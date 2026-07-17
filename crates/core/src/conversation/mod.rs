@@ -872,11 +872,20 @@ impl Database {
     pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
-            "UPDATE conversations SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE conversations
+             SET title = ?2, updated_at = datetime('now')
+             WHERE id = ?1 AND title_is_auto = 1",
             rusqlite::params![id, title],
         )?;
         if affected == 0 {
-            return Err(CoreError::NotFound(format!("Conversation {id}")));
+            let exists = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+                rusqlite::params![id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
+                return Err(CoreError::NotFound(format!("Conversation {id}")));
+            }
         }
         Ok(())
     }
@@ -3199,11 +3208,93 @@ Collection content has evidence authority by default; it does not override the s
 // ---------------------------------------------------------------------------
 
 const TITLE_SYSTEM_PROMPT: &str = "You are a conversation title generator. \
-Given the user's first message (and optionally the assistant's reply), \
+Given a compact excerpt containing the opening and most recent turns, \
 generate a concise, descriptive title in 5-10 words. \
-The title should capture the main topic or intent. \
+The title should capture the conversation's current overall topic or intent. \
 Reply with ONLY the title text. No quotes, no punctuation at the end. \
 Use the same language as the user's message.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleGenerationContext {
+    pub excerpt: String,
+    pub fallback_message: String,
+}
+
+fn is_steering_control(message: &ConversationMessage) -> bool {
+    message.role == Role::User
+        && message
+            .artifacts
+            .as_ref()
+            .and_then(|artifacts| artifacts.get("kind"))
+            .and_then(serde_json::Value::as_str)
+            == Some("steering")
+}
+
+/// Build a bounded title-generation excerpt from the opening and recent turns.
+/// Steering controls are intentionally excluded because they refine a turn but
+/// do not define a new conversation topic.
+pub fn build_title_generation_context(
+    messages: &[ConversationMessage],
+) -> Option<TitleGenerationContext> {
+    let meaningful = messages
+        .iter()
+        .filter(|message| {
+            matches!(message.role, Role::User | Role::Assistant) && !is_steering_control(message)
+        })
+        .collect::<Vec<_>>();
+    let first_user = meaningful
+        .iter()
+        .find(|message| message.role == Role::User)?
+        .content
+        .trim()
+        .to_string();
+    if first_user.is_empty() {
+        return None;
+    }
+
+    let mut selected_indexes = Vec::new();
+    if let Some(first_user_index) = meaningful
+        .iter()
+        .position(|message| message.role == Role::User)
+    {
+        selected_indexes.push(first_user_index);
+    }
+    if let Some(first_assistant_index) = meaningful
+        .iter()
+        .position(|message| message.role == Role::Assistant)
+    {
+        selected_indexes.push(first_assistant_index);
+    }
+    let recent_start = meaningful.len().saturating_sub(6);
+    selected_indexes.extend(recent_start..meaningful.len());
+    selected_indexes.sort_unstable();
+    selected_indexes.dedup();
+
+    let mut excerpt = String::new();
+    for index in selected_indexes {
+        let message = meaningful[index];
+        let content = message.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if !excerpt.is_empty() {
+            excerpt.push_str("\n\n");
+        }
+        let role = if message.role == Role::User {
+            "User"
+        } else {
+            "Assistant"
+        };
+        excerpt.push_str(role);
+        excerpt.push_str(": ");
+        excerpt.push_str(truncate_for_title_context(content, 350));
+    }
+
+    Some(TitleGenerationContext {
+        excerpt: truncate_for_title_context(&excerpt, 1_800).to_string(),
+        fallback_message: first_user,
+    })
+}
 
 /// Generate a conversation title using an LLM provider.
 ///
@@ -3214,19 +3305,9 @@ pub async fn generate_title(
     provider: &dyn crate::llm::LlmProvider,
     model: &str,
     provider_type: Option<crate::llm::ProviderType>,
-    user_message: &str,
-    assistant_reply: Option<&str>,
+    context: &TitleGenerationContext,
 ) -> String {
-    let mut user_content = format!(
-        "User message:\n{}",
-        truncate_for_title_context(user_message, 500)
-    );
-    if let Some(reply) = assistant_reply {
-        let trimmed = truncate_for_title_context(reply, 300);
-        if !trimmed.is_empty() {
-            user_content.push_str(&format!("\n\nAssistant reply:\n{}", trimmed));
-        }
-    }
+    let user_content = format!("Conversation excerpt:\n{}", context.excerpt);
 
     let request = crate::llm::CompletionRequest {
         model: model.to_string(),
@@ -3251,15 +3332,38 @@ pub async fn generate_title(
     .await
     {
         Ok(Ok(response)) => {
-            let title = response.content.trim().to_string();
+            let title = sanitize_generated_title(&response.content);
             if title.is_empty() {
-                fallback_title(user_message)
+                fallback_title(&context.fallback_message)
             } else {
                 title
             }
         }
-        _ => fallback_title(user_message),
+        _ => fallback_title(&context.fallback_message),
     }
+}
+
+fn sanitize_generated_title(raw: &str) -> String {
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let without_prefix = first_line
+        .strip_prefix("Title:")
+        .or_else(|| first_line.strip_prefix("标题："))
+        .unwrap_or(first_line)
+        .trim();
+    let cleaned = without_prefix
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | '*' | '#' | '“' | '”' | '‘' | '’'))
+        .trim_end_matches(|ch| {
+            matches!(
+                ch,
+                '.' | '!' | '?' | ':' | ';' | '。' | '！' | '？' | '：' | '；'
+            )
+        })
+        .trim();
+    truncate_to_char_count(cleaned, 80).trim().to_string()
 }
 
 fn truncate_to_char_count(text: &str, max_chars: usize) -> &str {
@@ -3275,7 +3379,7 @@ fn truncate_for_title_context(text: &str, max_chars: usize) -> &str {
 }
 
 /// Simple truncation fallback when LLM title generation fails.
-fn fallback_title(message: &str) -> String {
+pub fn fallback_title(message: &str) -> String {
     let trimmed = message.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -3303,6 +3407,28 @@ mod tests {
     use crate::project::CreateProjectInput;
     use crate::sources::CreateSourceInput;
 
+    fn title_test_message(
+        id: &str,
+        role: Role,
+        content: &str,
+        artifact_kind: Option<&str>,
+    ) -> ConversationMessage {
+        ConversationMessage {
+            id: id.to_string(),
+            conversation_id: "title-conversation".to_string(),
+            role,
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: artifact_kind.map(|kind| serde_json::json!({ "kind": kind })),
+            token_count: 0,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        }
+    }
+
     #[test]
     fn test_fallback_title_handles_cjk_without_panicking() {
         let message = "多字节片段".repeat(16);
@@ -3318,6 +3444,67 @@ mod tests {
         let text = "北".repeat(400);
         let truncated = truncate_for_title_context(&text, 300);
         assert_eq!(truncated.chars().count(), 300);
+    }
+
+    #[test]
+    fn test_title_context_uses_opening_and_recent_turns_without_steering() {
+        let messages = vec![
+            title_test_message("u1", Role::User, "Plan a database migration", None),
+            title_test_message("a1", Role::Assistant, "Let's inspect the schema", None),
+            title_test_message(
+                "s1",
+                Role::User,
+                "Ignore the title and focus on indexes",
+                Some("steering"),
+            ),
+            title_test_message("u2", Role::User, "Include a rollback strategy", None),
+            title_test_message("a2", Role::Assistant, "Added rollback checkpoints", None),
+        ];
+
+        let context = build_title_generation_context(&messages).expect("title context");
+
+        assert_eq!(context.fallback_message, "Plan a database migration");
+        assert!(context.excerpt.contains("Plan a database migration"));
+        assert!(context.excerpt.contains("Include a rollback strategy"));
+        assert!(!context.excerpt.contains("Ignore the title"));
+    }
+
+    #[test]
+    fn test_generated_title_sanitization_removes_wrappers_and_limits_length() {
+        assert_eq!(
+            sanitize_generated_title("Title: \"Database migration rollout!\"\nExtra detail"),
+            "Database migration rollout"
+        );
+        assert_eq!(
+            sanitize_generated_title(&"北".repeat(100)).chars().count(),
+            80
+        );
+    }
+
+    #[test]
+    fn test_auto_title_cannot_overwrite_manual_rename() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        db.update_conversation_title(&conv.id, "Automatic title")
+            .unwrap();
+        db.rename_conversation_by_user(&conv.id, "My manual title")
+            .unwrap();
+        db.update_conversation_title(&conv.id, "Late automatic title")
+            .unwrap();
+
+        let updated = db.get_conversation(&conv.id).unwrap();
+        assert_eq!(updated.title, "My manual title");
+        assert!(!updated.title_is_auto);
     }
 
     #[test]

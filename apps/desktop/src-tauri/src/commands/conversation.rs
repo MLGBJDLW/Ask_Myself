@@ -578,113 +578,124 @@ pub async fn generate_title_cmd(
         return Ok(conversation.title);
     }
 
-    // 1. Load agent config for LLM access.
-    //    Prefer the default config; fall back to any config matching the conversation's provider.
-    let (db_config, fallback_model) = match state
-        .db
-        .get_default_agent_config()
-        .map_err(|e| e.to_string())?
-    {
-        Some(cfg) => {
-            let model = cfg.model.clone();
-            (cfg, model)
-        }
-        None => {
-            let cfg = state
-                .db
-                .list_agent_configs()
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|c| c.provider == conversation.provider)
-                .ok_or_else(|| {
-                    format!(
-                        "No agent config for provider '{}'. Set a default agent or add a matching provider config.",
-                        conversation.provider
-                    )
-                })?;
-            (cfg, conversation.model.clone())
-        }
-    };
-
-    // 2. Load conversation messages.
+    // 1. Load a bounded excerpt containing both the opening and latest turns.
     let messages = state
         .db
         .get_messages(&conversation_id)
         .map_err(|e| e.to_string())?;
+    let title_context = nexa_core::conversation::build_title_generation_context(&messages)
+        .ok_or_else(|| "No user message found for title generation.".to_string())?;
+    let fallback_title = nexa_core::conversation::fallback_title(&title_context.fallback_message);
 
-    let first_user = messages.iter().find(|m| m.role == Role::User);
-    let first_assistant = messages.iter().find(|m| m.role == Role::Assistant);
+    // 2. Prefer the config that actually owns this conversation. A global
+    //    default may point at another provider after the user switches models.
+    let configs = state.db.list_agent_configs().map_err(|e| e.to_string())?;
+    let db_config = configs
+        .iter()
+        .find(|config| {
+            config.provider.eq_ignore_ascii_case(&conversation.provider)
+                && config.model == conversation.model
+        })
+        .or_else(|| {
+            configs
+                .iter()
+                .find(|config| config.provider.eq_ignore_ascii_case(&conversation.provider))
+        })
+        .or_else(|| configs.iter().find(|config| config.is_default))
+        .cloned();
 
-    let user_content = match first_user {
-        Some(m) => m.content.clone(),
-        None => return Err("No user message found.".to_string()),
-    };
-    let assistant_content = first_assistant.map(|m| m.content.as_str());
-
-    // 3. Build the provider + model pair for title generation.
-    //    Prefer the agent's configured summarization provider/model; fall back
-    //    to the default agent's primary provider/model.
-    let (provider, title_model, title_provider_type) = if let Some(summ_provider_name) =
-        db_config.summarization_provider.as_deref()
-    {
-        let summ_provider_type =
-            provider_type_for_parts(summ_provider_name, db_config.base_url.as_deref());
-        let summ_config = ProviderConfig {
-            provider_type: summ_provider_type,
-            api_key: Some(db_config.api_key.clone()),
-            base_url: db_config.base_url.clone(),
-            org_id: None,
-            timeout_secs: None,
-        };
-        match create_provider(summ_config) {
-            Ok(p) => {
-                let model = db_config
-                    .summarization_model
-                    .clone()
-                    .unwrap_or_else(|| fallback_model.clone());
-                (p, model, summ_provider_type)
+    // 3. Build the provider + model pair. Provider/configuration failures are
+    //    not fatal to auto-title: persist the deterministic fallback instead.
+    let title = if let Some(db_config) = db_config {
+        let fallback_model = db_config.model.clone();
+        let provider_bundle = if let Some(summ_provider_name) =
+            db_config.summarization_provider.as_deref()
+        {
+            let summ_provider_type =
+                provider_type_for_parts(summ_provider_name, db_config.base_url.as_deref());
+            let summ_config = ProviderConfig {
+                provider_type: summ_provider_type,
+                api_key: Some(db_config.api_key.clone()),
+                base_url: db_config.base_url.clone(),
+                org_id: None,
+                timeout_secs: None,
+            };
+            match create_provider(summ_config) {
+                Ok(provider) => Ok((
+                    provider,
+                    db_config
+                        .summarization_model
+                        .clone()
+                        .unwrap_or_else(|| fallback_model.clone()),
+                    summ_provider_type,
+                )),
+                Err(error) => {
+                    warn!(
+                        "summarization provider '{summ_provider_name}' unavailable ({error}); falling back to the conversation provider"
+                    );
+                    let provider_type = provider_type_for_config(&db_config);
+                    create_provider(db_config_to_provider_config(&db_config, None)).map(
+                        |provider| {
+                            (
+                                provider,
+                                db_config
+                                    .summarization_model
+                                    .clone()
+                                    .unwrap_or_else(|| fallback_model.clone()),
+                                provider_type,
+                            )
+                        },
+                    )
+                }
             }
-            Err(e) => {
-                warn!(
-                    "summarization provider '{summ_provider_name}' unavailable ({e}); falling back to default agent"
-                );
-                let provider_type = provider_type_for_config(&db_config);
-                let provider_config = db_config_to_provider_config(&db_config, None);
-                let p = create_provider(provider_config).map_err(|e| e.to_string())?;
-                let model = db_config
-                    .summarization_model
-                    .clone()
-                    .unwrap_or(fallback_model);
-                (p, model, provider_type)
+        } else {
+            let provider_type = provider_type_for_config(&db_config);
+            create_provider(db_config_to_provider_config(&db_config, None)).map(|provider| {
+                (
+                    provider,
+                    db_config
+                        .summarization_model
+                        .clone()
+                        .unwrap_or(fallback_model),
+                    provider_type,
+                )
+            })
+        };
+
+        match provider_bundle {
+            Ok((provider, title_model, title_provider_type)) => {
+                nexa_core::conversation::generate_title(
+                    provider.as_ref(),
+                    &title_model,
+                    Some(title_provider_type),
+                    &title_context,
+                )
+                .await
+            }
+            Err(error) => {
+                warn!("title provider unavailable ({error}); using fallback title");
+                fallback_title.clone()
             }
         }
     } else {
-        let provider_type = provider_type_for_config(&db_config);
-        let provider_config = db_config_to_provider_config(&db_config, None);
-        let p = create_provider(provider_config).map_err(|e| e.to_string())?;
-        let model = db_config
-            .summarization_model
-            .clone()
-            .unwrap_or(fallback_model);
-        (p, model, provider_type)
+        warn!(
+            "no agent config available for conversation {}; using fallback title",
+            conversation_id
+        );
+        fallback_title
     };
 
-    let title = nexa_core::conversation::generate_title(
-        provider.as_ref(),
-        &title_model,
-        Some(title_provider_type),
-        &user_content,
-        assistant_content,
-    )
-    .await;
-
-    // 4. Update DB (auto path — preserves title_is_auto = 1).
+    // 4. The DB update is guarded by title_is_auto. Re-read the row so a
+    //    concurrent user rename wins both in persistence and the returned UI.
     state
         .db
         .update_conversation_title(&conversation_id, &title)
         .map_err(|e| e.to_string())?;
-
-    Ok(title)
+    state
+        .db
+        .get_conversation(&conversation_id)
+        .map(|conversation| conversation.title)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
