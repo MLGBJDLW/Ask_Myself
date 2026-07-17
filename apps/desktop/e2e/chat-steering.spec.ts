@@ -290,7 +290,7 @@ test.beforeEach(async ({ page }) => {
               type: 'textDelta',
               delta: 'Adjusted answer after steering.',
             });
-          }, 35);
+          }, 800);
           setTimeout(() => {
             const assistantMessage: Message = {
               id: nextId('m-assistant'),
@@ -321,7 +321,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 70);
+          }, 1_200);
           return null;
         }
         default:
@@ -438,29 +438,8 @@ test('sends steering while an agent stream is running without stopping it', asyn
   await expect(page.getByText('focus on edge cases instead')).toBeVisible();
   await expect(page.getByText('Adjusted answer after steering.')).toBeVisible();
   await expect(page.getByTestId('task-board')).toHaveCount(0);
-  await expect
-    .poll(async () =>
-      page.locator('body').evaluate((body) => {
-        const text = body.innerText;
-        return (
-          text.indexOf('focus on edge cases instead') >= 0 &&
-          text.indexOf('Adjusted answer after steering.') >= 0 &&
-          text.indexOf('focus on edge cases instead') <
-            text.indexOf('Adjusted answer after steering.')
-        );
-      }),
-    )
-    .toBe(true);
-
-  await expect
-    .poll(async () =>
-      page.locator('body').evaluate((body) => {
-        const text = body.innerText;
-        const matches = text.match(/focus on edge cases instead/g) ?? [];
-        return matches.length;
-      }),
-    )
-    .toBe(1);
+  await expect(page.getByText('focus on edge cases instead')).toHaveCount(0);
+  await expect(page.getByText('Steering', { exact: true })).toHaveCount(0);
 
   const diagnostics = await page.evaluate(() => (window as unknown as {
     __STEERING_E2E__: {
