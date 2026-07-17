@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.7...nexa-monorepo-v0.10.8) (2026-07-17)
+
+
+### Bug Fixes
+
+* **chat:** hide completed steering controls ([f8e8b83](https://github.com/MLGBJDLW/Nexa/commit/f8e8b832490ce456e3b4e082d017e61dbc63c38f))
+* **chat:** restore automatic title updates ([eba6e4c](https://github.com/MLGBJDLW/Nexa/commit/eba6e4c27abb4dbf3e4d4fd634dc1a16f42c9521))
+* **chat:** stabilize steering, plan animation, and auto titles ([e1badfd](https://github.com/MLGBJDLW/Nexa/commit/e1badfd1b278d1e5d01d0cf36bd2637bbf2b951b))
+
+
+### Performance Improvements
+
+* **chat:** smooth plan capsule transitions ([e64e376](https://github.com/MLGBJDLW/Nexa/commit/e64e376ad07bb9358867b8865a8d6a7ca37442a9))
+
 ## [0.10.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.6...nexa-monorepo-v0.10.7) (2026-07-14)
 
 
