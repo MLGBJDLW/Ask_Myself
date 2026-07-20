@@ -387,7 +387,12 @@ export function SettingsPage() {
     if (!embedConfig) return;
     setTestLoading(true);
     try {
-      const ok = await api.testApiConnection(embedConfig.apiKey, embedConfig.apiBaseUrl);
+      const ok = await api.testApiConnection(
+        embedConfig.apiKey,
+        embedConfig.apiBaseUrl,
+        embedConfig.apiModel,
+        embedConfig.vectorDimensions,
+      );
       if (ok) {
         toast.success(t('settings.embeddingTestSuccess'));
       } else {
@@ -458,6 +463,16 @@ export function SettingsPage() {
           size: '1024x1024',
           quality: null,
           outputFormat: 'png',
+        },
+        textToSpeech: {
+          provider: 'open_ai',
+          apiStyle: 'openai_speech',
+          apiKey: '',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini-tts',
+          voice: 'coral',
+          outputFormat: 'wav',
+          speed: 1,
         },
       });
     }

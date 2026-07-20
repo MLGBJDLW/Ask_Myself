@@ -1,0 +1,64 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI Speech",
+    "provider": "open_ai",
+    "apiStyle": "openai_speech",
+    "baseUrl": "https://api.openai.com/v1",
+    "description": "The latest steerable GPT-4o mini speech model, plus low-latency and HD options.",
+    "models": [
+      { "id": "gpt-4o-mini-tts", "name": "GPT-4o Mini TTS (Latest)", "recommended": true },
+      { "id": "tts-1", "name": "TTS-1 (Lowest Latency)" },
+      { "id": "tts-1-hd", "name": "TTS-1 HD" }
+    ],
+    "voices": [
+      { "id": "coral", "name": "Coral", "recommended": true },
+      { "id": "alloy", "name": "Alloy" },
+      { "id": "ash", "name": "Ash" },
+      { "id": "ballad", "name": "Ballad" },
+      { "id": "cedar", "name": "Cedar" },
+      { "id": "echo", "name": "Echo" },
+      { "id": "fable", "name": "Fable" },
+      { "id": "marin", "name": "Marin" },
+      { "id": "nova", "name": "Nova" },
+      { "id": "onyx", "name": "Onyx" },
+      { "id": "sage", "name": "Sage" },
+      { "id": "shimmer", "name": "Shimmer" },
+      { "id": "verse", "name": "Verse" }
+    ],
+    "outputFormats": ["wav", "mp3", "opus", "aac", "flac"]
+  },
+  {
+    "id": "elevenlabs",
+    "name": "ElevenLabs Speech",
+    "provider": "elevenlabs",
+    "apiStyle": "elevenlabs_speech",
+    "baseUrl": "https://api.elevenlabs.io/v1",
+    "description": "Expressive multilingual speech, including a Flash model optimized for very low latency.",
+    "models": [
+      { "id": "eleven_flash_v2_5", "name": "Eleven Flash v2.5 (Fast)", "recommended": true },
+      { "id": "eleven_v3", "name": "Eleven v3" },
+      { "id": "eleven_multilingual_v2", "name": "Eleven Multilingual v2" }
+    ],
+    "voices": [
+      { "id": "JBFqnCBsd6RMkjVDRZzb", "name": "George", "recommended": true }
+    ],
+    "outputFormats": ["mp3"]
+  },
+  {
+    "id": "minimax",
+    "name": "MiniMax Speech",
+    "provider": "minimax",
+    "apiStyle": "minimax_speech",
+    "baseUrl": "https://api.minimax.io/v1",
+    "description": "Speech 2.8 turbo for speed and HD for higher-fidelity output.",
+    "models": [
+      { "id": "speech-2.8-turbo", "name": "Speech 2.8 Turbo", "recommended": true },
+      { "id": "speech-2.8-hd", "name": "Speech 2.8 HD" }
+    ],
+    "voices": [
+      { "id": "male-qn-qingse", "name": "Qingse", "recommended": true }
+    ],
+    "outputFormats": ["mp3"]
+  }
+]

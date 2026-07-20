@@ -1565,10 +1565,13 @@ fn windows_pathexts() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::sync::Arc;
 
+    #[cfg(windows)]
+    use std::fs;
+
     use serde_json::json;
+    #[cfg(windows)]
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};

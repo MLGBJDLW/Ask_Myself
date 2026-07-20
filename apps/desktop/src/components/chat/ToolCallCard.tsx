@@ -34,6 +34,7 @@ import {
   Route,
   ScrollText,
   Sparkles,
+  Volume2,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
@@ -115,6 +116,17 @@ interface GeneratedImageArtifact {
   transient?: boolean;
   suggestedFilename?: string;
   providerImageUrl?: string;
+}
+
+interface GeneratedAudioArtifact {
+  kind: 'generatedAudio';
+  path?: string;
+  previewPath?: string;
+  mediaType?: string;
+  provider?: string;
+  model?: string;
+  voice?: string;
+  bytes?: number;
 }
 
 interface ImagePromptArgs {
@@ -825,6 +837,14 @@ function extractGeneratedImageArtifact(
   return artifacts as unknown as GeneratedImageArtifact;
 }
 
+function extractGeneratedAudioArtifact(
+  artifacts: ArtifactPayload | undefined,
+): GeneratedAudioArtifact | null {
+  if (!isRecord(artifacts)) return null;
+  if (artifacts.kind !== 'generatedAudio') return null;
+  return artifacts as unknown as GeneratedAudioArtifact;
+}
+
 function extractSkillActivationArtifact(
   artifacts: ArtifactPayload | undefined,
 ): SkillActivationArtifact | null {
@@ -909,6 +929,44 @@ function imageAspectStyle(size?: string): CSSProperties {
 
 function generatedImagePreviewPath(image: GeneratedImageArtifact): string {
   return image.previewPath || image.path || '';
+}
+
+function GeneratedAudioPreview({ audio }: { audio: GeneratedAudioArtifact }) {
+  const previewPath = audio.previewPath || audio.path || '';
+  const previewSrc = useMemo(() => {
+    if (!previewPath) return '';
+    try {
+      return convertFileSrc(previewPath);
+    } catch {
+      return previewPath;
+    }
+  }, [previewPath]);
+
+  return (
+    <div className="space-y-2" data-testid="generated-audio-preview">
+      <audio
+        controls
+        preload="metadata"
+        src={previewSrc}
+        className="h-10 w-full accent-accent"
+        data-testid="generated-audio-player"
+      />
+      <div className="flex flex-wrap gap-1.5 text-[11px] text-text-tertiary">
+        {[audio.provider, audio.model, audio.voice, audio.mediaType]
+          .filter(Boolean)
+          .map((item) => (
+            <span key={String(item)} className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {String(item)}
+            </span>
+          ))}
+        {typeof audio.bytes === 'number' && (
+          <span className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+            {formatByteCount(audio.bytes)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function extensionForMediaType(mediaType?: string): string {
@@ -1489,6 +1547,7 @@ export function ToolCallCard({
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
+  const generatedAudio = useMemo(() => extractGeneratedAudioArtifact(artifacts), [artifacts]);
   const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
   const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
   const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
@@ -1968,6 +2027,40 @@ export function ToolCallCard({
               size={imageArgs.size}
             />
           )}
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (generatedAudio) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="chat-tool-card my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
+        data-testid="tool-call-card"
+        data-tool-state={toolCardState}
+      >
+        <div className="flex min-h-11 items-center gap-2 border-b border-border/40 px-3 py-2">
+          <Volume2 className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">
+            {briefLabel}
+          </div>
+          {StatusIcon && (
+            <span
+              className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${statusBadgeClass}`}
+              data-testid="tool-card-status"
+              role="img"
+              aria-label={statusLabel}
+              title={statusLabel}
+            >
+              <StatusIcon className="h-3 w-3" />
+            </span>
+          )}
+        </div>
+        <div className="px-3 py-3">
+          <GeneratedAudioPreview audio={generatedAudio} />
         </div>
       </motion.div>
     );

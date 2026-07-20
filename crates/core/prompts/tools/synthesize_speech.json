@@ -1,0 +1,32 @@
+{
+  "name": "synthesize_speech",
+  "description": "Turn text into a spoken-audio preview using the cloud TTS provider configured in Settings. Prefer the configured fast model for drafts and speed-sensitive work; use an HD or expressive model when the user prioritizes fidelity. The result is a transient local audio file and is not written into the workspace.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "The exact text to speak. Do not add commentary that the user did not request."
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional provider model override. Omit to use the configured model."
+      },
+      "voice": {
+        "type": "string",
+        "description": "Optional provider voice id override. Omit to use the configured voice."
+      },
+      "speed": {
+        "type": "number",
+        "minimum": 0.5,
+        "maximum": 2.0,
+        "description": "Optional speaking-rate multiplier. Omit to use the configured speed."
+      },
+      "filename": {
+        "type": "string",
+        "description": "Optional safe suggested filename for the transient preview."
+      }
+    },
+    "required": ["text"]
+  }
+}

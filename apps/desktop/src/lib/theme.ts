@@ -1,4 +1,4 @@
-export type ThemeId = 'dark' | 'light' | 'midnight' | 'aurora' | 'bloom';
+export type ThemeId = 'dark' | 'light' | 'midnight' | 'aurora' | 'bloom' | 'dream';
 
 export interface ThemeOption {
   id: ThemeId;
@@ -12,6 +12,7 @@ export const THEMES: ThemeOption[] = [
   { id: 'midnight', label: 'Midnight', icon: 'star' },
   { id: 'aurora', label: 'Aurora', icon: 'sparkles' },
   { id: 'bloom', label: 'Bloom', icon: 'palette' },
+  { id: 'dream', label: 'Dream', icon: 'heart' },
 ];
 
 export const THEME_IDS = THEMES.map((theme) => theme.id);

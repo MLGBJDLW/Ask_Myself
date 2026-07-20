@@ -1,0 +1,76 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI Embeddings",
+    "provider": "open_ai",
+    "baseUrl": "https://api.openai.com/v1",
+    "description": "Fast general-purpose text embeddings with optional dimension shortening.",
+    "models": [
+      {
+        "id": "text-embedding-3-small",
+        "name": "Text Embedding 3 Small",
+        "dimensions": 1536,
+        "supportsDimensionOverride": true,
+        "recommended": true
+      },
+      {
+        "id": "text-embedding-3-large",
+        "name": "Text Embedding 3 Large",
+        "dimensions": 3072,
+        "supportsDimensionOverride": true
+      }
+    ]
+  },
+  {
+    "id": "jina",
+    "name": "Jina AI Embeddings",
+    "provider": "jina",
+    "baseUrl": "https://api.jina.ai/v1",
+    "description": "Multilingual long-context embeddings served through an OpenAI-compatible API.",
+    "models": [
+      {
+        "id": "jina-embeddings-v5-text-small",
+        "name": "Jina Embeddings v5 Text Small",
+        "dimensions": 1024,
+        "supportsDimensionOverride": false,
+        "recommended": true
+      },
+      {
+        "id": "jina-embeddings-v5-text-nano",
+        "name": "Jina Embeddings v5 Text Nano",
+        "dimensions": 768,
+        "supportsDimensionOverride": false
+      },
+      {
+        "id": "jina-embeddings-v3",
+        "name": "Jina Embeddings v3",
+        "dimensions": 1024,
+        "supportsDimensionOverride": true
+      }
+    ]
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral Embeddings",
+    "provider": "mistral",
+    "baseUrl": "https://api.mistral.ai/v1",
+    "description": "Low-latency multilingual embeddings through Mistral's native embeddings endpoint.",
+    "models": [
+      {
+        "id": "mistral-embed",
+        "name": "Mistral Embed",
+        "dimensions": 1024,
+        "supportsDimensionOverride": false,
+        "recommended": true
+      }
+    ]
+  },
+  {
+    "id": "custom",
+    "name": "Custom OpenAI-compatible Embeddings",
+    "provider": "custom",
+    "baseUrl": "https://example.com/v1",
+    "description": "Any provider that implements POST /embeddings with an OpenAI-style response.",
+    "models": []
+  }
+]

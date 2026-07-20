@@ -29,6 +29,7 @@ pub mod dreaming;
 pub mod dreaming_scope;
 pub mod ecosystem;
 pub mod embed;
+pub mod embedding_provider_catalog;
 pub mod error;
 pub mod eval_harness;
 pub mod evidence_verifier;
@@ -82,6 +83,7 @@ pub mod tool_visibility_policy;
 pub mod tools;
 pub mod trace;
 pub mod trajectory;
+pub mod tts_provider_catalog;
 #[cfg(feature = "video")]
 pub mod video;
 pub mod visual_document;

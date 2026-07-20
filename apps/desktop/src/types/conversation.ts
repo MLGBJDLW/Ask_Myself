@@ -359,6 +359,7 @@ export interface AppConfig {
   hfMirrorBaseUrl?: string;
   ghproxyBaseUrl?: string;
   imageGeneration?: ImageGenerationConfig;
+  textToSpeech?: TextToSpeechConfig;
   webSearch?: WebSearchConfig;
   dreaming?: DreamingConfig;
 }
@@ -441,6 +442,17 @@ export interface ImageGenerationConfig {
   size: string | null;
   quality: string | null;
   outputFormat: string | null;
+}
+
+export interface TextToSpeechConfig {
+  provider: string;
+  apiStyle: string;
+  apiKey: string;
+  baseUrl: string | null;
+  model: string;
+  voice: string;
+  outputFormat: string;
+  speed: number;
 }
 
 export type ProviderType =

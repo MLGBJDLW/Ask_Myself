@@ -301,10 +301,14 @@ export function Layout() {
   };
 
   return (
-    <div className="flex h-screen bg-surface-0 text-text-primary">
+    <div
+      className="relative isolate flex h-screen overflow-hidden bg-surface-0 text-text-primary"
+      data-app-area={location.pathname === '/' ? 'home' : 'task'}
+    >
+      <div className="dream-backdrop" aria-hidden="true" />
       {/* Sidebar */}
       <motion.aside
-        className="relative flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
+        className="relative z-10 flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
         animate={{ width: collapsed ? 56 : sidebarWidth }}
         transition={isSidebarResizing || shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         aria-label={t('nav.mainNav')}
@@ -402,7 +406,7 @@ export function Layout() {
       </motion.aside>
 
       {/* Main content */}
-      <main className="flex-1 min-w-0 min-h-0 overflow-y-auto">
+      <main className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto">
         <Outlet />
       </main>
 

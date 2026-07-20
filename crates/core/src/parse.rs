@@ -579,32 +579,12 @@ fn extract_pptx_text_from_xml(bytes: &[u8]) -> Result<String, String> {
 
 /// Parse a .docx file by extracting its text content.
 pub fn parse_docx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
-    use dotext::*;
-    use std::io::Read;
-
     let bytes = std::fs::read(path)?;
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let dotext_result = (|| -> Result<String, String> {
-        let mut file = Docx::open(path)
-            .map_err(|e| format!("DOCX open failed for {}: {}", path.display(), e))?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|e| format!("DOCX read failed for {}: {}", path.display(), e))?;
-        Ok(text)
-    })();
-
-    let text = match dotext_result {
-        Ok(text) if !text.trim().is_empty() => text,
-        Ok(_) | Err(_) => extract_docx_text_from_xml(&bytes).map_err(|e| {
-            CoreError::Parse(format!(
-                "DOCX read failed for {} (OOXML fallback also failed: {})",
-                path.display(),
-                e
-            ))
-        })?,
-    };
+    let text = extract_docx_text_from_xml(&bytes)
+        .map_err(|e| CoreError::Parse(format!("DOCX read failed for {}: {}", path.display(), e)))?;
 
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
@@ -696,32 +676,12 @@ pub fn parse_xlsx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument,
 
 /// Parse a .pptx file by extracting its text content.
 pub fn parse_pptx(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, CoreError> {
-    use dotext::*;
-    use std::io::Read;
-
     let bytes = std::fs::read(path)?;
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let dotext_result = (|| -> Result<String, String> {
-        let mut file = Pptx::open(path)
-            .map_err(|e| format!("PPTX open failed for {}: {}", path.display(), e))?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|e| format!("PPTX read failed for {}: {}", path.display(), e))?;
-        Ok(text)
-    })();
-
-    let text = match dotext_result {
-        Ok(text) if !text.trim().is_empty() => text,
-        Ok(_) | Err(_) => extract_pptx_text_from_xml(&bytes).map_err(|e| {
-            CoreError::Parse(format!(
-                "PPTX read failed for {} (OOXML fallback also failed: {})",
-                path.display(),
-                e
-            ))
-        })?,
-    };
+    let text = extract_pptx_text_from_xml(&bytes)
+        .map_err(|e| CoreError::Parse(format!("PPTX read failed for {}: {}", path.display(), e)))?;
 
     let text = text.replace("\r\n", "\n");
     let chunks = chunk_plaintext_preserving_short_document(&text, max_chunk_chars);
@@ -1502,72 +1462,30 @@ fn parse_epub(path: &Path, max_chunk_chars: usize) -> Result<ParsedDocument, Cor
 
 /// Parse an ODF file (.odt, .ods, .odp) by extracting text.
 ///
-/// Uses `dotext` for `.odt` and `.odp` when available, with a zip-based
-/// fallback that reads `content.xml` and strips XML tags.
+/// Reads `content.xml` from the ODF zip and strips XML tags.
 fn parse_odf(
     path: &Path,
     mime_type: &str,
     max_chunk_chars: usize,
 ) -> Result<ParsedDocument, CoreError> {
-    use dotext::doc::OpenOfficeDoc;
-    use std::io::Read;
-
     let bytes = std::fs::read(path)?;
     let file_size = bytes.len() as i64;
     let content_hash = blake3::hash(&bytes).to_hex().to_string();
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-
-    // Try dotext first for supported formats.
-    let dotext_result: Option<String> = match ext.as_str() {
-        "odt" => {
-            let r = (|| -> Result<String, String> {
-                let mut file =
-                    dotext::Odt::open(path).map_err(|e| format!("ODT open failed: {}", e))?;
-                let mut text = String::new();
-                file.read_to_string(&mut text)
-                    .map_err(|e| format!("ODT read failed: {}", e))?;
-                Ok(text)
-            })();
-            r.ok().filter(|t| !t.trim().is_empty())
-        }
-        "odp" => {
-            let r = (|| -> Result<String, String> {
-                let mut file =
-                    dotext::Odp::open(path).map_err(|e| format!("ODP open failed: {}", e))?;
-                let mut text = String::new();
-                file.read_to_string(&mut text)
-                    .map_err(|e| format!("ODP read failed: {}", e))?;
-                Ok(text)
-            })();
-            r.ok().filter(|t| !t.trim().is_empty())
-        }
-        _ => None,
-    };
-
-    let text = if let Some(text) = dotext_result {
-        text
-    } else {
-        // Fallback: read content.xml from the zip and strip tags.
-        let xml = read_zip_entry_text(&bytes, |name| name == "content.xml").map_err(|e| {
-            CoreError::Parse(format!(
-                "ODF read failed for {} (content.xml extraction failed: {})",
-                path.display(),
-                e
-            ))
-        })?;
-        strip_ooxml_tags(&xml).map_err(|e| {
-            CoreError::Parse(format!(
-                "ODF tag stripping failed for {}: {}",
-                path.display(),
-                e
-            ))
-        })?
-    };
+    let xml = read_zip_entry_text(&bytes, |name| name == "content.xml").map_err(|e| {
+        CoreError::Parse(format!(
+            "ODF read failed for {} (content.xml extraction failed: {})",
+            path.display(),
+            e
+        ))
+    })?;
+    let text = strip_ooxml_tags(&xml).map_err(|e| {
+        CoreError::Parse(format!(
+            "ODF tag stripping failed for {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
 
     if text.trim().is_empty() {
         return Err(CoreError::Parse(format!(

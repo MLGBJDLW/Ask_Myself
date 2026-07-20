@@ -771,8 +771,14 @@ pub fn save_embedder_config_cmd(
 }
 
 #[tauri::command]
-pub fn test_api_connection_cmd(api_key: String, base_url: String) -> Result<bool, String> {
-    nexa_core::embed::test_api_connection(&api_key, &base_url).map_err(|e| e.to_string())
+pub fn test_api_connection_cmd(
+    api_key: String,
+    base_url: String,
+    model: String,
+    dimensions: u32,
+) -> Result<bool, String> {
+    nexa_core::embed::test_api_connection(&api_key, &base_url, &model, dimensions)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

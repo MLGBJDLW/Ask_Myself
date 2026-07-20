@@ -619,6 +619,25 @@
         }
       },
       {
+        "id": "moonshotai/kimi-k3",
+        "name": "MoonshotAI: Kimi K3",
+        "tagKey": "providers.tagLatest",
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "moonshotai/kimi-k2.7-code",
         "name": "MoonshotAI: Kimi K2.7 Code",
         "tagKey": "providers.tagCoding",
@@ -7233,19 +7252,36 @@
     "id": "moonshot",
     "name": "Moonshot (Kimi)",
     "provider": "moonshot",
-    "baseUrl": "https://api.moonshot.cn/v1",
+    "baseUrl": "https://api.moonshot.ai/v1",
     "requiresApiKey": true,
     "icon": "🌙",
-    "description": "Kimi K2.7 Code, K2.6, K2.5, K2 Thinking",
+    "description": "Kimi K3 with native vision and 1M context, plus K2 coding models",
     "capabilities": {
-      "vision": false
+      "vision": true
     },
     "models": [
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": [
+              "max"
+            ],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
       {
         "id": "kimi-k2.7-code",
         "name": "Kimi K2.7 Code",
         "tagKey": "providers.tagCoding",
-        "recommended": true,
         "capabilities": {
           "vision": true,
           "reasoning": {

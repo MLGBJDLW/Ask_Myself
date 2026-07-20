@@ -55,6 +55,50 @@ impl ImageGenerationConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TextToSpeechConfig {
+    #[serde(default = "default_tts_provider")]
+    pub provider: String,
+    #[serde(default = "default_tts_api_style")]
+    pub api_style: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_tts_base_url_option")]
+    pub base_url: Option<String>,
+    #[serde(default = "default_tts_model")]
+    pub model: String,
+    #[serde(default = "default_tts_voice")]
+    pub voice: String,
+    #[serde(default = "default_tts_output_format")]
+    pub output_format: String,
+    #[serde(default = "default_tts_speed")]
+    pub speed: f32,
+}
+
+impl Default for TextToSpeechConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_tts_provider(),
+            api_style: default_tts_api_style(),
+            api_key: String::new(),
+            base_url: default_tts_base_url_option(),
+            model: default_tts_model(),
+            voice: default_tts_voice(),
+            output_format: default_tts_output_format(),
+            speed: default_tts_speed(),
+        }
+    }
+}
+
+impl TextToSpeechConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.api_key.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && !self.voice.trim().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebSearchConfig {
     #[serde(default)]
     pub provider_profile: WebSearchProviderProfile,
@@ -386,6 +430,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub image_generation: ImageGenerationConfig,
 
+    /// Dedicated cloud speech provider settings used by the synthesize_speech tool.
+    #[serde(default)]
+    pub text_to_speech: TextToSpeechConfig,
+
     /// Defaults for native no-key public web search tools.
     #[serde(default)]
     pub web_search: WebSearchConfig,
@@ -479,6 +527,27 @@ fn default_image_size_option() -> Option<String> {
 fn default_image_output_format_option() -> Option<String> {
     Some("png".to_string())
 }
+fn default_tts_provider() -> String {
+    "open_ai".to_string()
+}
+fn default_tts_api_style() -> String {
+    "openai_speech".to_string()
+}
+fn default_tts_base_url_option() -> Option<String> {
+    Some("https://api.openai.com/v1".to_string())
+}
+fn default_tts_model() -> String {
+    "gpt-4o-mini-tts".to_string()
+}
+fn default_tts_voice() -> String {
+    "coral".to_string()
+}
+fn default_tts_output_format() -> String {
+    "wav".to_string()
+}
+fn default_tts_speed() -> f32 {
+    1.0
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -505,6 +574,7 @@ impl Default for AppConfig {
             hf_mirror_base_url: default_hf_mirror_base_url(),
             ghproxy_base_url: default_ghproxy_base_url(),
             image_generation: ImageGenerationConfig::default(),
+            text_to_speech: TextToSpeechConfig::default(),
             web_search: WebSearchConfig::default(),
             dreaming: DreamingConfig::default(),
         }
@@ -514,6 +584,7 @@ impl Default for AppConfig {
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
+    config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
     for provider in &mut config.web_search.custom_providers {
         provider.api_key = crate::crypto::encrypt_api_key(&provider.api_key)?;
     }
@@ -523,6 +594,7 @@ fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreEr
 fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.image_generation.api_key =
         crate::crypto::decrypt_api_key(&config.image_generation.api_key)?;
+    config.text_to_speech.api_key = crate::crypto::decrypt_api_key(&config.text_to_speech.api_key)?;
     for provider in &mut config.web_search.custom_providers {
         provider.api_key = crate::crypto::decrypt_api_key(&provider.api_key)?;
     }

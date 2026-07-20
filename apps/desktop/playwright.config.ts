@@ -11,6 +11,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     headless: true,
+    channel: process.env.NEXA_PLAYWRIGHT_CHANNEL === 'msedge' ? 'msedge' : undefined,
     trace: 'retain-on-failure',
     viewport: { width: 1360, height: 900 },
   },

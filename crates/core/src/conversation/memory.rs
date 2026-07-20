@@ -225,6 +225,7 @@ pub fn model_context_window(model: &str) -> u32 {
         "glm-4-long" => 1_000_000,
 
         // Moonshot / Kimi
+        "kimi-k3" | "moonshotai/kimi-k3" => 1_048_576,
         "kimi-k2.7-code" | "kimi-k2.6" | "kimi-k2.5" | "kimi-k2-thinking" | "kimi-k2" => 256_000,
         "kimi-latest" => 128_000,
 
@@ -402,6 +403,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("glm") => 128_000,
 
         // Moonshot / Kimi
+        _ if m.contains("kimi-k3") => 1_048_576,
         _ if m.contains("kimi-k2") => 256_000,
         _ if m.contains("kimi") || m.contains("moonshot") => 128_000,
 
@@ -669,6 +671,8 @@ mod tests {
         assert_eq!(model_context_window("glm-5"), 200_000);
         assert_eq!(model_context_window("glm-4-long"), 1_000_000);
         // Moonshot / Kimi
+        assert_eq!(model_context_window("kimi-k3"), 1_048_576);
+        assert_eq!(model_context_window("moonshotai/kimi-k3"), 1_048_576);
         assert_eq!(model_context_window("kimi-k2.7-code"), 256_000);
         assert_eq!(model_context_window("kimi-k2.6"), 256_000);
         assert_eq!(model_context_window("kimi-k2.5"), 256_000);

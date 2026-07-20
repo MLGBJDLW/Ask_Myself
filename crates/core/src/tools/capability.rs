@@ -134,6 +134,7 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
 pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
     match name {
         "generate_image"
+        | "synthesize_speech"
         | "download_asset"
         | "browser_evidence_capture"
         | "fetch_url"
@@ -432,6 +433,16 @@ pub fn infer_tool_access_profile(
             false,
             ApprovalRisk::Low,
             "Reads remote web content or search results and crosses the local trust boundary.",
+        ),
+        "synthesize_speech" => (
+            "web",
+            true,
+            false,
+            false,
+            true,
+            false,
+            ApprovalRisk::Low,
+            "Sends requested text to the configured cloud speech provider and returns bounded transient audio.",
         ),
         "browser_evidence_capture" => (
             "web",

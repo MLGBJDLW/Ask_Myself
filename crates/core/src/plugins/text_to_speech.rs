@@ -1,0 +1,160 @@
+use serde_json::to_value;
+
+use crate::app_settings::TextToSpeechConfig;
+use crate::tts_provider_catalog::load_tts_provider_presets;
+
+use super::{
+    PluginCheckSeverity, PluginManifest, PluginProviderCatalog, PluginRuntimeCheck,
+    PluginRuntimeStatus, PluginSettingsField, PluginSettingsSchema,
+};
+
+pub(super) fn enrich_manifest(
+    mut manifest: PluginManifest,
+    config: Option<&TextToSpeechConfig>,
+) -> PluginManifest {
+    manifest.settings_schema = Some(settings_schema());
+    manifest.provider_catalogs = vec![provider_catalog()];
+    manifest.runtime_checks = runtime_checks(config);
+    manifest
+}
+
+fn provider_catalog() -> PluginProviderCatalog {
+    let items = load_tts_provider_presets()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|preset| to_value(preset).ok())
+        .collect();
+    PluginProviderCatalog {
+        id: "ttsProviders".to_string(),
+        label: "Text-to-speech providers".to_string(),
+        item_kind: "providerPreset".to_string(),
+        items,
+    }
+}
+
+fn settings_schema() -> PluginSettingsSchema {
+    PluginSettingsSchema {
+        config_key: "textToSpeech".to_string(),
+        fields: vec![
+            field(
+                "provider",
+                "Provider",
+                "select",
+                true,
+                false,
+                Some("ttsProviders"),
+            ),
+            field("apiKey", "API key", "secret", true, true, None),
+            field("baseUrl", "Base URL", "url", true, false, None),
+            field(
+                "model",
+                "Model",
+                "select",
+                true,
+                false,
+                Some("ttsProviders.models"),
+            ),
+            field(
+                "voice",
+                "Voice",
+                "select",
+                true,
+                false,
+                Some("ttsProviders.voices"),
+            ),
+            field("speed", "Speed", "number", false, false, None),
+        ],
+    }
+}
+
+fn field(
+    key: &str,
+    label: &str,
+    kind: &str,
+    required: bool,
+    secret: bool,
+    options_source: Option<&str>,
+) -> PluginSettingsField {
+    PluginSettingsField {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind: kind.to_string(),
+        required,
+        secret,
+        description: String::new(),
+        options_source: options_source.map(str::to_string),
+        default_value: None,
+    }
+}
+
+fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck> {
+    let Some(config) = config else {
+        return vec![check(
+            "configuration",
+            "Configuration",
+            PluginRuntimeStatus::Unknown,
+            PluginCheckSeverity::Info,
+            "Text-to-speech settings have not been loaded.",
+        )];
+    };
+    vec![
+        check(
+            "api-key",
+            "API key",
+            if config.api_key.trim().is_empty() {
+                PluginRuntimeStatus::Warning
+            } else {
+                PluginRuntimeStatus::Pass
+            },
+            PluginCheckSeverity::Warning,
+            if config.api_key.trim().is_empty() {
+                "Add a provider API key before synthesizing speech."
+            } else {
+                "API key is configured."
+            },
+        ),
+        check(
+            "model-and-voice",
+            "Model and voice",
+            if config.model.trim().is_empty() || config.voice.trim().is_empty() {
+                PluginRuntimeStatus::Error
+            } else {
+                PluginRuntimeStatus::Pass
+            },
+            PluginCheckSeverity::Error,
+            if config.model.trim().is_empty() || config.voice.trim().is_empty() {
+                "Choose both a speech model and voice."
+            } else {
+                "Speech model and voice are selected."
+            },
+        ),
+    ]
+}
+
+fn check(
+    id: &str,
+    label: &str,
+    status: PluginRuntimeStatus,
+    severity: PluginCheckSeverity,
+    message: &str,
+) -> PluginRuntimeCheck {
+    PluginRuntimeCheck {
+        id: id.to_string(),
+        label: label.to_string(),
+        status,
+        severity,
+        message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_catalog_is_exposed_through_manifest_data() {
+        let catalog = provider_catalog();
+        assert_eq!(catalog.id, "ttsProviders");
+        assert_eq!(catalog.items.len(), 3);
+    }
+}

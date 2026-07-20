@@ -4,7 +4,7 @@ use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
+use quick_xml::{Reader, XmlVersion};
 use zip::ZipArchive;
 
 use super::model::{
@@ -169,7 +169,7 @@ fn attrs_for(
         let attr = attr.map_err(|e| e.to_string())?;
         let key = local_name(attr.key.as_ref());
         let value = attr
-            .decode_and_unescape_value(reader)
+            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
             .map_err(|e| e.to_string())?
             .to_string();
         attrs.insert(key, value);
@@ -179,7 +179,7 @@ fn attrs_for(
 
 fn parse_xml(xml: &str) -> Result<XmlNode, String> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(false);
+    reader.config_mut().trim_text(false);
     let mut buffer = Vec::new();
     let mut stack = vec![XmlNode {
         name: "__root".to_string(),
@@ -208,8 +208,10 @@ fn parse_xml(xml: &str) -> Result<XmlNode, String> {
             }
             Ok(Event::Text(event)) => {
                 if let Some(node) = stack.last_mut() {
-                    node.text
-                        .push_str(&event.unescape().map_err(|e| e.to_string())?);
+                    let decoded = event.decode().map_err(|e| e.to_string())?;
+                    let unescaped =
+                        quick_xml::escape::unescape(&decoded).map_err(|e| e.to_string())?;
+                    node.text.push_str(&unescaped);
                 }
             }
             Ok(Event::CData(event)) => {

@@ -23,10 +23,9 @@ use nexa_core::agent::{
 };
 use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
-use nexa_core::approval::{
-    ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
-    ToolApprovalPolicy, ToolPermissionKey,
-};
+#[cfg(test)]
+use nexa_core::approval::ToolApprovalMode;
+use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, AgentConfig as DbAgentConfig, AgentExecutionGraph,
@@ -178,7 +177,7 @@ pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
 
 /// State for the per-call tool approval flow.
 ///
-/// `pending` maps an [`ApprovalRequest`] id → a oneshot `Sender` that the
+/// `pending` maps an approval-request id → a oneshot `Sender` that the
 /// Tauri `approve_tool_call_cmd` resolves once the user clicks a button
 /// in the GUI. `session_store` holds "allow for this session" grants that
 /// persist until the app is closed.

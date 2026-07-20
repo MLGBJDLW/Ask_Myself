@@ -1,5 +1,11 @@
 import { AlertTriangle, Brain, CheckCircle, KeyRound, Loader2, RefreshCw, Save, XCircle, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import {
+  defaultEmbeddingModel,
+  EMBEDDING_PROVIDER_PRESETS,
+  findEmbeddingProviderPreset,
+} from '../../lib/embeddingProviderPresets';
+import { ProviderIcon } from '../../lib/providerIcons';
 import type { EmbedderConfig } from '../../types/embedder';
 import type { ScanProgress } from '../../types/ingest';
 import { Badge } from '../ui/Badge';
@@ -40,6 +46,29 @@ export function EmbeddingConfigSection({
     if (!embedConfig) return;
     onConfigChange({ ...embedConfig, ...patch });
     onMarkDirty();
+  };
+
+  const activeApiPreset = embedConfig
+    ? findEmbeddingProviderPreset(embedConfig.apiBaseUrl)
+    : null;
+
+  const applyApiPreset = (presetId: string) => {
+    const preset = EMBEDDING_PROVIDER_PRESETS.find((candidate) => candidate.id === presetId);
+    if (!preset || !embedConfig) return;
+    const model = defaultEmbeddingModel(preset);
+    updateConfig({
+      apiBaseUrl: preset.baseUrl,
+      apiModel: model?.id ?? '',
+      vectorDimensions: model?.dimensions ?? embedConfig.vectorDimensions,
+    });
+  };
+
+  const applyApiModel = (modelId: string) => {
+    const model = activeApiPreset?.models.find((candidate) => candidate.id === modelId);
+    updateConfig({
+      apiModel: modelId,
+      ...(model ? { vectorDimensions: model.dimensions } : {}),
+    });
   };
 
   return (
@@ -112,6 +141,29 @@ export function EmbeddingConfigSection({
           {embedConfig.provider === 'api' && (
             <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
               <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
+                <select
+                  value={activeApiPreset?.id ?? 'custom'}
+                  onChange={(event) => applyApiPreset(event.target.value)}
+                  className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
+                >
+                  {EMBEDDING_PROVIDER_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>{preset.name}</option>
+                  ))}
+                </select>
+                {activeApiPreset && (
+                  <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
+                    <ProviderIcon
+                      provider={activeApiPreset.provider}
+                      providerId={activeApiPreset.id}
+                      baseUrl={activeApiPreset.baseUrl}
+                      size="sm"
+                    />
+                    <p className="text-xs leading-5 text-text-tertiary">{activeApiPreset.description}</p>
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingApiKey')}</label>
                 <div className="relative">
                   <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
@@ -134,10 +186,34 @@ export function EmbeddingConfigSection({
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingModel')}</label>
+                {activeApiPreset && activeApiPreset.models.length > 0 ? (
+                  <select
+                    value={embedConfig.apiModel}
+                    onChange={(event) => applyApiModel(event.target.value)}
+                    className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
+                  >
+                    {activeApiPreset.models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <Input
+                    value={embedConfig.apiModel}
+                    onChange={(e) => updateConfig({ apiModel: e.target.value })}
+                    placeholder="text-embedding-3-small"
+                  />
+                )}
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.embeddingDimensions')}</label>
                 <Input
-                  value={embedConfig.apiModel}
-                  onChange={(e) => updateConfig({ apiModel: e.target.value })}
-                  placeholder="text-embedding-3-small"
+                  type="number"
+                  min={1}
+                  value={embedConfig.vectorDimensions}
+                  onChange={(event) => updateConfig({ vectorDimensions: Math.max(1, Number(event.target.value) || 1) })}
+                  disabled={Boolean(activeApiPreset && activeApiPreset.models.length > 0 && !activeApiPreset.models.find((model) => model.id === embedConfig.apiModel)?.supportsDimensionOverride)}
                 />
               </div>
               <Button

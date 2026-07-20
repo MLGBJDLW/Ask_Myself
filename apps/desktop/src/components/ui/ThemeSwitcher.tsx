@@ -1,4 +1,4 @@
-import { Moon, Sun, Star, Sparkles, Palette } from 'lucide-react';
+import { Heart, Moon, Sun, Star, Sparkles, Palette } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { LucideProps } from 'lucide-react';
 import { useTheme } from '../../lib/ThemeProvider';
@@ -12,6 +12,7 @@ const ICON_MAP: Record<ThemeId, React.ComponentType<LucideProps>> = {
   midnight: Star,
   aurora: Sparkles,
   bloom: Palette,
+  dream: Heart,
 };
 
 interface ThemeSwitcherProps {
