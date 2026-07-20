@@ -10,7 +10,7 @@ cross explicit trust boundaries.
 | Gate | Before | After | Enforcement |
 | --- | ---: | ---: | --- |
 | `cargo audit` vulnerabilities | 13 | 0 | Pull-request CI |
-| RustSec allowed warnings | 31 | 20 | Recorded upstream watch list |
+| RustSec allowed warnings | 31 | 18 | Recorded upstream watch list |
 | Root npm vulnerabilities | 17 | 0 | Local lockfile audit |
 | Desktop npm vulnerabilities | 17 | 0 | Pull-request CI |
 
@@ -68,20 +68,17 @@ The integration contract and threat boundary are documented in
 
 ## Remaining upstream warnings
 
-RustSec reports no vulnerabilities, but still reports 20 allowed warnings:
+RustSec reports no vulnerabilities, but still reports 18 allowed warnings:
 
 - Linux Tauri/Wry currently brings the unmaintained GTK3 bindings and
   `glib 0.18`. Nexa does not use the affected `VariantStrIter` API directly.
-- Tauri's build-time HTML selector chain brings `rand 0.7`; the advisory needs
-  a custom logger plus `rand::rng()`, and this path executes only during build.
-- Tauri/readability transitive chains include several unmaintained macro,
-  Unicode, and hashing crates. They have no RustSec vulnerability classification
-  today.
+- Tauri/readability transitive chains include several unmaintained macro and
+  Unicode crates. They have no RustSec vulnerability classification today.
 
 Replacing these transitive crates locally would require forking Tauri or its
 build stack and would create a second framework path. The repository therefore
 tracks them as upstream migration items while CI blocks every RustSec
-vulnerability. Project-owned warnings were reduced from 31 to 20 during this
+vulnerability. Project-owned warnings were reduced from 31 to 18 during this
 pass.
 
 ## Verification commands
