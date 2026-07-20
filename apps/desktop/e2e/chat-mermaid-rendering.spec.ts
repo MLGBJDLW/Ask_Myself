@@ -196,6 +196,7 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   await expect(surfaces).toHaveCount(3);
   await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(3);
   await expect(page.locator('svg style')).toHaveCount(3);
+  await expect(page.locator('svg foreignObject')).toHaveCount(0);
   await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
 
   const renderedLabels = await page.locator('svg').evaluateAll((svgs) =>
