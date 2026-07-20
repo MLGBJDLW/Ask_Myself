@@ -60,15 +60,6 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy -p nexa-core -- -D warnings
 
-      - name: Desktop Rust check
-        run: cargo check -p nexa-desktop
-
-      - name: Agent eval smoke
-        run: cargo test -p nexa-core developer_eval_smoke_workflow
-
-      - name: Cargo test
-        run: cargo test -p nexa-core
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -103,3 +94,12 @@ jobs:
       - name: Frontend build
         working-directory: apps/desktop
         run: npx vite build
+
+      - name: Desktop Rust check
+        run: cargo check -p nexa-desktop
+
+      - name: Agent eval smoke
+        run: cargo test -p nexa-core developer_eval_smoke_workflow
+
+      - name: Cargo test
+        run: cargo test -p nexa-core
