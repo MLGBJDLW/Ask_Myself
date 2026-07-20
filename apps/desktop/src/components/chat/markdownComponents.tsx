@@ -427,11 +427,14 @@ export function sanitizeMermaidSvg(svg: string): string {
   const sanitized = String(DOMPurify.sanitize(localOnlySvg, {
     USE_PROFILES: { html: true, svg: true, svgFilters: true },
   }));
-  const documentNode = new DOMParser().parseFromString(sanitized, 'image/svg+xml');
-  if (documentNode.querySelector('parsererror')) return '';
 
-  const root = documentNode.documentElement;
-  if (root.tagName.toLowerCase() !== 'svg') return '';
+  // Mermaid SVGs may contain HTML labels inside foreignObject. Parsing that
+  // browser-valid mixed markup as XML rejects diagrams containing elements
+  // such as <br>; use the browser's HTML parser, matching how React inserts it.
+  const template = document.createElement('template');
+  template.innerHTML = sanitized;
+  const root = template.content.firstElementChild;
+  if (!root || root.tagName.toLowerCase() !== 'svg') return '';
 
   root.querySelectorAll('*').forEach((element) => {
     for (const name of ['href', 'xlink:href']) {
@@ -442,7 +445,13 @@ export function sanitizeMermaidSvg(svg: string): string {
     }
   });
 
-  return new XMLSerializer().serializeToString(root);
+  root.querySelectorAll('style').forEach((style) => {
+    style.textContent = (style.textContent ?? '')
+      .replace(/@import\s+[^;]+;/gi, '')
+      .replace(/url\(\s*(?!['"]?#)[^)]+\)/gi, 'none');
+  });
+
+  return root.outerHTML;
 }
 
 export function normalizeMermaidChart(chart: string): string {
