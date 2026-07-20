@@ -201,7 +201,7 @@ function TurnNavigator({
     <nav
       aria-label={`${messageAreaLabel} · ${items.length}`}
       data-testid="chat-turn-navigator"
-      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-0 w-8 -translate-y-1/2 lg:block"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-px w-8 -translate-y-1/2 lg:block"
     >
       <div className="pointer-events-auto absolute right-0 top-0 flex max-h-[min(60vh,30rem)] w-8 -translate-y-1/2 flex-col items-center overflow-y-auto rounded-full border border-border/65 bg-surface-1/90 px-1 py-2 shadow-md backdrop-blur-md">
         <span
@@ -1792,7 +1792,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       ref={scrollContainerRef}
       onScroll={handleScroll}
       data-chat-scroll-root="true"
-      className="flex-1 overflow-y-auto px-4 py-4 relative"
+      className="flex-1 overflow-y-auto px-4 py-4 relative lg:pr-14"
       role="log"
       aria-live="polite"
       aria-label={t("chat.messageArea")}
