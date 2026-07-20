@@ -1,10 +1,8 @@
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { Target } from 'lucide-react';
 import { useTranslation, type TranslationKey } from '../../i18n';
@@ -123,37 +121,6 @@ const SEGMENT_KIND_ALIASES: Record<string, string> = {
 
 const RING_RADIUS = 12;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const DRAG_THRESHOLD_PX = 4;
-const SNAP_BACK_DURATION_MS = 320;
-
-interface HudDragState {
-  pointerId: number;
-  startClientX: number;
-  startClientY: number;
-  startOffsetX: number;
-  startOffsetY: number;
-  baseLeft: number;
-  baseTop: number;
-  width: number;
-  height: number;
-  nextOffsetX: number;
-  nextOffsetY: number;
-  moved: boolean;
-  frameId: number | null;
-}
-
-function currentTranslation(element: HTMLElement): { x: number; y: number } {
-  const transform = window.getComputedStyle(element).transform;
-  if (!transform || transform === 'none') return { x: 0, y: 0 };
-
-  try {
-    const matrix = new DOMMatrixReadOnly(transform);
-    return { x: matrix.m41, y: matrix.m42 };
-  } catch {
-    return { x: 0, y: 0 };
-  }
-}
-
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
@@ -247,9 +214,6 @@ export function ChatRunOverview({
   const overviewRef = useRef<HTMLDivElement>(null);
   const pointerInsideRef = useRef(false);
   const suppressHoverRef = useRef(false);
-  const suppressClickRef = useRef(false);
-  const dragStateRef = useRef<HudDragState | null>(null);
-  const snapAnimationRef = useRef<Animation | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
@@ -364,129 +328,6 @@ export function ChatRunOverview({
     : contextTriggerLabel;
   const ringDashOffset = RING_CIRCUMFERENCE * (1 - usagePercent / 100);
 
-  const applyDragFrame = useCallback(() => {
-    const element = overviewRef.current;
-    const dragState = dragStateRef.current;
-    if (!element || !dragState) return;
-    dragState.frameId = null;
-    element.style.transform = `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)`;
-  }, []);
-
-  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!event.isPrimary || event.button !== 0) return;
-    const element = overviewRef.current;
-    if (!element) return;
-
-    const translation = currentTranslation(element);
-    snapAnimationRef.current?.cancel();
-    snapAnimationRef.current = null;
-    element.style.transform = `translate3d(${translation.x}px, ${translation.y}px, 0)`;
-    element.style.willChange = 'transform';
-    element.dataset.dragging = 'true';
-
-    const rect = element.getBoundingClientRect();
-    dragStateRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startOffsetX: translation.x,
-      startOffsetY: translation.y,
-      baseLeft: rect.left - translation.x,
-      baseTop: rect.top - translation.y,
-      width: rect.width,
-      height: rect.height,
-      nextOffsetX: translation.x,
-      nextOffsetY: translation.y,
-      moved: false,
-      frameId: null,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }, []);
-
-  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    const dragState = dragStateRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
-
-    const deltaX = event.clientX - dragState.startClientX;
-    const deltaY = event.clientY - dragState.startClientY;
-    if (!dragState.moved && Math.hypot(deltaX, deltaY) < DRAG_THRESHOLD_PX) return;
-
-    if (!dragState.moved) {
-      dragState.moved = true;
-      suppressHoverRef.current = true;
-      setDetailsOpen(false);
-    }
-
-    event.preventDefault();
-    const viewportPadding = 8;
-    const minX = viewportPadding - dragState.baseLeft;
-    const maxX = window.innerWidth - viewportPadding - dragState.baseLeft - dragState.width;
-    const minY = viewportPadding - dragState.baseTop;
-    const maxY = window.innerHeight - viewportPadding - dragState.baseTop - dragState.height;
-    dragState.nextOffsetX = Math.min(maxX, Math.max(minX, dragState.startOffsetX + deltaX));
-    dragState.nextOffsetY = Math.min(maxY, Math.max(minY, dragState.startOffsetY + deltaY));
-
-    if (dragState.frameId === null) {
-      dragState.frameId = window.requestAnimationFrame(applyDragFrame);
-    }
-  }, [applyDragFrame]);
-
-  const finishDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    const element = overviewRef.current;
-    const dragState = dragStateRef.current;
-    if (!element || !dragState || dragState.pointerId !== event.pointerId) return;
-
-    if (dragState.frameId !== null) {
-      window.cancelAnimationFrame(dragState.frameId);
-      dragState.frameId = null;
-      applyDragFrame();
-    }
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-
-    dragStateRef.current = null;
-    delete element.dataset.dragging;
-    if (!dragState.moved) {
-      element.style.transform = '';
-      element.style.willChange = '';
-      return;
-    }
-
-    suppressClickRef.current = true;
-    window.setTimeout(() => {
-      suppressClickRef.current = false;
-    }, 0);
-
-    const startTransform = `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)`;
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduceMotion || typeof element.animate !== 'function') {
-      element.style.transform = '';
-      element.style.willChange = '';
-      return;
-    }
-
-    const animation = element.animate(
-      [
-        { transform: startTransform },
-        { transform: 'translate3d(0, 0, 0)' },
-      ],
-      {
-        duration: SNAP_BACK_DURATION_MS,
-        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-        fill: 'forwards',
-      },
-    );
-    snapAnimationRef.current = animation;
-    animation.onfinish = () => {
-      if (snapAnimationRef.current !== animation) return;
-      snapAnimationRef.current = null;
-      element.style.transform = '';
-      element.style.willChange = '';
-      animation.cancel();
-    };
-  }, [applyDragFrame]);
-
   useEffect(() => {
     if (!detailsOpen) return undefined;
 
@@ -507,14 +348,6 @@ export function ChatRunOverview({
     return () => document.removeEventListener('keydown', handleEscape, true);
   }, [detailsOpen]);
 
-  useEffect(() => () => {
-    const dragState = dragStateRef.current;
-    if (dragState?.frameId !== null && dragState?.frameId !== undefined) {
-      window.cancelAnimationFrame(dragState.frameId);
-    }
-    snapAnimationRef.current?.cancel();
-  }, []);
-
   if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow && !activeGoalContext) {
     return null;
   }
@@ -526,7 +359,7 @@ export function ChatRunOverview({
       data-testid="chat-run-overview"
       onMouseEnter={() => {
         pointerInsideRef.current = true;
-        if (!suppressHoverRef.current && !dragStateRef.current) setDetailsOpen(true);
+        if (!suppressHoverRef.current) setDetailsOpen(true);
       }}
       onMouseLeave={() => {
         pointerInsideRef.current = false;
@@ -545,26 +378,17 @@ export function ChatRunOverview({
     >
       <button
         type="button"
-        className={`relative flex h-8 touch-none select-none items-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35 active:cursor-grabbing ${
+        className={`relative flex h-8 cursor-pointer select-none items-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35 ${
           activeGoalContext
-            ? 'max-w-[min(16rem,45vw)] cursor-grab gap-1 border border-accent/25 bg-accent/10 pr-2.5 text-left'
-            : 'w-8 cursor-grab justify-center'
+            ? 'max-w-[min(16rem,45vw)] gap-1 border border-accent/25 bg-accent/10 pr-2.5 text-left'
+            : 'w-8 justify-center'
         }`}
         aria-label={triggerLabel}
         aria-describedby={detailsOpen ? 'chat-context-details' : undefined}
         aria-expanded={detailsOpen}
         aria-controls={detailsOpen ? 'chat-context-details' : undefined}
         data-testid="chat-context-trigger"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finishDrag}
-        onPointerCancel={finishDrag}
-        onClick={(event) => {
-          if (suppressClickRef.current) {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
+        onClick={() => {
           suppressHoverRef.current = false;
           setDetailsOpen(true);
         }}

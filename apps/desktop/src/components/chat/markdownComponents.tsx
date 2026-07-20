@@ -342,6 +342,8 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
 
 let mermaidInitialized = false;
 let mermaidModulePromise: Promise<MermaidModule> | null = null;
+let mermaidRenderQueue: Promise<void> = Promise.resolve();
+let mermaidRenderSequence = 0;
 
 async function loadMermaid() {
   if (!mermaidModulePromise) {
@@ -354,7 +356,17 @@ async function loadMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
+    secure: [
+      'secure',
+      'securityLevel',
+      'startOnLoad',
+      'maxTextSize',
+      'suppressErrorRendering',
+      'maxEdges',
+      'htmlLabels',
+    ],
     suppressErrorRendering: true,
+    htmlLabels: false,
     theme: 'base',
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
     themeVariables: {
@@ -401,6 +413,55 @@ async function loadMermaid() {
   });
   mermaidInitialized = true;
   return mermaid;
+}
+
+
+function enqueueMermaidRender<T>(task: () => Promise<T>): Promise<T> {
+  const result = mermaidRenderQueue.then(task, task);
+  mermaidRenderQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+export function sanitizeMermaidSvg(svg: string): string {
+  // Mermaid needs its generated <style> element for its palette. The SVG-only
+  // DOMPurify profile removes it and leaves black-on-black browser defaults.
+  // Labels are generated as pure SVG text (htmlLabels: false), while this mixed
+  // profile preserves styles and still blocks remote CSS, images, and links.
+  const localOnlySvg = svg
+    .replace(/@import\s+[^;]+;/gi, '')
+    .replace(/url\(\s*(?!['"]?#)[^)]+\)/gi, 'none');
+
+  const sanitized = String(DOMPurify.sanitize(localOnlySvg, {
+    USE_PROFILES: { html: true, svg: true, svgFilters: true },
+  }));
+
+  // Mermaid SVGs may contain HTML labels inside foreignObject. Parsing that
+  // browser-valid mixed markup as XML rejects diagrams containing elements
+  // such as <br>; use the browser's HTML parser, matching how React inserts it.
+  const template = document.createElement('template');
+  template.innerHTML = sanitized;
+  const root = template.content.firstElementChild;
+  if (!root || root.tagName.toLowerCase() !== 'svg') return '';
+
+  root.querySelectorAll('*').forEach((element) => {
+    for (const name of ['href', 'xlink:href']) {
+      const value = element.getAttribute(name);
+      if (value && !value.trim().startsWith('#')) {
+        element.removeAttribute(name);
+      }
+    }
+  });
+
+  root.querySelectorAll('style').forEach((style) => {
+    style.textContent = (style.textContent ?? '')
+      .replace(/@import\s+[^;]+;/gi, '')
+      .replace(/url\(\s*(?!['"]?#)[^)]+\)/gi, 'none');
+  });
+
+  return root.outerHTML;
 }
 
 export function normalizeMermaidChart(chart: string): string {
@@ -456,24 +517,27 @@ export function MermaidBlock({ chart }: { chart: string }) {
         setSvg('');
         setRenderState('rendering');
 
-        const parsed = await mermaid.parse(normalizedChart, { suppressErrors: true });
-        if (!parsed) {
+        const renderId = `mermaid-${diagramId}-${++mermaidRenderSequence}`;
+        const rendered = await enqueueMermaidRender(async () => {
+          try {
+            const parsed = await mermaid.parse(normalizedChart, { suppressErrors: true });
+            if (!parsed) return null;
+            return await mermaid.render(renderId, normalizedChart);
+          } finally {
+            document.getElementById(renderId)?.remove();
+          }
+        });
+        if (!rendered) {
           if (!cancelled) {
             setRenderState(isStreaming ? 'deferred' : 'invalid');
           }
           return;
         }
 
-        const { svg: nextSvg } = await mermaid.render(
-          `mermaid-${diagramId}-${Date.now()}`,
-          normalizedChart,
-        );
         if (!cancelled) {
-          setSvg(DOMPurify.sanitize(nextSvg, {
-            USE_PROFILES: { svg: true, svgFilters: true },
-            SANITIZE_NAMED_PROPS: true,
-          }));
-          setRenderState('ready');
+          const sanitizedSvg = sanitizeMermaidSvg(rendered.svg);
+          setSvg(sanitizedSvg);
+          setRenderState(sanitizedSvg ? 'ready' : 'invalid');
         }
       } catch {
         if (!cancelled) {
@@ -515,7 +579,11 @@ export function MermaidBlock({ chart }: { chart: string }) {
         </button>
       </div>
 
-      <div className="overflow-x-auto bg-white px-3 py-3">
+      <div
+        className="mermaid-surface overflow-x-auto bg-white px-3 py-3 text-slate-900"
+        data-testid="mermaid-surface"
+        style={{ colorScheme: 'light' }}
+      >
         {svg && renderState === 'ready' ? (
           <div
             className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"

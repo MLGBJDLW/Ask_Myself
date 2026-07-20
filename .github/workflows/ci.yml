@@ -95,6 +95,19 @@ jobs:
         working-directory: apps/desktop
         run: npx vite build
 
+      - name: Install browser for critical chat UI regressions
+        working-directory: apps/desktop
+        run: npx playwright install --with-deps chromium
+
+      - name: Critical chat UI regressions
+        working-directory: apps/desktop
+        run: >-
+          npx playwright test
+          e2e/chat-mermaid-rendering.spec.ts
+          e2e/chat-turn-navigation.spec.ts
+          e2e/chat-plan-progress-panel.spec.ts
+          --grep "only the Plan capsule drags|Mermaid|turn timeline|right-side timeline"
+
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop
 

@@ -40,7 +40,7 @@ import {
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
-import { isCompactionSummaryMessage, isGoalMessage } from "../../lib/chatMessageGuards";
+import { isCompactionSummaryMessage, isGoalMessage, isSteeringMessage } from "../../lib/chatMessageGuards";
 import { getActiveGoalContext } from "../../lib/goalContext";
 import { buildEvidenceItemsFromContent } from "../../lib/evidenceItems";
 import type {
@@ -170,6 +170,81 @@ const SUGGESTIONS: {
   },
 ];
 
+
+interface TurnNavigationItem {
+  id: string;
+  userMessageId: string;
+  preview: string;
+}
+
+function turnNavigationPreview(content: string): string {
+  const compact = content.replace(/\s+/g, ' ').trim();
+  if (!compact) return '…';
+  return compact.length > 72 ? `${compact.slice(0, 69).trimEnd()}…` : compact;
+}
+
+function TurnNavigator({
+  items,
+  activeId,
+  onSelect,
+  messageAreaLabel,
+}: {
+  items: TurnNavigationItem[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  messageAreaLabel: string;
+}) {
+  if (items.length < 2) return null;
+  const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
+
+  return (
+    <nav
+      aria-label={`${messageAreaLabel} · ${items.length}`}
+      data-testid="chat-turn-navigator"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-px w-8 -translate-y-1/2 lg:block"
+    >
+      <div className="pointer-events-auto absolute right-0 top-0 flex max-h-[min(60vh,30rem)] w-8 -translate-y-1/2 flex-col items-center overflow-y-auto rounded-full border border-border/65 bg-surface-1/90 px-1 py-2 shadow-md backdrop-blur-md">
+        <span
+          className="mb-1 text-[9px] font-semibold tabular-nums text-text-tertiary"
+          data-testid="chat-turn-position"
+          aria-hidden="true"
+        >
+          {activeIndex + 1}/{items.length}
+        </span>
+        <span className="absolute bottom-3 left-1/2 top-7 w-px -translate-x-1/2 bg-border/70" aria-hidden="true" />
+        {items.map((item, index) => {
+          const active = item.id === activeId;
+          const label = `#${index + 1} · ${item.preview}`;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-label={label}
+              aria-current={active ? 'step' : undefined}
+              title={label}
+              data-turn-navigation-id={item.id}
+              className="group relative z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+              onClick={() => onSelect(item.id)}
+            >
+              <span
+                className={`rounded-full border transition-[width,height,background-color,border-color,box-shadow] duration-fast motion-reduce:transition-none ${
+                  active
+                    ? 'h-3 w-3 border-accent bg-accent shadow-[0_0_0_3px_var(--color-accent-subtle)]'
+                    : 'h-2 w-2 border-text-tertiary/45 bg-surface-3 group-hover:h-2.5 group-hover:w-2.5 group-hover:border-accent/70 group-hover:bg-accent/70'
+                }`}
+                aria-hidden="true"
+              />
+              <span className="pointer-events-none absolute right-full mr-2 hidden w-48 rounded-lg border border-border/70 bg-surface-0/95 px-2.5 py-2 text-left text-[10px] leading-4 text-text-secondary shadow-lg backdrop-blur-md group-hover:block group-focus-visible:block">
+                <span className="mb-0.5 block font-semibold tabular-nums text-accent">#{index + 1}</span>
+                <span className="line-clamp-2">{item.preview}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
 
 const INSTANT_TRANSITION = { duration: 0 };
 const NEAR_BOTTOM_THRESHOLD = 96;
@@ -552,6 +627,37 @@ export function ChatMessages(props: ChatMessagesProps) {
   const prevMsgCountRef = useRef(messages.length);
   const chunkIdCacheRef = useRef<Map<string, string[]>>(new Map());
   const pendingChunkIdsRef = useRef<string[]>([]);
+  const turnAnchorRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const turnNavigationFrameRef = useRef<number | null>(null);
+  const turnByUserMessageId = useMemo(
+    () => new Map(turns.map((turn) => [turn.userMessageId, turn])),
+    [turns],
+  );
+  const turnNavigationItems = useMemo<TurnNavigationItem[]>(
+    () => messages
+      .filter((message) => message.role === 'user' && !isSteeringMessage(message))
+      .map((message) => ({
+        id: turnByUserMessageId.get(message.id)?.id ?? `message-${message.id}`,
+        userMessageId: message.id,
+        preview: turnNavigationPreview(message.content),
+      })),
+    [messages, turnByUserMessageId],
+  );
+  const turnNavigationByMessageId = useMemo(
+    () => new Map(turnNavigationItems.map((item) => [item.userMessageId, item])),
+    [turnNavigationItems],
+  );
+  const [activeTurnNavigationId, setActiveTurnNavigationId] = useState<string | null>(
+    turnNavigationItems[0]?.id ?? null,
+  );
+
+  useEffect(() => {
+    setActiveTurnNavigationId((current) =>
+      current && turnNavigationItems.some((item) => item.id === current)
+        ? current
+        : (turnNavigationItems[0]?.id ?? null),
+    );
+  }, [turnNavigationItems]);
 
   useEffect(() => {
     const ids: string[] = [];
@@ -1238,6 +1344,51 @@ export function ChatMessages(props: ChatMessagesProps) {
     ],
   );
 
+
+  const updateActiveTurnNavigation = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container || turnNavigationItems.length === 0) return;
+
+    const marker = container.scrollTop + Math.min(container.clientHeight * 0.34, 220);
+    let nextActive = turnNavigationItems[0].id;
+    for (const item of turnNavigationItems) {
+      const anchor = turnAnchorRefs.current.get(item.id);
+      if (!anchor || anchor.offsetTop > marker) break;
+      nextActive = item.id;
+    }
+    setActiveTurnNavigationId((current) => current === nextActive ? current : nextActive);
+  }, [turnNavigationItems]);
+
+  const scheduleTurnNavigationUpdate = useCallback(() => {
+    if (turnNavigationFrameRef.current != null) return;
+    turnNavigationFrameRef.current = requestAnimationFrame(() => {
+      turnNavigationFrameRef.current = null;
+      updateActiveTurnNavigation();
+    });
+  }, [updateActiveTurnNavigation]);
+
+  const registerTurnAnchor = useCallback((id: string, element: HTMLDivElement | null) => {
+    if (element) {
+      turnAnchorRefs.current.set(id, element);
+    } else {
+      turnAnchorRefs.current.delete(id);
+    }
+  }, []);
+
+  const scrollToTurn = useCallback((id: string) => {
+    const container = scrollContainerRef.current;
+    const anchor = turnAnchorRefs.current.get(id);
+    if (!container || !anchor) return;
+
+    shouldAutoFollowRef.current = false;
+    setActiveTurnNavigationId(id);
+    const top = Math.max(0, anchor.offsetTop - Math.min(120, container.clientHeight * 0.16));
+    container.scrollTo({
+      top,
+      behavior: shouldReduceMotion ? 'auto' : 'smooth',
+    });
+  }, [shouldReduceMotion]);
+
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) {
@@ -1276,11 +1427,15 @@ export function ChatMessages(props: ChatMessagesProps) {
       if (autoScrollFrameRef.current != null) {
         cancelAnimationFrame(autoScrollFrameRef.current);
       }
+      if (turnNavigationFrameRef.current != null) {
+        cancelAnimationFrame(turnNavigationFrameRef.current);
+      }
     },
     [],
   );
 
   const handleScroll = useCallback(() => {
+    scheduleTurnNavigationUpdate();
     const { distanceFromBottom, nearBottom, overflow } = getScrollMetrics();
     setHasOverflow(overflow);
     setIsNearBottom(!overflow || nearBottom);
@@ -1294,7 +1449,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     if (distanceFromBottom > FOLLOW_RELEASE_THRESHOLD) {
       shouldAutoFollowRef.current = false;
     }
-  }, [getScrollMetrics]);
+  }, [getScrollMetrics, scheduleTurnNavigationUpdate]);
 
   useEffect(() => {
     const newCount = messages.length - prevMsgCountRef.current;
@@ -1320,6 +1475,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     }
 
     scrollToContainerBottom("auto");
+    scheduleTurnNavigationUpdate();
   }, [
     messages,
     debouncedMarkdown,
@@ -1331,6 +1487,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     compactCompleteVisible,
     getScrollMetrics,
     scrollToContainerBottom,
+    scheduleTurnNavigationUpdate,
   ]);
 
   const scrollToBottom = useCallback(() => {
@@ -1635,11 +1792,17 @@ export function ChatMessages(props: ChatMessagesProps) {
       ref={scrollContainerRef}
       onScroll={handleScroll}
       data-chat-scroll-root="true"
-      className="flex-1 overflow-y-auto px-4 py-4 relative"
+      className="flex-1 overflow-y-auto px-4 py-4 relative lg:pr-14"
       role="log"
       aria-live="polite"
       aria-label={t("chat.messageArea")}
     >
+      <TurnNavigator
+        items={turnNavigationItems}
+        activeId={activeTurnNavigationId}
+        onSelect={scrollToTurn}
+        messageAreaLabel={t("chat.messageArea")}
+      />
       <AnimatePresence initial={false}>
         {messages.map((msg, idx) => {
           if (msg.role === "system") {
@@ -1688,7 +1851,11 @@ export function ChatMessages(props: ChatMessagesProps) {
               traceSkills.length === 0 && liveSkills.length > 0;
 
             return (
-              <div key={`turn-${turnRender.turn.id}`}>
+              <div
+                key={`turn-${turnRender.turn.id}`}
+                ref={(element) => registerTurnAnchor(turnRender.turn.id, element)}
+                data-chat-turn-id={turnRender.turn.id}
+              >
                 <MessageBubble
                   msg={msg}
                   alwaysShowTimestamp={(() => {
@@ -1806,8 +1973,18 @@ export function ChatMessages(props: ChatMessagesProps) {
                 )
               : undefined;
 
+          const navigationItem = msg.role === 'user'
+            ? turnNavigationByMessageId.get(msg.id)
+            : undefined;
+
           return (
-            <div key={msg.id}>
+            <div
+              key={msg.id}
+              ref={navigationItem
+                ? (element) => registerTurnAnchor(navigationItem.id, element)
+                : undefined}
+              data-chat-turn-id={navigationItem?.id}
+            >
               {traceSkills.length > 0 && (
                 <TurnSkillStrip skills={traceSkills} live={false} />
               )}

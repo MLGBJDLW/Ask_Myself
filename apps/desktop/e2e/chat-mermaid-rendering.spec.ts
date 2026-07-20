@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
+    localStorage.setItem('nexa-theme', 'dream');
 
     const nowIso = new Date().toISOString();
     const conversation = {
@@ -27,6 +28,15 @@ test.beforeEach(async ({ page }) => {
           '  A[Start] --> B{Ready?}',
           '  B -->|Yes| C[Render diagram]',
           '  B -->|No| D[Show source]',
+          '  click C "https://example.com/remote"',
+          '```',
+          '',
+          '```mermaid',
+          'sequenceDiagram',
+          '  participant A as Alice',
+          '  participant B as Bob',
+          '  A->>B: Render safely',
+          '  B-->>A: Visible result',
           '```',
           '',
           '```mermaid',
@@ -174,8 +184,47 @@ test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
   await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(3);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
+});
+
+
+test('keeps sanitized Mermaid structure readable across application themes', async ({ page }) => {
+  await page.goto('/chat/conv-mermaid');
+
+  const surfaces = page.getByTestId('mermaid-surface');
+  await expect(surfaces).toHaveCount(3);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(3);
+  await expect(page.locator('svg style')).toHaveCount(3);
+  await expect(page.locator('svg foreignObject')).toHaveCount(0);
+  await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
+
+  const renderedLabels = await page.locator('svg').evaluateAll((svgs) =>
+    svgs.map((svg) => svg.textContent ?? '').join(' | '),
+  );
+  expect(renderedLabels).toContain('Start');
+  expect(renderedLabels).toContain('Alice');
+  expect(renderedLabels).toContain('Accessible release timeline');
+
+  const expectedSurfaceColors = await surfaces.evaluateAll((elements) =>
+    elements.map((element) => getComputedStyle(element).color),
+  );
+  await expect(surfaces.first()).toHaveClass(/text-slate-900/);
+
+  for (const theme of ['dark', 'light', 'dream']) {
+    await page.evaluate((nextTheme) => {
+      const root = document.documentElement;
+      root.classList.remove('theme-light', 'theme-midnight', 'theme-aurora', 'theme-bloom', 'theme-dream');
+      if (nextTheme !== 'dark') root.classList.add(`theme-${nextTheme}`);
+    }, theme);
+
+    for (const surface of await surfaces.all()) {
+      await expect(surface).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    }
+    await expect.poll(() => surfaces.evaluateAll((elements) =>
+      elements.map((element) => getComputedStyle(element).color),
+    )).toEqual(expectedSurfaceColors);
+  }
 });
 
 test('keeps every Mermaid timeline section readable', async ({ page }) => {

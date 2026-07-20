@@ -1,5 +1,11 @@
 import { AlertTriangle, CheckCircle2, ChevronDown, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, XCircle } from 'lucide-react';
-import { useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useTranslation } from '../../i18n';
 import type {
   PlanArtifact,
@@ -204,9 +210,44 @@ function SubtaskRow({ subtask }: { subtask: SubtaskRunArtifact }) {
   );
 }
 
+const PLAN_DRAG_THRESHOLD_PX = 4;
+const PLAN_SNAP_BACK_DURATION_MS = 320;
+
+interface PlanDragState {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startOffsetX: number;
+  startOffsetY: number;
+  baseLeft: number;
+  baseTop: number;
+  width: number;
+  height: number;
+  nextOffsetX: number;
+  nextOffsetY: number;
+  moved: boolean;
+  frameId: number | null;
+}
+
+function currentPlanTranslation(element: HTMLElement): { x: number; y: number } {
+  const transform = window.getComputedStyle(element).transform;
+  if (!transform || transform === 'none') return { x: 0, y: 0 };
+
+  try {
+    const matrix = new DOMMatrixReadOnly(transform);
+    return { x: matrix.m41, y: matrix.m42 };
+  } catch {
+    return { x: 0, y: 0 };
+  }
+}
+
 export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const dragStateRef = useRef<PlanDragState | null>(null);
+  const snapAnimationRef = useRef<Animation | null>(null);
+  const suppressClickRef = useRef(false);
   const counts = getPlanCounts(plan);
   const current = getCurrentPlanStep(plan);
   const percent = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0;
@@ -217,19 +258,159 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
     currentIcon = <Loader2 className="h-3 w-3 animate-spin text-accent" />;
   }
 
+  const applyDragFrame = useCallback(() => {
+    const element = panelRef.current;
+    const dragState = dragStateRef.current;
+    if (!element || !dragState) return;
+    dragState.frameId = null;
+    element.style.transform = `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)`;
+  }, []);
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const element = panelRef.current;
+    if (!element) return;
+
+    const translation = currentPlanTranslation(element);
+    snapAnimationRef.current?.cancel();
+    snapAnimationRef.current = null;
+    element.style.transform = `translate3d(${translation.x}px, ${translation.y}px, 0)`;
+    element.style.willChange = 'transform';
+    element.dataset.dragging = 'true';
+
+    const rect = element.getBoundingClientRect();
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetX: translation.x,
+      startOffsetY: translation.y,
+      baseLeft: rect.left - translation.x,
+      baseTop: rect.top - translation.y,
+      width: rect.width,
+      height: rect.height,
+      nextOffsetX: translation.x,
+      nextOffsetY: translation.y,
+      moved: false,
+      frameId: null,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - dragState.startClientX;
+    const deltaY = event.clientY - dragState.startClientY;
+    if (!dragState.moved && Math.hypot(deltaX, deltaY) < PLAN_DRAG_THRESHOLD_PX) return;
+
+    if (!dragState.moved) {
+      dragState.moved = true;
+      setOpen(false);
+    }
+
+    event.preventDefault();
+    const viewportPadding = 8;
+    const minX = viewportPadding - dragState.baseLeft;
+    const maxX = window.innerWidth - viewportPadding - dragState.baseLeft - dragState.width;
+    const minY = viewportPadding - dragState.baseTop;
+    const maxY = window.innerHeight - viewportPadding - dragState.baseTop - dragState.height;
+    dragState.nextOffsetX = Math.min(maxX, Math.max(minX, dragState.startOffsetX + deltaX));
+    dragState.nextOffsetY = Math.min(maxY, Math.max(minY, dragState.startOffsetY + deltaY));
+
+    if (dragState.frameId === null) {
+      dragState.frameId = window.requestAnimationFrame(applyDragFrame);
+    }
+  }, [applyDragFrame]);
+
+  const finishDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const element = panelRef.current;
+    const dragState = dragStateRef.current;
+    if (!element || !dragState || dragState.pointerId !== event.pointerId) return;
+
+    if (dragState.frameId !== null) {
+      window.cancelAnimationFrame(dragState.frameId);
+      dragState.frameId = null;
+      applyDragFrame();
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    dragStateRef.current = null;
+    delete element.dataset.dragging;
+    if (!dragState.moved) {
+      element.style.transform = '';
+      element.style.willChange = '';
+      return;
+    }
+
+    suppressClickRef.current = true;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion || typeof element.animate !== 'function') {
+      element.style.transform = '';
+      element.style.willChange = '';
+      return;
+    }
+
+    const animation = element.animate(
+      [
+        { transform: `translate3d(${dragState.nextOffsetX}px, ${dragState.nextOffsetY}px, 0)` },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      {
+        duration: PLAN_SNAP_BACK_DURATION_MS,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        fill: 'forwards',
+      },
+    );
+    snapAnimationRef.current = animation;
+    animation.onfinish = () => {
+      if (snapAnimationRef.current !== animation) return;
+      snapAnimationRef.current = null;
+      element.style.transform = '';
+      element.style.willChange = '';
+      animation.cancel();
+    };
+  }, [applyDragFrame]);
+
+  const toggleOpen = useCallback(() => {
+    if (suppressClickRef.current) return;
+    setOpen((value) => !value);
+  }, []);
+
+  useEffect(() => () => {
+    const dragState = dragStateRef.current;
+    if (dragState?.frameId != null) {
+      window.cancelAnimationFrame(dragState.frameId);
+    }
+    snapAnimationRef.current?.cancel();
+  }, []);
+
   return (
     <div
+      ref={panelRef}
       className="pointer-events-auto relative ml-auto h-10 w-full"
       data-open={open}
+      data-testid="plan-progress-panel"
     >
       <button
         type="button"
         data-testid="task-board-collapsed"
-        className="chat-plan-capsule-collapsed ml-auto flex max-w-full items-center gap-1.5 rounded-full border border-border/70 bg-surface-1 px-3 py-2 text-left shadow-lg shadow-black/10 hover:bg-surface-2"
+        className="chat-plan-capsule-collapsed ml-auto flex max-w-full touch-none select-none items-center gap-1.5 rounded-full border border-border/70 bg-surface-1 px-3 py-2 text-left shadow-lg shadow-black/10 cursor-grab hover:bg-surface-2 active:cursor-grabbing"
         aria-expanded={open}
         aria-hidden={open}
         tabIndex={open ? -1 : 0}
-        onClick={() => setOpen((value) => !value)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onClick={toggleOpen}
       >
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-accent/20 bg-accent/10">
           {currentIcon}
@@ -262,10 +443,14 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
       >
         <button
           type="button"
-          className="flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left transition-colors hover:bg-surface-2/70"
+          className="flex w-full touch-none select-none items-center gap-2 rounded-xl px-1 py-1 text-left transition-colors cursor-grab hover:bg-surface-2/70 active:cursor-grabbing"
           aria-expanded={open}
           tabIndex={open ? 0 : -1}
-          onClick={() => setOpen((value) => !value)}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onClick={toggleOpen}
         >
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-accent/20 bg-accent/10">
             {currentIcon}
