@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.9...nexa-monorepo-v0.10.10) (2026-07-20)
+
+
+### Bug Fixes
+
+* **release:** align Tauri JavaScript packages ([9ae5c49](https://github.com/MLGBJDLW/Nexa/commit/9ae5c49cdd990ca949406aaf035a37437dbe7fc9))
+* **release:** align Tauri JavaScript packages ([a18a410](https://github.com/MLGBJDLW/Nexa/commit/a18a410fa672b14a0a0c0258920a58b31412fe07))
+
 ## [0.10.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.8...nexa-monorepo-v0.10.9) (2026-07-20)
 
 
