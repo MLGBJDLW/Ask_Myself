@@ -819,6 +819,49 @@ test('floating plan capsule renders only the update_plan checklist', async ({ pa
   expect((await board.boundingBox())?.width).toBe(stableWidth);
 });
 
+
+test('only the Plan capsule drags and snaps back', async ({ page }) => {
+  await page.goto('/chat/conv-plan-progress');
+
+  const panel = page.getByTestId('plan-progress-panel');
+  const collapsed = page.getByTestId('task-board-collapsed');
+  const start = await panel.boundingBox();
+  const handle = await collapsed.boundingBox();
+  expect(start).not.toBeNull();
+  expect(handle).not.toBeNull();
+
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle!.x - 72, handle!.y + 56, { steps: 5 });
+  await expect(panel).toHaveAttribute('data-dragging', 'true');
+  const draggedTransform = await panel.evaluate((element) => getComputedStyle(element).transform);
+  expect(draggedTransform).not.toBe('none');
+  expect(draggedTransform).not.toBe('matrix(1, 0, 0, 1, 0, 0)');
+  await page.mouse.up();
+
+  await expect.poll(async () =>
+    panel.evaluate((element) => getComputedStyle(element).transform),
+  ).toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+  await expect(collapsed).toHaveAttribute('aria-expanded', 'false');
+
+  const contextOverview = page.getByTestId('chat-run-overview');
+  const contextTrigger = page.getByTestId('chat-context-trigger');
+  await expect(contextOverview).toBeVisible();
+  await expect(contextTrigger).toHaveCSS('cursor', 'pointer');
+  const contextStart = await contextOverview.boundingBox();
+  expect(contextStart).not.toBeNull();
+
+  await page.mouse.move(
+    contextStart!.x + contextStart!.width / 2,
+    contextStart!.y + contextStart!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(contextStart!.x - 70, contextStart!.y - 50, { steps: 4 });
+  await page.mouse.up();
+
+  await expect(contextOverview).toHaveCSS('transform', 'none');
+});
+
 test('lower plan progress panel ignores automatic task run plans', async ({ page }) => {
   await page.goto('/chat/conv-auto-plan-only');
 
