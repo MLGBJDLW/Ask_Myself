@@ -58,7 +58,7 @@ impl LongTaskState {
 
     pub(super) fn should_checkpoint_after_tool_round(&self, iteration: u32) -> bool {
         let completed_rounds = iteration.saturating_add(1);
-        completed_rounds % CHECKPOINT_EVERY_TOOL_ROUNDS == 0
+        completed_rounds.is_multiple_of(CHECKPOINT_EVERY_TOOL_ROUNDS)
             && self.last_checkpoint_iteration != Some(iteration)
     }
 

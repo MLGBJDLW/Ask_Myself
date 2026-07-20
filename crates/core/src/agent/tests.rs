@@ -5,6 +5,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
+use tokio::sync::Notify;
 
 use super::*;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
@@ -1250,6 +1251,47 @@ impl Tool for DelayTool {
     }
 }
 
+struct BlockingTool {
+    name: &'static str,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl Tool for BlockingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Blocking tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string" }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        _arguments: &str,
+        _db: &Database,
+        _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        self.release.notified().await;
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: format!("{}-ok", self.name),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
 fn large_read_file_content() -> String {
     (0..260)
         .map(|index| {
@@ -1656,9 +1698,10 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
         name: "fast_tool",
         delay_ms: 0,
     }));
-    registry.register(Box::new(DelayTool {
+    let slow_release = Arc::new(Notify::new());
+    registry.register(Box::new(BlockingTool {
         name: "slow_tool",
-        delay_ms: 1000,
+        release: Arc::clone(&slow_release),
     }));
 
     let stream_calls = Arc::new(AtomicUsize::new(0));
@@ -1689,7 +1732,7 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
     );
     tokio::pin!(run);
 
-    let first_result = tokio::time::timeout(Duration::from_millis(500), async {
+    let first_result = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             tokio::select! {
                 biased;
@@ -1714,7 +1757,11 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
     assert_eq!(first_result.0, "fast_call");
     assert_eq!(first_result.1, "fast_tool-ok");
 
-    let final_msg = run.await.expect("run should succeed");
+    slow_release.notify_one();
+    let final_msg = tokio::time::timeout(Duration::from_secs(5), &mut run)
+        .await
+        .expect("run should finish after releasing the slow tool")
+        .expect("run should succeed");
     assert_eq!(final_msg.text_content(), "parallel final answer");
 }
 

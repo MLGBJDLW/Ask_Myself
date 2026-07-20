@@ -45,11 +45,23 @@ jobs:
           path: ~/.cache/ort.pyke.io
           key: ${{ runner.os }}-ort-${{ hashFiles('crates/core/Cargo.toml') }}
 
+      - name: Install cargo-audit
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q '0.22.2'; then
+            cargo install cargo-audit --version 0.22.2 --locked
+          fi
+
+      - name: Rust dependency audit
+        run: cargo audit
+
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         run: cargo clippy -p nexa-core -- -D warnings
+
+      - name: Desktop Rust check
+        run: cargo check -p nexa-desktop
 
       - name: Agent eval smoke
         run: cargo test -p nexa-core developer_eval_smoke_workflow
@@ -62,11 +74,23 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Root dependency audit
+        run: npm audit --audit-level=moderate
 
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
+
+      - name: Frontend dependency audit
+        working-directory: apps/desktop
+        run: npm audit --audit-level=moderate
 
       - name: Frontend streaming contracts
         working-directory: apps/desktop

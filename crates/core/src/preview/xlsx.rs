@@ -24,8 +24,7 @@ pub fn preview_xlsx(path: &Path) -> Result<StructuredPreview, String> {
             .map_err(|e| format!("XLSX sheet '{name}' read failed: {e}"))?;
         let formulas = workbook.worksheet_formula(&name).ok();
         let merged_ranges = workbook
-            .worksheet_merge_cells(&name)
-            .and_then(Result::ok)
+            .merge_cells_by_sheet_name(&name)
             .unwrap_or_default();
 
         let row_count = range.height();

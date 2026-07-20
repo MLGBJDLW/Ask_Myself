@@ -713,12 +713,3 @@ pub fn undo_dream_artifact_cmd(
         .undo_dream_artifact(&artifact_id)
         .map_err(|e| e.to_string())
 }
-
-// Silence dead-code warnings for the re-exported type alias used by callers.
-#[allow(dead_code)]
-type _ApprovalTypeMarkers = (
-    ApprovalRequest,
-    ApprovalCallback,
-    ToolApprovalMode,
-    ToolApprovalPolicy,
-);

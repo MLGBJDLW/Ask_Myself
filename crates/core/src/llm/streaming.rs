@@ -345,7 +345,7 @@ fn find_earliest_tag(haystack: &str, tags: &[&str]) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize)> = None;
     for tag in tags {
         if let Some(pos) = haystack.find(tag) {
-            if best.map_or(true, |(bp, _)| pos < bp) {
+            if best.is_none_or(|(bp, _)| pos < bp) {
                 best = Some((pos, tag.len()));
             }
         }

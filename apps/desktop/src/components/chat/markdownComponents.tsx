@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useState, typ
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
+import DOMPurify from 'dompurify';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
@@ -265,7 +266,9 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         openWebPreview(href, label || sourceHost(href));
         return;
       }
-      open(href);
+      if (/^mailto:/i.test(href)) {
+        open(href);
+      }
   };
   return (
     <a
@@ -466,7 +469,10 @@ export function MermaidBlock({ chart }: { chart: string }) {
           normalizedChart,
         );
         if (!cancelled) {
-          setSvg(nextSvg);
+          setSvg(DOMPurify.sanitize(nextSvg, {
+            USE_PROFILES: { svg: true, svgFilters: true },
+            SANITIZE_NAMED_PROPS: true,
+          }));
           setRenderState('ready');
         }
       } catch {

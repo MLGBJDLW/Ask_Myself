@@ -312,7 +312,7 @@ fn scan_source_inner(
 
         // Emit progress at regular intervals.
         if let Some(cb) = &on_progress {
-            if files_processed % progress_interval == 0 || files_processed == total_files {
+            if files_processed.is_multiple_of(progress_interval) || files_processed == total_files {
                 cb(ScanProgress {
                     source_id: source_id.to_string(),
                     phase: "scanning".to_string(),
