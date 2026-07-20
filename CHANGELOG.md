@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.8...nexa-monorepo-v0.10.9) (2026-07-20)
+
+
+### Features
+
+* **app:** expand AI capabilities and add Dream theme ([da598b4](https://github.com/MLGBJDLW/Nexa/commit/da598b4ad9cdb14f3316219f8c3468ce1beb6c66))
+
+
+### Bug Fixes
+
+* **ci:** align Tauri framework versions ([fd2c322](https://github.com/MLGBJDLW/Nexa/commit/fd2c3228a6724a9b42e5ab4cdb08ba94d56e1484))
+* **ci:** build frontend before desktop check ([39a8317](https://github.com/MLGBJDLW/Nexa/commit/39a83174b645658d534d539a04a6ba1240e552ce))
+* **ci:** install Tauri D-Bus headers ([5ea256f](https://github.com/MLGBJDLW/Nexa/commit/5ea256f78d885a4c7202af175fc77c1e07c057f2))
+* **security:** harden dependencies and architecture ([cd7c197](https://github.com/MLGBJDLW/Nexa/commit/cd7c197969a75d257947f37fc2e49b0bea349ac1))
+
 ## [0.10.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.7...nexa-monorepo-v0.10.8) (2026-07-17)
 
 
