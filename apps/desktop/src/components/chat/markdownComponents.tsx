@@ -356,7 +356,17 @@ async function loadMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
+    secure: [
+      'secure',
+      'securityLevel',
+      'startOnLoad',
+      'maxTextSize',
+      'suppressErrorRendering',
+      'maxEdges',
+      'htmlLabels',
+    ],
     suppressErrorRendering: true,
+    htmlLabels: false,
     theme: 'base',
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
     themeVariables: {
@@ -416,10 +426,10 @@ function enqueueMermaidRender<T>(task: () => Promise<T>): Promise<T> {
 }
 
 export function sanitizeMermaidSvg(svg: string): string {
-  // Mermaid needs its generated <style> element and foreignObject labels.
-  // The SVG-only DOMPurify profile removes both and leaves black-on-black
-  // browser defaults. Keep both HTML and SVG profiles, while preventing the
-  // generated markup from loading remote CSS, images, or links.
+  // Mermaid needs its generated <style> element for its palette. The SVG-only
+  // DOMPurify profile removes it and leaves black-on-black browser defaults.
+  // Labels are generated as pure SVG text (htmlLabels: false), while this mixed
+  // profile preserves styles and still blocks remote CSS, images, and links.
   const localOnlySvg = svg
     .replace(/@import\s+[^;]+;/gi, '')
     .replace(/url\(\s*(?!['"]?#)[^)]+\)/gi, 'none');
