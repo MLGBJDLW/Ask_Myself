@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.10...nexa-monorepo-v0.10.11) (2026-07-20)
+
+
+### Features
+
+* **chat:** add per-turn timeline navigation ([4aa1b27](https://github.com/MLGBJDLW/Nexa/commit/4aa1b27d7dbabb9870eaf364c848d920932647b1))
+* **chat:** add turn navigation and repair Mermaid rendering ([871fffa](https://github.com/MLGBJDLW/Nexa/commit/871fffa4ee04d8520ebdda32bf7bcd8f9026b3aa))
+* **chat:** make plan capsule draggable ([22ee4d0](https://github.com/MLGBJDLW/Nexa/commit/22ee4d0354d59d08b47beb083ae1a0744ef8ef1c))
+
+
+### Bug Fixes
+
+* **chat:** harden Mermaid rendering across themes ([7ffc603](https://github.com/MLGBJDLW/Nexa/commit/7ffc603b02a7008ba8011c50785e9ec667d64145))
+* **chat:** keep context indicator anchored ([d4c0a1e](https://github.com/MLGBJDLW/Nexa/commit/d4c0a1e1f03010b36dc6a3da7dfc3bf02957b977))
+* **chat:** preserve Mermaid foreign-object labels ([6c56b61](https://github.com/MLGBJDLW/Nexa/commit/6c56b61ddd79354dd11311c618b2c89c61e50a83))
+* **chat:** render Mermaid labels as pure SVG ([0c1e11e](https://github.com/MLGBJDLW/Nexa/commit/0c1e11e85854ba8f9067bbb0f38fd91e949aafef))
+* **chat:** reserve the turn navigator gutter ([0295c56](https://github.com/MLGBJDLW/Nexa/commit/0295c5666734b681508c9369eef5530b2e2bc2fa))
+
 ## [0.10.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.9...nexa-monorepo-v0.10.10) (2026-07-20)
 
 
