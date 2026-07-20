@@ -131,6 +131,7 @@ pub mod statistics_tool;
 pub mod submit_feedback_tool;
 pub mod summarize_tool;
 pub(crate) mod text_match;
+pub mod text_to_speech_tool;
 pub mod tool_search_tool;
 pub mod update_plan_tool;
 pub mod user_memory_tool;
@@ -919,6 +920,7 @@ fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
             | "browser_evidence_capture"
             | "download_asset"
             | "generate_image"
+            | "synthesize_speech"
             | "prepare_document_tools"
             | "update_plan"
             | "record_verification"
@@ -1032,6 +1034,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
     registry.register(Box::new(health_check_tool::HealthCheckTool));
     registry.register(Box::new(image_generation_tool::GenerateImageTool));
+    registry.register(Box::new(text_to_speech_tool::SynthesizeSpeechTool));
     #[cfg(feature = "ocr")]
     registry.register(Box::new(ocr_tool::ExtractImageTextTool));
     registry.register(Box::new(archive_output_tool::ArchiveOutputTool));
@@ -1228,6 +1231,15 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "manage_persona"));
+    }
+
+    #[test]
+    fn select_tools_keeps_speech_synthesis_available_for_direct_requests() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("Read this paragraph aloud.", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "synthesize_speech"));
     }
 
     #[test]

@@ -110,6 +110,18 @@ const PROVIDER_ICON_META: Record<string, ProviderIconMeta> = {
     label: 'MiniMax',
     tone: 'bg-violet-500/12 text-violet-400',
   },
+  elevenlabs: {
+    asset: '/provider-icons/elevenlabs.svg',
+    fallback: '11',
+    label: 'ElevenLabs',
+    tone: 'bg-text-primary/10 text-text-primary',
+  },
+  jina: {
+    asset: '/provider-icons/jina.svg',
+    fallback: 'J',
+    label: 'Jina AI',
+    tone: 'bg-cyan-500/12 text-cyan-400',
+  },
   xai: {
     asset: '/provider-icons/xai.svg',
     fallback: 'xAI',
@@ -151,6 +163,8 @@ const PROVIDER_TYPE_TO_ICON: Record<string, string> = {
   lm_studio: 'lmstudio',
   azure_open_ai: 'azureai',
   minimax: 'minimax',
+  elevenlabs: 'elevenlabs',
+  jina: 'jina',
   custom: 'custom',
 };
 
@@ -163,6 +177,8 @@ const PRESET_ID_TO_ICON: Record<string, string> = {
   xai: 'xai',
   mistral: 'mistral',
   minimax: 'minimax',
+  elevenlabs: 'elevenlabs',
+  jina: 'jina',
   ollama: 'ollama',
   lmstudio: 'lmstudio',
   zhipu: 'zhipu',
@@ -189,6 +205,8 @@ const BASE_URL_ICON_MATCHERS: Array<[RegExp, string]> = [
   [/azure\.com|openai\.azure/i, 'azureai'],
   [/mistral\.ai/i, 'mistral'],
   [/minimax\.io/i, 'minimax'],
+  [/elevenlabs\.io/i, 'elevenlabs'],
+  [/jina\.ai/i, 'jina'],
   [/x\.ai/i, 'xai'],
   [/openai\.com/i, 'openai'],
 ];
@@ -209,6 +227,8 @@ const LABEL_ICON_MATCHERS: Array<[RegExp, string]> = [
   [/azure/i, 'azureai'],
   [/mistral/i, 'mistral'],
   [/minimax/i, 'minimax'],
+  [/eleven\s*labs/i, 'elevenlabs'],
+  [/\bjina\b/i, 'jina'],
   [/\bxai\b|\bx\.ai\b|grok/i, 'xai'],
   [/openai|gpt/i, 'openai'],
 ];

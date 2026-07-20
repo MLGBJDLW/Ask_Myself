@@ -422,7 +422,7 @@ pub fn blob_to_vector(blob: &[u8]) -> Vec<f32> {
 
 impl Database {
     /// Store (upsert) a vector embedding for a chunk.
-    // TODO: integrate — single-row insert, production uses batch_store_embeddings()
+    /// Prefer [`Database::batch_store_embeddings`] for bulk indexing.
     pub fn store_embedding(
         &self,
         chunk_id: &str,
@@ -472,7 +472,6 @@ impl Database {
     }
 
     /// Retrieve the embedding vector for a specific chunk + model.
-    // TODO: integrate — single-row retrieval, production uses batch versions
     pub fn get_embedding(
         &self,
         chunk_id: &str,
@@ -540,7 +539,6 @@ impl Database {
     }
 
     /// Delete all embeddings belonging to chunks of a given document.
-    // TODO: integrate — per-document cleanup for incremental re-indexing
     pub fn delete_embeddings_for_document(&self, document_id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         conn.execute(
@@ -1201,6 +1199,7 @@ pub struct ApiEmbedder {
     base_url: String,
     model: String,
     dimensions: Option<usize>,
+    request_dimensions: bool,
 }
 
 impl ApiEmbedder {
@@ -1227,12 +1226,23 @@ impl ApiEmbedder {
             .build()
             .map_err(|e| CoreError::Embedding(format!("HTTP client init: {e}")))?;
 
+        let base_url = base_url.unwrap_or_else(|| "https://api.openai.com/v1".into());
+        let model = model.unwrap_or_else(|| "text-embedding-3-small".into());
+        let catalog_model =
+            crate::embedding_provider_catalog::find_embedding_model(&base_url, &model);
+        let request_dimensions = catalog_model
+            .as_ref()
+            .map(|preset| preset.supports_dimension_override)
+            .unwrap_or(true);
+        let dimensions = dimensions.or_else(|| catalog_model.map(|preset| preset.dimensions));
+
         Ok(Self {
             client,
             api_key,
-            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            model: model.unwrap_or_else(|| "text-embedding-3-small".into()),
+            base_url,
+            model,
             dimensions,
+            request_dimensions,
         })
     }
 
@@ -1244,7 +1254,7 @@ impl ApiEmbedder {
         let body = ApiEmbeddingRequest {
             input: texts,
             model: &self.model,
-            dimensions: self.dimensions,
+            dimensions: self.request_dimensions.then_some(self.dimensions).flatten(),
         };
 
         let response = self
@@ -1357,8 +1367,19 @@ impl Embedder for ApiEmbedder {
 ///
 /// Sends a single short text and returns `Ok(true)` if the API responds
 /// with a valid embedding. Any error is propagated as `CoreError`.
-pub fn test_api_connection(api_key: &str, base_url: &str) -> Result<bool, CoreError> {
-    let embedder = ApiEmbedder::new(api_key.to_string(), Some(base_url.to_string()), None, None)?;
+pub fn test_api_connection(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    dimensions: u32,
+) -> Result<bool, CoreError> {
+    let dimensions = (dimensions > 0).then_some(dimensions as usize);
+    let embedder = ApiEmbedder::new(
+        api_key.to_string(),
+        Some(base_url.to_string()),
+        Some(model.to_string()),
+        dimensions,
+    )?;
     let result = embedder.embed("connection test")?;
     Ok(!result.is_empty())
 }

@@ -87,6 +87,16 @@ test.beforeEach(async ({ page }) => {
         quality: null,
         outputFormat: "png",
       },
+      textToSpeech: {
+        provider: "open_ai",
+        apiStyle: "openai_speech",
+        apiKey: "",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini-tts",
+        voice: "coral",
+        outputFormat: "wav",
+        speed: 1,
+      },
     };
 
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -264,6 +274,10 @@ test("settings provider form shows updated preset models for add and edit flows"
     "DeepSeek V4 Flash",
   ]);
 
+  await providerField().getByRole("combobox").selectOption("moonshot");
+  modelSelect = modelField().getByRole("combobox");
+  await expectModelOptions(modelSelect, ["Kimi K3", "Kimi K2.7"]);
+
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.getByTitle("Edit").first().click();
 
@@ -309,6 +323,15 @@ test("settings exposes image generation model config under AI providers", async 
   await expect(selects.nth(0)).toHaveValue("qwen-dashscope-cn");
   await expect(selects.nth(1)).toHaveValue("qwen-image-2.0-pro");
 
+  await selects.nth(0).selectOption("google-gemini");
+  await expect(selects.nth(1)).toHaveValue("gemini-3.1-flash-image");
+  await expect(selects.nth(1).locator("option")).toContainText([
+    "Gemini 3.1 Flash Image",
+    "Gemini 3.1 Flash Lite Image",
+    "Gemini 3 Pro Image",
+  ]);
+  await selects.nth(0).selectOption("qwen-dashscope-cn");
+
   await panel.getByRole("button", { name: "Save" }).click();
   await page.waitForFunction(() => {
     const saved = (window as unknown as { __savedAppConfig?: { imageGeneration?: { provider?: string; apiKey?: string } } })
@@ -316,4 +339,67 @@ test("settings exposes image generation model config under AI providers", async 
     return saved?.imageGeneration?.provider === "qwen" &&
       saved.imageGeneration.apiKey === "sk-qwen-demo";
   });
+});
+
+test("settings promotes low-latency speech providers with their own logos", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const panel = page.getByTestId("text-to-speech-settings-panel");
+  await expect(panel.getByRole("heading", { name: "Text to Speech" })).toBeVisible();
+  await panel.locator("button").first().click();
+
+  const selects = panel.locator("select");
+  await expect(selects.nth(1)).toHaveValue("gpt-4o-mini-tts");
+  await selects.nth(0).selectOption("elevenlabs");
+  await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
+  await expect(panel.locator('[title="ElevenLabs"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/elevenlabs\.svg/,
+  );
+
+  await selects.nth(0).selectOption("minimax");
+  await expect(selects.nth(1)).toHaveValue("speech-2.8-turbo");
+});
+
+test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+
+  const section = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Embedding Configuration" }),
+  });
+  await section.locator("button").first().click();
+  await section.getByRole("button", { name: "API", exact: true }).click();
+
+  const selects = section.locator("select");
+  await selects.nth(0).selectOption("jina");
+  await expect(selects.nth(1)).toHaveValue("jina-embeddings-v5-text-small");
+  await expect(section.getByRole("spinbutton")).toHaveValue("1024");
+  await expect(section.getByRole("spinbutton")).toBeDisabled();
+  await expect(section.locator('[title="Jina AI"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/jina\.svg/,
+  );
+
+  await selects.nth(0).selectOption("mistral");
+  await expect(selects.nth(1)).toHaveValue("mistral-embed");
+  await expect(section.getByRole("spinbutton")).toHaveValue("1024");
+});
+
+test("dream theme is decorative and quieter away from home", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("nexa-theme", "dream"));
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  const shell = page.locator('[data-app-area]');
+  await shell.evaluate((element) => element.setAttribute('data-app-area', 'home'));
+  const homeBackdrop = shell.locator('.dream-backdrop');
+  await expect(homeBackdrop).toHaveCSS('pointer-events', 'none');
+  await expect(homeBackdrop).toHaveCSS('opacity', '0.92');
+  await page.screenshot({ path: 'test-results/dream-home.png', fullPage: true });
+
+  await shell.evaluate((element) => element.setAttribute('data-app-area', 'task'));
+  await expect(shell.locator('.dream-backdrop')).toHaveCSS('opacity', '0.42');
+  await page.screenshot({ path: 'test-results/dream-settings.png', fullPage: true });
 });

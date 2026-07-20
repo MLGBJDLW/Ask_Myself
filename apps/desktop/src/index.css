@@ -242,6 +242,101 @@
   --shadow-glow: 0 0 22px rgba(184,50,99,0.12);
 }
 
+/* Dream theme: a decorative, non-interactive wallpaper with translucent UI. */
+.theme-dream {
+  --color-surface-0: rgba(19, 11, 31, 0.86);
+  --color-surface-1: rgba(28, 16, 44, 0.91);
+  --color-surface-2: rgba(47, 27, 66, 0.88);
+  --color-surface-3: rgba(68, 39, 88, 0.88);
+  --color-surface-4: rgba(91, 53, 111, 0.9);
+
+  --color-text-primary: #fff7ff;
+  --color-text-secondary: #ddc7e7;
+  --color-text-tertiary: #a98db8;
+  --color-text-inverse: #23102e;
+
+  --color-accent: #f178c6;
+  --color-accent-hover: #ff9bd7;
+  --color-accent-subtle: #f178c629;
+
+  --color-success: #7ee7bc;
+  --color-warning: #ffd275;
+  --color-danger: #ff7898;
+  --color-danger-hover: #ff9caf;
+  --color-info: #8fc9ff;
+
+  --context-prompts: #8fc9ff;
+  --context-conversation: #7ee7bc;
+  --context-tool-results: #ffd275;
+  --context-tools: #c9a7ff;
+  --context-mcp: #ff91d0;
+  --context-overhead: #bca7c7;
+  --context-segment-separator: rgba(28, 16, 44, 0.68);
+
+  --color-border: #ffe9ff18;
+  --color-border-hover: #ffe9ff30;
+  --color-border-active: #f178c68a;
+
+  --shadow-sm: 0 1px 3px rgba(10, 4, 18, 0.34);
+  --shadow-md: 0 7px 20px rgba(10, 4, 18, 0.42);
+  --shadow-lg: 0 16px 38px rgba(10, 4, 18, 0.52);
+  --shadow-glow: 0 0 30px rgba(241, 120, 198, 0.18);
+}
+
+.dream-backdrop {
+  display: none;
+}
+
+.theme-dream .dream-backdrop {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.92;
+  background:
+    radial-gradient(circle at 14% 18%, rgba(255, 148, 211, 0.24), transparent 25%),
+    radial-gradient(circle at 83% 12%, rgba(159, 133, 255, 0.27), transparent 28%),
+    radial-gradient(circle at 72% 83%, rgba(111, 205, 255, 0.17), transparent 30%),
+    linear-gradient(145deg, #180d27 0%, #251038 47%, #12172d 100%);
+}
+
+.theme-dream .dream-backdrop::before,
+.theme-dream .dream-backdrop::after {
+  position: absolute;
+  inset: -12%;
+  content: '';
+  pointer-events: none;
+}
+
+.theme-dream .dream-backdrop::before {
+  opacity: 0.62;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.72) 0 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(247, 174, 230, 0.46) 0 1.4px, transparent 2px);
+  background-position: 0 0, 37px 29px;
+  background-size: 74px 74px, 113px 113px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.theme-dream .dream-backdrop::after {
+  inset: auto -8% -45% 24%;
+  height: 82%;
+  border-radius: 50%;
+  opacity: 0.34;
+  transform: rotate(-8deg);
+  background:
+    repeating-radial-gradient(ellipse at center, transparent 0 22px, rgba(255, 157, 219, 0.22) 24px 27px, transparent 29px 44px),
+    radial-gradient(ellipse at center, rgba(172, 122, 255, 0.32), transparent 66%);
+  filter: blur(0.3px);
+}
+
+.theme-dream [data-app-area='task'] > .dream-backdrop {
+  opacity: 0.42;
+  filter: saturate(0.74);
+}
+
 /* Global base styles */
 html {
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';

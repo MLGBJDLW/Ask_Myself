@@ -159,10 +159,11 @@ struct HtmlExtraction {
     metadata: PageMetadata,
 }
 
-struct BrowserRenderedHtml {
-    final_url: reqwest::Url,
-    html: String,
-    blocked_requests: usize,
+pub(crate) struct BrowserRenderedHtml {
+    pub(crate) final_url: reqwest::Url,
+    pub(crate) html: String,
+    pub(crate) blocked_requests: usize,
+    pub(crate) screenshot_png: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -1270,12 +1271,18 @@ async fn render_html_with_browser(url: reqwest::Url) -> Result<BrowserRenderedHt
         .map_err(|e| format!("browser render task failed: {e}"))?
 }
 
+pub(crate) async fn capture_browser_page(url: &str) -> Result<BrowserRenderedHtml, String> {
+    let url = validate_url_for_fetch(url).await?;
+    render_html_with_browser(url).await
+}
+
 fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRenderedHtml, String> {
     use headless_chrome::browser::tab::RequestPausedDecision;
     use headless_chrome::protocol::cdp::Fetch::{
         events::RequestPausedEvent, FailRequest, RequestPattern, RequestStage,
     };
     use headless_chrome::protocol::cdp::Network;
+    use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
     use headless_chrome::Browser;
 
     let browser = Browser::default().map_err(|e| format!("failed to launch browser: {e}"))?;
@@ -1335,11 +1342,15 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
         }
         html.truncate(cutoff);
     }
+    let screenshot_png = tab
+        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+        .map_err(|e| format!("failed to capture rendered page screenshot: {e}"))?;
 
     Ok(BrowserRenderedHtml {
         final_url,
         html,
         blocked_requests: blocked_requests.load(Ordering::Relaxed),
+        screenshot_png,
     })
 }
 

@@ -6,6 +6,7 @@
 
 pub(crate) mod image_generation;
 pub(crate) mod office_documents;
+pub(crate) mod text_to_speech;
 
 use crate::app_settings::AppConfig;
 use crate::capability_package::{CapabilityPackageManifest, CapabilityPackagePermissions};
@@ -181,6 +182,11 @@ impl BuiltinPlugin {
                 manifest,
                 context.app_config.map(|config| &config.image_generation),
             )
+        } else if self.id == TTS_PLUGIN.id {
+            text_to_speech::enrich_manifest(
+                manifest,
+                context.app_config.map(|config| &config.text_to_speech),
+            )
         } else if self.id == OFFICE_PLUGIN.id {
             office_documents::enrich_manifest(manifest, context.office_runtime)
         } else {
@@ -263,6 +269,17 @@ const IMAGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     tools: &["generate_image"],
     settings_surfaces: &["image-generation"],
     workflows: &["generate-image"],
+};
+
+const TTS_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+    id: "text-to-speech",
+    name: "Text to Speech",
+    capability: "Speech synthesis",
+    description: "Synthesizes speech through cloud providers and returns a transient audio asset.",
+    ecosystem_surface: EcosystemSurfaceKind::Adapter,
+    tools: &["synthesize_speech"],
+    settings_surfaces: &["text-to-speech"],
+    workflows: &["synthesize-speech"],
 };
 
 const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
@@ -382,17 +399,31 @@ const MCP_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["connector-tool-call"],
 };
 
+const COMPUTER_USE_CONNECTOR_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+    id: "computer-use-connector",
+    name: "Computer Use Connector",
+    capability: "Vision-guided UI automation",
+    description:
+        "Classifies tools from an isolated computer-use MCP service so observation and actions stay behind Nexa's connector approval boundary.",
+    ecosystem_surface: EcosystemSurfaceKind::Connector,
+    tools: &["mcp__computer_use__*"],
+    settings_surfaces: &["mcp", "tool-approvals"],
+    workflows: &["observe-decide-act"],
+};
+
 const BUILTIN_PLUGINS: &[BuiltinPlugin] = &[
     CORE_AGENT_PLUGIN,
     KNOWLEDGE_PLUGIN,
     OFFICE_PLUGIN,
     IMAGE_PLUGIN,
+    TTS_PLUGIN,
     WEB_PLUGIN,
     FILE_WORKSPACE_PLUGIN,
     DESKTOP_AUTOMATION_PLUGIN,
     MEMORY_PLUGIN,
     EVALUATION_PLUGIN,
     DELEGATION_PLUGIN,
+    COMPUTER_USE_CONNECTOR_PLUGIN,
     MCP_PLUGIN,
 ];
 
@@ -434,6 +465,9 @@ pub fn plugin_for_tool(name: &str) -> ToolPluginInfo {
 }
 
 fn plugin_for_tool_name(name: &str) -> BuiltinPlugin {
+    if is_computer_use_connector_tool(name) {
+        return COMPUTER_USE_CONNECTOR_PLUGIN;
+    }
     if name == "mcp_tool" || name.starts_with("mcp__") {
         return MCP_PLUGIN;
     }
@@ -444,6 +478,12 @@ fn plugin_for_tool_name(name: &str) -> BuiltinPlugin {
         .unwrap_or(CORE_AGENT_PLUGIN)
 }
 
+fn is_computer_use_connector_tool(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase().replace('-', "_");
+    normalized.starts_with("mcp__computer_use__")
+        || normalized.starts_with("mcp__windows_computer_use__")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +492,7 @@ mod tests {
     #[test]
     fn maps_tools_to_capability_packages() {
         assert_eq!(plugin_for_tool("generate_image").id, "image-generation");
+        assert_eq!(plugin_for_tool("synthesize_speech").id, "text-to-speech");
         assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
         assert_eq!(plugin_for_tool("run_shell").id, "desktop-automation");
         assert_eq!(plugin_for_tool("web_search").id, "web-research");
@@ -460,6 +501,14 @@ mod tests {
         assert_eq!(
             plugin_for_tool("mcp__custom__dangerous").id,
             "mcp-connectors"
+        );
+        assert_eq!(
+            plugin_for_tool("mcp__computer_use__computer").id,
+            "computer-use-connector"
+        );
+        assert_eq!(
+            plugin_for_tool("mcp__computer-use__screenshot").id,
+            "computer-use-connector"
         );
     }
 
@@ -515,6 +564,10 @@ mod tests {
         );
         assert_eq!(
             kind_for("mcp-connectors"),
+            Some(EcosystemSurfaceKind::Connector)
+        );
+        assert_eq!(
+            kind_for("computer-use-connector"),
             Some(EcosystemSurfaceKind::Connector)
         );
     }

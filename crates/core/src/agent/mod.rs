@@ -39,7 +39,9 @@ use crate::task_run::AgentTaskRuntime;
 use crate::task_timeline::TaskTimelineEvent;
 #[cfg(test)]
 use crate::tools::ToolCategory;
-use crate::tools::{ToolInputStreamingMode, ToolInterruptBehavior, ToolRegistry};
+use crate::tools::{
+    ToolInputStreamingMode, ToolInterruptBehavior, ToolOutputAttachment, ToolRegistry,
+};
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
 mod answer_cache;

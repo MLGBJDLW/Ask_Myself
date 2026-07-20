@@ -285,8 +285,8 @@ export const getEmbedderConfig = () =>
 export const saveEmbedderConfig = (config: EmbedderConfig) =>
   invoke<void>('save_embedder_config_cmd', { config });
 
-export const testApiConnection = (apiKey: string, baseUrl: string) =>
-  invoke<boolean>('test_api_connection_cmd', { apiKey, baseUrl });
+export const testApiConnection = (apiKey: string, baseUrl: string, model: string, dimensions: number) =>
+  invoke<boolean>('test_api_connection_cmd', { apiKey, baseUrl, model, dimensions });
 
 export const checkLocalModel = (localModel?: string) =>
   invoke<boolean>('check_local_model_cmd', { localModel });

@@ -35,7 +35,9 @@
     "requiresApiKey": true,
     "description": "Gemini image models through generateContent.",
     "models": [
-      { "id": "gemini-3-pro-image-preview", "name": "Gemini 3 Pro Image Preview", "recommended": true },
+      { "id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash Image (Nano Banana 2)", "recommended": true },
+      { "id": "gemini-3.1-flash-lite-image", "name": "Gemini 3.1 Flash Lite Image" },
+      { "id": "gemini-3-pro-image", "name": "Gemini 3 Pro Image (Nano Banana Pro)" },
       { "id": "gemini-2.5-flash-image", "name": "Gemini 2.5 Flash Image" }
     ],
     "sizeOptions": [

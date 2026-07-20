@@ -8,6 +8,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
+import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
 import { Section } from './SettingsSection';
 
 export type ProviderView = 'list' | 'selector' | 'form';
@@ -223,14 +224,23 @@ export function ProvidersSettingsTab({
           )}
 
           {appConfig && (
-            <ImageGenerationSettingsPanel
-              appConfig={appConfig}
-              agentConfigs={agentConfigs}
-              loading={appConfigLoading}
-              onChange={onAppConfigChange}
-              onMarkDirty={onMarkAppConfigDirty}
-              onSave={onAppConfigSave}
-            />
+            <>
+              <ImageGenerationSettingsPanel
+                appConfig={appConfig}
+                agentConfigs={agentConfigs}
+                loading={appConfigLoading}
+                onChange={onAppConfigChange}
+                onMarkDirty={onMarkAppConfigDirty}
+                onSave={onAppConfigSave}
+              />
+              <TextToSpeechSettingsPanel
+                appConfig={appConfig}
+                loading={appConfigLoading}
+                onChange={onAppConfigChange}
+                onMarkDirty={onMarkAppConfigDirty}
+                onSave={onAppConfigSave}
+              />
+            </>
           )}
         </div>
       )}
