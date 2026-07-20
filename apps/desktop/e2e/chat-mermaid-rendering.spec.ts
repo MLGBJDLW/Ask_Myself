@@ -206,6 +206,11 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   expect(renderedLabels).toContain('Alice');
   expect(renderedLabels).toContain('Accessible release timeline');
 
+  const expectedSurfaceColors = await surfaces.evaluateAll((elements) =>
+    elements.map((element) => getComputedStyle(element).color),
+  );
+  await expect(surfaces.first()).toHaveClass(/text-slate-900/);
+
   for (const theme of ['dark', 'light', 'dream']) {
     await page.evaluate((nextTheme) => {
       const root = document.documentElement;
@@ -215,8 +220,10 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
 
     for (const surface of await surfaces.all()) {
       await expect(surface).toHaveCSS('background-color', 'rgb(255, 255, 255)');
-      await expect(surface).toHaveCSS('color', 'rgb(15, 23, 42)');
     }
+    await expect.poll(() => surfaces.evaluateAll((elements) =>
+      elements.map((element) => getComputedStyle(element).color),
+    )).toEqual(expectedSurfaceColors);
   }
 });
 
