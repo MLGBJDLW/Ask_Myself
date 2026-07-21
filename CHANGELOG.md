@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.11...nexa-monorepo-v0.10.12) (2026-07-21)
+
+
+### Features
+
+* **agent:** manage local service lifecycle ([1357c83](https://github.com/MLGBJDLW/Nexa/commit/1357c834229d7a9a7e223e9674b346fcb055c5f4))
+* **chat:** integrate turn timeline with chat panel ([17844ea](https://github.com/MLGBJDLW/Nexa/commit/17844ea8c0810c4e5f5da6d65564a3d792ae582f))
+* **chat:** show subagent progress in plan ([f6a7ee1](https://github.com/MLGBJDLW/Nexa/commit/f6a7ee131e2f55eb8ab5b347c3495bec7e218192))
+* **desktop:** add themed custom window frame ([d9a8893](https://github.com/MLGBJDLW/Nexa/commit/d9a8893e49344708ce61c07a5a8e447636a7f96c))
+* **desktop:** polish chat UX and harden agent runtime ([a0724a5](https://github.com/MLGBJDLW/Nexa/commit/a0724a549946f47383b2cb840f220e9f5155d5a0))
+
+
+### Bug Fixes
+
+* **agent:** harden subagent delegation lifecycle ([6eb4313](https://github.com/MLGBJDLW/Nexa/commit/6eb4313612bb3904b529f4e3e25f16cdce8b5a4e))
+* **chat:** render formula-heavy Mermaid flowcharts ([efaa92b](https://github.com/MLGBJDLW/Nexa/commit/efaa92b68191c599ecad22ea135212290e2de53f))
+* **chat:** show live edit diff stats ([8976cce](https://github.com/MLGBJDLW/Nexa/commit/8976cce182fb96da5d934d0ebf8e0e091e1c37d4))
+
 ## [0.10.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.10...nexa-monorepo-v0.10.11) (2026-07-20)
 
 
