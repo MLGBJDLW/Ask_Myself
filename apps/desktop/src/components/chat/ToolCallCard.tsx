@@ -643,6 +643,8 @@ const FILE_NEW_TEXT_ARG_KEYS = [
   'content',
   'text',
   'body',
+  'new_str',
+  'newStr',
   'newString',
   'new_string',
   'replacement',
@@ -651,6 +653,8 @@ const FILE_NEW_TEXT_ARG_KEYS = [
 ];
 
 const FILE_OLD_TEXT_ARG_KEYS = [
+  'old_str',
+  'oldStr',
   'oldString',
   'old_string',
   'oldContent',
