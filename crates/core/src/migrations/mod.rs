@@ -1158,6 +1158,12 @@ Every answer that uses knowledge base search results.
         "v072_entity_link_confidence",
         "ALTER TABLE entity_links ADD COLUMN confidence REAL;",
     ),
+    (
+        "v073_conversation_archiving",
+        "ALTER TABLE conversations ADD COLUMN archived_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_conversations_archived_at
+            ON conversations(archived_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1574,5 +1580,20 @@ mod tests {
                 .unwrap();
             assert!(exists, "entity_links.{column} should exist");
         }
+    }
+
+    #[test]
+    fn test_conversation_archiving_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let archived_at_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'archived_at'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(archived_at_exists, "conversations.archived_at should exist");
     }
 }

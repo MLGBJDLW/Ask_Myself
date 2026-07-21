@@ -104,11 +104,12 @@ jobs:
         run: >-
           npx playwright test
           e2e/app-window-frame.spec.ts
+          e2e/chat-conversation-archive.spec.ts
           e2e/chat-done-preview-persistence.spec.ts
           e2e/chat-mermaid-rendering.spec.ts
           e2e/chat-turn-navigation.spec.ts
           e2e/chat-plan-progress-panel.spec.ts
-          --grep "themed window frame|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges"
+          --grep "themed window frame|conversation actions offer archive and delete|archived conversations can be restored|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges"
 
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop

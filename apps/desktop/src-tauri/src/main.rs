@@ -281,6 +281,7 @@ fn main() {
             // Conversations
             commands::create_conversation_cmd,
             commands::list_conversations_cmd,
+            commands::list_archived_conversations_cmd,
             commands::get_conversation_cmd,
             commands::get_conversation_turns_cmd,
             commands::get_agent_task_runs_cmd,
@@ -308,6 +309,8 @@ fn main() {
             commands::update_conversation_persona_cmd,
             commands::update_conversation_model_cmd,
             commands::delete_conversation_cmd,
+            commands::archive_conversation_cmd,
+            commands::unarchive_conversation_cmd,
             commands::delete_conversations_batch_cmd,
             commands::delete_all_conversations_cmd,
             commands::rename_conversation_cmd,

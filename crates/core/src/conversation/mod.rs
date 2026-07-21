@@ -33,6 +33,7 @@ pub struct Conversation {
     /// may be overwritten by auto-title regeneration. Set to `false` once the
     /// user renames the conversation manually.
     pub title_is_auto: bool,
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -737,8 +738,8 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<Conversation>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, persona_id, title_is_auto, created_at, updated_at
-             FROM conversations ORDER BY updated_at DESC",
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, persona_id, title_is_auto, archived_at, created_at, updated_at
+             FROM conversations WHERE archived_at IS NULL ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -751,8 +752,39 @@ impl Database {
                 project_id: row.get(6)?,
                 persona_id: row.get(7)?,
                 title_is_auto: row.get::<_, i64>(8)? != 0,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                archived_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// List archived conversations, most recently archived first.
+    pub fn list_archived_conversations(&self) -> Result<Vec<Conversation>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, persona_id, title_is_auto, archived_at, created_at, updated_at
+             FROM conversations WHERE archived_at IS NOT NULL ORDER BY archived_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                provider: row.get(2)?,
+                model: row.get(3)?,
+                system_prompt: row.get(4)?,
+                collection_context: parse_collection_context(row.get(5)?),
+                project_id: row.get(6)?,
+                persona_id: row.get(7)?,
+                title_is_auto: row.get::<_, i64>(8)? != 0,
+                archived_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })?;
         let mut results = Vec::new();
@@ -766,7 +798,7 @@ impl Database {
     pub fn get_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, persona_id, title_is_auto, created_at, updated_at
+            "SELECT id, title, provider, model, system_prompt, collection_context_json, project_id, persona_id, title_is_auto, archived_at, created_at, updated_at
              FROM conversations WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -780,8 +812,9 @@ impl Database {
                     project_id: row.get(6)?,
                     persona_id: row.get(7)?,
                     title_is_auto: row.get::<_, i64>(8)? != 0,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    archived_at: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             },
         )
@@ -791,6 +824,40 @@ impl Database {
             }
             other => CoreError::Database(other),
         })
+    }
+
+    /// Archive a conversation without deleting its messages or related state.
+    pub fn archive_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations
+             SET archived_at = datetime('now')
+             WHERE id = ?1 AND archived_at IS NULL",
+            rusqlite::params![id],
+        )?;
+        drop(conn);
+        if affected == 0 {
+            let conversation = self.get_conversation(id)?;
+            return Ok(conversation);
+        }
+        self.get_conversation(id)
+    }
+
+    /// Restore an archived conversation to the active conversation list.
+    pub fn unarchive_conversation(&self, id: &str) -> Result<Conversation, CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations
+             SET archived_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1 AND archived_at IS NOT NULL",
+            rusqlite::params![id],
+        )?;
+        drop(conn);
+        if affected == 0 {
+            let conversation = self.get_conversation(id)?;
+            return Ok(conversation);
+        }
+        self.get_conversation(id)
     }
 
     /// Delete a conversation (messages are CASCADE-deleted).
@@ -856,11 +923,12 @@ impl Database {
         Ok(affected)
     }
 
-    /// Delete ALL conversations (messages are CASCADE-deleted).
+    /// Delete all active conversations (messages are CASCADE-deleted).
+    /// Archived conversations remain available for explicit management.
     /// Returns the number of deleted rows.
     pub fn delete_all_conversations(&self) -> Result<usize, CoreError> {
         let conn = self.conn();
-        let affected = conn.execute("DELETE FROM conversations", [])?;
+        let affected = conn.execute("DELETE FROM conversations WHERE archived_at IS NULL", [])?;
         Ok(affected)
     }
 
@@ -969,7 +1037,8 @@ impl Database {
             "DELETE FROM conversations WHERE id IN (
                 SELECT c.id FROM conversations c
                 LEFT JOIN messages m ON m.conversation_id = c.id
-                WHERE c.created_at <= datetime('now', ?1)
+                WHERE c.archived_at IS NULL
+                  AND c.created_at <= datetime('now', ?1)
                 GROUP BY c.id
                 HAVING COUNT(m.id) = 0
             )",
@@ -1046,6 +1115,7 @@ impl Database {
                  JOIN conversations c ON c.id = f.conversation_id
                  JOIN messages m ON m.id = f.message_id
                  WHERE fts_messages MATCH ?1
+                   AND c.archived_at IS NULL
                  ORDER BY rank
                  LIMIT ?2",
             )?;
@@ -1076,6 +1146,7 @@ impl Database {
                  FROM messages m
                  JOIN conversations c ON c.id = m.conversation_id
                  WHERE m.role IN ('user', 'assistant')
+                   AND c.archived_at IS NULL
                    AND m.content LIKE ?1 ESCAPE '\\'
                  ORDER BY m.created_at DESC
                  LIMIT ?2",
@@ -3534,6 +3605,17 @@ mod tests {
         let all = db.list_conversations().unwrap();
         assert_eq!(all.len(), 1);
 
+        // Archive and restore without deleting the conversation.
+        let archived = db.archive_conversation(&conv.id).unwrap();
+        assert!(archived.archived_at.is_some());
+        assert!(db.list_conversations().unwrap().is_empty());
+        assert_eq!(db.list_archived_conversations().unwrap().len(), 1);
+
+        let restored = db.unarchive_conversation(&conv.id).unwrap();
+        assert!(restored.archived_at.is_none());
+        assert_eq!(db.list_conversations().unwrap().len(), 1);
+        assert!(db.list_archived_conversations().unwrap().is_empty());
+
         // Update title
         db.update_conversation_title(&conv.id, "My Chat").unwrap();
         let updated = db.get_conversation(&conv.id).unwrap();
@@ -3584,6 +3666,27 @@ mod tests {
         let context = fetched.collection_context.expect("collection context");
         assert_eq!(context.title, "Retry Collection");
         assert_eq!(context.source_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_all_active_conversations_preserves_archive() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let active = db.create_conversation(&input).unwrap();
+        let archived = db.create_conversation(&input).unwrap();
+        db.archive_conversation(&archived.id).unwrap();
+
+        assert_eq!(db.delete_all_conversations().unwrap(), 1);
+        assert!(db.get_conversation(&active.id).is_err());
+        assert!(db.get_conversation(&archived.id).is_ok());
+        assert_eq!(db.list_archived_conversations().unwrap().len(), 1);
     }
 
     #[test]

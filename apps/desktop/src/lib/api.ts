@@ -804,6 +804,9 @@ export const createConversationWithContext = (
 
 export const listConversations = () => invoke<Conversation[]>('list_conversations_cmd');
 
+export const listArchivedConversations = () =>
+  invoke<Conversation[]>('list_archived_conversations_cmd');
+
 export const getConversation = (id: string) =>
   invoke<[Conversation, ConversationMessage[]]>('get_conversation_cmd', { id });
 
@@ -897,6 +900,12 @@ export const listProjectTools = (sourceScope?: string[] | null) =>
 
 export const deleteConversation = (id: string) =>
   invoke<void>('delete_conversation_cmd', { id });
+
+export const archiveConversation = (id: string) =>
+  invoke<Conversation>('archive_conversation_cmd', { id });
+
+export const unarchiveConversation = (id: string) =>
+  invoke<Conversation>('unarchive_conversation_cmd', { id });
 
 export const deleteConversationsBatch = (ids: string[]) =>
   invoke<number>('delete_conversations_batch_cmd', { ids });

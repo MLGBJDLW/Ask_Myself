@@ -14,6 +14,8 @@ export interface Conversation {
   personaId?: string | null;
   /** `true` if the title is still auto-generated. Becomes `false` after a user rename. */
   titleIsAuto?: boolean;
+  /** Timestamp set while the conversation is hidden from the active sidebar. */
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
