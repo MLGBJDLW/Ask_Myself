@@ -174,6 +174,16 @@ pub async fn list_conversations_cmd(
 }
 
 #[tauri::command]
+pub async fn list_archived_conversations_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Conversation>, String> {
+    state
+        .db
+        .list_archived_conversations()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -528,6 +538,28 @@ pub async fn delete_conversation_cmd(
     id: String,
 ) -> Result<(), String> {
     state.db.delete_conversation(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn archive_conversation_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Conversation, String> {
+    state
+        .db
+        .archive_conversation(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unarchive_conversation_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Conversation, String> {
+    state
+        .db
+        .unarchive_conversation(&id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

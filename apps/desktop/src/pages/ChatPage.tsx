@@ -29,6 +29,22 @@ import {
   type GraphAgentContext,
 } from '../lib/knowledgeGraphAgent';
 
+function restoreConversationItems(
+  current: Conversation[],
+  previous: Conversation[],
+  restoredIds: Set<string>,
+): Conversation[] {
+  const previousIds = new Set(previous.map((conversation) => conversation.id));
+  const currentById = new Map(current.map((conversation) => [conversation.id, conversation]));
+  const additions = current.filter((conversation) => !previousIds.has(conversation.id));
+  const restored = previous.flatMap((conversation) => {
+    const latest = currentById.get(conversation.id);
+    if (latest) return [latest];
+    return restoredIds.has(conversation.id) ? [conversation] : [];
+  });
+  return [...additions, ...restored];
+}
+
 function personaExists(personas: api.PersonaProfile[], id: string): boolean {
   return personas.some((persona) => persona.id === id && persona.enabled !== false);
 }
@@ -812,21 +828,65 @@ export function ChatPage() {
     (id: string) => {
       const prev = chat.conversations;
       const removed = prev.find((c) => c.id === id);
+      const wasActive = chat.activeId === id;
       chat.setConversations(prev.filter((c) => c.id !== id));
-      if (chat.activeId === id) navigate('/chat');
+      if (wasActive) navigate('/chat');
+      const restore = () => {
+        chat.setConversations((current) => restoreConversationItems(current, prev, new Set([id])));
+        if (wasActive) navigate(`/chat/${id}`);
+      };
       undoableAction({
         message: t('chat.conversation.deleted'),
         undoLabel: t('common.undo'),
+        onUndo: restore,
         onConfirm: async () => {
           try {
             await api.deleteConversation(id);
           } catch (e) {
             toast.error(formatUserError(t('chat.deleteError'), e));
-            if (removed) chat.setConversations((c) => [...c, removed]);
+            if (removed) restore();
           }
         },
       });
-      return () => { if (removed) chat.setConversations((c) => [...c, removed]); };
+    },
+    [chat.conversations, chat.setConversations, chat.activeId, navigate, t],
+  );
+
+  const handleArchiveConversation = useCallback(
+    async (id: string) => {
+      const prev = chat.conversations;
+      const archived = prev.find((c) => c.id === id);
+      if (!archived) return;
+      const wasActive = chat.activeId === id;
+      chat.setConversations(prev.filter((c) => c.id !== id));
+      if (wasActive) navigate('/chat');
+      const restoreArchived = (conversation: Conversation = archived) => {
+        chat.setConversations((current) => [
+          conversation,
+          ...current.filter((item) => item.id !== id),
+        ]);
+        if (wasActive) navigate(`/chat/${id}`);
+      };
+      try {
+        await api.archiveConversation(id);
+        undoableAction({
+          message: t('chat.conversation.archived'),
+          undoLabel: t('common.undo'),
+          onUndo: async () => {
+            try {
+              const restored = await api.unarchiveConversation(id);
+              restoreArchived(restored);
+            } catch (e) {
+              toast.error(formatUserError(t('chat.unarchiveError'), e));
+            }
+          },
+          onConfirm: () => {},
+        });
+      } catch (e) {
+        toast.error(formatUserError(t('chat.archiveError'), e));
+        chat.setConversations((current) => restoreConversationItems(current, prev, new Set([id])));
+        if (wasActive) navigate(`/chat/${id}`);
+      }
     },
     [chat.conversations, chat.setConversations, chat.activeId, navigate, t],
   );
@@ -836,17 +896,23 @@ export function ChatPage() {
       const prev = chat.conversations;
       const idSet = new Set(ids);
       const removed = prev.filter((c) => idSet.has(c.id));
+      const previousActiveId = chat.activeId && idSet.has(chat.activeId) ? chat.activeId : null;
       chat.setConversations(prev.filter((c) => !idSet.has(c.id)));
-      if (chat.activeId && idSet.has(chat.activeId)) navigate('/chat');
+      if (previousActiveId) navigate('/chat');
+      const restore = () => {
+        chat.setConversations((current) => restoreConversationItems(current, prev, idSet));
+        if (previousActiveId) navigate(`/chat/${previousActiveId}`);
+      };
       undoableAction({
         message: t('chat.conversation.deleted'),
         undoLabel: t('common.undo'),
+        onUndo: restore,
         onConfirm: async () => {
           try {
             await api.deleteConversationsBatch(ids);
           } catch (e) {
             toast.error(formatUserError(t('chat.deleteError'), e));
-            chat.setConversations((c) => [...c, ...removed]);
+            if (removed.length > 0) restore();
           }
         },
       });
@@ -856,21 +922,29 @@ export function ChatPage() {
 
   const handleDeleteAll = useCallback(() => {
     const prev = chat.conversations;
+    const previousActiveId = chat.activeId;
     chat.setConversations([]);
     navigate('/chat');
+    const restore = () => {
+      chat.setConversations((current) =>
+        restoreConversationItems(current, prev, new Set(prev.map((conversation) => conversation.id))),
+      );
+      if (previousActiveId) navigate(`/chat/${previousActiveId}`);
+    };
     undoableAction({
       message: t('chat.conversation.deleted'),
       undoLabel: t('common.undo'),
+      onUndo: restore,
       onConfirm: async () => {
         try {
           await api.deleteAllConversations();
         } catch (e) {
           toast.error(formatUserError(t('chat.deleteError'), e));
-          chat.setConversations(prev);
+          restore();
         }
       },
     });
-  }, [chat.conversations, chat.setConversations, navigate, t]);
+  }, [chat.conversations, chat.setConversations, chat.activeId, navigate, t]);
 
   /* ── Suggestion prefill ─────────────────────────────────────────── */
 
@@ -962,6 +1036,7 @@ export function ChatPage() {
             activeId={chat.activeId}
             onSelect={handleSelectConversation}
             onNew={handleNewConversation}
+            onArchive={handleArchiveConversation}
             onDelete={handleDeleteConversation}
             onRename={chat.renameConversation}
             onDeleteBatch={handleDeleteBatch}

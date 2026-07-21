@@ -1,6 +1,22 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Pencil, MessageCircle, Check, X, Search, Star, MoreVertical, FolderInput } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  ChevronLeft,
+  FolderInput,
+  Loader2,
+  MessageCircle,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Search,
+  Star,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { relativeTime } from '../../lib/relativeTime';
@@ -12,6 +28,8 @@ import { ProjectSwitcher, useActiveProject } from './ProjectSwitcher';
 import type { Project } from '../../types/project';
 import * as api from '../../lib/api';
 import { ProjectIcon } from '../../lib/projectIcons';
+import { undoableAction } from '../../lib/undoToast';
+import { formatUserError } from '../../lib/userError';
 
 import type { Conversation } from '../../types/conversation';
 
@@ -24,11 +42,12 @@ interface ChatSidebarProps {
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: (projectId?: string | null) => void;
+  onArchive: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDeleteBatch: (ids: string[]) => void;
   onDeleteAll: () => void;
-  onConversationMoved?: () => void;
+  onConversationMoved?: () => void | Promise<void>;
 }
 
 type TimeGroup = 'pinned' | 'today' | 'yesterday' | 'last7Days' | 'last30Days' | 'older';
@@ -133,6 +152,7 @@ function ConversationItem({
   isSelected,
   index,
   onSelect,
+  onArchive,
   onDelete,
   onRename,
   onTogglePin,
@@ -147,6 +167,7 @@ function ConversationItem({
   isSelected: boolean;
   index: number;
   onSelect: () => void;
+  onArchive: () => void;
   onDelete: () => void;
   onRename: (title: string) => void;
   onTogglePin: () => void;
@@ -157,8 +178,22 @@ function ConversationItem({
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const closeActions = (event: MouseEvent) => {
+      if (!actionsRef.current?.contains(event.target as Node)) {
+        setActionsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', closeActions);
+    return () => document.removeEventListener('mousedown', closeActions);
+  }, [actionsOpen]);
 
   const startRename = () => {
+    setActionsOpen(false);
     setEditTitle(conv.title || '');
     setEditing(true);
   };
@@ -179,6 +214,7 @@ function ConversationItem({
       animate="visible"
       exit="exit"
       role="button"
+      data-testid={`conversation-item-${conv.id}`}
       tabIndex={0}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -257,7 +293,7 @@ function ConversationItem({
       </div>
 
       {/* Hover actions */}
-      {!isSelectMode && (hovered || isPinned) && !editing && (
+      {!isSelectMode && (hovered || isPinned || actionsOpen) && !editing && (
         <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button
             onClick={onTogglePin}
@@ -292,14 +328,48 @@ function ConversationItem({
               >
                 <FolderInput className="h-3 w-3" />
               </button>
-              <button
-                onClick={onDelete}
-                className="p-1 rounded hover:bg-danger/10 text-text-tertiary hover:text-danger
-                  transition-colors cursor-pointer"
-                aria-label={t('common.delete')}
-              >
-                <Trash2 className="h-3 w-3" />
-              </button>
+              <div className="relative" ref={actionsRef}>
+                <button
+                  onClick={() => setActionsOpen((open) => !open)}
+                  data-testid={`conversation-actions-trigger-${conv.id}`}
+                  className="p-1 rounded hover:bg-surface-3 text-text-tertiary hover:text-text-secondary
+                    transition-colors cursor-pointer"
+                  aria-label={t('common.moreOptions')}
+                  aria-expanded={actionsOpen}
+                >
+                  <MoreVertical className="h-3 w-3" />
+                </button>
+                {actionsOpen && (
+                  <div
+                    className="absolute right-0 top-full z-[120] mt-1 w-36 overflow-hidden rounded-lg
+                      border border-border bg-surface-2 py-1 text-xs shadow-lg"
+                    data-testid={`conversation-actions-${conv.id}`}
+                  >
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-text-secondary
+                        transition-colors hover:bg-surface-3 hover:text-text-primary"
+                      onClick={() => {
+                        setActionsOpen(false);
+                        onArchive();
+                      }}
+                    >
+                      <Archive className="h-3.5 w-3.5" />
+                      {t('chat.archive')}
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-danger
+                        transition-colors hover:bg-danger/10"
+                      onClick={() => {
+                        setActionsOpen(false);
+                        onDelete();
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {t('common.delete')}
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -317,6 +387,7 @@ export function ChatSidebar({
   activeId,
   onSelect,
   onNew,
+  onArchive,
   onDelete,
   onRename,
   onDeleteBatch,
@@ -363,6 +434,9 @@ export function ChatSidebar({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
 
   // Close menu on outside click
   useEffect(() => {
@@ -444,6 +518,176 @@ export function ChatSidebar({
     setMoveMenuPos({ x: e.clientX, y: e.clientY });
   }, []);
 
+  const openArchivedConversations = useCallback(async () => {
+    setMenuOpen(false);
+    setShowArchived(true);
+    setSearchQuery('');
+    setArchivedConversations([]);
+    setArchivedLoading(true);
+    try {
+      setArchivedConversations(await api.listArchivedConversations());
+    } catch (error) {
+      toast.error(formatUserError(t('chat.archiveLoadError'), error));
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, [t]);
+
+  const handleUnarchiveConversation = useCallback(async (conversation: Conversation) => {
+    setArchivedConversations((items) => items.filter((item) => item.id !== conversation.id));
+    try {
+      await api.unarchiveConversation(conversation.id);
+      try {
+        await onConversationMoved?.();
+      } catch { /* the conversation is already restored; the active list can refresh later */ }
+      toast.success(t('chat.conversation.unarchived'));
+    } catch (error) {
+      setArchivedConversations((items) =>
+        items.some((item) => item.id === conversation.id) ? items : [conversation, ...items],
+      );
+      toast.error(formatUserError(t('chat.unarchiveError'), error));
+    }
+  }, [onConversationMoved, t]);
+
+  const handleDeleteArchivedConversation = useCallback((conversation: Conversation) => {
+    setArchivedConversations((items) => items.filter((item) => item.id !== conversation.id));
+    const restore = () => setArchivedConversations((items) =>
+      items.some((item) => item.id === conversation.id) ? items : [conversation, ...items],
+    );
+    undoableAction({
+      message: t('chat.conversation.deleted'),
+      undoLabel: t('common.undo'),
+      onUndo: restore,
+      onConfirm: async () => {
+        try {
+          await api.deleteConversation(conversation.id);
+        } catch (error) {
+          restore();
+          toast.error(formatUserError(t('chat.deleteError'), error));
+        }
+      },
+    });
+  }, [t]);
+
+  const archivedFiltered = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return archivedConversations;
+    return archivedConversations.filter((conversation) =>
+      (conversation.title || '').toLowerCase().includes(query),
+    );
+  }, [archivedConversations, searchQuery]);
+
+  if (showArchived) {
+    return (
+      <div className="flex h-full min-h-0 flex-col border-r border-border bg-surface-1">
+        <div className="flex items-center gap-2 border-b border-border px-2 py-3">
+          <button
+            type="button"
+            onClick={() => {
+              setShowArchived(false);
+              setSearchQuery('');
+            }}
+            className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+            aria-label={t('chat.backToConversations')}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <Archive className="h-4 w-4 text-text-secondary" />
+          <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-text-primary">
+            {t('chat.archivedConversations')}
+          </h2>
+          {archivedConversations.length > 0 && (
+            <Badge className="!px-1.5 !text-[10px]">{archivedConversations.length}</Badge>
+          )}
+        </div>
+
+        {archivedConversations.length > 0 && (
+          <div className="border-b border-border px-2 py-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder={t('chat.searchArchivedConversations')}
+                className="w-full rounded-md border border-border bg-surface-0 py-1.5 pl-7 pr-7 text-xs
+                  text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary"
+                  aria-label={t('common.clear')}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5" data-testid="archived-conversation-list">
+          {archivedLoading ? (
+            <div className="flex h-24 items-center justify-center text-text-tertiary">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          ) : archivedConversations.length === 0 ? (
+            <EmptyState
+              icon={<Archive className="h-6 w-6" />}
+              title={t('chat.noArchivedConversations')}
+              description={t('chat.noArchivedConversationsDesc')}
+            />
+          ) : archivedFiltered.length === 0 ? (
+            <EmptyState
+              icon={<Search className="h-6 w-6" />}
+              title={t('chat.noSearchResults')}
+              description=""
+            />
+          ) : (
+            archivedFiltered.map((conversation) => (
+              <div
+                key={conversation.id}
+                data-testid={`archived-conversation-${conversation.id}`}
+                className="group flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary hover:bg-surface-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-text-primary">
+                    {conversation.title || t('chat.newConversation')}
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <Badge className="!px-1.5 !text-[10px]">{conversation.model}</Badge>
+                    <span className="text-[10px] text-text-tertiary">
+                      {relativeTime(conversation.archivedAt || conversation.updatedAt, t)}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleUnarchiveConversation(conversation)}
+                  className="rounded p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-accent"
+                  aria-label={t('chat.unarchive')}
+                  title={t('chat.unarchive')}
+                >
+                  <ArchiveRestore className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteArchivedConversation(conversation)}
+                  className="rounded p-1 text-text-tertiary transition-colors hover:bg-danger/10 hover:text-danger"
+                  aria-label={t('common.delete')}
+                  title={t('common.delete')}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Running index for stagger animation across groups
   let runningIndex = 0;
 
@@ -463,10 +707,10 @@ export function ChatSidebar({
           <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => onNew(activeProjectId)}>
             {t('chat.newChat')}
           </Button>
-          {conversations.length > 0 && (
-            <div className="relative" ref={menuRef}>
+          <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((v) => !v)}
+                data-testid="chat-sidebar-menu-trigger"
                 className="p-1.5 rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-2
                   transition-colors cursor-pointer"
                 aria-label={t('common.moreOptions')}
@@ -477,30 +721,41 @@ export function ChatSidebar({
                 <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-surface-2 border border-border
                   rounded-lg shadow-lg py-1 text-xs">
                   <button
-                    className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
-                      hover:text-text-primary transition-colors cursor-pointer"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setSelectMode(true);
-                      setSelectedIds(new Set());
-                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-text-secondary
+                      transition-colors hover:bg-surface-3 hover:text-text-primary"
+                    onClick={() => void openArchivedConversations()}
                   >
-                    {t('chat.selectMode')}
+                    <Archive className="h-3.5 w-3.5" />
+                    {t('chat.archivedConversations')}
                   </button>
-                  <button
-                    className="w-full text-left px-3 py-1.5 hover:bg-danger/10 text-danger
-                      transition-colors cursor-pointer"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onDeleteAll();
-                    }}
-                  >
-                    {t('chat.deleteAll')}
-                  </button>
+                  {conversations.length > 0 && (
+                    <>
+                      <div className="my-1 border-t border-border" />
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-text-secondary transition-colors
+                          hover:bg-surface-3 hover:text-text-primary"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setSelectMode(true);
+                          setSelectedIds(new Set());
+                        }}
+                      >
+                        {t('chat.selectMode')}
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-danger transition-colors hover:bg-danger/10"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onDeleteAll();
+                        }}
+                      >
+                        {t('chat.deleteAll')}
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
-          )}
         </div>
       </div>
 
@@ -577,6 +832,7 @@ export function ChatSidebar({
                         isSelected={selectedIds.has(conv.id)}
                         index={startIdx + idx}
                         onSelect={() => onSelect(conv.id)}
+                        onArchive={() => onArchive(conv.id)}
                         onDelete={() => onDelete(conv.id)}
                         onRename={(title) => onRename(conv.id, title)}
                         onTogglePin={() => togglePin(conv.id)}

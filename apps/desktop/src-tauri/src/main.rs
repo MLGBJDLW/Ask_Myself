@@ -19,6 +19,7 @@ use commands::{
 };
 use nexa_core::db::Database;
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 use tokio::sync::Mutex as TokioMutex;
 
 /// One-shot migration of user data from the pre-rebrand "ask-myself" layout
@@ -104,13 +105,23 @@ fn migrate_legacy_data_dir(data_dir: &Path) {
     }
 }
 
+fn persisted_window_state_flags() -> StateFlags {
+    // Native decorations are controlled by tauri.conf.json. Restoring this flag
+    // would let a pre-custom-frame state re-enable the system title bar.
+    StateFlags::all() & !StateFlags::DECORATIONS
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(persisted_window_state_flags())
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -270,6 +281,7 @@ fn main() {
             // Conversations
             commands::create_conversation_cmd,
             commands::list_conversations_cmd,
+            commands::list_archived_conversations_cmd,
             commands::get_conversation_cmd,
             commands::get_conversation_turns_cmd,
             commands::get_agent_task_runs_cmd,
@@ -297,6 +309,8 @@ fn main() {
             commands::update_conversation_persona_cmd,
             commands::update_conversation_model_cmd,
             commands::delete_conversation_cmd,
+            commands::archive_conversation_cmd,
+            commands::unarchive_conversation_cmd,
             commands::delete_conversations_batch_cmd,
             commands::delete_all_conversations_cmd,
             commands::rename_conversation_cmd,
@@ -492,4 +506,23 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_window_state_never_restores_native_decorations() {
+        let flags = persisted_window_state_flags();
+
+        assert!(!flags.contains(StateFlags::DECORATIONS));
+        assert!(flags.contains(
+            StateFlags::SIZE
+                | StateFlags::POSITION
+                | StateFlags::MAXIMIZED
+                | StateFlags::VISIBLE
+                | StateFlags::FULLSCREEN
+        ));
+    }
 }
