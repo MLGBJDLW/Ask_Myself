@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.12...nexa-monorepo-v0.10.13) (2026-07-21)
+
+
+### Features
+
+* **chat:** add conversation archiving ([30fcd33](https://github.com/MLGBJDLW/Nexa/commit/30fcd338c647164793cb62b4e32f0d238a973bd1))
+* **chat:** add conversation archiving and fix window frame ([41015a7](https://github.com/MLGBJDLW/Nexa/commit/41015a74ed3273a39f4da516ab1e4a110d23dbac))
+
+
+### Bug Fixes
+
+* **desktop:** prevent native window frame restore ([0e13c77](https://github.com/MLGBJDLW/Nexa/commit/0e13c77e80ebcde36d2caabcb7982743d800533c))
+
 ## [0.10.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.11...nexa-monorepo-v0.10.12) (2026-07-21)
 
 
