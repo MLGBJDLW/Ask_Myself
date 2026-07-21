@@ -16,6 +16,16 @@ pub(super) struct RunShellArgs {
     #[serde(default)]
     pub(super) timeout_secs: Option<u64>,
     #[serde(default)]
+    pub(super) background: bool,
+    #[serde(default)]
+    pub(super) ready_url: Option<String>,
+    #[serde(default)]
+    pub(super) ready_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(super) service_action: Option<String>,
+    #[serde(default)]
+    pub(super) service_id: Option<String>,
+    #[serde(default)]
     pub(super) stdin: Option<String>,
 }
 

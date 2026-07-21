@@ -140,6 +140,32 @@ pub(crate) fn parameters_schema() -> Value {
                 "default": DEFAULT_TIMEOUT_SECS,
                 "minimum": 0
             },
+            "background": {
+                "type": "boolean",
+                "default": false,
+                "description": "Start a long-running local web or API service without waiting for it to exit. Requires ready_url. The tool polls readiness and returns a service_id so later calls can check health or stop the service."
+            },
+            "ready_url": {
+                "type": "string",
+                "description": "Loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted."
+            },
+            "ready_timeout_secs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 120,
+                "default": 20,
+                "description": "How long to poll ready_url while starting a background service."
+            },
+            "service_action": {
+                "type": "string",
+                "enum": ["run", "status", "stop"],
+                "default": "run",
+                "description": "Use status or stop with a service_id returned by an earlier background run. Omit for ordinary commands."
+            },
+            "service_id": {
+                "type": "string",
+                "description": "Managed service identifier returned by a background run. Required for service_action status or stop."
+            },
             "stdin": {
                 "type": "string",
                 "description": "Optional text written to the child process stdin. Use this for scripts or generated content that would exceed argv limits, e.g. program python with args [\"-\"] and stdin containing the script. For HTML-first PPTX generation, pass the JSON deck spec here while using --spec - in args. The payload is bounded and is not logged. Native filesystem commands do not accept stdin."
@@ -206,6 +232,13 @@ pub(crate) fn expected_format() -> Value {
                 "cwd": "D:/workspace",
                 "timeout_secs": DEFAULT_TIMEOUT_SECS,
                 "stdin": "{ \"slides\": [/* HTML-first PPTX JSON spec */] }"
+            },
+            "backgroundService": {
+                "command": "python -m http.server 8080",
+                "cwd": "D:/workspace",
+                "background": true,
+                "ready_url": "http://127.0.0.1:8080",
+                "ready_timeout_secs": 20
             }
         },
         "rules": [
@@ -215,7 +248,8 @@ pub(crate) fn expected_format() -> Value {
             "Do not send command together with program or args.",
             "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
-            "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c."
+            "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
+            "Long-running web/API servers must use background=true with a loopback ready_url. Check them again with service_action=status before or after browser inspection, and stop them with service_action=stop when finished."
         ]
     })
 }
@@ -366,13 +400,13 @@ fn prompt_html_pptx_sentence() -> &'static str {
 
 fn timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. The broader agent turn timeout can still stop the run unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
     )
 }
 
 fn prompt_timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only when a long install/download/build is intentional and should not have a per-command timeout; the broader agent turn timeout can still stop the run unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Never run a local web/API server in the foreground: set `background: true` with a loopback `ready_url`, wait for the returned readiness result before opening the page, call `service_action: \"status\"` before or after browser checks, and `service_action: \"stop\"` when finished."
     )
 }
 
@@ -386,7 +420,7 @@ fn shell_parameter_description() -> &'static str {
 
 fn timeout_parameter_description() -> String {
     format!(
-        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 for no per-command timeout when a long install/download/build is intentional. The broader agent turn timeout can still stop the run if it is not raised or disabled."
+        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use background with ready_url for services. The broader agent turn timeout can still stop the run if it is not raised or disabled."
     )
 }
 

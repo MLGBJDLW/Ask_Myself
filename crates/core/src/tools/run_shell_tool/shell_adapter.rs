@@ -368,6 +368,26 @@ fn apply_os_options(_cmd: &mut tokio::process::Command) {
     // threat model. A dedicated process group could be added later if needed.
 }
 
+pub(super) fn spawn_background_process(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+) -> Result<tokio::process::Child, String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_clear();
+    for (key, value) in build_env() {
+        cmd.env(key, value);
+    }
+    apply_os_options(&mut cmd);
+    cmd.spawn()
+        .map_err(|error| format!("failed to start background service '{program}': {error}"))
+}
+
 pub(super) async fn execute_inner(
     program: &str,
     args: &[String],

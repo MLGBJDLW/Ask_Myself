@@ -236,6 +236,103 @@ fn test_lenient_parser_repairs_unescaped_windows_paths() {
     assert_eq!(parsed.cwd, r#"E:\Starting"#);
 }
 
+#[test]
+fn test_parser_accepts_managed_background_service_fields() {
+    let parsed = parse_run_shell_args(
+        r#"{"command":"python -m http.server 8080","cwd":"C:\\work","background":true,"ready_url":"http://127.0.0.1:8080","ready_timeout_secs":25}"#,
+    )
+    .expect("background service args should parse");
+
+    assert!(parsed.background);
+    assert_eq!(parsed.ready_url.as_deref(), Some("http://127.0.0.1:8080"));
+    assert_eq!(parsed.ready_timeout_secs, Some(25));
+}
+
+#[tokio::test]
+async fn test_foreground_http_server_is_rejected_without_waiting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+    let args = json!({
+        "command": "python -m http.server 8080",
+        "cwd": tmp.path().to_string_lossy(),
+        "timeout_secs": 0,
+    });
+
+    let started = Instant::now();
+    let result = tool
+        .execute("foreground-server", &args.to_string(), &db, &[])
+        .await
+        .expect("server guard should return a tool result");
+
+    assert!(result.is_error);
+    assert!(result.content.contains("background=true"));
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+#[ignore = "requires python3 on PATH"]
+async fn test_managed_http_service_start_status_and_stop() {
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+    let ready_url = format!("http://127.0.0.1:{port}");
+    let start_args = json!({
+        "command": format!("python3 -m http.server {port}"),
+        "cwd": tmp.path().to_string_lossy(),
+        "background": true,
+        "ready_url": ready_url,
+        "ready_timeout_secs": 15,
+    });
+
+    let started = tool
+        .execute("managed-http", &start_args.to_string(), &db, &[])
+        .await
+        .expect("managed service should return a tool result");
+    assert!(
+        !started.is_error,
+        "unexpected start error: {}",
+        started.content
+    );
+    assert_eq!(started.artifacts.as_ref().unwrap()["status"], "ready");
+
+    let status_args = json!({
+        "service_action": "status",
+        "service_id": "managed-http",
+        "cwd": tmp.path().to_string_lossy(),
+    });
+    let status = tool
+        .execute("managed-http-status", &status_args.to_string(), &db, &[])
+        .await
+        .expect("managed status should return a tool result");
+    assert!(
+        !status.is_error,
+        "unexpected status error: {}",
+        status.content
+    );
+    assert_eq!(status.artifacts.as_ref().unwrap()["status"], "ready");
+
+    let stop_args = json!({
+        "service_action": "stop",
+        "service_id": "managed-http",
+        "cwd": tmp.path().to_string_lossy(),
+    });
+    let stopped = tool
+        .execute("managed-http-stop", &stop_args.to_string(), &db, &[])
+        .await
+        .expect("managed stop should return a tool result");
+    assert!(
+        !stopped.is_error,
+        "unexpected stop error: {}",
+        stopped.content
+    );
+    assert_eq!(stopped.artifacts.as_ref().unwrap()["status"], "stopped");
+}
+
 #[tokio::test]
 async fn test_invalid_json_returns_run_shell_contract_error() {
     let tmp = tempfile::tempdir().unwrap();
