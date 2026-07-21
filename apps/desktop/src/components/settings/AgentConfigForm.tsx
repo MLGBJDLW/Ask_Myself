@@ -243,7 +243,7 @@ export function AgentConfigForm({
     number | null
   >(config?.subagentMaxCallsPerTurn ?? 6);
   const [subagentTokenBudget, setSubagentTokenBudget] = useState<number | null>(
-    config?.subagentTokenBudget ?? 12000,
+    config?.subagentTokenBudget ?? 32000,
   );
   const [enabledSkills, setEnabledSkills] = useState<Skill[]>([]);
   const [mcpToolDescriptors, setMcpToolDescriptors] = useState<
@@ -284,7 +284,7 @@ export function AgentConfigForm({
     subagentAllowedSkillIds: config?.subagentAllowedSkillIds ?? null,
     subagentMaxParallel: config?.subagentMaxParallel ?? 3,
     subagentMaxCallsPerTurn: config?.subagentMaxCallsPerTurn ?? 6,
-    subagentTokenBudget: config?.subagentTokenBudget ?? 12000,
+    subagentTokenBudget: config?.subagentTokenBudget ?? 32000,
   });
 
   const isLocal =
