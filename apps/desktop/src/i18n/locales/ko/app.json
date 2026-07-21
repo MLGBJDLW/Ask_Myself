@@ -1,5 +1,9 @@
 {
   "name": "Nexa",
   "pageNotFound": "Page not found",
-  "goHome": "Go Home"
+  "goHome": "Go Home",
+  "minimizeWindow": "창 최소화",
+  "maximizeWindow": "창 최대화",
+  "restoreWindow": "창 복원",
+  "closeWindow": "창 닫기"
 }

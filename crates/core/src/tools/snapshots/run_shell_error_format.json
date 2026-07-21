@@ -1,6 +1,13 @@
 {
   "expectedFormat": {
     "examples": {
+      "backgroundService": {
+        "background": true,
+        "command": "python -m http.server 8080",
+        "cwd": "D:/workspace",
+        "ready_timeout_secs": 20,
+        "ready_url": "http://127.0.0.1:8080"
+      },
       "exactArgv": {
         "args": [
           "crates/core/assets/skills/doc-script-editor/scripts/edit_doc.py",
@@ -40,7 +47,8 @@
       "Do not send command together with program or args.",
       "args must be an array of argv strings.",
       "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
-      "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c."
+      "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
+      "Long-running web/API servers must use background=true with a loopback ready_url. Check them again with service_action=status before or after browser inspection, and stop them with service_action=stop when finished."
     ]
   },
   "message": "Invalid run_shell arguments: expected value at line 1 column 1. Use command or program/args JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."

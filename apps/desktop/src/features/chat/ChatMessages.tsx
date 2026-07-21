@@ -1,6 +1,7 @@
 import {
   Fragment,
   type ReactNode,
+  type KeyboardEvent as ReactKeyboardEvent,
   useRef,
   useEffect,
   useLayoutEffect,
@@ -196,51 +197,96 @@ function TurnNavigator({
 }) {
   if (items.length < 2) return null;
   const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
+  const progress = activeIndex / (items.length - 1);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
+      '[data-turn-navigation-index]',
+    );
+    if (!target) return;
+
+    const currentIndex = Number(target.dataset.turnNavigationIndex);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      nextIndex = Math.max(0, currentIndex - 1);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      nextIndex = Math.min(items.length - 1, currentIndex + 1);
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = items.length - 1;
+    }
+    if (nextIndex == null || nextIndex === currentIndex) return;
+
+    event.preventDefault();
+    const nextItem = items[nextIndex];
+    event.currentTarget
+      .querySelector<HTMLButtonElement>(`[data-turn-navigation-index="${nextIndex}"]`)
+      ?.focus({ preventScroll: true });
+    onSelect(nextItem.id);
+  };
 
   return (
     <nav
       aria-label={`${messageAreaLabel} · ${items.length}`}
+      aria-orientation="vertical"
+      data-active-index={activeIndex}
+      data-variant="edge-rail"
       data-testid="chat-turn-navigator"
-      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-px w-8 -translate-y-1/2 lg:block"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-px w-10 -translate-y-1/2 lg:block"
+      onKeyDown={handleKeyDown}
     >
-      <div className="pointer-events-auto absolute right-0 top-0 flex max-h-[min(60vh,30rem)] w-8 -translate-y-1/2 flex-col items-center overflow-y-auto rounded-full border border-border/65 bg-surface-1/90 px-1 py-2 shadow-md backdrop-blur-md">
-        <span
-          className="mb-1 text-[9px] font-semibold tabular-nums text-text-tertiary"
+      <div className="group/rail pointer-events-auto absolute right-0 top-0 flex max-h-[min(64vh,32rem)] w-10 -translate-y-1/2 flex-col items-center overflow-y-auto bg-gradient-to-l from-surface-1/55 via-surface-1/15 to-transparent py-2">
+        <div
+          className="mb-1.5 flex items-baseline gap-0.5 text-text-tertiary"
           data-testid="chat-turn-position"
           aria-hidden="true"
         >
-          {activeIndex + 1}/{items.length}
-        </span>
-        <span className="absolute bottom-3 left-1/2 top-7 w-px -translate-x-1/2 bg-border/70" aria-hidden="true" />
-        {items.map((item, index) => {
-          const active = item.id === activeId;
-          const label = `#${index + 1} · ${item.preview}`;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              aria-label={label}
-              aria-current={active ? 'step' : undefined}
-              title={label}
-              data-turn-navigation-id={item.id}
-              className="group relative z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
-              onClick={() => onSelect(item.id)}
-            >
-              <span
-                className={`rounded-full border transition-[width,height,background-color,border-color,box-shadow] duration-fast motion-reduce:transition-none ${
-                  active
-                    ? 'h-3 w-3 border-accent bg-accent shadow-[0_0_0_3px_var(--color-accent-subtle)]'
-                    : 'h-2 w-2 border-text-tertiary/45 bg-surface-3 group-hover:h-2.5 group-hover:w-2.5 group-hover:border-accent/70 group-hover:bg-accent/70'
-                }`}
-                aria-hidden="true"
-              />
-              <span className="pointer-events-none absolute right-full mr-2 hidden w-48 rounded-lg border border-border/70 bg-surface-0/95 px-2.5 py-2 text-left text-[10px] leading-4 text-text-secondary shadow-lg backdrop-blur-md group-hover:block group-focus-visible:block">
-                <span className="mb-0.5 block font-semibold tabular-nums text-accent">#{index + 1}</span>
-                <span className="line-clamp-2">{item.preview}</span>
-              </span>
-            </button>
-          );
-        })}
+          <span className="text-[11px] font-semibold tabular-nums text-text-secondary">{activeIndex + 1}</span>
+          <span className="text-[8px] tabular-nums">/{items.length}</span>
+        </div>
+        <div className="relative flex flex-col items-center py-1">
+          <span className="absolute bottom-3 left-1/2 top-3 w-px -translate-x-1/2 bg-border/75" aria-hidden="true" />
+          <span
+            className="absolute bottom-3 left-1/2 top-3 w-[2px] origin-top -translate-x-1/2 bg-accent/75 transition-transform duration-normal ease-out motion-reduce:transition-none"
+            data-testid="chat-turn-progress"
+            style={{ transform: `translateX(-50%) scaleY(${progress})` }}
+            aria-hidden="true"
+          />
+          {items.map((item, index) => {
+            const active = item.id === activeId;
+            const label = `#${index + 1} · ${item.preview}`;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                aria-label={label}
+                aria-current={active ? 'step' : undefined}
+                title={label}
+                data-turn-navigation-id={item.id}
+                data-turn-navigation-index={index}
+                className="group relative z-10 flex h-6 w-7 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+                onClick={() => onSelect(item.id)}
+              >
+                <span
+                  className={`rounded-full border transition-[width,height,background-color,border-color,box-shadow] duration-fast ease-out motion-reduce:transition-none ${
+                    active
+                      ? 'h-4 w-1.5 border-accent bg-accent shadow-[0_0_0_3px_var(--color-accent-subtle)]'
+                      : 'h-1.5 w-1.5 border-text-tertiary/50 bg-surface-3 group-hover:h-2.5 group-hover:w-1.5 group-hover:border-accent/75 group-hover:bg-accent/75 group-focus-visible:h-2.5 group-focus-visible:w-1.5'
+                  }`}
+                  aria-hidden="true"
+                />
+                <span
+                  className="pointer-events-none invisible absolute right-full top-1/2 mr-2.5 w-52 -translate-y-1/2 translate-x-1 rounded-lg border border-border/70 border-l-2 border-l-accent bg-surface-1/95 px-3 py-2 text-left text-[10px] leading-4 text-text-secondary opacity-0 shadow-md backdrop-blur-md transition-[opacity,transform,visibility] duration-fast ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none"
+                  data-testid="chat-turn-preview"
+                >
+                  <span className="mb-0.5 block font-semibold tabular-nums text-accent">#{index + 1}</span>
+                  <span className="line-clamp-2">{item.preview}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </nav>
   );

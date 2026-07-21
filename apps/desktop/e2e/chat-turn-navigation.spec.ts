@@ -183,6 +183,8 @@ test('navigates to every conversation turn from the right-side timeline', async 
   const log = page.getByRole('log');
   const navigator = page.getByTestId('chat-turn-navigator');
   await expect(navigator).toBeVisible();
+  await expect(navigator).toHaveAttribute('data-variant', 'edge-rail');
+  await expect(navigator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(navigator.getByRole('button')).toHaveCount(4);
 
   const logBox = await log.boundingBox();
@@ -196,9 +198,14 @@ test('navigates to every conversation turn from the right-side timeline', async 
   await expect(navigator.getByTestId('chat-turn-position')).toHaveText('1/4');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeLessThan(120);
 
-  await navigator.getByRole('button', { name: /^#4 ·/ }).click();
+  await navigator.getByRole('button', { name: /^#1 ·/ }).hover();
+  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-preview')).toBeVisible();
+
+  await navigator.getByRole('button', { name: /^#1 ·/ }).focus();
+  await navigator.getByRole('button', { name: /^#1 ·/ }).press('End');
   await expect(navigator.getByRole('button', { name: /^#4 ·/ })).toHaveAttribute('aria-current', 'step');
   await expect(navigator.getByTestId('chat-turn-position')).toHaveText('4/4');
+  await expect(navigator.getByTestId('chat-turn-progress')).toHaveAttribute('style', /scaleY\(1\)/);
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(500);
 });
 

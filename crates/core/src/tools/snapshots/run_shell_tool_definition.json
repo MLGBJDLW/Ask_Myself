@@ -1,5 +1,5 @@
 {
-  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. By default no shell interpreter is invoked: shell metacharacters like `;`, `&&`, `|`, redirection, command substitution, and background operators are rejected in `command` to prevent accidental shell-style composition. When real shell syntax is required, set `shell` explicitly; shell mode is rejected in Restricted shell access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. The broader agent turn timeout can still stop the run unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
+  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. By default no shell interpreter is invoked: shell metacharacters like `;`, `&&`, `|`, redirection, command substitution, and background operators are rejected in `command` to prevent accidental shell-style composition. When real shell syntax is required, set `shell` explicitly; shell mode is rejected in Restricted shell access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
   "name": "run_shell",
   "parameters": {
     "properties": {
@@ -11,6 +11,11 @@
         },
         "type": "array"
       },
+      "background": {
+        "default": false,
+        "description": "Start a long-running local web or API service without waiting for it to exit. Requires ready_url. The tool polls readiness and returns a service_id so later calls can check health or stop the service.",
+        "type": "boolean"
+      },
       "command": {
         "description": "Simple one-line command string. Without shell, it is parsed into argv without invoking a shell. Use this for ordinary commands like \"git status --short\" or \"python -m pytest\". Quotes and escaped spaces are supported for arguments, but shell operators such as ;, &&, |, >, <, `...`, $(...), and backgrounding are rejected unless shell is explicitly set. On Windows, path backslashes are preserved by the command parser; JSON strings still need escaped backslashes such as \"C:\\\\Users\\\\me\\\\script.py\". Do not provide command together with program or args.",
         "type": "string"
@@ -21,6 +26,31 @@
       },
       "program": {
         "description": "Program to execute when not using command. In restricted mode it must be one of: python, python3, pip, pip3, node, npm, npx, git, pwd, ls, cat, mkdir, cp, mv. pwd/ls/cat/mkdir/cp/mv run natively inside the app and work even when the OS has no matching external binary. pip/pip3 are normalized to python/python3 -m pip. Simple aliases copy->cp and move->mv are also accepted. In less-restricted shell access modes, any bare command name may be allowed. No shell interpreter is invoked automatically.",
+        "type": "string"
+      },
+      "ready_timeout_secs": {
+        "default": 20,
+        "description": "How long to poll ready_url while starting a background service.",
+        "maximum": 120,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ready_url": {
+        "description": "Loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted.",
+        "type": "string"
+      },
+      "service_action": {
+        "default": "run",
+        "description": "Use status or stop with a service_id returned by an earlier background run. Omit for ordinary commands.",
+        "enum": [
+          "run",
+          "status",
+          "stop"
+        ],
+        "type": "string"
+      },
+      "service_id": {
+        "description": "Managed service identifier returned by a background run. Required for service_action status or stop.",
         "type": "string"
       },
       "shell": {
@@ -50,7 +80,7 @@
       },
       "timeout_secs": {
         "default": 30,
-        "description": "Timeout in seconds. Default 30. Set 0 for no per-command timeout when a long install/download/build is intentional. The broader agent turn timeout can still stop the run if it is not raised or disabled.",
+        "description": "Timeout in seconds. Default 30. Set 0 only for a finite long install/download/build, never for a web/API server; use background with ready_url for services. The broader agent turn timeout can still stop the run if it is not raised or disabled.",
         "minimum": 0,
         "type": "integer"
       }

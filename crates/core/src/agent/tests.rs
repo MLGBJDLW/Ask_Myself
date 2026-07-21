@@ -30,6 +30,20 @@ fn test_tool_timeout_honors_run_shell_no_timeout() {
 }
 
 #[test]
+fn test_tool_timeout_keeps_background_readiness_bounded() {
+    let timeout = tool_timeout_for_call(
+        Some(30),
+        "run_shell",
+        &serde_json::json!({
+            "timeout_secs": 0,
+            "background": true,
+            "ready_timeout_secs": 75,
+        }),
+    );
+    assert_eq!(timeout, Some(Duration::from_secs(80)));
+}
+
+#[test]
 fn test_tool_timeout_extends_for_long_run_shell_timeout() {
     let timeout = tool_timeout_for_call(
         Some(30),

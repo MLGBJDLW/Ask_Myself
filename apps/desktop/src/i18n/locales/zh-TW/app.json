@@ -1,5 +1,9 @@
 {
   "name": "Nexa",
   "pageNotFound": "頁面不存在",
-  "goHome": "返回首頁"
+  "goHome": "返回首頁",
+  "minimizeWindow": "最小化視窗",
+  "maximizeWindow": "最大化視窗",
+  "restoreWindow": "還原視窗",
+  "closeWindow": "關閉視窗"
 }

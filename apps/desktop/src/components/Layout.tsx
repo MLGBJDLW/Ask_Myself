@@ -302,7 +302,7 @@ export function Layout() {
 
   return (
     <div
-      className="relative isolate flex h-screen overflow-hidden bg-surface-0 text-text-primary"
+      className="relative isolate flex h-full min-h-0 overflow-hidden bg-surface-0 text-text-primary"
       data-app-area={location.pathname === '/' ? 'home' : 'task'}
     >
       <div className="dream-backdrop" aria-hidden="true" />

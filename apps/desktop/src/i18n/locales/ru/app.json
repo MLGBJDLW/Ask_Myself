@@ -1,5 +1,9 @@
 {
   "name": "Nexa",
   "pageNotFound": "Page not found",
-  "goHome": "Go Home"
+  "goHome": "Go Home",
+  "minimizeWindow": "Свернуть окно",
+  "maximizeWindow": "Развернуть окно",
+  "restoreWindow": "Восстановить окно",
+  "closeWindow": "Закрыть окно"
 }

@@ -618,8 +618,15 @@ test.beforeEach(async ({ page }) => {
         subtasks: [
           {
             id: 'subtask-1',
-            label: 'Subagent result that should not render',
+            label: 'Audit chat renderer',
+            role: 'Researcher',
             status: 'running',
+          },
+          {
+            id: 'subtask-2',
+            label: 'Verify Mermaid fallback',
+            role: 'Verifier',
+            status: 'completed',
           },
         ],
         verification: {
@@ -809,7 +816,14 @@ test('floating plan capsule renders only the update_plan checklist', async ({ pa
   await expect(expanded).not.toContainText('Progress');
   await expect(expanded).not.toContainText('Detailed execution plan');
   await expect(expanded).not.toContainText('Only the live checklist progress should be visible here.');
-  await expect(expanded).not.toContainText('Subagent result that should not render');
+  const subagentStatus = expanded.getByTestId('plan-subagent-status');
+  await expect(subagentStatus).toBeVisible();
+  await expect(subagentStatus).toContainText('Subagents');
+  await expect(subagentStatus).toContainText('Audit chat renderer');
+  await expect(subagentStatus).toContainText('Researcher');
+  await expect(subagentStatus).toContainText('Running');
+  await expect(subagentStatus).toContainText('Verify Mermaid fallback');
+  await expect(subagentStatus).toContainText('1/2');
   await expect(expanded).not.toContainText('Verification summary that should not render');
 
   await expanded.getByRole('button').click();

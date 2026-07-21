@@ -241,7 +241,13 @@ function currentPlanTranslation(element: HTMLElement): { x: number; y: number } 
   }
 }
 
-export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
+export function PlanProgressPanel({
+  plan,
+  subtasks = [],
+}: {
+  plan: PlanArtifact;
+  subtasks?: SubtaskRunArtifact[];
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -251,6 +257,7 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
   const counts = getPlanCounts(plan);
   const current = getCurrentPlanStep(plan);
   const percent = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0;
+  const subtaskCounts = getSubtaskCounts(subtasks);
   let currentIcon = <Circle className="h-3 w-3 text-text-tertiary" />;
   if (current?.status === 'completed') {
     currentIcon = <CheckCircle2 className="h-3 w-3 text-success" />;
@@ -433,6 +440,15 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
         >
           {counts.completed}/{counts.total}
         </span>
+        {subtaskCounts.running > 0 && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent"
+            title={t('chat.subtasksRunningCount', { count: String(subtaskCounts.running) })}
+          >
+            <GitBranch className="h-2.5 w-2.5" />
+            {subtaskCounts.running}
+          </span>
+        )}
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -485,6 +501,32 @@ export function PlanProgressPanel({ plan }: { plan: PlanArtifact }) {
             <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
           ))}
         </ol>
+        {subtasks.length > 0 && (
+          <section
+            data-testid="plan-subagent-status"
+            className="mx-1 mt-2 border-t border-border/50 pt-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <GitBranch className="h-3 w-3 shrink-0 text-accent" />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+                  {t('chat.subtasksLabel')}
+                </span>
+                {(subtaskCounts.running > 0 || subtaskCounts.queued > 0) && (
+                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
+                )}
+              </div>
+              <span className="text-[10px] tabular-nums text-text-tertiary">
+                {subtaskCounts.completed}/{subtaskCounts.total}
+              </span>
+            </div>
+            <ul className="mt-1.5 max-h-32 space-y-1.5 overflow-y-auto pr-1">
+              {subtasks.map((subtask, index) => (
+                <SubtaskRow key={subtask.id || `${subtask.label}-${index}`} subtask={subtask} />
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </div>
   );

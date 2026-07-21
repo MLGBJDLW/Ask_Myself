@@ -512,6 +512,7 @@ impl SubagentBudgetController {
         &self,
         label: &str,
         reserved_tokens: u32,
+        cancel_token: &CancellationToken,
     ) -> Result<OwnedSemaphorePermit, CoreError> {
         {
             let mut state = self.state.lock().await;
@@ -521,20 +522,32 @@ impl SubagentBudgetController {
                     state.max_calls_per_turn
                 )));
             }
-            if state.tokens_spent + state.tokens_reserved + reserved_tokens > state.token_budget {
+            if state.tokens_spent >= state.token_budget && state.tokens_reserved == 0 {
                 return Err(CoreError::InvalidInput(format!(
-                    "Delegated execution token budget exhausted before starting {label}. Requested reserve: {reserved_tokens} tokens.",
+                    "Delegated execution token budget exhausted before starting {label}. Spent: {} of {} tokens.",
+                    state.tokens_spent,
+                    state.token_budget,
                 )));
             }
             state.calls_started += 1;
             state.tokens_reserved = state.tokens_reserved.saturating_add(reserved_tokens);
         }
 
-        self.semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| CoreError::Internal("delegated execution semaphore closed".into()))
+        let semaphore = self.semaphore.clone();
+        let permit = tokio::select! {
+            _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
+                "Delegated execution '{label}' was cancelled while waiting for a worker slot."
+            ))),
+            result = semaphore.acquire_owned() => result
+                .map_err(|_| CoreError::Internal("delegated execution semaphore closed".into())),
+        };
+
+        if permit.is_err() {
+            let mut state = self.state.lock().await;
+            state.calls_started = state.calls_started.saturating_sub(1);
+            state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
+        }
+        permit
     }
 
     async fn finish_call(&self, reserved_tokens: u32, usage: &Usage) {
@@ -1622,12 +1635,13 @@ async fn run_subagent_once(
     };
     let _permit = match runtime
         .budget
-        .begin_call(&call_label, reserved_tokens)
+        .begin_call(&call_label, reserved_tokens, &worker_cancel_token)
         .await
     {
         Ok(permit) => {
             if let Some(subtask_id) = subtask_run_id.as_deref() {
                 if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
+                    runtime.budget.release_reservation(reserved_tokens).await;
                     finish_subtask_run_best_effort(
                         &db,
                         Some(subtask_id),
@@ -2197,7 +2211,10 @@ impl Tool for SubagentTool {
             CoreError::InvalidInput(format!("Invalid spawn_subagent arguments: {e}"))
         })?;
         let args = normalize_spawn_args(args)?;
-        let run = run_subagent_once(
+        let fallback_task = args.task.clone();
+        let fallback_role_id = args.role_id.clone();
+        let fallback_role = args.role.clone();
+        let run = match run_subagent_once(
             self.runtime.clone(),
             db.clone(),
             source_scope.to_vec(),
@@ -2205,7 +2222,29 @@ impl Tool for SubagentTool {
             None,
             args,
         )
-        .await?;
+        .await
+        {
+            Ok(run) => run,
+            Err(err) => {
+                let error_message = err.to_string();
+                return Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: format!("Subagent failed: {error_message}"),
+                    is_error: true,
+                    artifacts: Some(serde_json::json!({
+                        "kind": "subagent_result",
+                        "id": call_id,
+                        "status": "error",
+                        "task": fallback_task,
+                        "roleId": fallback_role_id,
+                        "role": fallback_role,
+                        "result": format!("Subagent failed: {error_message}"),
+                        "isError": true,
+                        "errorMessage": error_message,
+                    })),
+                });
+            }
+        };
 
         let mut content = String::from("Subagent result");
         if let Some(role) = run.role_name.as_deref().or(run.role.as_deref()) {
@@ -2220,6 +2259,9 @@ impl Tool for SubagentTool {
             is_error: false,
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_result",
+                "id": run.id,
+                "sessionId": run.session_id,
+                "status": run.status,
                 "task": run.task,
                 "roleId": run.role_id,
                 "roleName": run.role_name,
@@ -2242,6 +2284,8 @@ impl Tool for SubagentTool {
                 "sourceScopeApplied": run.source_scope_applied,
                 "allowedTools": run.allowed_tools,
                 "allowedSkills": run.allowed_skills,
+                "isError": run.is_error,
+                "errorMessage": run.error_message,
             })),
         })
     }
@@ -2351,7 +2395,7 @@ impl Tool for SubagentBatchTool {
                     let label = worker_id
                         .clone()
                         .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
-                    let fallback_task = task_args.task.clone();
+                    let fallback = task_args.clone();
                     match run_subagent_once(
                         runtime,
                         db,
@@ -2369,22 +2413,28 @@ impl Tool for SubagentBatchTool {
                             resumed_from_task_id: None,
                             previous_session: None,
                             status: "error".to_string(),
-                            task: fallback_task,
-                            role_id: None,
-                            role_name: None,
-                            role: None,
-                            expected_output: None,
-                            acceptance_criteria: None,
-                            evidence_chunk_ids: None,
+                            task: fallback.task,
+                            role_id: fallback.role_id.clone(),
+                            role_name: resolve_role_profile(
+                                fallback.role_id.as_deref(),
+                                fallback.role.as_deref(),
+                            )
+                            .ok()
+                            .flatten()
+                            .map(|profile| profile.label.to_string()),
+                            role: fallback.role,
+                            expected_output: fallback.expected_output,
+                            acceptance_criteria: fallback.acceptance_criteria,
+                            evidence_chunk_ids: fallback.evidence_chunk_ids,
                             evidence_handoff: Vec::new(),
-                            requested_source_scope: None,
+                            requested_source_scope: fallback.source_ids,
                             effective_source_scope: Vec::new(),
-                            requested_allowed_tools: None,
+                            requested_allowed_tools: fallback.allowed_tools,
                             allowed_tools: Vec::new(),
                             allowed_skills: Vec::new(),
                             parallel_group: batch_parallel_group.clone(),
-                            deliverable_style: None,
-                            return_sections: None,
+                            deliverable_style: fallback.deliverable_style,
+                            return_sections: fallback.return_sections,
                             result: format!("Subagent failed: {err}"),
                             finish_reason: None,
                             usage_total: Usage::default(),
@@ -2538,13 +2588,21 @@ impl Tool for JudgeSubagentResultsTool {
         let _permit = match self
             .runtime
             .budget
-            .begin_call("judge_subagent_results", reserved_tokens)
+            .begin_call(
+                "judge_subagent_results",
+                reserved_tokens,
+                &self.runtime.cancel_token,
+            )
             .await
         {
             Ok(permit) => {
                 if let Some(subtask_id) = subtask_run_id.as_deref() {
                     if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "adjudicating")
                     {
+                        self.runtime
+                            .budget
+                            .release_reservation(reserved_tokens)
+                            .await;
                         finish_subtask_run_best_effort(
                             db,
                             Some(subtask_id),
@@ -2995,26 +3053,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_budget_reservation_prevents_overcommit() {
+    async fn test_budget_reservations_are_soft_for_parallel_fanout() {
         let config = AgentConfig {
             subagent_token_budget: Some(256),
             ..Default::default()
         };
 
         let budget = SubagentBudgetController::new(&config);
-        let permit = budget.begin_call("worker-a", 220).await.unwrap();
+        let cancel_token = CancellationToken::new();
+        let permit = budget
+            .begin_call("worker-a", 220, &cancel_token)
+            .await
+            .unwrap();
         let snapshot = budget.snapshot().await;
         assert_eq!(snapshot.tokens_reserved, 220);
         assert_eq!(snapshot.remaining_tokens, 36);
 
-        let second = budget.begin_call("worker-b", 50).await;
-        assert!(
-            second.is_err(),
-            "reservation should block over-budget fanout"
-        );
+        let second = budget.begin_call("worker-b", 50, &cancel_token).await;
+        assert!(second.is_ok(), "estimated reservations are a soft budget");
+        drop(second);
 
         drop(permit);
         budget.release_reservation(220).await;
+        budget.release_reservation(50).await;
         assert_eq!(budget.snapshot().await.tokens_reserved, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_worker_queue_releases_budget_reservation() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(1),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let active_cancel = CancellationToken::new();
+        let active_permit = budget
+            .begin_call("worker-a", 200, &active_cancel)
+            .await
+            .unwrap();
+
+        let queued_budget = budget.clone();
+        let queued_cancel = CancellationToken::new();
+        let queued_cancel_for_task = queued_cancel.clone();
+        let queued = tokio::spawn(async move {
+            queued_budget
+                .begin_call("worker-b", 300, &queued_cancel_for_task)
+                .await
+        });
+        tokio::task::yield_now().await;
+        queued_cancel.cancel();
+
+        assert!(queued.await.unwrap().is_err());
+        let snapshot = budget.snapshot().await;
+        assert_eq!(snapshot.calls_started, 1);
+        assert_eq!(snapshot.tokens_reserved, 200);
+
+        drop(active_permit);
+        budget.release_reservation(200).await;
     }
 }

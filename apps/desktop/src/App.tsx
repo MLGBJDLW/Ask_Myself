@@ -13,6 +13,7 @@ import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
+import { AppWindowFrame } from "./components/AppWindowFrame";
 
 import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
@@ -114,15 +115,17 @@ function AppShell() {
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
-        <FilePreviewProvider>
-          <CommandPalette />
-          {wizardCompleted === false && location.pathname !== '/wizard' && (
-            <Navigate to="/wizard" replace />
-          )}
-          {wizardCompleted !== null && (
-            <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
-          )}
-        </FilePreviewProvider>
+        <AppWindowFrame>
+          <FilePreviewProvider>
+            <CommandPalette />
+            {wizardCompleted === false && location.pathname !== '/wizard' && (
+              <Navigate to="/wizard" replace />
+            )}
+            {wizardCompleted !== null && (
+              <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
+            )}
+          </FilePreviewProvider>
+        </AppWindowFrame>
       </MotionConfig>
     </I18nProvider>
   );

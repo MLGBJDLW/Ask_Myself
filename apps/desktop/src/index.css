@@ -339,15 +339,52 @@
 
 /* Global base styles */
 html {
+  height: 100%;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body {
+  height: 100%;
+  overflow: hidden;
   background: var(--color-surface-0);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
+}
+
+#root {
+  height: 100%;
+}
+
+.app-titlebar {
+  background-image: linear-gradient(90deg, var(--color-accent-subtle), transparent 28%);
+  box-shadow: inset 0 1px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
+
+.app-window-control {
+  display: inline-flex;
+  width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  transition: color var(--duration-fast) ease-out, background-color var(--duration-fast) ease-out;
+}
+
+.app-window-control:hover:not(:disabled),
+.app-window-control:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-3);
+}
+
+.app-window-control-close:hover:not(:disabled),
+.app-window-control-close:focus-visible {
+  color: #fff;
+  background: var(--color-danger);
+}
+
+.app-window-control:disabled {
+  cursor: default;
 }
 
 /* Scrollbar styling */

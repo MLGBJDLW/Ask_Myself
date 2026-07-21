@@ -126,10 +126,22 @@ pub(crate) fn tool_timeout_for_call(
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(30);
-        if requested == 0 {
+        let background = parsed_args
+            .get("background")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        if background {
+            let ready_timeout = parsed_args
+                .get("ready_timeout_secs")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(20);
+            timeout_secs = timeout_secs.max(ready_timeout.saturating_add(5));
+        } else if requested == 0 {
             return None;
         }
-        timeout_secs = timeout_secs.max(requested.saturating_add(5));
+        if requested > 0 {
+            timeout_secs = timeout_secs.max(requested.saturating_add(5));
+        }
     }
 
     Some(Duration::from_secs(timeout_secs.max(1)))

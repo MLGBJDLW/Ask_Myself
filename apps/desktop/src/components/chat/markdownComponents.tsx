@@ -478,6 +478,26 @@ export function normalizeMermaidChart(chart: string): string {
   return normalized.replace(/^\s*mermaid\s*\n/i, '').trim();
 }
 
+export function repairMermaidFlowchartLabels(chart: string): string {
+  if (!/(?:^|\n)\s*(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b/i.test(chart)) {
+    return chart;
+  }
+
+  // Mermaid's flowchart grammar treats parentheses in bare square-bracket
+  // labels as shape syntax. Formula-heavy labels such as
+  // `C[25×(SV/ST+RSV/RST)/2]` therefore fail even though the intent is plain
+  // text. Quoted labels are the grammar-supported equivalent and also retain
+  // line breaks such as <br/> when Mermaid emits pure SVG labels.
+  return chart.replace(
+    /(\b[A-Za-z_][\w-]*)\[([^\]\r\n]*)\]/g,
+    (match, nodeId: string, rawLabel: string) => {
+      const label = rawLabel.trim();
+      if (!label || (label.startsWith('"') && label.endsWith('"'))) return match;
+      return `${nodeId}["${label.replace(/"/g, '&quot;')}"]`;
+    },
+  );
+}
+
 export function MermaidBlock({ chart }: { chart: string }) {
   const { t } = useTranslation();
   const { isStreaming } = useContext(MarkdownRenderStateContext);
@@ -520,9 +540,21 @@ export function MermaidBlock({ chart }: { chart: string }) {
         const renderId = `mermaid-${diagramId}-${++mermaidRenderSequence}`;
         const rendered = await enqueueMermaidRender(async () => {
           try {
-            const parsed = await mermaid.parse(normalizedChart, { suppressErrors: true });
-            if (!parsed) return null;
-            return await mermaid.render(renderId, normalizedChart);
+            const repairedChart = repairMermaidFlowchartLabels(normalizedChart);
+            const candidates = repairedChart === normalizedChart
+              ? [normalizedChart]
+              : [normalizedChart, repairedChart];
+
+            for (const candidate of candidates) {
+              try {
+                const parsed = await mermaid.parse(candidate, { suppressErrors: true });
+                if (!parsed) continue;
+                return await mermaid.render(renderId, candidate);
+              } catch {
+                document.getElementById(renderId)?.remove();
+              }
+            }
+            return null;
           } finally {
             document.getElementById(renderId)?.remove();
           }

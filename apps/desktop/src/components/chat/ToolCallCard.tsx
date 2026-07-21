@@ -613,6 +613,18 @@ function parseArgsRecord(raw?: string): Record<string, unknown> | null {
   }
 }
 
+function getManagedServiceDisplayName(name: string, rawArgs?: string): string | null {
+  if (toolLeafName(name.toLowerCase()) !== 'run_shell') return null;
+  const args = parseArgsRecord(rawArgs);
+  if (!args) return null;
+  const action = typeof args.service_action === 'string'
+    ? args.service_action.trim().toLowerCase()
+    : 'run';
+  if (action === 'status') return 'Check service';
+  if (action === 'stop') return 'Stop service';
+  return args.background === true ? 'Start service' : null;
+}
+
 const FILE_TARGET_ARG_KEYS = [
   'path',
   'file',
@@ -631,6 +643,8 @@ const FILE_NEW_TEXT_ARG_KEYS = [
   'content',
   'text',
   'body',
+  'new_str',
+  'newStr',
   'newString',
   'new_string',
   'replacement',
@@ -639,6 +653,8 @@ const FILE_NEW_TEXT_ARG_KEYS = [
 ];
 
 const FILE_OLD_TEXT_ARG_KEYS = [
+  'old_str',
+  'oldStr',
   'oldString',
   'old_string',
   'oldContent',
@@ -783,7 +799,9 @@ function getToolBriefLabel(
   argsStatus?: ToolCallEvent['argsStatus'],
   renderKind?: ToolRenderKind,
 ): string {
-  const label = displayNameOverride ?? getToolDisplayName(name);
+  const label = displayNameOverride
+    ?? getManagedServiceDisplayName(name, args)
+    ?? getToolDisplayName(name);
   const target = getToolTitleTarget({
     toolName: name,
     renderKind,

@@ -189,6 +189,15 @@ test.beforeEach(async ({ page }) => {
               'Log retry exhaustion.',
             ].join('\n'),
           });
+          const editToolCallId = nextId('tool-edit');
+          const editToolArgs = JSON.stringify({
+            path: 'notes/retries.md',
+            old_str: 'Retry forever.',
+            new_str: [
+              'Keep retries bounded.',
+              'Show the retry limit.',
+            ].join('\n'),
+          });
 
           const userMessage: Message = {
             id: nextId('m-user'),
@@ -213,6 +222,7 @@ test.beforeEach(async ({ page }) => {
             toolCalls: [
               { id: toolCallId, name: 'read_file', arguments: toolArgs },
               { id: createToolCallId, name: 'create_file', arguments: createToolArgs },
+              { id: editToolCallId, name: 'edit_file', arguments: editToolArgs },
             ],
             artifacts: null,
             tokenCount: 0,
@@ -249,6 +259,20 @@ test.beforeEach(async ({ page }) => {
             thinking: null,
             imageAttachments: null,
           };
+          const editToolMessage: Message = {
+            id: nextId('m-tool-edit'),
+            conversationId,
+            role: 'tool',
+            content: 'Edited notes/retries.md',
+            toolCallId: editToolCallId,
+            toolCalls: [],
+            artifacts: null,
+            tokenCount: 0,
+            createdAt: new Date().toISOString(),
+            sortOrder: currentMessages.length + 4,
+            thinking: null,
+            imageAttachments: null,
+          };
           const finalAssistantMessage: Message = {
             id: nextId('m-assistant-final'),
             conversationId,
@@ -259,7 +283,7 @@ test.beforeEach(async ({ page }) => {
             artifacts: null,
             tokenCount: 0,
             createdAt: new Date().toISOString(),
-            sortOrder: currentMessages.length + 4,
+            sortOrder: currentMessages.length + 5,
             thinking: 'Writing the final recommendation.',
             imageAttachments: null,
           };
@@ -320,7 +344,29 @@ test.beforeEach(async ({ page }) => {
               isError: false,
               artifacts: null,
             });
-          }, 300);
+          }, 2_600);
+
+          setTimeout(() => {
+            emitEvent('agent:event', {
+              conversationId,
+              type: 'toolCallStart',
+              callId: editToolCallId,
+              toolName: 'edit_file',
+              arguments: editToolArgs,
+            });
+          }, 75);
+
+          setTimeout(() => {
+            emitEvent('agent:event', {
+              conversationId,
+              type: 'toolCallResult',
+              callId: editToolCallId,
+              toolName: 'edit_file',
+              content: editToolMessage.content,
+              isError: false,
+              artifacts: null,
+            });
+          }, 2_600);
 
           setTimeout(() => {
             refreshDelayActive = true;
@@ -330,6 +376,7 @@ test.beforeEach(async ({ page }) => {
               assistantToolMessage,
               toolMessage,
               createToolMessage,
+              editToolMessage,
               finalAssistantMessage,
             ];
             emitEvent('agent:event', {
@@ -352,7 +399,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 650);
+          }, 3_000);
 
           return null;
         }
@@ -382,7 +429,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('keeps the live thinking mounted until delayed persisted messages load', async ({ page }) => {
+test('keeps live thinking and file edit badges mounted until persisted messages load', async ({ page }) => {
   await page.goto('/chat/conv-done-preview');
 
   await page.getByTestId('chat-input-textarea').fill('Summarize the retry guidance.');
@@ -415,14 +462,16 @@ test('keeps the live thinking mounted until delayed persisted messages load', as
   await expect(liveCreateFile).not.toContainText(/\d+\s+B/);
   await expect(liveCreateFile.getByTestId('tool-card-header-additions')).toHaveAttribute('data-value', '+3');
   await expect(liveCreateFile.getByTestId('tool-card-header-deletions')).toHaveAttribute('data-value', '-0');
+  const liveEditFile = chatLog.getByRole('button', { name: /Edit file.*retries\.md/i });
+  await expect(liveEditFile).toHaveCount(1);
+  await expect(liveEditFile).toHaveAttribute('data-tool-state', 'running');
+  await expect(liveEditFile.getByTestId('tool-card-header-additions')).toHaveAttribute('data-value', '+2');
+  await expect(liveEditFile.getByTestId('tool-card-header-deletions')).toHaveAttribute('data-value', '-1');
 
   await page.waitForTimeout(140);
   await expect(page.getByText('Checking the retry note first.')).toBeVisible({ timeout: 50 });
 
-  await page.waitForTimeout(520);
-  await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 50 });
-
-  await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible();
+  await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 4_000 });
   await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
   const persistedCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });

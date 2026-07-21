@@ -47,6 +47,17 @@ test.beforeEach(async ({ page }) => {
           '  Apr : Delivery',
           '  May-Jun : Review',
           '```',
+          '',
+          '```mermaid',
+          'graph TD',
+          '  A[综合得分 满分100+] --> B[纯利部分: AC/AT × 65<br/>不封顶]',
+          '  A --> C[销售额部分: 25×(SV/ST+RSV/RST)/2<br/>封顶30分]',
+          '  A --> D[特定目标: 0-10+分<br/>前三项叠加,不封顶]',
+          '  B --> E[AC=实际净利, AT=年初业绩指标]',
+          '  C --> F[SV=实际含税销售额, ST=年初销售指标]',
+          '  C --> G[RSV=实际试剂含税, RST=年初试剂销售指标]',
+          '  D --> H[三级医院开发/新项目/装机等]',
+          '```',
         ].join('\n'),
         toolCallId: null,
         toolCalls: [],
@@ -184,7 +195,7 @@ test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
   await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
 });
 
@@ -193,9 +204,9 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   await page.goto('/chat/conv-mermaid');
 
   const surfaces = page.getByTestId('mermaid-surface');
-  await expect(surfaces).toHaveCount(3);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(3);
-  await expect(page.locator('svg style')).toHaveCount(3);
+  await expect(surfaces).toHaveCount(4);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
+  await expect(page.locator('svg style')).toHaveCount(4);
   await expect(page.locator('svg foreignObject')).toHaveCount(0);
   await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
 
@@ -205,6 +216,7 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   expect(renderedLabels).toContain('Start');
   expect(renderedLabels).toContain('Alice');
   expect(renderedLabels).toContain('Accessible release timeline');
+  expect(renderedLabels).toContain('综合得分 满分100+');
 
   const expectedSurfaceColors = await surfaces.evaluateAll((elements) =>
     elements.map((element) => getComputedStyle(element).color),
