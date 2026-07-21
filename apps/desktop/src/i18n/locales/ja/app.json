@@ -1,5 +1,9 @@
 {
   "name": "Nexa",
   "pageNotFound": "Page not found",
-  "goHome": "Go Home"
+  "goHome": "Go Home",
+  "minimizeWindow": "ウィンドウを最小化",
+  "maximizeWindow": "ウィンドウを最大化",
+  "restoreWindow": "ウィンドウを元に戻す",
+  "closeWindow": "ウィンドウを閉じる"
 }

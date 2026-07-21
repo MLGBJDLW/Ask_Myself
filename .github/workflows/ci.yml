@@ -103,10 +103,11 @@ jobs:
         working-directory: apps/desktop
         run: >-
           npx playwright test
+          e2e/app-window-frame.spec.ts
           e2e/chat-mermaid-rendering.spec.ts
           e2e/chat-turn-navigation.spec.ts
           e2e/chat-plan-progress-panel.spec.ts
-          --grep "only the Plan capsule drags|Mermaid|turn timeline|right-side timeline"
+          --grep "themed window frame|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline"
 
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop
