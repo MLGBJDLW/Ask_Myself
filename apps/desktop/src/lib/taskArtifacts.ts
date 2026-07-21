@@ -1,5 +1,9 @@
-import type { ConversationMessage } from '../types/conversation';
+import type {
+  AgentTaskRunEvent,
+  ConversationMessage,
+} from '../types/conversation';
 import type { ToolCallEvent } from './useAgentStream';
+import { taskTimelinePayloadFromTaskEvent } from './streaming/taskTimeline';
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
 export type VerificationStatus = 'pending' | 'passed' | 'failed' | 'skipped';
@@ -266,6 +270,55 @@ function normalizeSubtaskArtifacts(value: unknown): SubtaskRunArtifact[] | null 
   return single ? [single] : null;
 }
 
+function mergeSubtaskArtifacts(
+  target: Map<string, SubtaskRunArtifact>,
+  subtasks: SubtaskRunArtifact[],
+) {
+  for (const subtask of subtasks) {
+    const key = subtask.id || subtask.label;
+    const previous = target.get(key);
+    target.set(key, previous
+      ? {
+          ...previous,
+          ...subtask,
+          role: subtask.role ?? previous.role,
+          phase: subtask.phase ?? previous.phase,
+          task: subtask.task ?? previous.task,
+          result: subtask.result ?? previous.result,
+          errorMessage: subtask.errorMessage ?? previous.errorMessage,
+          tokenBudget: subtask.tokenBudget ?? previous.tokenBudget,
+        }
+      : subtask);
+  }
+}
+
+function subtaskArtifactFromTimelineEvent(
+  event: AgentTaskRunEvent,
+): SubtaskRunArtifact | null {
+  const timeline = taskTimelinePayloadFromTaskEvent(event);
+  if (!timeline || timeline.kind !== 'subtask') return null;
+
+  const payload = asRecord(timeline.payload);
+  const nestedRun = asRecord(payload?.run) ?? asRecord(payload?.judgement);
+  const callLabel = asText(payload?.callLabel) ?? asText(nestedRun?.id);
+  const id = callLabel ?? asText(payload?.subtaskRunId) ?? event.id;
+  const task = asText(payload?.task) ?? asText(nestedRun?.task);
+  const rawStatus = asText(timeline.status) ?? asText(event.status) ?? 'queued';
+  const status = rawStatus === 'done' ? 'completed' : rawStatus === 'error' ? 'failed' : rawStatus;
+
+  return {
+    id,
+    label: task ?? callLabel ?? timeline.label ?? event.label,
+    role: asText(payload?.role) ?? asText(nestedRun?.roleName) ?? asText(nestedRun?.role),
+    status,
+    phase: asText(payload?.phase),
+    task,
+    result: asText(payload?.result) ?? asText(nestedRun?.result) ?? asText(nestedRun?.summary),
+    errorMessage: asText(payload?.error) ?? asText(nestedRun?.errorMessage),
+    tokenBudget: asNumber(payload?.reservedTokens) ?? asNumber(payload?.tokenBudget),
+  };
+}
+
 function extractNestedArtifact<T>(
   value: unknown,
   normalize: (candidate: unknown) => T | null,
@@ -357,16 +410,47 @@ export function findLatestSubtaskArtifacts(
   messages: ConversationMessage[],
   toolCalls: ToolCallEvent[],
   taskArtifacts?: unknown,
+  taskEvents: AgentTaskRunEvent[] = [],
 ): SubtaskRunArtifact[] {
-  const taskRunSubtasks = extractSubtaskArtifacts(taskArtifacts);
-  if (taskRunSubtasks.length > 0) return taskRunSubtasks;
-  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
-    const artifact = extractSubtaskArtifacts(toolCalls[i].artifacts);
-    if (artifact.length > 0) return artifact;
+  const merged = new Map<string, SubtaskRunArtifact>();
+  const isSubagentTool = (name: string | null | undefined) => matchesSubagentToolName(name);
+  const persistedSubagentCallIds = new Set(
+    messages.flatMap(message => message.toolCalls)
+      .filter(call => isSubagentTool(call.name))
+      .map(call => call.id),
+  );
+
+  mergeSubtaskArtifacts(merged, extractSubtaskArtifacts(taskArtifacts));
+  for (const message of messages) {
+    if (message.toolCallId && persistedSubagentCallIds.has(message.toolCallId)) {
+      mergeSubtaskArtifacts(merged, extractSubtaskArtifacts(message.artifacts));
+    }
   }
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const artifact = extractSubtaskArtifacts(messages[i].artifacts);
-    if (artifact.length > 0) return artifact;
+  for (const call of toolCalls) {
+    if (isSubagentTool(call.toolName)) {
+      mergeSubtaskArtifacts(merged, extractSubtaskArtifacts(call.artifacts));
+    }
   }
-  return [];
+  for (const event of taskEvents) {
+    const subtask = subtaskArtifactFromTimelineEvent(event);
+    if (subtask) mergeSubtaskArtifacts(merged, [subtask]);
+  }
+
+  return [...merged.values()];
+}
+
+function matchesSubagentToolName(name: string | null | undefined): boolean {
+  return matchesToolName(name, [
+    'spawn_subagent',
+    'spawn_subagent_batch',
+    'judge_subagent_results',
+  ]);
+}
+
+function matchesToolName(
+  name: string | null | undefined,
+  candidates: string[],
+): boolean {
+  const normalized = name?.trim().toLowerCase();
+  return Boolean(normalized && candidates.includes(normalized));
 }
