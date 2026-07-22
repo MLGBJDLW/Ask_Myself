@@ -397,6 +397,54 @@ mod tests {
     }
 
     #[test]
+    fn google_catalog_defaults_to_latest_stable_gemini_models() {
+        let google = find_provider_preset(
+            "google",
+            Some("https://generativelanguage.googleapis.com/v1beta"),
+        )
+        .expect("Google preset should match");
+        let ids = google
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.first(), Some(&"gemini-3.6-flash"));
+        assert!(ids.contains(&"gemini-3.5-flash-lite"));
+        assert!(!ids.contains(&"gemini-3-pro-preview"));
+        assert!(!ids.contains(&"gemini-2.0-flash"));
+        assert!(!ids.contains(&"gemini-2.0-flash-lite"));
+
+        let latest = google
+            .models
+            .first()
+            .expect("Gemini 3.6 Flash should be listed first");
+        assert_eq!(latest.recommended, Some(true));
+        let reasoning = latest
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("Gemini 3.6 Flash should expose reasoning controls");
+        assert_eq!(
+            reasoning.effort_levels,
+            vec![
+                "minimal".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+            ]
+        );
+        assert_eq!(reasoning.default_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            reasoning
+                .thinking_budget
+                .as_ref()
+                .map(|budget| budget.enabled),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn openrouter_catalog_uses_openrouter_provider_type() {
         let openrouter = find_provider_preset("openrouter", Some("https://openrouter.ai/api/v1"))
             .expect("openrouter preset should match");

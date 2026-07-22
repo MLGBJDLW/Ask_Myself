@@ -15,8 +15,8 @@ use tracing::{error, info};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest,
-    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk, ToolCallDelta,
+    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
 
@@ -76,12 +76,16 @@ struct GeminiBlob {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct GeminiFunctionCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     name: String,
     args: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct GeminiFunctionResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     name: String,
     response: serde_json::Value,
 }
@@ -128,6 +132,8 @@ struct GeminiFunctionDeclaration {
 struct GeminiThinkingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     include_thoughts: Option<bool>,
 }
@@ -273,6 +279,7 @@ fn convert_messages(
                             serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
                         parts.push(GeminiPartV2::FunctionCall {
                             function_call: GeminiFunctionCall {
+                                id: Some(tc.id.clone()),
                                 name: tc.name.clone(),
                                 args,
                             },
@@ -288,7 +295,10 @@ fn convert_messages(
             Role::Tool => {
                 // Gemini expects function responses as user-role parts.
                 let tool_ref = msg.name.clone().unwrap_or_default();
-                let tool_name = tool_id_to_name.get(&tool_ref).cloned().unwrap_or(tool_ref);
+                let tool_name = tool_id_to_name
+                    .get(&tool_ref)
+                    .cloned()
+                    .unwrap_or_else(|| tool_ref.clone());
 
                 // Gemini requires an object-like payload for functionResponse.response.
                 let text = msg.text_content();
@@ -300,6 +310,7 @@ fn convert_messages(
 
                 let make_part = || GeminiPartV2::FunctionResponse {
                     function_response: GeminiFunctionResponse {
+                        id: Some(tool_ref.clone()),
                         name: tool_name.clone(),
                         response: response_val.clone(),
                     },
@@ -372,7 +383,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<GeminiToolSet> {
 }
 
 /// Returns `true` if the model supports extended thinking (`thinking_config`).
-/// Currently only Gemini 2.5+ models support it.
+/// Gemini 2.5 uses token budgets; Gemini 3 and later use effort levels.
 fn supports_thinking(model: &str) -> bool {
     // Normalise: "models/gemini-2.5-flash" → "gemini-2.5-flash"
     let name = model
@@ -397,6 +408,63 @@ fn supports_thinking(model: &str) -> bool {
     false
 }
 
+fn uses_thinking_levels(model: &str) -> bool {
+    let name = model
+        .strip_prefix("models/")
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+
+    name.strip_prefix("gemini-")
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 3)
+}
+
+fn uses_latest_generation_contract(model: &str) -> bool {
+    let name = model
+        .strip_prefix("models/")
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+
+    if name.starts_with("gemini-3.5-flash-lite") {
+        return true;
+    }
+
+    let Some(version) = name.strip_prefix("gemini-") else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+    let minor = parts.next().and_then(|part| {
+        part.split(|character: char| !character.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse::<u32>().ok())
+    });
+
+    matches!((major, minor), (Some(major), _) if major > 3)
+        || matches!((major, minor), (Some(3), Some(minor)) if minor >= 6)
+}
+
+fn normalize_thinking_level(level: &ReasoningEffort) -> String {
+    match level {
+        ReasoningEffort::None | ReasoningEffort::Minimal => "minimal",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => "high",
+    }
+    .to_string()
+}
+
+fn thinking_budget_to_level(budget: u32) -> String {
+    match budget {
+        ..=128 => "minimal",
+        129..=4_096 => "low",
+        4_097..=16_384 => "medium",
+        _ => "high",
+    }
+    .to_string()
+}
+
 fn build_request_body(
     request: &CompletionRequest,
     system_instruction: Option<GeminiSystemInstructionV2>,
@@ -404,15 +472,30 @@ fn build_request_body(
 ) -> GeminiRequestV2 {
     // Only send thinking_config to models that support it (Gemini 2.5+).
     let thinking_config = if supports_thinking(&request.model) {
-        request.thinking_budget.map(|budget| {
-            // Gemini API requires budget in 128..=32768. Clamp to avoid API errors.
-            let clamped = budget.clamp(128, 32_768) as i32;
-            GeminiThinkingConfig {
-                thinking_budget: Some(clamped),
-                // Required to receive `thought: true` parts in streaming/non-streaming responses.
-                include_thoughts: Some(true),
-            }
-        })
+        if uses_thinking_levels(&request.model) {
+            request
+                .reasoning_effort
+                .as_ref()
+                .map(normalize_thinking_level)
+                .or_else(|| request.thinking_budget.map(thinking_budget_to_level))
+                .map(|thinking_level| GeminiThinkingConfig {
+                    thinking_budget: None,
+                    thinking_level: Some(thinking_level),
+                    // Required to receive `thought: true` parts in streaming/non-streaming responses.
+                    include_thoughts: Some(true),
+                })
+        } else {
+            request.thinking_budget.map(|budget| {
+                // Gemini 2.5 requires budget in 128..=32768. Clamp to avoid API errors.
+                let clamped = budget.clamp(128, 32_768) as i32;
+                GeminiThinkingConfig {
+                    thinking_budget: Some(clamped),
+                    thinking_level: None,
+                    // Required to receive `thought: true` parts in streaming/non-streaming responses.
+                    include_thoughts: Some(true),
+                }
+            })
+        }
     } else {
         None
     };
@@ -425,7 +508,7 @@ fn build_request_body(
     {
         Some(GeminiGenerationConfig {
             // Gemini requires temperature unset when thinking is enabled.
-            temperature: if has_thinking {
+            temperature: if has_thinking || uses_latest_generation_contract(&request.model) {
                 None
             } else {
                 request.temperature
@@ -478,7 +561,10 @@ fn extract_response(
                             thought_signature,
                         } => {
                             tool_calls.push(ToolCallRequest {
-                                id: format!("call_{idx}"),
+                                id: function_call
+                                    .id
+                                    .clone()
+                                    .unwrap_or_else(|| format!("call_{idx}")),
                                 name: function_call.name.clone(),
                                 arguments: serde_json::to_string(&function_call.args)
                                     .unwrap_or_default(),
@@ -1223,6 +1309,106 @@ mod tests {
         let tc = gc.thinking_config.expect("thinking config");
         assert_eq!(tc.include_thoughts, Some(true));
         assert_eq!(tc.thinking_budget, Some(2048));
+        assert_eq!(tc.thinking_level, None);
+    }
+
+    #[test]
+    fn test_latest_models_use_thinking_level_and_omit_temperature() {
+        let request = CompletionRequest {
+            model: "gemini-3.6-flash".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.2),
+            max_tokens: Some(256),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = build_request_body(&request, None, vec![]);
+        let config = body.generation_config.expect("generation config");
+        let thinking = config.thinking_config.expect("thinking config");
+
+        assert_eq!(config.temperature, None);
+        assert_eq!(thinking.thinking_budget, None);
+        assert_eq!(thinking.thinking_level.as_deref(), Some("high"));
+        assert_eq!(thinking.include_thoughts, Some(true));
+    }
+
+    #[test]
+    fn test_latest_models_omit_temperature_without_explicit_thinking() {
+        let request = CompletionRequest {
+            model: "gemini-3.5-flash-lite".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.2),
+            max_tokens: Some(256),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = build_request_body(&request, None, vec![]);
+        let config = body.generation_config.expect("generation config");
+
+        assert_eq!(config.temperature, None);
+        assert!(config.thinking_config.is_none());
+    }
+
+    #[test]
+    fn test_convert_messages_preserves_function_call_ids() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                parts: vec![],
+                name: None,
+                tool_calls: Some(vec![ToolCallRequest {
+                    id: "fc_123".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"README.md"}"#.to_string(),
+                    thought_signature: Some("signature".to_string()),
+                }]),
+                reasoning_content: None,
+            },
+            Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "fc_123"),
+        ];
+
+        let (_system, contents) = convert_messages(&messages);
+        let encoded = serde_json::to_value(contents).expect("Gemini contents should serialize");
+
+        assert_eq!(encoded[0]["parts"][0]["functionCall"]["id"], "fc_123");
+        assert_eq!(encoded[1]["parts"][0]["functionResponse"]["id"], "fc_123");
+        assert_eq!(
+            encoded[1]["parts"][0]["functionResponse"]["name"],
+            "read_file"
+        );
+    }
+
+    #[test]
+    fn test_extract_response_preserves_provider_function_call_id() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "id": "fc_provider_1",
+                            "name": "read_file",
+                            "args": {"path": "README.md"}
+                        }
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("response");
+
+        let (_content, tool_calls, _finish_reason, _usage, _thinking) = extract_response(&response);
+
+        assert_eq!(tool_calls[0].id, "fc_provider_1");
     }
 
     #[test]

@@ -203,8 +203,14 @@ pub fn model_context_window(model: &str) -> u32 {
         "claude-2.1" => 200_000,
         "claude-2.0" => 100_000,
 
-        // Google Gemini 3.x (preview)
-        "gemini-3-pro-preview" | "gemini-3-flash-preview" => 1_048_576,
+        // Google Gemini 3.x
+        "gemini-3.6-flash"
+        | "gemini-3.5-flash"
+        | "gemini-3.5-flash-lite"
+        | "gemini-3.1-pro-preview"
+        | "gemini-3.1-flash-lite"
+        | "gemini-3-pro-preview"
+        | "gemini-3-flash-preview" => 1_048_576,
         // Google Gemini 2.5
         "gemini-2.5-pro" | "gemini-2.5-pro-preview-05-06" => 1_048_576,
         "gemini-2.5-flash" | "gemini-2.5-flash-preview-04-17" => 1_048_576,
@@ -660,6 +666,9 @@ mod tests {
         assert_eq!(model_context_window("claude-2.1"), 200_000);
         assert_eq!(model_context_window("claude-2.0"), 100_000);
         // Google Gemini
+        assert_eq!(model_context_window("gemini-3.6-flash"), 1_048_576);
+        assert_eq!(model_context_window("gemini-3.5-flash-lite"), 1_048_576);
+        assert_eq!(model_context_window("gemini-3.1-pro-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-3-pro-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-3-flash-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-2.0-flash"), 1_048_576);
