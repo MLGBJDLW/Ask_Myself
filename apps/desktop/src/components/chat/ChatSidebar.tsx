@@ -538,7 +538,7 @@ export function ChatSidebar({
     try {
       const archived = await api.listArchivedConversations();
       if (archivedRequestRef.current === requestId) {
-        setArchivedConversations(archived);
+        setArchivedConversations(Array.isArray(archived) ? archived : []);
       }
     } catch (error) {
       if (archivedRequestRef.current === requestId) {
