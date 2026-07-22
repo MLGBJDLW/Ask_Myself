@@ -920,10 +920,21 @@ pub fn build_desktop_agent_turn_config(
     } else {
         ""
     };
+    let active_goal = db
+        .get_conversation_goal(&conversation.id)
+        .ok()
+        .flatten()
+        .filter(|goal| goal.status == nexa_core::conversation::ConversationGoalStatus::Active);
+    let goal_section = nexa_core::conversation::goal::build_conversation_goal_prompt_section(
+        db,
+        &conversation.id,
+        !execution_mode.is_plan(),
+    );
     let system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
     let volatile_system_sections = vec![
         current_turn_time_section,
         plan_mode_section.to_string(),
+        goal_section,
         persona_section,
         collection_context_section,
         source_scope_section,
@@ -936,10 +947,14 @@ pub fn build_desktop_agent_turn_config(
     ];
 
     let executor_config = AgentConfig {
-        max_iterations: db_config
-            .max_iterations
-            .map(|v| v as u32)
-            .unwrap_or(u32::MAX),
+        max_iterations: if active_goal.is_some() && !execution_mode.is_plan() {
+            u32::MAX
+        } else {
+            db_config
+                .max_iterations
+                .map(|v| v as u32)
+                .unwrap_or(u32::MAX)
+        },
         system_prompt,
         volatile_system_sections,
         model: Some(db_config.model.clone()),

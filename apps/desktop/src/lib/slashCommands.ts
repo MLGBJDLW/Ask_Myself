@@ -61,7 +61,7 @@ const COMMON_COMMANDS: Array<Omit<SlashCommandOption, "id" | "kind" | "sourceLab
     description: "Set a persistent active goal with success criteria, constraints, and checkpoints.",
     action: "prompt",
     promptTemplate:
-      "Treat this as a persistent goal-oriented task. First restate the goal and success criteria, then identify constraints, risks, missing information, and a short execution plan. Ask concise clarifying questions only when they block safe progress; otherwise proceed. Keep future work tied to this goal until it is explicitly replaced, cleared, or completed.\n\nGoal:\n{{input}}",
+      "Start executing this durable conversation goal immediately. Establish success criteria and a short working plan, then keep taking concrete actions until the goal is actually achieved and verified. Do not stop after restating the goal, planning, or reporting partial progress. Ask only for information that genuinely blocks safe progress; otherwise continue autonomously. Use update_goal to mark the goal complete only after verification, or blocked only when external input is required.\n\nGoal:\n{{input}}",
   },
   {
     name: "ask",
@@ -419,12 +419,13 @@ export function resolveSlashCommandMessage(
   const expandedMessage = expandPromptTemplate(option.promptTemplate, remainder);
   if (option.kind === "command" && option.name === "goal") {
     const objective = remainder || option.title;
+    const clearsGoal = /^(clear|cancel|stop)$/i.test(remainder.trim());
     return {
       command: option,
-      message: expandedMessage,
+      message: clearsGoal ? "Clear the active conversation goal." : expandedMessage,
       displayMessage: objective,
       skillIds,
-      artifact: goalCommandArtifact(option, objective),
+      artifact: goalCommandArtifact(option, objective, clearsGoal ? "cleared" : "active"),
     };
   }
 
@@ -450,12 +451,16 @@ export function slashCommandArtifact(option: SlashCommandOption): Record<string,
   };
 }
 
-function goalCommandArtifact(option: SlashCommandOption, objective: string): Record<string, unknown> {
+function goalCommandArtifact(
+  option: SlashCommandOption,
+  objective: string,
+  status: "active" | "cleared",
+): Record<string, unknown> {
   return {
     ...slashCommandArtifact(option),
     kind: "goal",
     version: 1,
     objective,
-    status: "active",
+    status,
   };
 }

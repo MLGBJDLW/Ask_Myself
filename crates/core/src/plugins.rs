@@ -206,7 +206,13 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     description:
         "Routes tasks, tracks plans, and records verification without owning domain tools.",
     ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
-    tools: &["tool_search", "update_plan", "record_verification"],
+    tools: &[
+        "tool_search",
+        "update_plan",
+        "get_goal",
+        "update_goal",
+        "record_verification",
+    ],
     settings_surfaces: &["agent-quality", "tool-approvals"],
     workflows: &["task-planning", "verification"],
 };
