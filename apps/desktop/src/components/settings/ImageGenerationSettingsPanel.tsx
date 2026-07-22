@@ -127,6 +127,9 @@ function presetForAgentConfig(
 
   const baseUrl = normalizeUrl(config.baseUrl);
   if (config.provider === "qwen") {
+    // Token Plan text credentials use a dedicated endpoint and cannot be
+    // reused with the DashScope image-generation API.
+    if (baseUrl.includes("token-plan.")) return null;
     const regionPreset = baseUrl.includes("dashscope-intl")
       ? candidates.find((preset) => preset.id.includes("intl"))
       : candidates.find((preset) => preset.id.includes("cn"));

@@ -6,8 +6,11 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import {
   ChevronDown,
+  Copy,
+  Link2,
   Loader2,
   Maximize2,
+  MessageSquareText,
   Minimize2,
   PanelBottomOpen,
   Plus,
@@ -16,9 +19,11 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import * as api from '../../lib/api';
 import type { TerminalEvent, TerminalSessionInfo, TerminalShell } from '../../lib/api';
 import { useTheme } from '../../lib/ThemeProvider';
+import { useTranslation } from '../../i18n';
 import { Button } from '../ui/Button';
 
 type TerminalStatus = 'idle' | 'starting' | 'running' | 'exited' | 'error';
@@ -98,6 +103,24 @@ function clampOutputBuffer(value: string): string {
   return value.slice(value.length - MAX_BUFFER_CHARS);
 }
 
+async function writeClipboardText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const fallback = document.createElement('textarea');
+  fallback.value = value;
+  fallback.style.position = 'fixed';
+  fallback.style.opacity = '0';
+  document.body.appendChild(fallback);
+  fallback.select();
+  const copied = document.execCommand('copy');
+  fallback.remove();
+  if (!copied) {
+    throw new Error('Clipboard is unavailable');
+  }
+}
+
 function terminalStatusLabel(status: TerminalStatus): string {
   switch (status) {
     case 'starting':
@@ -128,14 +151,32 @@ function terminalStatusClass(status: TerminalStatus): string {
   }
 }
 
-export function TerminalDock() {
+export interface TerminalAgentSelection {
+  text: string;
+  outputTail: string;
+  session: TerminalSessionInfo;
+}
+
+interface TerminalDockProps {
+  conversationId?: string;
+  agentLabel?: string;
+  onSendSelectionToAgent?: (selection: TerminalAgentSelection) => void;
+}
+
+export function TerminalDock({
+  conversationId,
+  agentLabel,
+  onSendSelectionToAgent,
+}: TerminalDockProps) {
   const { theme } = useTheme();
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [isTall, setIsTall] = useState(false);
   const [selectedShell, setSelectedShell] = useState<TerminalShell>('default');
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const [status, setStatus] = useState<TerminalStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [selection, setSelection] = useState('');
   const hostRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -182,11 +223,13 @@ export function TerminalDock() {
     const sessionId = sessionIdRef.current;
     if (!sessionId) {
       setSession(null);
+      setSelection('');
       setStatus(nextStatus);
       return;
     }
     sessionIdRef.current = null;
     setSession(null);
+    setSelection('');
     setStatus(nextStatus);
     try {
       await api.closeTerminalSession(sessionId);
@@ -220,6 +263,7 @@ export function TerminalDock() {
     setError(null);
     setStatus('starting');
     setSession(null);
+    setSelection('');
     outputBufferRef.current = '';
     xtermRef.current?.reset();
 
@@ -229,6 +273,7 @@ export function TerminalDock() {
         shell,
         rows: term?.rows ?? 24,
         cols: term?.cols ?? 80,
+        conversationId: conversationId ?? null,
       });
       sessionIdRef.current = info.id;
       setSession(info);
@@ -243,7 +288,7 @@ export function TerminalDock() {
     } finally {
       startingRef.current = false;
     }
-  }, [appendSystemLine, resizeActiveTerminal, selectedShell]);
+  }, [appendSystemLine, conversationId, resizeActiveTerminal, selectedShell]);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,6 +309,7 @@ export function TerminalDock() {
         appendSystemLine(exitText);
         sessionIdRef.current = null;
         setSession(null);
+        setSelection('');
         setStatus('exited');
         return;
       }
@@ -271,6 +317,7 @@ export function TerminalDock() {
       appendSystemLine(message);
       sessionIdRef.current = null;
       setError(message);
+      setSelection('');
       setStatus('error');
     }).then((dispose) => {
       if (cancelled) {
@@ -303,6 +350,39 @@ export function TerminalDock() {
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
     term.open(hostRef.current);
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const key = event.key.toLowerCase();
+      const copyShortcut = key === 'c' && (event.ctrlKey || event.metaKey);
+      if (copyShortcut && term.hasSelection()) {
+        const selectedText = term.getSelection();
+        void writeClipboardText(selectedText)
+          .then(() => toast.success(t('chat.terminalSelectionCopied')))
+          .catch((copyError) => {
+            const message = copyError instanceof Error ? copyError.message : String(copyError);
+            appendSystemLine(message);
+          });
+        return false;
+      }
+      const pasteShortcut = key === 'v' && (
+        event.metaKey || (event.ctrlKey && event.shiftKey)
+      );
+      if (pasteShortcut) {
+        if (!navigator.clipboard?.readText) return false;
+        void navigator.clipboard.readText()
+          .then((text) => {
+            const sessionId = sessionIdRef.current;
+            if (!text || !sessionId || statusRef.current !== 'running') return;
+            return api.writeTerminalSession(sessionId, text);
+          })
+          .catch((pasteError) => {
+            const message = pasteError instanceof Error ? pasteError.message : String(pasteError);
+            appendSystemLine(message);
+          });
+        return false;
+      }
+      return true;
+    });
     term.onData((data) => {
       const sessionId = sessionIdRef.current;
       if (!sessionId || statusRef.current !== 'running') return;
@@ -310,6 +390,9 @@ export function TerminalDock() {
         const message = err instanceof Error ? err.message : String(err);
         appendSystemLine(message);
       });
+    });
+    term.onSelectionChange(() => {
+      setSelection(term.getSelection());
     });
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -337,7 +420,7 @@ export function TerminalDock() {
       xtermRef.current = null;
       term.dispose();
     };
-  }, [appendSystemLine, isOpen, resizeActiveTerminal]);
+  }, [appendSystemLine, isOpen, resizeActiveTerminal, t]);
 
   useEffect(() => {
     if (!xtermRef.current) return;
@@ -354,6 +437,17 @@ export function TerminalDock() {
     if (sessionIdRef.current || status !== 'idle') return;
     void startSession(selectedShell);
   }, [isOpen, selectedShell, startSession, status]);
+
+  useEffect(() => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId || !session || status !== 'running') return;
+    void api.bindTerminalSession(sessionId, conversationId ?? null)
+      .then((updated) => setSession(updated))
+      .catch((bindError) => {
+        const message = bindError instanceof Error ? bindError.message : String(bindError);
+        console.warn('[TerminalDock] conversation binding failed:', message);
+      });
+  }, [conversationId, session?.id, status]);
 
   useEffect(() => {
     return () => {
@@ -402,6 +496,27 @@ export function TerminalDock() {
   const handleOpen = () => {
     setIsOpen(true);
   };
+
+  const handleCopySelection = useCallback(() => {
+    if (!selection) return;
+    void writeClipboardText(selection)
+      .then(() => toast.success(t('chat.terminalSelectionCopied')))
+      .catch((copyError) => {
+        const message = copyError instanceof Error ? copyError.message : String(copyError);
+        appendSystemLine(message);
+      });
+  }, [appendSystemLine, selection, t]);
+
+  const handleSendSelectionToAgent = useCallback(() => {
+    if (!selection || !session || !onSendSelectionToAgent) return;
+    onSendSelectionToAgent({
+      text: selection,
+      outputTail: outputBufferRef.current.slice(-12_000),
+      session,
+    });
+    xtermRef.current?.clearSelection();
+    setSelection('');
+  }, [onSendSelectionToAgent, selection, session]);
 
   const statusText = terminalStatusLabel(status);
   const panelHeight = isTall ? 'h-[42vh] min-h-72' : 'h-64 min-h-48';
@@ -457,6 +572,45 @@ export function TerminalDock() {
             {error}
           </div>
         )}
+        {session && conversationId && (
+          <span
+            data-testid="terminal-agent-link"
+            className="inline-flex h-7 max-w-48 items-center gap-1 rounded-md border border-accent/20 bg-accent/10 px-2 text-[10px] text-accent"
+            title={t('chat.terminalLinkedToAgent', { agent: agentLabel || conversationId })}
+          >
+            <Link2 className="h-3 w-3 shrink-0" />
+            <span className="truncate">
+              {t('chat.terminalLinkedToAgent', { agent: agentLabel || conversationId })}
+            </span>
+          </span>
+        )}
+        {selection && (
+          <div className="inline-flex h-8 items-center gap-1 rounded-md border border-info/25 bg-info/10 px-1.5">
+            <span className="px-1 text-[10px] text-info">
+              {t('chat.terminalSelectionCount', { count: selection.length })}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              iconOnly
+              icon={<Copy size={13} />}
+              aria-label={t('chat.terminalCopySelection')}
+              title={t('chat.terminalCopySelection')}
+              onClick={handleCopySelection}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              iconOnly
+              icon={<MessageSquareText size={13} />}
+              data-testid="terminal-send-selection"
+              aria-label={t('chat.terminalSendSelection')}
+              title={t('chat.terminalSendSelection')}
+              onClick={handleSendSelectionToAgent}
+              disabled={!onSendSelectionToAgent}
+            />
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <Button
             variant="ghost"
@@ -510,7 +664,7 @@ export function TerminalDock() {
       </div>
       {isOpen && (
         <div className={`border-t border-border/50 bg-surface-0 ${panelHeight}`}>
-          <div ref={hostRef} className="h-full w-full overflow-hidden px-2 py-2" />
+          <div ref={hostRef} data-testid="terminal-screen" className="h-full w-full overflow-hidden px-2 py-2" />
         </div>
       )}
     </div>

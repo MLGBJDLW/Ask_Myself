@@ -11,6 +11,13 @@
   "conversation.archived": "对话已归档",
   "conversation.unarchived": "对话已恢复",
   "backToConversations": "返回对话列表",
+  "archiveUnavailable": "归档暂不可用",
+  "archivedAt": "归档于 {time}",
+  "archivedReadOnly": "此对话已归档，当前为只读状态。",
+  "archivedReadOnlyError": "请先恢复此对话，再发送消息。",
+  "restoreConversation": "恢复",
+  "restoreToContinue": "恢复后即可继续此对话。",
+  "stopBeforeArchive": "请先停止正在运行的 agent，再归档此对话。",
   "title": "对话",
   "newChat": "新建对话",
   "send": "发送",
@@ -528,5 +535,10 @@
   "subagentInnerTrace": "内部轨迹",
   "subagentError": "错误",
   "subagentSupervisorNotes": "子 Agent 的监督备注",
-  "projectMemoryMenu": "Project 记忆"
+  "projectMemoryMenu": "Project 记忆",
+  "terminalCopySelection": "复制终端所选内容",
+  "terminalSendSelection": "将所选内容发送给 Agent",
+  "terminalSelectionCopied": "已复制终端所选内容",
+  "terminalSelectionCount": "已选择 {count} 个字符",
+  "terminalLinkedToAgent": "已连接 {agent}"
 }

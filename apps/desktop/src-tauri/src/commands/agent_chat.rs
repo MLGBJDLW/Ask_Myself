@@ -29,6 +29,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub agent_state: &'a AgentState,
     pub mcp_state: &'a McpManagerState,
     pub approval_state: &'a ApprovalState,
+    pub terminal_state: Option<TerminalState>,
     pub app_handle: AppHandle,
     pub conversation_id: String,
     pub message: String,
@@ -48,6 +49,7 @@ pub async fn agent_chat_cmd(
     agent_state: tauri::State<'_, AgentState>,
     mcp_state: tauri::State<'_, McpManagerState>,
     approval_state: tauri::State<'_, ApprovalState>,
+    terminal_state: tauri::State<'_, TerminalState>,
     app_handle: AppHandle,
     conversation_id: String,
     message: String,
@@ -64,6 +66,7 @@ pub async fn agent_chat_cmd(
         agent_state: agent_state.inner(),
         mcp_state: mcp_state.inner(),
         approval_state: approval_state.inner(),
+        terminal_state: Some(terminal_state.inner().clone()),
         app_handle,
         conversation_id,
         message,
@@ -87,6 +90,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         agent_state,
         mcp_state,
         approval_state,
+        terminal_state,
         app_handle,
         conversation_id,
         message,
@@ -112,6 +116,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .db
         .get_conversation(&conversation_id)
         .map_err(|e| e.to_string())?;
+    if conv.archived_at.is_some() {
+        return Err(
+            "Archived conversations are read-only. Restore the conversation before continuing."
+                .to_string(),
+        );
+    }
 
     // 2. Resolve the best matching agent config for this conversation.
     let db_config =
@@ -266,6 +276,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             cancel_token: cancel_token.clone(),
             plan_mode,
             mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
+            terminal_state,
         })
         .await;
     let runtime_session_config =

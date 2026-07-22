@@ -543,8 +543,12 @@ pub async fn delete_conversation_cmd(
 #[tauri::command]
 pub async fn archive_conversation_cmd(
     state: tauri::State<'_, AppState>,
+    agent_state: tauri::State<'_, AgentState>,
     id: String,
 ) -> Result<Conversation, String> {
+    if agent_state.running.lock().await.contains_key(&id) {
+        return Err("Stop the running agent before archiving this conversation.".to_string());
+    }
     state
         .db
         .archive_conversation(&id)

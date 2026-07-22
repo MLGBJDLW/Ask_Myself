@@ -203,8 +203,14 @@ pub fn model_context_window(model: &str) -> u32 {
         "claude-2.1" => 200_000,
         "claude-2.0" => 100_000,
 
-        // Google Gemini 3.x (preview)
-        "gemini-3-pro-preview" | "gemini-3-flash-preview" => 1_048_576,
+        // Google Gemini 3.x
+        "gemini-3.6-flash"
+        | "gemini-3.5-flash"
+        | "gemini-3.5-flash-lite"
+        | "gemini-3.1-pro-preview"
+        | "gemini-3.1-flash-lite"
+        | "gemini-3-pro-preview"
+        | "gemini-3-flash-preview" => 1_048_576,
         // Google Gemini 2.5
         "gemini-2.5-pro" | "gemini-2.5-pro-preview-05-06" => 1_048_576,
         "gemini-2.5-flash" | "gemini-2.5-flash-preview-04-17" => 1_048_576,
@@ -246,6 +252,7 @@ pub fn model_context_window(model: &str) -> u32 {
         | "doubao-seed-1-6-flash-250828" => 256_000,
 
         // Qwen / DashScope
+        "qwen3.8-max-preview" => 1_000_000,
         "qwen3.7-max" | "qwen3.7-max-2026-05-20" | "qwen3.7-max-2026-06-08" => 1_000_000,
         "qwen3.7-plus" | "qwen3.7-plus-2026-05-26" => 1_000_000,
         "qwen3.6-max-preview" => 262_144,
@@ -320,7 +327,8 @@ fn parse_context_window_hint(m: &str) -> Option<u32> {
 
 fn qwen_model_context_window(m: &str) -> Option<u32> {
     match m {
-        _ if m.starts_with("qwen3.5-plus")
+        _ if m.starts_with("qwen3.8-max")
+            || m.starts_with("qwen3.5-plus")
             || m.starts_with("qwen3.7-max")
             || m.starts_with("qwen3.6-plus")
             || m.starts_with("qwen3.6-flash")
@@ -660,6 +668,9 @@ mod tests {
         assert_eq!(model_context_window("claude-2.1"), 200_000);
         assert_eq!(model_context_window("claude-2.0"), 100_000);
         // Google Gemini
+        assert_eq!(model_context_window("gemini-3.6-flash"), 1_048_576);
+        assert_eq!(model_context_window("gemini-3.5-flash-lite"), 1_048_576);
+        assert_eq!(model_context_window("gemini-3.1-pro-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-3-pro-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-3-flash-preview"), 1_048_576);
         assert_eq!(model_context_window("gemini-2.0-flash"), 1_048_576);
@@ -699,6 +710,7 @@ mod tests {
             256_000
         );
         // Qwen / DashScope
+        assert_eq!(model_context_window("qwen3.8-max-preview"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-2026-05-20"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-2026-06-08"), 1_000_000);
@@ -757,6 +769,7 @@ mod tests {
         assert_eq!(model_context_window("deepseek-v4-future"), 1_000_000);
         assert_eq!(model_context_window("deepseek-something"), 128_000);
         assert_eq!(model_context_window("qwen3.5-plus-2026-02-15"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.8-max-latest"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-latest"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-plus-latest"), 1_000_000);
         assert_eq!(

@@ -332,7 +332,7 @@ const DESKTOP_AUTOMATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     capability: "System and desktop actions",
     description: "Runs local commands and controlled desktop actions behind approval gates.",
     ecosystem_surface: EcosystemSurfaceKind::HostSurface,
-    tools: &["run_shell", "desktop_automation"],
+    tools: &["run_shell", "desktop_automation", "terminal_session"],
     settings_surfaces: &["tool-approvals"],
     workflows: &["run-command", "control-desktop"],
 };

@@ -11,6 +11,13 @@
   "conversation.archived": "Разговор архивирован",
   "conversation.unarchived": "Разговор восстановлен",
   "backToConversations": "Назад к разговорам",
+  "archiveUnavailable": "Архив недоступен",
+  "archivedAt": "В архиве с {time}",
+  "archivedReadOnly": "Этот разговор находится в архиве и доступен только для чтения.",
+  "archivedReadOnlyError": "Восстановите разговор перед отправкой сообщения.",
+  "restoreConversation": "Восстановить",
+  "restoreToContinue": "Восстановите разговор, чтобы продолжить его.",
+  "stopBeforeArchive": "Остановите агента перед архивацией этого разговора.",
   "title": "Chat",
   "newChat": "New Chat",
   "send": "Send",
@@ -528,5 +535,10 @@
   "subagentInnerTrace": "Inner trace",
   "subagentError": "error",
   "subagentSupervisorNotes": "Supervisor notes from the subagent",
-  "projectMemoryMenu": "Project memory"
+  "projectMemoryMenu": "Project memory",
+  "terminalCopySelection": "Копировать выделение терминала",
+  "terminalSendSelection": "Отправить выделение агенту",
+  "terminalSelectionCopied": "Выделение терминала скопировано",
+  "terminalSelectionCount": "Выбрано: {count}",
+  "terminalLinkedToAgent": "Связано с {agent}"
 }

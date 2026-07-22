@@ -11,6 +11,7 @@ import {
   MoreVertical,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Star,
   Trash2,
@@ -40,6 +41,7 @@ import type { Conversation } from '../../types/conversation';
 interface ChatSidebarProps {
   conversations: Conversation[];
   activeId: string | null;
+  activeConversationArchived: boolean;
   onSelect: (id: string) => void;
   onNew: (projectId?: string | null) => void;
   onArchive: (id: string) => void;
@@ -47,6 +49,9 @@ interface ChatSidebarProps {
   onRename: (id: string, title: string) => void;
   onDeleteBatch: (ids: string[]) => void;
   onDeleteAll: () => void;
+  onSelectArchived: (id: string) => void;
+  onArchivedRestored?: (conversation: Conversation) => void;
+  onArchivedDeleted?: (id: string) => void;
   onConversationMoved?: () => void | Promise<void>;
 }
 
@@ -385,6 +390,7 @@ function ConversationItem({
 export function ChatSidebar({
   conversations,
   activeId,
+  activeConversationArchived,
   onSelect,
   onNew,
   onArchive,
@@ -392,6 +398,9 @@ export function ChatSidebar({
   onRename,
   onDeleteBatch,
   onDeleteAll,
+  onSelectArchived,
+  onArchivedRestored,
+  onArchivedDeleted,
   onConversationMoved,
 }: ChatSidebarProps) {
   const { t } = useTranslation();
@@ -437,6 +446,10 @@ export function ChatSidebar({
   const [showArchived, setShowArchived] = useState(false);
   const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState<string | null>(null);
+  const [archivedPendingIds, setArchivedPendingIds] = useState<Set<string>>(new Set());
+  const archivedRequestRef = useRef(0);
+  const wasViewingArchivedConversationRef = useRef(false);
 
   // Close menu on outside click
   useEffect(() => {
@@ -518,36 +531,82 @@ export function ChatSidebar({
     setMoveMenuPos({ x: e.clientX, y: e.clientY });
   }, []);
 
+  const loadArchivedConversations = useCallback(async (foreground: boolean) => {
+    const requestId = ++archivedRequestRef.current;
+    if (foreground) setArchivedLoading(true);
+    setArchivedError(null);
+    try {
+      const archived = await api.listArchivedConversations();
+      if (archivedRequestRef.current === requestId) {
+        setArchivedConversations(Array.isArray(archived) ? archived : []);
+      }
+    } catch (error) {
+      if (archivedRequestRef.current === requestId) {
+        const message = formatUserError(t('chat.archiveLoadError'), error);
+        setArchivedError(message);
+        if (foreground) toast.error(message);
+      }
+    } finally {
+      if (foreground && archivedRequestRef.current === requestId) {
+        setArchivedLoading(false);
+      }
+    }
+  }, [t]);
+
+  const activeConversationIdentity = useMemo(
+    () => conversations.map((conversation) => conversation.id).sort().join('\u0000'),
+    [conversations],
+  );
+
+  useEffect(() => {
+    void loadArchivedConversations(false);
+  }, [activeConversationIdentity, loadArchivedConversations]);
+
+  useEffect(() => {
+    if (activeId && activeConversationArchived) {
+      setShowArchived(true);
+    } else if (wasViewingArchivedConversationRef.current) {
+      setShowArchived(false);
+      setSearchQuery('');
+    }
+    wasViewingArchivedConversationRef.current = Boolean(activeId && activeConversationArchived);
+  }, [activeConversationArchived, activeId]);
+
   const openArchivedConversations = useCallback(async () => {
     setMenuOpen(false);
     setShowArchived(true);
     setSearchQuery('');
-    setArchivedConversations([]);
-    setArchivedLoading(true);
-    try {
-      setArchivedConversations(await api.listArchivedConversations());
-    } catch (error) {
-      toast.error(formatUserError(t('chat.archiveLoadError'), error));
-    } finally {
-      setArchivedLoading(false);
-    }
-  }, [t]);
+    await loadArchivedConversations(true);
+  }, [loadArchivedConversations]);
 
   const handleUnarchiveConversation = useCallback(async (conversation: Conversation) => {
+    if (archivedPendingIds.has(conversation.id)) return;
+    setArchivedPendingIds((ids) => new Set(ids).add(conversation.id));
     setArchivedConversations((items) => items.filter((item) => item.id !== conversation.id));
     try {
-      await api.unarchiveConversation(conversation.id);
+      const restored = await api.unarchiveConversation(conversation.id);
+      onArchivedRestored?.(restored);
       try {
         await onConversationMoved?.();
       } catch { /* the conversation is already restored; the active list can refresh later */ }
+      if (activeId === conversation.id) {
+        setShowArchived(false);
+        setSearchQuery('');
+      }
       toast.success(t('chat.conversation.unarchived'));
     } catch (error) {
       setArchivedConversations((items) =>
         items.some((item) => item.id === conversation.id) ? items : [conversation, ...items],
       );
       toast.error(formatUserError(t('chat.unarchiveError'), error));
+    } finally {
+      setArchivedPendingIds((ids) => {
+        const next = new Set(ids);
+        next.delete(conversation.id);
+        return next;
+      });
     }
-  }, [onConversationMoved, t]);
+  }, [activeId, archivedPendingIds, onArchivedRestored, onConversationMoved, t]);
 
   const handleDeleteArchivedConversation = useCallback((conversation: Conversation) => {
     setArchivedConversations((items) => items.filter((item) => item.id !== conversation.id));
@@ -561,13 +620,14 @@ export function ChatSidebar({
       onConfirm: async () => {
         try {
           await api.deleteConversation(conversation.id);
+          onArchivedDeleted?.(conversation.id);
         } catch (error) {
           restore();
           toast.error(formatUserError(t('chat.deleteError'), error));
         }
       },
     });
-  }, [t]);
+  }, [onArchivedDeleted, t]);
 
   const archivedFiltered = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -632,6 +692,16 @@ export function ChatSidebar({
             <div className="flex h-24 items-center justify-center text-text-tertiary">
               <Loader2 className="h-4 w-4 animate-spin" />
             </div>
+          ) : archivedError ? (
+            <EmptyState
+              icon={<Archive className="h-6 w-6" />}
+              title={t('chat.archiveUnavailable')}
+              description={archivedError}
+              action={{
+                label: t('chat.retry'),
+                onClick: () => void loadArchivedConversations(true),
+              }}
+            />
           ) : archivedConversations.length === 0 ? (
             <EmptyState
               icon={<Archive className="h-6 w-6" />}
@@ -649,8 +719,25 @@ export function ChatSidebar({
               <div
                 key={conversation.id}
                 data-testid={`archived-conversation-${conversation.id}`}
-                className="group flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary hover:bg-surface-2"
+                role="button"
+                tabIndex={0}
+                aria-current={activeId === conversation.id ? 'page' : undefined}
+                onClick={() => onSelectArchived(conversation.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectArchived(conversation.id);
+                  }
+                }}
+                className={`group relative flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm
+                  transition-colors ${activeId === conversation.id
+                    ? 'bg-accent-subtle text-accent-hover'
+                    : 'text-text-secondary hover:bg-surface-2'
+                  }`}
               >
+                {activeId === conversation.id && (
+                  <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-accent" />
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-medium text-text-primary">
                     {conversation.title || t('chat.newConversation')}
@@ -658,22 +745,34 @@ export function ChatSidebar({
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <Badge className="!px-1.5 !text-[10px]">{conversation.model}</Badge>
                     <span className="text-[10px] text-text-tertiary">
-                      {relativeTime(conversation.archivedAt || conversation.updatedAt, t)}
+                      {t('chat.archivedAt', {
+                        time: relativeTime(conversation.archivedAt || conversation.updatedAt, t),
+                      })}
                     </span>
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => void handleUnarchiveConversation(conversation)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleUnarchiveConversation(conversation);
+                  }}
+                  disabled={archivedPendingIds.has(conversation.id)}
                   className="rounded p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-accent"
                   aria-label={t('chat.unarchive')}
                   title={t('chat.unarchive')}
                 >
-                  <ArchiveRestore className="h-3.5 w-3.5" />
+                  {archivedPendingIds.has(conversation.id)
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <ArchiveRestore className="h-3.5 w-3.5" />}
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDeleteArchivedConversation(conversation)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleDeleteArchivedConversation(conversation);
+                  }}
+                  disabled={archivedPendingIds.has(conversation.id)}
                   className="rounded p-1 text-text-tertiary transition-colors hover:bg-danger/10 hover:text-danger"
                   aria-label={t('common.delete')}
                   title={t('common.delete')}
@@ -707,7 +806,8 @@ export function ChatSidebar({
           <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => onNew(activeProjectId)}>
             {t('chat.newChat')}
           </Button>
-          <div className="relative" ref={menuRef}>
+          {conversations.length > 0 && (
+            <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((v) => !v)}
                 data-testid="chat-sidebar-menu-trigger"
@@ -721,47 +821,53 @@ export function ChatSidebar({
                 <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-surface-2 border border-border
                   rounded-lg shadow-lg py-1 text-xs">
                   <button
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-text-secondary
-                      transition-colors hover:bg-surface-3 hover:text-text-primary"
-                    onClick={() => void openArchivedConversations()}
+                    className="w-full px-3 py-1.5 text-left text-text-secondary transition-colors
+                      hover:bg-surface-3 hover:text-text-primary"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setSelectMode(true);
+                      setSelectedIds(new Set());
+                    }}
                   >
-                    <Archive className="h-3.5 w-3.5" />
-                    {t('chat.archivedConversations')}
+                    {t('chat.selectMode')}
                   </button>
-                  {conversations.length > 0 && (
-                    <>
-                      <div className="my-1 border-t border-border" />
-                      <button
-                        className="w-full px-3 py-1.5 text-left text-text-secondary transition-colors
-                          hover:bg-surface-3 hover:text-text-primary"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          setSelectMode(true);
-                          setSelectedIds(new Set());
-                        }}
-                      >
-                        {t('chat.selectMode')}
-                      </button>
-                      <button
-                        className="w-full px-3 py-1.5 text-left text-danger transition-colors hover:bg-danger/10"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          onDeleteAll();
-                        }}
-                      >
-                        {t('chat.deleteAll')}
-                      </button>
-                    </>
-                  )}
+                  <button
+                    className="w-full px-3 py-1.5 text-left text-danger transition-colors hover:bg-danger/10"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onDeleteAll();
+                    }}
+                  >
+                    {t('chat.deleteAll')}
+                  </button>
                 </div>
               )}
             </div>
+          )}
         </div>
       </div>
 
       {/* Project switcher */}
       <div className="px-2 py-1.5 border-b border-border">
         <ProjectSwitcher activeProjectId={activeProjectId} onProjectChange={setProject} />
+      </div>
+
+      <div className="border-b border-border px-2 py-1.5">
+        <button
+          type="button"
+          data-testid="chat-archive-nav"
+          onClick={() => void openArchivedConversations()}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary
+            transition-colors hover:bg-surface-2 hover:text-text-primary"
+        >
+          <Archive className="h-3.5 w-3.5" />
+          <span className="min-w-0 flex-1 truncate text-left">{t('chat.archivedConversations')}</span>
+          {archivedError ? (
+            <RefreshCw className="h-3 w-3 text-warning" />
+          ) : archivedConversations.length > 0 ? (
+            <Badge className="!px-1.5 !text-[10px]">{archivedConversations.length}</Badge>
+          ) : null}
+        </button>
       </div>
 
       {/* Search bar */}

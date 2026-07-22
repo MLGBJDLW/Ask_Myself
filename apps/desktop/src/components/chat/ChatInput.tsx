@@ -51,6 +51,7 @@ interface ChatInputProps {
   onRestoreCheckpoint?: () => void;
   onBranchCheckpoint?: (conversation: Conversation) => void;
   prefillText?: string;
+  prefillKey?: number;
   onCompact?: () => void;
   isCompacting?: boolean;
   planModeEnabled?: boolean;
@@ -214,6 +215,7 @@ export function ChatInput({
   onRestoreCheckpoint,
   onBranchCheckpoint,
   prefillText,
+  prefillKey,
   onCompact,
   isCompacting = false,
   planModeEnabled,
@@ -306,7 +308,7 @@ export function ChatInput({
       persistDraft(prefillText);
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [persistDraft, prefillText, resetInputHistoryNavigation]);
+  }, [persistDraft, prefillKey, prefillText, resetInputHistoryNavigation]);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {

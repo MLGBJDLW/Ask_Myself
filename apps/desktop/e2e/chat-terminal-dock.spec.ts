@@ -41,6 +41,7 @@ test.beforeEach(async ({ page }) => {
       writes: [] as string[],
       resizes: [] as Array<Record<string, unknown>>,
       closes: [] as string[],
+      bindings: [] as Array<Record<string, unknown>>,
     };
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
@@ -118,8 +119,9 @@ test.beforeEach(async ({ page }) => {
             shell: 'PowerShell',
             cwd: 'D:\\Apps\\ask_myself',
             processId: 4242,
+            conversationId: String((args.input as Record<string, unknown> | undefined)?.conversationId ?? ''),
           };
-          queueMicrotask(() => {
+          setTimeout(() => {
             emitEvent('terminal:event', {
               sessionId: session.id,
               kind: 'data',
@@ -127,7 +129,7 @@ test.beforeEach(async ({ page }) => {
               exitCode: null,
               signal: null,
             });
-          });
+          }, 50);
           return session;
         }
         case 'terminal_write_session_cmd':
@@ -139,6 +141,26 @@ test.beforeEach(async ({ page }) => {
         case 'terminal_close_session_cmd':
           terminalDiagnostics.closes.push(String(args.sessionId ?? ''));
           return null;
+        case 'terminal_bind_session_cmd':
+          terminalDiagnostics.bindings.push(clone(args));
+          return {
+            id: String(args.sessionId ?? 'terminal-session-1'),
+            shell: 'PowerShell',
+            cwd: 'D:\\Apps\\ask_myself',
+            processId: 4242,
+            conversationId: String(args.conversationId ?? ''),
+          };
+        case 'terminal_snapshot_session_cmd':
+          return {
+            session: {
+              id: String(args.sessionId ?? 'terminal-session-1'),
+              shell: 'PowerShell',
+              cwd: 'D:\\Apps\\ask_myself',
+              processId: 4242,
+              conversationId: 'conv-terminal-dock',
+            },
+            output: 'PS D:\\Apps\\ask_myself> ',
+          };
         case 'terminal_list_sessions_cmd':
           return [];
         default:
@@ -168,7 +190,8 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('opens an interactive terminal dock from the chat screen', async ({ page }) => {
+test('opens an interactive terminal dock from the chat screen', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/chat/conv-terminal-dock');
 
   await page.getByRole('button', { name: 'Toggle terminal' }).click();
@@ -176,12 +199,23 @@ test('opens an interactive terminal dock from the chat screen', async ({ page })
   await expect(page.locator('.xterm')).toBeVisible();
   await expect(page.getByText('Running')).toBeVisible();
   await expect(page.getByText('PowerShell #4242')).toBeVisible();
+  await expect(page.getByTestId('terminal-agent-link')).toContainText('Terminal Dock Config');
 
   await page.keyboard.press('Control+KeyJ');
   await expect(page.locator('.xterm')).toHaveCount(0);
 
   await page.keyboard.press('Control+KeyJ');
   await expect(page.locator('.xterm')).toBeVisible();
+
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+C');
+
+  await expect.poll(async () => page.evaluate(() => {
+    const diagnostics = (window as unknown as {
+      __terminalDiagnostics__: { writes: string[] };
+    }).__terminalDiagnostics__;
+    return diagnostics.writes;
+  })).toContain('\u0003');
 
   const starts = await page.evaluate(() => {
     const diagnostics = (window as unknown as {
@@ -193,8 +227,50 @@ test('opens an interactive terminal dock from the chat screen', async ({ page })
   expect(starts[0]).toMatchObject({
     input: {
       shell: 'default',
+      conversationId: 'conv-terminal-dock',
     },
   });
+
+  const bindings = await page.evaluate(() => {
+    const diagnostics = (window as unknown as {
+      __terminalDiagnostics__: { bindings: Array<Record<string, unknown>> };
+    }).__terminalDiagnostics__;
+    return diagnostics.bindings;
+  });
+  expect(bindings).toContainEqual({
+    sessionId: 'terminal-session-1',
+    conversationId: 'conv-terminal-dock',
+  });
+
+  const screen = page.locator('.xterm-screen');
+  await page.waitForTimeout(100);
+  const box = await screen.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + 4, box!.y + 38);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + 150, box!.y + 38, { steps: 8 });
+  await page.mouse.up();
+
+  await expect(page.getByTestId('terminal-send-selection')).toBeVisible();
+  const writesBeforeCopy = await page.evaluate(() => {
+    const diagnostics = (window as unknown as {
+      __terminalDiagnostics__: { writes: string[] };
+    }).__terminalDiagnostics__;
+    return diagnostics.writes.length;
+  });
+  await page.keyboard.press('Control+C');
+  await expect(page.getByText('Terminal selection copied')).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => {
+    const diagnostics = (window as unknown as {
+      __terminalDiagnostics__: { writes: string[] };
+    }).__terminalDiagnostics__;
+    return diagnostics.writes.length;
+  })).toBe(writesBeforeCopy);
+  await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain('ask_myself');
+
+  await page.getByTestId('terminal-send-selection').click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue(/<terminal_selection>/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue(/ask_myself/);
 
   await page.getByRole('button', { name: 'Stop terminal' }).click();
   await expect(page.getByText('Exited')).toBeVisible();

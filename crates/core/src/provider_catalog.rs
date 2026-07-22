@@ -126,6 +126,12 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         .into_iter()
         .filter(|preset| preset.provider == provider)
         .collect::<Vec<_>>();
+    if let Some(default_index) = provider_matches
+        .iter()
+        .position(|preset| preset.id == provider)
+    {
+        return Some(provider_matches.swap_remove(default_index));
+    }
     if provider_matches.len() == 1 {
         provider_matches.pop()
     } else {
@@ -363,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_catalog_defaults_to_qwen37_max() {
+    fn qwen_catalog_separates_pay_as_you_go_from_token_plan() {
         let qwen = find_provider_preset(
             "qwen",
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -379,6 +385,7 @@ mod tests {
         assert!(ids.contains(&"qwen3.7-plus"));
         assert!(ids.contains(&"qwen3.7-max-2026-06-08"));
         assert!(ids.contains(&"qwen3.6-plus"));
+        assert!(!ids.contains(&"qwen3.8-max-preview"));
 
         let qwen37 = qwen
             .models
@@ -393,6 +400,74 @@ mod tests {
                 .as_ref()
                 .and_then(|capabilities| capabilities.vision),
             Some(true)
+        );
+
+        let token_plan = find_provider_preset(
+            "qwen",
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/"),
+        )
+        .expect("Qwen Token Plan preset should match its dedicated endpoint");
+        assert_eq!(token_plan.id, "qwen-token-plan-cn");
+        assert_eq!(token_plan.models.len(), 1);
+        assert_eq!(token_plan.models[0].id, "qwen3.8-max-preview");
+        assert_eq!(token_plan.models[0].recommended, Some(true));
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-max-preview"),
+            Some(false)
+        );
+        assert_eq!(
+            find_provider_preset("qwen", None)
+                .expect("Qwen should keep its pay-as-you-go default")
+                .id,
+            "qwen"
+        );
+    }
+
+    #[test]
+    fn google_catalog_defaults_to_latest_stable_gemini_models() {
+        let google = find_provider_preset(
+            "google",
+            Some("https://generativelanguage.googleapis.com/v1beta"),
+        )
+        .expect("Google preset should match");
+        let ids = google
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids.first(), Some(&"gemini-3.6-flash"));
+        assert!(ids.contains(&"gemini-3.5-flash-lite"));
+        assert!(!ids.contains(&"gemini-3-pro-preview"));
+        assert!(!ids.contains(&"gemini-2.0-flash"));
+        assert!(!ids.contains(&"gemini-2.0-flash-lite"));
+
+        let latest = google
+            .models
+            .first()
+            .expect("Gemini 3.6 Flash should be listed first");
+        assert_eq!(latest.recommended, Some(true));
+        let reasoning = latest
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("Gemini 3.6 Flash should expose reasoning controls");
+        assert_eq!(
+            reasoning.effort_levels,
+            vec![
+                "minimal".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+            ]
+        );
+        assert_eq!(reasoning.default_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            reasoning
+                .thinking_budget
+                .as_ref()
+                .map(|budget| budget.enabled),
+            Some(false)
         );
     }
 

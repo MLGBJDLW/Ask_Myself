@@ -6518,24 +6518,65 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3.5 Flash, Gemini 3.1 Pro/Flash Lite, Gemini 3 previews, Gemini 2.5",
+    "description": "Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
     "capabilities": {
       "vision": true
     },
     "models": [
       {
-        "id": "gemini-3.5-flash",
-        "name": "Gemini 3.5 Flash",
+        "id": "gemini-3.6-flash",
+        "name": "Gemini 3.6 Flash",
         "tagKey": "providers.tagLatest",
         "recommended": true,
         "capabilities": {
           "reasoning": {
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
             "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gemini-3.5-flash-lite",
+        "name": "Gemini 3.5 Flash-Lite",
+        "tagKey": "providers.tagCheapest",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "minimal",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
             }
           }
         }
@@ -6546,12 +6587,14 @@
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "high",
             "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
+              "enabled": false
             }
           }
         }
@@ -6562,12 +6605,15 @@
         "tagKey": "providers.tagFast",
         "capabilities": {
           "reasoning": {
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "minimal",
             "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
+              "enabled": false
             }
           }
         }
@@ -6621,44 +6667,23 @@
         }
       },
       {
-        "id": "gemini-3-pro-preview",
-        "name": "Gemini 3 Pro Preview",
-        "tagKey": "providers.tagPreview",
-        "capabilities": {
-          "reasoning": {
-            "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
-            }
-          }
-        }
-      },
-      {
         "id": "gemini-3-flash-preview",
         "name": "Gemini 3 Flash Preview",
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "high",
             "thinkingBudget": {
-              "enabled": true,
-              "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
-              "step": 128
+              "enabled": false
             }
           }
         }
-      },
-      {
-        "id": "gemini-2.0-flash",
-        "name": "Gemini 2.0 Flash"
-      },
-      {
-        "id": "gemini-2.0-flash-lite",
-        "name": "Gemini 2.0 Flash-Lite"
       }
     ]
   },
@@ -7318,6 +7343,35 @@
       {
         "id": "kimi-latest",
         "name": "Kimi Latest"
+      }
+    ]
+  },
+  {
+    "id": "qwen-token-plan-cn",
+    "name": "Qwen Token Plan",
+    "provider": "qwen",
+    "baseUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "requiresApiKey": true,
+    "icon": "🪶",
+    "description": "Qwen3.8 Max Preview via the Token Plan endpoint and sk-sp API key",
+    "capabilities": {
+      "reasoning": {
+        "effortLevels": [],
+        "thinkingBudget": {
+          "enabled": true,
+          "defaultTokens": 10000,
+          "minTokens": 1,
+          "step": 500
+        }
+      },
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "qwen3.8-max-preview",
+        "name": "Qwen3.8 Max Preview",
+        "tagKey": "providers.tagPreview",
+        "recommended": true
       }
     ]
   },

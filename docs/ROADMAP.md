@@ -16,17 +16,17 @@ The product should combine:
 
 ### P0
 
-- Keep source scope, evidence strength, and route clarity visible in Chat
-- Make Search, Collections, and Chat feel like one continuous workflow
-- Maintain full i18n coverage for all shipped locales
-- Preserve streaming and completed-state consistency
+- Keep source scope, evidence strength, route, model, and reasoning state clear in Chat
+- Preserve streaming, persisted replay, archive, restore, and delete consistency
+- Make live desktop surfaces such as the terminal useful to the agent without weakening user control or approval boundaries
+- Maintain full i18n coverage and critical browser regression coverage for all shipped UI changes
 
 ### P1
 
-- Recall Mode for vague memory lookup
-- Consumer-friendly language across helper/status surfaces
-- Better collection-as-workspace behavior
-- Stronger office assistance flows
+- Better collection-as-workspace behavior and cross-surface handoff
+- Consumer-friendly language across helper, approval, trace, and status surfaces
+- Stronger office assistance flows with verifiable output
+- Reduce provider drift by keeping the shared catalog and adapter contracts synchronized
 
 ### P2
 
@@ -36,21 +36,26 @@ The product should combine:
 
 ## Near-term Build Sequence
 
-1. Investigation workspace in Chat
-2. Recall Mode in Search
-3. Collections as sustained working sets
-4. Consumerize advanced agent labels and helper flows
-5. Office/document workflows that feel guided and safe
+1. Harden conversation lifecycle and replay across active and archived states
+2. Deepen Search, Collections, and Chat as one sustained working set
+3. Expand user-controlled desktop context bridges beyond the terminal where justified
+4. Consumerize advanced agent labels, approvals, and recovery flows
+5. Ship office/document workflows with validation and review built in
 
 ## Shipped Foundations
 
-Already in progress or landed:
+Landed foundations include:
 
 - investigation header in Chat with clearer scope / route / evidence visibility
 - Search to Chat source-scope handoff
 - collection-context handoff into Chat
 - Recall Mode entry in Search for vague-memory lookup
 - first-pass collection workspace actions for investigation, briefs, reports, and slide outlines
+- persisted turn traces, checkpoints, context accounting, and per-turn navigation
+- visible archived-conversation browsing with read-only replay and restore/delete lifecycle
+- a split model and reasoning selector backed by the shared provider catalog
+- a conversation-linked terminal with selection-to-prompt and approval-gated agent interaction
+- critical Playwright coverage for the custom window frame, conversation lifecycle, terminal bridge, Mermaid rendering, plan capsule, and turn timeline
 - stronger product, UX, roadmap, and i18n documentation in `docs/`
 
 ## Guardrails

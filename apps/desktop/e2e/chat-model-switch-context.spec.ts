@@ -208,18 +208,25 @@ test.beforeEach(async ({ page }) => {
 test('model selector and context usage follow the active chat model', async ({ page }) => {
   await page.goto('/chat/conv-model-switch');
 
-  await expect(page.getByText('61% context used').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /61% context used/ })).toBeVisible();
   const modelSelect = page.getByTestId('agent-model-picker-trigger');
+  const reasoningSelect = page.getByTestId('agent-reasoning-picker-trigger');
   await expect(modelSelect).toContainText('Tiny Context');
+  await expect(reasoningSelect).toBeVisible();
+
+  const modelBox = await modelSelect.boundingBox();
+  const reasoningBox = await reasoningSelect.boundingBox();
+  expect(modelBox).not.toBeNull();
+  expect(reasoningBox).not.toBeNull();
+  expect(Math.abs((modelBox?.x ?? 0) + (modelBox?.width ?? 0) - (reasoningBox?.x ?? 0))).toBeLessThan(2);
 
   await modelSelect.click();
   await page.getByTestId('agent-model-provider-cfg-large').click();
   await page.getByTestId('agent-model-option-cfg-large-large-context').click();
-  await page.getByTestId('agent-model-apply').click();
 
   await expect(modelSelect).toHaveAttribute('title', 'open_ai / large-context');
-  await expect(page.getByText('1% context used').first()).toBeVisible();
-  await expect(page.getByText('61% context used')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /1% context used/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /61% context used/ })).toHaveCount(0);
 
   await page.getByTestId('chat-input-textarea').fill('Use the selected model.');
   await page.getByTestId('chat-send').click();
@@ -239,6 +246,10 @@ test('model selector saves model and reasoning changes to the agent config', asy
   await modelSelect.click();
   await page.getByTestId('agent-model-provider-cfg-tiny').click();
   await page.getByTestId('agent-model-option-cfg-tiny-gpt-5.5').click();
+  await expect(modelSelect).toHaveAttribute('title', 'open_ai / gpt-5.5');
+
+  const reasoningSelect = page.getByTestId('agent-reasoning-picker-trigger');
+  await reasoningSelect.click();
   await page.getByTestId('agent-model-reasoning-high').click();
 
   await expect(modelSelect).toHaveAttribute('title', 'open_ai / gpt-5.5');

@@ -11,6 +11,13 @@
   "conversation.archived": "대화를 보관했습니다",
   "conversation.unarchived": "대화를 복원했습니다",
   "backToConversations": "대화 목록으로 돌아가기",
+  "archiveUnavailable": "보관함을 사용할 수 없음",
+  "archivedAt": "{time}에 보관됨",
+  "archivedReadOnly": "이 대화는 보관되어 읽기 전용입니다.",
+  "archivedReadOnlyError": "메시지를 보내기 전에 이 대화를 복원하세요.",
+  "restoreConversation": "복원",
+  "restoreToContinue": "대화를 계속하려면 복원하세요.",
+  "stopBeforeArchive": "이 대화를 보관하기 전에 실행 중인 에이전트를 중지하세요.",
   "title": "Chat",
   "newChat": "New Chat",
   "send": "Send",
@@ -528,5 +535,10 @@
   "subagentInnerTrace": "Inner trace",
   "subagentError": "error",
   "subagentSupervisorNotes": "Supervisor notes from the subagent",
-  "projectMemoryMenu": "Project memory"
+  "projectMemoryMenu": "Project memory",
+  "terminalCopySelection": "터미널 선택 영역 복사",
+  "terminalSendSelection": "선택 영역을 에이전트에 보내기",
+  "terminalSelectionCopied": "터미널 선택 영역을 복사했습니다",
+  "terminalSelectionCount": "{count}자 선택됨",
+  "terminalLinkedToAgent": "{agent}에 연결됨"
 }

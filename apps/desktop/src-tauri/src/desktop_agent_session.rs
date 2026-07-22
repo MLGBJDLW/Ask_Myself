@@ -49,9 +49,11 @@ use crate::agent_task_events::{
     emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
 };
 use crate::app_events::emit_app_event;
+use crate::commands::TerminalState;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
 };
+use crate::terminal_agent_tool::TerminalAgentTool;
 
 const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
@@ -143,6 +145,7 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub cancel_token: CancellationToken,
     pub plan_mode: bool,
     pub mcp_call_timeout_secs: u64,
+    pub terminal_state: Option<TerminalState>,
 }
 
 pub struct DesktopAgentTurnOutcome {
@@ -1128,6 +1131,7 @@ pub async fn build_desktop_agent_session_dependencies(
         cancel_token,
         plan_mode,
         mcp_call_timeout_secs,
+        terminal_state,
     } = request;
 
     let selected_skills = if pinned_skill_ids.is_empty() {
@@ -1200,6 +1204,9 @@ pub async fn build_desktop_agent_session_dependencies(
     tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
         delegation_runtime.clone(),
     )));
+    if let Some(terminal_state) = terminal_state {
+        tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
+    }
     let before_package_filter_count = tools.tool_names().len();
     tools = match filter_desktop_tool_registry_by_package_host(db, tools) {
         Ok(filtered) => {

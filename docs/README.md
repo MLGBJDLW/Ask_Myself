@@ -38,3 +38,16 @@ This folder captures the durable product and engineering memory for Nexa, which 
   satisfy.
 - [TOOLS.md](./TOOLS.md)
   Reference for built-in agent tools and their intended routing.
+
+## Runtime and Architecture
+
+- [architecture/terminal-agent-bridge.md](./architecture/terminal-agent-bridge.md)
+  Documents terminal copy/paste behavior, selection-to-prompt handoff,
+  conversation binding, agent permissions, output limits, and stop semantics.
+- [architecture/live-file-tool-streaming.md](./architecture/live-file-tool-streaming.md)
+  Documents live file-tool projection and the frontend/backend event contract.
+- [computer-use-integration.md](./computer-use-integration.md)
+  Describes the desktop automation boundary and supported interaction paths.
+- [security-and-architecture-audit-2026-07.md](./security-and-architecture-audit-2026-07.md)
+  Captures the July 2026 security and architecture audit and its follow-up
+  constraints.

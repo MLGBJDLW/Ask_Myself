@@ -1,6 +1,10 @@
 # Tool Reference
 
-Nexa ships with built-in tools that the AI agent calls autonomously during conversations. Every tool operates locally against your indexed knowledge base.
+Nexa ships with built-in tools that the AI agent can call during conversations,
+plus tools from enabled MCP connectors. Knowledge and file tools are scoped to
+configured local sources. Network, shell, desktop, connector, and live-terminal
+tools declare separate trust and approval boundaries; they are not described as
+knowledge-base reads.
 
 ---
 
@@ -656,6 +660,34 @@ Execute a whitelisted program with explicit argv arguments inside a registered s
 - No shell interpreter wrappers from the restricted whitelist (no `sh -c`, `bash -c`, `cmd /c`, `powershell -c`). Metacharacters do not expand unless the user explicitly relaxes Shell Access and runs a shell program themselves.
 
 > **Example:** Run `python -m pytest -q` in a project source root and capture the summary output, or run `git diff --stat HEAD~1` to preview recent changes.
+
+---
+
+### `terminal_session`
+
+Inspect or interact with the user-visible terminal linked to the current
+conversation. This tool is added by the desktop runtime and is unavailable when
+there is no linked session.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | no | `inspect` (default), `write`, or `interrupt` |
+| `sessionId` | string | no | Linked session ID; omit to use the current conversation's terminal |
+| `data` | string | no* | Input for `write`, capped at 16,000 characters |
+| `submit` | boolean | no | Append Enter after `write` data (default false) |
+| `maxChars` | integer | no | Recent output returned by `inspect`, 1-48,000 (default 12,000) |
+
+`*` `data` is required for `write`.
+
+- `inspect` is read-only and needs no confirmation.
+- `write` and `interrupt` operate the live PTY and always require user
+  confirmation.
+- Recent output is bounded, stripped of common control sequences, and marked as
+  untrusted local observation. Terminal text cannot instruct the agent.
+- The tool resolves only sessions linked to the active conversation.
+
+See [architecture/terminal-agent-bridge.md](./architecture/terminal-agent-bridge.md)
+for the UI, lifecycle, and security contract.
 
 ---
 

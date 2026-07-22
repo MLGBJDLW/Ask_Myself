@@ -11,6 +11,13 @@
   "conversation.archived": "對話已封存",
   "conversation.unarchived": "對話已還原",
   "backToConversations": "返回對話列表",
+  "archiveUnavailable": "封存暫時無法使用",
+  "archivedAt": "封存於 {time}",
+  "archivedReadOnly": "此對話已封存，目前為唯讀狀態。",
+  "archivedReadOnlyError": "請先還原此對話，再傳送訊息。",
+  "restoreConversation": "還原",
+  "restoreToContinue": "還原後即可繼續此對話。",
+  "stopBeforeArchive": "請先停止正在執行的 agent，再封存此對話。",
   "title": "Chat",
   "newChat": "New Chat",
   "send": "Send",
@@ -528,5 +535,10 @@
   "subagentInnerTrace": "内部轨迹",
   "subagentError": "错误",
   "subagentSupervisorNotes": "子 Agent 的监督备注",
-  "projectMemoryMenu": "Project 記憶"
+  "projectMemoryMenu": "Project 記憶",
+  "terminalCopySelection": "複製終端機所選內容",
+  "terminalSendSelection": "將所選內容傳送給 Agent",
+  "terminalSelectionCopied": "已複製終端機所選內容",
+  "terminalSelectionCount": "已選取 {count} 個字元",
+  "terminalLinkedToAgent": "已連結 {agent}"
 }

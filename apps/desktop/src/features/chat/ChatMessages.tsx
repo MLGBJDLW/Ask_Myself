@@ -231,30 +231,34 @@ function TurnNavigator({
       aria-label={`${messageAreaLabel} · ${items.length}`}
       aria-orientation="vertical"
       data-active-index={activeIndex}
-      data-variant="edge-rail"
+      data-variant="edge-waveform"
       data-testid="chat-turn-navigator"
-      className="pointer-events-none sticky top-1/2 z-20 ml-auto hidden h-px w-10 -translate-y-1/2 lg:block"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto -mr-12 hidden h-px w-8 -translate-y-1/2 lg:block"
       onKeyDown={handleKeyDown}
     >
-      <div className="group/rail pointer-events-auto absolute right-0 top-0 flex max-h-[min(64vh,32rem)] w-10 -translate-y-1/2 flex-col items-center overflow-y-auto bg-gradient-to-l from-surface-1/55 via-surface-1/15 to-transparent py-2">
+      <div className="group/rail pointer-events-auto absolute right-0 top-0 flex max-h-[min(64vh,32rem)] w-8 -translate-y-1/2 flex-col items-end overflow-y-auto bg-gradient-to-l from-surface-1/70 via-surface-1/20 to-transparent py-2">
         <div
-          className="mb-1.5 flex items-baseline gap-0.5 text-text-tertiary"
+          className="mb-1.5 flex w-full items-baseline justify-end gap-0.5 pr-1 text-text-tertiary/70 transition-colors duration-fast group-hover/rail:text-text-tertiary motion-reduce:transition-none"
           data-testid="chat-turn-position"
           aria-hidden="true"
         >
           <span className="text-[11px] font-semibold tabular-nums text-text-secondary">{activeIndex + 1}</span>
           <span className="text-[8px] tabular-nums">/{items.length}</span>
         </div>
-        <div className="relative flex flex-col items-center py-1">
-          <span className="absolute bottom-3 left-1/2 top-3 w-px -translate-x-1/2 bg-border/75" aria-hidden="true" />
+        <div className="relative flex w-full flex-col items-end py-1">
+          <span className="absolute bottom-2 right-[5px] top-2 w-px bg-border/55" aria-hidden="true" />
           <span
-            className="absolute bottom-3 left-1/2 top-3 w-[2px] origin-top -translate-x-1/2 bg-accent/75 transition-transform duration-normal ease-out motion-reduce:transition-none"
+            className="absolute bottom-2 right-[5px] top-2 w-px origin-top bg-accent/80 transition-transform duration-normal ease-out motion-reduce:transition-none"
             data-testid="chat-turn-progress"
-            style={{ transform: `translateX(-50%) scaleY(${progress})` }}
+            style={{ transform: `scaleY(${progress})` }}
             aria-hidden="true"
           />
           {items.map((item, index) => {
             const active = item.id === activeId;
+            const proximity = Math.max(0, 1 - Math.abs(index - activeIndex) / 3);
+            const density = Math.min(1, Math.max(0.25, item.preview.length / 72));
+            const waveWidth = active ? 24 : Math.round(7 + density * 7 + proximity * 4);
+            const waveOpacity = active ? 1 : 0.38 + proximity * 0.24;
             const label = `#${index + 1} · ${item.preview}`;
             return (
               <button
@@ -265,15 +269,17 @@ function TurnNavigator({
                 title={label}
                 data-turn-navigation-id={item.id}
                 data-turn-navigation-index={index}
-                className="group relative z-10 flex h-6 w-7 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+                className="group relative z-10 flex h-5 w-8 shrink-0 items-center justify-end rounded-l-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
                 onClick={() => onSelect(item.id)}
               >
                 <span
-                  className={`rounded-full border transition-[width,height,background-color,border-color,box-shadow] duration-fast ease-out motion-reduce:transition-none ${
+                  data-testid="chat-turn-wave-bar"
+                  className={`origin-right rounded-full transition-[width,transform,opacity,background-color,box-shadow] duration-fast ease-out group-hover:scale-x-110 group-focus-visible:scale-x-110 motion-reduce:transition-none ${
                     active
-                      ? 'h-4 w-1.5 border-accent bg-accent shadow-[0_0_0_3px_var(--color-accent-subtle)]'
-                      : 'h-1.5 w-1.5 border-text-tertiary/50 bg-surface-3 group-hover:h-2.5 group-hover:w-1.5 group-hover:border-accent/75 group-hover:bg-accent/75 group-focus-visible:h-2.5 group-focus-visible:w-1.5'
+                      ? 'h-[3px] bg-accent shadow-[0_0_0_2px_var(--color-accent-subtle)]'
+                      : 'h-0.5 bg-text-tertiary group-hover:bg-accent/80 group-focus-visible:bg-accent/80'
                   }`}
+                  style={{ width: `${waveWidth}px`, opacity: waveOpacity }}
                   aria-hidden="true"
                 />
                 <span
