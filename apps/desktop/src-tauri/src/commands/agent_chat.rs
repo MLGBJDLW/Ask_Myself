@@ -116,6 +116,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .db
         .get_conversation(&conversation_id)
         .map_err(|e| e.to_string())?;
+    if conv.archived_at.is_some() {
+        return Err(
+            "Archived conversations are read-only. Restore the conversation before continuing."
+                .to_string(),
+        );
+    }
 
     // 2. Resolve the best matching agent config for this conversation.
     let db_config =

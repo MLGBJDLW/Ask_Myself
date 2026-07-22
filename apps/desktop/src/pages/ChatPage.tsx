@@ -1,7 +1,7 @@
 import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Check, ChevronDown, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Check, ChevronDown, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
@@ -872,6 +872,10 @@ export function ChatPage() {
 
   const handleArchiveConversation = useCallback(
     async (id: string) => {
+      if (chat.activeId === id && chat.isStreaming) {
+        toast.error(t('chat.stopBeforeArchive'));
+        return;
+      }
       const prev = chat.conversations;
       const archived = prev.find((c) => c.id === id);
       if (!archived) return;
@@ -906,8 +910,51 @@ export function ChatPage() {
         if (wasActive) navigate(`/chat/${id}`);
       }
     },
-    [chat.conversations, chat.setConversations, chat.activeId, navigate, t],
+    [chat.conversations, chat.setConversations, chat.activeId, chat.isStreaming, navigate, t],
   );
+
+  const handleSelectArchivedConversation = useCallback((id: string) => {
+    navigate(`/chat/${id}`);
+  }, [navigate]);
+
+  const handleArchivedConversationRestored = useCallback((conversation: Conversation) => {
+    chat.setConversations((current) => [
+      conversation,
+      ...current.filter((item) => item.id !== conversation.id),
+    ]);
+  }, [chat.setConversations]);
+
+  const handleArchivedConversationDeleted = useCallback((id: string) => {
+    if (chat.activeId === id) {
+      navigate('/chat');
+    }
+  }, [chat.activeId, navigate]);
+
+  const [restoringArchivedConversation, setRestoringArchivedConversation] = useState(false);
+  const handleRestoreActiveArchivedConversation = useCallback(async () => {
+    const conversation = chat.activeConversation;
+    if (!conversation?.archivedAt || restoringArchivedConversation) return;
+
+    setRestoringArchivedConversation(true);
+    try {
+      const restored = await api.unarchiveConversation(conversation.id);
+      handleArchivedConversationRestored(restored);
+      await chat.loadConversations().catch(() => undefined);
+      toast.success(t('chat.conversation.unarchived'));
+    } catch (error) {
+      toast.error(formatUserError(t('chat.unarchiveError'), error));
+    } finally {
+      setRestoringArchivedConversation(false);
+    }
+  }, [
+    chat.activeConversation,
+    chat.loadConversations,
+    handleArchivedConversationRestored,
+    restoringArchivedConversation,
+    t,
+  ]);
+
+  const isArchivedConversation = Boolean(chat.activeConversation?.archivedAt);
 
   const handleDeleteBatch = useCallback(
     (ids: string[]) => {
@@ -1055,6 +1102,7 @@ export function ChatPage() {
           <ChatSidebar
             conversations={chat.conversations}
             activeId={chat.activeId}
+            activeConversationArchived={isArchivedConversation}
             onSelect={handleSelectConversation}
             onNew={handleNewConversation}
             onArchive={handleArchiveConversation}
@@ -1062,6 +1110,9 @@ export function ChatPage() {
             onRename={chat.renameConversation}
             onDeleteBatch={handleDeleteBatch}
             onDeleteAll={handleDeleteAll}
+            onSelectArchived={handleSelectArchivedConversation}
+            onArchivedRestored={handleArchivedConversationRestored}
+            onArchivedDeleted={handleArchivedConversationDeleted}
             onConversationMoved={chat.loadConversations}
           />
         </div>
@@ -1127,33 +1178,63 @@ export function ChatPage() {
                   >
                     {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                   </button>
-                  <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2">
-                    <SourceSelector
-                      conversationId={chat.activeId}
-                      initialSelectedIds={initialSourceIds}
-                      onSelectionChange={handleSourceSelectionChange}
-                    />
-                    <SystemPromptEditor
-                      conversationId={chat.activeId}
-                      systemPrompt={chat.customSystemPrompt}
-                      onSaved={(newPrompt) => chat.setCustomSystemPrompt(newPrompt)}
-                    />
-                    <ActiveExtensions
-                      conversationId={chat.activeId ?? undefined}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleToggleTerminal}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
-                      text-text-tertiary hover:text-text-primary hover:bg-surface-3
-                      transition-colors cursor-pointer"
-                    title={`${t('shortcuts.toggleTerminal')} (Ctrl+J / Cmd+J)`}
-                    aria-label={t('shortcuts.toggleTerminal')}
-                    aria-keyshortcuts="Control+J Meta+J"
-                  >
-                    <TerminalSquare size={16} />
-                  </button>
+                  {isArchivedConversation ? (
+                    <div
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                      data-testid="archived-conversation-banner"
+                    >
+                      <Archive className="h-4 w-4 shrink-0 text-text-tertiary" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium text-text-primary">
+                          {chat.activeConversation?.title || t('chat.newConversation')}
+                        </div>
+                        <div className="truncate text-[10px] text-text-tertiary">
+                          {t('chat.archivedReadOnly')}
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        icon={restoringArchivedConversation
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <ArchiveRestore className="h-3.5 w-3.5" />}
+                        disabled={restoringArchivedConversation}
+                        onClick={() => void handleRestoreActiveArchivedConversation()}
+                      >
+                        {t('chat.restoreConversation')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2">
+                        <SourceSelector
+                          conversationId={chat.activeId}
+                          initialSelectedIds={initialSourceIds}
+                          onSelectionChange={handleSourceSelectionChange}
+                        />
+                        <SystemPromptEditor
+                          conversationId={chat.activeId}
+                          systemPrompt={chat.customSystemPrompt}
+                          onSaved={(newPrompt) => chat.setCustomSystemPrompt(newPrompt)}
+                        />
+                        <ActiveExtensions
+                          conversationId={chat.activeId ?? undefined}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleToggleTerminal}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
+                          text-text-tertiary hover:text-text-primary hover:bg-surface-3
+                          transition-colors cursor-pointer"
+                        title={`${t('shortcuts.toggleTerminal')} (Ctrl+J / Cmd+J)`}
+                        aria-label={t('shortcuts.toggleTerminal')}
+                        aria-keyshortcuts="Control+J Meta+J"
+                      >
+                        <TerminalSquare size={16} />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -1169,14 +1250,14 @@ export function ChatPage() {
               taskRun={chat.taskRun}
               isStreaming={chat.isStreaming}
               error={chat.error}
-              onRetry={chat.retry}
+              onRetry={isArchivedConversation ? undefined : chat.retry}
               onDismissError={() => chat.clearError()}
-              onDeleteMessage={chat.deleteMessage}
-              onEditAndResend={chat.editAndResend}
-              onApprovePlan={handleApprovePlan}
+              onDeleteMessage={isArchivedConversation ? undefined : chat.deleteMessage}
+              onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
+              onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
-              onSuggestionClick={handleSuggestionClick}
+              onSuggestionClick={isArchivedConversation ? undefined : handleSuggestionClick}
               isCompacting={isCompacting}
               compactCompleteVisible={compactCompleteVisible}
             />
@@ -1186,11 +1267,13 @@ export function ChatPage() {
               taskRun={chat.taskRun}
               taskEvents={chat.taskEvents}
             />
-            <TerminalDock
-              conversationId={chat.activeId ?? undefined}
-              agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
-              onSendSelectionToAgent={handleTerminalSelection}
-            />
+            {!isArchivedConversation && (
+              <TerminalDock
+                conversationId={chat.activeId ?? undefined}
+                agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
+                onSendSelectionToAgent={handleTerminalSelection}
+              />
+            )}
             {pendingGraphContext && (
               <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -1226,7 +1309,27 @@ export function ChatPage() {
                 </div>
               </div>
             )}
-            <ChatInput
+            {isArchivedConversation ? (
+              <div className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3">
+                <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 rounded-lg border border-border/70 bg-surface-2/70 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-text-primary">{t('chat.archivedReadOnly')}</div>
+                    <div className="text-[11px] text-text-tertiary">{t('chat.restoreToContinue')}</div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={restoringArchivedConversation
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <ArchiveRestore className="h-3.5 w-3.5" />}
+                    disabled={restoringArchivedConversation}
+                    onClick={() => void handleRestoreActiveArchivedConversation()}
+                  >
+                    {t('chat.restoreConversation')}
+                  </Button>
+                </div>
+              </div>
+            ) : <ChatInput
               onSend={handleChatSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
@@ -1256,8 +1359,10 @@ export function ChatPage() {
                 await chat.reloadMessages();
               } : undefined}
               onBranchCheckpoint={handleCheckpointBranch}
-            />
-            {chat.activeId && <ApprovalDialogMount conversationId={chat.activeId} />}
+            />}
+            {chat.activeId && !isArchivedConversation && (
+              <ApprovalDialogMount conversationId={chat.activeId} />
+            )}
           </>
         )}
       </div>

@@ -26,6 +26,36 @@ test.beforeEach(async ({ page }) => {
       title: 'Archived conversation',
       archivedAt: nowIso,
     };
+    const archivedMessages = [
+      {
+        id: 'msg-archived-user',
+        conversationId: 'conv-archived',
+        role: 'user',
+        content: 'Keep this archived question available.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 8,
+        createdAt: nowIso,
+        sortOrder: 0,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'msg-archived-assistant',
+        conversationId: 'conv-archived',
+        role: 'assistant',
+        content: 'This archived answer remains readable.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 8,
+        createdAt: nowIso,
+        sortOrder: 1,
+        thinking: null,
+        imageAttachments: null,
+      },
+    ];
     let active = [activeConversation];
     let archived = [archivedConversation];
     const commands: string[] = [];
@@ -108,7 +138,10 @@ test.beforeEach(async ({ page }) => {
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const conversation = [...active, ...archived].find((item) => item.id === id);
-          return [clone(conversation), []];
+          return [
+            clone(conversation),
+            id === 'conv-archived' ? clone(archivedMessages) : [],
+          ];
         }
         case 'get_conversation_turns_cmd':
         case 'get_agent_task_runs_cmd':
@@ -186,18 +219,41 @@ test('conversation actions offer archive and delete with reversible archive', as
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {
   await page.goto('/chat/conv-active');
 
-  await page.getByTestId('chat-sidebar-menu-trigger').click();
-  await page.getByRole('button', { name: 'Archived conversations' }).click();
+  await expect(page.getByTestId('chat-archive-nav')).toBeVisible();
+  await page.getByTestId('chat-archive-nav').click();
 
   const archivedItem = page.getByTestId('archived-conversation-conv-archived');
   await expect(archivedItem).toContainText('Archived conversation');
   await expect(archivedItem.getByRole('button', { name: 'Delete' })).toBeVisible();
+  await archivedItem.click();
+  await expect(page.getByTestId('archived-conversation-banner')).toContainText('read-only');
+  await expect(page.getByText('Keep this archived question available.')).toBeVisible();
+  await expect(page.getByText('This archived answer remains readable.')).toBeVisible();
+  await expect(page.getByPlaceholder('Type a message...')).toBeHidden();
+
   await archivedItem.getByRole('button', { name: 'Unarchive' }).click();
   await expect(archivedItem).toBeHidden();
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __ARCHIVE_COMMANDS__: string[] }).__ARCHIVE_COMMANDS__,
   )).toContain('unarchive_conversation_cmd');
 
-  await page.getByRole('button', { name: 'Back to conversations' }).click();
   await expect(page.getByText('Archived conversation', { exact: true })).toBeVisible();
+});
+
+test('a direct archived conversation link opens read-only without joining the active list', async ({ page }) => {
+  await page.goto('/chat/conv-archived');
+
+  const banner = page.getByTestId('archived-conversation-banner');
+  await expect(banner).toBeVisible();
+  await expect(page.getByTestId('archived-conversation-conv-archived')).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await expect(page.getByTestId('conversation-item-conv-archived')).toHaveCount(0);
+  await expect(page.getByPlaceholder('Type a message...')).toHaveCount(0);
+
+  await banner.getByRole('button', { name: 'Restore' }).click();
+  await expect(banner).toBeHidden();
+  await expect(page.getByTestId('conversation-item-conv-archived')).toBeVisible();
+  await expect(page.getByPlaceholder('Type a message...')).toBeVisible();
 });

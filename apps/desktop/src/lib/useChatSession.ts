@@ -573,6 +573,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   /* ── State ──────────────────────────────────────────────────────── */
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [openedConversation, setOpenedConversation] = useState<Conversation | null>(null);
   const [messageCache, setMessageCache] = useState<Record<string, ConversationMessage[]>>({});
   const [turnCache, setTurnCache] = useState<Record<string, ConversationTurn[]>>({});
   const [taskRunCache, setTaskRunCache] = useState<Record<string, AgentTaskRun[]>>({});
@@ -613,6 +614,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const defaultAgentConfigRef = useRef<AgentConfig | null>(null);
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
+  const openedConversationRef = useRef(openedConversation);
+  openedConversationRef.current = openedConversation;
   const messageCacheRef = useRef(messageCache);
   messageCacheRef.current = messageCache;
   activeAgentConfigRef.current = agentConfig;
@@ -891,6 +894,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   /* ── Load messages when conversation changes ────────────────────── */
   useEffect(() => {
     if (!activeId) {
+      setOpenedConversation(null);
       setCachedUsage(null);
       setCustomSystemPrompt(externalSystemPrompt ?? '');
       setAgentConfig(defaultAgentConfigRef.current);
@@ -899,6 +903,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       return;
     }
 
+    setOpenedConversation(
+      conversationsRef.current.find((conversation) => conversation.id === activeId) ?? null,
+    );
     setCustomSystemPrompt(systemPromptCacheRef.current[activeId] ?? '');
     setContextWindow(contextWindowCacheRef.current[activeId] ?? defaultContextWindow);
 
@@ -924,6 +931,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           api.getAgentTaskRuns(activeId),
         ]);
         if (cancelled) return;
+        setOpenedConversation(conv);
         // Safety net (also covers pre-Tier-B persisted rows): preserve any
         // imageAttachments present in prior in-memory state when the backend
         // response lacks them (e.g. optimistic temp-* ids or legacy rows).
@@ -948,6 +956,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             .catch(() => undefined);
         }
         setConversations((prev) => {
+          if (conv.archivedAt) {
+            return prev.filter((item) => item.id !== conv.id);
+          }
           const existing = prev.find((item) => item.id === conv.id);
           if (existing) {
             return prev.map((item) => (item.id === conv.id ? { ...item, ...conv } : item));
@@ -1013,7 +1024,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           );
           setTurnsForConversation(completedConversationId, conversationTurns);
           setTaskRunsForConversation(completedConversationId, agentTaskRuns);
+          if (activeId === completedConversationId) {
+            setOpenedConversation(conv);
+          }
           setConversations((prev) => {
+            if (conv.archivedAt) {
+              return prev.filter((item) => item.id !== conv.id);
+            }
             const existing = prev.find((item) => item.id === conv.id);
             if (existing) {
               return prev.map((item) => (item.id === conv.id ? { ...item, ...conv } : item));
@@ -1276,6 +1293,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const configForSend = activeAgentConfigRef.current;
       if (!configForSend) {
         toast.error(t('chat.noConfigError'));
+        return;
+      }
+      const conversationForSend = activeId
+        ? conversationsRef.current.find((conversation) => conversation.id === activeId)
+          ?? (openedConversationRef.current?.id === activeId ? openedConversationRef.current : null)
+        : null;
+      if (conversationForSend?.archivedAt) {
+        toast.error(t('chat.archivedReadOnlyError'));
         return;
       }
       const personaForSend = personaOverrideId ?? activePersonaId;
@@ -1643,7 +1668,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const shouldShowLivePreview =
     isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
   const activeConversation = activeId
-    ? conversations.find((conversation) => conversation.id === activeId) ?? null
+    ? conversations.find((conversation) => conversation.id === activeId)
+      ?? (openedConversation?.id === activeId ? openedConversation : null)
     : null;
   const activeTurns = turns;
   const activeIsStreaming = shouldShowLivePreview && isStreaming;
