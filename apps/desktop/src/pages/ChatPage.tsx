@@ -464,8 +464,8 @@ export function ChatPage() {
     [chat.messages],
   );
   const activeGoalContext = useMemo(
-    () => getActiveGoalContext(chat.messages),
-    [chat.messages],
+    () => getActiveGoalContext(chat.messages, chat.toolCalls),
+    [chat.messages, chat.toolCalls],
   );
   const [pendingGraphContext, setPendingGraphContext] = useState<GraphAgentContext | null>(
     () => readGraphAgentContext(),
@@ -844,6 +844,10 @@ export function ChatPage() {
 
   const handleDeleteConversation = useCallback(
     (id: string) => {
+      if (chat.runningConversationIds.has(id)) {
+        toast.error(t('chat.stopBeforeArchive'));
+        return;
+      }
       const prev = chat.conversations;
       const removed = prev.find((c) => c.id === id);
       const wasActive = chat.activeId === id;
@@ -867,12 +871,12 @@ export function ChatPage() {
         },
       });
     },
-    [chat.conversations, chat.setConversations, chat.activeId, navigate, t],
+    [chat.conversations, chat.runningConversationIds, chat.setConversations, chat.activeId, navigate, t],
   );
 
   const handleArchiveConversation = useCallback(
     async (id: string) => {
-      if (chat.activeId === id && chat.isStreaming) {
+      if (chat.runningConversationIds.has(id)) {
         toast.error(t('chat.stopBeforeArchive'));
         return;
       }
@@ -910,7 +914,7 @@ export function ChatPage() {
         if (wasActive) navigate(`/chat/${id}`);
       }
     },
-    [chat.conversations, chat.setConversations, chat.activeId, chat.isStreaming, navigate, t],
+    [chat.conversations, chat.runningConversationIds, chat.setConversations, chat.activeId, navigate, t],
   );
 
   const handleSelectArchivedConversation = useCallback((id: string) => {
@@ -958,6 +962,10 @@ export function ChatPage() {
 
   const handleDeleteBatch = useCallback(
     (ids: string[]) => {
+      if (ids.some((id) => chat.runningConversationIds.has(id))) {
+        toast.error(t('chat.stopBeforeArchive'));
+        return;
+      }
       const prev = chat.conversations;
       const idSet = new Set(ids);
       const removed = prev.filter((c) => idSet.has(c.id));
@@ -982,10 +990,14 @@ export function ChatPage() {
         },
       });
     },
-    [chat.conversations, chat.setConversations, chat.activeId, navigate, t],
+    [chat.conversations, chat.runningConversationIds, chat.setConversations, chat.activeId, navigate, t],
   );
 
   const handleDeleteAll = useCallback(() => {
+    if (chat.runningConversationIds.size > 0) {
+      toast.error(t('chat.stopBeforeArchive'));
+      return;
+    }
     const prev = chat.conversations;
     const previousActiveId = chat.activeId;
     chat.setConversations([]);
@@ -1009,7 +1021,7 @@ export function ChatPage() {
         }
       },
     });
-  }, [chat.conversations, chat.setConversations, chat.activeId, navigate, t]);
+  }, [chat.conversations, chat.runningConversationIds, chat.setConversations, chat.activeId, navigate, t]);
 
   /* ── Suggestion prefill ─────────────────────────────────────────── */
 
@@ -1102,6 +1114,7 @@ export function ChatPage() {
           <ChatSidebar
             conversations={chat.conversations}
             activeId={chat.activeId}
+            runningConversationIds={chat.runningConversationIds}
             activeConversationArchived={isArchivedConversation}
             onSelect={handleSelectConversation}
             onNew={handleNewConversation}
@@ -1266,6 +1279,7 @@ export function ChatPage() {
               toolCalls={chat.toolCalls}
               taskRun={chat.taskRun}
               taskEvents={chat.taskEvents}
+              goal={activeGoalContext}
             />
             {!isArchivedConversation && (
               <TerminalDock
@@ -1352,7 +1366,6 @@ export function ChatPage() {
                   finishReason={chat.finishReason}
                   contextOverflow={chat.contextOverflow}
                   isCompacting={isCompacting}
-                  activeGoalContext={activeGoalContext}
                 />
               ) : null}
               onRestoreCheckpoint={chat.activeId ? async () => {

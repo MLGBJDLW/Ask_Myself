@@ -123,6 +123,13 @@ class StreamStoreImpl {
     return null;
   }
 
+  /** Return every conversation that currently owns a live stream. */
+  getRunningConversationIds(): string[] {
+    return Object.entries(this._streams)
+      .filter(([, state]) => state.isStreaming)
+      .map(([id]) => id);
+  }
+
   private restoreProjectedState(
     conversationId: string,
     stateFactory: () => InternalStreamState,

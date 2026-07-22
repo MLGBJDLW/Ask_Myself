@@ -165,27 +165,53 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     activeConversationRef.current = null;
   }, []);
 
+  // Effects synchronize the subscription after a route change. Reading the
+  // watched stream directly prevents one stale render from showing the prior
+  // conversation's run state in the meantime.
+  const resolvedState = watchConversationId
+    ? streamStore.getStream(watchConversationId) ?? null
+    : storeState;
+
   return {
     send,
     stop,
-    isStreaming: storeState?.isStreaming ?? false,
-    streamText: storeState?.streamText ?? '',
-    streamRounds: storeState?.streamRounds ?? EMPTY_ROUNDS,
-    traceEvents: storeState?.traceEvents ?? EMPTY_TRACE_EVENTS,
-    thinkingText: storeState?.thinkingText ?? '',
-    isThinking: storeState?.isThinking ?? false,
-    toolCalls: storeState?.toolCalls ?? EMPTY_TOOLS,
-    error: storeState?.error ?? null,
-    lastUsage: storeState?.lastUsage ?? null,
-    lastCached: storeState?.lastCached ?? false,
-    finishReason: storeState?.finishReason ?? null,
-    contextOverflow: storeState?.contextOverflow ?? false,
-    rateLimited: storeState?.rateLimited ?? false,
-    autoCompacted: storeState?.autoCompacted ?? null,
-    pendingApprovals: storeState?.pendingApprovals ?? EMPTY_APPROVALS,
-    taskRun: storeState?.taskRun ?? null,
-    taskEvents: storeState?.taskEvents ?? EMPTY_TASK_EVENTS,
+    isStreaming: resolvedState?.isStreaming ?? false,
+    streamText: resolvedState?.streamText ?? '',
+    streamRounds: resolvedState?.streamRounds ?? EMPTY_ROUNDS,
+    traceEvents: resolvedState?.traceEvents ?? EMPTY_TRACE_EVENTS,
+    thinkingText: resolvedState?.thinkingText ?? '',
+    isThinking: resolvedState?.isThinking ?? false,
+    toolCalls: resolvedState?.toolCalls ?? EMPTY_TOOLS,
+    error: resolvedState?.error ?? null,
+    lastUsage: resolvedState?.lastUsage ?? null,
+    lastCached: resolvedState?.lastCached ?? false,
+    finishReason: resolvedState?.finishReason ?? null,
+    contextOverflow: resolvedState?.contextOverflow ?? false,
+    rateLimited: resolvedState?.rateLimited ?? false,
+    autoCompacted: resolvedState?.autoCompacted ?? null,
+    pendingApprovals: resolvedState?.pendingApprovals ?? EMPTY_APPROVALS,
+    taskRun: resolvedState?.taskRun ?? null,
+    taskEvents: resolvedState?.taskEvents ?? EMPTY_TASK_EVENTS,
     clearPreview,
     reset,
   };
+}
+
+/** Subscribe to the global run registry without coupling it to the open chat. */
+export function useRunningConversationIds(): ReadonlySet<string> {
+  const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(
+    () => new Set(streamStore.getRunningConversationIds()),
+  );
+
+  useEffect(() => streamStore.subscribe(() => {
+    const nextIds = streamStore.getRunningConversationIds();
+    setRunningIds((previous) => {
+      if (previous.size === nextIds.length && nextIds.every(id => previous.has(id))) {
+        return previous;
+      }
+      return new Set(nextIds);
+    });
+  }), []);
+
+  return runningIds;
 }

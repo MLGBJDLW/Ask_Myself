@@ -41,6 +41,7 @@ import type { Conversation } from '../../types/conversation';
 interface ChatSidebarProps {
   conversations: Conversation[];
   activeId: string | null;
+  runningConversationIds: ReadonlySet<string>;
   activeConversationArchived: boolean;
   onSelect: (id: string) => void;
   onNew: (projectId?: string | null) => void;
@@ -152,6 +153,7 @@ const listItemVariants = {
 function ConversationItem({
   conv,
   isActive,
+  isRunning,
   isPinned,
   isSelectMode,
   isSelected,
@@ -167,6 +169,7 @@ function ConversationItem({
 }: {
   conv: Conversation;
   isActive: boolean;
+  isRunning: boolean;
   isPinned: boolean;
   isSelectMode: boolean;
   isSelected: boolean;
@@ -219,6 +222,7 @@ function ConversationItem({
       animate="visible"
       exit="exit"
       role="button"
+      data-running={isRunning ? 'true' : 'false'}
       data-testid={`conversation-item-${conv.id}`}
       tabIndex={0}
       onMouseEnter={() => setHovered(true)}
@@ -296,6 +300,17 @@ function ConversationItem({
           </>
         )}
       </div>
+
+      {isRunning && !isSelectMode && !editing && (
+        <span
+          data-testid={`conversation-running-${conv.id}`}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent"
+          title={t('chat.thinking')}
+          aria-label={t('chat.thinking')}
+        >
+          <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        </span>
+      )}
 
       {/* Hover actions */}
       {!isSelectMode && (hovered || isPinned || actionsOpen) && !editing && (
@@ -390,6 +405,7 @@ function ConversationItem({
 export function ChatSidebar({
   conversations,
   activeId,
+  runningConversationIds,
   activeConversationArchived,
   onSelect,
   onNew,
@@ -933,6 +949,7 @@ export function ChatSidebar({
                       <ConversationItem
                         conv={conv}
                         isActive={conv.id === activeId}
+                        isRunning={runningConversationIds.has(conv.id)}
                         isPinned={pinnedIds.has(conv.id)}
                         isSelectMode={selectMode}
                         isSelected={selectedIds.has(conv.id)}

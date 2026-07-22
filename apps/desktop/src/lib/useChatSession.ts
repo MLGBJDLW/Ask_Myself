@@ -4,7 +4,12 @@ import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
 import type { AgentExecutionMode } from './api';
-import { useAgentStream, type ContextUsageBreakdown, type UsageTotal } from './useAgentStream';
+import {
+  useAgentStream,
+  useRunningConversationIds,
+  type ContextUsageBreakdown,
+  type UsageTotal,
+} from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
 import type {
@@ -484,6 +489,7 @@ export interface UseChatSessionReturn {
   taskRun: AgentTaskRun | null;
   taskEvents: ReturnType<typeof useAgentStream>['taskEvents'];
   conversations: Conversation[];
+  runningConversationIds: ReadonlySet<string>;
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
   isStreaming: boolean;
   streamText: string;
@@ -600,12 +606,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     personaId?: string | null;
     options?: ChatSendOptions;
   } | null>(null);
-  const usageConversationRef = useRef<string | null>(null);
   const usageCacheRef = useRef<Record<string, StoredUsageEntry>>(readUsageCache());
   const lastUsageRef = useRef<UsageTotal | null>(null);
   const recordedUsageSampleRef = useRef<string | null>(null);
-  const pendingStreamConversationRef = useRef<string | null>(null);
-  const streamingConversationRef = useRef<string | null>(null);
+  const knownStreamConversationsRef = useRef<Set<string>>(new Set());
+  const suppressedLiveUsageRef = useRef<Set<string>>(new Set());
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
@@ -691,27 +696,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     autoCompacted,
     taskRun: streamTaskRun,
     taskEvents: streamTaskEvents,
-    reset,
   } = useAgentStream(activeId);
+  const runningConversationIds = useRunningConversationIds();
+
+  useEffect(() => {
+    for (const conversationId of runningConversationIds) {
+      knownStreamConversationsRef.current.add(conversationId);
+    }
+  }, [runningConversationIds]);
 
   useEffect(() => {
     lastUsageRef.current = lastUsage;
   }, [lastUsage]);
-
-  // Reconnect to in-progress or just-completed stream from global store
-  // (runs during render so scoping computed values below see the correct ref)
-  if (activeId && !streamingConversationRef.current) {
-    const storeStream = streamStore.getStream(activeId);
-    if (storeStream && (
-      storeStream.isStreaming
-      || storeStream.streamRounds.length > 0
-      || storeStream.traceEvents.length > 0
-      || storeStream.streamText.length > 0
-    )) {
-      streamingConversationRef.current = activeId;
-      usageConversationRef.current = activeId;
-    }
-  }
 
   const setUsageCacheForConversation = useCallback((conversationId: string, usage: UsageTotal) => {
     const normalized = normalizeUsage(usage);
@@ -909,12 +905,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setCustomSystemPrompt(systemPromptCacheRef.current[activeId] ?? '');
     setContextWindow(contextWindowCacheRef.current[activeId] ?? defaultContextWindow);
 
-    const isPendingStreamConversation = pendingStreamConversationRef.current === activeId;
-    const isActiveStreamingConversation =
-      streamingConversationRef.current === activeId && isStreaming;
-    const justFinishedStreaming =
-      streamingConversationRef.current === activeId && !isStreaming;
-    if (isPendingStreamConversation || isActiveStreamingConversation || justFinishedStreaming) {
+    if (isStreaming) {
       setLoadingMsgs(false);
       return;
     }
@@ -949,8 +940,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               streamStore.restoreFromHistoricalEvents(activeId, resumableRun, taskEvents, runEvents);
               const restoredStream = streamStore.getStream(activeId);
               if (restoredStream?.isStreaming) {
-                streamingConversationRef.current = activeId;
-                usageConversationRef.current = activeId;
+                knownStreamConversationsRef.current.add(activeId);
               }
             })
             .catch(() => undefined);
@@ -1003,10 +993,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
     let cancelled = false;
-    const completedConversationId = !isStreaming ? streamingConversationRef.current : null;
+    const completedConversationId = activeId
+      && !isStreaming
+      && knownStreamConversationsRef.current.has(activeId)
+      ? activeId
+      : null;
     if (completedConversationId) {
+      knownStreamConversationsRef.current.delete(completedConversationId);
       const completedUsage = lastUsageRef.current;
-      if (completedUsage && usageConversationRef.current === completedConversationId) {
+      if (completedUsage) {
         recordUsageCacheSampleForConversation(completedConversationId, completedUsage);
       }
       // Re-fetch messages after agent is done.
@@ -1107,23 +1102,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   }, [streamError]);
 
   useEffect(() => {
-    if (isStreaming) {
-      pendingStreamConversationRef.current = null;
-      return;
-    }
-    if (streamText.trim().length > 0) return;
-    if (streamRounds.length > 0) return;
-    if (traceEvents.length > 0) return;
-    if (thinkingText.trim().length > 0) return;
-    if (isThinking) return;
-    if (toolCalls.length > 0) return;
-    pendingStreamConversationRef.current = null;
-    streamingConversationRef.current = null;
-  }, [isStreaming, isThinking, streamRounds.length, streamText, thinkingText, toolCalls.length, traceEvents.length]);
-
-  useEffect(() => {
     if (!activeId || !lastUsage) return;
-    if (usageConversationRef.current !== activeId) return;
+    if (suppressedLiveUsageRef.current.has(activeId)) return;
     setUsageCacheForConversation(activeId, lastUsage);
   }, [activeId, lastUsage, setUsageCacheForConversation]);
 
@@ -1148,13 +1128,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setCachedUsage(null);
     setAgentConfig(defaultAgentConfigRef.current);
     setContextWindow(defaultContextWindow);
-    usageConversationRef.current = null;
-    pendingStreamConversationRef.current = null;
-    streamingConversationRef.current = null;
-    reset();
     setChatError(null);
     lastUserMessageRef.current = null;
-  }, [defaultContextWindow, reset]);
+  }, [defaultContextWindow]);
 
   const deleteConversation = useCallback(
     async (id: string) => {
@@ -1184,9 +1160,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setCachedUsage(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
-          usageConversationRef.current = null;
-          pendingStreamConversationRef.current = null;
-          streamingConversationRef.current = null;
         }
       } catch (e) {
         toast.error(formatUserError(t('chat.deleteError'), e));
@@ -1226,9 +1199,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setCachedUsage(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
-          usageConversationRef.current = null;
-          pendingStreamConversationRef.current = null;
-          streamingConversationRef.current = null;
         }
       } catch (e) {
         toast.error(formatUserError(t('chat.deleteError'), e));
@@ -1252,9 +1222,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setCachedUsage(null);
       setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
-      usageConversationRef.current = null;
-      pendingStreamConversationRef.current = null;
-      streamingConversationRef.current = null;
     } catch (e) {
       toast.error(formatUserError(t('chat.deleteError'), e));
     }
@@ -1324,7 +1291,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       let convId = activeId;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
-      if (convId && streamingConversationRef.current === convId && liveStream?.isStreaming) {
+      if (convId && liveStream?.isStreaming) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));
@@ -1349,8 +1316,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         };
         setMessagesForConversation(steeringConversationId, (prev) => [...prev, optimisticMsg]);
         recordedUsageSampleRef.current = null;
-        usageConversationRef.current = steeringConversationId;
-        streamingConversationRef.current = steeringConversationId;
+        knownStreamConversationsRef.current.add(steeringConversationId);
 
         try {
           await api.agentSteer(steeringConversationId, content);
@@ -1367,15 +1333,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           );
           if (isNoRunningAgentError(e)) {
             streamStore.clearStream(steeringConversationId);
-            if (usageConversationRef.current === steeringConversationId) {
-              usageConversationRef.current = null;
-            }
-            if (pendingStreamConversationRef.current === steeringConversationId) {
-              pendingStreamConversationRef.current = null;
-            }
-            if (streamingConversationRef.current === steeringConversationId) {
-              streamingConversationRef.current = null;
-            }
+            knownStreamConversationsRef.current.delete(steeringConversationId);
             setChatError(null);
             await send(content, attachments, personaOverrideId, options);
             return;
@@ -1465,9 +1423,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       };
       setMessagesForConversation(convId, (prev) => [...prev, optimisticMsg]);
       recordedUsageSampleRef.current = null;
-      usageConversationRef.current = convId;
-      pendingStreamConversationRef.current = convId;
-      streamingConversationRef.current = convId;
+      knownStreamConversationsRef.current.add(convId);
+      suppressedLiveUsageRef.current.delete(convId);
 
       await streamSend(
         convId,
@@ -1485,10 +1442,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   );
 
   const stop = useCallback(() => {
-    const targetConversationId =
-      streamingConversationRef.current ?? pendingStreamConversationRef.current ?? activeId;
-    if (targetConversationId) {
-      streamStop(targetConversationId);
+    if (activeId) {
+      streamStop(activeId);
     }
   }, [activeId, streamStop]);
 
@@ -1572,9 +1527,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     recordedUsageSampleRef.current = null;
-    usageConversationRef.current = activeId;
-    pendingStreamConversationRef.current = activeId;
-    streamingConversationRef.current = activeId;
+    knownStreamConversationsRef.current.add(activeId);
+    suppressedLiveUsageRef.current.delete(activeId);
 
     await streamSend(
       activeId,
@@ -1626,9 +1580,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     };
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     recordedUsageSampleRef.current = null;
-    usageConversationRef.current = activeId;
-    pendingStreamConversationRef.current = activeId;
-    streamingConversationRef.current = activeId;
+    knownStreamConversationsRef.current.add(activeId);
+    suppressedLiveUsageRef.current.delete(activeId);
 
     await streamSend(activeId, newContent, undefined, activeAgentConfigRef.current?.id ?? null);
   }, [activeId, messages, setMessagesForConversation, streamSend]);
@@ -1644,9 +1597,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         writeUsageCache(next);
       }
       setCachedUsage(null);
-      if (usageConversationRef.current === activeId) {
-        usageConversationRef.current = null;
-      }
+      suppressedLiveUsageRef.current.add(activeId);
     }
     try {
       const [[, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
@@ -1663,7 +1614,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   /* ── Computed ────────────────────────────────────────────────────── */
 
   const isViewingStreamingConversation =
-    activeId != null && streamingConversationRef.current === activeId;
+    activeId != null && streamHasVisiblePreview(activeId);
   const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
   const shouldShowLivePreview =
     isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
@@ -1684,12 +1635,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     ? (streamTaskRun ?? latestPersistedTaskRun)
     : latestPersistedTaskRun;
   const activeTaskEvents = shouldShowLivePreview ? streamTaskEvents : [];
-  const scopedLastUsage = usageConversationRef.current === activeId ? lastUsage : null;
-  const scopedLastCached = usageConversationRef.current === activeId ? lastCached : false;
-  const scopedFinishReason = usageConversationRef.current === activeId ? finishReason : null;
-  const scopedContextOverflow = usageConversationRef.current === activeId ? contextOverflow : false;
-  const scopedRateLimited = usageConversationRef.current === activeId ? rateLimited : false;
-  const scopedError = usageConversationRef.current === activeId ? chatError : null;
+  const liveUsageSuppressed = activeId ? suppressedLiveUsageRef.current.has(activeId) : false;
+  const scopedLastUsage = activeId && !liveUsageSuppressed ? lastUsage : null;
+  const scopedLastCached = activeId && !liveUsageSuppressed ? lastCached : false;
+  const scopedFinishReason = activeId && !liveUsageSuppressed ? finishReason : null;
+  const scopedContextOverflow = activeId && !liveUsageSuppressed ? contextOverflow : false;
+  const scopedRateLimited = activeId && !liveUsageSuppressed ? rateLimited : false;
+  const scopedError = activeId ? chatError : null;
 
   const usageForView = scopedLastUsage ? normalizeUsage(scopedLastUsage) : (cachedUsage ? normalizeUsage(cachedUsage) : null);
   const usageAverageForView = cachedUsage ? normalizeUsage(cachedUsage) : null;
@@ -1757,6 +1709,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     taskRun: activeTaskRun,
     taskEvents: activeTaskEvents,
     conversations,
+    runningConversationIds,
     setConversations,
     isStreaming: activeIsStreaming,
     streamText: activeStreamText,
