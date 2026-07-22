@@ -183,18 +183,21 @@ test('navigates to every conversation turn from the right-side timeline', async 
   const log = page.getByRole('log');
   const navigator = page.getByTestId('chat-turn-navigator');
   await expect(navigator).toBeVisible();
-  await expect(navigator).toHaveAttribute('data-variant', 'edge-rail');
+  await expect(navigator).toHaveAttribute('data-variant', 'edge-waveform');
   await expect(navigator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(navigator.getByRole('button')).toHaveCount(4);
+  await expect(navigator.getByTestId('chat-turn-wave-bar')).toHaveCount(4);
 
   const logBox = await log.boundingBox();
   const navigatorBox = await navigator.boundingBox();
   expect(logBox).not.toBeNull();
   expect(navigatorBox).not.toBeNull();
-  expect(navigatorBox!.x).toBeGreaterThan(logBox!.x + logBox!.width * 0.75);
+  expect(navigatorBox!.x).toBeGreaterThan(logBox!.x + logBox!.width * 0.9);
+  expect(Math.abs(logBox!.x + logBox!.width - (navigatorBox!.x + navigatorBox!.width))).toBeLessThan(16);
 
   await navigator.getByRole('button', { name: /^#1 ·/ }).click();
   await expect(navigator.getByRole('button', { name: /^#1 ·/ })).toHaveAttribute('aria-current', 'step');
+  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-wave-bar')).toHaveAttribute('style', /width: 24px/);
   await expect(navigator.getByTestId('chat-turn-position')).toHaveText('1/4');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeLessThan(120);
 
