@@ -135,8 +135,18 @@ test('resolves goal into a goal-oriented prompt', () => {
   assertEqual(resolved.artifact.kind, 'goal', 'goal uses dedicated artifact kind');
   assertEqual(resolved.artifact.objective, 'ship offline sync', 'goal artifact records objective');
   assert(resolved.message.includes('success criteria'), 'goal prompt asks for success criteria');
-  assert(resolved.message.includes('future work'), 'goal prompt makes the objective persistent');
+  assert(resolved.message.includes('durable conversation goal'), 'goal prompt makes the objective persistent');
+  assert(resolved.message.includes('update_goal'), 'goal prompt requires an explicit lifecycle transition');
   assert(resolved.message.includes('ship offline sync'), 'goal preserves user objective');
+});
+
+test('resolves goal clear into a terminal goal artifact', () => {
+  const options = buildSlashCommandOptions([], []);
+  const resolved = resolveSlashCommandMessage('/goal clear', options);
+  assert(resolved, 'goal clear should resolve');
+  assertEqual(resolved.artifact.kind, 'goal', 'goal clear keeps the dedicated artifact kind');
+  assertEqual(resolved.artifact.status, 'cleared', 'goal clear closes the durable goal');
+  assertEqual(resolved.message, 'Clear the active conversation goal.', 'goal clear avoids a new execution prompt');
 });
 
 test('keeps the latest goal active across assistant replies until replaced or completed', () => {

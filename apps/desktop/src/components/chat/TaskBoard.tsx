@@ -5,6 +5,7 @@ import type {
   ConversationMessage,
 } from '../../types/conversation';
 import type { ToolCallEvent } from '../../lib/useAgentStream';
+import type { ActiveGoalContext } from '../../lib/goalContext';
 import {
   extractPlanArtifact,
   findLatestPlanArtifact,
@@ -17,6 +18,7 @@ interface TaskBoardProps {
   toolCalls: ToolCallEvent[];
   taskRun?: AgentTaskRun | null;
   taskEvents?: AgentTaskRunEvent[];
+  goal?: ActiveGoalContext | null;
 }
 
 export function TaskBoard({
@@ -24,6 +26,7 @@ export function TaskBoard({
   toolCalls,
   taskRun,
   taskEvents = [],
+  goal = null,
 }: TaskBoardProps) {
   const plan = useMemo(
     () => findLatestUpdatePlanArtifact(messages, toolCalls)
@@ -40,11 +43,11 @@ export function TaskBoard({
     [messages, taskEvents, taskRun?.artifacts, toolCalls],
   );
 
-  if (!plan) {
+  if (!plan && !goal) {
     return null;
   }
 
-  if (plan.routeKind === 'DirectResponse') {
+  if (!goal && plan?.routeKind === 'DirectResponse') {
     return null;
   }
 
@@ -53,7 +56,7 @@ export function TaskBoard({
       data-testid="task-board"
       className="pointer-events-none absolute right-3 top-14 z-20 w-[min(22rem,calc(100%-1.5rem))] md:right-4"
     >
-      <PlanProgressPanel plan={plan} subtasks={subtasks} />
+      <PlanProgressPanel plan={plan} goal={goal} subtasks={subtasks} />
     </div>
   );
 }

@@ -1,0 +1,19 @@
+{
+  "description": "Update the durable execution goal for the current conversation. Mark it complete only after the objective is actually achieved and verified. Mark it blocked only when progress genuinely requires user input or an external state change. Do not close a goal because a response, plan, tool budget, or iteration is ending.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": ["active", "blocked", "complete"],
+        "description": "The truthful lifecycle state of the goal."
+      },
+      "objective": {
+        "type": "string",
+        "description": "Optional refined objective; omit to preserve the existing objective."
+      }
+    },
+    "required": ["status"],
+    "additionalProperties": false
+  }
+}

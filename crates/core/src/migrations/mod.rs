@@ -1164,6 +1164,20 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_conversations_archived_at
             ON conversations(archived_at);",
     ),
+    (
+        "v074_conversation_goals",
+        "CREATE TABLE IF NOT EXISTS conversation_goals (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+            id TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active', 'blocked', 'complete')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_goals_status
+            ON conversation_goals(status, updated_at);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1595,5 +1609,30 @@ mod tests {
             )
             .unwrap();
         assert!(archived_at_exists, "conversations.archived_at should exist");
+    }
+
+    #[test]
+    fn test_conversation_goals_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        for column in [
+            "conversation_id",
+            "id",
+            "objective",
+            "status",
+            "created_at",
+            "updated_at",
+            "completed_at",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('conversation_goals') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0).map(|count| count > 0),
+                )
+                .unwrap();
+            assert!(exists, "conversation_goals.{column} should exist");
+        }
     }
 }

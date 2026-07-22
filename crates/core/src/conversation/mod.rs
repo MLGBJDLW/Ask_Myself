@@ -1,7 +1,10 @@
 //! Conversation persistence — types and CRUD for conversations, messages, and agent configs.
 
+pub mod goal;
 pub mod memory;
 pub mod summarizer;
+
+pub use goal::{ConversationGoal, ConversationGoalStatus};
 
 use std::collections::{BTreeSet, HashSet};
 

@@ -1,14 +1,16 @@
 import type { ConversationMessage, ArtifactPayload } from "../types/conversation";
+import type { ToolCallEvent } from "./streaming/protocol";
 
 export type GoalLifecycleStatus =
   | "active"
+  | "blocked"
   | "paused"
   | "complete"
   | "cleared";
 
 export interface ActiveGoalContext {
   objective: string;
-  status: Extract<GoalLifecycleStatus, "active" | "paused">;
+  status: Extract<GoalLifecycleStatus, "active" | "blocked" | "paused">;
   sourceMessageId: string;
   createdAt: string;
 }
@@ -35,39 +37,64 @@ function artifactStatus(artifacts: Record<string, unknown>): GoalLifecycleStatus
   if (typeof raw !== "string") return "active";
   const normalized = raw.trim().toLowerCase();
   if (normalized === "paused") return "paused";
+  if (normalized === "blocked") return "blocked";
   if (TERMINAL_GOAL_STATUSES.has(normalized)) {
     return normalized === "cleared" || normalized === "clear" ? "cleared" : "complete";
   }
   return "active";
 }
 
-export function getActiveGoalContext(messages: ConversationMessage[]): ActiveGoalContext | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-
-    const artifacts = asRecord(message.artifacts);
-    if (!artifacts) continue;
-
-    const kind = typeof artifacts.kind === "string" ? artifacts.kind : null;
-    if (!kind || !GOAL_ARTIFACT_KINDS.has(kind)) continue;
-
-    const status = artifactStatus(artifacts);
-    if (status === "complete" || status === "cleared") {
-      return null;
+function findGoalArtifact(value: unknown, depth = 0): Record<string, unknown> | null {
+  if (depth > 5) return null;
+  const record = asRecord(value);
+  if (record) {
+    const kind = typeof record.kind === "string" ? record.kind : null;
+    if (kind && GOAL_ARTIFACT_KINDS.has(kind)) return record;
+    for (const key of ["artifacts", "goal", "data", "toolOutput"]) {
+      if (!(key in record)) continue;
+      const nested = findGoalArtifact(record[key], depth + 1);
+      if (nested) return nested;
     }
-
-    const objective = artifactObjective(artifacts, message.content);
-    if (!objective) return null;
-
-    return {
-      objective,
-      status,
-      sourceMessageId: message.id,
-      createdAt: message.createdAt,
-    };
+  }
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const nested = findGoalArtifact(value[index], depth + 1);
+      if (nested) return nested;
+    }
   }
   return null;
+}
+
+export function getActiveGoalContext(
+  messages: ConversationMessage[],
+  toolCalls: ToolCallEvent[] = [],
+): ActiveGoalContext | null {
+  let current: ActiveGoalContext | null = null;
+  const applyArtifact = (
+    value: unknown,
+    fallbackObjective: string,
+    sourceMessageId: string,
+    createdAt: string,
+  ) => {
+    const artifacts = findGoalArtifact(value);
+    if (!artifacts) return;
+    const status = artifactStatus(artifacts);
+    if (status === "complete" || status === "cleared") {
+      current = null;
+      return;
+    }
+    const objective = artifactObjective(artifacts, fallbackObjective);
+    if (!objective) return;
+    current = { objective, status, sourceMessageId, createdAt };
+  };
+
+  for (const message of messages) {
+    applyArtifact(message.artifacts, message.content, message.id, message.createdAt);
+  }
+  for (const call of toolCalls) {
+    applyArtifact(call.artifacts, "", call.callId, "");
+  }
+  return current;
 }
 
 export function buildGoalContinuationLlmContext(goal: ActiveGoalContext, userMessage: string): string {

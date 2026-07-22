@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, ChevronDown, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Circle, ClipboardList, GitBranch, Loader2, ShieldCheck, Target, XCircle } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -14,6 +14,7 @@ import type {
   VerificationArtifact,
   VerificationCheckArtifact,
 } from '../../lib/taskArtifacts';
+import type { ActiveGoalContext } from '../../lib/goalContext';
 
 function derivePlanCounts(plan: PlanArtifact) {
   const total = plan.steps.length;
@@ -243,9 +244,11 @@ function currentPlanTranslation(element: HTMLElement): { x: number; y: number } 
 
 export function PlanProgressPanel({
   plan,
+  goal = null,
   subtasks = [],
 }: {
-  plan: PlanArtifact;
+  plan?: PlanArtifact | null;
+  goal?: ActiveGoalContext | null;
   subtasks?: SubtaskRunArtifact[];
 }) {
   const { t } = useTranslation();
@@ -254,12 +257,20 @@ export function PlanProgressPanel({
   const dragStateRef = useRef<PlanDragState | null>(null);
   const snapAnimationRef = useRef<Animation | null>(null);
   const suppressClickRef = useRef(false);
-  const counts = getPlanCounts(plan);
-  const current = getCurrentPlanStep(plan);
+  const counts = plan
+    ? getPlanCounts(plan)
+    : { total: 0, completed: 0, inProgress: 0, pending: 0 };
+  const current = plan ? getCurrentPlanStep(plan) : null;
   const percent = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0;
   const subtaskCounts = getSubtaskCounts(subtasks);
-  let currentIcon = <Circle className="h-3 w-3 text-text-tertiary" />;
-  if (current?.status === 'completed') {
+  let currentIcon = goal
+    ? <Target className="h-3 w-3 text-accent" />
+    : <Circle className="h-3 w-3 text-text-tertiary" />;
+  if (goal?.status === 'blocked') {
+    currentIcon = <AlertTriangle className="h-3 w-3 text-warning" />;
+  } else if (goal?.status === 'active') {
+    currentIcon = <Loader2 className="h-3 w-3 animate-spin text-accent motion-reduce:animate-none" />;
+  } else if (current?.status === 'completed') {
     currentIcon = <CheckCircle2 className="h-3 w-3 text-success" />;
   } else if (current?.status === 'in_progress') {
     currentIcon = <Loader2 className="h-3 w-3 animate-spin text-accent" />;
@@ -404,6 +415,7 @@ export function PlanProgressPanel({
       ref={panelRef}
       className="pointer-events-auto relative ml-auto h-10 w-full"
       data-open={open}
+      data-goal-active={goal ? 'true' : 'false'}
       data-testid="plan-progress-panel"
     >
       <button
@@ -425,21 +437,23 @@ export function PlanProgressPanel({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
-              {t('chat.planLabel')}
+              {goal ? t('chat.goalStatusTitle') : t('chat.planLabel')}
             </span>
-            {current?.title && (
+            {(goal?.objective || current?.title) && (
               <span className="max-w-44 truncate text-xs font-medium text-text-primary">
-                {current.title}
+                {goal?.objective ?? current?.title}
               </span>
             )}
           </div>
         </div>
-        <span
-          data-testid="task-board-progress"
-          className="shrink-0 text-[11px] tabular-nums text-text-tertiary"
-        >
-          {counts.completed}/{counts.total}
-        </span>
+        {plan && (
+          <span
+            data-testid="task-board-progress"
+            className="shrink-0 text-[11px] tabular-nums text-text-tertiary"
+          >
+            {counts.completed}/{counts.total}
+          </span>
+        )}
         {subtaskCounts.running > 0 && (
           <span
             className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent"
@@ -474,33 +488,39 @@ export function PlanProgressPanel({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
-                {t('chat.planLabel')}
+                {goal ? t('chat.goalStatusTitle') : t('chat.planLabel')}
               </span>
             </div>
             <div className="mt-0.5 truncate text-xs font-semibold text-text-primary">
-              {current?.title ?? plan.title ?? ''}
+              {goal?.objective ?? current?.title ?? plan?.title ?? ''}
             </div>
             {current?.notes && (
               <div className="mt-0.5 truncate text-[11px] text-text-tertiary">{current.notes}</div>
             )}
           </div>
-          <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
-            {counts.completed}/{counts.total}
-          </span>
+          {plan && (
+            <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
+              {counts.completed}/{counts.total}
+            </span>
+          )}
           <ChevronDown className="h-3.5 w-3.5 shrink-0 rotate-180 text-text-tertiary transition-transform" />
         </button>
 
-        <div className="mx-1 mt-1 h-1 rounded-full bg-surface-0">
-          <div
-            className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <ol className="mt-2 max-h-40 space-y-1 overflow-y-auto px-1 pr-1.5">
-          {plan.steps.map((step, index) => (
-            <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
-          ))}
-        </ol>
+        {plan && (
+          <>
+            <div className="mx-1 mt-1 h-1 rounded-full bg-surface-0">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-300"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+            <ol className="mt-2 max-h-40 space-y-1 overflow-y-auto px-1 pr-1.5">
+              {plan.steps.map((step, index) => (
+                <PlanProgressStepRow key={step.id || `${step.title}-${index}`} step={step} />
+              ))}
+            </ol>
+          </>
+        )}
         {subtasks.length > 0 && (
           <section
             data-testid="plan-subagent-status"

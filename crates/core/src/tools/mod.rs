@@ -86,6 +86,7 @@ pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
 pub mod compare_tool;
 pub mod compile_tool;
+pub mod conversation_goal_tool;
 pub mod create_file_tool;
 pub mod date_search_tool;
 pub mod desktop_automation_tool;
@@ -923,6 +924,7 @@ fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
             | "synthesize_speech"
             | "prepare_document_tools"
             | "update_plan"
+            | "update_goal"
             | "record_verification"
             | "spawn_subagent"
             | "spawn_subagent_batch"
@@ -1029,6 +1031,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(desktop_automation_tool::DesktopAutomationTool));
     registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
     registry.register(Box::new(update_plan_tool::UpdatePlanTool));
+    registry.register(Box::new(conversation_goal_tool::GetGoalTool));
+    registry.register(Box::new(conversation_goal_tool::UpdateGoalTool));
     registry.register(Box::new(record_verification_tool::RecordVerificationTool));
     registry.register(Box::new(compile_tool::CompileTool));
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
@@ -1127,6 +1131,7 @@ mod tests {
             "create_file",
             "write_note",
             "update_plan",
+            "update_goal",
             "record_verification",
             "project_tool",
             "spawn_subagent",

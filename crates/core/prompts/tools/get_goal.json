@@ -1,0 +1,8 @@
+{
+  "description": "Read the durable execution goal for the current conversation, including its objective and lifecycle status.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

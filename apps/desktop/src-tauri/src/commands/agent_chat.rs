@@ -122,6 +122,11 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .to_string(),
         );
     }
+    sync_conversation_goal_from_user_artifacts(
+        state.db.as_ref(),
+        &conversation_id,
+        user_artifacts.as_ref(),
+    )?;
 
     // 2. Resolve the best matching agent config for this conversation.
     let db_config =
@@ -483,6 +488,59 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     }
 
     Ok(launch)
+}
+
+fn sync_conversation_goal_from_user_artifacts(
+    db: &Database,
+    conversation_id: &str,
+    user_artifacts: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let artifact = user_artifacts.and_then(serde_json::Value::as_object);
+    let is_goal_command = artifact
+        .and_then(|value| value.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| matches!(kind, "goal" | "agentGoal"));
+
+    if is_goal_command {
+        let status = artifact
+            .and_then(|value| value.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("active")
+            .trim()
+            .to_ascii_lowercase();
+        if matches!(
+            status.as_str(),
+            "clear" | "cleared" | "cancel" | "cancelled"
+        ) {
+            return db
+                .clear_conversation_goal(conversation_id)
+                .map_err(|error| error.to_string());
+        }
+
+        let objective = artifact
+            .and_then(|value| value.get("objective"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Goal objective cannot be empty.".to_string())?;
+        db.set_conversation_goal(conversation_id, objective)
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    if db
+        .get_conversation_goal(conversation_id)
+        .map_err(|error| error.to_string())?
+        .is_some_and(|goal| goal.status == nexa_core::conversation::ConversationGoalStatus::Blocked)
+    {
+        db.update_conversation_goal(
+            conversation_id,
+            nexa_core::conversation::ConversationGoalStatus::Active,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 // ── Model Context Window ─────────────────────────────────────────────────

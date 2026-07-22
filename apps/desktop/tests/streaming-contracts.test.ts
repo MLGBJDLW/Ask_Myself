@@ -2152,6 +2152,30 @@ test('live ordering ignores duplicate and late events while marking gaps', () =>
   streamStore.clearStream(conversationId);
 });
 
+test('stream registry keeps concurrent conversations independently addressable', () => {
+  const firstId = 'concurrent-stream-first';
+  const secondId = 'concurrent-stream-second';
+
+  streamStore.startStream(firstId);
+  streamStore.startStream(secondId);
+  assertEqual(
+    streamStore.getRunningConversationIds().sort().join(','),
+    [firstId, secondId].sort().join(','),
+    'both running conversations are exposed to navigation surfaces',
+  );
+
+  streamStore.stopStream(firstId);
+  assertEqual(
+    streamStore.getRunningConversationIds().join(','),
+    secondId,
+    'stopping one conversation does not affect the other',
+  );
+  assert(streamStore.getStream(secondId)?.isStreaming, 'second conversation keeps running');
+
+  streamStore.clearStream(firstId);
+  streamStore.clearStream(secondId);
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     try {

@@ -4,10 +4,8 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Target } from 'lucide-react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
-import type { ActiveGoalContext } from '../../lib/goalContext';
 
 interface ContextUsageSegment {
   kind: string;
@@ -65,7 +63,6 @@ interface ChatRunOverviewProps {
   finishReason?: string | null;
   contextOverflow?: boolean;
   isCompacting?: boolean;
-  activeGoalContext?: ActiveGoalContext | null;
 }
 
 const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
@@ -208,12 +205,12 @@ export function ChatRunOverview({
   finishReason,
   contextOverflow = false,
   isCompacting = false,
-  activeGoalContext = null,
 }: ChatRunOverviewProps) {
   const { t } = useTranslation();
   const overviewRef = useRef<HTMLDivElement>(null);
   const pointerInsideRef = useRef(false);
   const suppressHoverRef = useRef(false);
+  const suppressHoverTimerRef = useRef<number | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
@@ -320,12 +317,7 @@ export function ChatRunOverview({
   const contextTriggerLabel = usage
     ? `${t('chat.contextBudgetLabel')}: ${tokenUsageLabel} · ${percentLabel} · ${statusLabel}`
     : `${t('chat.contextBudgetLabel')}: ${statusLabel}`;
-  const goalTriggerLabel = activeGoalContext
-    ? `${t('chat.goalStatusTitle')}: ${activeGoalContext.objective}`
-    : null;
-  const triggerLabel = goalTriggerLabel
-    ? `${goalTriggerLabel}; ${contextTriggerLabel}`
-    : contextTriggerLabel;
+  const triggerLabel = contextTriggerLabel;
   const ringDashOffset = RING_CIRCUMFERENCE * (1 - usagePercent / 100);
 
   useEffect(() => {
@@ -336,6 +328,13 @@ export function ChatRunOverview({
       event.preventDefault();
       event.stopPropagation();
       suppressHoverRef.current = pointerInsideRef.current;
+      if (suppressHoverTimerRef.current !== null) {
+        window.clearTimeout(suppressHoverTimerRef.current);
+      }
+      suppressHoverTimerRef.current = window.setTimeout(() => {
+        suppressHoverRef.current = false;
+        suppressHoverTimerRef.current = null;
+      }, 120);
       setDetailsOpen(false);
 
       const activeElement = document.activeElement;
@@ -348,7 +347,13 @@ export function ChatRunOverview({
     return () => document.removeEventListener('keydown', handleEscape, true);
   }, [detailsOpen]);
 
-  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow && !activeGoalContext) {
+  useEffect(() => () => {
+    if (suppressHoverTimerRef.current !== null) {
+      window.clearTimeout(suppressHoverTimerRef.current);
+    }
+  }, []);
+
+  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow) {
     return null;
   }
 
@@ -359,11 +364,23 @@ export function ChatRunOverview({
       data-testid="chat-run-overview"
       onMouseEnter={() => {
         pointerInsideRef.current = true;
-        if (!suppressHoverRef.current) setDetailsOpen(true);
+        // A fresh pointer entry is an explicit request to reopen, even when an
+        // earlier Escape briefly suppressed hover while the pointer remained
+        // inside the old popover geometry.
+        suppressHoverRef.current = false;
+        if (suppressHoverTimerRef.current !== null) {
+          window.clearTimeout(suppressHoverTimerRef.current);
+          suppressHoverTimerRef.current = null;
+        }
+        setDetailsOpen(true);
       }}
       onMouseLeave={() => {
         pointerInsideRef.current = false;
         suppressHoverRef.current = false;
+        if (suppressHoverTimerRef.current !== null) {
+          window.clearTimeout(suppressHoverTimerRef.current);
+          suppressHoverTimerRef.current = null;
+        }
         if (!overviewRef.current?.contains(document.activeElement)) setDetailsOpen(false);
       }}
       onFocusCapture={() => {
@@ -378,11 +395,7 @@ export function ChatRunOverview({
     >
       <button
         type="button"
-        className={`relative flex h-8 cursor-pointer select-none items-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35 ${
-          activeGoalContext
-            ? 'max-w-[min(16rem,45vw)] gap-1 border border-accent/25 bg-accent/10 pr-2.5 text-left'
-            : 'w-8 justify-center'
-        }`}
+        className="relative flex h-8 w-8 cursor-pointer select-none items-center justify-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35"
         aria-label={triggerLabel}
         aria-describedby={detailsOpen ? 'chat-context-details' : undefined}
         aria-expanded={detailsOpen}
@@ -439,16 +452,6 @@ export function ChatRunOverview({
             />
           )}
         </span>
-        {activeGoalContext && (
-          <span
-            className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-text-primary"
-            data-testid="chat-context-goal-summary"
-          >
-            <Target className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
-            <span className="shrink-0 text-accent">{t('chat.goalStatusTitle')}</span>
-            <span className="truncate">{activeGoalContext.objective}</span>
-          </span>
-        )}
       </button>
 
       <div
@@ -488,27 +491,6 @@ export function ChatRunOverview({
             </span>
           )}
         </div>
-
-        {activeGoalContext && (
-          <div
-            className="mt-3 flex min-w-0 items-start gap-2 rounded-lg border border-accent/25 bg-accent/10 px-2.5 py-2"
-            data-testid="chat-context-goal"
-          >
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
-              <Target className="h-3.5 w-3.5" aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-accent">
-                {activeGoalContext.status === 'active'
-                  ? t('chat.goalStatusActive')
-                  : t('chat.goalStatusTitle')}
-              </span>
-              <span className="mt-0.5 block line-clamp-2 text-xs leading-4 text-text-primary">
-                {activeGoalContext.objective}
-              </span>
-            </span>
-          </div>
-        )}
 
         <div className="mt-3">
           <div className="flex items-end justify-between gap-3">

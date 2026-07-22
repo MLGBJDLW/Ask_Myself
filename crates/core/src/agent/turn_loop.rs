@@ -735,6 +735,38 @@ impl AgentExecutor {
                         before_trim != prompt_cache::message_sequence_fingerprint(&messages);
                     continue;
                 }
+                let active_goal = if self.config.execution_mode.is_plan()
+                    || self.config.request_kind != AgentRequestKind::MainAgentStep
+                    || iteration + 1 >= self.config.max_iterations
+                {
+                    None
+                } else {
+                    conversation_id
+                        .and_then(|id| db.get_conversation_goal(id).ok().flatten())
+                        .filter(|goal| {
+                            goal.status == crate::conversation::ConversationGoalStatus::Active
+                        })
+                };
+                if let Some(goal) = active_goal {
+                    let status = format!(
+                        "Goal remains active; continuing execution: {}",
+                        goal.objective
+                    );
+                    append_persisted_trace_status(&mut persisted_trace_items, &status, "info");
+                    let _ = tx
+                        .send(AgentEvent::Status {
+                            content: status,
+                            tone: Some("info".to_string()),
+                        })
+                        .await;
+                    if let Some(message) = prompt_ir::controller_state_message(format!(
+                        "The durable goal is still active: {}\n\nDo not end this turn with a plan, progress update, or partial answer. Continue taking concrete actions. When the objective is actually achieved and verified, call update_goal with status complete. If and only if progress genuinely requires user input or an external state change, call update_goal with status blocked.",
+                        goal.objective
+                    )) {
+                        messages.push(message);
+                    }
+                    continue;
+                }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
                 turn_state.transition_to(TurnPhase::Finalizing);
                 let assistant_msg = self

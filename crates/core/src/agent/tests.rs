@@ -807,6 +807,69 @@ struct ScriptedProvider {
     final_answer: &'static str,
 }
 
+struct GoalLifecycleProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for GoalLifecycleProvider {
+    fn name(&self) -> &str {
+        "goal-lifecycle-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunks = match call_no {
+            0 => vec![StreamChunk {
+                delta: "I made partial progress.".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }],
+            1 => vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "complete-goal".to_string(),
+                    name: Some("update_goal".to_string()),
+                    arguments_delta: r#"{"status":"complete"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }],
+            _ => vec![StreamChunk {
+                delta: "The goal is complete and verified.".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }],
+        };
+        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
     fn name(&self) -> &str {
@@ -1875,6 +1938,66 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
 
     let final_msg = run.await.expect("run should succeed");
     assert_eq!(final_msg.text_content(), "serial final answer");
+}
+
+#[tokio::test]
+async fn active_goal_continues_until_the_model_explicitly_completes_it() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(
+        crate::tools::conversation_goal_tool::UpdateGoalTool,
+    ));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(GoalLifecycleProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 5,
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "openai".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    db.set_conversation_goal(&conversation.id, "Finish and verify the task")
+        .unwrap();
+    let (tx, _rx) = mpsc::channel(64);
+
+    let result = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Begin the goal".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("goal run should finish");
+
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert!(result.text_content().contains("complete and verified"));
+    assert_eq!(
+        db.get_conversation_goal(&conversation.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        crate::conversation::ConversationGoalStatus::Complete
+    );
 }
 
 #[test]
