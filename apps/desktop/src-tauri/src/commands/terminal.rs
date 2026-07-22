@@ -12,8 +12,9 @@ use uuid::Uuid;
 use crate::app_events::emit_app_event;
 
 const TERMINAL_EVENT: &str = "terminal:event";
+const MAX_TERMINAL_OUTPUT_CHARS: usize = 180_000;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TerminalState {
     sessions: Arc<Mutex<HashMap<String, TerminalSession>>>,
 }
@@ -25,6 +26,8 @@ struct TerminalSession {
     shell: String,
     cwd: String,
     process_id: Option<u32>,
+    conversation_id: Option<String>,
+    output: Arc<Mutex<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,15 +37,24 @@ pub struct TerminalStartInput {
     shell: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
+    conversation_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionInfo {
-    id: String,
-    shell: String,
-    cwd: String,
-    process_id: Option<u32>,
+    pub id: String,
+    pub shell: String,
+    pub cwd: String,
+    pub process_id: Option<u32>,
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionSnapshot {
+    pub session: TerminalSessionInfo,
+    pub output: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +89,7 @@ pub fn terminal_start_session_cmd(
     input: TerminalStartInput,
 ) -> Result<TerminalSessionInfo, String> {
     let cwd = resolve_terminal_cwd(input.cwd)?;
+    let conversation_id = normalize_conversation_id(input.conversation_id);
     let size = PtySize {
         rows: input.rows.unwrap_or(24).clamp(5, 200),
         cols: input.cols.unwrap_or(80).clamp(20, 400),
@@ -124,6 +137,7 @@ pub fn terminal_start_session_cmd(
             .map_err(|err| format!("failed to attach terminal input: {err}"))?;
         let process_id = child.process_id();
         let session_id = Uuid::new_v4().to_string();
+        let output = Arc::new(Mutex::new(String::new()));
         let session = TerminalSession {
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
@@ -131,6 +145,8 @@ pub fn terminal_start_session_cmd(
             shell: candidate.label.to_string(),
             cwd: cwd.display().to_string(),
             process_id,
+            conversation_id: conversation_id.clone(),
+            output: output.clone(),
         };
 
         {
@@ -146,6 +162,7 @@ pub fn terminal_start_session_cmd(
             state.sessions.clone(),
             session_id.clone(),
             reader,
+            output,
         );
         spawn_terminal_waiter(
             app_handle,
@@ -159,6 +176,7 @@ pub fn terminal_start_session_cmd(
             shell: candidate.label.to_string(),
             cwd: cwd.display().to_string(),
             process_id,
+            conversation_id,
         });
     }
 
@@ -171,23 +189,7 @@ pub fn terminal_write_session_cmd(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let writer = {
-        let sessions = state
-            .sessions
-            .lock()
-            .map_err(|_| "terminal session state is unavailable".to_string())?;
-        sessions
-            .get(&session_id)
-            .map(|session| session.writer.clone())
-            .ok_or_else(|| "terminal session is no longer running".to_string())?
-    };
-    let mut writer = writer
-        .lock()
-        .map_err(|_| "terminal input stream is unavailable".to_string())?;
-    writer
-        .write_all(data.as_bytes())
-        .and_then(|_| writer.flush())
-        .map_err(|err| format!("failed to write terminal input: {err}"))
+    state.write_session(&session_id, &data)
 }
 
 #[tauri::command]
@@ -220,23 +222,25 @@ pub fn terminal_close_session_cmd(
     state: State<'_, TerminalState>,
     session_id: String,
 ) -> Result<(), String> {
-    let session = {
-        let mut sessions = state
-            .sessions
-            .lock()
-            .map_err(|_| "terminal session state is unavailable".to_string())?;
-        sessions.remove(&session_id)
-    };
-    if let Some(session) = session {
-        let mut killer = session
-            .killer
-            .lock()
-            .map_err(|_| "terminal process handle is unavailable".to_string())?;
-        killer
-            .kill()
-            .map_err(|err| format!("failed to stop terminal process: {err}"))?;
-    }
-    Ok(())
+    state.close_session(&session_id)
+}
+
+#[tauri::command]
+pub fn terminal_bind_session_cmd(
+    state: State<'_, TerminalState>,
+    session_id: String,
+    conversation_id: Option<String>,
+) -> Result<TerminalSessionInfo, String> {
+    state.bind_session(&session_id, conversation_id)
+}
+
+#[tauri::command]
+pub fn terminal_snapshot_session_cmd(
+    state: State<'_, TerminalState>,
+    session_id: String,
+    max_chars: Option<usize>,
+) -> Result<TerminalSessionSnapshot, String> {
+    state.snapshot_session(&session_id, max_chars.unwrap_or(24_000))
 }
 
 #[tauri::command]
@@ -254,6 +258,7 @@ pub fn terminal_list_sessions_cmd(
             shell: session.shell.clone(),
             cwd: session.cwd.clone(),
             process_id: session.process_id,
+            conversation_id: session.conversation_id.clone(),
         })
         .collect())
 }
@@ -263,6 +268,7 @@ fn spawn_terminal_reader(
     sessions: Arc<Mutex<HashMap<String, TerminalSession>>>,
     session_id: String,
     mut reader: Box<dyn Read + Send>,
+    output: Arc<Mutex<String>>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
@@ -271,6 +277,9 @@ fn spawn_terminal_reader(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                    if let Ok(mut output) = output.lock() {
+                        append_terminal_output(&mut output, &data);
+                    }
                     emit_app_event(
                         &app_handle,
                         TERMINAL_EVENT,
@@ -306,6 +315,180 @@ fn spawn_terminal_reader(
             }
         }
     });
+}
+
+impl TerminalState {
+    pub fn write_session(&self, session_id: &str, data: &str) -> Result<(), String> {
+        let writer = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "terminal session state is unavailable".to_string())?;
+            sessions
+                .get(session_id)
+                .map(|session| session.writer.clone())
+                .ok_or_else(|| "terminal session is no longer running".to_string())?
+        };
+        let mut writer = writer
+            .lock()
+            .map_err(|_| "terminal input stream is unavailable".to_string())?;
+        writer
+            .write_all(data.as_bytes())
+            .and_then(|_| writer.flush())
+            .map_err(|err| format!("failed to write terminal input: {err}"))
+    }
+
+    pub fn close_session(&self, session_id: &str) -> Result<(), String> {
+        let session = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "terminal session state is unavailable".to_string())?;
+            sessions.remove(session_id)
+        };
+        if let Some(session) = session {
+            let mut killer = session
+                .killer
+                .lock()
+                .map_err(|_| "terminal process handle is unavailable".to_string())?;
+            if let Err(err) = killer.kill() {
+                if !terminal_stop_succeeded(&err) {
+                    return Err(format!("failed to stop terminal process: {err}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn bind_session(
+        &self,
+        session_id: &str,
+        conversation_id: Option<String>,
+    ) -> Result<TerminalSessionInfo, String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "terminal session state is unavailable".to_string())?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| "terminal session is no longer running".to_string())?;
+        session.conversation_id = normalize_conversation_id(conversation_id);
+        Ok(session_info(session_id, session))
+    }
+
+    pub fn snapshot_session(
+        &self,
+        session_id: &str,
+        max_chars: usize,
+    ) -> Result<TerminalSessionSnapshot, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "terminal session state is unavailable".to_string())?;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| "terminal session is no longer running".to_string())?;
+        let output = session
+            .output
+            .lock()
+            .map_err(|_| "terminal output buffer is unavailable".to_string())?;
+        Ok(TerminalSessionSnapshot {
+            session: session_info(session_id, session),
+            output: terminal_output_tail(&output, max_chars.clamp(1, MAX_TERMINAL_OUTPUT_CHARS)),
+        })
+    }
+
+    pub fn snapshot_for_conversation(
+        &self,
+        conversation_id: &str,
+        requested_session_id: Option<&str>,
+        max_chars: usize,
+    ) -> Result<TerminalSessionSnapshot, String> {
+        let session_id = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "terminal session state is unavailable".to_string())?;
+            if let Some(requested) = requested_session_id {
+                let session = sessions
+                    .get(requested)
+                    .ok_or_else(|| "terminal session is no longer running".to_string())?;
+                if session.conversation_id.as_deref() != Some(conversation_id) {
+                    return Err(
+                        "terminal session is not linked to the current conversation".to_string()
+                    );
+                }
+                requested.to_string()
+            } else {
+                sessions
+                    .iter()
+                    .find(|(_, session)| {
+                        session.conversation_id.as_deref() == Some(conversation_id)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .ok_or_else(|| {
+                        "no running terminal is linked to the current conversation".to_string()
+                    })?
+            }
+        };
+        self.snapshot_session(&session_id, max_chars)
+    }
+}
+
+fn session_info(id: &str, session: &TerminalSession) -> TerminalSessionInfo {
+    TerminalSessionInfo {
+        id: id.to_string(),
+        shell: session.shell.clone(),
+        cwd: session.cwd.clone(),
+        process_id: session.process_id,
+        conversation_id: session.conversation_id.clone(),
+    }
+}
+
+fn normalize_conversation_id(value: Option<String>) -> Option<String> {
+    value
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+fn append_terminal_output(output: &mut String, data: &str) {
+    output.push_str(data);
+    if output.len() <= MAX_TERMINAL_OUTPUT_CHARS {
+        return;
+    }
+    let tail = terminal_output_tail(output, MAX_TERMINAL_OUTPUT_CHARS);
+    *output = tail;
+}
+
+fn terminal_output_tail(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
+        return output.to_string();
+    }
+    let mut start = output.len().saturating_sub(max_chars);
+    while start < output.len() && !output.is_char_boundary(start) {
+        start += 1;
+    }
+    output[start..].to_string()
+}
+
+fn terminal_stop_succeeded(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // portable-pty 0.9's Windows ChildKiller reports the successful
+        // TerminateProcess branch as Err(last_os_error()). The common result is
+        // OS error 0 (ERROR_SUCCESS), but the last-error slot may also be stale.
+        // Reaching this Err branch therefore means TerminateProcess succeeded.
+        let _ = error;
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        error.raw_os_error() == Some(0)
+            || error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("os error 0")
+    }
 }
 
 fn spawn_terminal_waiter(
@@ -508,6 +691,19 @@ fn shell_candidates(requested: &str) -> Vec<ShellCandidate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_output_tail_preserves_utf8_boundaries() {
+        assert_eq!(terminal_output_tail("abc终端", 4), "端");
+        assert_eq!(terminal_output_tail("abc", 20), "abc");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_portable_pty_windows_success_error() {
+        let error = std::io::Error::from_raw_os_error(0);
+        assert!(terminal_stop_succeeded(&error));
+    }
 
     #[cfg(windows)]
     #[test]

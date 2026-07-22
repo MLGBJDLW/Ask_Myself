@@ -528,5 +528,10 @@
   "subagentInnerTrace": "Inner trace",
   "subagentError": "error",
   "subagentSupervisorNotes": "Supervisor notes from the subagent",
-  "projectMemoryMenu": "Project memory"
+  "projectMemoryMenu": "Project memory",
+  "terminalCopySelection": "Copiar seleção do terminal",
+  "terminalSendSelection": "Enviar seleção ao agente",
+  "terminalSelectionCopied": "Seleção do terminal copiada",
+  "terminalSelectionCount": "{count} selecionados",
+  "terminalLinkedToAgent": "Ligado a {agent}"
 }

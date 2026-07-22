@@ -229,6 +229,7 @@ async fn launch_task_orchestrator_execution_ticket(
         agent_state,
         mcp_state,
         approval_state,
+        terminal_state: None,
         app_handle,
         ticket,
         selected_config,

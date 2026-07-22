@@ -7,7 +7,11 @@ import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
-import { TerminalDock, TERMINAL_TOGGLE_EVENT } from '../components/chat/TerminalDock';
+import {
+  TerminalDock,
+  TERMINAL_TOGGLE_EVENT,
+  type TerminalAgentSelection,
+} from '../components/chat/TerminalDock';
 import { ChatMessages } from '../features/chat';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
@@ -129,6 +133,20 @@ function buildApprovedPlanPrompt(planMarkdown: string): string {
     '<approved_plan>',
     planMarkdown.trim(),
     '</approved_plan>',
+  ].join('\n');
+}
+
+function buildTerminalSelectionPrompt(selection: TerminalAgentSelection): string {
+  const process = selection.session.processId ? ` · PID ${selection.session.processId}` : '';
+  return [
+    'Please diagnose the selected output from the Terminal linked to this chat.',
+    `Terminal: ${selection.session.shell}${process}`,
+    `Working directory: ${selection.session.cwd}`,
+    'You may use the terminal_session tool to inspect newer output. Ask for approval before sending input to the live terminal.',
+    '',
+    '<terminal_selection>',
+    selection.text.trim(),
+    '</terminal_selection>',
   ].join('\n');
 }
 
@@ -949,11 +967,14 @@ export function ChatPage() {
   /* ── Suggestion prefill ─────────────────────────────────────────── */
 
   const [prefillText, setPrefillText] = useState<string>('');
-  const prefillKey = useRef(0);
+  const [prefillKey, setPrefillKey] = useState(0);
   const handleSuggestionClick = useCallback((text: string) => {
-    prefillKey.current += 1;
     setPrefillText(text);
+    setPrefillKey((current) => current + 1);
   }, []);
+  const handleTerminalSelection = useCallback((selection: TerminalAgentSelection) => {
+    handleSuggestionClick(buildTerminalSelectionPrompt(selection));
+  }, [handleSuggestionClick]);
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactCompleteVisible, setCompactCompleteVisible] = useState(false);
@@ -1165,7 +1186,11 @@ export function ChatPage() {
               taskRun={chat.taskRun}
               taskEvents={chat.taskEvents}
             />
-            <TerminalDock />
+            <TerminalDock
+              conversationId={chat.activeId ?? undefined}
+              agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
+              onSendSelectionToAgent={handleTerminalSelection}
+            />
             {pendingGraphContext && (
               <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -1210,6 +1235,7 @@ export function ChatPage() {
               inputHistory={chatInputHistory}
               sessionControls={sessionControls}
               prefillText={prefillText}
+              prefillKey={prefillKey}
               onCompact={chat.activeId ? handleCompactConversation : undefined}
               isCompacting={isCompacting}
               planModeEnabled={planModeEnabled}

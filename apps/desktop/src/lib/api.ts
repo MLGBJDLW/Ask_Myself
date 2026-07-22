@@ -317,6 +317,7 @@ export interface TerminalStartInput {
   shell?: TerminalShell | string | null;
   rows?: number | null;
   cols?: number | null;
+  conversationId?: string | null;
 }
 
 export interface TerminalSessionInfo {
@@ -324,6 +325,12 @@ export interface TerminalSessionInfo {
   shell: string;
   cwd: string;
   processId?: number | null;
+  conversationId?: string | null;
+}
+
+export interface TerminalSessionSnapshot {
+  session: TerminalSessionInfo;
+  output: string;
 }
 
 export interface TerminalEvent {
@@ -345,6 +352,15 @@ export const resizeTerminalSession = (sessionId: string, rows: number, cols: num
 
 export const closeTerminalSession = (sessionId: string) =>
   invoke<void>('terminal_close_session_cmd', { sessionId });
+
+export const bindTerminalSession = (sessionId: string, conversationId?: string | null) =>
+  invoke<TerminalSessionInfo>('terminal_bind_session_cmd', {
+    sessionId,
+    conversationId: conversationId ?? null,
+  });
+
+export const snapshotTerminalSession = (sessionId: string, maxChars = 24_000) =>
+  invoke<TerminalSessionSnapshot>('terminal_snapshot_session_cmd', { sessionId, maxChars });
 
 export const listTerminalSessions = () =>
   invoke<TerminalSessionInfo[]>('terminal_list_sessions_cmd');

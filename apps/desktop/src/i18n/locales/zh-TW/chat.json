@@ -528,5 +528,10 @@
   "subagentInnerTrace": "内部轨迹",
   "subagentError": "错误",
   "subagentSupervisorNotes": "子 Agent 的监督备注",
-  "projectMemoryMenu": "Project 記憶"
+  "projectMemoryMenu": "Project 記憶",
+  "terminalCopySelection": "複製終端機所選內容",
+  "terminalSendSelection": "將所選內容傳送給 Agent",
+  "terminalSelectionCopied": "已複製終端機所選內容",
+  "terminalSelectionCount": "已選取 {count} 個字元",
+  "terminalLinkedToAgent": "已連結 {agent}"
 }

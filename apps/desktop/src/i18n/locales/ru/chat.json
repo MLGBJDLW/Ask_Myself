@@ -528,5 +528,10 @@
   "subagentInnerTrace": "Inner trace",
   "subagentError": "error",
   "subagentSupervisorNotes": "Supervisor notes from the subagent",
-  "projectMemoryMenu": "Project memory"
+  "projectMemoryMenu": "Project memory",
+  "terminalCopySelection": "Копировать выделение терминала",
+  "terminalSendSelection": "Отправить выделение агенту",
+  "terminalSelectionCopied": "Выделение терминала скопировано",
+  "terminalSelectionCount": "Выбрано: {count}",
+  "terminalLinkedToAgent": "Связано с {agent}"
 }

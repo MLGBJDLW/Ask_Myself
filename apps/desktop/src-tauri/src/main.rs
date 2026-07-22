@@ -7,6 +7,7 @@ mod app_events;
 mod commands;
 mod desktop_agent_session;
 mod subagent_tool;
+mod terminal_agent_tool;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -374,6 +375,8 @@ fn main() {
             commands::terminal_write_session_cmd,
             commands::terminal_resize_session_cmd,
             commands::terminal_close_session_cmd,
+            commands::terminal_bind_session_cmd,
+            commands::terminal_snapshot_session_cmd,
             commands::terminal_list_sessions_cmd,
             // Model info
             commands::get_model_context_window,
