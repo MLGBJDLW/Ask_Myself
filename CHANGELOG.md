@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.10.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.13...nexa-monorepo-v0.10.14) (2026-07-22)
+
+
+### Features
+
+* **chat:** make archived conversations browsable ([65557af](https://github.com/MLGBJDLW/Nexa/commit/65557af946600bf36442b560f4bdd0af7114a0b2))
+* **chat:** move turn timeline to edge waveform ([32fa410](https://github.com/MLGBJDLW/Nexa/commit/32fa41075e044344e3600ec11270b81b50f72c6b))
+* **chat:** split model and reasoning controls ([a42931c](https://github.com/MLGBJDLW/Nexa/commit/a42931cb3c7617f06ab61b76b163e73d985350cc))
+* **models:** add Qwen 3.8 Token Plan preset ([3c5b7e4](https://github.com/MLGBJDLW/Nexa/commit/3c5b7e4b83ae1ab87786f4ee82c797968d5f6b6f))
+* **models:** support latest Gemini releases ([dadf990](https://github.com/MLGBJDLW/Nexa/commit/dadf99012d7731d58afd53bbf27089a15a959751))
+* refresh chat models archives and terminal integration ([390ad66](https://github.com/MLGBJDLW/Nexa/commit/390ad6648690eedc992f3471f89ced10e01c8207))
+* **terminal:** connect sessions to active agents ([69f0ad2](https://github.com/MLGBJDLW/Nexa/commit/69f0ad2c2e8b7b18397cc9c4b5ad284fe70bcf7e))
+
+
+### Bug Fixes
+
+* **chat:** tolerate empty archive responses ([b505165](https://github.com/MLGBJDLW/Nexa/commit/b505165eedebf4817a30d9bf02aea6a7343c8bb2))
+* **terminal:** wire workflow chat launches ([d5cfad6](https://github.com/MLGBJDLW/Nexa/commit/d5cfad6b386a6e302969c5c4119e3650e6559008))
+
 ## [0.10.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.12...nexa-monorepo-v0.10.13) (2026-07-21)
 
 
