@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.14...nexa-monorepo-v0.10.15) (2026-07-22)
+
+
+### Features
+
+* **agent:** add durable conversation goals ([1acc62f](https://github.com/MLGBJDLW/Nexa/commit/1acc62ffd37ca998b4bbb78f93918f710c6ed6ea))
+* **chat:** support concurrent runs and goal capsule ([cac9822](https://github.com/MLGBJDLW/Nexa/commit/cac982206436d25168c1ca5e0677aca1c63facc0))
+* support concurrent chats and durable goals ([9a40977](https://github.com/MLGBJDLW/Nexa/commit/9a40977bf7e650d8a266485346cc95164e80c6bc))
+
+
+### Bug Fixes
+
+* **chat:** require explicit subagent provenance ([ff4e18a](https://github.com/MLGBJDLW/Nexa/commit/ff4e18a5cafe7a13262eef19181c9040ee43b16e))
+
 ## [0.10.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.13...nexa-monorepo-v0.10.14) (2026-07-22)
 
 
