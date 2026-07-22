@@ -14,12 +14,14 @@ Nexa is a local desktop assistant built around your own files and knowledge base
 
 Unlike cloud-native note tools, the core data path stays on your machine. Indexing, parsing, embedding, OCR, search, collections, and chat persistence all run locally. External LLM providers can be used for generation, but the app sends scoped context rather than your full document store.
 
-The project has recently evolved beyond a flat chat log:
+The current chat runtime goes beyond a flat message log:
 
 - Conversations now persist structured collection context.
 - Each user turn can persist route, status, trace, and final answer bindings.
-- The chat UI is moving toward a turn-driven trace timeline rather than disconnected thinking/tool/reply fragments.
+- The chat UI renders a turn-driven trace timeline rather than disconnected thinking/tool/reply fragments.
 - Collections can launch scoped follow-up chat with both source scope and collection metadata attached.
+- Conversations can be archived, opened read-only, restored, or permanently deleted from a visible archive view.
+- The docked terminal is linked to the active conversation: users can send a selection into the prompt, and the agent can inspect the linked session or request approval to write/interrupt it.
 
 ## Product Direction
 
@@ -86,8 +88,10 @@ Supported formats include:
 - Consumer-friendly investigation workspace in the Chat UI
 - Recall Mode entry in Search for vague memory lookup
 - Office-style document assistance through document and file tools
-- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini, DeepSeek, Qwen, Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and any other OpenAI-compatible endpoint
-- Hierarchical model picker for switching providers, presets, and models
+- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini (including Gemini 3.6 Flash and Gemini 3.5 Flash-Lite), DeepSeek, Qwen, Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and other OpenAI-compatible endpoints
+- A compact split control below the prompt: model selection on the left and model-aware reasoning effort or thinking budget on the right
+- Archived conversation browsing with read-only replay, restore, delete, search, and direct-link handling
+- A conversation-linked terminal with selection-to-prompt, normal terminal copy/paste shortcuts, bounded output capture, and approval-gated agent interaction
 - Switchable agent personas and a slash-command palette for quick actions
 - Durable agent, user, and project memory tools
 - Markdown answers with LaTeX math and Mermaid diagram rendering
@@ -153,6 +157,7 @@ See:
   - `conversation_sources`
   - `conversation_turns`
   - `conversation_checkpoints`
+  - archived-state lifecycle and read-only replay
 - Structured agent trace pipeline:
   - live `traceEvents` on the frontend
   - persisted turn traces on the backend
@@ -161,6 +166,10 @@ See:
   - collection metadata persisted on the conversation
   - source scope persisted separately
   - collection-driven prompt sections injected server-side
+- Conversation-linked terminal sessions:
+  - the visible PTY stays user-controlled
+  - recent output is available to the active agent as untrusted local evidence
+  - writes and interrupts require explicit approval
 
 ## Tech Stack
 
@@ -180,7 +189,7 @@ See:
 
 ## Built-In Agent Tools
 
-The default registry currently exposes 50+ built-in tools, including:
+The runtime currently exposes 50+ built-in tools, with additional tools available from enabled MCP connectors, including:
 
 - Search tools
 - Collection management tools
@@ -190,6 +199,7 @@ The default registry currently exposes 50+ built-in tools, including:
 - Comparison and summarization tools
 - Source management tools
 - Statistics and verification tools
+- Conversation-linked terminal inspection and approval-gated interaction
 - MCP connector tools exposed by enabled connectors
 
 See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
@@ -198,7 +208,7 @@ See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 
 ### Prerequisites
 
-- Rust 1.75+ (stable toolchain; pinned in `rust-toolchain.toml`)
+- Rust stable (selected by `rust-toolchain.toml`)
 - Node.js 20+ (CI builds on Node 24)
 - Tauri 2 system dependencies
 
@@ -207,23 +217,43 @@ See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 ```bash
 git clone https://github.com/MLGBJDLW/Nexa.git
 cd Nexa
-cd apps/desktop
-npm install
-cd ../..
+npm ci
+npm ci --prefix apps/desktop
 ```
 
 ### Development
 
 ```bash
 cd apps/desktop
-npm run tauri dev
+npm run tauri -- dev
 ```
+
+For frontend-only work, run `npm run dev` from `apps/desktop`.
 
 ### Production Build
 
 ```bash
 cd apps/desktop
-npm run tauri build
+npm run tauri -- build
+```
+
+### Verification
+
+Run frontend commands from `apps/desktop`:
+
+```bash
+npm test
+npm run build
+npm run e2e
+```
+
+Run Rust checks from the repository root:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p nexa-core -- -D warnings
+cargo test -p nexa-core
+cargo check -p nexa-desktop
 ```
 
 ## Feature Flags

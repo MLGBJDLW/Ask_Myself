@@ -24,7 +24,10 @@ Nexa 不是单纯的聊天窗口，也不是只面向开发者的 agent 控制�
 - 基于引用证据的回答，支持 `[cite:CHUNK_ID]` 风格引用
 - 聊天中的 thinking、工具调用、路由和状态轨迹
 - 集合工作台：保存证据、整理笔记，并从集合继续追问
-- 可配置的 OpenAI-compatible、Anthropic、Google Gemini、Ollama 等模型提供商
+- 可配置的 OpenAI-compatible、Anthropic、Google Gemini、Ollama 等模型提供商；Google 直连目录包含 Gemini 3.6 Flash 与 Gemini 3.5 Flash-Lite
+- 输入框下方采用模型/推理强度双段控件：左侧直接切换模型，右侧按模型能力选择推理档位或 thinking budget
+- 对话归档中心：可搜索、完整只读查看、恢复、永久删除，并正确处理归档对话的直接链接
+- 与当前对话绑定的终端：框选内容可送入输入框，常规复制/粘贴快捷键可用；Agent 可读取近期输出，写入和中断必须经过用户确认
 - 角色、Skills、Slash commands、子代理和项目工具
 - 本地用户记忆、Agent 工作流记忆和项目记忆
 - Markdown 数学公式与 Mermaid 图表渲染
@@ -32,23 +35,33 @@ Nexa 不是单纯的聊天窗口，也不是只面向开发者的 agent 控制�
 
 ## 本地运行
 
-先安装 Node.js、Rust 和 Tauri 所需平台依赖，然后在仓库根目录执行：
+先安装 Node.js、Rust stable 和 Tauri 所需平台依赖，然后分别安装根目录与桌面前端的锁定依赖：
 
 ```bash
-npm install
+npm ci
+npm ci --prefix apps/desktop
+cd apps/desktop
 npm run tauri -- dev
 ```
 
-桌面前端位于 `apps/desktop`，核心 Rust crate 位于 `crates/core`。
+桌面前端位于 `apps/desktop`，核心 Rust crate 位于 `crates/core`。只开发浏览器前端时，在 `apps/desktop` 执行 `npm run dev`。
 
 常用命令：
 
 ```bash
-npm run build --prefix apps/desktop
-npm run i18n:check --prefix apps/desktop
-npm run e2e --prefix apps/desktop
+# 在 apps/desktop 执行
+npm test
+npm run build
+npm run e2e
+
+# 在仓库根目录执行
+cargo fmt --all -- --check
+cargo clippy -p nexa-core -- -D warnings
 cargo test -p nexa-core
+cargo check -p nexa-desktop
 ```
+
+完整桌面打包命令是在 `apps/desktop` 执行 `npm run tauri -- build`。Windows 本机没有 Playwright Chromium 时，可设置 `NEXA_PLAYWRIGHT_CHANNEL=msedge` 后运行 E2E。
 
 ## 打包产物
 
