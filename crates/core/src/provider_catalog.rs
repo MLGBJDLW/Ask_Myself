@@ -126,6 +126,12 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         .into_iter()
         .filter(|preset| preset.provider == provider)
         .collect::<Vec<_>>();
+    if let Some(default_index) = provider_matches
+        .iter()
+        .position(|preset| preset.id == provider)
+    {
+        return Some(provider_matches.swap_remove(default_index));
+    }
     if provider_matches.len() == 1 {
         provider_matches.pop()
     } else {
@@ -363,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_catalog_defaults_to_qwen37_max() {
+    fn qwen_catalog_separates_pay_as_you_go_from_token_plan() {
         let qwen = find_provider_preset(
             "qwen",
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -379,6 +385,7 @@ mod tests {
         assert!(ids.contains(&"qwen3.7-plus"));
         assert!(ids.contains(&"qwen3.7-max-2026-06-08"));
         assert!(ids.contains(&"qwen3.6-plus"));
+        assert!(!ids.contains(&"qwen3.8-max-preview"));
 
         let qwen37 = qwen
             .models
@@ -393,6 +400,26 @@ mod tests {
                 .as_ref()
                 .and_then(|capabilities| capabilities.vision),
             Some(true)
+        );
+
+        let token_plan = find_provider_preset(
+            "qwen",
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/"),
+        )
+        .expect("Qwen Token Plan preset should match its dedicated endpoint");
+        assert_eq!(token_plan.id, "qwen-token-plan-cn");
+        assert_eq!(token_plan.models.len(), 1);
+        assert_eq!(token_plan.models[0].id, "qwen3.8-max-preview");
+        assert_eq!(token_plan.models[0].recommended, Some(true));
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-max-preview"),
+            Some(false)
+        );
+        assert_eq!(
+            find_provider_preset("qwen", None)
+                .expect("Qwen should keep its pay-as-you-go default")
+                .id,
+            "qwen"
         );
     }
 

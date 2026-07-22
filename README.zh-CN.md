@@ -24,7 +24,7 @@ Nexa 不是单纯的聊天窗口，也不是只面向开发者的 agent 控制�
 - 基于引用证据的回答，支持 `[cite:CHUNK_ID]` 风格引用
 - 聊天中的 thinking、工具调用、路由和状态轨迹
 - 集合工作台：保存证据、整理笔记，并从集合继续追问
-- 可配置的 OpenAI-compatible、Anthropic、Google Gemini、Ollama 等模型提供商；Google 直连目录包含 Gemini 3.6 Flash 与 Gemini 3.5 Flash-Lite
+- 可配置的 OpenAI-compatible、Anthropic、Google Gemini、Ollama 等模型提供商；Google 直连目录包含 Gemini 3.6 Flash 与 Gemini 3.5 Flash-Lite，Qwen 目录提供 Qwen3.8 Max Preview 的 Token Plan 专属入口
 - 输入框下方采用模型/推理强度双段控件：左侧直接切换模型，右侧按模型能力选择推理档位或 thinking budget
 - 对话归档中心：可搜索、完整只读查看、恢复、永久删除，并正确处理归档对话的直接链接
 - 与当前对话绑定的终端：框选内容可送入输入框，常规复制/粘贴快捷键可用；Agent 可读取近期输出，写入和中断必须经过用户确认

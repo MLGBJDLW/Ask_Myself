@@ -88,7 +88,7 @@ Supported formats include:
 - Consumer-friendly investigation workspace in the Chat UI
 - Recall Mode entry in Search for vague memory lookup
 - Office-style document assistance through document and file tools
-- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini (including Gemini 3.6 Flash and Gemini 3.5 Flash-Lite), DeepSeek, Qwen, Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and other OpenAI-compatible endpoints
+- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini (including Gemini 3.6 Flash and Gemini 3.5 Flash-Lite), DeepSeek, Qwen (including the dedicated Token Plan route for Qwen3.8 Max Preview), Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and other OpenAI-compatible endpoints
 - A compact split control below the prompt: model selection on the left and model-aware reasoning effort or thinking budget on the right
 - Archived conversation browsing with read-only replay, restore, delete, search, and direct-link handling
 - A conversation-linked terminal with selection-to-prompt, normal terminal copy/paste shortcuts, bounded output capture, and approval-gated agent interaction

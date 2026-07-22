@@ -75,6 +75,10 @@ export function findProviderPreset(input: {
   const providerMatches = PROVIDER_PRESETS.filter(
     (preset) => preset.provider === provider,
   );
+  const defaultMatch = providerMatches.find((preset) => preset.id === provider);
+  if (defaultMatch) {
+    return defaultMatch;
+  }
   if (providerMatches.length === 1) {
     return providerMatches[0];
   }

@@ -241,8 +241,10 @@ test("settings provider form shows updated preset models for add and edit flows"
   await providerField().getByRole("combobox").selectOption("google");
   modelSelect = modelField().getByRole("combobox");
   await expectModelOptions(modelSelect, [
+    "Gemini 3.6 Flash",
+    "Gemini 3.5 Flash-Lite",
+    "Gemini 3.1 Pro Preview",
     "Gemini 2.5 Pro",
-    "Gemini 3 Pro Preview",
     "Gemini 3 Flash Preview",
   ]);
 
@@ -302,6 +304,32 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   const minimaxGlyph = minimaxCard.locator('[title="MiniMax"] > span');
   await expect(minimaxGlyph).toHaveAttribute("style", /provider-icons\/minimax\.svg/);
   await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
+});
+
+test("settings exposes Qwen3.8 only through the Token Plan endpoint", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const tokenPlanCard = page.getByRole("button", { name: /^Qwen Token Plan/ });
+  await expect(tokenPlanCard).toContainText("sk-sp API key");
+  await tokenPlanCard.click();
+
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await expect(baseUrlField.getByRole("textbox")).toHaveValue(
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  );
+
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const modelSelect = modelField.getByRole("combobox");
+  await expect(modelSelect).toHaveValue("qwen3.8-max-preview");
+  await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
 });
 
 test("settings exposes image generation model config under AI providers", async ({

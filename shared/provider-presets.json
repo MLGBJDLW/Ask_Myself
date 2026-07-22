@@ -7347,6 +7347,35 @@
     ]
   },
   {
+    "id": "qwen-token-plan-cn",
+    "name": "Qwen Token Plan",
+    "provider": "qwen",
+    "baseUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "requiresApiKey": true,
+    "icon": "🪶",
+    "description": "Qwen3.8 Max Preview via the Token Plan endpoint and sk-sp API key",
+    "capabilities": {
+      "reasoning": {
+        "effortLevels": [],
+        "thinkingBudget": {
+          "enabled": true,
+          "defaultTokens": 10000,
+          "minTokens": 1,
+          "step": 500
+        }
+      },
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "qwen3.8-max-preview",
+        "name": "Qwen3.8 Max Preview",
+        "tagKey": "providers.tagPreview",
+        "recommended": true
+      }
+    ]
+  },
+  {
     "id": "qwen",
     "name": "Qwen",
     "provider": "qwen",
