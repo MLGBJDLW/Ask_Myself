@@ -2,7 +2,7 @@ import type {
   AgentTaskRunEvent,
   ConversationMessage,
 } from '../types/conversation';
-import type { ToolCallEvent } from './useAgentStream';
+import type { ToolCallEvent } from './streaming/protocol';
 import { taskTimelinePayloadFromTaskEvent } from './streaming/taskTimeline';
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
@@ -198,7 +198,10 @@ function normalizeRuntimeGate(value: unknown): RuntimeVerificationGateArtifact |
   };
 }
 
-function normalizeSubtaskRun(value: unknown): SubtaskRunArtifact | null {
+function normalizeSubtaskRun(
+  value: unknown,
+  trustedSubtaskContainer = false,
+): SubtaskRunArtifact | null {
   const record = asRecord(value);
   if (!record) return null;
 
@@ -206,7 +209,18 @@ function normalizeSubtaskRun(value: unknown): SubtaskRunArtifact | null {
   const output = asRecord(record.output);
   const outputRun = asRecord(output?.run);
   const outputJudgement = asRecord(output?.judgement);
-  const directRun = record.kind === 'subagent_result' || record.status === 'done' ? record : null;
+  const kind = asText(record.kind)?.toLowerCase();
+  const inputKind = asText(input?.kind)?.toLowerCase();
+  const hasSubagentProvenance = Boolean(
+    trustedSubtaskContainer
+    || kind?.startsWith('subagent_')
+    || kind === 'subtask'
+    || inputKind?.startsWith('subagent_')
+    || (asText(record.parentRunId) && asText(record.role)),
+  );
+  if (!hasSubagentProvenance) return null;
+
+  const directRun = trustedSubtaskContainer || kind?.startsWith('subagent_') ? record : null;
   const run = outputRun ?? outputJudgement ?? directRun;
 
   const id =
@@ -249,22 +263,31 @@ function normalizeSubtaskRun(value: unknown): SubtaskRunArtifact | null {
   };
 }
 
-function normalizeSubtaskArtifacts(value: unknown): SubtaskRunArtifact[] | null {
+function normalizeSubtaskArtifacts(
+  value: unknown,
+  trustedSubtaskContainer = false,
+): SubtaskRunArtifact[] | null {
   if (Array.isArray(value)) {
     const subtasks = value
-      .map(normalizeSubtaskRun)
+      .map(item => normalizeSubtaskRun(item, trustedSubtaskContainer))
       .filter((subtask): subtask is SubtaskRunArtifact => Boolean(subtask));
-    return subtasks.length ? subtasks : null;
+    return trustedSubtaskContainer ? subtasks : (subtasks.length ? subtasks : null);
   }
 
   const record = asRecord(value);
   if (!record) return null;
 
   if (Array.isArray(record.subtasks)) {
-    return normalizeSubtaskArtifacts(record.subtasks);
+    // `subtasks` is the canonical backend projection. An explicit empty array
+    // is authoritative and must stop recursive artifact discovery from
+    // misclassifying sibling skills, workflow runs, or ordinary tool records.
+    return normalizeSubtaskArtifacts(record.subtasks, true);
   }
-  if (Array.isArray(record.runs)) {
-    return normalizeSubtaskArtifacts(record.runs);
+  if (
+    Array.isArray(record.runs)
+    && ['subagents', 'subagent_runs', 'subtask_runs'].includes(asText(record.kind)?.toLowerCase() ?? '')
+  ) {
+    return normalizeSubtaskArtifacts(record.runs, true);
   }
   const single = normalizeSubtaskRun(record);
   return single ? [single] : null;
