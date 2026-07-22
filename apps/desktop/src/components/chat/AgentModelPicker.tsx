@@ -235,6 +235,7 @@ export function AgentModelPicker({
   const [query, setQuery] = useState('');
   const [budgetDraft, setBudgetDraft] = useState('');
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const reasoningTriggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -299,17 +300,22 @@ export function AgentModelPicker({
       searchModelRows[0] ??
       null;
 
+  const selectedModelRow = selectedConfig
+    ? allModelRows.find(
+      (row) => row.providerRow.config.id === selectedConfig.id && row.model.id === selectedConfig.model,
+    ) ?? null
+    : null;
   const selectedTitle = selectedConfig
     ? `${selectedConfig.provider} / ${selectedConfig.model}`
     : t('settings.defaultModel');
-  const selectedLabel = selectedConfig?.name?.trim() || selectedConfig?.model || t('settings.defaultModel');
-  const selectedDetail = selectedConfig
-    ? selectedConfig.reasoningEffort
-      ? t(REASONING_EFFORT_LABEL_KEYS[selectedConfig.reasoningEffort as ReasoningEffortLevel] ?? 'settings.reasoningEffort')
-      : selectedConfig.thinkingBudget
-        ? `${formatBudget(selectedConfig.thinkingBudget)} ${t('settings.thinkingBudget')}`
-        : selectedConfig.model
-    : t('settings.defaultModel');
+  const selectedLabel = selectedModelRow?.model.name || selectedConfig?.model || t('settings.defaultModel');
+  const selectedDetail = selectedModelRow?.providerRow.label || selectedConfig?.name?.trim() || selectedConfig?.provider || t('settings.provider');
+  const selectedReasoningLabel = selectedConfig?.reasoningEffort
+    ? t(REASONING_EFFORT_LABEL_KEYS[selectedConfig.reasoningEffort as ReasoningEffortLevel] ?? 'settings.reasoningEffort')
+    : selectedConfig?.thinkingBudget
+      ? formatBudget(selectedConfig.thinkingBudget)
+      : t('settings.reasoningNone');
+  const selectedReasoningTitle = `${t('settings.reasoningEffort')}: ${selectedReasoningLabel}`;
 
   const panelStepRef = useRef<PickerStep>('providers');
   const panelQueryRef = useRef('');
@@ -317,14 +323,15 @@ export function AgentModelPicker({
   panelQueryRef.current = normalizedQuery;
 
   const updatePanelPosition = useCallback(() => {
-    const rect = triggerRef.current?.getBoundingClientRect();
+    const rect = (panelStepRef.current === 'reasoning' ? reasoningTriggerRef.current : triggerRef.current)
+      ?.getBoundingClientRect();
     if (!rect) return;
     const availableWidth = Math.max(280, window.innerWidth - 16);
     const currentStep = panelStepRef.current;
-    const targetWidth = panelQueryRef.current || currentStep === 'models'
-      ? 520
-      : currentStep === 'reasoning'
-        ? 400
+    const targetWidth = currentStep === 'reasoning'
+      ? 300
+      : panelQueryRef.current || currentStep === 'models'
+        ? 520
         : 340;
     const width = Math.min(targetWidth, availableWidth);
     const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
@@ -346,7 +353,6 @@ export function AgentModelPicker({
     if (!open) return;
     setActiveConfigId(selectedConfig?.id ?? agentConfigs[0]?.id ?? '');
     setActiveModelId(selectedConfig?.model ?? agentConfigs[0]?.model ?? '');
-    setPickerStep('providers');
     setQuery('');
     updatePanelPosition();
     requestAnimationFrame(() => searchRef.current?.focus());
@@ -356,6 +362,7 @@ export function AgentModelPicker({
     if (!open) return;
     const handlePointerDown = (event: MouseEvent) => {
       if (triggerRef.current?.contains(event.target as Node)) return;
+      if (reasoningTriggerRef.current?.contains(event.target as Node)) return;
       if (panelRef.current?.contains(event.target as Node)) return;
       closeMenu();
     };
@@ -363,7 +370,7 @@ export function AgentModelPicker({
       if (event.key === 'Escape') {
         event.preventDefault();
         closeMenu();
-        triggerRef.current?.focus();
+        (panelStepRef.current === 'reasoning' ? reasoningTriggerRef.current : triggerRef.current)?.focus();
       }
     };
     window.addEventListener('resize', updatePanelPosition);
@@ -390,13 +397,39 @@ export function AgentModelPicker({
     }
   }, [activeConfigId, activeModelId, normalizedQuery, open, pickerStep, visibleModelRows]);
 
+  const applyModelSelection = useCallback(
+    (row: ModelRow) => {
+      const isCurrent = selectedConfig?.id === row.providerRow.config.id && selectedConfig.model === row.model.id;
+      const defaultEffort = defaultReasoningEffort(row.reasoning);
+      const defaultBudget = defaultThinkingBudget(row.reasoning);
+      setOpen(false);
+      void onSelect({
+        config: row.providerRow.config,
+        model: row.model.id,
+        reasoningEnabled: isCurrent
+          ? selectedConfig.reasoningEnabled
+          : row.reasoning
+            ? true
+            : null,
+        thinkingBudget: isCurrent
+          ? selectedConfig.thinkingBudget
+          : defaultEffort
+            ? null
+            : defaultBudget,
+        reasoningEffort: isCurrent ? selectedConfig.reasoningEffort : defaultEffort,
+      });
+      requestAnimationFrame(() => triggerRef.current?.focus());
+    },
+    [onSelect, selectedConfig],
+  );
+
   useEffect(() => {
     if (!activeModelRow) return;
     const currentConfig = activeModelRow.providerRow.config;
     setBudgetDraft(String(currentConfig.thinkingBudget ?? defaultThinkingBudget(activeModelRow.reasoning) ?? ''));
   }, [activeModelRow?.key]);
 
-  const applySelection = useCallback(
+  const applyReasoningSelection = useCallback(
     (reasoning: {
       reasoningEnabled: boolean | null;
       thinkingBudget: number | null;
@@ -409,46 +442,23 @@ export function AgentModelPicker({
         model: activeModelRow.model.id,
         ...reasoning,
       });
-      requestAnimationFrame(() => triggerRef.current?.focus());
+      requestAnimationFrame(() => reasoningTriggerRef.current?.focus());
     },
     [activeModelRow, onSelect],
   );
 
-  const applyDefaultSelection = useCallback(() => {
-    if (!activeModelRow?.reasoning) {
-      applySelection({
-        reasoningEnabled: null,
-        thinkingBudget: null,
-        reasoningEffort: null,
-      });
-      return;
-    }
-    const effort = defaultReasoningEffort(activeModelRow.reasoning);
-    if (effort) {
-      applySelection({
-        reasoningEnabled: true,
-        thinkingBudget: null,
-        reasoningEffort: effort,
-      });
-      return;
-    }
-    const budget = defaultThinkingBudget(activeModelRow.reasoning);
-    applySelection({
-      reasoningEnabled: budget !== null ? true : null,
-      thinkingBudget: budget,
-      reasoningEffort: null,
-    });
-  }, [activeModelRow, applySelection]);
-
   const applyBudget = useCallback(() => {
     const parsed = Number.parseInt(budgetDraft, 10);
-    const budget = clampThinkingBudget(Number.isFinite(parsed) ? parsed : null, activeModelRow?.reasoning ?? null);
-    applySelection({
+    const budget = clampThinkingBudget(
+      Number.isFinite(parsed) ? parsed : null,
+      activeModelRow?.reasoning ?? null,
+    );
+    applyReasoningSelection({
       reasoningEnabled: budget !== null ? true : null,
       thinkingBudget: budget,
       reasoningEffort: null,
     });
-  }, [activeModelRow?.reasoning, applySelection, budgetDraft]);
+  }, [activeModelRow?.reasoning, applyReasoningSelection, budgetDraft]);
 
   const selected = selectedConfig;
   const isSearching = normalizedQuery.length > 0;
@@ -463,22 +473,30 @@ export function AgentModelPicker({
   }
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative inline-flex shrink-0 overflow-hidden rounded-md border border-border/60 bg-surface-1/70">
       <button
         ref={triggerRef}
         type="button"
         data-testid="agent-model-picker-trigger"
-        className={`group flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center gap-0 overflow-hidden rounded-md px-1.5 text-xs font-medium transition-colors duration-fast ease-out hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20 sm:w-auto sm:max-w-[12rem] sm:justify-start sm:gap-1.5 ${
-          open ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:text-text-primary'
+        className={`group flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center gap-0 overflow-hidden border-r border-border/60 px-1.5 text-xs font-medium transition-colors duration-fast ease-out hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/20 sm:w-auto sm:max-w-[12rem] sm:justify-start sm:gap-1.5 ${
+          open && pickerStep !== 'reasoning' ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:text-text-primary'
         }`}
         aria-haspopup="dialog"
-        aria-expanded={open}
+        aria-expanded={open && pickerStep !== 'reasoning'}
         aria-label={t('settings.defaultModel')}
         title={selectedTitle}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (open && pickerStep !== 'reasoning') {
+            setOpen(false);
+            return;
+          }
+          setPickerStep('providers');
+          setOpen(true);
+        }}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
+            setPickerStep('providers');
             setOpen(true);
           }
         }}
@@ -497,7 +515,52 @@ export function AgentModelPicker({
             {selectedDetail}
           </span>
         </span>
-        <ChevronDown className={`hidden h-3 w-3 shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary sm:block ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`hidden h-3 w-3 shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary sm:block ${open && pickerStep !== 'reasoning' ? 'rotate-180' : ''}`} />
+      </button>
+
+      <button
+        ref={reasoningTriggerRef}
+        type="button"
+        data-testid="agent-reasoning-picker-trigger"
+        className={`group flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center gap-0 px-1.5 text-xs font-medium transition-colors duration-fast ease-out hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/20 sm:w-auto sm:max-w-[9rem] sm:justify-start sm:gap-1.5 ${
+          open && pickerStep === 'reasoning' ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:text-text-primary'
+        }`}
+        aria-haspopup="dialog"
+        aria-expanded={open && pickerStep === 'reasoning'}
+        aria-label={t('settings.reasoningEffort')}
+        title={selectedReasoningTitle}
+        onClick={() => {
+          if (open && pickerStep === 'reasoning') {
+            setOpen(false);
+            return;
+          }
+          setActiveConfigId(selected.id);
+          setActiveModelId(selected.model);
+          setQuery('');
+          setPickerStep('reasoning');
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setActiveConfigId(selected.id);
+            setActiveModelId(selected.model);
+            setQuery('');
+            setPickerStep('reasoning');
+            setOpen(true);
+          }
+        }}
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-accent" />
+        <span className="hidden min-w-0 sm:flex sm:flex-col sm:items-start">
+          <span className="max-w-[6rem] truncate text-xs font-medium leading-4 text-text-secondary group-hover:text-text-primary">
+            {selectedReasoningLabel}
+          </span>
+          <span className="max-w-[6rem] truncate text-[10px] leading-3 text-text-tertiary">
+            {t('settings.reasoningEffort')}
+          </span>
+        </span>
+        <ChevronDown className={`hidden h-3 w-3 shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary sm:block ${open && pickerStep === 'reasoning' ? 'rotate-180' : ''}`} />
       </button>
 
       {createPortal(
@@ -515,7 +578,9 @@ export function AgentModelPicker({
               role="dialog"
               aria-label={t('settings.defaultModel')}
             >
-              <div className="flex items-center gap-2 border-b border-border/60 px-2.5 py-2">
+              {pickerStep !== 'reasoning' && (
+                <>
+                  <div className="flex items-center gap-2 border-b border-border/60 px-2.5 py-2">
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
                   <input
@@ -536,10 +601,10 @@ export function AgentModelPicker({
                 <span className="shrink-0 rounded-md border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
                   {visibleCount}
                 </span>
-              </div>
+                  </div>
 
-              <div className="border-b border-border/50 px-2.5 py-1.5">
-                <div className="flex min-w-0 items-center gap-1 text-[10px] text-text-tertiary">
+                  <div className="border-b border-border/50 px-2.5 py-1.5">
+                    <div className="flex min-w-0 items-center gap-1 text-[10px] text-text-tertiary">
                   {(pickerStep !== 'providers' || isSearching) && (
                     <button
                       type="button"
@@ -549,7 +614,7 @@ export function AgentModelPicker({
                           setPickerStep('providers');
                           return;
                         }
-                        setPickerStep(pickerStep === 'reasoning' ? 'models' : 'providers');
+                        setPickerStep('providers');
                       }}
                       className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-surface-1 hover:text-text-primary"
                       aria-label="Back"
@@ -587,21 +652,10 @@ export function AgentModelPicker({
                   >
                     {t('settings.model')}
                   </button>
-                  <span>/</span>
-                  <button
-                    type="button"
-                    disabled={!activeModelRow}
-                    onClick={() => setPickerStep('reasoning')}
-                    className={`rounded px-1.5 py-0.5 transition-colors disabled:opacity-45 ${
-                      pickerStep === 'reasoning' && !isSearching
-                        ? 'bg-accent-subtle text-accent'
-                        : 'hover:bg-surface-1 hover:text-text-secondary'
-                    }`}
-                  >
-                    {t('settings.reasoningEffort')}
-                  </button>
-                </div>
-              </div>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="h-[19rem] min-w-0 overflow-hidden">
                 {!isSearching && pickerStep === 'providers' && (
@@ -671,8 +725,7 @@ export function AgentModelPicker({
                             onClick={() => {
                               setActiveConfigId(row.providerRow.config.id);
                               setActiveModelId(row.model.id);
-                              setQuery('');
-                              setPickerStep('reasoning');
+                              applyModelSelection(row);
                             }}
                             className={`grid w-full grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
                               active
@@ -698,7 +751,6 @@ export function AgentModelPicker({
                             <span className="flex items-center gap-1">
                               {reasoningAvailable && <SlidersHorizontal className="h-3 w-3 text-accent" />}
                               {current && <Check className="h-3.5 w-3.5 text-accent" />}
-                              <ChevronDown className="-rotate-90 h-3.5 w-3.5 text-text-tertiary" />
                             </span>
                           </button>
                         );
@@ -740,6 +792,28 @@ export function AgentModelPicker({
                             </p>
                           ) : activeModelRow.reasoning.effortLevels?.length ? (
                             <div className="grid gap-1">
+                              {!activeModelRow.reasoning.effortLevels.includes('none') && (
+                                <button
+                                  type="button"
+                                  data-testid="agent-model-reasoning-none"
+                                  onClick={() =>
+                                    applyReasoningSelection({
+                                      reasoningEnabled: null,
+                                      thinkingBudget: null,
+                                      reasoningEffort: null,
+                                    })
+                                  }
+                                  className={`flex h-7 items-center justify-between rounded-md px-2 text-xs transition-colors ${
+                                    selectedConfig?.id === activeModelRow.providerRow.config.id &&
+                                    selectedConfig.model === activeModelRow.model.id &&
+                                    !selectedConfig.reasoningEffort
+                                      ? 'bg-accent-subtle text-text-primary ring-1 ring-accent/25'
+                                      : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary'
+                                  }`}
+                                >
+                                  <span className="truncate">{t('settings.reasoningNone')}</span>
+                                </button>
+                              )}
                               {activeModelRow.reasoning.effortLevels.map((level) => {
                                 const current =
                                   selectedConfig?.id === activeModelRow.providerRow.config.id &&
@@ -751,7 +825,7 @@ export function AgentModelPicker({
                                     type="button"
                                     data-testid={`agent-model-reasoning-${level}`}
                                     onClick={() =>
-                                      applySelection({
+                                      applyReasoningSelection({
                                         reasoningEnabled: true,
                                         thinkingBudget: null,
                                         reasoningEffort: level,
@@ -782,7 +856,7 @@ export function AgentModelPicker({
                                       key={budget}
                                       type="button"
                                       onClick={() => {
-                                        applySelection({
+                                        applyReasoningSelection({
                                           reasoningEnabled: true,
                                           thinkingBudget: budget,
                                           reasoningEffort: null,
@@ -822,29 +896,32 @@ export function AgentModelPicker({
                           )}
                         </div>
 
-                        <div className="flex gap-1 border-t border-border/50 pt-2">
-                          <button
-                            type="button"
-                            data-testid="agent-model-apply"
-                            onClick={activeModelRow.reasoning?.thinkingBudget?.enabled ? applyBudget : applyDefaultSelection}
-                            className="h-7 flex-1 rounded-md bg-accent px-2 text-xs font-medium text-on-accent transition-colors hover:bg-accent-hover"
-                          >
-                            {t('common.save')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              applySelection({
-                                reasoningEnabled: null,
-                                thinkingBudget: null,
-                                reasoningEffort: null,
-                              })
-                            }
-                            className="h-7 rounded-md border border-border/60 px-2 text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
-                          >
-                            {t('settings.reasoningNone')}
-                          </button>
-                        </div>
+                        {activeModelRow.reasoning?.thinkingBudget?.enabled && (
+                          <div className="flex gap-1 border-t border-border/50 pt-2">
+                            <button
+                              type="button"
+                              data-testid="agent-model-apply"
+                              onClick={applyBudget}
+                              className="h-7 flex-1 rounded-md bg-accent px-2 text-xs font-medium text-on-accent transition-colors hover:bg-accent-hover"
+                            >
+                              {t('common.save')}
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="agent-model-reasoning-none"
+                              onClick={() =>
+                                applyReasoningSelection({
+                                  reasoningEnabled: null,
+                                  thinkingBudget: null,
+                                  reasoningEffort: null,
+                                })
+                              }
+                              className="h-7 rounded-md border border-border/60 px-2 text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+                            >
+                              {t('settings.reasoningNone')}
+                            </button>
+                          </div>
+                        )}
                       </>
                     ) : (
                       <div className="px-2 py-8 text-center text-xs text-text-tertiary">
