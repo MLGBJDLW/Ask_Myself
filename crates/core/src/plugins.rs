@@ -498,7 +498,6 @@ mod tests {
 
     #[test]
     fn maps_tools_to_capability_packages() {
-        assert_eq!(plugin_for_tool("request_user_input").id, "core-agent");
         assert_eq!(plugin_for_tool("generate_image").id, "image-generation");
         assert_eq!(plugin_for_tool("synthesize_speech").id, "text-to-speech");
         assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
@@ -518,6 +517,11 @@ mod tests {
             plugin_for_tool("mcp__computer-use__screenshot").id,
             "computer-use-connector"
         );
+    }
+
+    #[test]
+    fn question_tool_belongs_to_the_core_agent_package() {
+        assert_eq!(plugin_for_tool("request_user_input").id, "core-agent");
     }
 
     #[test]
