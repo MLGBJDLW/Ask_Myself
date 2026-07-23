@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
@@ -10,8 +11,8 @@ import {
   buildSlashCommandOptions,
   getMatchingSlashCommands,
   getSlashCommandTrigger,
-  insertSlashCommand,
   resolveSlashCommandMessage,
+  resolveSlashCommandSelection,
   type SlashCommandKind,
   type SlashCommandOption,
 } from "../../lib/slashCommands";
@@ -63,10 +64,12 @@ interface ChatInputProps {
 interface ChatDraftState {
   value: string;
   attachments: ImageAttachment[];
+  activeSlashCommandId: string | null;
 }
 
 interface StoredChatDraftState {
   value: string;
+  activeSlashCommandId?: string | null;
   updatedAt: number;
 }
 
@@ -108,6 +111,7 @@ function cloneDraftState(draft: ChatDraftState): ChatDraftState {
   return {
     value: draft.value,
     attachments: draft.attachments.slice(),
+    activeSlashCommandId: draft.activeSlashCommandId,
   };
 }
 
@@ -126,7 +130,11 @@ function readStoredChatInputDrafts(): Record<string, StoredChatDraftState> {
       const updatedAt = typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt)
         ? row.updatedAt
         : 0;
-      drafts[key] = { value: row.value, updatedAt };
+      drafts[key] = {
+        value: row.value,
+        activeSlashCommandId: typeof row.activeSlashCommandId === "string" ? row.activeSlashCommandId : null,
+        updatedAt,
+      };
     }
     return drafts;
   } catch {
@@ -154,7 +162,11 @@ function readChatInputDraft(draftKey: string): ChatDraftState {
   if (cached) return cloneDraftState(cached);
 
   const stored = readStoredChatInputDrafts()[draftKey];
-  const draft = { value: stored?.value ?? "", attachments: [] };
+  const draft = {
+    value: stored?.value ?? "",
+    attachments: [],
+    activeSlashCommandId: stored?.activeSlashCommandId ?? null,
+  };
   chatInputDrafts[draftKey] = cloneDraftState(draft);
   return draft;
 }
@@ -163,8 +175,12 @@ function persistChatInputDraft(draftKey: string, draft: ChatDraftState) {
   chatInputDrafts[draftKey] = cloneDraftState(draft);
 
   const storedDrafts = readStoredChatInputDrafts();
-  if (draft.value.length > 0) {
-    storedDrafts[draftKey] = { value: draft.value, updatedAt: Date.now() };
+  if (draft.value.length > 0 || draft.activeSlashCommandId) {
+    storedDrafts[draftKey] = {
+      value: draft.value,
+      activeSlashCommandId: draft.activeSlashCommandId,
+      updatedAt: Date.now(),
+    };
   } else {
     delete storedDrafts[draftKey];
   }
@@ -233,6 +249,9 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ImageAttachment[]>(() => (
     initialDraftRef.current?.attachments ?? []
   ));
+  const [activeSlashCommandId, setActiveSlashCommandId] = useState<string | null>(
+    () => initialDraftRef.current?.activeSlashCommandId ?? null,
+  );
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [loadedDraftKey, setLoadedDraftKey] = useState(draftKey);
   const [isDragging, setIsDragging] = useState(false);
@@ -274,11 +293,19 @@ export function ChatInput({
     onPlanModeChange?.(enabled);
   }, [onPlanModeChange, planModeEnabled]);
 
-  const persistDraft = useCallback((nextValue: string, nextAttachments: ImageAttachment[] = attachments) => {
-    const draft = { value: nextValue, attachments: nextAttachments };
+  const persistDraft = useCallback((
+    nextValue: string,
+    nextAttachments: ImageAttachment[] = attachments,
+    nextSlashCommandId: string | null = activeSlashCommandId,
+  ) => {
+    const draft = {
+      value: nextValue,
+      attachments: nextAttachments,
+      activeSlashCommandId: nextSlashCommandId,
+    };
     draftsRef.current[draftKey] = cloneDraftState(draft);
     persistChatInputDraft(draftKey, draft);
-  }, [attachments, draftKey]);
+  }, [activeSlashCommandId, attachments, draftKey]);
 
   useEffect(() => {
     const draft = draftsRef.current[draftKey] ?? readChatInputDraft(draftKey);
@@ -287,6 +314,7 @@ export function ChatInput({
     setLoadedDraftKey(draftKey);
     setValue(draft.value);
     setAttachments(draft.attachments);
+    setActiveSlashCommandId(draft.activeSlashCommandId);
     setPreviewAttachment(null);
     setTimeout(() => {
       if (textareaRef.current) {
@@ -297,8 +325,8 @@ export function ChatInput({
 
   useEffect(() => {
     if (loadedDraftKey !== draftKey) return;
-    persistDraft(value, attachments);
-  }, [attachments, draftKey, loadedDraftKey, persistDraft, value]);
+    persistDraft(value, attachments, activeSlashCommandId);
+  }, [activeSlashCommandId, attachments, draftKey, loadedDraftKey, persistDraft, value]);
 
   // Accept prefilled text from outside (e.g. suggestion cards)
   useEffect(() => {
@@ -429,6 +457,10 @@ export function ChatInput({
     () => buildSlashCommandOptions(activeSkills, workflowTemplates),
     [activeSkills, workflowTemplates],
   );
+  const activeSlashCommand = useMemo(
+    () => slashOptions.find((option) => option.id === activeSlashCommandId) ?? null,
+    [activeSlashCommandId, slashOptions],
+  );
   const slashTrigger = useMemo(
     () => getSlashCommandTrigger(value, caretPosition),
     [caretPosition, value],
@@ -499,7 +531,8 @@ export function ChatInput({
     if (option.action === "openWorkflows") {
       const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
       setValue(nextValue);
-      persistDraft(nextValue);
+      setActiveSlashCommandId(null);
+      persistDraft(nextValue, attachments, null);
       setWorkflowCatalogOpen(true);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -512,7 +545,8 @@ export function ChatInput({
     if (option.action === "planMode") {
       const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
       setValue(nextValue);
-      persistDraft(nextValue);
+      setActiveSlashCommandId(null);
+      persistDraft(nextValue, attachments, null);
       setPlanMode(true);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -522,19 +556,27 @@ export function ChatInput({
       return;
     }
 
-    const next = insertSlashCommand(value, slashTrigger, option);
-    setValue(next.value);
-    persistDraft(next.value);
+    const nextValue = `${value.slice(0, slashTrigger.start)}${value.slice(slashTrigger.end)}`.trimStart();
+    const nextCursor = Math.min(slashTrigger.start, nextValue.length);
+    setValue(nextValue);
+    setActiveSlashCommandId(option.id);
+    persistDraft(nextValue, attachments, option.id);
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) {
         el.focus();
-        el.setSelectionRange(next.cursorPosition, next.cursorPosition);
-        setCaretPosition(next.cursorPosition);
+        el.setSelectionRange(nextCursor, nextCursor);
+        setCaretPosition(nextCursor);
       }
       adjustHeight();
     });
-  }, [adjustHeight, persistDraft, setPlanMode, slashTrigger, value]);
+  }, [adjustHeight, attachments, persistDraft, setPlanMode, slashTrigger, value]);
+
+  const removeActiveSlashCommand = useCallback(() => {
+    setActiveSlashCommandId(null);
+    persistDraft(value, attachments, null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [attachments, persistDraft, value]);
 
   const getSlashOptionTitle = useCallback((option: SlashCommandOption) => {
     const key = option.kind === "command" ? commonSlashCommandKey(option.name, "title") : null;
@@ -565,10 +607,11 @@ export function ChatInput({
 
   const clearDraft = useCallback(() => {
     clearChatInputDraft(draftKey);
-    draftsRef.current[draftKey] = { value: "", attachments: [] };
+    draftsRef.current[draftKey] = { value: "", attachments: [], activeSlashCommandId: null };
     resetInputHistoryNavigation();
     setValue("");
     setAttachments([]);
+    setActiveSlashCommandId(null);
     setPreviewAttachment(null);
     setDismissedSlashToken(null);
     setCaretPosition(0);
@@ -582,12 +625,14 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     if (inputLocked) return;
     const trimmed = value.trim();
-    if (!trimmed && attachments.length === 0) return;
+    if (!trimmed && attachments.length === 0 && !activeSlashCommand) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
       toast.error(t("chat.attachmentWhileRunning"));
       return;
     }
-    const slashResolution = trimmed ? resolveSlashCommandMessage(trimmed, slashOptions) : null;
+    const slashResolution = activeSlashCommand
+      ? resolveSlashCommandSelection(activeSlashCommand, trimmed)
+      : (trimmed ? resolveSlashCommandMessage(trimmed, slashOptions) : null);
     if (slashResolution?.localAction === "openWorkflows") {
       setWorkflowCatalogOpen(true);
       const nextValue = slashResolution.message;
@@ -656,7 +701,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [activeGoalContext, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1199,6 +1244,35 @@ export function ChatInput({
             effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
           }`}
         >
+        <AnimatePresence initial={false}>
+          {activeSlashCommand && (
+            <motion.div
+              data-testid="active-slash-command"
+              className="flex items-center border-b border-border/35 bg-linear-to-r from-accent/10 via-accent/4 to-transparent px-3 py-2"
+              initial={{ opacity: 0, height: 0, y: -6 }}
+              animate={{ opacity: 1, height: 'auto', y: 0 }}
+              exit={{ opacity: 0, height: 0, y: -5 }}
+              transition={{ type: 'spring', stiffness: 430, damping: 34 }}
+            >
+              <button
+                type="button"
+                data-testid="remove-active-slash-command"
+                onClick={removeActiveSlashCommand}
+                className="group inline-flex max-w-full items-center gap-2 rounded-full border border-accent/30 bg-accent/12 py-1 pl-2.5 pr-1.5 text-xs text-accent shadow-[0_4px_14px_rgba(80,100,255,0.12)] transition hover:border-accent/55 hover:bg-accent/18"
+                aria-label={t('chat.removeActiveSlashCommand', { command: getSlashOptionTitle(activeSlashCommand) })}
+              >
+                <Sparkles size={12} className="shrink-0" />
+                <span className="truncate font-medium">/{activeSlashCommand.name}</span>
+                <span className="hidden truncate text-[10px] text-text-secondary sm:inline">
+                  {getSlashOptionTitle(activeSlashCommand)}
+                </span>
+                <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-text-tertiary transition group-hover:bg-surface-1 group-hover:text-text-primary">
+                  <X size={11} />
+                </span>
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 border-b border-border/35 px-3 py-2">
             {attachments.map((att, i) => (
@@ -1363,7 +1437,7 @@ export function ChatInput({
                 inputLocked ||
                 (isStreaming
                   ? !value.trim() || attachments.length > 0
-                  : !value.trim() && attachments.length === 0)
+                  : !value.trim() && attachments.length === 0 && !activeSlashCommand)
               }
               data-testid="chat-send"
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-text-primary/10 bg-text-primary text-surface-0 shadow-[0_8px_20px_rgba(0,0,0,0.22)] transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-out cursor-pointer hover:-translate-y-0.5 hover:bg-text-secondary hover:shadow-[0_10px_24px_rgba(0,0,0,0.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:pointer-events-none disabled:translate-y-0 disabled:border-border disabled:bg-surface-2 disabled:text-text-tertiary disabled:shadow-none"

@@ -2,6 +2,7 @@ import {
   buildSlashCommandOptions,
   getMatchingSlashCommands,
   getSlashCommandTrigger,
+  resolveSlashCommandSelection,
   resolveSlashCommandMessage,
 } from '../src/lib/slashCommands';
 import {
@@ -215,12 +216,21 @@ test('builds hidden continuation context for normal messages under an active goa
   assertEqual(artifact.llmContextContent, llmContext, 'hidden context is attached at the top level');
 });
 
-test('resolves ask into a question card prompt', () => {
+test('does not expose question cards as a user slash command', () => {
   const options = buildSlashCommandOptions([], []);
-  const resolved = resolveSlashCommandMessage('/ask clarify deployment', options);
-  assert(resolved, 'ask should resolve');
-  assert(resolved.message.includes('question-card set'), 'ask prompt requests question cards');
-  assert(resolved.message.includes('clarify deployment'), 'ask preserves request');
+  assertEqual(options.some((option) => option.name === 'ask'), false, 'ask is agent-only');
+  assertEqual(resolveSlashCommandMessage('/ask clarify deployment', options), null, 'ask does not resolve');
+});
+
+test('resolves an activated command without keeping slash syntax in the input', () => {
+  const options = buildSlashCommandOptions([skill()], []);
+  const selected = options.find((option) => option.skillId === 'builtin-frontend-design');
+  assert(selected, 'skill command should exist');
+
+  const resolved = resolveSlashCommandSelection(selected, 'build a dense dashboard');
+
+  assertEqual(resolved.skillIds[0], 'builtin-frontend-design', 'selected skill stays pinned');
+  assert(resolved.message.includes('build a dense dashboard'), 'plain input is expanded through selection');
 });
 
 test('resolves plan as execution mode without prompt expansion', () => {

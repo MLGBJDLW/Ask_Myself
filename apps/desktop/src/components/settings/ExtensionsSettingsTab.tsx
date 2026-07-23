@@ -15,6 +15,7 @@ import { PackageHostSettingsPanel } from './PackageHostSettingsPanel';
 import { ProjectToolsPanel } from './ProjectToolsPanel';
 import { Section } from './SettingsSection';
 import { SkillEditor } from './SkillEditor';
+import { SkillInstaller } from './SkillInstaller';
 import { SkillMarkdownPreview } from './SkillMarkdownPreview';
 import { WebSearchSettingsPanel } from './WebSearchSettingsPanel';
 
@@ -806,6 +807,7 @@ export function ExtensionsSettingsTab({
                 >
                   {t('settings.skillExportAll')}
                 </Button>
+                <SkillInstaller skills={skills} onInstalled={onPackageStateChange} />
                 <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={onAddSkill}>
                   {t('settings.addSkill')}
                 </Button>

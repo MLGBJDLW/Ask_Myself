@@ -1268,6 +1268,9 @@ export function ChatPage() {
               onDeleteMessage={isArchivedConversation ? undefined : chat.deleteMessage}
               onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
               onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
+              onQuestionSubmit={isArchivedConversation ? undefined : (message, artifact) => {
+                void handleChatSend(message, undefined, { userArtifacts: artifact });
+              }}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               onSuggestionClick={isArchivedConversation ? undefined : handleSuggestionClick}

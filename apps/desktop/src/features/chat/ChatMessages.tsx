@@ -117,6 +117,7 @@ interface ChatMessagesProps {
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
+  onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
   onSuggestionClick?: (text: string) => void;
@@ -197,7 +198,6 @@ function TurnNavigator({
 }) {
   if (items.length < 2) return null;
   const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
-  const progress = activeIndex / (items.length - 1);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -231,34 +231,20 @@ function TurnNavigator({
       aria-label={`${messageAreaLabel} · ${items.length}`}
       aria-orientation="vertical"
       data-active-index={activeIndex}
-      data-variant="edge-waveform"
+      data-variant="turn-dial"
       data-testid="chat-turn-navigator"
-      className="pointer-events-none sticky top-1/2 z-20 ml-auto -mr-12 hidden h-px w-8 -translate-y-1/2 lg:block"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto -mr-14 hidden h-px w-10 -translate-y-1/2 lg:block"
       onKeyDown={handleKeyDown}
     >
-      <div className="group/rail pointer-events-auto absolute right-0 top-0 flex max-h-[min(64vh,32rem)] w-8 -translate-y-1/2 flex-col items-end overflow-y-auto bg-gradient-to-l from-surface-1/70 via-surface-1/20 to-transparent py-2">
-        <div
-          className="mb-1.5 flex w-full items-baseline justify-end gap-0.5 pr-1 text-text-tertiary/70 transition-colors duration-fast group-hover/rail:text-text-tertiary motion-reduce:transition-none"
-          data-testid="chat-turn-position"
-          aria-hidden="true"
-        >
-          <span className="text-[11px] font-semibold tabular-nums text-text-secondary">{activeIndex + 1}</span>
-          <span className="text-[8px] tabular-nums">/{items.length}</span>
-        </div>
+      <div className="group/rail pointer-events-auto absolute right-0 top-0 max-h-[min(68vh,34rem)] w-10 -translate-y-1/2 overflow-y-auto overflow-x-visible rounded-[1.15rem] border border-border/55 bg-surface-1/82 py-2 shadow-[0_14px_38px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl">
         <div className="relative flex w-full flex-col items-end py-1">
-          <span className="absolute bottom-2 right-[5px] top-2 w-px bg-border/55" aria-hidden="true" />
-          <span
-            className="absolute bottom-2 right-[5px] top-2 w-px origin-top bg-accent/80 transition-transform duration-normal ease-out motion-reduce:transition-none"
-            data-testid="chat-turn-progress"
-            style={{ transform: `scaleY(${progress})` }}
-            aria-hidden="true"
-          />
+          <span className="absolute bottom-2 right-[7px] top-2 w-px bg-linear-to-b from-transparent via-border/70 to-transparent" aria-hidden="true" />
           {items.map((item, index) => {
             const active = item.id === activeId;
-            const proximity = Math.max(0, 1 - Math.abs(index - activeIndex) / 3);
-            const density = Math.min(1, Math.max(0.25, item.preview.length / 72));
-            const waveWidth = active ? 24 : Math.round(7 + density * 7 + proximity * 4);
-            const waveOpacity = active ? 1 : 0.38 + proximity * 0.24;
+            const distance = Math.abs(index - activeIndex);
+            const proximity = Math.max(0, 1 - distance / 4);
+            const tickWidth = active ? 27 : Math.round(7 + proximity * 8);
+            const tickOpacity = active ? 1 : 0.3 + proximity * 0.42;
             const label = `#${index + 1} · ${item.preview}`;
             return (
               <button
@@ -269,21 +255,36 @@ function TurnNavigator({
                 title={label}
                 data-turn-navigation-id={item.id}
                 data-turn-navigation-index={index}
-                className="group relative z-10 flex h-5 w-8 shrink-0 items-center justify-end rounded-l-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+                className="group relative z-10 flex h-[18px] w-10 shrink-0 items-center justify-end pr-1.5 outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
                 onClick={() => onSelect(item.id)}
               >
-                <span
-                  data-testid="chat-turn-wave-bar"
-                  className={`origin-right rounded-full transition-[width,transform,opacity,background-color,box-shadow] duration-fast ease-out group-hover:scale-x-110 group-focus-visible:scale-x-110 motion-reduce:transition-none ${
+                {active && (
+                  <motion.span
+                    layoutId="chat-turn-dial-active-lens"
+                    className="absolute -left-1 right-0 h-6 rounded-l-xl border border-r-0 border-accent/30 bg-linear-to-r from-accent/18 to-accent/5 shadow-[-5px_0_18px_rgba(99,102,241,0.16)]"
+                    transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.65 }}
+                    aria-hidden="true"
+                  />
+                )}
+                <motion.span
+                  data-testid="chat-turn-dial-tick"
+                  data-active={active ? 'true' : 'false'}
+                  className={`relative z-10 origin-right rounded-full group-hover:bg-accent group-focus-visible:bg-accent ${
                     active
-                      ? 'h-[3px] bg-accent shadow-[0_0_0_2px_var(--color-accent-subtle)]'
-                      : 'h-0.5 bg-text-tertiary group-hover:bg-accent/80 group-focus-visible:bg-accent/80'
+                      ? 'h-[3px] bg-accent shadow-[0_0_10px_rgba(110,120,255,0.75)]'
+                      : 'h-0.5 bg-text-tertiary'
                   }`}
-                  style={{ width: `${waveWidth}px`, opacity: waveOpacity }}
+                  animate={{
+                    width: tickWidth,
+                    opacity: tickOpacity,
+                    x: active ? -2 : 0,
+                    scaleX: active ? 1.06 : 1,
+                  }}
+                  transition={{ type: 'spring', stiffness: 430, damping: 32, mass: 0.6 }}
                   aria-hidden="true"
                 />
                 <span
-                  className="pointer-events-none invisible absolute right-full top-1/2 mr-2.5 w-52 -translate-y-1/2 translate-x-1 rounded-lg border border-border/70 border-l-2 border-l-accent bg-surface-1/95 px-3 py-2 text-left text-[10px] leading-4 text-text-secondary opacity-0 shadow-md backdrop-blur-md transition-[opacity,transform,visibility] duration-fast ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none"
+                  className="pointer-events-none invisible absolute right-full top-1/2 mr-3 w-52 -translate-y-1/2 translate-x-1 rounded-xl border border-border/70 border-r-2 border-r-accent bg-surface-1/95 px-3 py-2 text-left text-[10px] leading-4 text-text-secondary opacity-0 shadow-xl backdrop-blur-md transition-[opacity,transform,visibility] duration-fast ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none"
                   data-testid="chat-turn-preview"
                 >
                   <span className="mb-0.5 block font-semibold tabular-nums text-accent">#{index + 1}</span>
@@ -624,6 +625,24 @@ function TraceSteeringRow({
   );
 }
 
+function collectAnsweredQuestionCalls(
+  value: unknown,
+  output: Set<string>,
+  depth = 0,
+) {
+  if (depth > 6 || value == null) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+    return;
+  }
+  if (typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'questionResponse' && typeof record.requestCallId === 'string') {
+    output.add(record.requestCallId);
+  }
+  Object.values(record).forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+}
+
 export function ChatMessages(props: ChatMessagesProps) {
   const {
     turns,
@@ -639,6 +658,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     onDeleteMessage,
     onEditAndResend,
     onApprovePlan,
+    onQuestionSubmit,
     loadingMsgs,
     lastCached,
     onSuggestionClick,
@@ -667,6 +687,11 @@ export function ChatMessages(props: ChatMessagesProps) {
     () => getActiveGoalContext(messages),
     [messages],
   );
+  const answeredQuestionCalls = useMemo(() => {
+    const answered = new Set<string>();
+    messages.forEach((message) => collectAnsweredQuestionCalls(message.artifacts, answered));
+    return answered;
+  }, [messages]);
 
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -944,15 +969,15 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const renderThinkingTraceNode = useCallback(
-    (key: string, sections: ThinkingSection[], isStreaming = false) => (
+    (key: string, sections: ThinkingSection[], isStreaming = false, forceExpanded = false) => (
       <div key={key} className="flex justify-start mb-1">
         <div className="w-full min-w-0">
           <ThinkingBlock
             content=""
             sections={sections}
             isStreaming={isStreaming}
-            defaultExpanded={isStreaming}
-            collapseOnFinish
+            defaultExpanded={isStreaming || forceExpanded}
+            collapseOnFinish={!forceExpanded}
           />
         </div>
       </div>
@@ -998,6 +1023,7 @@ export function ChatMessages(props: ChatMessagesProps) {
             node: (
               <ToolCallCard
                 key={section.id}
+                callId={section.toolCall.callId}
                 toolName={section.toolCall.toolName}
                 arguments={section.toolCall.arguments}
                 status={section.toolCall.status}
@@ -1011,6 +1037,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                 argsStatus={section.toolCall.argsStatus}
                 argsBytes={section.toolCall.argsBytes}
                 trace={section.trace}
+                questionAnswered={answeredQuestionCalls.has(section.toolCall.callId)}
+                onQuestionSubmit={onQuestionSubmit}
               />
             ),
           };
@@ -1018,7 +1046,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           return null;
       }
     },
-    [renderTraceReplyNode, t],
+    [answeredQuestionCalls, onQuestionSubmit, renderTraceReplyNode, t],
   );
 
   const renderTimelineSections = useCallback(
@@ -1030,13 +1058,20 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const renderTimelineTraceNode = useCallback(
-    (key: string, sections: TimelineSection[], isStreaming = false) =>
-      renderThinkingTraceNode(
+    (key: string, sections: TimelineSection[], isStreaming = false) => {
+      const hasPendingQuestion = sections.some(
+        (section) => section.kind === 'tool'
+          && section.toolCall.toolName === 'request_user_input'
+          && !answeredQuestionCalls.has(section.toolCall.callId),
+      );
+      return renderThinkingTraceNode(
         key,
         renderTimelineSections(sections),
         isStreaming,
-      ),
-    [renderThinkingTraceNode, renderTimelineSections],
+        hasPendingQuestion,
+      );
+    },
+    [answeredQuestionCalls, renderThinkingTraceNode, renderTimelineSections],
   );
 
   const messageThinkingText = useMemo(() => {

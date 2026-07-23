@@ -1297,6 +1297,22 @@ export const listActiveSkills = async () =>
 export const importSkillFromMd = (content: string) =>
   invoke<Skill>('import_skill_from_md_cmd', { content });
 
+export const parseSkillMarkdown = (content: string) =>
+  invoke<SaveSkillInput>('parse_skill_markdown_cmd', { content });
+
+export const inspectSkillInstallSource = (source: string) =>
+  invoke<DiscoveredSkillBundle[]>('inspect_skill_install_source_cmd', { source });
+
+export const installSkillsFromSource = (
+  source: string,
+  replaceExisting: boolean,
+  acceptBlockedWarnings: boolean,
+) => invoke<Skill[]>('install_skills_from_source_cmd', {
+  source,
+  replaceExisting,
+  acceptBlockedWarnings,
+});
+
 export const exportSkillToMd = (skillId: string) =>
   invoke<string>('export_skill_to_md_cmd', { skillId });
 

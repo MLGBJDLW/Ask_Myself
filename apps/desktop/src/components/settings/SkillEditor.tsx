@@ -151,7 +151,7 @@ export function SkillEditor({ skill, onSave, onCancel, onDirtyChange }: SkillEdi
 
   const runImport = useCallback(async (text: string) => {
     try {
-      const imported = await api.importSkillFromMd(text);
+      const imported = await api.parseSkillMarkdown(text);
       setName(imported.name);
       setDescription(imported.description);
       setContent(imported.content);

@@ -203,14 +203,14 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     id: "core-agent",
     name: "Core Agent",
     capability: "Run orchestration",
-    description:
-        "Routes tasks, tracks plans, and records verification without owning domain tools.",
+    description: "Routes tasks, coordinates user input, tracks plans, and records verification without owning domain tools.",
     ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "tool_search",
         "update_plan",
         "get_goal",
         "update_goal",
+        "request_user_input",
         "record_verification",
     ],
     settings_surfaces: &["agent-quality", "tool-approvals"],
@@ -516,6 +516,11 @@ mod tests {
             plugin_for_tool("mcp__computer-use__screenshot").id,
             "computer-use-connector"
         );
+    }
+
+    #[test]
+    fn question_tool_belongs_to_the_core_agent_package() {
+        assert_eq!(plugin_for_tool("request_user_input").id, "core-agent");
     }
 
     #[test]

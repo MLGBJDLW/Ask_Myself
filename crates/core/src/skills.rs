@@ -28,7 +28,10 @@ pub use catalog::{
     render_skill_catalog_prompt_envelope, SkillCatalogEntry, SkillCatalogEnvelope,
     SKILL_CATALOG_ENVELOPE_VERSION,
 };
-pub use importer::{discover_skills_in_directory, import_skills_from_directory};
+pub use importer::{
+    discover_skills_in_directory, import_skills_from_directory, import_skills_from_source,
+    inspect_skill_install_source,
+};
 pub use model::{
     DiscoveredSkillBundle, SaveSkillInput, Skill, SkillDependencies, SkillFrontmatter,
     SkillInterfaceMetadata, SkillPolicy, SkillResourceEncoding, SkillResourceFile,
