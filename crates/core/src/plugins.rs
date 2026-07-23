@@ -211,6 +211,7 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
         "update_plan",
         "get_goal",
         "update_goal",
+        "request_user_input",
         "record_verification",
     ],
     settings_surfaces: &["agent-quality", "tool-approvals"],
@@ -497,6 +498,7 @@ mod tests {
 
     #[test]
     fn maps_tools_to_capability_packages() {
+        assert_eq!(plugin_for_tool("request_user_input").id, "core-agent");
         assert_eq!(plugin_for_tool("generate_image").id, "image-generation");
         assert_eq!(plugin_for_tool("synthesize_speech").id, "text-to-speech");
         assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
