@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.15...nexa-monorepo-v0.10.16) (2026-07-23)
+
+
+### Features
+
+* **chat:** improve skills and interaction controls ([977bbc9](https://github.com/MLGBJDLW/Nexa/commit/977bbc9b913b1f81bd11c470d4c95f09b755ede6))
+* **chat:** Improve skills and interaction controls ([b412e02](https://github.com/MLGBJDLW/Nexa/commit/b412e02964e05028eab1e05edc27fd1213a01ae2))
+
+
+### Bug Fixes
+
+* **agent:** declare question tool in core manifest ([97cb8b1](https://github.com/MLGBJDLW/Nexa/commit/97cb8b1b31e9826296af7d895478f4c0a22676f7))
+
 ## [0.10.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.14...nexa-monorepo-v0.10.15) (2026-07-22)
 
 
