@@ -1,0 +1,62 @@
+{
+  "name": "request_user_input",
+  "description": "Ask the user one to three concise, structured questions when their input is genuinely needed. The app renders these as interactive cards. Call this tool instead of writing a questionnaire in prose. After calling it, stop and wait for the user's next message; never guess their answers.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Stable short identifier using lowercase letters, digits, and underscores."
+            },
+            "header": {
+              "type": "string",
+              "maxLength": 24,
+              "description": "Short scannable label."
+            },
+            "question": {
+              "type": "string",
+              "description": "One clear sentence shown to the user."
+            },
+            "type": {
+              "type": "string",
+              "enum": ["short", "long", "single_choice", "multi_choice", "confirm"],
+              "description": "Response control. Prefer single_choice when options are mutually exclusive."
+            },
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 4,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": { "type": "string", "maxLength": 40 },
+                  "description": { "type": "string", "maxLength": 160 }
+                },
+                "required": ["label", "description"]
+              },
+              "description": "Required for choice questions. Put the recommended option first and suffix its label with '(Recommended)'."
+            },
+            "placeholder": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "why": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Optional concise explanation of how this answer changes the work."
+            }
+          },
+          "required": ["id", "header", "question", "type"]
+        }
+      }
+    },
+    "required": ["questions"]
+  }
+}

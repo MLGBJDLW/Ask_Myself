@@ -121,6 +121,7 @@ pub mod read_files_tool;
 pub mod record_verification_tool;
 pub mod reindex_tool;
 pub mod related_concepts_tool;
+pub mod request_user_input_tool;
 pub(crate) mod run_shell_contract;
 pub mod run_shell_tool;
 pub mod scratchpad_tool;
@@ -1034,6 +1035,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(conversation_goal_tool::GetGoalTool));
     registry.register(Box::new(conversation_goal_tool::UpdateGoalTool));
     registry.register(Box::new(record_verification_tool::RecordVerificationTool));
+    registry.register(Box::new(request_user_input_tool::RequestUserInputTool));
     registry.register(Box::new(compile_tool::CompileTool));
     registry.register(Box::new(knowledge_graph_tool::KnowledgeGraphTool));
     registry.register(Box::new(health_check_tool::HealthCheckTool));
@@ -1227,6 +1229,17 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "manage_skill"));
+    }
+
+    #[test]
+    fn default_registry_exposes_agent_only_user_question_tool() {
+        let registry = default_tool_registry();
+        let tool = registry
+            .get("request_user_input")
+            .expect("request_user_input should be registered");
+        let schema = tool.parameters_schema();
+        assert_eq!(schema["properties"]["questions"]["minItems"], 1);
+        assert_eq!(schema["properties"]["questions"]["maxItems"], 3);
     }
 
     #[test]

@@ -143,8 +143,8 @@ function QuestionCardsPanel({ cards }: { cards: QuestionCard[] }) {
             {card.options && card.options.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {card.options.map((option) => (
-                  <span key={option} className="rounded-md border border-border/60 bg-surface-2/70 px-2 py-1 text-xs text-text-secondary">
-                    {option}
+                  <span key={option.label} className="rounded-md border border-border/60 bg-surface-2/70 px-2 py-1 text-xs text-text-secondary">
+                    {option.label}
                   </span>
                 ))}
               </div>

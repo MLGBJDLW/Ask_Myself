@@ -64,6 +64,8 @@ import { PlanPanel, VerificationPanel } from './TaskPanels';
 import type { ArtifactPayload, ToolPluginInfo, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
+import { QuestionRequestPanel } from './QuestionRequestPanel';
+import { extractQuestionRequest } from '../../lib/questionCards';
 import {
   FileDiffPreview,
   extractDiffStatsArtifact,
@@ -254,6 +256,7 @@ function KnowledgeGraphUsagePanel({
 type ToolCallCardStatus = ToolCallEvent['status'];
 
 interface ToolCallCardProps {
+  callId?: string;
   toolName?: string;
   arguments?: string;
   status: ToolCallCardStatus;
@@ -271,6 +274,8 @@ interface ToolCallCardProps {
   argsStatus?: ToolCallEvent['argsStatus'];
   /** Total characters of `arguments` received so far. */
   argsBytes?: number;
+  onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
+  questionAnswered?: boolean;
 }
 
 function formatByteCount(bytes: number): string {
@@ -1463,6 +1468,7 @@ function SkillActivationPanel({
 /* ------------------------------------------------------------------ */
 
 export function ToolCallCard({
+  callId,
   toolName,
   arguments: args,
   status,
@@ -1477,6 +1483,8 @@ export function ToolCallCard({
   inline,
   trace,
   argsStatus,
+  onQuestionSubmit,
+  questionAnswered,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1567,6 +1575,12 @@ export function ToolCallCard({
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
   const generatedAudio = useMemo(() => extractGeneratedAudioArtifact(artifacts), [artifacts]);
   const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
+  const questionRequest = useMemo(
+    () => safeToolName === 'request_user_input'
+      ? extractQuestionRequest(callId ?? '', args, artifacts)
+      : null,
+    [args, artifacts, callId, safeToolName],
+  );
   const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
   const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
   const showImagePendingPreview = isImageRender && isPending && !generatedImage;
@@ -1603,6 +1617,16 @@ export function ToolCallCard({
       setExpanded(true);
     }
   }, [fileDiff, isFileChangeRender, isPending]);
+
+  if (questionRequest && !inline) {
+    return (
+      <QuestionRequestPanel
+        request={questionRequest}
+        answered={questionAnswered}
+        onSubmit={onQuestionSubmit}
+      />
+    );
+  }
 
   if (inline) {
     return (

@@ -171,9 +171,12 @@ test('slash command menu can pin a skill for the next send', async ({ page }) =>
   await expect(menu).toContainText('/frontend-design');
 
   await page.keyboard.press('Enter');
-  await expect(textarea).toHaveValue('/frontend-design ');
+  await expect(textarea).toHaveValue('');
+  const capsule = page.getByTestId('active-slash-command');
+  await expect(capsule).toBeVisible();
+  await expect(capsule).toContainText('/frontend-design');
 
-  await textarea.fill('/frontend-design build a dense dashboard');
+  await textarea.fill('build a dense dashboard');
   await page.getByTestId('chat-send').click();
 
   await expect.poll(
@@ -184,16 +187,39 @@ test('slash command menu can pin a skill for the next send', async ({ page }) =>
   ).toEqual(['builtin-frontend-design']);
   await expect.poll(
     () => page.evaluate(() =>
-      String((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
-        .__slashAgentChatCalls__[0]?.message ?? ''),
+      String(((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.userArtifacts as Record<string, unknown> | undefined)
+        ?.llmContextContent ?? ''),
     ),
   ).toContain('Use frontend-design for this UI task.');
+  await expect.poll(
+    () => page.evaluate(() =>
+      String(((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.userArtifacts as Record<string, unknown> | undefined)
+        ?.llmContextContent ?? ''),
+    ),
+  ).toContain('build a dense dashboard');
   await expect.poll(
     () => page.evaluate(() =>
       String((window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
         .__slashAgentChatCalls__[0]?.message ?? ''),
     ),
-  ).toContain('build a dense dashboard');
+  ).toBe('build a dense dashboard');
+});
+
+test('an activated slash command can be cancelled without editing the prompt', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  await textarea.fill('/front');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('active-slash-command')).toBeVisible();
+
+  await page.getByTestId('remove-active-slash-command').click();
+
+  await expect(page.getByTestId('active-slash-command')).toHaveCount(0);
+  await expect(textarea).toHaveValue('');
+  await expect(textarea).toBeFocused();
 });
 
 test('slash command tabs filter the second-level option list', async ({ page }) => {

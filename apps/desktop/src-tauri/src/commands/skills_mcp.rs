@@ -144,6 +144,48 @@ pub async fn import_skill_from_md_cmd(
     Ok(skill)
 }
 
+/// Parse an editor import without persisting it. This keeps file selection and
+/// the explicit Save action as one database write instead of creating a hidden
+/// duplicate skill first.
+#[tauri::command]
+pub async fn parse_skill_markdown_cmd(content: String) -> Result<SaveSkillInput, String> {
+    let (fm, body) = nexa_core::skills::parse_skill_file(&content).map_err(|e| e.to_string())?;
+    Ok(SaveSkillInput {
+        id: None,
+        name: fm.name,
+        description: fm.description,
+        content: body,
+        enabled: true,
+        resource_bundle: Vec::new(),
+    })
+}
+
+#[tauri::command]
+pub async fn inspect_skill_install_source_cmd(
+    source: String,
+) -> Result<Vec<DiscoveredSkillBundle>, String> {
+    nexa_core::skills::inspect_skill_install_source(Path::new(&source)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn install_skills_from_source_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    source: String,
+    replace_existing: bool,
+    accept_blocked_warnings: bool,
+) -> Result<Vec<Skill>, String> {
+    let skills = nexa_core::skills::import_skills_from_source(
+        &state.db,
+        Path::new(&source),
+        replace_existing,
+        accept_blocked_warnings,
+    )
+    .map_err(|e| e.to_string())?;
+    materialize_user_skill_resources(&app_handle, &skills)?;
+    Ok(skills)
+}
+
 #[tauri::command]
 pub async fn discover_skills_in_directory_cmd(
     directory: String,

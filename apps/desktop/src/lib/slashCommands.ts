@@ -64,14 +64,6 @@ const COMMON_COMMANDS: Array<Omit<SlashCommandOption, "id" | "kind" | "sourceLab
       "Start executing this durable conversation goal immediately. Establish success criteria and a short working plan, then keep taking concrete actions until the goal is actually achieved and verified. Do not stop after restating the goal, planning, or reporting partial progress. Ask only for information that genuinely blocks safe progress; otherwise continue autonomously. Use update_goal to mark the goal complete only after verification, or blocked only when external input is required.\n\nGoal:\n{{input}}",
   },
   {
-    name: "ask",
-    title: "Question Cards",
-    description: "Collect structured answers with clear, scannable question cards.",
-    action: "prompt",
-    promptTemplate:
-      "Create a structured question-card set for this request. Return a concise intro, then a fenced `question-cards` JSON block with an array of cards. Each card must include: id, title, question, why, type (`short`, `long`, `single_choice`, `multi_choice`, or `confirm`), optional options, and optional placeholder. Ask only the highest-signal questions needed to continue.\n\nRequest:\n{{input}}",
-  },
-  {
     name: "review",
     title: "Review",
     description: "Review code or a proposal for defects, regressions, and missing tests.",
@@ -394,6 +386,16 @@ export function resolveSlashCommandMessage(
   const commandStart = match.index + leadingWhitespace.length;
   const commandEnd = commandStart + commandName.length + 1;
   const remainder = `${message.slice(0, commandStart)}${message.slice(commandEnd)}`.trim();
+
+  return resolveSlashCommandSelection(option, remainder);
+}
+
+/** Resolve an already-selected command against the visible composer text. */
+export function resolveSlashCommandSelection(
+  option: SlashCommandOption,
+  input: string,
+): ResolvedSlashCommand {
+  const remainder = input.trim();
 
   if (option.action === "compact" || option.action === "openWorkflows") {
     return {

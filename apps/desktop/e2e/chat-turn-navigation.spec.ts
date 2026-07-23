@@ -19,7 +19,19 @@ test.beforeEach(async ({ page }) => {
       const number = index + 1;
       const userId = `m-user-${number}`;
       const assistantId = `m-assistant-${number}`;
-      return [
+      const questionArguments = JSON.stringify({
+        questions: [{
+          id: 'scope',
+          header: 'Scope',
+          question: 'Which scope should I use?',
+          type: 'single_choice',
+          options: [
+            { label: 'App (Recommended)', description: 'Only this app.' },
+            { label: 'Repository', description: 'The whole repository.' },
+          ],
+        }],
+      });
+      const rows = [
         {
           id: userId,
           conversationId: conversation.id,
@@ -43,7 +55,9 @@ test.beforeEach(async ({ page }) => {
             (_, paragraph) => `Turn ${number}, paragraph ${paragraph + 1}. This content makes the conversation tall enough to exercise precise scrolling.`,
           ).join('\n\n'),
           toolCallId: null,
-          toolCalls: [],
+          toolCalls: index === 0
+            ? [{ id: 'question-call-1', name: 'request_user_input', arguments: questionArguments }]
+            : [],
           artifacts: null,
           tokenCount: 0,
           createdAt: new Date(now + index * 2_000 + 1_000).toISOString(),
@@ -52,6 +66,29 @@ test.beforeEach(async ({ page }) => {
           imageAttachments: null,
         },
       ];
+      if (index === 0) {
+        rows.push({
+          id: 'm-tool-question-1',
+          conversationId: conversation.id,
+          role: 'tool',
+          content: 'Questions displayed.',
+          toolCallId: 'question-call-1',
+          toolCalls: [],
+          artifacts: {
+            kind: 'questionRequest',
+            version: 1,
+            callId: 'question-call-1',
+            status: 'pending',
+            questions: JSON.parse(questionArguments).questions,
+          },
+          tokenCount: 0,
+          createdAt: new Date(now + 1_500).toISOString(),
+          sortOrder: 1.5,
+          thinking: null,
+          imageAttachments: null,
+        });
+      }
+      return rows;
     }).flat();
     const turns = Array.from({ length: 4 }, (_, index) => {
       const number = index + 1;
@@ -94,6 +131,7 @@ test.beforeEach(async ({ page }) => {
     const listeners = new Map<number, { event: string; handlerId: number }>();
     let callbackSeq = 1;
     let listenerSeq = 1;
+    const agentChatCalls: Array<Record<string, unknown>> = [];
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       switch (cmd) {
@@ -107,6 +145,9 @@ test.beforeEach(async ({ page }) => {
         }
         case 'plugin:event|unlisten':
           listeners.delete(Number(args.eventId ?? 0));
+          return null;
+        case 'agent_chat_cmd':
+          agentChatCalls.push(clone(args));
           return null;
         case 'get_wizard_state':
         case 'get_wizard_state_cmd':
@@ -161,6 +202,7 @@ test.beforeEach(async ({ page }) => {
       }
     };
 
+    (window as unknown as { __questionAgentChatCalls__: Array<Record<string, unknown>> }).__questionAgentChatCalls__ = agentChatCalls;
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
       invoke,
       transformCallback: (callback: (event: unknown) => void) => {
@@ -183,10 +225,11 @@ test('navigates to every conversation turn from the right-side timeline', async 
   const log = page.getByRole('log');
   const navigator = page.getByTestId('chat-turn-navigator');
   await expect(navigator).toBeVisible();
-  await expect(navigator).toHaveAttribute('data-variant', 'edge-waveform');
+  await expect(navigator).toHaveAttribute('data-variant', 'turn-dial');
   await expect(navigator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(navigator.getByRole('button')).toHaveCount(4);
-  await expect(navigator.getByTestId('chat-turn-wave-bar')).toHaveCount(4);
+  await expect(navigator.getByTestId('chat-turn-dial-tick')).toHaveCount(4);
+  await expect(navigator.getByTestId('chat-turn-position')).toHaveCount(0);
 
   const logBox = await log.boundingBox();
   const navigatorBox = await navigator.boundingBox();
@@ -197,8 +240,7 @@ test('navigates to every conversation turn from the right-side timeline', async 
 
   await navigator.getByRole('button', { name: /^#1 ·/ }).click();
   await expect(navigator.getByRole('button', { name: /^#1 ·/ })).toHaveAttribute('aria-current', 'step');
-  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-wave-bar')).toHaveAttribute('style', /width: 24px/);
-  await expect(navigator.getByTestId('chat-turn-position')).toHaveText('1/4');
+  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-dial-tick')).toHaveAttribute('data-active', 'true');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeLessThan(120);
 
   await navigator.getByRole('button', { name: /^#1 ·/ }).hover();
@@ -207,8 +249,7 @@ test('navigates to every conversation turn from the right-side timeline', async 
   await navigator.getByRole('button', { name: /^#1 ·/ }).focus();
   await navigator.getByRole('button', { name: /^#1 ·/ }).press('End');
   await expect(navigator.getByRole('button', { name: /^#4 ·/ })).toHaveAttribute('aria-current', 'step');
-  await expect(navigator.getByTestId('chat-turn-position')).toHaveText('4/4');
-  await expect(navigator.getByTestId('chat-turn-progress')).toHaveAttribute('style', /scaleY\(1\)/);
+  await expect(navigator.getByRole('button', { name: /^#4 ·/ }).getByTestId('chat-turn-dial-tick')).toHaveAttribute('data-active', 'true');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(500);
 });
 
@@ -217,4 +258,21 @@ test('keeps the compact turn timeline out of narrow chat layouts', async ({ page
   await page.goto('/chat/conv-turn-navigation');
 
   await expect(page.getByTestId('chat-turn-navigator')).toBeHidden();
+});
+
+test('renders and submits agent-requested question cards', async ({ page }) => {
+  await page.goto('/chat/conv-turn-navigation');
+
+  const card = page.getByTestId('question-request-card');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('Which scope should I use?');
+  await card.getByRole('radio', { name: /Repository/ }).click();
+  await card.getByRole('button', { name: 'Submit answers' }).click();
+  await expect(card).toContainText('Answered');
+
+  await expect.poll(() => page.evaluate(() => {
+    const call = (window as unknown as { __questionAgentChatCalls__: Array<Record<string, unknown>> })
+      .__questionAgentChatCalls__[0];
+    return (call?.userArtifacts as Record<string, unknown> | undefined)?.requestCallId;
+  })).toBe('question-call-1');
 });
