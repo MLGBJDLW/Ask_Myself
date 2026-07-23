@@ -203,8 +203,7 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     id: "core-agent",
     name: "Core Agent",
     capability: "Run orchestration",
-    description:
-        "Routes tasks, tracks plans, and records verification without owning domain tools.",
+    description: "Routes tasks, coordinates user input, tracks plans, and records verification without owning domain tools.",
     ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "tool_search",
