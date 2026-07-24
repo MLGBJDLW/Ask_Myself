@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.16...nexa-monorepo-v0.10.17) (2026-07-24)
+
+
+### Features
+
+* **agent:** add verified Nexus execution mode ([bf57343](https://github.com/MLGBJDLW/Nexa/commit/bf573432a4013751a02fa6bf8aa8b26867708057))
+* **chat:** refine turn navigation as thread minimap ([3f41f74](https://github.com/MLGBJDLW/Nexa/commit/3f41f74f820e1ad3d27519c01fa307526929a934))
+* refine chat navigation and add TTS plus Nexus mode ([606db1f](https://github.com/MLGBJDLW/Nexa/commit/606db1f2e44aec90b681d23240d264d4ead323e1))
+* **tts:** expand cloud and local speech providers ([a1ddf1b](https://github.com/MLGBJDLW/Nexa/commit/a1ddf1b8046bd0851b23c88a8ed2fdf512af0f4a))
+
+
+### Bug Fixes
+
+* **agent:** preserve standard mode during compaction ([6b56ebd](https://github.com/MLGBJDLW/Nexa/commit/6b56ebdcec6c2f32bf81b94fd2cf6c686c96a1da))
+
 ## [0.10.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.15...nexa-monorepo-v0.10.16) (2026-07-23)
 
 
