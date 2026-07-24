@@ -72,6 +72,27 @@ pub struct TextToSpeechConfig {
     pub output_format: String,
     #[serde(default = "default_tts_speed")]
     pub speed: f32,
+    /// Local sherpa-onnx executable (a bare PATH command or absolute path).
+    #[serde(default)]
+    pub executable_path: Option<String>,
+    /// Primary ONNX model file for local synthesis.
+    #[serde(default)]
+    pub model_path: Option<String>,
+    /// Model token table used by VITS, Kokoro, and Kitten.
+    #[serde(default)]
+    pub tokens_path: Option<String>,
+    /// Optional voices.bin used by multi-voice Kokoro and Kitten models.
+    #[serde(default)]
+    pub voices_path: Option<String>,
+    /// Optional espeak-ng data directory bundled with a model.
+    #[serde(default)]
+    pub data_dir: Option<String>,
+    /// Optional lexicon file or comma-separated lexicon files.
+    #[serde(default)]
+    pub lexicon_path: Option<String>,
+    /// Local inference thread count.
+    #[serde(default = "default_tts_num_threads")]
+    pub num_threads: u32,
 }
 
 impl Default for TextToSpeechConfig {
@@ -85,12 +106,41 @@ impl Default for TextToSpeechConfig {
             voice: default_tts_voice(),
             output_format: default_tts_output_format(),
             speed: default_tts_speed(),
+            executable_path: None,
+            model_path: None,
+            tokens_path: None,
+            voices_path: None,
+            data_dir: None,
+            lexicon_path: None,
+            num_threads: default_tts_num_threads(),
         }
     }
 }
 
 impl TextToSpeechConfig {
     pub fn is_configured(&self) -> bool {
+        if self.api_style == "sherpa_onnx" {
+            let family = self.model.trim();
+            let has_common_paths = self
+                .executable_path
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+                && self
+                    .model_path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+                && self
+                    .tokens_path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty());
+            let has_family_paths = !matches!(family, "kokoro" | "kitten")
+                || self
+                    .voices_path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty());
+            return has_common_paths && has_family_paths;
+        }
+
         !self.api_key.trim().is_empty()
             && !self.model.trim().is_empty()
             && !self.voice.trim().is_empty()
@@ -549,6 +599,10 @@ fn default_tts_speed() -> f32 {
     1.0
 }
 
+fn default_tts_num_threads() -> u32 {
+    2
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -891,6 +945,24 @@ mod tests {
         let json = serde_json::to_string(&config).expect("serialize web search config");
         assert!(json.contains("\"preset\":\"anysearch\""));
         assert!(json.contains("\"preset\":\"serpapi_google\""));
+    }
+
+    #[test]
+    fn local_sherpa_tts_uses_files_instead_of_an_api_key() {
+        let mut config = TextToSpeechConfig {
+            api_style: "sherpa_onnx".to_string(),
+            model: "vits".to_string(),
+            executable_path: Some("sherpa-onnx-offline-tts".to_string()),
+            model_path: Some("model.onnx".to_string()),
+            tokens_path: Some("tokens.txt".to_string()),
+            ..TextToSpeechConfig::default()
+        };
+        assert!(config.is_configured());
+
+        config.model = "kokoro".to_string();
+        assert!(!config.is_configured());
+        config.voices_path = Some("voices.bin".to_string());
+        assert!(config.is_configured());
     }
 
     #[test]

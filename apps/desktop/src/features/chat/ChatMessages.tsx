@@ -196,8 +196,10 @@ function TurnNavigator({
   onSelect: (id: string) => void;
   messageAreaLabel: string;
 }) {
+  const shouldReduceMotion = useReducedMotion();
   if (items.length < 2) return null;
   const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
+  const progress = items.length <= 1 ? 0 : activeIndex / (items.length - 1);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -231,20 +233,29 @@ function TurnNavigator({
       aria-label={`${messageAreaLabel} · ${items.length}`}
       aria-orientation="vertical"
       data-active-index={activeIndex}
-      data-variant="turn-dial"
+      data-variant="thread-minimap"
       data-testid="chat-turn-navigator"
-      className="pointer-events-none sticky top-1/2 z-20 ml-auto -mr-14 hidden h-px w-10 -translate-y-1/2 lg:block"
+      className="pointer-events-none sticky top-1/2 z-20 ml-auto -mr-11 hidden h-px w-7 -translate-y-1/2 lg:block"
       onKeyDown={handleKeyDown}
     >
-      <div className="group/rail pointer-events-auto absolute right-0 top-0 max-h-[min(68vh,34rem)] w-10 -translate-y-1/2 overflow-y-auto overflow-x-visible rounded-[1.15rem] border border-border/55 bg-surface-1/82 py-2 shadow-[0_14px_38px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl">
+      <div className="group/rail pointer-events-auto absolute right-0 top-0 max-h-[min(68vh,34rem)] w-7 -translate-y-1/2 overflow-y-auto overflow-x-visible py-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="relative flex w-full flex-col items-end py-1">
-          <span className="absolute bottom-2 right-[7px] top-2 w-px bg-linear-to-b from-transparent via-border/70 to-transparent" aria-hidden="true" />
+          <span
+            className="absolute bottom-[9px] right-[4px] top-[9px] w-px overflow-hidden bg-border/35 transition-colors duration-200 group-hover/rail:bg-border/55"
+            aria-hidden="true"
+          >
+            <motion.span
+              data-testid="chat-turn-minimap-progress"
+              className="block h-full w-full origin-top bg-linear-to-b from-accent/35 via-accent/70 to-accent"
+              animate={{ scaleY: progress }}
+              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            />
+          </span>
           {items.map((item, index) => {
             const active = item.id === activeId;
             const distance = Math.abs(index - activeIndex);
-            const proximity = Math.max(0, 1 - distance / 4);
-            const tickWidth = active ? 27 : Math.round(7 + proximity * 8);
-            const tickOpacity = active ? 1 : 0.3 + proximity * 0.42;
+            const proximity = Math.max(0, 1 - distance / 5);
+            const markerOpacity = active ? 1 : 0.26 + proximity * 0.34;
             const label = `#${index + 1} · ${item.preview}`;
             return (
               <button
@@ -255,39 +266,37 @@ function TurnNavigator({
                 title={label}
                 data-turn-navigation-id={item.id}
                 data-turn-navigation-index={index}
-                className="group relative z-10 flex h-[18px] w-10 shrink-0 items-center justify-end pr-1.5 outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+                className="group relative z-10 flex h-[17px] w-7 shrink-0 items-center justify-end pr-0.5 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
                 onClick={() => onSelect(item.id)}
               >
                 {active && (
                   <motion.span
-                    layoutId="chat-turn-dial-active-lens"
-                    className="absolute -left-1 right-0 h-6 rounded-l-xl border border-r-0 border-accent/30 bg-linear-to-r from-accent/18 to-accent/5 shadow-[-5px_0_18px_rgba(99,102,241,0.16)]"
-                    transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.65 }}
+                    layoutId="chat-turn-minimap-active-marker"
+                    className="absolute right-0 h-[15px] w-[9px] rounded-l-full border border-r-0 border-accent/20 bg-accent/8 shadow-[-4px_0_14px_rgba(99,102,241,0.12)]"
+                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { type: 'spring', stiffness: 260, damping: 28, mass: 0.85 }}
                     aria-hidden="true"
                   />
                 )}
                 <motion.span
-                  data-testid="chat-turn-dial-tick"
+                  data-testid="chat-turn-minimap-marker"
                   data-active={active ? 'true' : 'false'}
-                  className={`relative z-10 origin-right rounded-full group-hover:bg-accent group-focus-visible:bg-accent ${
+                  className={`relative z-10 rounded-full ring-1 ring-surface-1 transition-colors duration-150 group-hover:bg-accent group-focus-visible:bg-accent ${
                     active
-                      ? 'h-[3px] bg-accent shadow-[0_0_10px_rgba(110,120,255,0.75)]'
-                      : 'h-0.5 bg-text-tertiary'
+                      ? 'h-2.5 w-1 bg-accent shadow-[0_0_9px_rgba(110,120,255,0.68)]'
+                      : 'h-1 w-1 bg-text-tertiary'
                   }`}
                   animate={{
-                    width: tickWidth,
-                    opacity: tickOpacity,
-                    x: active ? -2 : 0,
-                    scaleX: active ? 1.06 : 1,
+                    opacity: markerOpacity,
+                    scale: active ? 1 : 0.82 + proximity * 0.12,
                   }}
-                  transition={{ type: 'spring', stiffness: 430, damping: 32, mass: 0.6 }}
+                  transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                   aria-hidden="true"
                 />
                 <span
-                  className="pointer-events-none invisible absolute right-full top-1/2 mr-3 w-52 -translate-y-1/2 translate-x-1 rounded-xl border border-border/70 border-r-2 border-r-accent bg-surface-1/95 px-3 py-2 text-left text-[10px] leading-4 text-text-secondary opacity-0 shadow-xl backdrop-blur-md transition-[opacity,transform,visibility] duration-fast ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none"
+                  className="pointer-events-none invisible absolute right-full top-1/2 mr-2.5 w-52 -translate-y-1/2 translate-x-0.5 rounded-lg border border-border/55 bg-surface-1/96 px-2.5 py-2 text-left text-[10px] leading-4 text-text-secondary opacity-0 shadow-[0_10px_28px_rgba(0,0,0,0.18)] backdrop-blur-md transition-[opacity,transform,visibility] duration-150 ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none"
                   data-testid="chat-turn-preview"
                 >
-                  <span className="mb-0.5 block font-semibold tabular-nums text-accent">#{index + 1}</span>
+                  <span className="mb-0.5 block font-semibold tabular-nums text-accent/90">Turn {index + 1}</span>
                   <span className="line-clamp-2">{item.preview}</span>
                 </span>
               </button>

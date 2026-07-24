@@ -12,6 +12,9 @@ use std::time::Duration;
 use base64::Engine;
 use chrono::{Local, SecondsFormat, Utc};
 use log::{info, warn};
+use nexa_core::agent::power_mode::{
+    resolve_agent_power_policy, AgentPowerMode, AgentPowerPolicyInput,
+};
 use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
     AgentRequestKind, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
@@ -93,6 +96,7 @@ pub struct DesktopAgentTurnConfigRequest<'a> {
     pub db_config: &'a DbAgentConfig,
     pub app_cfg: &'a AppConfig,
     pub execution_mode: AgentExecutionMode,
+    pub power_mode: AgentPowerMode,
 }
 
 pub struct DesktopAgentTurnConfig {
@@ -238,6 +242,23 @@ pub fn execution_mode_artifact(execution_mode: AgentExecutionMode) -> serde_json
     })
 }
 
+pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "agentPowerMode",
+        "version": 1,
+        "mode": config.power_mode.as_str(),
+        "policy": {
+            "reasoningEnabled": config.reasoning_enabled,
+            "reasoningEffort": config.reasoning_effort.as_ref().map(ToString::to_string),
+            "thinkingBudget": config.thinking_budget,
+            "maxParallel": config.subagent_max_parallel,
+            "maxCallsPerTurn": config.subagent_max_calls_per_turn,
+            "delegatedTokenBudget": config.subagent_token_budget,
+            "verificationReservePercent": config.subagent_verification_reserve_percent,
+        },
+    })
+}
+
 pub fn build_desktop_running_agent_task(
     request: DesktopRunningAgentTaskRequest,
 ) -> DesktopRunningAgentTask {
@@ -358,23 +379,54 @@ pub fn request_desktop_running_agent_stop(
 pub fn annotate_user_artifacts_with_execution_mode(
     artifacts: Option<serde_json::Value>,
     execution_mode: AgentExecutionMode,
+    power_mode: AgentPowerMode,
 ) -> Option<serde_json::Value> {
-    if !execution_mode.is_plan() {
+    if !execution_mode.is_plan() && !power_mode.is_nexus() {
         return artifacts;
     }
 
-    let marker = execution_mode_artifact(execution_mode);
+    let insert_markers = |map: &mut serde_json::Map<String, serde_json::Value>| {
+        if execution_mode.is_plan() {
+            map.insert(
+                "executionMode".to_string(),
+                execution_mode_artifact(execution_mode),
+            );
+        }
+        if power_mode.is_nexus() {
+            map.insert(
+                "powerMode".to_string(),
+                serde_json::json!({
+                    "kind": "agentPowerMode",
+                    "version": 1,
+                    "mode": power_mode.as_str(),
+                }),
+            );
+        }
+    };
     match artifacts {
-        None => Some(marker),
-        Some(serde_json::Value::Object(mut map)) => {
-            map.insert("executionMode".to_string(), marker);
+        None => {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "kind".to_string(),
+                serde_json::Value::String("chatSendContext".to_string()),
+            );
+            insert_markers(&mut map);
             Some(serde_json::Value::Object(map))
         }
-        Some(value) => Some(serde_json::json!({
-            "kind": "chatSendContext",
-            "userArtifacts": value,
-            "executionMode": marker,
-        })),
+        Some(serde_json::Value::Object(mut map)) => {
+            insert_markers(&mut map);
+            Some(serde_json::Value::Object(map))
+        }
+        Some(value) => {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "kind".to_string(),
+                serde_json::Value::String("chatSendContext".to_string()),
+            );
+            map.insert("userArtifacts".to_string(), value);
+            insert_markers(&mut map);
+            Some(serde_json::Value::Object(map))
+        }
     }
 }
 
@@ -813,6 +865,7 @@ pub fn build_desktop_agent_turn_config(
         db_config,
         app_cfg,
         execution_mode,
+        power_mode,
     } = request;
 
     let source_scope_ids = db
@@ -920,6 +973,21 @@ pub fn build_desktop_agent_turn_config(
     } else {
         ""
     };
+    let provider_type = provider_type_for_config(db_config);
+    let configured_reasoning_effort =
+        db_config
+            .reasoning_effort
+            .as_ref()
+            .and_then(|effort| match effort.as_str() {
+                "none" => Some(ReasoningEffort::None),
+                "minimal" => Some(ReasoningEffort::Minimal),
+                "low" => Some(ReasoningEffort::Low),
+                "medium" => Some(ReasoningEffort::Medium),
+                "high" => Some(ReasoningEffort::High),
+                "max" => Some(ReasoningEffort::Max),
+                "xhigh" => Some(ReasoningEffort::XHigh),
+                _ => None,
+            });
     let active_goal = db
         .get_conversation_goal(&conversation.id)
         .ok()
@@ -930,10 +998,34 @@ pub fn build_desktop_agent_turn_config(
         &conversation.id,
         !execution_mode.is_plan(),
     );
+    let configured_max_iterations = if active_goal.is_some() && !execution_mode.is_plan() {
+        u32::MAX
+    } else {
+        db_config
+            .max_iterations
+            .map(|value| value as u32)
+            .unwrap_or(u32::MAX)
+    };
+    let power_policy = resolve_agent_power_policy(AgentPowerPolicyInput {
+        mode: power_mode,
+        provider_type,
+        model: &db_config.model,
+        max_iterations: configured_max_iterations,
+        reasoning_enabled: db_config.reasoning_enabled,
+        thinking_budget: db_config.thinking_budget.map(|value| value as u32),
+        reasoning_effort: configured_reasoning_effort,
+        subagent_max_parallel: db_config.subagent_max_parallel.map(|value| value as u32),
+        subagent_max_calls_per_turn: db_config
+            .subagent_max_calls_per_turn
+            .map(|value| value as u32),
+        subagent_token_budget: db_config.subagent_token_budget.map(|value| value as u32),
+    });
+    let power_mode_section = power_policy.prompt_section().to_string();
     let system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
     let volatile_system_sections = vec![
         current_turn_time_section,
         plan_mode_section.to_string(),
+        power_mode_section,
         goal_section,
         persona_section,
         collection_context_section,
@@ -947,43 +1039,25 @@ pub fn build_desktop_agent_turn_config(
     ];
 
     let executor_config = AgentConfig {
-        max_iterations: if active_goal.is_some() && !execution_mode.is_plan() {
-            u32::MAX
-        } else {
-            db_config
-                .max_iterations
-                .map(|v| v as u32)
-                .unwrap_or(u32::MAX)
-        },
+        max_iterations: power_policy.max_iterations,
         system_prompt,
         volatile_system_sections,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),
         context_window: db_config.context_window.map(|w| w as u32),
-        reasoning_enabled: db_config.reasoning_enabled,
-        thinking_budget: db_config.thinking_budget.map(|v| v as u32),
-        reasoning_effort: db_config
-            .reasoning_effort
-            .as_ref()
-            .and_then(|s| match s.as_str() {
-                "none" => Some(ReasoningEffort::None),
-                "minimal" => Some(ReasoningEffort::Minimal),
-                "low" => Some(ReasoningEffort::Low),
-                "medium" => Some(ReasoningEffort::Medium),
-                "high" => Some(ReasoningEffort::High),
-                "max" => Some(ReasoningEffort::Max),
-                "xhigh" => Some(ReasoningEffort::XHigh),
-                _ => None,
-            }),
-        provider_type: Some(provider_type_for_config(db_config)),
+        reasoning_enabled: power_policy.reasoning_enabled,
+        thinking_budget: power_policy.thinking_budget,
+        reasoning_effort: power_policy.reasoning_effort,
+        provider_type: Some(provider_type),
         request_kind: AgentRequestKind::MainAgentStep,
         summarization_model: db_config.summarization_model.clone(),
         summarization_provider_type: desktop_summarization_provider_config(db_config)
             .map(|config| config.provider_type),
-        subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
-        subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
-        subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
+        subagent_max_parallel: power_policy.subagent_max_parallel,
+        subagent_max_calls_per_turn: power_policy.subagent_max_calls_per_turn,
+        subagent_token_budget: power_policy.subagent_token_budget,
+        subagent_verification_reserve_percent: power_policy.verification_reserve_percent,
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -993,6 +1067,7 @@ pub fn build_desktop_agent_turn_config(
         shell_access_mode: app_cfg.shell_access_mode,
         tool_approval_mode: app_cfg.tool_approval_mode,
         execution_mode,
+        power_mode,
     };
 
     DesktopAgentTurnConfig {
@@ -1102,6 +1177,7 @@ pub fn build_desktop_agent_initial_task_artifacts(
     selected_skills: &[Skill],
     runtime_session_config: &nexa_core::runtime::AgentSessionConfig,
     execution_mode: AgentExecutionMode,
+    executor_config: &AgentConfig,
 ) -> serde_json::Value {
     let mut artifacts = serde_json::json!({
         "kind": "agentTaskArtifacts",
@@ -1111,6 +1187,9 @@ pub fn build_desktop_agent_initial_task_artifacts(
     });
     if execution_mode.is_plan() {
         artifacts["executionMode"] = execution_mode_artifact(execution_mode);
+    }
+    if executor_config.power_mode.is_nexus() {
+        artifacts["powerMode"] = power_mode_artifact(executor_config);
     }
     artifacts
 }
@@ -2024,6 +2103,7 @@ mod tests {
             db_config: &test_agent_config(),
             app_cfg: &app_cfg,
             execution_mode: AgentExecutionMode::Plan,
+            power_mode: AgentPowerMode::Standard,
         });
 
         assert_eq!(turn_config.source_scope_ids, vec![source.id.clone()]);
@@ -2058,6 +2138,7 @@ mod tests {
         assert_eq!(executor.subagent_max_parallel, Some(2));
         assert_eq!(executor.subagent_max_calls_per_turn, Some(3));
         assert_eq!(executor.subagent_token_budget, Some(4096));
+        assert_eq!(executor.subagent_verification_reserve_percent, None);
         assert_eq!(executor.cache_ttl_hours, Some(9));
         assert!(!executor.dynamic_tool_visibility);
         assert!(!executor.trace_enabled);
@@ -2065,6 +2146,7 @@ mod tests {
         assert_eq!(executor.shell_access_mode, ShellAccessMode::Open);
         assert_eq!(executor.tool_approval_mode, ToolApprovalMode::DenyAll);
         assert_eq!(executor.execution_mode, AgentExecutionMode::Plan);
+        assert_eq!(executor.power_mode, AgentPowerMode::Standard);
 
         let prompt_sections = executor.volatile_system_sections.join("\n");
         assert!(prompt_sections.contains("## Current Turn Time"));
@@ -2072,6 +2154,33 @@ mod tests {
         assert!(prompt_sections.contains(root.to_string_lossy().as_ref()));
         assert!(prompt_sections.contains("Research Set"));
         assert!(prompt_sections.contains("Plan Mode"));
+
+        let mut nexus_db_config = test_agent_config();
+        nexus_db_config.model = "gpt-5.6".to_string();
+        let nexus = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+            db: &db,
+            conversation: &conversation,
+            turn_id: "turn-2",
+            message: "Verify a difficult cross-module change",
+            persona_id: None,
+            explicit_skill_ids: &[],
+            db_config: &nexus_db_config,
+            app_cfg: &app_cfg,
+            execution_mode: AgentExecutionMode::Normal,
+            power_mode: AgentPowerMode::Nexus,
+        })
+        .executor_config;
+        assert_eq!(nexus.max_iterations, 48);
+        assert_eq!(nexus.reasoning_effort, Some(ReasoningEffort::Max));
+        assert_eq!(nexus.subagent_max_parallel, Some(4));
+        assert_eq!(nexus.subagent_max_calls_per_turn, Some(8));
+        assert_eq!(nexus.subagent_token_budget, Some(64_000));
+        assert_eq!(nexus.subagent_verification_reserve_percent, Some(25));
+        assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
+        assert!(nexus
+            .volatile_system_sections
+            .join("\n")
+            .contains("## Nexus Execution Policy"));
 
         let _ = std::fs::remove_dir_all(root);
     }

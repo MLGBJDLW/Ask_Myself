@@ -1024,6 +1024,7 @@ export const removeConversationFromProject = (conversationId: string) =>
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
 export type AgentExecutionMode = 'normal' | 'plan';
+export type AgentPowerMode = 'standard' | 'nexus';
 
 export const agentChat = (
   conversationId: string,
@@ -1033,6 +1034,7 @@ export const agentChat = (
   personaId?: string | null,
   skillIds?: string[],
   executionMode?: AgentExecutionMode | null,
+  powerMode?: AgentPowerMode | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) =>
@@ -1044,6 +1046,7 @@ export const agentChat = (
     personaId: personaId ?? null,
     skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
     executionMode: executionMode ?? null,
+    powerMode: powerMode ?? null,
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   });

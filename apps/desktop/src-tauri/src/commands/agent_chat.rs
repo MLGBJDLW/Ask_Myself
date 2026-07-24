@@ -38,6 +38,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub persona_id: Option<String>,
     pub skill_ids: Option<Vec<String>>,
     pub execution_mode: Option<String>,
+    pub power_mode: Option<String>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
 }
@@ -58,6 +59,7 @@ pub async fn agent_chat_cmd(
     persona_id: Option<String>,
     skill_ids: Option<Vec<String>>,
     execution_mode: Option<String>,
+    power_mode: Option<String>,
     user_artifacts: Option<serde_json::Value>,
     task_orchestrator_run_id: Option<String>,
 ) -> Result<(), String> {
@@ -75,6 +77,7 @@ pub async fn agent_chat_cmd(
         persona_id,
         skill_ids,
         execution_mode,
+        power_mode,
         user_artifacts,
         task_orchestrator_run_id,
     })
@@ -99,10 +102,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         persona_id,
         skill_ids,
         execution_mode,
+        power_mode,
         user_artifacts,
         task_orchestrator_run_id,
     } = request;
     let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
+    let power_mode = AgentPowerMode::from_wire(power_mode.as_deref())?;
     let plan_mode = execution_mode.is_plan();
     let task_orchestrator_run_id = task_orchestrator_run_id
         .as_deref()
@@ -180,7 +185,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
     // 5. Save user message to DB.
     let persisted_user_artifacts =
-        annotate_user_artifacts_with_execution_mode(user_artifacts, execution_mode);
+        annotate_user_artifacts_with_execution_mode(user_artifacts, execution_mode, power_mode);
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -253,6 +258,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         db_config: &db_config,
         app_cfg: &app_cfg,
         execution_mode,
+        power_mode,
     });
     let source_scope_ids = desktop_turn_config.source_scope_ids;
     let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
@@ -300,6 +306,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         &session_dependencies.selected_skills,
         &runtime_session_config,
         execution_mode,
+        &executor_config,
     );
     let _ = state.db.update_agent_task_run_progress(
         &task_run.id,

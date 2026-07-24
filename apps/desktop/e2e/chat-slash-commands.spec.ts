@@ -309,3 +309,48 @@ test('plan mode switch keeps its divider centered between labels', async ({ page
   expect(Math.abs(metrics.dividerCenter - metrics.segmentCenter)).toBeLessThan(0.75);
   expect(Math.abs(metrics.dividerCenter - metrics.buttonBoundary)).toBeLessThan(1);
 });
+
+test('Nexus mode explains its cost, persists per conversation, and reaches the backend', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  const nexusSwitch = page.getByTestId('chat-nexus-mode');
+  await expect(nexusSwitch).toHaveAttribute('aria-pressed', 'false');
+  await nexusSwitch.click();
+
+  const dialog = page.getByTestId('chat-nexus-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'About Nexus mode' })).toHaveCSS('opacity', '1');
+  await expect(dialog).toContainText('64K delegated tokens');
+  await expect(dialog).toContainText('same blind spot');
+  await page.getByTestId('chat-nexus-confirm').click();
+
+  await expect(page.getByTestId('nexus-activation-effect')).toBeVisible();
+  await expect(page.getByTestId('nexus-activation-effect')).toBeHidden();
+  await expect(nexusSwitch).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('chat-nexus-mode-banner')).toContainText('25% verification reserve');
+
+  await page.getByTestId('chat-input-textarea').fill('Review the cross-module change');
+  await page.getByTestId('chat-send').click();
+  await expect.poll(
+    () => page.evaluate(() =>
+      (window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0]?.powerMode,
+    ),
+  ).toBe('nexus');
+
+  await page.reload();
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('chat-nexus-mode').click();
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('Nexus activation respects reduced-motion preferences', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/chat/conv-slash');
+
+  await page.getByTestId('chat-nexus-mode').click();
+  await page.getByTestId('chat-nexus-confirm').click();
+
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('nexus-activation-effect')).toHaveCount(0);
+});

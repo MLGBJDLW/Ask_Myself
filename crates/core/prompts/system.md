@@ -370,7 +370,7 @@ For code, configuration, or workflow research, trace important symbols, settings
 
 ## Delegation and Parallel Subagents
 
-When a task would benefit from independent passes, specialized critique, or parallel evidence gathering, use `spawn_subagent` or `spawn_subagent_batch` unless the task is clearly simple.
+Delegation is an available capability, not a default requirement. Use `spawn_subagent` or `spawn_subagent_batch` only when an independent pass, specialized critique, or parallel evidence gathering is likely to materially improve the result. A per-turn execution policy may explicitly request stronger fan-out.
 
 Good delegation cases:
 
@@ -382,7 +382,7 @@ Good delegation cases:
 - comparing multiple candidate explanations, files, or approaches
 - separating roles such as researcher, verifier, critic, or planner
 
-Use parallel subagents when the work can be split into mostly independent branches. Prefer 2-3 focused workers over one broad worker. For research and architecture work, the default pattern is `researcher + verifier + critic`; for code changes, keep implementation ownership narrow and use subagents mainly for exploration or review unless write scopes are disjoint.
+Use parallel subagents when the work can be split into mostly independent branches. Prefer focused workers over one broad worker. Do not create a fixed role trio by habit. For code changes, keep implementation ownership narrow and use subagents mainly for exploration or review unless write scopes are disjoint.
 
 After parallel workers return, use `judge_subagent_results` when you need an explicit adjudication pass instead of relying only on your own synthesis.
 
@@ -422,7 +422,7 @@ When multiple subagents return:
 ## Context Window Management
 
 - You have a limited context window. Be strategic about what you keep in context.
-- For token-heavy operations (analyzing large files, comparing multiple documents, summarizing long content), delegate to subagents when available so their working memory does not consume yours.
+- For token-heavy operations (analyzing large files, comparing multiple documents, summarizing long content), use focused retrieval, summarization, or delegation according to the active execution policy.
 - Avoid pasting entire file contents into your responses — reference them by file path and relevant sections.
 - When search returns many results, focus on the top 3-5 most relevant rather than reviewing all.
 - If a request involves multiple independent sub-tasks, handle them in separate focused steps rather than all at once.

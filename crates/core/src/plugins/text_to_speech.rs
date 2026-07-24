@@ -44,8 +44,8 @@ fn settings_schema() -> PluginSettingsSchema {
                 false,
                 Some("ttsProviders"),
             ),
-            field("apiKey", "API key", "secret", true, true, None),
-            field("baseUrl", "Base URL", "url", true, false, None),
+            field("apiKey", "API key", "secret", false, true, None),
+            field("baseUrl", "Base URL", "url", false, false, None),
             field(
                 "model",
                 "Model",
@@ -62,7 +62,29 @@ fn settings_schema() -> PluginSettingsSchema {
                 false,
                 Some("ttsProviders.voices"),
             ),
+            field("outputFormat", "Output format", "select", true, false, None),
             field("speed", "Speed", "number", false, false, None),
+            field(
+                "executablePath",
+                "Local executable",
+                "text",
+                false,
+                false,
+                None,
+            ),
+            field("modelPath", "Local model", "text", false, false, None),
+            field("tokensPath", "Local tokens", "text", false, false, None),
+            field("voicesPath", "Local voices", "text", false, false, None),
+            field(
+                "dataDir",
+                "Local data directory",
+                "text",
+                false,
+                false,
+                None,
+            ),
+            field("lexiconPath", "Local lexicon", "text", false, false, None),
+            field("numThreads", "Local threads", "number", false, false, None),
         ],
     }
 }
@@ -97,6 +119,24 @@ fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck
             "Text-to-speech settings have not been loaded.",
         )];
     };
+    if config.api_style == "sherpa_onnx" {
+        return vec![check(
+            "local-runtime",
+            "Local runtime",
+            if config.is_configured() {
+                PluginRuntimeStatus::Pass
+            } else {
+                PluginRuntimeStatus::Error
+            },
+            PluginCheckSeverity::Error,
+            if config.is_configured() {
+                "sherpa-onnx executable and model files are configured."
+            } else {
+                "Set the sherpa-onnx executable, model, tokens, and any required voices file."
+            },
+        )];
+    }
+
     vec![
         check(
             "api-key",
@@ -155,6 +195,21 @@ mod tests {
     fn provider_catalog_is_exposed_through_manifest_data() {
         let catalog = provider_catalog();
         assert_eq!(catalog.id, "ttsProviders");
-        assert_eq!(catalog.items.len(), 3);
+        assert_eq!(catalog.items.len(), 7);
+    }
+
+    #[test]
+    fn local_runtime_does_not_require_an_api_key() {
+        let mut config = TextToSpeechConfig::default();
+        config.api_style = "sherpa_onnx".to_string();
+        config.model = "vits".to_string();
+        config.executable_path = Some("sherpa-onnx-offline-tts".to_string());
+        config.model_path = Some("model.onnx".to_string());
+        config.tokens_path = Some("tokens.txt".to_string());
+
+        let checks = runtime_checks(Some(&config));
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "local-runtime");
+        assert_eq!(checks[0].status, PluginRuntimeStatus::Pass);
     }
 }

@@ -1,11 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles, CircleDollarSign, Timer, Users, ShieldCheck, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
 import type { Skill } from "../../types/extensions";
-import type { AgentExecutionMode, WorkflowCatalogTemplate } from "../../lib/api";
+import type { AgentExecutionMode, AgentPowerMode, WorkflowCatalogTemplate } from "../../lib/api";
 import * as api from "../../lib/api";
 import {
   buildSlashCommandOptions,
@@ -38,6 +38,7 @@ export interface ChatInputSendOptions {
   skillIds?: string[];
   userArtifacts?: ArtifactPayload | null;
   executionMode?: AgentExecutionMode;
+  powerMode?: AgentPowerMode;
   taskOrchestratorRunId?: string | null;
 }
 
@@ -77,9 +78,27 @@ type SlashCommandTab = "all" | SlashCommandKind;
 
 const NEW_CONVERSATION_DRAFT_KEY = "__new__";
 const CHAT_INPUT_DRAFT_STORAGE_KEY = "chat-input-drafts-v1";
+const CHAT_POWER_MODE_STORAGE_PREFIX = "chat-agent-power-mode-v1";
 const MAX_STORED_CHAT_INPUT_DRAFTS = 100;
 const MAX_INPUT_HISTORY_ITEMS = 100;
 const chatInputDrafts: Record<string, ChatDraftState> = {};
+
+function readStoredPowerMode(key: string): AgentPowerMode | null {
+  try {
+    const value = localStorage.getItem(`${CHAT_POWER_MODE_STORAGE_PREFIX}:${key}`);
+    return value === "nexus" || value === "standard" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistPowerMode(key: string, mode: AgentPowerMode) {
+  try {
+    localStorage.setItem(`${CHAT_POWER_MODE_STORAGE_PREFIX}:${key}`, mode);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
 
 const SLASH_COMMAND_TABS: SlashCommandTab[] = ["all", "command", "skill", "workflow"];
 const LOCALIZED_COMMON_SLASH_COMMANDS = new Set([
@@ -240,6 +259,7 @@ export function ChatInput({
   contextIndicator,
 }: ChatInputProps) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const draftKey = conversationId ?? NEW_CONVERSATION_DRAFT_KEY;
   const initialDraftRef = useRef<ChatDraftState | null>(null);
   if (initialDraftRef.current === null) {
@@ -264,6 +284,11 @@ export function ChatInput({
   const [slashActiveTab, setSlashActiveTab] = useState<SlashCommandTab>("all");
   const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(null);
   const [localPlanModeEnabled, setLocalPlanModeEnabled] = useState(false);
+  const [powerMode, setPowerModeState] = useState<AgentPowerMode>(
+    () => readStoredPowerMode(draftKey) ?? "standard",
+  );
+  const [nexusDialogOpen, setNexusDialogOpen] = useState(false);
+  const [nexusActivationVisible, setNexusActivationVisible] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -272,6 +297,7 @@ export function ChatInput({
     initialDraftRef.current ? { [draftKey]: cloneDraftState(initialDraftRef.current) } : {},
   );
   const historyDraftRef = useRef<{ value: string; cursor: number } | null>(null);
+  const previousPowerModeKeyRef = useRef(draftKey);
   const inputLocked = disabled || isCompacting;
   const attachmentLocked = inputLocked || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
@@ -292,6 +318,35 @@ export function ChatInput({
     }
     onPlanModeChange?.(enabled);
   }, [onPlanModeChange, planModeEnabled]);
+
+  const setPowerMode = useCallback((mode: AgentPowerMode) => {
+    setPowerModeState(mode);
+    persistPowerMode(draftKey, mode);
+  }, [draftKey]);
+
+  const activateNexusMode = useCallback(() => {
+    setPowerMode("nexus");
+    setNexusDialogOpen(false);
+    if (!shouldReduceMotion) {
+      setNexusActivationVisible(true);
+    }
+  }, [setPowerMode, shouldReduceMotion]);
+
+  useEffect(() => {
+    const previousKey = previousPowerModeKeyRef.current;
+    let storedMode = readStoredPowerMode(draftKey);
+    if (
+      storedMode === null
+      && previousKey === NEW_CONVERSATION_DRAFT_KEY
+      && draftKey !== NEW_CONVERSATION_DRAFT_KEY
+      && powerMode === "nexus"
+    ) {
+      storedMode = "nexus";
+      persistPowerMode(draftKey, storedMode);
+    }
+    setPowerModeState(storedMode ?? "standard");
+    previousPowerModeKeyRef.current = draftKey;
+  }, [draftKey]);
 
   const persistDraft = useCallback((
     nextValue: string,
@@ -685,13 +740,12 @@ export function ChatInput({
     const userArtifacts = activeGoal && goalContextContent
       ? mergeGoalContextArtifact(baseUserArtifacts, activeGoal, goalContextContent)
       : baseUserArtifacts;
-    const sendOptions = slashResolution || executionMode || userArtifacts
-      ? {
-          skillIds: slashResolution?.skillIds,
-          userArtifacts,
-          executionMode,
-        }
-      : undefined;
+    const sendOptions = {
+      skillIds: slashResolution?.skillIds,
+      userArtifacts,
+      executionMode,
+      powerMode,
+    };
     if (executionMode === "plan") {
       setPlanMode(true);
     }
@@ -701,7 +755,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, powerMode, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -923,6 +977,16 @@ export function ChatInput({
     });
   }, [adjustHeight, persistDraft]);
 
+  const nexusRiskItems: Array<{
+    Icon: typeof CircleDollarSign;
+    key: TranslationKey;
+  }> = [
+    { Icon: CircleDollarSign, key: "chat.nexusCostRisk" },
+    { Icon: Timer, key: "chat.nexusLatencyRisk" },
+    { Icon: Users, key: "chat.nexusParallelRisk" },
+    { Icon: ShieldCheck, key: "chat.nexusQualityRisk" },
+  ];
+
   const modeIndicatorStyle = {
     width: "calc(50% + 0.25rem)",
     transform: effectivePlanModeEnabled ? "translateX(0)" : "translateX(calc(100% - 0.5rem))",
@@ -1009,6 +1073,36 @@ export function ChatInput({
         onClick={() => setPlanMode(false)}
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-0 hover:text-text-primary"
         aria-label={t("common.close")}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : null;
+  const nexusModeEnabled = powerMode === "nexus";
+  const nexusModeBanner = nexusModeEnabled ? (
+    <div
+      data-testid="chat-nexus-mode-banner"
+      className="flex min-w-0 items-center gap-2 rounded-lg border border-violet-400/25 bg-linear-to-r from-violet-500/12 via-accent/8 to-transparent px-2.5 py-2 text-xs text-text-secondary"
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-violet-400/25 bg-surface-0/70 text-violet-300">
+        <Sparkles className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-text-primary">{t("chat.nexusMode")}</div>
+        <div className="truncate text-[11px] text-text-tertiary">{t("chat.nexusBannerSummary")}</div>
+      </div>
+      <button
+        type="button"
+        onClick={() => setNexusDialogOpen(true)}
+        className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-violet-300 transition-colors hover:bg-surface-0/70 hover:text-violet-200"
+      >
+        {t("chat.nexusDetails")}
+      </button>
+      <button
+        type="button"
+        onClick={() => setPowerMode("standard")}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-0 hover:text-text-primary"
+        aria-label={t("chat.nexusDisable")}
       >
         <X className="h-3.5 w-3.5" />
       </button>
@@ -1238,6 +1332,7 @@ export function ChatInput({
           {contextIndicator}
         </div>
         {planModeBanner}
+        {nexusModeBanner}
 
         <div
           className={`overflow-hidden rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
@@ -1364,6 +1459,29 @@ export function ChatInput({
             {sessionControls}
 
             <button
+              type="button"
+              data-testid="chat-nexus-mode"
+              onClick={() => {
+                if (nexusModeEnabled) {
+                  setPowerMode("standard");
+                } else {
+                  setNexusDialogOpen(true);
+                }
+              }}
+              disabled={attachmentLocked}
+              aria-pressed={nexusModeEnabled}
+              className={`flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-all duration-fast disabled:pointer-events-none disabled:opacity-40 ${
+                nexusModeEnabled
+                  ? "border-violet-400/35 bg-violet-500/12 text-violet-300 shadow-[0_0_16px_rgba(139,92,246,0.12)]"
+                  : "border-transparent text-text-tertiary hover:border-border/70 hover:bg-surface-2 hover:text-text-primary"
+              }`}
+              aria-label={t("chat.nexusMode")}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Nexus</span>
+            </button>
+
+            <button
               onClick={() => fileInputRef.current?.click()}
               disabled={attachmentLocked}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
@@ -1449,6 +1567,60 @@ export function ChatInput({
         </div>
         </div>
       </div>
+      <AnimatePresence>
+        {nexusActivationVisible && (
+          <motion.div
+            data-testid="nexus-activation-effect"
+            aria-hidden="true"
+            className="pointer-events-none fixed inset-0 z-[70] overflow-hidden"
+            style={{
+              background:
+                "radial-gradient(ellipse at 50% 74%, rgba(139, 92, 246, 0.13) 0%, rgba(14, 7, 30, 0.62) 34%, rgba(2, 1, 8, 0.82) 100%)",
+            }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 1, 0.92, 0] }}
+            transition={{ duration: 1.35, times: [0, 0.12, 0.72, 1], ease: "easeOut" }}
+            onAnimationComplete={() => setNexusActivationVisible(false)}
+          >
+            <motion.div
+              className="absolute inset-x-0 top-[74%] h-px origin-center bg-linear-to-r from-transparent via-violet-100 to-transparent shadow-[0_0_34px_8px_rgba(139,92,246,0.72)]"
+              initial={{ scaleX: 0.01, opacity: 0 }}
+              animate={{ scaleX: [0.01, 1.15, 0.7], opacity: [0, 1, 0] }}
+              transition={{ duration: 1.05, times: [0, 0.38, 1], ease: [0.16, 1, 0.3, 1] }}
+            />
+            {[0, 0.12, 0.24].map((delay, index) => (
+              <div
+                key={delay}
+                className="absolute left-1/2 top-[74%] h-64 w-64 -translate-x-1/2 -translate-y-1/2"
+              >
+                <motion.div
+                  className="h-full w-full rounded-full border border-violet-300/80"
+                  style={{ boxShadow: "0 0 38px rgba(139, 92, 246, 0.28), inset 0 0 24px rgba(196, 181, 253, 0.12)" }}
+                  initial={{ scale: 0.06, opacity: 0 }}
+                  animate={{ scale: [0.06, 0.18, 2.9 + index * 0.42], opacity: [0, 0.88, 0] }}
+                  transition={{ duration: 1.1, delay, times: [0, 0.18, 1], ease: [0.16, 1, 0.3, 1] }}
+                />
+              </div>
+            ))}
+            <div className="absolute left-1/2 top-[74%] -translate-x-1/2 -translate-y-1/2">
+              <motion.div
+                className="h-44 w-px origin-center bg-white shadow-[0_0_18px_5px_rgba(196,181,253,0.9),0_0_64px_18px_rgba(109,40,217,0.68)]"
+                initial={{ scaleY: 0, opacity: 0 }}
+                animate={{ scaleY: [0, 1, 0.06], opacity: [0, 1, 0] }}
+                transition={{ duration: 0.82, times: [0, 0.32, 1], ease: [0.16, 1, 0.3, 1] }}
+              />
+            </div>
+            <motion.div
+              className="absolute inset-x-0 top-[54%] text-center font-mono text-base font-semibold tracking-[0.55em] text-violet-50 drop-shadow-[0_0_16px_rgba(196,181,253,1)]"
+              initial={{ opacity: 0, y: 10, filter: "blur(8px)" }}
+              animate={{ opacity: [0, 1, 0], y: [10, 0, -8], filter: ["blur(8px)", "blur(0px)", "blur(5px)"] }}
+              transition={{ duration: 1.1, times: [0, 0.32, 1], ease: "easeOut" }}
+            >
+              NEXUS
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <Modal
         open={previewAttachment !== null}
         onClose={() => setPreviewAttachment(null)}
@@ -1462,6 +1634,70 @@ export function ChatInput({
             className="mx-auto max-h-[68vh] max-w-full rounded-lg object-contain"
           />
         )}
+      </Modal>
+      <Modal
+        open={nexusDialogOpen}
+        onClose={() => setNexusDialogOpen(false)}
+        title={t("chat.nexusDialogTitle")}
+        surfaceClassName="bg-surface-0"
+        footer={(
+          <>
+            <button
+              type="button"
+              onClick={() => setNexusDialogOpen(false)}
+              className="rounded-md px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              data-testid="chat-nexus-confirm"
+              onClick={() => {
+                if (nexusModeEnabled) {
+                  setPowerMode("standard");
+                  setNexusDialogOpen(false);
+                } else {
+                  activateNexusMode();
+                }
+              }}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                nexusModeEnabled
+                  ? "bg-danger/12 text-danger hover:bg-danger/20"
+                  : "bg-violet-500 text-white hover:bg-violet-400"
+              }`}
+            >
+              {t(nexusModeEnabled ? "chat.nexusDisable" : "chat.nexusEnable")}
+            </button>
+          </>
+        )}
+      >
+        <div data-testid="chat-nexus-dialog" className="space-y-4">
+          <div className="rounded-lg border border-violet-400/20 bg-violet-500/8 p-3">
+            <div className="flex items-start gap-2.5">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
+              <p className="text-sm leading-6 text-text-secondary">{t("chat.nexusDialogIntro")}</p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {nexusRiskItems.map(({ Icon, key }) => (
+              <div key={key} className="flex gap-2.5 rounded-lg border border-border/70 bg-surface-1/70 p-3">
+                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary" />
+                <p className="text-xs leading-5 text-text-secondary">{t(key)}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs leading-5 text-text-tertiary">{t("chat.nexusModelBound")}</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-success/20 bg-success/8 p-3">
+              <div className="mb-1 text-xs font-semibold text-success">{t("chat.nexusUseForTitle")}</div>
+              <p className="text-xs leading-5 text-text-secondary">{t("chat.nexusUseFor")}</p>
+            </div>
+            <div className="rounded-lg border border-warning/20 bg-warning/8 p-3">
+              <div className="mb-1 text-xs font-semibold text-warning">{t("chat.nexusAvoidForTitle")}</div>
+              <p className="text-xs leading-5 text-text-secondary">{t("chat.nexusAvoidFor")}</p>
+            </div>
+          </div>
+        </div>
       </Modal>
     </div>
   );

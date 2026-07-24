@@ -25,6 +25,13 @@ export const DEFAULT_TTS_CONFIG: TextToSpeechConfig = {
   voice: 'coral',
   outputFormat: 'wav',
   speed: 1,
+  executablePath: null,
+  modelPath: null,
+  tokensPath: null,
+  voicesPath: null,
+  dataDir: null,
+  lexiconPath: null,
+  numThreads: 2,
 };
 
 export function TextToSpeechSettingsPanel({
@@ -44,7 +51,16 @@ export function TextToSpeechSettingsPanel({
     ) ?? TTS_PROVIDER_PRESETS[0],
     [config.apiStyle, config.provider],
   );
-  const configured = Boolean(config.apiKey.trim() && config.model.trim() && config.voice.trim());
+  const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
+  const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
+  const configured = localProvider
+    ? Boolean(
+        config.executablePath?.trim()
+        && config.modelPath?.trim()
+        && config.tokensPath?.trim()
+        && (!localFamilyNeedsVoices || config.voicesPath?.trim()),
+      )
+    : Boolean(config.apiKey.trim() && config.model.trim() && config.voice.trim());
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -61,6 +77,7 @@ export function TextToSpeechSettingsPanel({
       model: defaultTtsItem(preset.models)?.id ?? '',
       voice: defaultTtsItem(preset.voices)?.id ?? '',
       outputFormat: preset.outputFormats[0] ?? 'mp3',
+      executablePath: preset.local ? (config.executablePath || 'sherpa-onnx-offline-tts') : config.executablePath,
     });
   };
 
@@ -84,7 +101,11 @@ export function TextToSpeechSettingsPanel({
                 ? 'border-success/20 bg-success/10 text-success'
                 : 'border-warning/25 bg-warning/10 text-warning'}
             >
-              {configured ? t('settings.configured') : t('settings.needsApiKey')}
+              {configured
+                ? t('settings.configured')
+                : localProvider
+                  ? t('settings.ttsNeedsLocalFiles')
+                  : t('settings.needsApiKey')}
             </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">
@@ -113,30 +134,34 @@ export function TextToSpeechSettingsPanel({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">{t('settings.apiKey')}</label>
-              <div className="relative">
-                <Input
-                  type={showKey ? 'text' : 'password'}
-                  value={config.apiKey}
-                  onChange={(event) => update({ apiKey: event.target.value })}
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowKey((value) => !value)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary"
-                  aria-label={showKey ? t('settings.hideKey') : t('settings.showKey')}
-                >
-                  {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
+            {!localProvider && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.apiKey')}</label>
+                <div className="relative">
+                  <Input
+                    type={showKey ? 'text' : 'password'}
+                    value={config.apiKey}
+                    onChange={(event) => update({ apiKey: event.target.value })}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((value) => !value)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary"
+                    aria-label={showKey ? t('settings.hideKey') : t('settings.showKey')}
+                  >
+                    {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">{t('settings.baseUrl')}</label>
-              <Input value={config.baseUrl ?? ''} onChange={(event) => update({ baseUrl: event.target.value || null })} />
-            </div>
+            {!localProvider && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{t('settings.baseUrl')}</label>
+                <Input value={config.baseUrl ?? ''} onChange={(event) => update({ baseUrl: event.target.value || null })} />
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
@@ -152,8 +177,11 @@ export function TextToSpeechSettingsPanel({
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">{t('settings.ttsVoice')}</label>
+              <label className="text-sm font-medium text-text-primary">
+                {localProvider ? t('settings.ttsSpeakerId') : t('settings.ttsVoice')}
+              </label>
               <Input
+                data-testid="tts-voice-input"
                 value={config.voice}
                 onChange={(event) => update({ voice: event.target.value })}
                 list="nexa-tts-voices"
@@ -161,6 +189,19 @@ export function TextToSpeechSettingsPanel({
               <datalist id="nexa-tts-voices">
                 {activePreset.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
               </datalist>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-text-primary">{t('settings.ttsOutputFormat')}</label>
+              <select
+                value={config.outputFormat}
+                onChange={(event) => update({ outputFormat: event.target.value })}
+                className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
+              >
+                {activePreset.outputFormats.map((format) => (
+                  <option key={format} value={format}>{format.toUpperCase()}</option>
+                ))}
+              </select>
             </div>
 
             <div className="space-y-2">
@@ -174,6 +215,53 @@ export function TextToSpeechSettingsPanel({
                 onChange={(event) => update({ speed: Math.min(2, Math.max(0.5, Number(event.target.value) || 1)) })}
               />
             </div>
+
+            {localProvider && (
+              <>
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsLocalExecutable')}</label>
+                  <Input
+                    data-testid="tts-local-executable"
+                    value={config.executablePath ?? ''}
+                    onChange={(event) => update({ executablePath: event.target.value || null })}
+                    placeholder="sherpa-onnx-offline-tts"
+                  />
+                  <p className="text-[11px] leading-5 text-text-tertiary">{t('settings.ttsSherpaHint')}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsModelPath')}</label>
+                  <Input data-testid="tts-local-model" value={config.modelPath ?? ''} onChange={(event) => update({ modelPath: event.target.value || null })} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsTokensPath')}</label>
+                  <Input value={config.tokensPath ?? ''} onChange={(event) => update({ tokensPath: event.target.value || null })} />
+                </div>
+                {localFamilyNeedsVoices && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-text-primary">{t('settings.ttsVoicesPath')}</label>
+                    <Input value={config.voicesPath ?? ''} onChange={(event) => update({ voicesPath: event.target.value || null })} />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsDataDir')}</label>
+                  <Input value={config.dataDir ?? ''} onChange={(event) => update({ dataDir: event.target.value || null })} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsLexiconPath')}</label>
+                  <Input value={config.lexiconPath ?? ''} onChange={(event) => update({ lexiconPath: event.target.value || null })} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-primary">{t('settings.ttsThreads')}</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={32}
+                    value={config.numThreads ?? 2}
+                    onChange={(event) => update({ numThreads: Math.min(32, Math.max(1, Number(event.target.value) || 2)) })}
+                  />
+                </div>
+              </>
+            )}
           </div>
           <div className="mt-4 flex justify-end border-t border-border pt-3">
             <Button

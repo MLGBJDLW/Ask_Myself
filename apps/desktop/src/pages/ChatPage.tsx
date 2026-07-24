@@ -549,6 +549,7 @@ export function ChatPage() {
               skillIds: inputOptions?.skillIds,
               userArtifacts: userArtifacts ?? null,
               executionMode: inputOptions?.executionMode,
+              powerMode: inputOptions?.powerMode,
               taskOrchestratorRunId: inputOptions?.taskOrchestratorRunId,
             }
           : undefined,

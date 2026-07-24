@@ -290,6 +290,7 @@ async fn launch_task_orchestrator_execution_ticket(
         persona_id,
         skill_ids,
         execution_mode,
+        power_mode: Some("standard".to_string()),
         user_artifacts: Some(serde_json::json!({
             "kind": "taskOrchestratorLaunch",
             "version": 1,
