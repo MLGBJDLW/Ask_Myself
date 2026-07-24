@@ -4,6 +4,7 @@
     "name": "OpenAI Speech",
     "provider": "open_ai",
     "apiStyle": "openai_speech",
+    "requiresApiKey": true,
     "baseUrl": "https://api.openai.com/v1",
     "description": "The latest steerable GPT-4o mini speech model, plus low-latency and HD options.",
     "models": [
@@ -29,10 +30,35 @@
     "outputFormats": ["wav", "mp3", "opus", "aac", "flac"]
   },
   {
+    "id": "groq",
+    "name": "Groq Orpheus",
+    "provider": "groq",
+    "apiStyle": "openai_speech",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.groq.com/openai/v1",
+    "description": "Very fast US-hosted Orpheus speech with expressive English and Saudi Arabic voices.",
+    "models": [
+      { "id": "canopylabs/orpheus-v1-english", "name": "Orpheus English", "recommended": true },
+      { "id": "canopylabs/orpheus-arabic-saudi", "name": "Orpheus Arabic (Saudi)" }
+    ],
+    "voices": [
+      { "id": "hannah", "name": "Hannah", "recommended": true },
+      { "id": "autumn", "name": "Autumn" },
+      { "id": "diana", "name": "Diana" },
+      { "id": "austin", "name": "Austin" },
+      { "id": "daniel", "name": "Daniel" },
+      { "id": "troy", "name": "Troy" },
+      { "id": "fahad", "name": "Fahad (Arabic)" },
+      { "id": "lulwa", "name": "Lulwa (Arabic)" }
+    ],
+    "outputFormats": ["wav"]
+  },
+  {
     "id": "elevenlabs",
     "name": "ElevenLabs Speech",
     "provider": "elevenlabs",
     "apiStyle": "elevenlabs_speech",
+    "requiresApiKey": true,
     "baseUrl": "https://api.elevenlabs.io/v1",
     "description": "Expressive multilingual speech, including a Flash model optimized for very low latency.",
     "models": [
@@ -46,10 +72,31 @@
     "outputFormats": ["mp3"]
   },
   {
+    "id": "azure-speech",
+    "name": "Azure AI Speech",
+    "provider": "azure_speech",
+    "apiStyle": "azure_speech",
+    "requiresApiKey": true,
+    "baseUrl": "https://eastus.tts.speech.microsoft.com/cognitiveservices/v1",
+    "description": "Microsoft neural speech with broad regional, multilingual, and Chinese voice coverage. Replace eastus with your Speech resource region.",
+    "models": [
+      { "id": "neural", "name": "Azure Neural Speech", "recommended": true }
+    ],
+    "voices": [
+      { "id": "en-US-JennyMultilingualNeural", "name": "Jenny Multilingual (US)", "recommended": true },
+      { "id": "en-US-JennyNeural", "name": "Jenny (US)" },
+      { "id": "en-US-ChristopherNeural", "name": "Christopher (US)" },
+      { "id": "zh-CN-XiaoxiaoNeural", "name": "晓晓 (普通话)" },
+      { "id": "zh-CN-YunxiNeural", "name": "云希 (普通话)" }
+    ],
+    "outputFormats": ["wav", "mp3"]
+  },
+  {
     "id": "minimax",
     "name": "MiniMax Speech",
     "provider": "minimax",
     "apiStyle": "minimax_speech",
+    "requiresApiKey": true,
     "baseUrl": "https://api.minimax.io/v1",
     "description": "Speech 2.8 turbo for speed and HD for higher-fidelity output.",
     "models": [
@@ -60,5 +107,50 @@
       { "id": "male-qn-qingse", "name": "Qingse", "recommended": true }
     ],
     "outputFormats": ["mp3"]
+  },
+  {
+    "id": "dashscope-cosyvoice",
+    "name": "Alibaba CosyVoice / Qwen TTS",
+    "provider": "qwen",
+    "apiStyle": "dashscope_speech",
+    "requiresApiKey": true,
+    "baseUrl": "https://dashscope.aliyuncs.com/api/v1/services/audio/tts",
+    "description": "Alibaba Cloud Model Studio speech for Mandarin, English, dialects, and multilingual content. Voice availability is model-specific; custom model and voice IDs remain editable.",
+    "models": [
+      { "id": "qwen-audio-3.0-tts-flash", "name": "Qwen Audio 3.0 TTS Flash", "recommended": true },
+      { "id": "qwen-audio-3.0-tts-plus", "name": "Qwen Audio 3.0 TTS Plus" },
+      { "id": "cosyvoice-v3.5-flash", "name": "CosyVoice v3.5 Flash" },
+      { "id": "cosyvoice-v3.5-plus", "name": "CosyVoice v3.5 Plus" },
+      { "id": "cosyvoice-v3-flash", "name": "CosyVoice v3 Flash" },
+      { "id": "cosyvoice-v3-plus", "name": "CosyVoice v3 Plus" }
+    ],
+    "voices": [
+      { "id": "longanhuan_v3.6", "name": "龙安欢 V3.6 (普通话/English)", "recommended": true },
+      { "id": "longjielidou_v3.6", "name": "龙杰力豆 V3.6 (普通话/English)" },
+      { "id": "loongeva_v3.6", "name": "Eva V3.6 (American English)" },
+      { "id": "loongjohn", "name": "John (American English)" }
+    ],
+    "outputFormats": ["wav", "mp3", "opus"]
+  },
+  {
+    "id": "sherpa-onnx",
+    "name": "sherpa-onnx (Local)",
+    "provider": "sherpa_onnx",
+    "apiStyle": "sherpa_onnx",
+    "requiresApiKey": false,
+    "local": true,
+    "baseUrl": "",
+    "description": "Fast, private offline speech through sherpa-onnx-offline-tts. Supports VITS/Piper/MMS, multilingual Kokoro, and Kitten model packages on Windows, macOS, and Linux.",
+    "models": [
+      { "id": "vits", "name": "VITS / Piper / MMS", "recommended": true },
+      { "id": "kokoro", "name": "Kokoro" },
+      { "id": "kitten", "name": "KittenTTS" }
+    ],
+    "voices": [
+      { "id": "0", "name": "Speaker 0", "recommended": true },
+      { "id": "1", "name": "Speaker 1" },
+      { "id": "18", "name": "Speaker 18 (Kokoro zh/en example)" }
+    ],
+    "outputFormats": ["wav"]
   }
 ]

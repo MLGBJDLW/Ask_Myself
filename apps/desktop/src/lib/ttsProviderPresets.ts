@@ -11,6 +11,8 @@ export interface TtsProviderPreset {
   name: string;
   provider: string;
   apiStyle: string;
+  requiresApiKey: boolean;
+  local?: boolean;
   baseUrl: string;
   description: string;
   models: TtsCatalogItem[];

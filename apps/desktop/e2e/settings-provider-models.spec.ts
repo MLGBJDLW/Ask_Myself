@@ -378,7 +378,13 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await panel.locator("button").first().click();
 
   const selects = panel.locator("select");
+  await expect(selects.nth(0).locator("option")).toHaveCount(7);
   await expect(selects.nth(1)).toHaveValue("gpt-4o-mini-tts");
+  await selects.nth(0).selectOption("groq");
+  await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
+  await expect(selects.nth(2)).toHaveValue("wav");
+  await expect(panel.locator('[title="Groq"]')).toContainText("GQ");
+
   await selects.nth(0).selectOption("elevenlabs");
   await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
   await expect(panel.locator('[title="ElevenLabs"] > span')).toHaveAttribute(
@@ -388,6 +394,17 @@ test("settings promotes low-latency speech providers with their own logos", asyn
 
   await selects.nth(0).selectOption("minimax");
   await expect(selects.nth(1)).toHaveValue("speech-2.8-turbo");
+
+  await selects.nth(0).selectOption("dashscope-cosyvoice");
+  await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
+  await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
+
+  await selects.nth(0).selectOption("sherpa-onnx");
+  await expect(selects.nth(1)).toHaveValue("vits");
+  await expect(panel.locator('[title="sherpa-onnx"]')).toContainText("S");
+  await expect(panel.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
+  await expect(panel.getByTestId("tts-local-model")).toBeVisible();
+  await expect(panel.locator("label").filter({ hasText: "API Key" })).toHaveCount(0);
 });
 
 test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {

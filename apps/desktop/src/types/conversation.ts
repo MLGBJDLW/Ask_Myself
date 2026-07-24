@@ -455,6 +455,13 @@ export interface TextToSpeechConfig {
   voice: string;
   outputFormat: string;
   speed: number;
+  executablePath?: string | null;
+  modelPath?: string | null;
+  tokensPath?: string | null;
+  voicesPath?: string | null;
+  dataDir?: string | null;
+  lexiconPath?: string | null;
+  numThreads?: number;
 }
 
 export type ProviderType =
