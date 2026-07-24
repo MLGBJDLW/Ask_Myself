@@ -846,6 +846,7 @@ pub async fn compact_conversation_cmd(
         subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
+        subagent_verification_reserve_percent: None,
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -855,6 +856,7 @@ pub async fn compact_conversation_cmd(
         shell_access_mode: ShellAccessMode::Restricted,
         tool_approval_mode: app_cfg.tool_approval_mode,
         execution_mode: AgentExecutionMode::Normal,
+        power_mode: AgentPowerMode::Standard,
     };
 
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
