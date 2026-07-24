@@ -225,10 +225,11 @@ test('navigates to every conversation turn from the right-side timeline', async 
   const log = page.getByRole('log');
   const navigator = page.getByTestId('chat-turn-navigator');
   await expect(navigator).toBeVisible();
-  await expect(navigator).toHaveAttribute('data-variant', 'turn-dial');
+  await expect(navigator).toHaveAttribute('data-variant', 'thread-minimap');
   await expect(navigator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(navigator.getByRole('button')).toHaveCount(4);
-  await expect(navigator.getByTestId('chat-turn-dial-tick')).toHaveCount(4);
+  await expect(navigator.getByTestId('chat-turn-minimap-marker')).toHaveCount(4);
+  await expect(navigator.getByTestId('chat-turn-minimap-progress')).toHaveCount(1);
   await expect(navigator.getByTestId('chat-turn-position')).toHaveCount(0);
 
   const logBox = await log.boundingBox();
@@ -240,7 +241,7 @@ test('navigates to every conversation turn from the right-side timeline', async 
 
   await navigator.getByRole('button', { name: /^#1 ·/ }).click();
   await expect(navigator.getByRole('button', { name: /^#1 ·/ })).toHaveAttribute('aria-current', 'step');
-  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-dial-tick')).toHaveAttribute('data-active', 'true');
+  await expect(navigator.getByRole('button', { name: /^#1 ·/ }).getByTestId('chat-turn-minimap-marker')).toHaveAttribute('data-active', 'true');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeLessThan(120);
 
   await navigator.getByRole('button', { name: /^#1 ·/ }).hover();
@@ -249,7 +250,7 @@ test('navigates to every conversation turn from the right-side timeline', async 
   await navigator.getByRole('button', { name: /^#1 ·/ }).focus();
   await navigator.getByRole('button', { name: /^#1 ·/ }).press('End');
   await expect(navigator.getByRole('button', { name: /^#4 ·/ })).toHaveAttribute('aria-current', 'step');
-  await expect(navigator.getByRole('button', { name: /^#4 ·/ }).getByTestId('chat-turn-dial-tick')).toHaveAttribute('data-active', 'true');
+  await expect(navigator.getByRole('button', { name: /^#4 ·/ }).getByTestId('chat-turn-minimap-marker')).toHaveAttribute('data-active', 'true');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(500);
 });
 
