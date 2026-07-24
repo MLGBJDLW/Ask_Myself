@@ -3,7 +3,7 @@ import * as api from './api';
 import { streamStore } from './streamStore';
 import type { ImageAttachment, ApprovalRequest, ArtifactPayload } from '../types/conversation';
 import type { StreamState } from './streamStore';
-import type { AgentExecutionMode } from './api';
+import type { AgentExecutionMode, AgentPowerMode } from './api';
 
 // Re-export types from streamStore for backward compatibility
 export type { ContextUsageBreakdown, ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
@@ -30,6 +30,7 @@ interface UseAgentStreamReturn {
     personaId?: string | null,
     skillIds?: string[],
     executionMode?: AgentExecutionMode | null,
+    powerMode?: AgentPowerMode | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
   ) => Promise<void>;
@@ -124,6 +125,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     personaId?: string | null,
     skillIds?: string[],
     executionMode?: AgentExecutionMode | null,
+    powerMode?: AgentPowerMode | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
   ) => {
@@ -139,6 +141,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         personaId,
         skillIds,
         executionMode,
+        powerMode,
         userArtifacts,
         taskOrchestratorRunId,
       );

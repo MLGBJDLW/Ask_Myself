@@ -56,6 +56,7 @@ mod finalization;
 mod long_task;
 pub mod loop_guard;
 mod model_step;
+pub mod power_mode;
 mod pre_search;
 mod prompt_cache;
 pub mod prompt_ir;
@@ -241,6 +242,8 @@ pub struct AgentConfig {
     pub subagent_max_calls_per_turn: Option<u32>,
     /// Soft token budget for delegated workers and adjudication per turn.
     pub subagent_token_budget: Option<u32>,
+    /// Percentage of delegated tokens reserved for verification/adjudication.
+    pub subagent_verification_reserve_percent: Option<u32>,
     /// Maximum time for each tool call in seconds. 0 disables the outer tool timeout.
     pub tool_timeout_secs: Option<u32>,
     pub agent_timeout_secs: Option<u32>,
@@ -268,6 +271,9 @@ pub struct AgentConfig {
     /// approval-ready plan instead of applying changes.
     #[serde(default)]
     pub execution_mode: AgentExecutionMode,
+    /// Per-turn capability policy selected by the user.
+    #[serde(default)]
+    pub power_mode: power_mode::AgentPowerMode,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -355,6 +361,7 @@ impl Default for AgentConfig {
             subagent_max_parallel: None,
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
+            subagent_verification_reserve_percent: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
@@ -364,6 +371,7 @@ impl Default for AgentConfig {
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: ToolApprovalMode::default(),
             execution_mode: AgentExecutionMode::Normal,
+            power_mode: power_mode::AgentPowerMode::Standard,
         }
     }
 }

@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
-import type { AgentExecutionMode } from './api';
+import type { AgentExecutionMode, AgentPowerMode } from './api';
 import {
   useAgentStream,
   useRunningConversationIds,
@@ -480,6 +480,7 @@ export interface ChatSendOptions {
   userArtifacts?: ArtifactPayload | null;
   skillIds?: string[];
   executionMode?: AgentExecutionMode;
+  powerMode?: AgentPowerMode;
   taskOrchestratorRunId?: string | null;
 }
 
@@ -1434,6 +1435,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         personaForSend,
         options?.skillIds,
         options?.executionMode,
+        options?.powerMode,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
       );
@@ -1538,6 +1540,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       personaId ?? activePersonaId,
       options?.skillIds,
       options?.executionMode,
+      options?.powerMode,
       options?.userArtifacts,
       null,
     );

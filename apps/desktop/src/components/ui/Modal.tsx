@@ -29,9 +29,10 @@ interface ModalProps {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  surfaceClassName?: string;
 }
 
-export function Modal({ open, onClose, title, children, footer }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, surfaceClassName }: ModalProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -131,7 +132,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
             aria-modal="true"
             aria-label={title}
             tabIndex={-1}
-            className="relative z-10 flex max-h-[88vh] w-[min(92vw,32rem)] flex-col overflow-hidden rounded-lg border border-border bg-surface-2 shadow-lg"
+            className={`relative z-10 flex max-h-[88vh] w-[min(92vw,32rem)] flex-col overflow-hidden rounded-lg border border-border shadow-lg ${surfaceClassName ?? 'bg-surface-2'}`}
           >
             <div className="flex shrink-0 items-center justify-between px-5 py-4 border-b border-border">
               <h2 className="text-sm font-semibold text-text-primary">{title}</h2>

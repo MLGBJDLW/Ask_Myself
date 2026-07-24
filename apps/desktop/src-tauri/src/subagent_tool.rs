@@ -436,6 +436,7 @@ struct BudgetSnapshot {
     tokens_spent: u32,
     tokens_reserved: u32,
     remaining_tokens: u32,
+    verification_reserve_tokens: u32,
 }
 
 #[derive(Debug)]
@@ -446,6 +447,7 @@ struct SubagentBudgetState {
     calls_started: u32,
     tokens_spent: u32,
     tokens_reserved: u32,
+    verification_reserve_percent: u32,
 }
 
 #[derive(Clone)]
@@ -494,6 +496,10 @@ impl SubagentBudgetController {
             .subagent_token_budget
             .unwrap_or(32_000)
             .clamp(256, 200_000);
+        let verification_reserve_percent = config
+            .subagent_verification_reserve_percent
+            .unwrap_or_default()
+            .clamp(0, 80);
 
         Self {
             semaphore: Arc::new(Semaphore::new(max_parallel as usize)),
@@ -504,6 +510,7 @@ impl SubagentBudgetController {
                 calls_started: 0,
                 tokens_spent: 0,
                 tokens_reserved: 0,
+                verification_reserve_percent,
             })),
         }
     }
@@ -512,6 +519,7 @@ impl SubagentBudgetController {
         &self,
         label: &str,
         reserved_tokens: u32,
+        is_verification: bool,
         cancel_token: &CancellationToken,
     ) -> Result<OwnedSemaphorePermit, CoreError> {
         {
@@ -521,6 +529,28 @@ impl SubagentBudgetController {
                     "Delegated execution budget exhausted: maximum {} calls per turn reached before starting {label}.",
                     state.max_calls_per_turn
                 )));
+            }
+            if state.verification_reserve_percent > 0 && !is_verification {
+                let reserve_tokens = state
+                    .token_budget
+                    .saturating_mul(state.verification_reserve_percent)
+                    / 100;
+                let exploration_ceiling = state.token_budget.saturating_sub(reserve_tokens);
+                let committed_after_call = state
+                    .tokens_spent
+                    .saturating_add(state.tokens_reserved)
+                    .saturating_add(reserved_tokens);
+                if committed_after_call > exploration_ceiling {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Nexus verification reserve reached before starting {label}. Keep {reserve_tokens} of {} delegated tokens available for verification or adjudication.",
+                        state.token_budget
+                    )));
+                }
+                if state.calls_started >= state.max_calls_per_turn.saturating_sub(1) {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Nexus verification call reserve reached before starting {label}. Keep the final delegated call for verification or adjudication."
+                    )));
+                }
             }
             if state.tokens_spent >= state.token_budget && state.tokens_reserved == 0 {
                 return Err(CoreError::InvalidInput(format!(
@@ -574,6 +604,10 @@ impl SubagentBudgetController {
             remaining_tokens: state
                 .token_budget
                 .saturating_sub(state.tokens_spent.saturating_add(state.tokens_reserved)),
+            verification_reserve_tokens: state
+                .token_budget
+                .saturating_mul(state.verification_reserve_percent)
+                / 100,
         }
     }
 }
@@ -1635,7 +1669,12 @@ async fn run_subagent_once(
     };
     let _permit = match runtime
         .budget
-        .begin_call(&call_label, reserved_tokens, &worker_cancel_token)
+        .begin_call(
+            &call_label,
+            reserved_tokens,
+            role_profile.is_some_and(|profile| profile.id == "verifier"),
+            &worker_cancel_token,
+        )
         .await
     {
         Ok(permit) => {
@@ -2591,6 +2630,7 @@ impl Tool for JudgeSubagentResultsTool {
             .begin_call(
                 "judge_subagent_results",
                 reserved_tokens,
+                true,
                 &self.runtime.cancel_token,
             )
             .await
@@ -2660,11 +2700,27 @@ impl Tool for JudgeSubagentResultsTool {
                 nexa_core::llm::Message::text(nexa_core::llm::Role::User, user_prompt),
             ],
             temperature: Some(0.1),
-            max_tokens: Some(1200),
+            max_tokens: Some(if self.runtime.base_config.power_mode.is_nexus() {
+                self.runtime
+                    .base_config
+                    .max_tokens
+                    .unwrap_or(4_000)
+                    .clamp(1_200, 4_000)
+            } else {
+                1_200
+            }),
             tools: None,
             stop: None,
-            thinking_budget: None,
-            reasoning_effort: None,
+            thinking_budget: if self.runtime.base_config.power_mode.is_nexus() {
+                self.runtime.base_config.thinking_budget
+            } else {
+                None
+            },
+            reasoning_effort: if self.runtime.base_config.power_mode.is_nexus() {
+                self.runtime.base_config.reasoning_effort.clone()
+            } else {
+                None
+            },
             provider_type: self.runtime.base_config.provider_type,
             parallel_tool_calls: true,
         };
@@ -3062,14 +3118,16 @@ mod tests {
         let budget = SubagentBudgetController::new(&config);
         let cancel_token = CancellationToken::new();
         let permit = budget
-            .begin_call("worker-a", 220, &cancel_token)
+            .begin_call("worker-a", 220, false, &cancel_token)
             .await
             .unwrap();
         let snapshot = budget.snapshot().await;
         assert_eq!(snapshot.tokens_reserved, 220);
         assert_eq!(snapshot.remaining_tokens, 36);
 
-        let second = budget.begin_call("worker-b", 50, &cancel_token).await;
+        let second = budget
+            .begin_call("worker-b", 50, false, &cancel_token)
+            .await;
         assert!(second.is_ok(), "estimated reservations are a soft budget");
         drop(second);
 
@@ -3088,7 +3146,7 @@ mod tests {
         let budget = SubagentBudgetController::new(&config);
         let active_cancel = CancellationToken::new();
         let active_permit = budget
-            .begin_call("worker-a", 200, &active_cancel)
+            .begin_call("worker-a", 200, false, &active_cancel)
             .await
             .unwrap();
 
@@ -3097,7 +3155,7 @@ mod tests {
         let queued_cancel_for_task = queued_cancel.clone();
         let queued = tokio::spawn(async move {
             queued_budget
-                .begin_call("worker-b", 300, &queued_cancel_for_task)
+                .begin_call("worker-b", 300, false, &queued_cancel_for_task)
                 .await
         });
         tokio::task::yield_now().await;
@@ -3110,5 +3168,38 @@ mod tests {
 
         drop(active_permit);
         budget.release_reservation(200).await;
+    }
+
+    #[tokio::test]
+    async fn test_nexus_preserves_tokens_and_a_call_for_verification() {
+        let config = AgentConfig {
+            subagent_max_calls_per_turn: Some(3),
+            subagent_token_budget: Some(1_000),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel_token = CancellationToken::new();
+
+        let worker = budget
+            .begin_call("worker-a", 700, false, &cancel_token)
+            .await
+            .unwrap();
+        assert!(budget
+            .begin_call("worker-b", 100, false, &cancel_token)
+            .await
+            .is_err());
+        let verifier = budget
+            .begin_call("verifier", 300, true, &cancel_token)
+            .await;
+        assert!(verifier.is_ok());
+
+        drop(verifier);
+        drop(worker);
+        budget.release_reservation(700).await;
+        budget.release_reservation(300).await;
+        let snapshot = budget.snapshot().await;
+        assert_eq!(snapshot.verification_reserve_tokens, 250);
+        assert_eq!(snapshot.calls_started, 2);
     }
 }
