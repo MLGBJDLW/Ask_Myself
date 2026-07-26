@@ -201,6 +201,8 @@ export function ThinkingBlock({
     <div className="mb-2">
       <button
         type="button"
+        data-testid="thinking-trace-toggle"
+        data-trace-state={isStreaming ? "active" : "complete"}
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"

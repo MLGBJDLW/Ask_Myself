@@ -474,7 +474,7 @@ test('active goal owns the top-right task capsule and stays out of context detai
   await expect(panel).not.toHaveAttribute('data-dragging');
 });
 
-test('manual compact shows progress, locks input, and refreshes context usage', async ({ page }) => {
+test('manual compact keeps the draft editable, locks send, and refreshes context usage', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
 
   await page.getByTestId('chat-input-textarea').fill('Generate usage before compacting.');
@@ -483,10 +483,14 @@ test('manual compact shows progress, locks input, and refreshes context usage', 
 
   await page.getByTestId('chat-compact').click();
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
-  await expect(page.getByTestId('chat-input-textarea')).toBeDisabled();
+  await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
+  await expect(page.getByTestId('chat-send')).toBeDisabled();
+  await page.getByTestId('chat-input-textarea').fill('Draft the next question while compacting.');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('Draft the next question while compacting.');
   await expect(page.getByTestId('chat-send')).toBeDisabled();
 
   await expect(page.getByTestId('chat-input-textarea')).toBeEnabled();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('Draft the next question while compacting.');
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
   await expect(page.getByText('Compaction complete').first()).toBeVisible();
   await expect(page.getByTestId('chat-context-trigger')).not.toHaveAttribute('aria-label', /7% context used/);
