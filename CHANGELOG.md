@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.18](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.17...nexa-monorepo-v0.10.18) (2026-07-26)
+
+
+### Features
+
+* **agent:** strengthen compaction and execution contract ([bfa6ed7](https://github.com/MLGBJDLW/Nexa/commit/bfa6ed7050e2e4226043b2d837e1275593847edc))
+* **chat:** preserve drafts and fold completed turn traces ([f79bc1a](https://github.com/MLGBJDLW/Nexa/commit/f79bc1a4455ea2c07cc6ef6ffac3b6da29a67610))
+* upgrade context, streaming, and speech workflows ([2196ce9](https://github.com/MLGBJDLW/Nexa/commit/2196ce9dfdb086ee8bd8eb5d2183d9979e51002c))
+* **voice:** add fast transcription and automatic playback ([d31e469](https://github.com/MLGBJDLW/Nexa/commit/d31e469370bf45b7722ca824c3129b12ffe8cc47))
+
+
+### Bug Fixes
+
+* **chat:** keep final replies outside completed traces ([0958e6a](https://github.com/MLGBJDLW/Nexa/commit/0958e6aba6bc8a0fc56502a7c87865b686d8d0ca))
+* **ci:** satisfy strict clippy checks ([166989a](https://github.com/MLGBJDLW/Nexa/commit/166989abdf943e0d90a6eb229e65fc597864887e))
+* **deps:** move to patched React Router stack ([6691de6](https://github.com/MLGBJDLW/Nexa/commit/6691de653679c7f532b2f0855fc591ddcbb8495d))
+
 ## [0.10.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.16...nexa-monorepo-v0.10.17) (2026-07-24)
 
 
