@@ -209,9 +209,7 @@ fn test_accumulate_by_index_when_id_missing() {
 fn test_default_config() {
     let cfg = AgentConfig::default();
     assert_eq!(cfg.max_iterations, u32::MAX);
-    assert!(cfg
-        .system_prompt
-        .contains("local-first personal workspace assistant"));
+    assert!(cfg.system_prompt.contains("local-first workspace agent"));
     assert_eq!(cfg.temperature, Some(0.3));
     assert_eq!(cfg.max_tokens, Some(4096));
 }
@@ -243,6 +241,10 @@ fn test_build_system_prompt_preserves_core_rules() {
         "dynamic sections should follow custom text"
     );
     assert!(prompt.contains("Prefer terse answers."));
+    assert!(prompt.contains("Own the requested outcome"));
+    assert!(prompt.contains("Protect user work"));
+    assert!(prompt.contains("A tool call is not evidence of success"));
+    assert!(prompt.contains("keep recent complete turns verbatim"));
     assert!(!prompt.contains("## Tool Contract: run_shell"));
     assert!(prompt.len() < 8_000);
 }
