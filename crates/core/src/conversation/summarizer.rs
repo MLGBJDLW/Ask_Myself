@@ -76,11 +76,11 @@ fn fit_entries_to_budget(entries: &[String], max_len: usize) -> String {
     }
 
     let mut selected = vec![false; entries.len()];
-    for index in 0..entries.len().min(2) {
-        selected[index] = true;
+    for keep in selected.iter_mut().take(entries.len().min(2)) {
+        *keep = true;
     }
-    for index in entries.len().saturating_sub(6)..entries.len() {
-        selected[index] = true;
+    for keep in selected.iter_mut().skip(entries.len().saturating_sub(6)) {
+        *keep = true;
     }
 
     let mut candidates = entries
@@ -222,6 +222,7 @@ pub async fn summarize_evicted_messages(
 
 /// Flatten a slice of [`Message`]s into a plain-text conversation transcript
 /// suitable for feeding into the summariser prompt.
+#[cfg(test)]
 fn build_conversation_text(messages: &[Message]) -> String {
     build_conversation_entries(messages).join("\n")
 }

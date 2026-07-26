@@ -103,14 +103,13 @@ fn parse_sherpa_stdout(stdout: &str, wav_path: &Path) -> String {
     stdout
         .lines()
         .map(str::trim)
-        .filter(|line| {
+        .rfind(|line| {
             !line.is_empty()
                 && !line.contains("parse-options.cc")
                 && !line.contains("Elapsed seconds")
                 && !line.contains("Real time factor")
                 && !line.ends_with(wav_name)
         })
-        .last()
         .map(clean_sense_voice_tags)
         .unwrap_or_default()
 }
@@ -164,7 +163,7 @@ pub fn transcribe_sherpa_wav(
     }
     command.arg(wav_path);
 
-    let output = command.output().map_err(|error| CoreError::Io(error))?;
+    let output = command.output().map_err(CoreError::Io)?;
     if !output.status.success() {
         return Err(CoreError::Video(format!(
             "sherpa-onnx transcription failed: {}",
