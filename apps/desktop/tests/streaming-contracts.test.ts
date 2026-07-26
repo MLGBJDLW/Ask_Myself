@@ -1823,6 +1823,21 @@ test('timeline view model typewriter text only replaces the active reply event',
   assertEqual(timeline[1].isStreaming, true, 'active reply remains streaming');
 });
 
+test('timeline view model keeps the terminal reply visible during persistence refresh', () => {
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: [{ id: 'thinking-1', kind: 'thinking', text: 'Checking files' }],
+    isStreaming: false,
+    currentTraceActive: false,
+    streamText: 'Final answer',
+    displayedText: 'Final answer',
+  });
+
+  assertEqual(timeline.length, 2, 'terminal preview timeline item count');
+  assert(timeline[1].kind === 'reply', 'terminal preview should be a separate reply');
+  assertEqual(timeline[1].content, 'Final answer', 'terminal reply should remain visible');
+  assertEqual(timeline[1].isStreaming, false, 'terminal reply should not remain streaming');
+});
+
 test('timeline view model merges adjacent thinking trace events into one section', () => {
   const events: TraceEvent[] = [
     { id: 'thinking-1', kind: 'thinking', text: 'First thought' },
@@ -2112,6 +2127,32 @@ test('dispatches cancelled done terminal events without surfacing failed state',
   assert(restored, 'cancelled done terminal event should create stream state');
   assertEqual(restored.isStreaming, false, 'cancelled done terminal event stops streaming');
   assertEqual(restored.error, null, 'cancelled done terminal event should not set failed error');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('done message supplies the final reply when a thinking-only round is active', () => {
+  const conversationId = 'conversation-thinking-then-done-message';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    type: 'thinking',
+    content: 'Preparing the final answer',
+  } as AgentFrontendEvent);
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    type: 'done',
+    message: {
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'Final answer' }],
+    },
+  } as unknown as AgentFrontendEvent);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'done event should retain terminal preview state');
+  assertEqual(restored.isStreaming, false, 'done event stops streaming');
+  assertEqual(restored.streamRounds.length, 1, 'thinking and final reply share one round');
+  assertEqual(restored.streamRounds[0].reply, 'Final answer', 'done message becomes final reply');
 
   streamStore.clearStream(conversationId);
 });

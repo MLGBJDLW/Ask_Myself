@@ -1230,7 +1230,16 @@ export function ChatMessages(props: ChatMessagesProps) {
       const finalAssistantIdx = [...currentGroup]
         .reverse()
         .find((idx) => finalAssistantIndexes.has(idx));
-      const anchorIdx = finalAssistantIdx ?? persistedTraceCarrierIdx ?? currentGroup[0];
+      const finalContentAssistantIdx = [...currentGroup]
+        .reverse()
+        .find((idx) => {
+          const message = messages[idx];
+          return message.content.trim().length > 0 && message.toolCalls.length === 0;
+        });
+      const anchorIdx = finalAssistantIdx
+        ?? finalContentAssistantIdx
+        ?? persistedTraceCarrierIdx
+        ?? currentGroup[0];
       const persistedTraceCarrier =
         persistedTraceCarrierIdx == null ? null : messages[persistedTraceCarrierIdx];
       const persistedTraceItems =
@@ -1441,8 +1450,7 @@ export function ChatMessages(props: ChatMessagesProps) {
   const collapsedLiveTrace = useMemo(() => {
     const finalItem = liveTraceTimeline[liveTraceTimeline.length - 1];
     if (
-      !isStreaming
-      || currentTraceActive
+      currentTraceActive
       || liveTraceTimeline.length < 2
       || finalItem?.kind !== "reply"
     ) {
@@ -1458,7 +1466,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       );
     if (!hasRenderableTimelineSections(historySections)) return null;
     return { historySections, finalItem };
-  }, [currentTraceActive, isStreaming, liveTraceTimeline]);
+  }, [currentTraceActive, liveTraceTimeline]);
 
 
   const updateActiveTurnNavigation = useCallback(() => {
@@ -1790,7 +1798,9 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const shouldRenderLiveTraceTimeline =
-    liveTraceTimeline.length > 0 && (isStreaming || streamRounds.length === 0);
+    liveTraceTimeline.length > 0 && (
+      isStreaming || streamRounds.length === 0 || collapsedLiveTrace !== null
+    );
   const shouldRenderStreamRounds =
     streamRounds.length > 0 && (isStreaming || !shouldRenderLiveTraceTimeline);
   const shouldShowStreamingText =
