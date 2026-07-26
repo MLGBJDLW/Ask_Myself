@@ -8,7 +8,7 @@ import {
   Route,
   RouterProvider,
   useLocation,
-} from "react-router-dom";
+} from "react-router";
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";

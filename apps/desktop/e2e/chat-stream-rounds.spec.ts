@@ -456,4 +456,7 @@ test('preserves multiple thinking and tool rounds during a single streamed respo
   expect(text.indexOf('Final answer: add the timeout guard from the second file.')).toBeGreaterThan(
     text.indexOf('Now compare the two candidate files.'),
   );
+
+  await page.getByRole('button', { name: 'Insert emoji' }).click();
+  await expect(page.locator('em-emoji-picker')).toBeVisible();
 });

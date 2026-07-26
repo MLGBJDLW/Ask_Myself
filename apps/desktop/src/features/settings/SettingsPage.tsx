@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useBlocker, useNavigate } from 'react-router-dom';
+import { useBlocker, useNavigate } from 'react-router';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Database,

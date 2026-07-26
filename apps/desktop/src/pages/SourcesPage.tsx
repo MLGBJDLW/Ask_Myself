@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   FolderOpen,
@@ -1221,5 +1221,4 @@ export function SourcesPage() {
     </div>
   );
 }
-
 

@@ -58,7 +58,7 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
     return <p {...r} className="my-1 leading-relaxed">{children}</p>;
   },
   pre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
-    const child = children as React.ReactElement | undefined;
+    const child = children as React.ReactElement<{ className?: string }> | undefined;
     if (child?.props?.className?.startsWith('language-')) {
       return <>{children}</>;
     }
