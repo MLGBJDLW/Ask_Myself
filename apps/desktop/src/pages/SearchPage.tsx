@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
@@ -1330,5 +1330,4 @@ export function SearchPage() {
     </div>
   );
 }
-
 

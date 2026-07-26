@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
+    (window as unknown as { __AUTO_SPEECH_TEXTS__: string[] }).__AUTO_SPEECH_TEXTS__ = [];
+    HTMLMediaElement.prototype.play = async () => undefined;
 
     type Conversation = {
       id: string;
@@ -52,6 +54,7 @@ test.beforeEach(async ({ page }) => {
 
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
+    let streamSteps: Array<() => void> = [];
     let callbackSeq = 1;
     let listenerSeq = 1;
 
@@ -109,6 +112,30 @@ test.beforeEach(async ({ page }) => {
           return [clone(defaultAgentConfig)];
         case 'get_model_context_window':
           return 1047576;
+        case 'get_app_config_cmd':
+          return {
+            timeoutDefaultsVersion: 1,
+            cacheTtlHours: 24,
+            defaultSearchLimit: 20,
+            minSearchSimilarity: 0.2,
+            maxTextFileSize: 1,
+            maxVideoFileSize: 1,
+            maxAudioFileSize: 1,
+            textToSpeech: {
+              provider: 'open_ai',
+              apiStyle: 'openai_speech',
+              apiKey: 'configured-for-test',
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-4o-mini-tts',
+              voice: 'coral',
+              outputFormat: 'wav',
+              speed: 1,
+              autoSpeakFinalAnswers: true,
+            },
+          };
+        case 'synthesize_speech_preview_cmd':
+          (window as unknown as { __AUTO_SPEECH_TEXTS__: string[] }).__AUTO_SPEECH_TEXTS__.push(String(args.text ?? ''));
+          return { path: 'C:\\temp\\auto-speech.wav', mediaType: 'audio/wav' };
         case 'list_conversations_cmd':
           return Object.values(conversations).map(clone);
         case 'get_conversation_cmd': {
@@ -267,15 +294,15 @@ test.beforeEach(async ({ page }) => {
             finalAssistantMessage,
           ];
 
-          setTimeout(() => {
+          streamSteps = [
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'thinking',
               content: 'Need to search the knowledge base first.',
             });
-          }, 20);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'toolCallStart',
@@ -283,9 +310,8 @@ test.beforeEach(async ({ page }) => {
               toolName: 'search_knowledge_base',
               arguments: firstToolArgs,
             });
-          }, 80);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'toolCallResult',
@@ -295,17 +321,15 @@ test.beforeEach(async ({ page }) => {
               isError: false,
               artifacts: null,
             });
-          }, 150);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'thinking',
               content: 'Now compare the two candidate files.',
             });
-          }, 240);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'toolCallStart',
@@ -313,9 +337,8 @@ test.beforeEach(async ({ page }) => {
               toolName: 'compare_documents',
               arguments: secondToolArgs,
             });
-          }, 360);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'toolCallResult',
@@ -325,17 +348,15 @@ test.beforeEach(async ({ page }) => {
               isError: false,
               artifacts: null,
             });
-          }, 430);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'textDelta',
               delta: 'Final answer: add the timeout guard from the second file.',
             });
-          }, 520);
-
-          setTimeout(() => {
+            },
+            () => {
             emitEvent('agent:event', {
               conversationId,
               type: 'done',
@@ -350,7 +371,8 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 600);
+            },
+          ];
 
           return null;
         }
@@ -377,39 +399,64 @@ test.beforeEach(async ({ page }) => {
         listeners.delete(eventId);
       },
     };
+
+    (window as unknown as { __EMIT_STREAM_STEP__: () => boolean }).__EMIT_STREAM_STEP__ = () => {
+      const next = streamSteps.shift();
+      next?.();
+      return Boolean(next);
+    };
   });
 });
 
 test('preserves multiple thinking and tool rounds during a single streamed response', async ({ page }) => {
   await page.goto('/chat/conv-stream-rounds');
+  await expect(page.getByTestId('chat-auto-tts-toggle')).toHaveAttribute('aria-pressed', 'true');
 
   await page.getByTestId('chat-input-textarea').fill('Walk through the retries problem.');
   await page.getByTestId('chat-send').click();
 
-  await page.waitForTimeout(110);
+  const emitNext = () => page.evaluate(() => (
+    window as unknown as { __EMIT_STREAM_STEP__: () => boolean }
+  ).__EMIT_STREAM_STEP__());
+
+  await emitNext();
   await expect(page.getByText('Need to search the knowledge base first.')).toBeVisible();
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await emitNext();
+  await expect(page.getByTestId('tool-call-card')).toHaveCount(1);
 
-  await page.waitForTimeout(170);
-  await expect(page.getByText('Now compare the two candidate files.')).toBeVisible({ timeout: 50 });
-
-  await page.waitForTimeout(120);
-  await expect(page.getByText('compare_documents')).toBeVisible();
+  await emitNext();
+  await emitNext();
+  await expect(page.getByText('Now compare the two candidate files.')).toBeVisible();
+  await emitNext();
+  await expect(page.getByTestId('tool-call-card')).toHaveCount(2);
   await expect(page.getByText('Now compare the two candidate files.')).toBeVisible();
 
-  await page.waitForTimeout(250);
+  await emitNext();
+  await emitNext();
   await expect(page.getByText('Final answer: add the timeout guard from the second file.')).toBeVisible();
+  await emitNext();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __AUTO_SPEECH_TEXTS__: string[] }
+  ).__AUTO_SPEECH_TEXTS__)).toEqual([
+    'Final answer: add the timeout guard from the second file.',
+  ]);
   const thinkingToggle = page.locator('button').filter({ hasText: 'Thinking completed' });
   await expect(thinkingToggle).toHaveAttribute('aria-expanded', 'false');
   await thinkingToggle.click();
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
+  await expect(page.getByTestId('tool-call-card')).toHaveCount(2);
 
   const text = chatLogText ?? '';
   expect(text.indexOf('Need to search the knowledge base first.')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('Need to search the knowledge base first.'));
-  expect(text.indexOf('Now compare the two candidate files.')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
-  expect(text.indexOf('compare_documents')).toBeGreaterThan(text.indexOf('Now compare the two candidate files.'));
-  expect(text.indexOf('Final answer: add the timeout guard from the second file.')).toBeGreaterThan(text.indexOf('compare_documents'));
+  expect(text.indexOf('Now compare the two candidate files.')).toBeGreaterThan(
+    text.indexOf('Need to search the knowledge base first.'),
+  );
+  expect(text.indexOf('Final answer: add the timeout guard from the second file.')).toBeGreaterThan(
+    text.indexOf('Now compare the two candidate files.'),
+  );
+
+  await page.getByRole('button', { name: 'Insert emoji' }).click();
+  await expect(page.locator('em-emoji-picker')).toBeVisible();
 });

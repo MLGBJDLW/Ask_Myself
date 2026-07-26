@@ -298,8 +298,12 @@ export function ChatInput({
   );
   const historyDraftRef = useRef<{ value: string; cursor: number } | null>(null);
   const previousPowerModeKeyRef = useRef(draftKey);
-  const inputLocked = disabled || isCompacting;
-  const attachmentLocked = inputLocked || isStreaming;
+  // Compaction only locks actions that mutate conversation history. The draft
+  // remains fully editable so the user can keep typing while the checkpoint is
+  // being built, then send as soon as compaction completes.
+  const inputLocked = disabled;
+  const sendLocked = inputLocked || isCompacting;
+  const attachmentLocked = sendLocked || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
   const inputHistoryEntries = useMemo(
     () => normalizeInputHistory(inputHistory),
@@ -678,7 +682,7 @@ export function ChatInput({
   }, [draftKey, resetInputHistoryNavigation]);
 
   const handleSend = useCallback(() => {
-    if (inputLocked) return;
+    if (sendLocked) return;
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0 && !activeSlashCommand) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
@@ -755,7 +759,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, inputLocked, isStreaming, onCompact, onSend, persistDraft, powerMode, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, isStreaming, onCompact, onSend, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -792,7 +796,7 @@ export function ChatInput({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (!inputLocked) {
+        if (!sendLocked) {
           handleSend();
         }
         return;
@@ -814,7 +818,7 @@ export function ChatInput({
       activeSlashOption,
       applySlashOption,
       handleSend,
-      inputLocked,
+      sendLocked,
       navigateInputHistory,
       slashActiveTab,
       slashEnabledTabs,
@@ -1552,7 +1556,7 @@ export function ChatInput({
             <button
               onClick={handleSend}
               disabled={
-                inputLocked ||
+                sendLocked ||
                 (isStreaming
                   ? !value.trim() || attachments.length > 0
                   : !value.trim() && attachments.length === 0 && !activeSlashCommand)

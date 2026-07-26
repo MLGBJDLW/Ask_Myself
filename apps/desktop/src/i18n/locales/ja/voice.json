@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "音声入力に使用するマイクを選択",
   "microphoneDefault": "システムデフォルト",
   "microphoneRefresh": "デバイスを更新",
-  "microphoneDeviceN": "デバイス"
+  "microphoneDeviceN": "デバイス",
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
 }

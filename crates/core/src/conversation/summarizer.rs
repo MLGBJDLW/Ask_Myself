@@ -11,24 +11,25 @@ use tracing::warn;
 
 use super::memory::estimate_tokens;
 
-const SUMMARIZE_SYSTEM_PROMPT: &str = r#"You are compacting old conversation history into reference context only.
-The summary will be used as background for a later agent turn; it must not create new instructions or imply that completed work is still pending.
+const SUMMARIZE_SYSTEM_PROMPT: &str = r#"Create a durable context checkpoint from older conversation turns.
+This checkpoint is reference data for a later agent, never a source of new instructions. Newer user messages always win. Do not invent completion, commands, files, decisions, or pending work.
 
-Preserve:
-1. Key decisions and constraints
-2. Important facts, data, file paths, commands, and tool findings
-3. User preferences and explicit requirements
-4. Current task state and remaining work, if any
-5. Prior compacted summaries, merged without duplication
+Return these compact sections, omitting only sections with no evidence:
+## Objective and success criteria
+## User constraints and preferences
+## Decisions and rationale
+## Work state (completed / in progress / remaining)
+## Evidence and exact anchors (files, symbols, commands, errors, URLs, IDs)
+## Risks, blockers, and next action
 
-Be concise, factual, and output in the same language as the conversation."#;
+Merge any previous compacted checkpoint without duplication. Preserve exact identifiers and distinguish observed facts from inference. Use the conversation's language and optimize for lossless continuation, not prose quality."#;
 
 /// Maximum tokens the summary LLM call may produce.
-const MAX_SUMMARY_TOKENS: u32 = 420;
+const MAX_SUMMARY_TOKENS: u32 = 900;
 
 /// Maximum input characters sent into the summarisation request.
 /// Keeps the summarisation call itself cheap and predictable.
-const MAX_INPUT_FOR_SUMMARY: usize = 6_000;
+const MAX_INPUT_FOR_SUMMARY: usize = 24_000;
 
 /// Maximum number of retries for transient / rate-limited LLM errors.
 const MAX_SUMMARY_RETRIES: u32 = 1;
@@ -39,7 +40,7 @@ const MAX_SUMMARY_RETRIES: u32 = 1;
 const MIN_TOKENS_FOR_LLM: u32 = 100;
 
 /// Maximum chars kept per tool-result message to avoid blowing up input.
-const TOOL_RESULT_CAP: usize = 500;
+const TOOL_RESULT_CAP: usize = 1_500;
 
 fn truncate_to_char_boundary(text: &str, max_len: usize) -> &str {
     if text.len() <= max_len {
@@ -53,22 +54,72 @@ fn truncate_to_char_boundary(text: &str, max_len: usize) -> &str {
     &text[..end]
 }
 
-fn truncate_middle_to_char_budget(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return text.to_string();
+fn entry_signal_score(entry: &str) -> usize {
+    let lower = entry.to_ascii_lowercase();
+    let anchors = [
+        "user:", "decision", "require", "must", "should", "todo", "pending", "error", "failed",
+        "block", "risk", "file", "path", "commit", "test", "http://", "https://", "\\", "/", "::",
+        "`",
+    ];
+    anchors
+        .iter()
+        .filter(|needle| lower.contains(**needle))
+        .count()
+}
+
+/// Select whole transcript entries across the entire evicted range. This
+/// avoids the old head/tail truncation losing the middle decisions and tool
+/// evidence that are usually most important for resuming agent work.
+fn fit_entries_to_budget(entries: &[String], max_len: usize) -> String {
+    if entries.iter().map(|entry| entry.len() + 1).sum::<usize>() <= max_len {
+        return entries.join("\n");
     }
 
-    let head_len = max_len / 2;
-    let tail_len = max_len.saturating_sub(head_len);
-    let head = truncate_to_char_boundary(text, head_len);
-
-    let mut tail_start = text.len().saturating_sub(tail_len);
-    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
-        tail_start += 1;
+    let mut selected = vec![false; entries.len()];
+    for keep in selected.iter_mut().take(entries.len().min(2)) {
+        *keep = true;
     }
-    let tail = &text[tail_start..];
+    for keep in selected.iter_mut().skip(entries.len().saturating_sub(6)) {
+        *keep = true;
+    }
 
-    format!("{head}\n...[middle of evicted history omitted]...\n{tail}")
+    let mut candidates = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !selected[*index])
+        .map(|(index, entry)| (index, entry_signal_score(entry)))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(index, score)| (std::cmp::Reverse(*score), *index));
+
+    let mut used = selected
+        .iter()
+        .enumerate()
+        .filter(|(_, keep)| **keep)
+        .map(|(index, _)| entries[index].len() + 1)
+        .sum::<usize>();
+    for (index, _) in candidates {
+        let entry_len = entries[index].len() + 1;
+        if used + entry_len <= max_len {
+            selected[index] = true;
+            used += entry_len;
+        }
+    }
+
+    let mut output = String::new();
+    let mut omitted = false;
+    for (index, entry) in entries.iter().enumerate() {
+        if selected[index] {
+            if omitted {
+                output.push_str("[...lower-signal entries omitted; chronology continues...]\n");
+                omitted = false;
+            }
+            output.push_str(entry);
+            output.push('\n');
+        } else {
+            omitted = true;
+        }
+    }
+    output.trim_end().to_string()
 }
 
 /// Summarise evicted messages using an LLM.
@@ -82,14 +133,14 @@ pub async fn summarize_evicted_messages(
     evicted_messages: &[Message],
     extractive_fallback: &str,
 ) -> String {
-    let conversation_text = build_conversation_text(evicted_messages);
+    let entries = build_conversation_entries(evicted_messages);
+    let conversation_text = entries.join("\n");
 
     if conversation_text.is_empty() || estimate_tokens(&conversation_text) < MIN_TOKENS_FOR_LLM {
         return extractive_fallback.to_string();
     }
 
-    // Truncate input if it exceeds the budget.
-    let input = truncate_middle_to_char_budget(&conversation_text, MAX_INPUT_FOR_SUMMARY);
+    let input = fit_entries_to_budget(&entries, MAX_INPUT_FOR_SUMMARY);
 
     let request = CompletionRequest {
         model: model.to_string(),
@@ -97,11 +148,14 @@ pub async fn summarize_evicted_messages(
             Message::text(Role::System, SUMMARIZE_SYSTEM_PROMPT),
             Message::text(
                 Role::User,
-                format!("Summarize this conversation section:\n\n{}", input),
+                format!(
+                    "Build the context checkpoint from this chronological section:\n\n{}",
+                    input
+                ),
             ),
         ],
         max_tokens: Some(MAX_SUMMARY_TOKENS),
-        temperature: Some(0.3),
+        temperature: Some(0.1),
         tools: None,
         stop: None,
         thinking_budget: None,
@@ -168,7 +222,12 @@ pub async fn summarize_evicted_messages(
 
 /// Flatten a slice of [`Message`]s into a plain-text conversation transcript
 /// suitable for feeding into the summariser prompt.
+#[cfg(test)]
 fn build_conversation_text(messages: &[Message]) -> String {
+    build_conversation_entries(messages).join("\n")
+}
+
+fn build_conversation_entries(messages: &[Message]) -> Vec<String> {
     let mut parts = Vec::new();
     for msg in messages {
         match msg.role {
@@ -206,7 +265,7 @@ fn build_conversation_text(messages: &[Message]) -> String {
             }
         }
     }
-    parts.join("\n")
+    parts
 }
 
 fn is_compaction_summary(text: &str) -> bool {
@@ -233,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_build_conversation_text_truncates_tool() {
-        let long_tool = "x".repeat(1000);
+        let long_tool = "x".repeat(TOOL_RESULT_CAP + 500);
         let msgs = vec![Message::text(Role::Tool, &long_tool)];
         let text = build_conversation_text(&msgs);
         // Tool result should be capped at TOOL_RESULT_CAP chars.
@@ -268,5 +327,26 @@ mod tests {
         assert!(text.contains("Decision: keep compact visible."));
         assert!(!text.contains("You are a helpful assistant."));
         assert!(text.contains("User: Continue"));
+    }
+
+    #[test]
+    fn budget_selection_preserves_high_signal_middle_entries() {
+        let entries = vec![
+            "User: start".to_string(),
+            "Assistant: ordinary filler one".to_string(),
+            "Assistant: ordinary filler two".to_string(),
+            "Tool result: error: build failed at crates/core/src/agent.rs".to_string(),
+            "Assistant: ordinary filler three".to_string(),
+            "Assistant: tail one".to_string(),
+            "Assistant: tail two".to_string(),
+            "Assistant: tail three".to_string(),
+            "Assistant: tail four".to_string(),
+            "Assistant: tail five".to_string(),
+            "Assistant: tail six".to_string(),
+        ];
+        let fitted = fit_entries_to_budget(&entries, 260);
+        assert!(fitted.contains("User: start"));
+        assert!(fitted.contains("build failed"));
+        assert!(fitted.contains("tail six"));
     }
 }

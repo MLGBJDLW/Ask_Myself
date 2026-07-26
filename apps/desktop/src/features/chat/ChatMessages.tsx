@@ -1230,7 +1230,16 @@ export function ChatMessages(props: ChatMessagesProps) {
       const finalAssistantIdx = [...currentGroup]
         .reverse()
         .find((idx) => finalAssistantIndexes.has(idx));
-      const anchorIdx = finalAssistantIdx ?? persistedTraceCarrierIdx ?? currentGroup[0];
+      const finalContentAssistantIdx = [...currentGroup]
+        .reverse()
+        .find((idx) => {
+          const message = messages[idx];
+          return message.content.trim().length > 0 && message.toolCalls.length === 0;
+        });
+      const anchorIdx = finalAssistantIdx
+        ?? finalContentAssistantIdx
+        ?? persistedTraceCarrierIdx
+        ?? currentGroup[0];
       const persistedTraceCarrier =
         persistedTraceCarrierIdx == null ? null : messages[persistedTraceCarrierIdx];
       const persistedTraceItems =
@@ -1259,13 +1268,8 @@ export function ChatMessages(props: ChatMessagesProps) {
         statusSectionsByAssistant.get(anchorIdx) ?? persistedTraceSections;
       const nodes: ReactNode[] = [];
       const hiddenMembers = new Set<number>();
-      let activeSections: TimelineSection[] = [...statusSections];
+      const traceSections: TimelineSection[] = [...statusSections];
       let renderedTraceActivity = false;
-      const flushThinkingNode = (key: string) => {
-        if (!hasRenderableTimelineSections(activeSections)) return;
-        nodes.push(renderTimelineTraceNode(key, activeSections));
-        activeSections = [];
-      };
 
       for (const idx of currentGroup) {
         const msg = messages[idx];
@@ -1295,7 +1299,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
         if (thinking) {
           renderedTraceActivity = true;
-          activeSections.push({
+          traceSections.push({
             kind: "thinking",
             id: `message-thinking-${msg.id}`,
             text: thinking,
@@ -1306,20 +1310,16 @@ export function ChatMessages(props: ChatMessagesProps) {
           msg.content.trim().length > 0 &&
           !(idx === anchorIdx && msg.toolCalls.length === 0);
         if (shouldRenderInlineReply) {
-          flushThinkingNode(`trace-thinking-before-reply-${msg.id}`);
-          nodes.push(
-            renderTraceReplyNode(
-              `trace-reply-${msg.id}`,
-              msg.content,
-              false,
-              messageCitationLookups.get(idx),
-            ),
-          );
+          traceSections.push({
+            kind: "reply",
+            id: `trace-reply-${msg.id}`,
+            text: msg.content,
+          });
         }
 
         if (inlineToolSections.length > 0) {
           renderedTraceActivity = true;
-          activeSections.push(...inlineToolSections);
+          traceSections.push(...inlineToolSections);
         }
 
         if (idx !== anchorIdx) {
@@ -1330,10 +1330,17 @@ export function ChatMessages(props: ChatMessagesProps) {
       const fallbackSectionsForAnchor =
         fallbackSectionsByAssistant.get(anchorIdx) ?? [];
       if (!renderedTraceActivity && fallbackSectionsForAnchor.length > 0) {
-        activeSections.push(...fallbackSectionsForAnchor);
+        traceSections.push(...fallbackSectionsForAnchor);
       }
 
-      flushThinkingNode(`trace-thinking-tail-${messages[anchorIdx].id}`);
+      if (hasRenderableTimelineSections(traceSections)) {
+        nodes.push(
+          renderTimelineTraceNode(
+            `turn-working-trace-${messages[anchorIdx].id}`,
+            traceSections,
+          ),
+        );
+      }
 
       if (nodes.length === 0) {
         const fallbackSections = [
@@ -1439,6 +1446,27 @@ export function ChatMessages(props: ChatMessagesProps) {
       streamText,
     ],
   );
+
+  const collapsedLiveTrace = useMemo(() => {
+    const finalItem = liveTraceTimeline[liveTraceTimeline.length - 1];
+    if (
+      currentTraceActive
+      || liveTraceTimeline.length < 2
+      || finalItem?.kind !== "reply"
+    ) {
+      return null;
+    }
+
+    const historySections = liveTraceTimeline
+      .slice(0, -1)
+      .flatMap<TimelineSection>((item) =>
+        item.kind === "thinking"
+          ? item.sections
+          : [{ kind: "reply", id: `${item.id}-history`, text: item.content }],
+      );
+    if (!hasRenderableTimelineSections(historySections)) return null;
+    return { historySections, finalItem };
+  }, [currentTraceActive, liveTraceTimeline]);
 
 
   const updateActiveTurnNavigation = useCallback(() => {
@@ -1770,7 +1798,9 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const shouldRenderLiveTraceTimeline =
-    liveTraceTimeline.length > 0 && (isStreaming || streamRounds.length === 0);
+    liveTraceTimeline.length > 0 && (
+      isStreaming || streamRounds.length === 0 || collapsedLiveTrace !== null
+    );
   const shouldRenderStreamRounds =
     streamRounds.length > 0 && (isStreaming || !shouldRenderLiveTraceTimeline);
   const shouldShowStreamingText =
@@ -2133,7 +2163,24 @@ export function ChatMessages(props: ChatMessagesProps) {
       </AnimatePresence>
 
       {/* ── Interleaved per-round rendering ─────────────────────────── */}
+      {shouldRenderLiveTraceTimeline && collapsedLiveTrace && (
+        <>
+          {renderTimelineTraceNode(
+            "current-turn-working-trace",
+            collapsedLiveTrace.historySections,
+            false,
+          )}
+          {renderTraceReplyNode(
+            collapsedLiveTrace.finalItem.id,
+            collapsedLiveTrace.finalItem.content,
+            collapsedLiveTrace.finalItem.isStreaming,
+            streamingCitationLookup,
+          )}
+        </>
+      )}
+
       {shouldRenderLiveTraceTimeline &&
+        !collapsedLiveTrace &&
         liveTraceTimeline.map((item) => (
           <motion.div
             key={item.id}

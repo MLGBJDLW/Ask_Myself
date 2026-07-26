@@ -1167,6 +1167,14 @@ export const saveAppConfig = (config: AppConfig) => {
   return invoke<void>('save_app_config_cmd', { config: configToSave });
 };
 
+export interface SpeechPreview {
+  path: string;
+  mediaType: string;
+}
+
+export const synthesizeSpeechPreview = (text: string) =>
+  invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text });
+
 export const getWebSearchStatus = (webSearch?: WebSearchConfig) =>
   invoke<WebSearchProviderStatus[]>('get_web_search_status_cmd', { webSearch });
 

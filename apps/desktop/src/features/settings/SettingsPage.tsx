@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useBlocker, useNavigate } from 'react-router-dom';
+import { useBlocker, useNavigate } from 'react-router';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Database,
@@ -473,6 +473,14 @@ export function SettingsPage() {
           voice: 'coral',
           outputFormat: 'wav',
           speed: 1,
+        },
+        speechToText: {
+          provider: 'local_whisper',
+          apiStyle: 'local_whisper',
+          apiKey: '',
+          baseUrl: null,
+          model: 'whisper-local',
+          language: null,
         },
       });
     }

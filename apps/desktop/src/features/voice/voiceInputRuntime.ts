@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import * as api from '../../lib/api';
 import { getModelStatus, invalidate as invalidateModelStatus } from '../../lib/modelStatusCache';
+import type { SpeechToTextConfig } from '../../types/conversation';
 import type { VideoConfig, WhisperModel } from '../../types/video';
 import { useMicrophoneDevices } from './useMicrophoneDevices';
 import { useVoiceRecorder } from './useVoiceRecorder';
@@ -11,6 +12,7 @@ export type VoiceRuntimeErrorCode =
   | 'permission_denied'
   | 'recording_failed'
   | 'transcription_failed'
+  | 'speech_provider_not_configured'
   | 'whisper_check_failed'
   | 'whisper_model_missing';
 
@@ -38,6 +40,20 @@ export function invalidateWhisperReadiness(): void {
 
 export function normalizeTranscript(text: string): string {
   return text.trim();
+}
+
+export function isSpeechToTextConfigured(config?: SpeechToTextConfig | null): boolean {
+  if (!config || config.apiStyle === 'local_whisper') return true;
+  if (config.apiStyle === 'openai_transcription') {
+    return Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim());
+  }
+  if (config.apiStyle === 'sherpa_onnx') {
+    const common = Boolean(config.executablePath?.trim() && config.tokensPath?.trim());
+    return config.sherpaModelFamily === 'zipformer'
+      ? common && Boolean(config.encoderPath?.trim() && config.decoderPath?.trim() && config.joinerPath?.trim())
+      : common && Boolean(config.modelPath?.trim());
+  }
+  return false;
 }
 
 export function formatRecordingDuration(seconds: number): string {
@@ -111,6 +127,24 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     }
   }, [resolveVideoConfig]);
 
+  const ensureSpeechProviderReadyForRecording = useCallback(async (): Promise<VoiceRuntimeActionResult | null> => {
+    try {
+      const appConfig = await api.getAppConfig();
+      const speechConfig = appConfig.speechToText;
+      if (!isSpeechToTextConfigured(speechConfig)) {
+        return { status: 'error', code: 'speech_provider_not_configured' };
+      }
+      if (speechConfig?.apiStyle !== 'local_whisper') return null;
+      return ensureWhisperReadyForRecording();
+    } catch (error) {
+      return {
+        status: 'error',
+        code: 'whisper_check_failed',
+        message: String(error),
+      };
+    }
+  }, [ensureWhisperReadyForRecording]);
+
   const downloadWhisperModel = useCallback(
     async (configOverride?: VideoConfig | null): Promise<void> => {
       const config = await resolveVideoConfig(configOverride);
@@ -158,7 +192,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       return wav ? transcribeWav(wav) : { status: 'empty' };
     }
 
-    const readinessError = await ensureWhisperReadyForRecording();
+    const readinessError = await ensureSpeechProviderReadyForRecording();
     if (readinessError) return readinessError;
 
     try {
@@ -173,7 +207,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     }
   }, [
     recorder,
-    ensureWhisperReadyForRecording,
+    ensureSpeechProviderReadyForRecording,
     transcribeWav,
     transcribing,
     whisperChecking,

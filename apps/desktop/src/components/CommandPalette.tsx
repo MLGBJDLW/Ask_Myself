@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Command } from 'cmdk';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, MessageCircle, Settings, ScanSearch, Database, Clock, Keyboard, Archive } from 'lucide-react';
 import * as api from '../lib/api';

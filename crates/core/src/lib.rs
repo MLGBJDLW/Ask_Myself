@@ -75,6 +75,7 @@ pub mod search;
 pub mod skills;
 pub mod source_tree;
 pub mod sources;
+pub mod speech_to_text;
 pub mod task_orchestrator;
 pub mod task_run;
 pub mod task_timeline;

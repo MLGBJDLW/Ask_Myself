@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "Mikrofon für die Spracheingabe auswählen",
   "microphoneDefault": "Systemstandard",
   "microphoneRefresh": "Geräte aktualisieren",
-  "microphoneDeviceN": "Gerät"
+  "microphoneDeviceN": "Gerät",
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
 }

@@ -83,9 +83,16 @@ export function applyDoneEvent(
 ): void {
   const terminalStatus = terminalRunStatus(event, raw);
   const finalThinking = state.thinkingText;
-  const finalReply = state.streamText;
+  const doneMessage = event.message ?? raw.message;
+  const doneText = extractMessageText(doneMessage);
+  const finalReply = state.streamText.trim().length > 0
+    ? state.streamText
+    : (doneText ?? '');
   const hasFinalRound = finalThinking.trim() || finalReply.trim();
   if (hasFinalRound) {
+    if (!state.streamText.trim() && finalReply.trim()) {
+      appendReplyTraceEvent(state, finalReply);
+    }
     const roundId = `stream-round-${Date.now()}-${state._roundSeq++}`;
     state.streamRounds = [...state.streamRounds, {
       id: roundId,
@@ -97,15 +104,6 @@ export function applyDoneEvent(
   }
   state.isThinking = false;
   state.thinkingText = '';
-
-  if (!hasFinalRound) {
-    const doneMessage = event.message ?? raw.message;
-    const doneText = extractMessageText(doneMessage);
-    if (doneText) {
-      state.streamText = doneText;
-      appendReplyTraceEvent(state, doneText);
-    }
-  }
 
   const toolStatus = terminalStatus === 'cancelled'
     ? 'cancelled'

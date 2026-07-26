@@ -566,5 +566,9 @@
   "terminalSendSelection": "将所选内容发送给 Agent",
   "terminalSelectionCopied": "已复制终端所选内容",
   "terminalSelectionCount": "已选择 {count} 个字符",
-  "terminalLinkedToAgent": "已连接 {agent}"
+  "terminalLinkedToAgent": "已连接 {agent}",
+  "autoTtsOn": "自动朗读已开启",
+  "autoTtsOff": "自动朗读已关闭",
+  "autoTtsNeedsProvider": "请先在设置中配置文本转语音服务",
+  "autoTtsFailed": "自动朗读失败"
 }

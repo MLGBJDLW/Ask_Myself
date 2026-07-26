@@ -566,5 +566,9 @@
   "terminalSendSelection": "Envoyer la sélection à l’agent",
   "terminalSelectionCopied": "Sélection du terminal copiée",
   "terminalSelectionCount": "{count} sélectionnés",
-  "terminalLinkedToAgent": "Lié à {agent}"
+  "terminalLinkedToAgent": "Lié à {agent}",
+  "autoTtsOn": "Automatic read-aloud is on",
+  "autoTtsOff": "Automatic read-aloud is off",
+  "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
+  "autoTtsFailed": "Automatic read-aloud failed"
 }

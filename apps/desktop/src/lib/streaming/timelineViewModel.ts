@@ -740,11 +740,14 @@ export function buildLiveTraceTimeline(input: {
 
   flushThinking('trace-thinking-tail');
 
-  if (!isStreaming) return items;
-
-  if (activeStreamText && !renderedActiveStreamReply) {
-    appendReply('live-stream-reply-tail', displayedText, true, { mergeAdjacent: false });
+  const hasMatchingStreamReply = items.some(
+    (item) => item.kind === 'reply' && item.content === activeStreamText,
+  );
+  if (activeStreamText && !renderedActiveStreamReply && !hasMatchingStreamReply) {
+    appendReply('live-stream-reply-tail', displayedText, isStreaming, { mergeAdjacent: false });
   }
+
+  if (!isStreaming) return items;
 
   if (items.length === 0) return items;
 

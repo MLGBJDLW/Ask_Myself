@@ -15,6 +15,56 @@ pub fn save_app_config_cmd(
     state.db.save_app_config(&config).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechPreview {
+    pub path: String,
+    pub media_type: String,
+}
+
+#[tauri::command]
+pub async fn synthesize_speech_preview_cmd(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<SpeechPreview, String> {
+    use nexa_core::tools::text_to_speech_tool::SynthesizeSpeechTool;
+    use nexa_core::tools::Tool;
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Speech text cannot be empty".into());
+    }
+    let arguments = serde_json::json!({ "text": trimmed }).to_string();
+    let result = SynthesizeSpeechTool
+        .execute(
+            &format!("auto-speech-{}", Uuid::new_v4()),
+            &arguments,
+            state.db.as_ref(),
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if result.is_error {
+        return Err(result.content);
+    }
+    let artifacts = result
+        .artifacts
+        .ok_or_else(|| "Speech provider returned no audio artifact".to_string())?;
+    let path = artifacts
+        .get("previewPath")
+        .or_else(|| artifacts.get("path"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Speech provider returned no preview path".to_string())?;
+    let media_type = artifacts
+        .get("mediaType")
+        .and_then(|value| value.as_str())
+        .unwrap_or("audio/wav");
+    Ok(SpeechPreview {
+        path: path.to_string(),
+        media_type: media_type.to_string(),
+    })
+}
+
 #[tauri::command]
 pub fn get_web_search_status_cmd(
     state: tauri::State<'_, AppState>,

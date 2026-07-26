@@ -685,7 +685,7 @@ export const markdownComponents: Record<string, React.ComponentType<ComponentPro
   a: MarkdownLink,
   pre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
     // Let CodeBlock handle its own <pre>; avoid double-wrapping
-    const child = children as React.ReactElement | undefined;
+    const child = children as React.ReactElement<{ className?: string }> | undefined;
     if (child?.props?.className?.startsWith('language-')) {
       return <>{children}</>;
     }

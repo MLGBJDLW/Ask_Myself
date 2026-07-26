@@ -9,13 +9,24 @@ import { getSoftDropdownMotion } from "../../lib/uiMotion";
 const LazyPicker = lazy(async () => {
   const [{ default: data }, { default: Picker }] = await Promise.all([
     import("@emoji-mart/data"),
-    import("@emoji-mart/react"),
+    import("emoji-mart").then((module) => ({ default: module.Picker })),
   ]);
-  // Wrap the default export so React.lazy gets { default: Component }
+  function EmojiMartPicker(props: Record<string, unknown>) {
+    const hostRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      const host = hostRef.current;
+      if (!host) return;
+      const picker = new Picker({ data, ...props });
+      host.replaceChildren(picker as unknown as Node);
+      return () => host.replaceChildren();
+    }, [props]);
+
+    return <div ref={hostRef} />;
+  }
+
   return {
-    default: (props: Record<string, unknown>) => (
-      <Picker data={data} {...props} />
-    ),
+    default: EmojiMartPicker,
   };
 });
 

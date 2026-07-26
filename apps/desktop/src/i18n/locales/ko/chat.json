@@ -566,5 +566,9 @@
   "terminalSendSelection": "선택 영역을 에이전트에 보내기",
   "terminalSelectionCopied": "터미널 선택 영역을 복사했습니다",
   "terminalSelectionCount": "{count}자 선택됨",
-  "terminalLinkedToAgent": "{agent}에 연결됨"
+  "terminalLinkedToAgent": "{agent}에 연결됨",
+  "autoTtsOn": "Automatic read-aloud is on",
+  "autoTtsOff": "Automatic read-aloud is off",
+  "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
+  "autoTtsFailed": "Automatic read-aloud failed"
 }

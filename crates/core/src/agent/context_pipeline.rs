@@ -5,7 +5,9 @@ use crate::conversation::memory::{
 };
 use crate::llm::Message;
 
-const AUTO_COMPACT_THRESHOLD: f32 = 0.85;
+/// Start compacting before the provider's hard limit is close enough to make
+/// one large tool result turn an otherwise healthy run into an overflow retry.
+const AUTO_COMPACT_THRESHOLD: f32 = 0.78;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ContextPipeline {

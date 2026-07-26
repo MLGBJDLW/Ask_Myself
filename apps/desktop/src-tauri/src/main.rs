@@ -385,6 +385,7 @@ fn main() {
             // App Config
             commands::get_app_config_cmd,
             commands::save_app_config_cmd,
+            commands::synthesize_speech_preview_cmd,
             commands::get_web_search_status_cmd,
             commands::check_office_runtime_cmd,
             commands::prepare_office_runtime_cmd,

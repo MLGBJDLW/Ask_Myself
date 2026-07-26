@@ -735,5 +735,15 @@
   "packageHost.permission.write": "写入",
   "packageHost.permission.execute": "执行",
   "packageHost.permission.network": "网络",
-  "packageHost.permission.nativeCode": "原生代码"
+  "packageHost.permission.nativeCode": "原生代码",
+  "speechToText": "语音转文字",
+  "speechToTextDesc": "为麦克风输入选择高速在线转写、现有本地 Whisper，或隐私优先的 sherpa-onnx SenseVoice 与流式 Zipformer 模型。",
+  "sttNeedsLocalFiles": "需要本地文件",
+  "sttLanguage": "语言（可选）",
+  "sttLocalWhisperHint": "本地 Whisper 使用“视频与音频”中选择的模型。在线与 sherpa-onnx 方案通常能更快返回短语音输入。",
+  "sttSherpaExecutable": "sherpa-onnx 可执行文件",
+  "sttTokensPath": "Tokens 文件路径",
+  "sttModelPath": "SenseVoice 模型路径",
+  "ttsAutoSpeakFinal": "自动朗读最终回答",
+  "ttsAutoSpeakFinalDesc": "当前 turn 完成后，只朗读最终回答；聊天页右上角也提供快捷开关。"
 }

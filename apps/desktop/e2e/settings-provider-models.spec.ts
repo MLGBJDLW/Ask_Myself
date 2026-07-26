@@ -405,6 +405,23 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(panel.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
   await expect(panel.getByTestId("tts-local-model")).toBeVisible();
   await expect(panel.locator("label").filter({ hasText: "API Key" })).toHaveCount(0);
+
+  const sttPanel = page.getByTestId("speech-to-text-settings-panel");
+  await expect(sttPanel.getByRole("heading", { name: "Speech to Text" })).toBeVisible();
+  await sttPanel.locator("button").first().click();
+  const sttProvider = sttPanel.getByTestId("stt-provider-select");
+  await expect(sttProvider.locator("option")).toHaveCount(6);
+
+  await sttProvider.selectOption("groq");
+  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
+    "whisper-large-v3-turbo",
+  );
+
+  await sttProvider.selectOption("sherpa-zipformer");
+  await expect(sttPanel.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
+  await expect(sttPanel.locator("label").filter({ hasText: "encoder" })).toBeVisible();
+  await expect(sttPanel.locator("label").filter({ hasText: "decoder" })).toBeVisible();
+  await expect(sttPanel.locator("label").filter({ hasText: "joiner" })).toBeVisible();
 });
 
 test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {

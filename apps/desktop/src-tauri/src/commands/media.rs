@@ -154,41 +154,68 @@ pub async fn transcribe_audio_buffer_cmd(
 ) -> Result<String, String> {
     let db = state.db.clone();
     let whisper_busy = state.whisper_busy.clone();
-
-    tokio::task::spawn_blocking(move || {
-        if whisper_busy.load(Ordering::SeqCst) {
-            return Err("Transcription already in progress".into());
+    if whisper_busy.swap(true, Ordering::SeqCst) {
+        return Err("Transcription already in progress".into());
+    }
+    struct BusyGuard(Arc<AtomicBool>);
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
         }
+    }
+    let _busy_guard = BusyGuard(whisper_busy);
 
-        let config = db.load_video_config().map_err(|e| e.to_string())?;
-
-        let temp_dir = std::env::temp_dir().join("nexa-voice");
-        std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
-        let wav_path = temp_dir.join(format!("voice-{}.wav", Uuid::new_v4()));
-        std::fs::write(&wav_path, &audio_data).map_err(|e| e.to_string())?;
-
-        whisper_busy.store(true, Ordering::SeqCst);
-        struct Guard(Arc<AtomicBool>, PathBuf);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
-                let _ = std::fs::remove_file(&self.1);
-            }
+    let app_config = db.load_app_config().map_err(|e| e.to_string())?;
+    let speech_config = app_config.speech_to_text;
+    match speech_config.api_style.as_str() {
+        "openai_transcription" => {
+            nexa_core::speech_to_text::transcribe_cloud_wav(audio_data, &speech_config)
+                .await
+                .map_err(|e| e.to_string())
         }
-        let _guard = Guard(whisper_busy, wav_path.clone());
+        "sherpa_onnx" => tokio::task::spawn_blocking(move || {
+            with_voice_wav(&audio_data, |wav_path| {
+                nexa_core::speech_to_text::transcribe_sherpa_wav(wav_path, &speech_config)
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?,
+        "local_whisper" => tokio::task::spawn_blocking(move || {
+            let config = db.load_video_config().map_err(|e| e.to_string())?;
+            with_voice_wav(&audio_data, |wav_path| {
+                let segments = nexa_core::video::transcribe_audio(wav_path, &config)
+                    .map_err(|e| e.to_string())?;
+                Ok(segments
+                    .iter()
+                    .map(|segment| segment.text.trim())
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?,
+        style => Err(format!("Unsupported speech-to-text API style: {style}")),
+    }
+}
 
-        let segments =
-            nexa_core::video::transcribe_audio(&wav_path, &config).map_err(|e| e.to_string())?;
-
-        let text = segments
-            .iter()
-            .map(|s| s.text.trim())
-            .collect::<Vec<_>>()
-            .join(" ");
-        Ok(text)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
+#[cfg(feature = "video")]
+fn with_voice_wav<T>(
+    audio_data: &[u8],
+    operation: impl FnOnce(&std::path::Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let temp_dir = std::env::temp_dir().join("nexa-voice");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    let wav_path = temp_dir.join(format!("voice-{}.wav", Uuid::new_v4()));
+    std::fs::write(&wav_path, audio_data).map_err(|e| e.to_string())?;
+    struct WavGuard(PathBuf);
+    impl Drop for WavGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _guard = WavGuard(wav_path.clone());
+    operation(&wav_path)
 }
 
 #[cfg(feature = "video")]

@@ -362,6 +362,7 @@ export interface AppConfig {
   ghproxyBaseUrl?: string;
   imageGeneration?: ImageGenerationConfig;
   textToSpeech?: TextToSpeechConfig;
+  speechToText?: SpeechToTextConfig;
   webSearch?: WebSearchConfig;
   dreaming?: DreamingConfig;
 }
@@ -461,6 +462,24 @@ export interface TextToSpeechConfig {
   voicesPath?: string | null;
   dataDir?: string | null;
   lexiconPath?: string | null;
+  numThreads?: number;
+  autoSpeakFinalAnswers?: boolean;
+}
+
+export interface SpeechToTextConfig {
+  provider: string;
+  apiStyle: 'local_whisper' | 'openai_transcription' | 'sherpa_onnx' | string;
+  apiKey: string;
+  baseUrl: string | null;
+  model: string;
+  language: string | null;
+  executablePath?: string | null;
+  sherpaModelFamily?: 'sense_voice' | 'zipformer' | string;
+  modelPath?: string | null;
+  tokensPath?: string | null;
+  encoderPath?: string | null;
+  decoderPath?: string | null;
+  joinerPath?: string | null;
   numThreads?: number;
 }
 

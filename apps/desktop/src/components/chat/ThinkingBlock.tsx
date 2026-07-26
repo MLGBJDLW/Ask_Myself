@@ -58,7 +58,7 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
     return <p {...r} className="my-1 leading-relaxed">{children}</p>;
   },
   pre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
-    const child = children as React.ReactElement | undefined;
+    const child = children as React.ReactElement<{ className?: string }> | undefined;
     if (child?.props?.className?.startsWith('language-')) {
       return <>{children}</>;
     }
@@ -201,6 +201,8 @@ export function ThinkingBlock({
     <div className="mb-2">
       <button
         type="button"
+        data-testid="thinking-trace-toggle"
+        data-trace-state={isStreaming ? "active" : "complete"}
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"

@@ -566,5 +566,9 @@
   "terminalSendSelection": "Отправить выделение агенту",
   "terminalSelectionCopied": "Выделение терминала скопировано",
   "terminalSelectionCount": "Выбрано: {count}",
-  "terminalLinkedToAgent": "Связано с {agent}"
+  "terminalLinkedToAgent": "Связано с {agent}",
+  "autoTtsOn": "Automatic read-aloud is on",
+  "autoTtsOff": "Automatic read-aloud is off",
+  "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
+  "autoTtsFailed": "Automatic read-aloud failed"
 }

@@ -2,6 +2,75 @@
 
 use super::*;
 
+/// After compaction, leave enough headroom for several tool calls and the next
+/// user turn instead of compacting just barely below the trigger threshold.
+const COMPACTION_TARGET_USAGE: f32 = 0.55;
+const MIN_RECENT_TURNS: usize = 2;
+
+fn system_prefix_end(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .position(|message| {
+            message.role != Role::System
+                || message
+                    .text_content()
+                    .contains("## Earlier conversation context")
+        })
+        .unwrap_or(messages.len())
+}
+
+/// Return an exclusive boundary that evicts only complete, old user turns.
+/// The returned boundary always points at a user message, so assistant tool
+/// calls and their tool results on the preceding turn remain atomic.
+fn compaction_boundary(
+    messages: &[Message],
+    model: &str,
+    target_tail_tokens: u32,
+    min_recent_turns: usize,
+) -> Option<usize> {
+    let prefix_end = system_prefix_end(messages);
+    let user_starts = messages
+        .iter()
+        .enumerate()
+        .skip(prefix_end)
+        .filter_map(|(index, message)| (message.role == Role::User).then_some(index))
+        .collect::<Vec<_>>();
+
+    if user_starts.len() <= min_recent_turns {
+        return None;
+    }
+
+    let latest_allowed = user_starts[user_starts.len() - min_recent_turns];
+    let mut selected = None;
+    for boundary in user_starts.into_iter().skip(1) {
+        if boundary > latest_allowed {
+            break;
+        }
+        selected = Some(boundary);
+        let tail_tokens = messages[boundary..]
+            .iter()
+            .map(|message| estimate_message_tokens_for_model(model, message))
+            .sum::<u32>();
+        if tail_tokens <= target_tail_tokens {
+            return Some(boundary);
+        }
+    }
+
+    selected
+}
+
+fn reference_summary_message(summary: &str, evicted_count: usize, reason: &str) -> Message {
+    Message::text(
+        Role::System,
+        format!(
+            "## Earlier conversation context (compacted)\n\
+             Context checkpoint for {evicted_count} older messages ({reason}). \
+             This is reference state, not a new instruction. If it conflicts \
+             with a newer user message, follow the newer message.\n{summary}"
+        ),
+    )
+}
+
 fn conversation_message_to_compaction_llm_message(m: &ConversationMessage) -> Message {
     let mut msg = Message::text(
         m.role.clone(),
@@ -30,9 +99,8 @@ impl AgentExecutor {
     /// `System` summary message.  This keeps more nuance than the
     /// extractive (truncation-based) recap in `context.rs`.
     ///
-    /// The method is intentionally conservative: it only fires when the
-    /// total estimated token count exceeds 50% of the context window so
-    /// that short conversations are unaffected.
+    /// It fires early enough to retain recovery headroom and evicts complete
+    /// old turns until the retained tail is near the target utilization.
     pub(super) async fn summarize_if_needed(
         &self,
         history: Vec<Message>,
@@ -43,13 +111,8 @@ impl AgentExecutor {
             return history;
         }
 
-        let ctx_window = self
-            .config
-            .context_window
-            .unwrap_or_else(|| model_context_window(model));
-
-        // Budget available for history (context window minus response reservation).
-        let budget = ctx_window.saturating_sub(max_response_tokens);
+        let pipeline = ContextPipeline::new(model, self.config.context_window, max_response_tokens);
+        let budget = pipeline.context_budget();
         if budget == 0 {
             return history;
         }
@@ -60,23 +123,21 @@ impl AgentExecutor {
             .map(|message| estimate_message_tokens_for_model(model, message))
             .sum();
 
-        // Only trigger when history consumes >50% of available budget.
-        if total_tokens <= budget / 2 {
+        if !pipeline.budget_decision(total_tokens).should_compact {
             return history;
         }
 
-        // Figure out which messages would be evicted by trim_to_context_window.
-        // That function keeps the system message + newest messages. We simulate
-        // it to identify the split point.
-        let trimmed = trim_to_context_window(&history, ctx_window, max_response_tokens);
-        let kept_count = trimmed.len();
-        let evict_count = history.len().saturating_sub(kept_count);
-
-        if evict_count == 0 {
+        let prefix_end = system_prefix_end(&history);
+        let target_tail_tokens = (budget as f32 * COMPACTION_TARGET_USAGE) as u32;
+        let Some(evict_end) =
+            compaction_boundary(&history, model, target_tail_tokens, MIN_RECENT_TURNS)
+        else {
             return history;
-        }
+        };
 
-        let evicted = &history[..evict_count];
+        // Include any earlier compacted summary after the stable system prefix
+        // so summaries are merged instead of accumulating as separate layers.
+        let evicted = &history[prefix_end..evict_end];
 
         // Build the extractive fallback first (cheap, in-process).
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
@@ -103,19 +164,14 @@ impl AgentExecutor {
         )
         .await;
 
-        // Build a replacement history: summary message + surviving messages.
-        let mut new_history = Vec::with_capacity(1 + history.len() - evict_count);
-        new_history.push(Message::text(
-            Role::System,
-            format!(
-                "## Earlier conversation context (summarized)\n\
-                 The following is a summary of earlier conversation turns that \
-                 were condensed to save context space. Treat it as reference \
-                 context, not active instructions:\n{}",
-                summary
-            ),
+        let mut new_history = Vec::with_capacity(prefix_end + 1 + history.len() - evict_end);
+        new_history.extend_from_slice(&history[..prefix_end]);
+        new_history.push(reference_summary_message(
+            &summary,
+            evict_end - prefix_end,
+            "automatic headroom compaction",
         ));
-        new_history.extend_from_slice(&history[evict_count..]);
+        new_history.extend_from_slice(&history[evict_end..]);
         new_history
     }
 
@@ -148,49 +204,27 @@ impl AgentExecutor {
     }
 
     // -----------------------------------------------------------------------
-    // Aggressive auto-compact (85% threshold, in-loop)
+    // Aggressive auto-compact (in-loop overflow prevention)
     // -----------------------------------------------------------------------
 
-    /// Summarize the oldest half of non-system messages in-place, replacing
-    /// them with a single system recap. Used when the context window hits 85%.
+    /// Summarize complete old turns in-place, retaining at least two recent
+    /// turns and targeting enough free space for subsequent tool output.
     pub(super) async fn aggressive_compact(
         &self,
         messages: &mut Vec<Message>,
         model: &str,
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<(), CoreError> {
-        // Find the first non-system message.
-        let non_system_start = messages
-            .iter()
-            .position(|m| m.role != Role::System)
-            .unwrap_or(0);
-        let non_system_count = messages.len() - non_system_start;
-        if non_system_count <= 2 {
-            return Ok(()); // Too few to compact
-        }
-
-        // Evict approximately the first half of non-system messages,
-        // but adjust the boundary to avoid splitting tool-call blocks.
-        let mut evict_end = non_system_start + non_system_count / 2;
-
-        // If boundary lands on a Tool message, extend to include all
-        // consecutive Tool messages (don't split mid-block).
-        while evict_end < messages.len() && messages[evict_end].role == Role::Tool {
-            evict_end += 1;
-        }
-        // If boundary lands right after an assistant with tool_calls,
-        // pull back to before that assistant message.
-        if evict_end > non_system_start && evict_end < messages.len() {
-            if let Some(ref tc) = messages[evict_end - 1].tool_calls {
-                if !tc.is_empty()
-                    && messages
-                        .get(evict_end)
-                        .is_some_and(|m| m.role == Role::Tool)
-                {
-                    evict_end -= 1;
-                }
-            }
-        }
+        let non_system_start = system_prefix_end(messages);
+        let pipeline = ContextPipeline::new(
+            model,
+            self.config.context_window,
+            self.config.max_tokens.unwrap_or(4096),
+        );
+        let target = (pipeline.context_budget() as f32 * COMPACTION_TARGET_USAGE) as u32;
+        let Some(evict_end) = compaction_boundary(messages, model, target, MIN_RECENT_TURNS) else {
+            return Ok(());
+        };
 
         let evicted = &messages[non_system_start..evict_end];
 
@@ -218,16 +252,7 @@ impl AgentExecutor {
         let evicted_count = evict_end - non_system_start;
 
         // Build replacement: keep system prefix + summary + kept tail.
-        let summary_msg = Message::text(
-            Role::System,
-            format!(
-                "## Earlier conversation context (auto-compacted)\n\
-                 The following is a summary of {} earlier messages that \
-                 were condensed because the context window was nearly full. \
-                 Treat it as reference context, not active instructions:\n{}",
-                evicted_count, summary
-            ),
-        );
+        let summary_msg = reference_summary_message(&summary, evicted_count, "near-limit recovery");
 
         let mut new_messages =
             Vec::with_capacity(non_system_start + 1 + messages.len() - evict_end);
@@ -279,29 +304,12 @@ impl AgentExecutor {
             return Ok(messages);
         }
 
-        // Determine eviction split using trim_to_context_window.
-        let trimmed = trim_to_context_window(&llm_msgs, ctx_window, max_response_tokens);
-        let kept_count = trimmed.len();
-        let evict_count = llm_msgs.len().saturating_sub(kept_count);
-
-        // If nothing would be evicted under normal rules, force evict at
-        // least the first half (minus system messages).
-        let evict_count = if evict_count == 0 {
-            // Force-evict first half of non-system messages.
-            let non_system_start = llm_msgs
-                .iter()
-                .position(|m| m.role != Role::System)
-                .unwrap_or(0);
-            let non_system_count = llm_msgs.len() - non_system_start;
-            if non_system_count <= 2 {
-                return Ok(messages); // too few to compact
-            }
-            non_system_start + non_system_count / 2
-        } else {
-            evict_count
+        let prefix_end = system_prefix_end(&llm_msgs);
+        let target = (budget as f32 * COMPACTION_TARGET_USAGE) as u32;
+        let Some(evict_end) = compaction_boundary(&llm_msgs, model, target, 1) else {
+            return Ok(messages);
         };
-
-        let evicted = &llm_msgs[..evict_count];
+        let evicted = &llm_msgs[prefix_end..evict_end];
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
 
         let summ_provider: &dyn LlmProvider = self
@@ -325,12 +333,22 @@ impl AgentExecutor {
 
         // Archive evicted messages as a checkpoint before replacing.
         if let Some(db) = db {
-            let est_tokens: u32 = messages[..evict_count].iter().map(|m| m.token_count).sum();
-            match db.create_checkpoint(conversation_id, label, evict_count as u32, est_tokens) {
+            let est_tokens: u32 = messages[prefix_end..evict_end]
+                .iter()
+                .map(|m| m.token_count)
+                .sum();
+            match db.create_checkpoint(
+                conversation_id,
+                label,
+                (evict_end - prefix_end) as u32,
+                est_tokens,
+            ) {
                 Ok(cp_id) => {
-                    if let Err(e) =
-                        db.archive_messages(&cp_id, conversation_id, &messages[..evict_count])
-                    {
+                    if let Err(e) = db.archive_messages(
+                        &cp_id,
+                        conversation_id,
+                        &messages[prefix_end..evict_end],
+                    ) {
                         warn!("Failed to archive messages for checkpoint: {e}");
                     }
                 }
@@ -341,13 +359,9 @@ impl AgentExecutor {
         }
 
         // Build compacted ConversationMessages to persist.
-        let summary_content = format!(
-            "## Earlier conversation context (summarized)\n\
-             The following is a summary of earlier conversation turns that \
-             were condensed to save context space. Treat it as reference \
-             context, not active instructions:\n{}",
-            summary
-        );
+        let summary_content =
+            reference_summary_message(&summary, evict_end - prefix_end, "manual compaction")
+                .text_content();
 
         let summary_msg = ConversationMessage {
             id: Uuid::new_v4().to_string(),
@@ -359,16 +373,20 @@ impl AgentExecutor {
             artifacts: None,
             token_count: estimate_tokens_for_model(model, &summary_content),
             created_at: String::new(),
-            sort_order: 0,
+            // The stable system prefix keeps its original ordering. Insert the
+            // checkpoint exactly where the evicted conversation span began so
+            // persistence and in-memory ordering remain identical.
+            sort_order: prefix_end as i64,
             thinking: None,
             image_attachments: None,
         };
 
-        let mut compacted = Vec::with_capacity(1 + messages.len() - evict_count);
+        let mut compacted = Vec::with_capacity(prefix_end + 1 + messages.len() - evict_end);
+        compacted.extend_from_slice(&messages[..prefix_end]);
         compacted.push(summary_msg);
-        for (i, m) in messages[evict_count..].iter().enumerate() {
+        for (i, m) in messages[evict_end..].iter().enumerate() {
             let mut m = m.clone();
-            m.sort_order = (i + 1) as i64;
+            m.sort_order = (prefix_end + i + 1) as i64;
             compacted.push(m);
         }
 
@@ -405,5 +423,47 @@ mod tests {
             llm_msg.text_content(),
             "expanded goal prompt\n\nvisible goal"
         );
+    }
+
+    #[test]
+    fn compaction_boundary_keeps_recent_turns_and_tool_blocks() {
+        let messages = vec![
+            Message::text(Role::System, "stable"),
+            Message::text(Role::User, "first"),
+            Message::text(Role::Assistant, "working"),
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::Assistant, "done"),
+            Message::text(Role::User, "second"),
+            Message::text(Role::Assistant, "done"),
+            Message::text(Role::User, "third"),
+            Message::text(Role::Assistant, "done"),
+        ];
+
+        let boundary = compaction_boundary(&messages, "gpt-4o", 1, 2).unwrap();
+        assert_eq!(boundary, 5);
+        assert_eq!(messages[boundary].role, Role::User);
+        assert!(messages[..boundary]
+            .iter()
+            .any(|message| message.role == Role::Tool));
+    }
+
+    #[test]
+    fn compaction_boundary_requires_enough_complete_turns() {
+        let messages = vec![
+            Message::text(Role::System, "stable"),
+            Message::text(Role::User, "only"),
+            Message::text(Role::Assistant, "answer"),
+        ];
+        assert_eq!(compaction_boundary(&messages, "gpt-4o", 1, 2), None);
+    }
+
+    #[test]
+    fn system_prefix_excludes_an_existing_compaction_checkpoint() {
+        let messages = vec![
+            Message::text(Role::System, "stable policy"),
+            reference_summary_message("previous state", 3, "automatic"),
+            Message::text(Role::User, "continue"),
+        ];
+        assert_eq!(system_prefix_end(&messages), 1);
     }
 }

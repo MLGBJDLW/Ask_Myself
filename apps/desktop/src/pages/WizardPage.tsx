@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { AnimatePresence } from 'framer-motion';
-import { useNavigate, useOutletContext } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router';
 import { toast } from 'sonner';
 import { useTranslation } from '../i18n';
 import * as api from '../lib/api';
