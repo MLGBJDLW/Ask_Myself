@@ -1,7 +1,8 @@
 import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Archive, ArchiveRestore, Check, ChevronDown, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Check, ChevronDown, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
@@ -21,8 +22,9 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
-import type { AgentConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
+import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
+import { finalAnswerToSpeechText } from '../lib/autoSpeech';
 import { isGoalMessage, isSteeringMessage } from '../lib/chatMessageGuards';
 import { getActiveGoalContext } from '../lib/goalContext';
 import {
@@ -452,6 +454,90 @@ export function ChatPage() {
     initialCollectionContext,
     activePersonaId,
   });
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [autoSpeechSaving, setAutoSpeechSaving] = useState(false);
+  const activeSpeechRef = useRef<HTMLAudioElement | null>(null);
+  const finalSpeechCandidateRef = useRef<{ conversationId: string; text: string } | null>(null);
+  const autoSpeechEnabled = appConfig?.textToSpeech?.autoSpeakFinalAnswers === true;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getAppConfig()
+      .then((config) => {
+        if (!cancelled) setAppConfig(config);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      activeSpeechRef.current?.pause();
+      activeSpeechRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!autoSpeechEnabled || !chat.activeId || !chat.isStreaming || !chat.streamText.trim()) return;
+    finalSpeechCandidateRef.current = {
+      conversationId: chat.activeId,
+      text: chat.streamText,
+    };
+  }, [autoSpeechEnabled, chat.activeId, chat.isStreaming, chat.streamText]);
+
+  useEffect(() => {
+    if (chat.isStreaming) return;
+    const candidate = finalSpeechCandidateRef.current;
+    if (!candidate || candidate.conversationId !== chat.activeId) return;
+    finalSpeechCandidateRef.current = null;
+    if (!autoSpeechEnabled || chat.activeConversation?.archivedAt) return;
+    const speechText = finalAnswerToSpeechText(candidate.text);
+    if (!speechText) return;
+    void api.synthesizeSpeechPreview(speechText)
+      .then((preview) => {
+        activeSpeechRef.current?.pause();
+        const audio = new Audio(convertFileSrc(preview.path));
+        activeSpeechRef.current = audio;
+        audio.addEventListener('ended', () => {
+          if (activeSpeechRef.current === audio) activeSpeechRef.current = null;
+        }, { once: true });
+        return audio.play();
+      })
+      .catch((error) => toast.error(formatUserError(t('chat.autoTtsFailed'), error)));
+  }, [autoSpeechEnabled, chat.activeConversation, chat.activeId, chat.isStreaming, t]);
+
+  const toggleAutoSpeech = useCallback(async () => {
+    if (!appConfig?.textToSpeech || autoSpeechSaving) return;
+    const nextEnabled = !appConfig.textToSpeech.autoSpeakFinalAnswers;
+    if (nextEnabled) {
+      const tts = appConfig.textToSpeech;
+      const configured = tts.apiStyle === 'sherpa_onnx'
+        ? Boolean(tts.executablePath?.trim() && tts.modelPath?.trim() && tts.tokensPath?.trim())
+        : Boolean(tts.apiKey.trim() && tts.model.trim() && tts.voice.trim());
+      if (!configured) {
+        toast.error(t('chat.autoTtsNeedsProvider'));
+        return;
+      }
+    } else {
+      activeSpeechRef.current?.pause();
+      activeSpeechRef.current = null;
+      finalSpeechCandidateRef.current = null;
+    }
+    const nextConfig: AppConfig = {
+      ...appConfig,
+      textToSpeech: {
+        ...appConfig.textToSpeech,
+        autoSpeakFinalAnswers: nextEnabled,
+      },
+    };
+    setAppConfig(nextConfig);
+    setAutoSpeechSaving(true);
+    try {
+      await api.saveAppConfig(nextConfig);
+    } catch (error) {
+      setAppConfig(appConfig);
+      toast.error(formatUserError(t('chat.autoTtsFailed'), error));
+    } finally {
+      setAutoSpeechSaving(false);
+    }
+  }, [appConfig, autoSpeechSaving, t]);
   const chatInputHistory = useMemo(
     () => chat.messages
       .filter((message) => (
@@ -1237,6 +1323,26 @@ export function ChatPage() {
                       </div>
                       <button
                         type="button"
+                        data-testid="chat-auto-tts-toggle"
+                        onClick={() => void toggleAutoSpeech()}
+                        disabled={!appConfig?.textToSpeech || autoSpeechSaving}
+                        aria-pressed={autoSpeechEnabled}
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors disabled:pointer-events-none disabled:opacity-40 ${
+                          autoSpeechEnabled
+                            ? 'border-accent/35 bg-accent/10 text-accent hover:bg-accent/15'
+                            : 'border-border/50 bg-surface-2/70 text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
+                        }`}
+                        title={autoSpeechEnabled ? t('chat.autoTtsOn') : t('chat.autoTtsOff')}
+                        aria-label={autoSpeechEnabled ? t('chat.autoTtsOn') : t('chat.autoTtsOff')}
+                      >
+                        {autoSpeechSaving
+                          ? <Loader2 size={16} className="animate-spin" />
+                          : autoSpeechEnabled
+                            ? <Volume2 size={16} />
+                            : <VolumeX size={16} />}
+                      </button>
+                      <button
+                        type="button"
                         onClick={handleToggleTerminal}
                         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
                           text-text-tertiary hover:text-text-primary hover:bg-surface-3
@@ -1351,7 +1457,7 @@ export function ChatPage() {
               onSend={handleChatSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
-              disabled={!chat.agentConfig || chat.loadingMsgs || isCompacting}
+              disabled={!chat.agentConfig || chat.loadingMsgs}
               conversationId={chat.activeId ?? undefined}
               inputHistory={chatInputHistory}
               sessionControls={sessionControls}

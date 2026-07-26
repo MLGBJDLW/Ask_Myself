@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "選擇用於語音輸入的麥克風",
   "microphoneDefault": "系統預設",
   "microphoneRefresh": "重新整理裝置",
-  "microphoneDeviceN": "裝置"
+  "microphoneDeviceN": "裝置",
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
 }

@@ -474,6 +474,14 @@ export function SettingsPage() {
           outputFormat: 'wav',
           speed: 1,
         },
+        speechToText: {
+          provider: 'local_whisper',
+          apiStyle: 'local_whisper',
+          apiKey: '',
+          baseUrl: null,
+          model: 'whisper-local',
+          language: null,
+        },
       });
     }
   }, []);

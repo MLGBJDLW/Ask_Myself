@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "Select which microphone to use for voice input",
   "microphoneDefault": "System Default",
   "microphoneRefresh": "Refresh devices",
-  "microphoneDeviceN": "Device"
+  "microphoneDeviceN": "Device",
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
 }

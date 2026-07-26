@@ -566,5 +566,9 @@
   "terminalSendSelection": "選択範囲をエージェントに送る",
   "terminalSelectionCopied": "ターミナルの選択範囲をコピーしました",
   "terminalSelectionCount": "{count} 文字を選択",
-  "terminalLinkedToAgent": "{agent} に接続中"
+  "terminalLinkedToAgent": "{agent} に接続中",
+  "autoTtsOn": "Automatic read-aloud is on",
+  "autoTtsOff": "Automatic read-aloud is off",
+  "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
+  "autoTtsFailed": "Automatic read-aloud failed"
 }

@@ -32,6 +32,7 @@ export const DEFAULT_TTS_CONFIG: TextToSpeechConfig = {
   dataDir: null,
   lexiconPath: null,
   numThreads: 2,
+  autoSpeakFinalAnswers: false,
 };
 
 export function TextToSpeechSettingsPanel({
@@ -118,6 +119,18 @@ export function TextToSpeechSettingsPanel({
       {expanded && (
         <div className="border-t border-border px-4 py-4">
           <p className="mb-4 text-xs text-text-tertiary">{t('settings.textToSpeechDesc')}</p>
+          <label className="mb-4 flex items-center justify-between gap-4 rounded-md border border-border/60 bg-surface-1/60 px-3 py-2.5">
+            <span>
+              <span className="block text-sm font-medium text-text-primary">{t('settings.ttsAutoSpeakFinal')}</span>
+              <span className="block text-[11px] leading-5 text-text-tertiary">{t('settings.ttsAutoSpeakFinalDesc')}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={config.autoSpeakFinalAnswers === true}
+              onChange={(event) => update({ autoSpeakFinalAnswers: event.target.checked })}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>

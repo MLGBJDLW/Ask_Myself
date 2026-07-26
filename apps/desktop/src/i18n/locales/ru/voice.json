@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "Выберите микрофон для голосового ввода",
   "microphoneDefault": "Системный по умолчанию",
   "microphoneRefresh": "Обновить устройства",
-  "microphoneDeviceN": "Устройство"
+  "microphoneDeviceN": "Устройство",
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
 }

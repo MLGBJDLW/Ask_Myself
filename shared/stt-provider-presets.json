@@ -1,0 +1,82 @@
+[
+  {
+    "id": "local-whisper",
+    "name": "Whisper (Local)",
+    "provider": "local_whisper",
+    "apiStyle": "local_whisper",
+    "requiresApiKey": false,
+    "local": true,
+    "baseUrl": "",
+    "description": "Existing private Candle Whisper transcription. Works offline but is slower to initialize on CPU.",
+    "models": [
+      { "id": "whisper-local", "name": "Model selected under Video & Audio", "recommended": true }
+    ]
+  },
+  {
+    "id": "openai",
+    "name": "OpenAI Transcription",
+    "provider": "open_ai",
+    "apiStyle": "openai_transcription",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.openai.com/v1",
+    "description": "Hosted GPT-4o transcription with strong multilingual accuracy and fast short-form dictation.",
+    "models": [
+      { "id": "gpt-4o-mini-transcribe", "name": "GPT-4o Mini Transcribe (Fast)", "recommended": true },
+      { "id": "gpt-4o-transcribe", "name": "GPT-4o Transcribe" },
+      { "id": "whisper-1", "name": "Whisper-1" }
+    ]
+  },
+  {
+    "id": "groq",
+    "name": "Groq Transcription",
+    "provider": "groq",
+    "apiStyle": "openai_transcription",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.groq.com/openai/v1",
+    "description": "OpenAI-compatible, very low-latency multilingual Whisper inference.",
+    "models": [
+      { "id": "whisper-large-v3-turbo", "name": "Whisper Large V3 Turbo (Fast)", "recommended": true },
+      { "id": "whisper-large-v3", "name": "Whisper Large V3 (Accurate)" }
+    ]
+  },
+  {
+    "id": "sherpa-sense-voice",
+    "name": "sherpa-onnx SenseVoice (Local)",
+    "provider": "sherpa_onnx",
+    "apiStyle": "sherpa_onnx",
+    "requiresApiKey": false,
+    "local": true,
+    "baseUrl": "",
+    "sherpaModelFamily": "sense_voice",
+    "description": "Fast offline Chinese, English, Japanese, Korean, and Cantonese recognition with inverse text normalization.",
+    "models": [
+      { "id": "sense_voice", "name": "SenseVoice", "recommended": true }
+    ]
+  },
+  {
+    "id": "sherpa-zipformer",
+    "name": "sherpa-onnx Zipformer (Local)",
+    "provider": "sherpa_onnx",
+    "apiStyle": "sherpa_onnx",
+    "requiresApiKey": false,
+    "local": true,
+    "baseUrl": "",
+    "sherpaModelFamily": "zipformer",
+    "description": "Streaming-capable local Zipformer models using encoder, decoder, and joiner files.",
+    "models": [
+      { "id": "zipformer", "name": "Streaming Zipformer", "recommended": true }
+    ]
+  },
+  {
+    "id": "custom-openai",
+    "name": "OpenAI-compatible (Custom)",
+    "provider": "custom",
+    "apiStyle": "openai_transcription",
+    "requiresApiKey": true,
+    "baseUrl": "",
+    "description": "Any compatible /audio/transcriptions endpoint with an editable base URL and model ID.",
+    "models": [
+      { "id": "whisper-1", "name": "Custom model", "recommended": true }
+    ]
+  }
+]

@@ -9,6 +9,7 @@ import { Button } from '../ui/Button';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
 import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
+import { SpeechToTextSettingsPanel } from './SpeechToTextSettingsPanel';
 import { Section } from './SettingsSection';
 
 export type ProviderView = 'list' | 'selector' | 'form';
@@ -234,6 +235,13 @@ export function ProvidersSettingsTab({
                 onSave={onAppConfigSave}
               />
               <TextToSpeechSettingsPanel
+                appConfig={appConfig}
+                loading={appConfigLoading}
+                onChange={onAppConfigChange}
+                onMarkDirty={onMarkAppConfigDirty}
+                onSave={onAppConfigSave}
+              />
+              <SpeechToTextSettingsPanel
                 appConfig={appConfig}
                 loading={appConfigLoading}
                 onChange={onAppConfigChange}

@@ -566,5 +566,9 @@
   "terminalSendSelection": "Send selection to agent",
   "terminalSelectionCopied": "Terminal selection copied",
   "terminalSelectionCount": "{count} selected",
-  "terminalLinkedToAgent": "Linked to {agent}"
+  "terminalLinkedToAgent": "Linked to {agent}",
+  "autoTtsOn": "Automatic read-aloud is on",
+  "autoTtsOff": "Automatic read-aloud is off",
+  "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
+  "autoTtsFailed": "Automatic read-aloud failed"
 }

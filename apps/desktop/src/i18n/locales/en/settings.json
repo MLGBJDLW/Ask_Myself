@@ -735,5 +735,15 @@
   "packageHost.permission.write": "Write",
   "packageHost.permission.execute": "Execute",
   "packageHost.permission.network": "Network",
-  "packageHost.permission.nativeCode": "Native code"
+  "packageHost.permission.nativeCode": "Native code",
+  "speechToText": "Speech to Text",
+  "speechToTextDesc": "Choose fast hosted transcription, existing local Whisper, or private sherpa-onnx SenseVoice and streaming Zipformer models for microphone input.",
+  "sttNeedsLocalFiles": "Needs local files",
+  "sttLanguage": "Language (optional)",
+  "sttLocalWhisperHint": "Local Whisper uses the model selected under Video & Audio. Hosted and sherpa-onnx options usually return short dictation much faster.",
+  "sttSherpaExecutable": "sherpa-onnx executable",
+  "sttTokensPath": "Tokens path",
+  "sttModelPath": "SenseVoice model path",
+  "ttsAutoSpeakFinal": "Read final answers automatically",
+  "ttsAutoSpeakFinalDesc": "After a turn completes, collapse the working trace and speak only the final answer. The chat header also provides a quick switch."
 }

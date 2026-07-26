@@ -10,5 +10,6 @@
   "microphoneDeviceDesc": "选择用于语音输入的麦克风",
   "microphoneDefault": "系统默认",
   "microphoneRefresh": "刷新设备",
-  "microphoneDeviceN": "设备"
+  "microphoneDeviceN": "设备",
+  "providerNotConfigured": "请先在设置中完成所选语音转文字服务的配置"
 }

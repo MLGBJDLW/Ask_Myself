@@ -93,6 +93,9 @@ pub struct TextToSpeechConfig {
     /// Local inference thread count.
     #[serde(default = "default_tts_num_threads")]
     pub num_threads: u32,
+    /// Automatically read the final answer of each successful turn.
+    #[serde(default)]
+    pub auto_speak_final_answers: bool,
 }
 
 impl Default for TextToSpeechConfig {
@@ -113,6 +116,7 @@ impl Default for TextToSpeechConfig {
             data_dir: None,
             lexicon_path: None,
             num_threads: default_tts_num_threads(),
+            auto_speak_final_answers: false,
         }
     }
 }
@@ -144,6 +148,109 @@ impl TextToSpeechConfig {
         !self.api_key.trim().is_empty()
             && !self.model.trim().is_empty()
             && !self.voice.trim().is_empty()
+    }
+}
+
+/// Dedicated voice-input transcription settings. This is intentionally
+/// separate from video analysis: microphone input can use a low-latency cloud
+/// or sherpa-onnx recognizer while video ingestion keeps its local Whisper
+/// configuration and offline defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechToTextConfig {
+    #[serde(default = "default_stt_provider")]
+    pub provider: String,
+    #[serde(default = "default_stt_api_style")]
+    pub api_style: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_stt_base_url_option")]
+    pub base_url: Option<String>,
+    #[serde(default = "default_stt_model")]
+    pub model: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Local sherpa-onnx command line executable.
+    #[serde(default)]
+    pub executable_path: Option<String>,
+    /// `sense_voice` for a single-model offline recognizer, or `zipformer`
+    /// for encoder/decoder/joiner streaming models.
+    #[serde(default = "default_stt_sherpa_model_family")]
+    pub sherpa_model_family: String,
+    #[serde(default)]
+    pub model_path: Option<String>,
+    #[serde(default)]
+    pub tokens_path: Option<String>,
+    #[serde(default)]
+    pub encoder_path: Option<String>,
+    #[serde(default)]
+    pub decoder_path: Option<String>,
+    #[serde(default)]
+    pub joiner_path: Option<String>,
+    #[serde(default = "default_stt_num_threads")]
+    pub num_threads: u32,
+}
+
+impl Default for SpeechToTextConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_stt_provider(),
+            api_style: default_stt_api_style(),
+            api_key: String::new(),
+            base_url: default_stt_base_url_option(),
+            model: default_stt_model(),
+            language: None,
+            executable_path: None,
+            sherpa_model_family: default_stt_sherpa_model_family(),
+            model_path: None,
+            tokens_path: None,
+            encoder_path: None,
+            decoder_path: None,
+            joiner_path: None,
+            num_threads: default_stt_num_threads(),
+        }
+    }
+}
+
+impl SpeechToTextConfig {
+    pub fn is_configured(&self) -> bool {
+        match self.api_style.as_str() {
+            "local_whisper" => true,
+            "sherpa_onnx" => {
+                let common = self
+                    .executable_path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && self
+                        .tokens_path
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty());
+                if self.sherpa_model_family == "zipformer" {
+                    common
+                        && [&self.encoder_path, &self.decoder_path, &self.joiner_path]
+                            .into_iter()
+                            .all(|path| {
+                                path.as_deref()
+                                    .is_some_and(|value| !value.trim().is_empty())
+                            })
+                } else {
+                    common
+                        && self
+                            .model_path
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty())
+                }
+            }
+            "openai_transcription" => {
+                !self.api_key.trim().is_empty()
+                    && !self.model.trim().is_empty()
+                    && self
+                        .base_url
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+            }
+            _ => false,
+        }
     }
 }
 
@@ -484,6 +591,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub text_to_speech: TextToSpeechConfig,
 
+    /// Dedicated low-latency microphone transcription settings.
+    #[serde(default)]
+    pub speech_to_text: SpeechToTextConfig,
+
     /// Defaults for native no-key public web search tools.
     #[serde(default)]
     pub web_search: WebSearchConfig,
@@ -603,6 +714,25 @@ fn default_tts_num_threads() -> u32 {
     2
 }
 
+fn default_stt_provider() -> String {
+    "local_whisper".to_string()
+}
+fn default_stt_api_style() -> String {
+    "local_whisper".to_string()
+}
+fn default_stt_base_url_option() -> Option<String> {
+    None
+}
+fn default_stt_model() -> String {
+    "whisper-1".to_string()
+}
+fn default_stt_sherpa_model_family() -> String {
+    "sense_voice".to_string()
+}
+fn default_stt_num_threads() -> u32 {
+    2
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -629,6 +759,7 @@ impl Default for AppConfig {
             ghproxy_base_url: default_ghproxy_base_url(),
             image_generation: ImageGenerationConfig::default(),
             text_to_speech: TextToSpeechConfig::default(),
+            speech_to_text: SpeechToTextConfig::default(),
             web_search: WebSearchConfig::default(),
             dreaming: DreamingConfig::default(),
         }
@@ -639,6 +770,7 @@ fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreEr
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
+    config.speech_to_text.api_key = crate::crypto::encrypt_api_key(&config.speech_to_text.api_key)?;
     for provider in &mut config.web_search.custom_providers {
         provider.api_key = crate::crypto::encrypt_api_key(&provider.api_key)?;
     }
@@ -649,6 +781,7 @@ fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreEr
     config.image_generation.api_key =
         crate::crypto::decrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::decrypt_api_key(&config.text_to_speech.api_key)?;
+    config.speech_to_text.api_key = crate::crypto::decrypt_api_key(&config.speech_to_text.api_key)?;
     for provider in &mut config.web_search.custom_providers {
         provider.api_key = crate::crypto::decrypt_api_key(&provider.api_key)?;
     }
@@ -837,6 +970,38 @@ mod tests {
             .custom_providers
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
+    }
+
+    #[test]
+    fn speech_to_text_configuration_covers_local_cloud_and_sherpa() {
+        let local = SpeechToTextConfig::default();
+        assert_eq!(local.api_style, "local_whisper");
+        assert!(local.is_configured());
+
+        let mut cloud = SpeechToTextConfig {
+            api_style: "openai_transcription".to_string(),
+            ..SpeechToTextConfig::default()
+        };
+        assert!(!cloud.is_configured());
+        cloud.api_key = "secret".to_string();
+        cloud.base_url = Some("https://api.openai.com/v1".to_string());
+        assert!(cloud.is_configured());
+
+        let mut sherpa = SpeechToTextConfig {
+            api_style: "sherpa_onnx".to_string(),
+            executable_path: Some("sherpa-onnx-offline".to_string()),
+            model_path: Some("model.onnx".to_string()),
+            tokens_path: Some("tokens.txt".to_string()),
+            ..SpeechToTextConfig::default()
+        };
+        assert!(sherpa.is_configured());
+
+        sherpa.sherpa_model_family = "zipformer".to_string();
+        assert!(!sherpa.is_configured());
+        sherpa.encoder_path = Some("encoder.onnx".to_string());
+        sherpa.decoder_path = Some("decoder.onnx".to_string());
+        sherpa.joiner_path = Some("joiner.onnx".to_string());
+        assert!(sherpa.is_configured());
     }
 
     #[test]
