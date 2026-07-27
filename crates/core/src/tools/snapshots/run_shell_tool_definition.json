@@ -1,5 +1,5 @@
 {
-  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it. Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
+  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it. Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Local web/API servers are automatically promoted to managed background services; provide background=true and a loopback ready_url when known, or let the tool discover it from startup logs. Use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
   "name": "run_shell",
   "parameters": {
     "properties": {
@@ -13,7 +13,7 @@
       },
       "background": {
         "default": false,
-        "description": "Start a long-running local web or API service without waiting for it to exit. Requires ready_url. The tool polls readiness and returns a service_id so later calls can check health or stop the service.",
+        "description": "Start a long-running local web or API service without waiting for it to exit. ready_url is recommended but optional: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted.",
         "type": "boolean"
       },
       "command": {
@@ -36,7 +36,7 @@
         "type": "integer"
       },
       "ready_url": {
-        "description": "Loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted.",
+        "description": "Optional loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted. When omitted, run_shell tries to discover the URL from startup logs.",
         "type": "string"
       },
       "service_action": {
@@ -80,7 +80,7 @@
       },
       "timeout_secs": {
         "default": 30,
-        "description": "Timeout in seconds. Default 30. Set 0 only for a finite long install/download/build, never for a web/API server; use background with ready_url for services. The broader agent turn timeout can still stop the run if it is not raised or disabled.",
+        "description": "Timeout in seconds. Default 30. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode for services (ready_url is optional but recommended). The broader agent turn timeout can still stop the run if it is not raised or disabled.",
         "minimum": 0,
         "type": "integer"
       }

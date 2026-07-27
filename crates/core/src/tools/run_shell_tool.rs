@@ -54,6 +54,8 @@ use shell_adapter::{
     build_env_from, bytes_to_clamped_string, clamp_timeout, execute_inner, format_output,
     resolve_program, RunShellOutput,
 };
+#[cfg(test)]
+use tool_impl::looks_like_persistent_service;
 
 #[cfg(test)]
 mod tests;

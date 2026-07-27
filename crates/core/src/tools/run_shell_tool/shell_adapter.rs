@@ -394,8 +394,11 @@ pub(super) fn spawn_background_process(
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Keep bounded tails in the managed-service registry. Besides making
+        // status calls useful, startup logs are often the only reliable way
+        // to discover the ephemeral URL selected by a dev server.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env_clear();
     for (key, value) in build_env() {
         cmd.env(key, value);

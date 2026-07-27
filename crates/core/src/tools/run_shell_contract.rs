@@ -143,11 +143,11 @@ pub(crate) fn parameters_schema() -> Value {
             "background": {
                 "type": "boolean",
                 "default": false,
-                "description": "Start a long-running local web or API service without waiting for it to exit. Requires ready_url. The tool polls readiness and returns a service_id so later calls can check health or stop the service."
+                "description": "Start a long-running local web or API service without waiting for it to exit. ready_url is recommended but optional: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted."
             },
             "ready_url": {
                 "type": "string",
-                "description": "Loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted."
+                "description": "Optional loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted. When omitted, run_shell tries to discover the URL from startup logs."
             },
             "ready_timeout_secs": {
                 "type": "integer",
@@ -249,7 +249,7 @@ pub(crate) fn expected_format() -> Value {
             "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
             "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
-            "Long-running web/API servers must use background=true with a loopback ready_url. Check them again with service_action=status before or after browser inspection, and stop them with service_action=stop when finished."
+            "Long-running web/API servers are automatically promoted to managed background services. Prefer background=true and provide a loopback ready_url when known; otherwise run_shell discovers a URL from startup logs or returns a running service after a stability check. Check it with service_action=status before or after browser inspection, and stop it with service_action=stop when finished."
         ]
     })
 }
@@ -400,13 +400,13 @@ fn prompt_html_pptx_sentence() -> &'static str {
 
 fn timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Local web/API servers are automatically promoted to managed background services; provide background=true and a loopback ready_url when known, or let the tool discover it from startup logs. Use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
     )
 }
 
 fn prompt_timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Never run a local web/API server in the foreground: set `background: true` with a loopback `ready_url`, wait for the returned readiness result before opening the page, call `service_action: \"status\"` before or after browser checks, and `service_action: \"stop\"` when finished."
+        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Prefer `background: true` plus a loopback `ready_url` for local web/API servers; recognized servers are automatically promoted and can discover a URL from startup logs when it is omitted. Continue after the managed-service result, call `service_action: \"status\"` around browser checks, and `service_action: \"stop\"` when finished."
     )
 }
 
@@ -420,7 +420,7 @@ fn shell_parameter_description() -> &'static str {
 
 fn timeout_parameter_description() -> String {
     format!(
-        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use background with ready_url for services. The broader agent turn timeout can still stop the run if it is not raised or disabled."
+        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode for services (ready_url is optional but recommended). The broader agent turn timeout can still stop the run if it is not raised or disabled."
     )
 }
 
