@@ -279,6 +279,10 @@ fn test_persistent_servers_are_recognized_for_automatic_backgrounding() {
         &["server.py".to_string()]
     ));
     assert!(looks_like_persistent_service(
+        "python3.12",
+        &["-u".to_string(), "scripts/server.py".to_string()]
+    ));
+    assert!(looks_like_persistent_service(
         "python",
         &[
             "-m".to_string(),
@@ -293,6 +297,18 @@ fn test_persistent_servers_are_recognized_for_automatic_backgrounding() {
     assert!(!looks_like_persistent_service(
         "python",
         &["scripts/check.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["test_server.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["generate_server.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["scripts/check.py".to_string(), "server.py".to_string()]
     ));
 }
 

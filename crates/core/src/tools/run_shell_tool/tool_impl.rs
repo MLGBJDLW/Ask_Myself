@@ -164,6 +164,38 @@ async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
+fn launches_python_server_script(program: &str, args: &[String]) -> bool {
+    let is_python_launcher = matches!(program, "python" | "python3" | "py")
+        || program
+            .strip_prefix("python3.")
+            .is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()));
+    if !is_python_launcher {
+        return false;
+    }
+
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        match arg.as_str() {
+            "-c" | "-m" => return false,
+            "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
+            "--" => {
+                return args
+                    .get(index + 1)
+                    .and_then(|value| value.rsplit(['/', '\\']).next())
+                    .is_some_and(|name| name == "server.py");
+            }
+            value if value.starts_with('-') => index += 1,
+            value => {
+                return value
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(|name| name == "server.py");
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let program = Path::new(program)
         .file_stem()
@@ -174,7 +206,7 @@ pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> b
     let joined = normalized_args.join(" ");
 
     joined.contains("http.server")
-        || joined.contains("server.py")
+        || launches_python_server_script(&program, &normalized_args)
         || joined.contains("manage.py runserver")
         || joined.contains("uvicorn")
         || joined.contains("flask run")
