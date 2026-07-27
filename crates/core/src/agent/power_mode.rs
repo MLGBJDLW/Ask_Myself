@@ -4,9 +4,9 @@ use crate::llm::{ProviderType, ReasoningEffort};
 use crate::provider_catalog::model_capabilities_from_catalog;
 
 pub const NEXUS_MAX_ITERATIONS_FLOOR: u32 = 48;
-pub const NEXUS_MAX_PARALLEL: u32 = 4;
-pub const NEXUS_MAX_CALLS_PER_TURN: u32 = 8;
-pub const NEXUS_TOKEN_BUDGET: u32 = 64_000;
+pub const NEXUS_MAX_PARALLEL: u32 = 6;
+pub const NEXUS_MAX_CALLS_PER_TURN: u32 = 12;
+pub const NEXUS_TOKEN_BUDGET: u32 = 96_000;
 pub const NEXUS_VERIFICATION_RESERVE_PERCENT: u32 = 25;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,12 +76,14 @@ impl ResolvedAgentPowerPolicy {
         }
 
         "## Nexus Execution Policy\n\n\
-         The user explicitly enabled Nexus mode for this turn. Apply it only where additional work can materially improve correctness.\n\
-         - For genuinely complex work, split independent investigation or review into 2-4 focused workers. Keep implementation ownership narrow and parallel writes disjoint.\n\
+         The user explicitly enabled Nexus mode for this turn. The parent agent is the lead and must actively orchestrate specialist subagents rather than merely doing all work itself.\n\
+         - For any non-trivial task with two or more independent investigation, implementation-planning, debugging, research, or review tracks, call `spawn_subagent_batch` early with 3-6 focused subagents. This is a required Nexus behavior, not an optional suggestion.\n\
+         - Give each subagent a narrow role, explicit deliverable, relevant read-only tools, and disjoint ownership. Keep final synthesis and write ownership with the parent unless parallel writes are provably isolated.\n\
+         - Work in evidence-driven waves: parallel reconnaissance first, parent synthesis and implementation second, then an independent verifier or `judge_subagent_results` pass. Reuse workflow templates such as `research_verify` when they fit.\n\
          - Reserve at least one delegated call and 25% of the delegated token budget for verification or adjudication. Stop exploratory fan-out before consuming that reserve.\n\
          - Prefer objective checks, primary evidence, independent reproduction, and an explicit verifier or judge over majority voting. Correlated agreement is not proof.\n\
          - The runtime has selected only reasoning controls declared by the active model catalog. Never claim an unsupported reasoning level.\n\
-         - Do not fan out trivial work. Extra agents can add latency, cost, overthinking, and conflicting edits. The parent remains responsible for synthesis and final verification."
+         - Do not fan out a truly trivial or tightly coupled one-step task. Extra agents can add latency, cost, overthinking, and conflicting edits. If you do not delegate, state internally why the task is trivial or inseparable."
     }
 }
 
@@ -212,6 +214,11 @@ mod tests {
         assert_eq!(policy.subagent_token_budget, Some(NEXUS_TOKEN_BUDGET));
         assert_eq!(policy.verification_reserve_percent, Some(25));
         assert!(policy.model_capability_resolved);
+        let prompt = policy.prompt_section();
+        assert!(prompt.contains("required Nexus behavior"));
+        assert!(prompt.contains("spawn_subagent_batch"));
+        assert!(prompt.contains("3-6 focused subagents"));
+        assert!(prompt.contains("judge_subagent_results"));
     }
 
     #[test]

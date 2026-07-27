@@ -220,6 +220,20 @@ impl AgentExecutor {
         } else {
             self.tools.definitions()
         };
+        if self.config.power_mode.is_nexus() {
+            // Nexus orchestration must be available on the first model step.
+            // Leaving delegation behind dynamic discovery made the high-power
+            // mode behave like one large worker whenever routing omitted it.
+            let delegation_tools = [
+                "spawn_subagent_batch",
+                "spawn_subagent",
+                "judge_subagent_results",
+            ]
+            .iter()
+            .filter_map(|name| self.tools.get(name).map(|tool| tool.definition()))
+            .collect();
+            tool_defs = merge_tool_definitions(tool_defs, delegation_tools);
+        }
         if let Some(ref mut t) = trace {
             t.tools_offered = tool_defs.len() as u32;
             t.route_kind = Some(route_plan.kind.as_str().to_string());
