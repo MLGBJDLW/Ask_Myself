@@ -327,15 +327,18 @@ fn replace_matches(segment: &str, matches: &[TextMatch], new_str: &str) -> Strin
 
 fn replacement_for_match(segment: &str, matched: &TextMatch, new_str: &str) -> String {
     let original = &segment[matched.start..matched.start + matched.len];
+    let new_str = matched.replacement_text(new_str);
     if matches!(
         matched.kind,
-        TextMatchKind::LineEndingNormalized | TextMatchKind::VisualNormalized
+        TextMatchKind::LineEndingNormalized
+            | TextMatchKind::IndentationNormalized
+            | TextMatchKind::VisualNormalized
     ) && original.contains("\r\n")
         && new_str.contains('\n')
     {
         new_str.replace('\n', "\r\n")
     } else {
-        new_str.to_string()
+        new_str
     }
 }
 

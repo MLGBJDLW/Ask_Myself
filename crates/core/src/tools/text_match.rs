@@ -4,14 +4,35 @@ use unicode_normalization::UnicodeNormalization;
 pub(crate) enum TextMatchKind {
     Exact,
     LineEndingNormalized,
+    IndentationNormalized,
     VisualNormalized,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TextMatch {
     pub start: usize,
     pub len: usize,
     pub kind: TextMatchKind,
+    indentation_prefix: Option<String>,
+}
+
+impl TextMatch {
+    pub(crate) fn replacement_text(&self, replacement: &str) -> String {
+        let Some(prefix) = self.indentation_prefix.as_deref() else {
+            return replacement.to_string();
+        };
+        replacement
+            .split_inclusive('\n')
+            .map(|line| {
+                let body = line.trim_end_matches(['\r', '\n']);
+                if body.trim().is_empty() {
+                    line.to_string()
+                } else {
+                    format!("{prefix}{line}")
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +52,7 @@ pub(crate) fn find_text_matches(haystack: &str, needle: &str) -> Vec<TextMatch> 
             start,
             len: matched.len(),
             kind: TextMatchKind::Exact,
+            indentation_prefix: None,
         })
         .collect();
     if !exact.is_empty() {
@@ -45,6 +67,11 @@ pub(crate) fn find_text_matches(haystack: &str, needle: &str) -> Vec<TextMatch> 
     );
     if !line_endings.is_empty() {
         return line_endings;
+    }
+
+    let indentation = find_uniform_indentation_matches(haystack, needle);
+    if !indentation.is_empty() {
+        return indentation;
     }
 
     find_normalized_matches(
@@ -84,6 +111,7 @@ fn find_normalized_matches(
             start: original_start,
             len: original_end - original_start,
             kind,
+            indentation_prefix: None,
         };
         if !matches
             .iter()
@@ -93,6 +121,97 @@ fn find_normalized_matches(
         }
     }
 
+    matches
+}
+
+fn line_ranges(input: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in input.bytes().enumerate() {
+        if byte == b'\n' {
+            ranges.push((start, index + 1));
+            start = index + 1;
+        }
+    }
+    if start < input.len() {
+        ranges.push((start, input.len()));
+    }
+    ranges
+}
+
+fn leading_ascii_whitespace(value: &str) -> &str {
+    let count = value
+        .as_bytes()
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    &value[..count]
+}
+
+fn line_body(value: &str) -> &str {
+    value.trim_end_matches(['\r', '\n'])
+}
+
+fn find_uniform_indentation_matches(haystack: &str, needle: &str) -> Vec<TextMatch> {
+    let haystack_ranges = line_ranges(haystack);
+    let needle_ranges = line_ranges(needle);
+    if needle_ranges.is_empty() || needle_ranges.len() > haystack_ranges.len() {
+        return Vec::new();
+    }
+
+    let needle_lines = needle_ranges
+        .iter()
+        .map(|(start, end)| &needle[*start..*end])
+        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for window_start in 0..=haystack_ranges.len() - needle_ranges.len() {
+        let mut shared_prefix: Option<&str> = None;
+        let mut valid = true;
+        for (offset, needle_line) in needle_lines.iter().enumerate() {
+            let (start, end) = haystack_ranges[window_start + offset];
+            let haystack_line = &haystack[start..end];
+            if haystack_line.ends_with('\n') != needle_line.ends_with('\n') {
+                valid = false;
+                break;
+            }
+            let haystack_body = line_body(haystack_line);
+            let needle_body = line_body(needle_line);
+            let haystack_indent = leading_ascii_whitespace(haystack_body);
+            let needle_indent = leading_ascii_whitespace(needle_body);
+            if haystack_body[haystack_indent.len()..] != needle_body[needle_indent.len()..] {
+                valid = false;
+                break;
+            }
+            if haystack_body.trim().is_empty() {
+                continue;
+            }
+            let Some(prefix) = haystack_indent.strip_suffix(needle_indent) else {
+                valid = false;
+                break;
+            };
+            match shared_prefix {
+                Some(existing) if existing != prefix => {
+                    valid = false;
+                    break;
+                }
+                None => shared_prefix = Some(prefix),
+                _ => {}
+            }
+        }
+        let Some(prefix) = shared_prefix.filter(|prefix| !prefix.is_empty()) else {
+            continue;
+        };
+        if valid {
+            let start = haystack_ranges[window_start].0;
+            let end = haystack_ranges[window_start + needle_ranges.len() - 1].1;
+            matches.push(TextMatch {
+                start,
+                len: end - start,
+                kind: TextMatchKind::IndentationNormalized,
+                indentation_prefix: Some(prefix.to_string()),
+            });
+        }
+    }
     matches
 }
 
@@ -314,6 +433,21 @@ mod tests {
         assert_eq!(
             &haystack[matches[0].start..matches[0].start + matches[0].len],
             "قال: «مرحبا»"
+        );
+    }
+
+    #[test]
+    fn finds_and_reindents_uniformly_outdented_block() {
+        let haystack = "fn main() {\n    if ready {\n        run();\n    }\n}\n";
+        let needle = "if ready {\n    run();\n}\n";
+
+        let matches = find_text_matches(haystack, needle);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].kind, TextMatchKind::IndentationNormalized);
+        assert_eq!(
+            matches[0].replacement_text("if ready {\n    finish();\n}\n"),
+            "    if ready {\n        finish();\n    }\n"
         );
     }
 

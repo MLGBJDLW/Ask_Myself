@@ -1,5 +1,5 @@
 {
-  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. By default no shell interpreter is invoked: shell metacharacters like `;`, `&&`, `|`, redirection, command substitution, and background operators are rejected in `command` to prevent accidental shell-style composition. When real shell syntax is required, set `shell` explicitly; shell mode is rejected in Restricted shell access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
+  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it. Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
   "name": "run_shell",
   "parameters": {
     "properties": {
@@ -17,11 +17,11 @@
         "type": "boolean"
       },
       "command": {
-        "description": "Simple one-line command string. Without shell, it is parsed into argv without invoking a shell. Use this for ordinary commands like \"git status --short\" or \"python -m pytest\". Quotes and escaped spaces are supported for arguments, but shell operators such as ;, &&, |, >, <, `...`, $(...), and backgrounding are rejected unless shell is explicitly set. On Windows, path backslashes are preserved by the command parser; JSON strings still need escaped backslashes such as \"C:\\\\Users\\\\me\\\\script.py\". Do not provide command together with program or args.",
+        "description": "Command string. Plain commands are parsed into exact argv without a shell. In ConfirmAll/Open modes, shell syntax such as ;, &&, |, redirection, command substitution, or multiline scripts automatically uses the platform default shell; Restricted mode still rejects shell syntax. You may also set shell explicitly. On Windows, path backslashes are preserved by the command parser; JSON strings still need escaped backslashes such as \"C:\\\\Users\\\\me\\\\script.py\". Do not provide command together with program or args.",
         "type": "string"
       },
       "cwd": {
-        "description": "Working directory for the command. In restricted mode it must resolve inside a registered source directory. In less-restricted shell access modes, any existing directory may be allowed.",
+        "description": "Optional working directory. Defaults deterministically to the first source in the active conversation scope. In restricted mode it must resolve inside a registered source directory; less-restricted modes may use any existing directory.",
         "type": "string"
       },
       "program": {
@@ -85,9 +85,7 @@
         "type": "integer"
       }
     },
-    "required": [
-      "cwd"
-    ],
+    "required": [],
     "type": "object"
   }
 }

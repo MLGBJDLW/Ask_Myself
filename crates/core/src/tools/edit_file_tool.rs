@@ -15,7 +15,7 @@ use super::diff_stats::diff_stats_from_diff;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
-use super::text_match::find_text_matches;
+use super::text_match::{find_text_matches, TextMatch};
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -355,11 +355,14 @@ fn find_replacement_matches(
     old_str: &str,
     start_byte: usize,
     end_byte: usize,
-) -> Vec<(usize, usize)> {
+) -> Vec<TextMatch> {
     let search_area = &content[start_byte..end_byte];
     find_text_matches(search_area, old_str)
         .into_iter()
-        .map(|matched| (start_byte + matched.start, matched.len))
+        .map(|mut matched| {
+            matched.start += start_byte;
+            matched
+        })
         .collect()
 }
 
@@ -574,11 +577,14 @@ impl EditFileTool {
                         });
                     }
 
-                    let (byte_offset, matched_len) = matches[0];
+                    let matched = &matches[0];
+                    let byte_offset = matched.start;
+                    let matched_len = matched.len;
+                    let replacement = matched.replacement_text(new_str);
                     let new_content = format!(
                         "{}{}{}",
                         &content[..byte_offset],
-                        new_str,
+                        replacement,
                         &content[byte_offset + matched_len..]
                     );
 
@@ -600,14 +606,14 @@ impl EditFileTool {
                         });
                     }
 
-                    let snippet = snippet_around(&new_content, byte_offset, new_str.len());
+                    let snippet = snippet_around(&new_content, byte_offset, replacement.len());
                     let diff = replacement_diff_artifact(
                         &args.path,
                         &content,
                         &new_content,
                         byte_offset,
                         matched_len,
-                        new_str.len(),
+                        replacement.len(),
                     );
                     Ok(ToolResult {
                         call_id,

@@ -233,7 +233,31 @@ fn test_lenient_parser_repairs_unescaped_windows_paths() {
 
     assert_eq!(parsed.program.as_deref(), Some("python"));
     assert_eq!(parsed.args, vec![r#"E:\Starting\convert_to_docx.py"#]);
-    assert_eq!(parsed.cwd, r#"E:\Starting"#);
+    assert_eq!(parsed.cwd.as_deref(), Some(r#"E:\Starting"#));
+}
+
+#[test]
+fn test_parser_allows_omitted_cwd() {
+    let parsed = parse_run_shell_args(r#"{"command":"git status --short"}"#)
+        .expect("cwd should be optional");
+
+    assert!(parsed.cwd.is_none());
+}
+
+#[test]
+fn test_open_mode_auto_promotes_shell_syntax() {
+    let parsed = parse_run_shell_args(
+        r#"{"command":"git status --short && git diff --stat","cwd":"C:\\work"}"#,
+    )
+    .expect("shell command should parse");
+
+    let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Open)
+        .expect("open mode should use the platform shell automatically");
+
+    assert!(!program.is_empty());
+    assert!(args
+        .iter()
+        .any(|arg| arg.contains("git status --short && git diff --stat")));
 }
 
 #[test]
@@ -668,6 +692,18 @@ fn test_output_truncation_respects_utf8() {
     assert!(trunc);
     // Result must be valid UTF-8 and not contain the partial char.
     assert_eq!(s, "a".repeat(10));
+}
+
+#[test]
+fn test_output_truncation_preserves_diagnostic_tail() {
+    let bytes = format!("{}{}", "a".repeat(200), "FINAL COMPILER ERROR").into_bytes();
+    let (output, truncated) = bytes_to_clamped_string(&bytes, 100);
+
+    assert!(truncated);
+    assert!(output.starts_with('a'));
+    assert!(output.contains("output middle omitted"));
+    assert!(output.ends_with("FINAL COMPILER ERROR"));
+    assert!(output.len() <= 100);
 }
 
 // --- Integration tests (need real binaries; ignored by default) --------

@@ -339,7 +339,7 @@ impl Tool for RunShellTool {
         let cwd = args
             .get("cwd")
             .and_then(|v| v.as_str())
-            .unwrap_or("<unknown>");
+            .unwrap_or("<active source root>");
         let timeout = args
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
@@ -468,15 +468,31 @@ impl Tool for RunShellTool {
         };
 
         // Resolve cwd inside a registered source directory (blocking fs ops).
-        let cwd_input = parsed.cwd.clone();
+        let cwd_input = parsed
+            .cwd
+            .clone()
+            .map(|cwd| cwd.trim().to_string())
+            .filter(|cwd| !cwd.is_empty());
         let args_input = normalized_args.clone();
         let db_clone = db.clone();
         let scope_clone = source_scope.to_vec();
         let program = canonical_program.clone();
         let cwd_result: Result<PathBuf, String> = tokio::task::spawn_blocking(move || {
+            let sources = scoped_sources(&db_clone, &scope_clone)
+                .map_err(|e| format!("failed to load sources: {e}"))?;
+            let cwd_input = cwd_input.unwrap_or_else(|| {
+                sources
+                    .first()
+                    .map(|source| source.root_path.clone())
+                    .unwrap_or_default()
+            });
+            if cwd_input.is_empty() {
+                return Err(
+                    "run_shell.cwd was omitted and no active source root is available. Add a source or pass cwd explicitly."
+                        .to_string(),
+                );
+            }
             if shell_access_mode.is_restricted() {
-                let sources = scoped_sources(&db_clone, &scope_clone)
-                    .map_err(|e| format!("failed to load sources: {e}"))?;
                 if sources.is_empty() {
                     return Err("No sources registered. Add a source directory first.".to_string());
                 }
@@ -484,15 +500,11 @@ impl Tool for RunShellTool {
                 validate_scoped_args(shell_access_mode, &program, &args_input, &cwd, &sources)?;
                 Ok(cwd)
             } else {
-                if !Path::new(&cwd_input).is_absolute() {
-                    let sources = scoped_sources(&db_clone, &scope_clone)
-                        .map_err(|e| format!("failed to load sources: {e}"))?;
-                    if !sources.is_empty() {
-                        if let Ok(cwd) =
-                            resolve_existing_directory_in_sources(Path::new(&cwd_input), &sources)
-                        {
-                            return Ok(cwd);
-                        }
+                if !Path::new(&cwd_input).is_absolute() && !sources.is_empty() {
+                    if let Ok(cwd) =
+                        resolve_existing_directory_in_sources(Path::new(&cwd_input), &sources)
+                    {
+                        return Ok(cwd);
                     }
                 }
                 let cwd = std::fs::canonicalize(Path::new(&cwd_input))
@@ -592,11 +604,41 @@ impl Tool for RunShellTool {
             content.push('\n');
         }
 
+        let execution_code = if output.killed_by_timeout {
+            Some("command_timeout")
+        } else if output.exit_code != Some(0) {
+            Some("command_exit_nonzero")
+        } else {
+            None
+        };
+        let mut artifacts = file_changes
+            .map(|changes| changes.artifact)
+            .unwrap_or_else(|| serde_json::json!({ "kind": "commandExecution" }));
+        if let Some(object) = artifacts.as_object_mut() {
+            object.insert(
+                "execution".to_string(),
+                serde_json::json!({
+                    "exitCode": output.exit_code,
+                    "durationMs": output.duration_ms as u64,
+                    "timedOut": output.killed_by_timeout,
+                    "stdoutTruncated": output.truncated_stdout,
+                    "stderrTruncated": output.truncated_stderr,
+                    "errorCode": execution_code,
+                    "retryable": is_error,
+                    "recovery": if is_error {
+                        "inspect the preserved output tail, then correct the command, cwd, timeout, or failing code before retrying"
+                    } else {
+                        "none"
+                    }
+                }),
+            );
+        }
+
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content,
             is_error,
-            artifacts: file_changes.map(|changes| changes.artifact),
+            artifacts: Some(artifacts),
         })
     }
 }
