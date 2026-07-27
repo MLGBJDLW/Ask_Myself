@@ -57,6 +57,7 @@ pub use spec::{
     validate_skill_spec, SkillSpecIssue, SkillSpecReport, MAX_SKILL_DESCRIPTION_CHARS,
     MAX_SKILL_NAME_CHARS, NEXA_SKILL_SPEC_VERSION,
 };
+pub(crate) use storage::normalize_resource_bundle;
 pub use storage::{
     builtin_skill_dir, materialize_skills_to_disk, materialize_user_skill_to_disk,
     materialize_user_skills_to_disk, remove_materialized_user_skill, user_skill_dir,
