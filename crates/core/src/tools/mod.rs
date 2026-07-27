@@ -946,6 +946,18 @@ impl ToolRegistry {
         ))
     }
 
+    pub(crate) fn normalized_arguments_for_scheduling(
+        &self,
+        name: &str,
+        arguments: &str,
+    ) -> serde_json::Value {
+        let mut value = parse_tool_arguments_value(arguments).unwrap_or_default();
+        if let Some(tool) = self.get(name) {
+            normalize_property_aliases(&mut value, &tool.definition().parameters);
+        }
+        value
+    }
+
     fn prepare_execution<'a>(
         &'a self,
         name: &str,

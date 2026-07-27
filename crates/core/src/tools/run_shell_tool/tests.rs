@@ -312,6 +312,31 @@ fn test_persistent_servers_are_recognized_for_automatic_backgrounding() {
     ));
 }
 
+#[test]
+fn test_managed_background_budget_uses_the_execution_promotion_rules() {
+    assert!(uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["server.py"]
+    })));
+    assert!(uses_managed_background(&serde_json::json!({
+        "command": "npm run dev"
+    })));
+    assert!(uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["check.py"],
+        "ready_url": "http://127.0.0.1:4173"
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["test_server.py"]
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "service_action": "status",
+        "service_id": "service-1",
+        "ready_url": "http://127.0.0.1:4173"
+    })));
+}
+
 #[tokio::test]
 #[ignore = "requires python3 on PATH"]
 async fn test_managed_http_service_start_status_and_stop() {

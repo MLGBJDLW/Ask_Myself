@@ -527,7 +527,7 @@ pub(super) fn tool_call_execution_batches(
     let mut current_exclusive_resource_keys: HashSet<String> = HashSet::new();
 
     for (index, tool_call) in tool_calls.iter().enumerate() {
-        let scheduling = tool_policy.decision_for(tool_call);
+        let scheduling = tool_policy.decision_for(tools, tool_call);
         let invocation =
             tools.build_invocation(&tool_call.id, &tool_call.name, scheduling.parsed_args);
         if invocation.wait_for_previous && !current_parallel_batch.is_empty() {

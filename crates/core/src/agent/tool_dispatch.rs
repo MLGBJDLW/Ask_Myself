@@ -161,7 +161,7 @@ impl AgentExecutor {
             registered_tool_names,
         );
         for tc in tool_calls {
-            let decision = tool_policy.decision_for(tc);
+            let decision = tool_policy.decision_for(&self.tools, tc);
             let policy_label = if loop_guard_block_reason.is_some() {
                 "blockedByLoopGuard"
             } else {
@@ -228,7 +228,7 @@ impl AgentExecutor {
                 let loop_guard_block_reason = loop_guard_block_reason.clone();
                 tool_futures.push(
                     async move {
-                        let scheduling = tool_policy.decision_for(&tc);
+                        let scheduling = tool_policy.decision_for(&self.tools, &tc);
                         let invocation = self
                             .tools
                             .build_invocation(&tc.id, &tc.name, scheduling.parsed_args);

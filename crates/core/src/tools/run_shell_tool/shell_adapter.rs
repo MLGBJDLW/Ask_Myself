@@ -399,6 +399,9 @@ pub(super) fn spawn_background_process(
         // to discover the ephemeral URL selected by a dev server.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Until startup succeeds, the child is not yet reachable through the
+        // managed-service registry. Cancellation must not orphan it.
+        .kill_on_drop(true)
         .env_clear();
     for (key, value) in build_env() {
         cmd.env(key, value);

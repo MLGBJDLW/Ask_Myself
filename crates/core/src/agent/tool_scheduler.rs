@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::llm::ToolCallRequest;
-use crate::tools::{parse_tool_arguments_value, structured_tool_error_result, ToolResult};
+use crate::tools::{structured_tool_error_result, ToolRegistry, ToolResult};
 
 /// Maximum characters to keep in a generic tool result for LLM context.
 /// This keeps normal read/edit/search results useful while still leaving room
@@ -42,8 +42,12 @@ impl ToolSchedulerPolicy {
         }
     }
 
-    pub(crate) fn decision_for(&self, call: &ToolCallRequest) -> ToolSchedulingDecision {
-        let parsed_args = parse_tool_arguments_value(&call.arguments).unwrap_or_default();
+    pub(crate) fn decision_for(
+        &self,
+        tools: &ToolRegistry,
+        call: &ToolCallRequest,
+    ) -> ToolSchedulingDecision {
+        let parsed_args = tools.normalized_arguments_for_scheduling(&call.name, &call.arguments);
         let timeout = tool_timeout_for_call(self.configured_timeout_secs, &call.name, &parsed_args);
 
         let hidden_registered_tool = self.dynamic_tool_visibility
@@ -146,11 +150,7 @@ pub(crate) fn tool_timeout_for_call(
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(30);
-        let background = parsed_args
-            .get("background")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        if background {
+        if crate::tools::run_shell_tool::uses_managed_background(parsed_args) {
             let ready_timeout = parsed_args
                 .get("ready_timeout_secs")
                 .and_then(|value| value.as_u64())
@@ -374,6 +374,50 @@ mod tests {
     }
 
     #[test]
+    fn timeout_extends_for_auto_promoted_shell_readiness() {
+        let timeout = tool_timeout_for_call(
+            Some(30),
+            "run_shell",
+            &serde_json::json!({
+                "program": "python",
+                "args": ["server.py"],
+                "ready_timeout_secs": 120
+            }),
+        );
+        assert_eq!(timeout, Some(Duration::from_secs(125)));
+    }
+
+    #[test]
+    fn scheduling_normalizes_aliases_before_calculating_timeout() {
+        let tools = crate::tools::default_tool_registry();
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            false,
+            HashSet::from(["run_shell".to_string()]),
+            HashSet::from(["run_shell".to_string()]),
+        );
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-alias-timeout".to_string(),
+                name: "run_shell".to_string(),
+                arguments: serde_json::json!({
+                    "program": "python",
+                    "args": ["server.py"],
+                    "timeoutSecs": 0,
+                    "readyTimeoutSecs": 120
+                })
+                .to_string(),
+                thought_signature: None,
+            },
+        );
+
+        assert_eq!(decision.parsed_args["timeout_secs"], 0);
+        assert_eq!(decision.parsed_args["ready_timeout_secs"], 120);
+        assert_eq!(decision.timeout, Some(Duration::from_secs(125)));
+    }
+
+    #[test]
     fn timeout_gives_subagents_minimum_outer_budget() {
         assert_eq!(
             tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
@@ -414,18 +458,22 @@ mod tests {
 
     #[test]
     fn dynamic_visibility_blocks_unoffered_tools() {
+        let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string()]),
         );
-        let decision = policy.decision_for(&ToolCallRequest {
-            id: "call-1".to_string(),
-            name: "run_shell".to_string(),
-            arguments: "{}".to_string(),
-            thought_signature: None,
-        });
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            },
+        );
         let synthetic_result = decision.synthetic_result.unwrap();
         assert!(synthetic_result.is_error);
         assert!(synthetic_result.content.contains("tool_search"));
@@ -435,18 +483,22 @@ mod tests {
 
     #[test]
     fn dynamic_visibility_executes_hidden_registered_tools() {
+        let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string(), "edit_file".to_string()]),
         );
-        let decision = policy.decision_for(&ToolCallRequest {
-            id: "call-1".to_string(),
-            name: "edit_file".to_string(),
-            arguments: "{}".to_string(),
-            thought_signature: None,
-        });
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "edit_file".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            },
+        );
 
         assert!(decision.synthetic_result.is_none());
         assert_eq!(decision.policy_label, "executeHiddenRegistered");
