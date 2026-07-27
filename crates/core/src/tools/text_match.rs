@@ -17,21 +17,34 @@ pub(crate) struct TextMatch {
 }
 
 impl TextMatch {
-    pub(crate) fn replacement_text(&self, replacement: &str) -> String {
-        let Some(prefix) = self.indentation_prefix.as_deref() else {
-            return replacement.to_string();
+    pub(crate) fn replacement_text(&self, original: &str, replacement: &str) -> String {
+        let replacement = match self.indentation_prefix.as_deref() {
+            Some(prefix) => replacement
+                .split_inclusive('\n')
+                .map(|line| {
+                    let body = line.trim_end_matches(['\r', '\n']);
+                    if body.trim().is_empty() {
+                        line.to_string()
+                    } else {
+                        format!("{prefix}{line}")
+                    }
+                })
+                .collect(),
+            None => replacement.to_string(),
         };
-        replacement
-            .split_inclusive('\n')
-            .map(|line| {
-                let body = line.trim_end_matches(['\r', '\n']);
-                if body.trim().is_empty() {
-                    line.to_string()
-                } else {
-                    format!("{prefix}{line}")
-                }
-            })
-            .collect()
+
+        if matches!(
+            self.kind,
+            TextMatchKind::LineEndingNormalized
+                | TextMatchKind::IndentationNormalized
+                | TextMatchKind::VisualNormalized
+        ) && original.contains("\r\n")
+            && replacement.contains('\n')
+        {
+            replacement.replace("\r\n", "\n").replace('\n', "\r\n")
+        } else {
+            replacement
+        }
     }
 }
 
@@ -446,8 +459,25 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].kind, TextMatchKind::IndentationNormalized);
         assert_eq!(
-            matches[0].replacement_text("if ready {\n    finish();\n}\n"),
+            matches[0].replacement_text(
+                &haystack[matches[0].start..matches[0].start + matches[0].len],
+                "if ready {\n    finish();\n}\n"
+            ),
             "    if ready {\n        finish();\n    }\n"
+        );
+    }
+
+    #[test]
+    fn recovered_replacement_preserves_crlf_without_doubling_carriage_returns() {
+        let haystack = "fn main() {\r\n    if ready {\r\n        run();\r\n    }\r\n}\r\n";
+        let needle = "if ready {\n    run();\n}\n";
+        let matches = find_text_matches(haystack, needle);
+        let matched = &matches[0];
+        let original = &haystack[matched.start..matched.start + matched.len];
+
+        assert_eq!(
+            matched.replacement_text(original, "if ready {\r\n    finish();\r\n}\r\n"),
+            "    if ready {\r\n        finish();\r\n    }\r\n"
         );
     }
 

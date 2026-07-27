@@ -580,7 +580,8 @@ impl EditFileTool {
                     let matched = &matches[0];
                     let byte_offset = matched.start;
                     let matched_len = matched.len;
-                    let replacement = matched.replacement_text(new_str);
+                    let original = &content[byte_offset..byte_offset + matched_len];
+                    let replacement = matched.replacement_text(original, new_str);
                     let new_content = format!(
                         "{}{}{}",
                         &content[..byte_offset],
@@ -914,6 +915,39 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "delta\r\ngamma\r\n"
         );
+    }
+
+    #[tokio::test]
+    async fn test_str_replace_preserves_crlf_after_indentation_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        std::fs::write(
+            &file,
+            "fn main() {\r\n    if ready {\r\n        run();\r\n    }\r\n}\r\n",
+        )
+        .unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "if ready {\n    run();\n}\n",
+            "new_str": "if ready {\n    finish();\n}\n"
+        });
+
+        let result = tool
+            .execute("c-crlf-indent", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            content,
+            "fn main() {\r\n    if ready {\r\n        finish();\r\n    }\r\n}\r\n"
+        );
+        assert!(!content.replace("\r\n", "").contains('\n'));
     }
 
     #[tokio::test]
