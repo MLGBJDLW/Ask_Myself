@@ -102,6 +102,26 @@ struct GeminiSystemInstructionV2 {
     parts: Vec<GeminiPartV2>,
 }
 
+fn push_or_merge_content(
+    contents: &mut Vec<GeminiContentV2>,
+    role: &str,
+    parts: Vec<GeminiPartV2>,
+) {
+    if parts.is_empty() {
+        return;
+    }
+    if let Some(last) = contents.last_mut() {
+        if last.role == role {
+            last.parts.extend(parts);
+            return;
+        }
+    }
+    contents.push(GeminiContentV2 {
+        role: role.to_string(),
+        parts,
+    });
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequestV2 {
@@ -241,10 +261,7 @@ fn convert_messages(
                 {
                     system_parts.push(GeminiPartV2::Text { text });
                 } else if !text.is_empty() {
-                    contents.push(GeminiContentV2 {
-                        role: "user".to_string(),
-                        parts: vec![GeminiPartV2::Text { text }],
-                    });
+                    push_or_merge_content(&mut contents, "user", vec![GeminiPartV2::Text { text }]);
                 }
             }
             Role::User => {
@@ -261,10 +278,7 @@ fn convert_messages(
                         },
                     })
                     .collect();
-                contents.push(GeminiContentV2 {
-                    role: "user".to_string(),
-                    parts,
-                });
+                push_or_merge_content(&mut contents, "user", parts);
             }
             Role::Assistant => {
                 let mut parts: Vec<GeminiPartV2> = Vec::new();
@@ -287,10 +301,21 @@ fn convert_messages(
                         });
                     }
                 }
-                contents.push(GeminiContentV2 {
-                    role: "model".to_string(),
-                    parts,
-                });
+                if !parts.is_empty() && contents.is_empty() {
+                    // Context compaction can retain an assistant function-call
+                    // turn while dropping the user turn that preceded it.
+                    // Gemini rejects a leading model/function-call turn, so
+                    // restore the structural boundary without inventing task
+                    // content or altering signed function-call parts.
+                    push_or_merge_content(
+                        &mut contents,
+                        "user",
+                        vec![GeminiPartV2::Text {
+                            text: "[Retained conversation context begins here.]".to_string(),
+                        }],
+                    );
+                }
+                push_or_merge_content(&mut contents, "model", parts);
             }
             Role::Tool => {
                 // Gemini expects function responses as user-role parts.
@@ -329,10 +354,7 @@ fn convert_messages(
                 };
 
                 if !appended {
-                    contents.push(GeminiContentV2 {
-                        role: "user".to_string(),
-                        parts: vec![make_part()],
-                    });
+                    push_or_merge_content(&mut contents, "user", vec![make_part()]);
                 }
             }
         }
@@ -1198,10 +1220,9 @@ mod tests {
             GeminiPartV2::Text { text } => assert_eq!(text, "stable prompt"),
             _ => panic!("expected text system part"),
         }
-        assert_eq!(contents.len(), 2);
+        assert_eq!(contents.len(), 1);
         assert_eq!(contents[0].role, "user");
-        assert_eq!(contents[1].role, "user");
-        match &contents[1].parts[0] {
+        match &contents[0].parts[1] {
             GeminiPartV2::Text { text } => assert_eq!(text, "runtime tail"),
             _ => panic!("expected text context part"),
         }
@@ -1380,12 +1401,102 @@ mod tests {
         let (_system, contents) = convert_messages(&messages);
         let encoded = serde_json::to_value(contents).expect("Gemini contents should serialize");
 
-        assert_eq!(encoded[0]["parts"][0]["functionCall"]["id"], "fc_123");
-        assert_eq!(encoded[1]["parts"][0]["functionResponse"]["id"], "fc_123");
+        assert_eq!(encoded[0]["role"], "user");
+        assert_eq!(encoded[1]["parts"][0]["functionCall"]["id"], "fc_123");
+        assert_eq!(encoded[2]["parts"][0]["functionResponse"]["id"], "fc_123");
         assert_eq!(
-            encoded[1]["parts"][0]["functionResponse"]["name"],
+            encoded[2]["parts"][0]["functionResponse"]["name"],
             "read_file"
         );
+    }
+
+    #[test]
+    fn test_convert_messages_merges_consecutive_model_turns_before_function_response() {
+        let messages = vec![
+            Message::text(Role::User, "Please investigate"),
+            Message::text(Role::Assistant, "I will inspect this."),
+            Message {
+                role: Role::Assistant,
+                parts: vec![],
+                name: None,
+                tool_calls: Some(vec![ToolCallRequest {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                    thought_signature: Some("signed-call".to_string()),
+                }]),
+                reasoning_content: None,
+            },
+            Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "call_1"),
+        ];
+
+        let (_system, contents) = convert_messages(&messages);
+
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0].role, "user");
+        assert_eq!(contents[1].role, "model");
+        assert_eq!(contents[1].parts.len(), 2);
+        assert!(matches!(contents[1].parts[0], GeminiPartV2::Text { .. }));
+        match &contents[1].parts[1] {
+            GeminiPartV2::FunctionCall {
+                function_call,
+                thought_signature,
+            } => {
+                assert_eq!(function_call.id.as_deref(), Some("call_1"));
+                assert_eq!(thought_signature.as_deref(), Some("signed-call"));
+            }
+            _ => panic!("expected function call"),
+        }
+        assert_eq!(contents[2].role, "user");
+        assert!(matches!(
+            contents[2].parts[0],
+            GeminiPartV2::FunctionResponse { .. }
+        ));
+    }
+
+    #[test]
+    fn test_convert_messages_keeps_parallel_calls_and_responses_paired() {
+        let messages = vec![
+            Message::text(Role::User, "Inspect both files"),
+            Message {
+                role: Role::Assistant,
+                parts: vec![],
+                name: None,
+                tool_calls: Some(vec![
+                    ToolCallRequest {
+                        id: "call_a".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"a.rs"}"#.to_string(),
+                        thought_signature: None,
+                    },
+                    ToolCallRequest {
+                        id: "call_b".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"b.rs"}"#.to_string(),
+                        thought_signature: None,
+                    },
+                ]),
+                reasoning_content: None,
+            },
+            Message::text_with_name(Role::Tool, r#"{"content":"a"}"#, "call_a"),
+            Message::text_with_name(Role::Tool, r#"{"content":"b"}"#, "call_b"),
+        ];
+
+        let (_system, contents) = convert_messages(&messages);
+        assert_eq!(
+            contents
+                .iter()
+                .map(|content| content.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "model", "user"]
+        );
+        assert_eq!(contents[1].parts.len(), 2);
+        assert_eq!(contents[2].parts.len(), 2);
+        let encoded = serde_json::to_value(contents).expect("serialize Gemini contents");
+        assert_eq!(encoded[1]["parts"][0]["functionCall"]["id"], "call_a");
+        assert_eq!(encoded[1]["parts"][1]["functionCall"]["id"], "call_b");
+        assert_eq!(encoded[2]["parts"][0]["functionResponse"]["id"], "call_a");
+        assert_eq!(encoded[2]["parts"][1]["functionResponse"]["id"], "call_b");
     }
 
     #[test]
