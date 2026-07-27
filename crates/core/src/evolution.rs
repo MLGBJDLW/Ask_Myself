@@ -24,7 +24,6 @@ const MEMORY_TITLE_MAX_CHARS: usize = 120;
 const MEMORY_CONTENT_MAX_CHARS: usize = 1_200;
 const MEMORY_TAG_MAX_CHARS: usize = 40;
 const MEMORY_MAX_TAGS: usize = 8;
-const PROPOSAL_TEXT_MAX_CHARS: usize = 24_000;
 const SUMMARY_MEMORY_MAX_ITEMS: usize = 5;
 const AUTO_SKILL_MIN_TOOL_CALLS: u32 = 8;
 const AUTO_SKILL_MIN_ITERATIONS: u32 = 5;
@@ -254,6 +253,14 @@ fn normalize_required(value: &str, field: &str, max_chars: usize) -> Result<Stri
     Ok(trimmed.to_string())
 }
 
+fn normalize_required_unbounded(value: &str, field: &str) -> Result<String, CoreError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CoreError::InvalidInput(format!("{field} cannot be empty")));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn normalize_optional_text(value: &str, max_chars: usize) -> Result<String, CoreError> {
     let trimmed = value.trim();
     if trimmed.chars().count() > max_chars {
@@ -386,11 +393,11 @@ impl Database {
     ) -> Result<SkillChangeProposal, CoreError> {
         let mut name = input.name.as_deref().unwrap_or("").trim().to_string();
         let mut description = input.description.trim().to_string();
-        let content = normalize_required(
-            &input.content,
-            "Skill proposal content",
-            PROPOSAL_TEXT_MAX_CHARS,
-        )?;
+        // Skill packages already have import-time file/package guards and the
+        // scanner emits an advisory for unusually large SKILL.md bodies. Do
+        // not impose a much smaller proposal-only cap that prevents a valid
+        // skill from passing through the reviewed proposal lifecycle.
+        let content = normalize_required_unbounded(&input.content, "Skill proposal content")?;
         let rationale = normalize_optional_text(&input.rationale, 4_000)?;
         let skill_id = input.skill_id.as_ref().map(|id| id.trim().to_string());
 

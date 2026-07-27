@@ -45,6 +45,8 @@ struct ManageSkillArgs {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    resource_bundle: Vec<SkillResourceFile>,
+    #[serde(default)]
     rationale: Option<String>,
     #[serde(default)]
     status: Option<String>,
@@ -225,7 +227,7 @@ impl Tool for ManageSkillTool {
                         name: args.name,
                         description: args.description.unwrap_or_default(),
                         content,
-                        resource_bundle: Vec::new(),
+                        resource_bundle: args.resource_bundle,
                         rationale: args.rationale.unwrap_or_default(),
                         conversation_id: None,
                         source: "manual".to_string(),
@@ -756,5 +758,49 @@ mod tests {
             .unwrap();
         assert!(!applied.is_error);
         assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn proposal_preserves_large_skill_body_and_resources() {
+        let db = Database::open_memory().unwrap();
+        let tool = ManageSkillTool;
+        let large_body = format!(
+            "# Workflow\n\n{}",
+            "Keep this step precise.\n".repeat(16_000)
+        );
+        assert!(large_body.len() > 256 * 1024);
+        let args = serde_json::json!({
+            "action": "propose_create",
+            "name": "Large reviewed skill",
+            "description": "Exercises a complete workflow with bundled references.",
+            "content": large_body,
+            "resource_bundle": [{
+                "path": "references/checklist.md",
+                "kind": "reference",
+                "encoding": "utf8",
+                "content": "# Checklist\n\n- Verify the result.\n"
+            }]
+        });
+
+        let proposed = tool
+            .execute("call-large", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+        assert!(!proposed.is_error, "proposal failed: {}", proposed.content);
+
+        let proposal_id = proposed.artifacts.as_ref().unwrap()["proposal"]["id"]
+            .as_str()
+            .unwrap();
+        let proposal = db.get_skill_change_proposal(proposal_id).unwrap();
+        assert!(proposal.content.len() > 256 * 1024);
+        assert_eq!(proposal.resource_bundle.len(), 1);
+        assert!(proposal
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "size.too_large"));
+
+        let applied = db.apply_skill_change_proposal(proposal_id).unwrap();
+        assert_eq!(applied.skill.resource_bundle.len(), 1);
+        assert!(applied.skill.content.len() > 256 * 1024);
     }
 }
