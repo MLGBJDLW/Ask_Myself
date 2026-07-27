@@ -244,6 +244,8 @@ fn test_build_system_prompt_preserves_core_rules() {
     assert!(prompt.contains("Own the requested outcome"));
     assert!(prompt.contains("Protect user work"));
     assert!(prompt.contains("A tool call is not evidence of success"));
+    assert!(prompt.contains("closed observe-fix-verify loop"));
+    assert!(prompt.contains("browser_evidence_capture"));
     assert!(prompt.contains("keep recent complete turns verbatim"));
     assert!(!prompt.contains("## Tool Contract: run_shell"));
     assert!(prompt.len() < 8_000);
@@ -696,6 +698,8 @@ impl LlmProvider for SteeringInterruptProvider {
 
 struct MockTool;
 
+struct NamedMockTool(&'static str);
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -725,6 +729,36 @@ impl Tool for MockTool {
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "tool-ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for NamedMockTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn description(&self) -> &str {
+        "Named mock tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        _arguments: &str,
+        _db: &Database,
+        _source_scope: &[String],
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content: "ok".to_string(),
             is_error: false,
             artifacts: None,
         })
@@ -1155,6 +1189,63 @@ async fn prefix_cached_provider_pins_full_tool_surface_when_dynamic_visibility_i
     assert!(requests[0]
         .iter()
         .any(|name| name == "mcp__cache_test__deferred"));
+}
+
+#[tokio::test]
+async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));
+    registry.register(Box::new(MockTool));
+    for name in [
+        "spawn_subagent_batch",
+        "spawn_subagent",
+        "judge_subagent_results",
+    ] {
+        registry.register(Box::new(NamedMockTool(name)));
+    }
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("gpt-5.6".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            dynamic_tool_visibility: true,
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(16);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Investigate a complex cross-module regression.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent turn");
+
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    for name in [
+        "spawn_subagent_batch",
+        "spawn_subagent",
+        "judge_subagent_results",
+    ] {
+        assert!(requests[0].iter().any(|offered| offered == name));
+    }
 }
 
 #[tokio::test]

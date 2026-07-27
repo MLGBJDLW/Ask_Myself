@@ -100,7 +100,7 @@ pub(crate) fn parameters_schema() -> Value {
             "command": {
                 "type": "string",
                 "description": format!(
-                    "Simple one-line command string. Without shell, it is parsed into argv without invoking a shell. Use this for ordinary commands like \"git status --short\" or \"python -m pytest\". Quotes and escaped spaces are supported for arguments, but shell operators such as ;, &&, |, >, <, `...`, $(...), and backgrounding are rejected unless shell is explicitly set. On Windows, path backslashes are preserved by the command parser; JSON strings still need escaped backslashes such as \"C:\\\\Users\\\\me\\\\script.py\". Do not provide command together with program or args."
+                    "Command string. Plain commands are parsed into exact argv without a shell. In ConfirmAll/Open modes, shell syntax such as ;, &&, |, redirection, command substitution, or multiline scripts automatically uses the platform default shell; Restricted mode still rejects shell syntax. You may also set shell explicitly. On Windows, path backslashes are preserved by the command parser; JSON strings still need escaped backslashes such as \"C:\\\\Users\\\\me\\\\script.py\". Do not provide command together with program or args."
                 )
             },
             "shell": {
@@ -132,7 +132,7 @@ pub(crate) fn parameters_schema() -> Value {
             },
             "cwd": {
                 "type": "string",
-                "description": "Working directory for the command. In restricted mode it must resolve inside a registered source directory. In less-restricted shell access modes, any existing directory may be allowed."
+                "description": "Optional working directory. Defaults deterministically to the first source in the active conversation scope. In restricted mode it must resolve inside a registered source directory; less-restricted modes may use any existing directory."
             },
             "timeout_secs": {
                 "type": "integer",
@@ -143,11 +143,11 @@ pub(crate) fn parameters_schema() -> Value {
             "background": {
                 "type": "boolean",
                 "default": false,
-                "description": "Start a long-running local web or API service without waiting for it to exit. Requires ready_url. The tool polls readiness and returns a service_id so later calls can check health or stop the service."
+                "description": "Start a long-running local web or API service without waiting for it to exit. ready_url is recommended but optional: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted."
             },
             "ready_url": {
                 "type": "string",
-                "description": "Loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted."
+                "description": "Optional loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted. When omitted, run_shell tries to discover the URL from startup logs."
             },
             "ready_timeout_secs": {
                 "type": "integer",
@@ -171,7 +171,7 @@ pub(crate) fn parameters_schema() -> Value {
                 "description": "Optional text written to the child process stdin. Use this for scripts or generated content that would exceed argv limits, e.g. program python with args [\"-\"] and stdin containing the script. For HTML-first PPTX generation, pass the JSON deck spec here while using --spec - in args. The payload is bounded and is not logged. Native filesystem commands do not accept stdin."
             }
         },
-        "required": ["cwd"]
+        "required": []
     })
 }
 
@@ -195,7 +195,7 @@ pub(crate) fn system_prompt_section() -> &'static str {
 
 pub(crate) fn route_guidance() -> &'static str {
     ROUTE_GUIDANCE.get_or_init(|| {
-        "Use `project_tool list` / `project_tool describe` before ad hoc `run_shell` when a repository may define local lint, test, codegen, diagnostics, export, or validation workflows; `project_tool run` must include the current manifestHash. When `run_shell` is needed, prefer `command` for simple one-line commands, `program` plus `args` for exact argv or stdin-driven scripts, and explicit `shell` only for intentional shell syntax.".to_string()
+        "Use `project_tool list` / `project_tool describe` before ad hoc `run_shell` when a repository may define local lint, test, codegen, diagnostics, export, or validation workflows; `project_tool run` must include the current manifestHash. When `run_shell` is needed, prefer `command` for simple commands, `program` plus `args` for exact argv or stdin-driven scripts, and explicit `shell` when the interpreter choice matters.".to_string()
     })
 }
 
@@ -243,13 +243,13 @@ pub(crate) fn expected_format() -> Value {
         },
         "rules": [
             "Use command for simple one-line commands, or program plus args for exact argv control.",
-            "By default command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
-            "Use shell only for real shell syntax. shell requires ConfirmAll or Open shell access mode and is rejected in Restricted mode.",
+            "Plain commands are parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; set shell explicitly when interpreter choice matters.",
+            "Restricted mode rejects shell syntax and explicit shell execution.",
             "Do not send command together with program or args.",
             "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
             "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
-            "Long-running web/API servers must use background=true with a loopback ready_url. Check them again with service_action=status before or after browser inspection, and stop them with service_action=stop when finished."
+            "Long-running web/API servers are automatically promoted to managed background services. Prefer background=true and provide a loopback ready_url when known; otherwise run_shell discovers a URL from startup logs or returns a running service after a stability check. Check it with service_action=status before or after browser inspection, and stop it with service_action=stop when finished."
         ]
     })
 }
@@ -278,11 +278,11 @@ pub(crate) fn invalid_shell_selector_type_message() -> &'static str {
 }
 
 pub(crate) fn command_shell_operator_error() -> &'static str {
-    "run_shell.command only accepts a simple command string; shell operators like pipes, chains, redirection, backticks, and backgrounding are not supported. Use program/args for exact argv, or enable an explicit shell path only when shell interpretation is intentional."
+    "Restricted run_shell.command only accepts a simple command string; shell operators like pipes, chains, redirection, backticks, and backgrounding are not supported. Use program/args for exact argv, or change shell access policy before intentional shell execution."
 }
 
 pub(crate) fn command_substitution_error() -> &'static str {
-    "run_shell.command does not support shell command substitution. Use program/args or stdin instead."
+    "Restricted run_shell.command does not support shell command substitution. Use program/args or stdin instead."
 }
 
 pub(crate) fn shell_restricted_error() -> &'static str {
@@ -327,19 +327,19 @@ fn prompt_invocation_modes_sentence() -> &'static str {
 }
 
 fn direct_command_sentence() -> &'static str {
-    "By default no shell interpreter is invoked: shell metacharacters like `;`, `&&`, `|`, redirection, command substitution, and background operators are rejected in `command` to prevent accidental shell-style composition."
+    "Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it."
 }
 
 fn prompt_direct_command_sentence() -> &'static str {
-    "`command` is parsed into argv and does not invoke a shell; shell operators such as `&&`, pipes, redirects, variables, command substitution, and backgrounding require explicit `shell`."
+    "Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode rejects shell syntax."
 }
 
 fn shell_mode_sentence() -> &'static str {
-    "When real shell syntax is required, set `shell` explicitly; shell mode is rejected in Restricted shell access and only works in ConfirmAll/Open."
+    "Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open."
 }
 
 fn prompt_shell_mode_sentence() -> &'static str {
-    "Use `shell` only when real shell syntax is intentional; explicit shell mode is rejected in Restricted shell access and, when allowed, uses PowerShell on Windows for `shell: \"default\"` and `sh` on Unix-like systems."
+    "Set `shell` when interpreter choice matters; explicit shell mode is rejected in Restricted access and, when allowed, uses PowerShell on Windows for `shell: \"default\"` and `sh` on Unix-like systems."
 }
 
 fn restricted_programs_sentence() -> String {
@@ -400,13 +400,13 @@ fn prompt_html_pptx_sentence() -> &'static str {
 
 fn timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Start local web/API servers with background=true and a loopback ready_url so readiness is monitored and the agent can continue; use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Local web/API servers are automatically promoted to managed background services; provide background=true and a loopback ready_url when known, or let the tool discover it from startup logs. Use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
     )
 }
 
 fn prompt_timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Never run a local web/API server in the foreground: set `background: true` with a loopback `ready_url`, wait for the returned readiness result before opening the page, call `service_action: \"status\"` before or after browser checks, and `service_action: \"stop\"` when finished."
+        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Prefer `background: true` plus a loopback `ready_url` for local web/API servers; recognized servers are automatically promoted and can discover a URL from startup logs when it is omitted. Continue after the managed-service result, call `service_action: \"status\"` around browser checks, and `service_action: \"stop\"` when finished."
     )
 }
 
@@ -420,7 +420,7 @@ fn shell_parameter_description() -> &'static str {
 
 fn timeout_parameter_description() -> String {
     format!(
-        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use background with ready_url for services. The broader agent turn timeout can still stop the run if it is not raised or disabled."
+        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode for services (ready_url is optional but recommended). The broader agent turn timeout can still stop the run if it is not raised or disabled."
     )
 }
 

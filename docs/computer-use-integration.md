@@ -2,8 +2,10 @@
 
 ## Decision
 
-Nexa treats computer use as a connector, not as another in-process desktop
-tool. The first integration classifies `mcp__computer_use__*` and
+Nexa separates browser observation from privileged desktop input. An
+in-process, read-only browser-debug lane can open public and loopback local
+pages, while full computer use remains a connector. The connector integration
+classifies `mcp__computer_use__*` and
 `mcp__windows_computer_use__*` tools as the **Computer Use Connector** while
 retaining the existing high-risk MCP approval policy.
 
@@ -46,10 +48,30 @@ An implementation should expose separate observation and action tools:
   fresh observation or an explicit observation error.
 - Secrets must never be copied into screenshots, traces, or connector logs.
 
+## Autonomous browser-debug loop
+
+For local web work, the main agent can now complete this loop without an
+external connector:
+
+1. `run_shell` recognizes common long-running dev servers, automatically
+   promotes an accidental foreground invocation to a managed background
+   service, and discovers loopback URLs from bounded startup logs.
+2. `browser_evidence_capture` opens public or loopback pages in Chromium and
+   returns rendered text, a screenshot, interactive-element metadata, console
+   entries, JavaScript exceptions, failed requests, and HTTP 4xx/5xx responses.
+3. The agent fixes the source and captures the page again until the relevant
+   error is gone. The system prompt requires this observe-fix-verify cycle when
+   a page is available.
+
+Only loopback addresses are added to the browser-debug allowlist. RFC1918 LAN,
+link-local, metadata-service, and other private targets remain blocked. Page
+content remains untrusted data.
+
 ## Current status
 
-The capability manifest and tool ownership route are implemented. Users can
-configure a compatible MCP server without Nexa misclassifying it as a generic
+Read-only browser observation and local web diagnostics are built in. Users can
+configure a compatible MCP server for clicks, typing, scrolling, app launch,
+and accessibility-tree observation without Nexa misclassifying it as a generic
 connector. Shipping or silently installing a privileged Windows automation
-runtime is intentionally out of scope until its package, signing, permission
-prompts, and update channel can be verified.
+runtime remains out of scope until its package, signing, permission prompts,
+and update channel can be verified.

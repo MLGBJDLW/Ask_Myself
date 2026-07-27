@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::llm::ToolCallRequest;
-use crate::tools::{structured_tool_error_result, ToolResult};
+use crate::tools::{structured_tool_error_result, ToolRegistry, ToolResult};
 
 /// Maximum characters to keep in a generic tool result for LLM context.
 /// This keeps normal read/edit/search results useful while still leaving room
@@ -42,9 +42,12 @@ impl ToolSchedulerPolicy {
         }
     }
 
-    pub(crate) fn decision_for(&self, call: &ToolCallRequest) -> ToolSchedulingDecision {
-        let parsed_args: serde_json::Value =
-            serde_json::from_str(&call.arguments).unwrap_or_default();
+    pub(crate) fn decision_for(
+        &self,
+        tools: &ToolRegistry,
+        call: &ToolCallRequest,
+    ) -> ToolSchedulingDecision {
+        let parsed_args = tools.normalized_arguments_for_scheduling(&call.name, &call.arguments);
         let timeout = tool_timeout_for_call(self.configured_timeout_secs, &call.name, &parsed_args);
 
         let hidden_registered_tool = self.dynamic_tool_visibility
@@ -54,15 +57,20 @@ impl ToolSchedulerPolicy {
             && !self.offered_tool_names.contains(&call.name)
             && !hidden_registered_tool
         {
-            Some(ToolResult {
-                    call_id: call.id.clone(),
-                    content: format!(
-                        "Tool '{}' is not available in the enabled tool registry for this model step. Call tool_search with the capability you need; matching enabled hidden tools will be available on the next model step, then retry.",
-                        call.name
-                    ),
-                    is_error: true,
-                    artifacts: None,
-                })
+            Some(structured_tool_error_result(
+                &call.id,
+                "tool_not_visible",
+                format!(
+                    "Tool '{}' is not available in this model step. Use tool_search for the needed capability; matching enabled tools will be available on the next model step.",
+                    call.name
+                ),
+                serde_json::json!({
+                    "tool": "tool_search",
+                    "query": "describe the capability needed rather than guessing a tool name",
+                    "recovery": "call tool_search, then retry with an activated exact tool name"
+                }),
+                true,
+            ))
         } else {
             None
         };
@@ -115,22 +123,34 @@ pub(crate) fn tool_timeout_for_call(
     };
     let mut timeout_secs = base_timeout.saturating_mul(multiplier);
 
-    timeout_secs = match tool_name {
-        "spawn_subagent" => timeout_secs.max(180),
-        "spawn_subagent_batch" => timeout_secs.max(240),
-        _ => timeout_secs,
+    let minimum = match tool_name {
+        "web_search" | "fetch_url" => 60,
+        "web_research_context" | "browser_evidence_capture" => 90,
+        "download_asset" | "desktop_automation" | "extract_image_text" | "reindex_document"
+        | "run_health_check" => 120,
+        "compile_document" | "prepare_document_tools" => 180,
+        "generate_image" | "synthesize_speech" | "spawn_subagent_batch" => 240,
+        "spawn_subagent" => 180,
+        _ => 0,
     };
+    timeout_secs = timeout_secs.max(minimum);
+
+    if tool_name == "manage_skill"
+        && parsed_args.get("action").and_then(|value| value.as_str()) == Some("run_resource_helper")
+    {
+        let requested = parsed_args
+            .get("timeout_secs")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(30);
+        timeout_secs = timeout_secs.max(requested.saturating_add(5));
+    }
 
     if tool_name == "run_shell" {
         let requested = parsed_args
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(30);
-        let background = parsed_args
-            .get("background")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        if background {
+        if crate::tools::run_shell_tool::uses_managed_background(parsed_args) {
             let ready_timeout = parsed_args
                 .get("ready_timeout_secs")
                 .and_then(|value| value.as_u64())
@@ -354,6 +374,50 @@ mod tests {
     }
 
     #[test]
+    fn timeout_extends_for_auto_promoted_shell_readiness() {
+        let timeout = tool_timeout_for_call(
+            Some(30),
+            "run_shell",
+            &serde_json::json!({
+                "program": "python",
+                "args": ["server.py"],
+                "ready_timeout_secs": 120
+            }),
+        );
+        assert_eq!(timeout, Some(Duration::from_secs(125)));
+    }
+
+    #[test]
+    fn scheduling_normalizes_aliases_before_calculating_timeout() {
+        let tools = crate::tools::default_tool_registry();
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            false,
+            HashSet::from(["run_shell".to_string()]),
+            HashSet::from(["run_shell".to_string()]),
+        );
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-alias-timeout".to_string(),
+                name: "run_shell".to_string(),
+                arguments: serde_json::json!({
+                    "program": "python",
+                    "args": ["server.py"],
+                    "timeoutSecs": 0,
+                    "readyTimeoutSecs": 120
+                })
+                .to_string(),
+                thought_signature: None,
+            },
+        );
+
+        assert_eq!(decision.parsed_args["timeout_secs"], 0);
+        assert_eq!(decision.parsed_args["ready_timeout_secs"], 120);
+        assert_eq!(decision.timeout, Some(Duration::from_secs(125)));
+    }
+
+    #[test]
     fn timeout_gives_subagents_minimum_outer_budget() {
         assert_eq!(
             tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
@@ -370,19 +434,46 @@ mod tests {
     }
 
     #[test]
+    fn timeout_gives_slow_builtin_tools_realistic_outer_budgets() {
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "generate_image", &serde_json::json!({})),
+            Some(Duration::from_secs(240))
+        );
+        assert_eq!(
+            tool_timeout_for_call(Some(30), "fetch_url", &serde_json::json!({})),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            tool_timeout_for_call(
+                Some(30),
+                "manage_skill",
+                &serde_json::json!({
+                    "action": "run_resource_helper",
+                    "timeout_secs": 120
+                })
+            ),
+            Some(Duration::from_secs(125))
+        );
+    }
+
+    #[test]
     fn dynamic_visibility_blocks_unoffered_tools() {
+        let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string()]),
         );
-        let decision = policy.decision_for(&ToolCallRequest {
-            id: "call-1".to_string(),
-            name: "run_shell".to_string(),
-            arguments: "{}".to_string(),
-            thought_signature: None,
-        });
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "run_shell".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            },
+        );
         let synthetic_result = decision.synthetic_result.unwrap();
         assert!(synthetic_result.is_error);
         assert!(synthetic_result.content.contains("tool_search"));
@@ -392,18 +483,22 @@ mod tests {
 
     #[test]
     fn dynamic_visibility_executes_hidden_registered_tools() {
+        let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string(), "edit_file".to_string()]),
         );
-        let decision = policy.decision_for(&ToolCallRequest {
-            id: "call-1".to_string(),
-            name: "edit_file".to_string(),
-            arguments: "{}".to_string(),
-            thought_signature: None,
-        });
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "edit_file".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            },
+        );
 
         assert!(decision.synthetic_result.is_none());
         assert_eq!(decision.policy_label, "executeHiddenRegistered");

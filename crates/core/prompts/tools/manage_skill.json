@@ -58,7 +58,32 @@
       },
       "content": {
         "type": "string",
-        "description": "Full proposed skill body. Keep it procedural, specific, and reusable."
+        "description": "Full proposed skill body. Keep it procedural, specific, and reusable. Large valid SKILL.md bodies are accepted; use resource_bundle for scripts, references, and assets instead of flattening them into this field."
+      },
+      "resource_bundle": {
+        "type": "array",
+        "description": "Optional complete resource bundle for propose_create or propose_patch. Paths must be relative and normally begin with scripts/, references/, assets/, or agents/.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["script", "reference", "metadata", "asset"]
+            },
+            "encoding": {
+              "type": "string",
+              "enum": ["utf8", "base64"]
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": ["path", "kind", "encoding", "content"],
+          "additionalProperties": false
+        }
       },
       "rationale": {
         "type": "string",

@@ -93,7 +93,7 @@ test.beforeEach(async ({ page }) => {
           id: 'm-assistant-file',
           conversationId: 'conv-agent-edit',
           role: 'assistant',
-          content: 'Open `notes/agent-edit.md` and improve the action item. Also inspect `docs/office-proposal.docx`, `docs/structured-report.docx`, and `sheets/budget.xlsx`.',
+          content: 'Open `D:\\Vault\\scripts\\server.py` and inspect `D:\\Vault\\docs\\manual.pdf`. Also improve `D:\\Vault\\notes\\agent-edit.md`, inspect `D:\\Vault\\docs\\office-proposal.docx`, `D:\\Vault\\docs\\structured-report.docx`, and `D:\\Vault\\sheets\\budget.xlsx`.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -589,6 +589,20 @@ test('sends an exact selected file range to the agent edit flow', async ({ page 
   await expect
     .poll(() => page.evaluate(() => window.__lastSourceIds ?? []))
     .toEqual(['src-agent-edit']);
+});
+
+test('renders dedicated SVG icons for code and document file badges', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  const pythonBadge = page.locator('[data-file-icon="python"]');
+  const pdfBadge = page.locator('[data-file-icon="pdf"]');
+  await expect(pythonBadge).toContainText('server.py');
+  await expect(pdfBadge).toContainText('manual.pdf');
+  await expect(page.locator('[data-file-icon="markdown"]')).toContainText('agent-edit.md');
+  await expect(page.locator('[data-file-icon="word"]')).toHaveCount(2);
+  await expect(page.locator('[data-file-icon="excel"]')).toContainText('budget.xlsx');
+  await expect(pythonBadge.locator('svg')).toHaveCount(1);
+  await expect(pdfBadge.locator('svg')).toHaveCount(1);
 });
 
 test('opens file preview as a large panel and closes it from outside clicks', async ({ page }) => {

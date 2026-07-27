@@ -15,7 +15,7 @@ use super::diff_stats::diff_stats_from_diff;
 use super::document_utils::{
     edit_guidance_for_path, generated_document_mime, is_binary_file_error,
 };
-use super::text_match::find_text_matches;
+use super::text_match::{find_text_matches, TextMatch};
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -355,11 +355,14 @@ fn find_replacement_matches(
     old_str: &str,
     start_byte: usize,
     end_byte: usize,
-) -> Vec<(usize, usize)> {
+) -> Vec<TextMatch> {
     let search_area = &content[start_byte..end_byte];
     find_text_matches(search_area, old_str)
         .into_iter()
-        .map(|matched| (start_byte + matched.start, matched.len))
+        .map(|mut matched| {
+            matched.start += start_byte;
+            matched
+        })
         .collect()
 }
 
@@ -574,11 +577,15 @@ impl EditFileTool {
                         });
                     }
 
-                    let (byte_offset, matched_len) = matches[0];
+                    let matched = &matches[0];
+                    let byte_offset = matched.start;
+                    let matched_len = matched.len;
+                    let original = &content[byte_offset..byte_offset + matched_len];
+                    let replacement = matched.replacement_text(original, new_str);
                     let new_content = format!(
                         "{}{}{}",
                         &content[..byte_offset],
-                        new_str,
+                        replacement,
                         &content[byte_offset + matched_len..]
                     );
 
@@ -600,14 +607,14 @@ impl EditFileTool {
                         });
                     }
 
-                    let snippet = snippet_around(&new_content, byte_offset, new_str.len());
+                    let snippet = snippet_around(&new_content, byte_offset, replacement.len());
                     let diff = replacement_diff_artifact(
                         &args.path,
                         &content,
                         &new_content,
                         byte_offset,
                         matched_len,
-                        new_str.len(),
+                        replacement.len(),
                     );
                     Ok(ToolResult {
                         call_id,
@@ -908,6 +915,39 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "delta\r\ngamma\r\n"
         );
+    }
+
+    #[tokio::test]
+    async fn test_str_replace_preserves_crlf_after_indentation_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        std::fs::write(
+            &file,
+            "fn main() {\r\n    if ready {\r\n        run();\r\n    }\r\n}\r\n",
+        )
+        .unwrap();
+
+        let db = setup_db_with_source(dir.path());
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": file.to_string_lossy(),
+            "action": "str_replace",
+            "old_str": "if ready {\n    run();\n}\n",
+            "new_str": "if ready {\n    finish();\n}\n"
+        });
+
+        let result = tool
+            .execute("c-crlf-indent", &args.to_string(), &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "unexpected error: {}", result.content);
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            content,
+            "fn main() {\r\n    if ready {\r\n        finish();\r\n    }\r\n}\r\n"
+        );
+        assert!(!content.replace("\r\n", "").contains('\n'));
     }
 
     #[tokio::test]

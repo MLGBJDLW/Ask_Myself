@@ -79,6 +79,7 @@ type SlashCommandTab = "all" | SlashCommandKind;
 const NEW_CONVERSATION_DRAFT_KEY = "__new__";
 const CHAT_INPUT_DRAFT_STORAGE_KEY = "chat-input-drafts-v1";
 const CHAT_POWER_MODE_STORAGE_PREFIX = "chat-agent-power-mode-v1";
+const CHAT_NEXUS_ACKNOWLEDGED_STORAGE_KEY = "chat-nexus-mode-acknowledged-v1";
 const MAX_STORED_CHAT_INPUT_DRAFTS = 100;
 const MAX_INPUT_HISTORY_ITEMS = 100;
 const chatInputDrafts: Record<string, ChatDraftState> = {};
@@ -97,6 +98,22 @@ function persistPowerMode(key: string, mode: AgentPowerMode) {
     localStorage.setItem(`${CHAT_POWER_MODE_STORAGE_PREFIX}:${key}`, mode);
   } catch {
     // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+function hasAcknowledgedNexusMode(): boolean {
+  try {
+    return localStorage.getItem(CHAT_NEXUS_ACKNOWLEDGED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function acknowledgeNexusMode() {
+  try {
+    localStorage.setItem(CHAT_NEXUS_ACKNOWLEDGED_STORAGE_KEY, "true");
+  } catch {
+    // Keep activation functional when persistent storage is unavailable.
   }
 }
 
@@ -330,6 +347,7 @@ export function ChatInput({
 
   const activateNexusMode = useCallback(() => {
     setPowerMode("nexus");
+    acknowledgeNexusMode();
     setNexusDialogOpen(false);
     if (!shouldReduceMotion) {
       setNexusActivationVisible(true);
@@ -1468,6 +1486,8 @@ export function ChatInput({
               onClick={() => {
                 if (nexusModeEnabled) {
                   setPowerMode("standard");
+                } else if (hasAcknowledgedNexusMode()) {
+                  activateNexusMode();
                 } else {
                   setNexusDialogOpen(true);
                 }

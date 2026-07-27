@@ -1,5 +1,6 @@
 //! Tool system — trait, registry, and built-in tools for the agent framework.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
@@ -76,6 +77,13 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
                 "default": false
             })
         });
+    // Closed top-level schemas give providers a much stronger contract and
+    // prevent invented bookkeeping fields from reaching individual tools.
+    // Preserve an explicit setting for runtime/MCP definitions that truly
+    // accept arbitrary properties.
+    schema
+        .entry("additionalProperties")
+        .or_insert_with(|| serde_json::Value::Bool(false));
     parameters
 }
 
@@ -868,11 +876,17 @@ impl ToolRegistry {
         db: &Database,
         source_scope: &[String],
     ) -> Result<ToolResult, CoreError> {
-        enforce_tool_arg_limit(name, arguments)?;
-        let tool = self
-            .get(name)
-            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
-        tool.execute(call_id, arguments, db, source_scope).await
+        let (tool, arguments) = match self.prepare_execution(name, call_id, arguments) {
+            Ok(prepared) => prepared,
+            Err(result) => return Ok(result),
+        };
+        let result = tool.execute(call_id, &arguments, db, source_scope).await;
+        Ok(normalize_tool_execution_result(
+            call_id,
+            name,
+            tool.parameters_schema(),
+            result,
+        ))
     }
 
     /// Conversation-aware variant of [`ToolRegistry::execute`].
@@ -888,12 +902,19 @@ impl ToolRegistry {
         source_scope: &[String],
         conversation_id: Option<&str>,
     ) -> Result<ToolResult, CoreError> {
-        enforce_tool_arg_limit(name, arguments)?;
-        let tool = self
-            .get(name)
-            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
-        tool.execute_with_context(call_id, arguments, db, source_scope, conversation_id)
-            .await
+        let (tool, arguments) = match self.prepare_execution(name, call_id, arguments) {
+            Ok(prepared) => prepared,
+            Err(result) => return Ok(result),
+        };
+        let result = tool
+            .execute_with_context(call_id, &arguments, db, source_scope, conversation_id)
+            .await;
+        Ok(normalize_tool_execution_result(
+            call_id,
+            name,
+            tool.parameters_schema(),
+            result,
+        ))
     }
 
     pub async fn execute_with_run_context(
@@ -901,11 +922,394 @@ impl ToolRegistry {
         name: &str,
         ctx: ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        enforce_tool_arg_limit(name, ctx.arguments)?;
-        let tool = self
-            .get(name)
-            .ok_or_else(|| CoreError::InvalidInput(format!("Unknown tool: {name}")))?;
-        tool.execute_with_run_context(ctx).await
+        let (tool, arguments) = match self.prepare_execution(name, ctx.call_id, ctx.arguments) {
+            Ok(prepared) => prepared,
+            Err(result) => return Ok(result),
+        };
+        let call_id = ctx.call_id;
+        let result = tool
+            .execute_with_run_context(ToolExecutionContext {
+                call_id: ctx.call_id,
+                arguments: &arguments,
+                db: ctx.db,
+                source_scope: ctx.source_scope,
+                conversation_id: ctx.conversation_id,
+                tool_registry: ctx.tool_registry,
+                cancel_token: ctx.cancel_token,
+            })
+            .await;
+        Ok(normalize_tool_execution_result(
+            call_id,
+            name,
+            tool.parameters_schema(),
+            result,
+        ))
+    }
+
+    pub(crate) fn normalized_arguments_for_scheduling(
+        &self,
+        name: &str,
+        arguments: &str,
+    ) -> serde_json::Value {
+        let mut value = parse_tool_arguments_value(arguments).unwrap_or_default();
+        if let Some(tool) = self.get(name) {
+            normalize_property_aliases(&mut value, &tool.definition().parameters);
+        }
+        value
+    }
+
+    fn prepare_execution<'a>(
+        &'a self,
+        name: &str,
+        call_id: &str,
+        arguments: &str,
+    ) -> Result<(&'a dyn Tool, String), ToolResult> {
+        let Some(tool) = self.get(name) else {
+            let suggestions = nearest_tool_names(name, &self.tool_names());
+            let suffix = if suggestions.is_empty() {
+                String::new()
+            } else {
+                format!(" Did you mean: {}?", suggestions.join(", "))
+            };
+            return Err(structured_tool_error_result(
+                call_id,
+                "unknown_tool",
+                format!("Unknown tool '{name}'.{suffix}"),
+                serde_json::json!({
+                    "tool": suggestions.first(),
+                    "availableSuggestions": suggestions,
+                    "recovery": "use an exact registered tool name; use tool_search when the needed capability is not currently visible"
+                }),
+                true,
+            ));
+        };
+
+        if let Err(error) = enforce_tool_arg_limit(name, arguments) {
+            return Err(structured_tool_error_result(
+                call_id,
+                "tool_arguments_too_large",
+                error.to_string(),
+                serde_json::json!({
+                    "tool": name,
+                    "arguments": tool.definition().parameters,
+                    "recovery": "split the request into smaller resumable calls or move large generated input to a declared stdin/file resource channel"
+                }),
+                true,
+            ));
+        }
+
+        let schema = tool.definition().parameters;
+        match normalize_tool_arguments(name, arguments, &schema) {
+            Ok(arguments) => Ok((tool, arguments)),
+            Err((code, message)) => Err(structured_tool_error_result(
+                call_id, code, message, schema, true,
+            )),
+        }
+    }
+}
+
+fn strip_json_code_fence(arguments: &str) -> Cow<'_, str> {
+    let trimmed = arguments.trim();
+    let Some(header_end) = trimmed.find('\n') else {
+        return Cow::Borrowed(trimmed);
+    };
+    let header = trimmed[..header_end].trim_end_matches('\r').trim();
+    if !matches!(header, "```" | "```json" | "```JSON") || !trimmed.ends_with("```") {
+        return Cow::Borrowed(trimmed);
+    }
+    Cow::Borrowed(trimmed[header_end + 1..trimmed.len() - 3].trim())
+}
+
+pub(crate) fn parse_tool_arguments_value(
+    arguments: &str,
+) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_str(strip_json_code_fence(arguments).as_ref())
+}
+
+fn camel_to_snake_case(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len() + 4);
+    for (index, ch) in value.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                normalized.push('_');
+            }
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
+}
+
+fn snake_to_camel_case(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut uppercase_next = false;
+    for ch in value.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            normalized.push(ch.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
+}
+
+fn normalize_property_aliases(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    let keys = object.keys().cloned().collect::<Vec<_>>();
+    for key in keys {
+        if properties.contains_key(&key) {
+            continue;
+        }
+        let snake = camel_to_snake_case(&key);
+        let camel = snake_to_camel_case(&key);
+        let canonical = if properties.contains_key(&snake) {
+            Some(snake)
+        } else if properties.contains_key(&camel) {
+            Some(camel)
+        } else {
+            None
+        };
+        let Some(canonical) = canonical else {
+            continue;
+        };
+        if object.contains_key(&canonical) {
+            continue;
+        }
+        if let Some(value) = object.remove(&key) {
+            object.insert(canonical, value);
+        }
+    }
+}
+
+fn json_value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
+    match expected {
+        "null" => value.is_null(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "string" => value.is_string(),
+        _ => true,
+    }
+}
+
+fn top_level_argument_issue(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Option<(&'static str, String)> {
+    let object = value.as_object()?;
+    if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+        let missing = required
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|field| !object.contains_key(*field))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Some((
+                "missing_required_arguments",
+                format!("Missing required tool argument(s): {}", missing.join(", ")),
+            ));
+        }
+    }
+
+    let properties = schema.get("properties")?.as_object()?;
+    for (field, field_value) in object {
+        let Some(field_schema) = properties.get(field) else {
+            continue;
+        };
+        if let Some(expected) = field_schema.get("type").and_then(serde_json::Value::as_str) {
+            if !json_value_matches_type(field_value, expected) {
+                return Some((
+                    "invalid_argument_type",
+                    format!("Tool argument '{field}' must be {expected}"),
+                ));
+            }
+        }
+        if let Some(allowed) = field_schema
+            .get("enum")
+            .and_then(serde_json::Value::as_array)
+        {
+            if !allowed.contains(field_value) {
+                return Some((
+                    "invalid_argument_value",
+                    format!(
+                        "Tool argument '{field}' must be one of: {}",
+                        allowed
+                            .iter()
+                            .map(serde_json::Value::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn normalize_tool_arguments(
+    tool_name: &str,
+    arguments: &str,
+    schema: &serde_json::Value,
+) -> Result<String, (&'static str, String)> {
+    let payload = strip_json_code_fence(arguments);
+    let mut value = match serde_json::from_str::<serde_json::Value>(payload.as_ref()) {
+        Ok(value) => value,
+        // run_shell has an additional Windows-path escape repair lane.
+        Err(_) if tool_name == "run_shell" => return Ok(payload.into_owned()),
+        Err(error) => {
+            return Err((
+                "invalid_arguments_json",
+                format!(
+                    "Tool arguments must be one JSON object: {error}. Remove prose/code fences and retry with only schema fields."
+                ),
+            ));
+        }
+    };
+    if !value.is_object() {
+        return Err((
+            "invalid_arguments_shape",
+            "Tool arguments must be a JSON object.".to_string(),
+        ));
+    }
+    normalize_property_aliases(&mut value, schema);
+    if let Some(issue) = top_level_argument_issue(&value, schema) {
+        return Err(issue);
+    }
+    serde_json::to_string(&value).map_err(|error| {
+        (
+            "invalid_arguments_json",
+            format!("Failed to normalize tool arguments: {error}"),
+        )
+    })
+}
+
+fn nearest_tool_names(requested: &str, available: &[String]) -> Vec<String> {
+    let mut scored = available
+        .iter()
+        .map(|name| (levenshtein(requested, name), name.clone()))
+        .collect::<Vec<_>>();
+    scored.sort_by(|(left_score, left_name), (right_score, right_name)| {
+        left_score.cmp(right_score).then(left_name.cmp(right_name))
+    });
+    scored.into_iter().take(3).map(|(_, name)| name).collect()
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    for (left_index, left_char) in left.chars().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            current.push(
+                (current[right_index] + 1)
+                    .min(previous[right_index + 1] + 1)
+                    .min(previous[right_index] + usize::from(left_char != *right_char)),
+            );
+        }
+        previous = current;
+    }
+    previous[right_chars.len()]
+}
+
+fn classify_tool_result_error(message: &str) -> (&'static str, bool) {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("cancel") || lower.contains("denied") || lower.contains("permission") {
+        ("tool_permission_or_cancellation", false)
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        ("tool_timeout", true)
+    } else if lower.contains("not found") || lower.contains("cannot find") {
+        ("resource_not_found", true)
+    } else if lower.contains("found ") && lower.contains(" times")
+        || lower.contains("multiple occurrences")
+        || lower.contains("ambiguous")
+    {
+        ("ambiguous_match", true)
+    } else if lower.contains("invalid")
+        || lower.contains("requires")
+        || lower.contains("must ")
+        || lower.contains("missing")
+    {
+        ("invalid_tool_request", true)
+    } else {
+        ("tool_execution_failed", true)
+    }
+}
+
+fn core_error_contract(error: &CoreError) -> (&'static str, bool) {
+    match error {
+        CoreError::InvalidInput(_) | CoreError::Serialization(_) | CoreError::Parse(_) => {
+            ("invalid_tool_request", true)
+        }
+        CoreError::NotFound(_) => ("resource_not_found", true),
+        CoreError::RateLimited { .. }
+        | CoreError::TransientLlm(_)
+        | CoreError::StreamIncomplete(_) => ("transient_tool_failure", true),
+        CoreError::Cancelled(_) => ("tool_cancelled", false),
+        CoreError::Io(_) | CoreError::Database(_) | CoreError::Internal(_) => {
+            ("tool_runtime_failure", true)
+        }
+        _ => ("tool_execution_failed", true),
+    }
+}
+
+fn normalize_tool_execution_result(
+    call_id: &str,
+    tool_name: &str,
+    schema: serde_json::Value,
+    result: Result<ToolResult, CoreError>,
+) -> ToolResult {
+    match result {
+        Ok(result) if result.is_error && result.artifacts.is_none() => {
+            let (code, retryable) = classify_tool_result_error(&result.content);
+            structured_tool_error_result(
+                call_id,
+                code,
+                result.content,
+                serde_json::json!({
+                    "tool": tool_name,
+                    "arguments": schema,
+                    "recovery": if retryable {
+                        "correct the smallest failing field or precondition, then retry once if the operation is still needed"
+                    } else {
+                        "do not retry until permission, cancellation, or user intent changes"
+                    }
+                }),
+                retryable,
+            )
+        }
+        Ok(result) => result,
+        Err(error) => {
+            let (code, retryable) = core_error_contract(&error);
+            structured_tool_error_result(
+                call_id,
+                code,
+                format!("{tool_name} failed: {error}"),
+                serde_json::json!({
+                    "tool": tool_name,
+                    "arguments": schema,
+                    "recovery": if retryable {
+                        "inspect the structured code, repair arguments or runtime preconditions, and retry once with a materially corrected call"
+                    } else {
+                        "stop and wait for user intent or permissions to change"
+                    }
+                }),
+                retryable,
+            )
+        }
     }
 }
 
@@ -950,7 +1354,10 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
     };
     let arg_size = arguments.len();
     if arg_size > max_bytes {
-        let guidance = if max_bytes == MAX_FILE_MUTATION_ARG_BYTES {
+        let lower = name.to_ascii_lowercase();
+        let guidance = if lower == "manage_skill" || lower.contains("manage_skill") {
+            "Keep SKILL.md and its declared resource bundle within the package safety envelope; use the filesystem importer for exceptionally large binary assets."
+        } else if max_bytes == MAX_FILE_MUTATION_ARG_BYTES {
             "Split very large rewrites into smaller targeted edits, or use run_shell stdin for bulk generated content."
         } else {
             "For document editing with large content, use a file mutation tool for plain text or run_shell with the doc-script-editor skill for rich document formats."
@@ -968,10 +1375,17 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
 fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
     const DEFAULT_MAX_TOOL_ARG_BYTES: usize = 256 * 1024;
     const MAX_FILE_MUTATION_ARG_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_SKILL_PROPOSAL_ARG_BYTES: usize = 16 * 1024 * 1024;
 
     let lower = name.to_ascii_lowercase();
     if lower == "run_shell" {
         return None;
+    }
+    if lower == "manage_skill" || lower.contains("manage_skill") {
+        // A reviewed proposal may contain a large SKILL.md plus JSON escaping
+        // overhead and bundled resources. Retain a transport guard, but do not
+        // let the generic search-tool cap block valid skill packages.
+        return Some(MAX_SKILL_PROPOSAL_ARG_BYTES);
     }
     if matches!(
         lower.as_str(),
@@ -1065,6 +1479,73 @@ mod tests {
     use crate::approval::ApprovalRisk;
 
     struct RuntimeMcpOnlyTool;
+
+    struct EchoArgumentsTool;
+
+    #[async_trait]
+    impl Tool for EchoArgumentsTool {
+        fn name(&self) -> &str {
+            "echo_arguments"
+        }
+
+        fn description(&self) -> &str {
+            "Echo normalized arguments for contract tests."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "start_line": { "type": "integer" }
+                },
+                "required": ["start_line"]
+            })
+        }
+
+        async fn execute(
+            &self,
+            call_id: &str,
+            arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Ok(ToolResult {
+                call_id: call_id.to_string(),
+                content: arguments.to_string(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
+
+    struct FailingTool;
+
+    #[async_trait]
+    impl Tool for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Always fails for contract tests."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+
+        async fn execute(
+            &self,
+            _call_id: &str,
+            _arguments: &str,
+            _db: &Database,
+            _source_scope: &[String],
+        ) -> Result<ToolResult, CoreError> {
+            Err(CoreError::InvalidInput(
+                "the requested field is stale".to_string(),
+            ))
+        }
+    }
 
     #[async_trait]
     impl Tool for RuntimeMcpOnlyTool {
@@ -1514,6 +1995,41 @@ mod tests {
     }
 
     #[test]
+    fn skill_proposals_are_not_bound_by_generic_search_payload_limit() {
+        let content = "x".repeat(512 * 1024);
+        let args = serde_json::json!({
+            "action": "propose_create",
+            "name": "Large skill",
+            "content": content
+        })
+        .to_string();
+
+        assert!(enforce_tool_arg_limit("manage_skill", &args).is_ok());
+        assert!(enforce_tool_arg_limit("search_knowledge_base", &args).is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_executes_large_skill_proposals_end_to_end() {
+        let db = Database::open_memory().unwrap();
+        let registry = default_tool_registry();
+        let args = serde_json::json!({
+            "action": "propose_create",
+            "name": "Large registry skill",
+            "description": "Verifies the reviewed proposal transport path.",
+            "content": format!("# Workflow\n\n{}", "Run the verified step.\n".repeat(16_000))
+        })
+        .to_string();
+
+        let result = registry
+            .execute("manage_skill", "call-large-skill", &args, &db, &[])
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "proposal failed: {}", result.content);
+        assert_eq!(db.list_skill_change_proposals(None, 10).unwrap().len(), 1);
+    }
+
+    #[test]
     fn generic_tools_keep_argument_guard_at_transport_scale() {
         let large_query = "x".repeat(257 * 1024);
         let args = serde_json::json!({ "query": large_query }).to_string();
@@ -1609,6 +2125,88 @@ mod tests {
             .unwrap_or(&Vec::new())
             .iter()
             .any(|value| value.as_str() == Some("wait_for_previous")));
+    }
+
+    #[test]
+    fn default_tool_definitions_close_top_level_object_schemas() {
+        let registry = default_tool_registry();
+
+        for definition in registry.definitions() {
+            if definition.parameters["type"].as_str() == Some("object") {
+                assert_eq!(
+                    definition.parameters["additionalProperties"],
+                    serde_json::Value::Bool(false),
+                    "{} should reject invented top-level fields at the provider boundary",
+                    definition.name
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_normalizes_fenced_json_and_case_aliases() {
+        let db = Database::open_memory().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoArgumentsTool));
+
+        let result = registry
+            .execute(
+                "echo_arguments",
+                "call-normalize",
+                "```json\n{\"startLine\": 7}\n```",
+                &db,
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result.content).unwrap()["start_line"],
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_returns_structured_contract_errors() {
+        let db = Database::open_memory().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoArgumentsTool));
+        registry.register(Box::new(FailingTool));
+
+        let invalid = registry
+            .execute(
+                "echo_arguments",
+                "call-invalid",
+                r#"{"startLine":"seven"}"#,
+                &db,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(invalid.is_error);
+        assert_eq!(
+            invalid.artifacts.as_ref().unwrap()["code"],
+            "invalid_argument_type"
+        );
+
+        let failed = registry
+            .execute("failing_tool", "call-failed", "{}", &db, &[])
+            .await
+            .unwrap();
+        assert!(failed.is_error);
+        assert_eq!(
+            failed.artifacts.as_ref().unwrap()["code"],
+            "invalid_tool_request"
+        );
+
+        let unknown = registry
+            .execute("echo_argument", "call-unknown", "{}", &db, &[])
+            .await
+            .unwrap();
+        assert!(unknown.is_error);
+        assert_eq!(unknown.artifacts.as_ref().unwrap()["code"], "unknown_tool");
+        assert!(unknown.content.contains("echo_arguments"));
     }
 
     #[test]

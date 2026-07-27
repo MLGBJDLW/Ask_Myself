@@ -11,7 +11,7 @@ use super::super::run_shell_contract::{
     PROGRAM_ALIASES, PROGRAM_WHITELIST,
 };
 use super::parser::{split_simple_command_string, RunShellArgs};
-use super::shell_adapter::{parse_shell_selector, shell_invocation};
+use super::shell_adapter::{parse_shell_selector, shell_invocation, CommandShell};
 
 fn program_matches(candidate: &str, canonical: &str) -> bool {
     #[cfg(windows)]
@@ -110,7 +110,13 @@ pub(super) fn normalize_run_shell_invocation(
             if !parsed.args.is_empty() {
                 return Err(command_args_mix_error().to_string());
             }
-            let parts = split_simple_command_string(command)?;
+            let parts = match split_simple_command_string(command) {
+                Ok(parts) => parts,
+                Err(_error) if !mode.is_restricted() && command_uses_shell_syntax(command) => {
+                    return shell_invocation(CommandShell::Default, command);
+                }
+                Err(error) => return Err(error),
+            };
             let program = &parts[0];
             let args = parts[1..].to_vec();
             normalize_invocation(program, &args, mode)
@@ -118,6 +124,13 @@ pub(super) fn normalize_run_shell_invocation(
         (None, Some(program)) => normalize_invocation(program, &parsed.args, mode),
         (None, None) => Err("run_shell requires either command or program".to_string()),
     }
+}
+
+fn command_uses_shell_syntax(command: &str) -> bool {
+    command
+        .chars()
+        .any(|ch| matches!(ch, '|' | ';' | '<' | '>' | '`' | '&' | '\n' | '\r'))
+        || command.contains("$(")
 }
 
 /// Reject unsafe argv patterns.

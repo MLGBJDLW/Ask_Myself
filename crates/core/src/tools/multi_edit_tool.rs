@@ -14,7 +14,7 @@ use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 use super::diff_stats::{changed_line_count, diff_stats_artifact, text_diff_artifact};
 use super::document_utils::{edit_guidance_for_path, is_binary_file_error};
 use super::path_utils::resolve_existing_file_for_file_access;
-use super::text_match::{find_text_matches, TextMatch, TextMatchKind};
+use super::text_match::{find_text_matches, TextMatch};
 use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -327,16 +327,7 @@ fn replace_matches(segment: &str, matches: &[TextMatch], new_str: &str) -> Strin
 
 fn replacement_for_match(segment: &str, matched: &TextMatch, new_str: &str) -> String {
     let original = &segment[matched.start..matched.start + matched.len];
-    if matches!(
-        matched.kind,
-        TextMatchKind::LineEndingNormalized | TextMatchKind::VisualNormalized
-    ) && original.contains("\r\n")
-        && new_str.contains('\n')
-    {
-        new_str.replace('\n', "\r\n")
-    } else {
-        new_str.to_string()
-    }
+    matched.replacement_text(original, new_str)
 }
 
 fn line_range_bounds(

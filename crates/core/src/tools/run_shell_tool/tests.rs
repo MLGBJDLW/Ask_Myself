@@ -233,7 +233,31 @@ fn test_lenient_parser_repairs_unescaped_windows_paths() {
 
     assert_eq!(parsed.program.as_deref(), Some("python"));
     assert_eq!(parsed.args, vec![r#"E:\Starting\convert_to_docx.py"#]);
-    assert_eq!(parsed.cwd, r#"E:\Starting"#);
+    assert_eq!(parsed.cwd.as_deref(), Some(r#"E:\Starting"#));
+}
+
+#[test]
+fn test_parser_allows_omitted_cwd() {
+    let parsed = parse_run_shell_args(r#"{"command":"git status --short"}"#)
+        .expect("cwd should be optional");
+
+    assert!(parsed.cwd.is_none());
+}
+
+#[test]
+fn test_open_mode_auto_promotes_shell_syntax() {
+    let parsed = parse_run_shell_args(
+        r#"{"command":"git status --short && git diff --stat","cwd":"C:\\work"}"#,
+    )
+    .expect("shell command should parse");
+
+    let (program, args) = normalize_run_shell_invocation(&parsed, ShellAccessMode::Open)
+        .expect("open mode should use the platform shell automatically");
+
+    assert!(!program.is_empty());
+    assert!(args
+        .iter()
+        .any(|arg| arg.contains("git status --short && git diff --stat")));
 }
 
 #[test]
@@ -248,26 +272,69 @@ fn test_parser_accepts_managed_background_service_fields() {
     assert_eq!(parsed.ready_timeout_secs, Some(25));
 }
 
-#[tokio::test]
-async fn test_foreground_http_server_is_rejected_without_waiting() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = db_with_source(tmp.path());
-    let tool = RunShellTool;
-    let args = json!({
-        "command": "python -m http.server 8080",
-        "cwd": tmp.path().to_string_lossy(),
-        "timeout_secs": 0,
-    });
+#[test]
+fn test_persistent_servers_are_recognized_for_automatic_backgrounding() {
+    assert!(looks_like_persistent_service(
+        "python",
+        &["server.py".to_string()]
+    ));
+    assert!(looks_like_persistent_service(
+        "python3.12",
+        &["-u".to_string(), "scripts/server.py".to_string()]
+    ));
+    assert!(looks_like_persistent_service(
+        "python",
+        &[
+            "-m".to_string(),
+            "http.server".to_string(),
+            "8080".to_string()
+        ]
+    ));
+    assert!(looks_like_persistent_service(
+        "npm",
+        &["run".to_string(), "dev".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["scripts/check.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["test_server.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["generate_server.py".to_string()]
+    ));
+    assert!(!looks_like_persistent_service(
+        "python",
+        &["scripts/check.py".to_string(), "server.py".to_string()]
+    ));
+}
 
-    let started = Instant::now();
-    let result = tool
-        .execute("foreground-server", &args.to_string(), &db, &[])
-        .await
-        .expect("server guard should return a tool result");
-
-    assert!(result.is_error);
-    assert!(result.content.contains("background=true"));
-    assert!(started.elapsed() < Duration::from_secs(2));
+#[test]
+fn test_managed_background_budget_uses_the_execution_promotion_rules() {
+    assert!(uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["server.py"]
+    })));
+    assert!(uses_managed_background(&serde_json::json!({
+        "command": "npm run dev"
+    })));
+    assert!(uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["check.py"],
+        "ready_url": "http://127.0.0.1:4173"
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["test_server.py"]
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "service_action": "status",
+        "service_id": "service-1",
+        "ready_url": "http://127.0.0.1:4173"
+    })));
 }
 
 #[tokio::test]
@@ -331,6 +398,50 @@ async fn test_managed_http_service_start_status_and_stop() {
         stopped.content
     );
     assert_eq!(stopped.artifacts.as_ref().unwrap()["status"], "stopped");
+}
+
+#[tokio::test]
+#[ignore = "requires python3 on PATH"]
+async fn test_python_server_script_is_auto_promoted_and_discovers_url() {
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("server.py"),
+        format!(
+            "import http.server\nimport socketserver\nPORT = {port}\nprint(f'http://127.0.0.1:{{PORT}}', flush=True)\nwith socketserver.TCPServer(('127.0.0.1', PORT), http.server.SimpleHTTPRequestHandler) as server:\n    server.serve_forever()\n"
+        ),
+    )
+    .unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+    let start_args = json!({
+        "command": "python3 server.py",
+        "cwd": tmp.path().to_string_lossy(),
+    });
+
+    let started = tool
+        .execute("auto-python-server", &start_args.to_string(), &db, &[])
+        .await
+        .expect("auto-promoted service result");
+    assert!(!started.is_error, "unexpected error: {}", started.content);
+    let artifacts = started.artifacts.as_ref().unwrap();
+    assert_eq!(artifacts["autoPromoted"], true);
+    assert_eq!(artifacts["status"], "ready");
+    assert_eq!(artifacts["readyUrl"], format!("http://127.0.0.1:{port}/"));
+
+    let stop_args = json!({
+        "service_action": "stop",
+        "service_id": "auto-python-server",
+        "cwd": tmp.path().to_string_lossy(),
+    });
+    let stopped = tool
+        .execute("auto-python-server-stop", &stop_args.to_string(), &db, &[])
+        .await
+        .expect("managed stop result");
+    assert!(!stopped.is_error);
 }
 
 #[tokio::test]
@@ -668,6 +779,18 @@ fn test_output_truncation_respects_utf8() {
     assert!(trunc);
     // Result must be valid UTF-8 and not contain the partial char.
     assert_eq!(s, "a".repeat(10));
+}
+
+#[test]
+fn test_output_truncation_preserves_diagnostic_tail() {
+    let bytes = format!("{}{}", "a".repeat(200), "FINAL COMPILER ERROR").into_bytes();
+    let (output, truncated) = bytes_to_clamped_string(&bytes, 100);
+
+    assert!(truncated);
+    assert!(output.starts_with('a'));
+    assert!(output.contains("output middle omitted"));
+    assert!(output.ends_with("FINAL COMPILER ERROR"));
+    assert!(output.len() <= 100);
 }
 
 // --- Integration tests (need real binaries; ignored by default) --------

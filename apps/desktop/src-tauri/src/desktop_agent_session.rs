@@ -248,6 +248,7 @@ pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
         "version": 1,
         "mode": config.power_mode.as_str(),
         "policy": {
+            "orchestration": if config.power_mode.is_nexus() { "proactiveParallelSubagents" } else { "standard" },
             "reasoningEnabled": config.reasoning_enabled,
             "reasoningEffort": config.reasoning_effort.as_ref().map(ToString::to_string),
             "thinkingBudget": config.thinking_budget,
@@ -2172,9 +2173,9 @@ mod tests {
         .executor_config;
         assert_eq!(nexus.max_iterations, 48);
         assert_eq!(nexus.reasoning_effort, Some(ReasoningEffort::Max));
-        assert_eq!(nexus.subagent_max_parallel, Some(4));
-        assert_eq!(nexus.subagent_max_calls_per_turn, Some(8));
-        assert_eq!(nexus.subagent_token_budget, Some(64_000));
+        assert_eq!(nexus.subagent_max_parallel, Some(6));
+        assert_eq!(nexus.subagent_max_calls_per_turn, Some(12));
+        assert_eq!(nexus.subagent_token_budget, Some(96_000));
         assert_eq!(nexus.subagent_verification_reserve_percent, Some(25));
         assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
         assert!(nexus

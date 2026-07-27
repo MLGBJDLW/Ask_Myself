@@ -42,13 +42,13 @@
     },
     "rules": [
       "Use command for simple one-line commands, or program plus args for exact argv control.",
-      "By default command is parsed into argv and still does not invoke a shell; pipes, chains, redirection, command substitution, and background operators are rejected.",
-      "Use shell only for real shell syntax. shell requires ConfirmAll or Open shell access mode and is rejected in Restricted mode.",
+      "Plain commands are parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; set shell explicitly when interpreter choice matters.",
+      "Restricted mode rejects shell syntax and explicit shell execution.",
       "Do not send command together with program or args.",
       "args must be an array of argv strings.",
       "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
       "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
-      "Long-running web/API servers must use background=true with a loopback ready_url. Check them again with service_action=status before or after browser inspection, and stop them with service_action=stop when finished."
+      "Long-running web/API servers are automatically promoted to managed background services. Prefer background=true and provide a loopback ready_url when known; otherwise run_shell discovers a URL from startup logs or returns a running service after a stability check. Check it with service_action=status before or after browser inspection, and stop it with service_action=stop when finished."
     ]
   },
   "message": "Invalid run_shell arguments: expected value at line 1 column 1. Use command or program/args JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."

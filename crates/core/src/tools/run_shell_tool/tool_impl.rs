@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::execution_environment::{ExecutionEnvironment, ExecutionRequest};
 use async_trait::async_trait;
+use regex::Regex;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::super::path_utils::resolve_existing_directory_in_sources;
 use super::super::run_shell_contract::{
@@ -30,12 +32,22 @@ pub struct RunShellTool;
 
 const DEFAULT_READY_TIMEOUT_SECS: u64 = 20;
 const MAX_READY_TIMEOUT_SECS: u64 = 120;
+const AUTO_SERVICE_SETTLE_MS: u64 = 1_500;
+const MAX_SERVICE_LOG_BYTES: usize = 32 * 1024;
+
+#[derive(Default)]
+struct ManagedServiceLogs {
+    stdout: String,
+    stderr: String,
+}
 
 struct ManagedService {
     child: tokio::process::Child,
     process_id: Option<u32>,
     program: String,
-    ready_url: reqwest::Url,
+    ready_url: Option<reqwest::Url>,
+    logs: Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
+    auto_promoted: bool,
     started_at: Instant,
 }
 
@@ -57,11 +69,8 @@ fn readiness_client() -> &'static reqwest::Client {
     })
 }
 
-fn validate_ready_url(raw: Option<&str>) -> Result<reqwest::Url, String> {
-    let raw = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "background run_shell requires ready_url".to_string())?;
+fn validate_ready_url(raw: &str) -> Result<reqwest::Url, String> {
+    let raw = raw.trim();
     let url = reqwest::Url::parse(raw)
         .map_err(|error| format!("invalid run_shell ready_url: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -82,11 +91,112 @@ fn validate_ready_url(raw: Option<&str>) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+fn append_bounded_log(target: &mut String, bytes: &[u8]) {
+    target.push_str(&String::from_utf8_lossy(bytes));
+    if target.len() <= MAX_SERVICE_LOG_BYTES {
+        return;
+    }
+    let mut start = target.len() - MAX_SERVICE_LOG_BYTES;
+    while start < target.len() && !target.is_char_boundary(start) {
+        start += 1;
+    }
+    target.drain(..start);
+}
+
+fn collect_service_output<R>(
+    mut reader: R,
+    logs: Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
+    stdout: bool,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 2_048];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    let mut logs = logs.lock().await;
+                    let target = if stdout {
+                        &mut logs.stdout
+                    } else {
+                        &mut logs.stderr
+                    };
+                    append_bounded_log(target, &buffer[..read]);
+                }
+            }
+        }
+    });
+}
+
+fn local_url_regex() -> &'static Regex {
+    static URL_RE: OnceLock<Regex> = OnceLock::new();
+    URL_RE.get_or_init(|| {
+        Regex::new(
+            r#"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\])(?::\d{1,5})?(?:/[^\s\"'<>]*)?"#,
+        )
+        .expect("valid managed-service URL regex")
+    })
+}
+
+fn discover_ready_url(stdout: &str, stderr: &str) -> Option<reqwest::Url> {
+    local_url_regex()
+        .find_iter(&format!("{stdout}\n{stderr}"))
+        .filter_map(|matched| {
+            let candidate = matched
+                .as_str()
+                .trim_end_matches(['.', ',', ')', ']', ';'])
+                .replace("0.0.0.0", "127.0.0.1")
+                .replace("[::]", "[::1]");
+            validate_ready_url(&candidate).ok()
+        })
+        .next()
+}
+
+async fn service_log_snapshot(
+    logs: &Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
+) -> (String, String) {
+    let logs = logs.lock().await;
+    (logs.stdout.clone(), logs.stderr.clone())
+}
+
 async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
-fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
+fn launches_python_server_script(program: &str, args: &[String]) -> bool {
+    let is_python_launcher = matches!(program, "python" | "python3" | "py")
+        || program
+            .strip_prefix("python3.")
+            .is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()));
+    if !is_python_launcher {
+        return false;
+    }
+
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        match arg.as_str() {
+            "-c" | "-m" => return false,
+            "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
+            "--" => {
+                return args
+                    .get(index + 1)
+                    .and_then(|value| value.rsplit(['/', '\\']).next())
+                    .is_some_and(|name| name == "server.py");
+            }
+            value if value.starts_with('-') => index += 1,
+            value => {
+                return value
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(|name| name == "server.py");
+            }
+        }
+    }
+    false
+}
+
+pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let program = Path::new(program)
         .file_stem()
         .and_then(|name| name.to_str())
@@ -96,8 +206,13 @@ fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let joined = normalized_args.join(" ");
 
     joined.contains("http.server")
+        || launches_python_server_script(&program, &normalized_args)
+        || joined.contains("manage.py runserver")
         || joined.contains("uvicorn")
         || joined.contains("flask run")
+        || joined.contains("fastapi dev")
+        || joined.contains("fastapi run")
+        || joined.contains("streamlit run")
         || joined.contains("webpack serve")
         || joined.contains("next dev")
         || matches!(program.as_str(), "vite" | "uvicorn" | "gunicorn")
@@ -118,22 +233,32 @@ async fn start_managed_service(
     program: &str,
     args: &[String],
     cwd: &Path,
-    ready_url: reqwest::Url,
+    requested_ready_url: Option<reqwest::Url>,
     ready_timeout_secs: u64,
+    auto_promoted: bool,
 ) -> ToolResult {
-    if readiness_probe(&ready_url).await {
-        return error_result(
-            call_id,
-            format!(
-                "ready_url {ready_url} is already responding; choose a free port or check the existing service before starting another process"
-            ),
-        );
+    if let Some(ready_url) = requested_ready_url.as_ref() {
+        if readiness_probe(ready_url).await {
+            return error_result(
+                call_id,
+                format!(
+                    "ready_url {ready_url} is already responding; choose a free port or check the existing service before starting another process"
+                ),
+            );
+        }
     }
 
     let mut child = match spawn_background_process(program, args, cwd) {
         Ok(child) => child,
         Err(error) => return error_result(call_id, error),
     };
+    let logs = Arc::new(tokio::sync::Mutex::new(ManagedServiceLogs::default()));
+    if let Some(stdout) = child.stdout.take() {
+        collect_service_output(stdout, Arc::clone(&logs), true);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        collect_service_output(stderr, Arc::clone(&logs), false);
+    }
     let process_id = child.id();
     let started_at = Instant::now();
     let deadline = started_at + Duration::from_secs(ready_timeout_secs);
@@ -141,12 +266,12 @@ async fn start_managed_service(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return error_result(
-                    call_id,
+                return error_result(call_id, {
+                    let (stdout, stderr) = service_log_snapshot(&logs).await;
                     format!(
-                        "background service exited before {ready_url} became ready (status: {status})"
-                    ),
-                );
+                            "background service exited during startup (status: {status}).\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+                        )
+                });
             }
             Ok(None) => {}
             Err(error) => {
@@ -158,18 +283,25 @@ async fn start_managed_service(
             }
         }
 
-        if readiness_probe(&ready_url).await {
-            managed_services().lock().await.insert(
-                call_id.to_string(),
-                ManagedService {
-                    child,
-                    process_id,
-                    program: program.to_string(),
-                    ready_url: ready_url.clone(),
-                    started_at,
-                },
-            );
-            return ToolResult {
+        let (stdout, stderr) = service_log_snapshot(&logs).await;
+        let ready_url = requested_ready_url
+            .clone()
+            .or_else(|| discover_ready_url(&stdout, &stderr));
+        if let Some(ready_url) = ready_url.as_ref() {
+            if readiness_probe(ready_url).await {
+                managed_services().lock().await.insert(
+                    call_id.to_string(),
+                    ManagedService {
+                        child,
+                        process_id,
+                        program: program.to_string(),
+                        ready_url: Some(ready_url.clone()),
+                        logs,
+                        auto_promoted,
+                        started_at,
+                    },
+                );
+                return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
                     "Background service is ready at {ready_url}. service_id: {call_id}; process_id: {}. Recheck with service_action=status and stop it with service_action=stop when finished.",
@@ -183,6 +315,50 @@ async fn start_managed_service(
                     "status": "ready",
                     "readyUrl": ready_url.as_str(),
                     "program": program,
+                    "autoPromoted": auto_promoted,
+                    "stdoutTail": stdout,
+                    "stderrTail": stderr,
+                })),
+                };
+            }
+        }
+
+        if requested_ready_url.is_none()
+            && started_at.elapsed() >= Duration::from_millis(AUTO_SERVICE_SETTLE_MS)
+        {
+            managed_services().lock().await.insert(
+                call_id.to_string(),
+                ManagedService {
+                    child,
+                    process_id,
+                    program: program.to_string(),
+                    ready_url: ready_url.clone(),
+                    logs,
+                    auto_promoted,
+                    started_at,
+                },
+            );
+            return ToolResult {
+                call_id: call_id.to_string(),
+                content: format!(
+                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; continue with browser_evidence_capture when a URL is available, and use service_action=status/stop for lifecycle control.",
+                    process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
+                    ready_url.as_ref().map_or_else(
+                        || "No loopback URL was discovered yet; status will keep checking startup logs.".to_string(),
+                        |url| format!("Discovered URL: {url}."),
+                    ),
+                ),
+                is_error: false,
+                artifacts: Some(serde_json::json!({
+                    "kind": "managedService",
+                    "serviceId": call_id,
+                    "processId": process_id,
+                    "status": "running",
+                    "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
+                    "program": program,
+                    "autoPromoted": auto_promoted,
+                    "stdoutTail": stdout,
+                    "stderrTail": stderr,
                 })),
             };
         }
@@ -193,7 +369,8 @@ async fn start_managed_service(
             return error_result(
                 call_id,
                 format!(
-                    "background service did not become ready at {ready_url} within {ready_timeout_secs}s and was stopped"
+                    "background service did not become ready at {} within {ready_timeout_secs}s and was stopped",
+                    requested_ready_url.as_ref().map_or("the requested URL", reqwest::Url::as_str)
                 ),
             );
         }
@@ -225,8 +402,9 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
                 "serviceId": service_id,
                 "processId": service.process_id,
                 "status": "stopped",
-                "readyUrl": service.ready_url.as_str(),
+                "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
                 "program": service.program,
+                "autoPromoted": service.auto_promoted,
             })),
         };
     }
@@ -241,8 +419,9 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
                 "serviceId": service_id,
                 "processId": service.process_id,
                 "status": "exited",
-                "readyUrl": service.ready_url.as_str(),
+                "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
                 "program": service.program,
+                "autoPromoted": service.auto_promoted,
             })),
         },
         Err(error) => error_result(
@@ -250,30 +429,40 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
             format!("failed to inspect service {service_id}: {error}"),
         ),
         Ok(None) => {
-            let healthy = readiness_probe(&service.ready_url).await;
+            let (stdout, stderr) = service_log_snapshot(&service.logs).await;
+            if service.ready_url.is_none() {
+                service.ready_url = discover_ready_url(&stdout, &stderr);
+            }
+            let healthy = match service.ready_url.as_ref() {
+                Some(url) => Some(readiness_probe(url).await),
+                None => None,
+            };
             let uptime_ms = service.started_at.elapsed().as_millis() as u64;
             let result = ToolResult {
                 call_id: call_id.to_string(),
-                content: if healthy {
-                    format!(
-                        "Managed service {service_id} is running and healthy at {}.",
-                        service.ready_url
-                    )
-                } else {
-                    format!(
-                        "Managed service {service_id} is still running, but {} is not responding.",
-                        service.ready_url
-                    )
+                content: match (healthy, service.ready_url.as_ref()) {
+                    (Some(true), Some(url)) => format!(
+                        "Managed service {service_id} is running and healthy at {url}."
+                    ),
+                    (Some(false), Some(url)) => format!(
+                        "Managed service {service_id} is still running, but {url} is not responding.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+                    ),
+                    _ => format!(
+                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+                    ),
                 },
-                is_error: !healthy,
+                is_error: healthy == Some(false),
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
                     "serviceId": service_id,
                     "processId": service.process_id,
-                    "status": if healthy { "ready" } else { "unhealthy" },
-                    "readyUrl": service.ready_url.as_str(),
+                    "status": match healthy { Some(true) => "ready", Some(false) => "unhealthy", None => "running" },
+                    "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
                     "program": service.program,
+                    "autoPromoted": service.auto_promoted,
                     "uptimeMs": uptime_ms,
+                    "stdoutTail": stdout,
+                    "stderrTail": stderr,
                 })),
             };
             registry.insert(service_id.to_string(), service);
@@ -339,7 +528,7 @@ impl Tool for RunShellTool {
         let cwd = args
             .get("cwd")
             .and_then(|v| v.as_str())
-            .unwrap_or("<unknown>");
+            .unwrap_or("<active source root>");
         let timeout = args
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
@@ -442,41 +631,55 @@ impl Tool for RunShellTool {
         }
 
         let timeout = clamp_timeout(parsed.timeout_secs);
-        if !parsed.background && looks_like_persistent_service(&canonical_program, &normalized_args)
-        {
-            return Ok(error_result(
-                call_id,
-                "Long-running local servers cannot run in the foreground because they block the agent. Retry with background=true and a loopback ready_url; use the returned service_id for later status and stop calls.",
-            ));
-        }
-        if !parsed.background && parsed.ready_url.is_some() {
-            return Ok(error_result(call_id, "ready_url requires background=true"));
-        }
-        if parsed.background && parsed.stdin.is_some() {
+        let persistent_service =
+            looks_like_persistent_service(&canonical_program, &normalized_args);
+        let auto_promoted =
+            !parsed.background && (persistent_service || parsed.ready_url.is_some());
+        let managed_background = parsed.background || auto_promoted;
+        if managed_background && parsed.stdin.is_some() {
             return Ok(error_result(
                 call_id,
                 "background run_shell does not accept stdin",
             ));
         }
-        let ready_url = if parsed.background {
-            match validate_ready_url(parsed.ready_url.as_deref()) {
-                Ok(url) => Some(url),
-                Err(message) => return Ok(error_result(call_id, message)),
+        let ready_url = if managed_background {
+            match parsed.ready_url.as_deref() {
+                Some(raw) => match validate_ready_url(raw) {
+                    Ok(url) => Some(url),
+                    Err(message) => return Ok(error_result(call_id, message)),
+                },
+                None => None,
             }
         } else {
             None
         };
 
         // Resolve cwd inside a registered source directory (blocking fs ops).
-        let cwd_input = parsed.cwd.clone();
+        let cwd_input = parsed
+            .cwd
+            .clone()
+            .map(|cwd| cwd.trim().to_string())
+            .filter(|cwd| !cwd.is_empty());
         let args_input = normalized_args.clone();
         let db_clone = db.clone();
         let scope_clone = source_scope.to_vec();
         let program = canonical_program.clone();
         let cwd_result: Result<PathBuf, String> = tokio::task::spawn_blocking(move || {
+            let sources = scoped_sources(&db_clone, &scope_clone)
+                .map_err(|e| format!("failed to load sources: {e}"))?;
+            let cwd_input = cwd_input.unwrap_or_else(|| {
+                sources
+                    .first()
+                    .map(|source| source.root_path.clone())
+                    .unwrap_or_default()
+            });
+            if cwd_input.is_empty() {
+                return Err(
+                    "run_shell.cwd was omitted and no active source root is available. Add a source or pass cwd explicitly."
+                        .to_string(),
+                );
+            }
             if shell_access_mode.is_restricted() {
-                let sources = scoped_sources(&db_clone, &scope_clone)
-                    .map_err(|e| format!("failed to load sources: {e}"))?;
                 if sources.is_empty() {
                     return Err("No sources registered. Add a source directory first.".to_string());
                 }
@@ -484,15 +687,11 @@ impl Tool for RunShellTool {
                 validate_scoped_args(shell_access_mode, &program, &args_input, &cwd, &sources)?;
                 Ok(cwd)
             } else {
-                if !Path::new(&cwd_input).is_absolute() {
-                    let sources = scoped_sources(&db_clone, &scope_clone)
-                        .map_err(|e| format!("failed to load sources: {e}"))?;
-                    if !sources.is_empty() {
-                        if let Ok(cwd) =
-                            resolve_existing_directory_in_sources(Path::new(&cwd_input), &sources)
-                        {
-                            return Ok(cwd);
-                        }
+                if !Path::new(&cwd_input).is_absolute() && !sources.is_empty() {
+                    if let Ok(cwd) =
+                        resolve_existing_directory_in_sources(Path::new(&cwd_input), &sources)
+                    {
+                        return Ok(cwd);
                     }
                 }
                 let cwd = std::fs::canonicalize(Path::new(&cwd_input))
@@ -511,7 +710,7 @@ impl Tool for RunShellTool {
             Err(msg) => return Ok(error_result(call_id, msg)),
         };
 
-        if let Some(ready_url) = ready_url {
+        if managed_background {
             let ready_timeout_secs = parsed
                 .ready_timeout_secs
                 .unwrap_or(DEFAULT_READY_TIMEOUT_SECS)
@@ -523,6 +722,7 @@ impl Tool for RunShellTool {
                 &cwd_path,
                 ready_url,
                 ready_timeout_secs,
+                auto_promoted,
             )
             .await);
         }
@@ -592,11 +792,41 @@ impl Tool for RunShellTool {
             content.push('\n');
         }
 
+        let execution_code = if output.killed_by_timeout {
+            Some("command_timeout")
+        } else if output.exit_code != Some(0) {
+            Some("command_exit_nonzero")
+        } else {
+            None
+        };
+        let mut artifacts = file_changes
+            .map(|changes| changes.artifact)
+            .unwrap_or_else(|| serde_json::json!({ "kind": "commandExecution" }));
+        if let Some(object) = artifacts.as_object_mut() {
+            object.insert(
+                "execution".to_string(),
+                serde_json::json!({
+                    "exitCode": output.exit_code,
+                    "durationMs": output.duration_ms as u64,
+                    "timedOut": output.killed_by_timeout,
+                    "stdoutTruncated": output.truncated_stdout,
+                    "stderrTruncated": output.truncated_stderr,
+                    "errorCode": execution_code,
+                    "retryable": is_error,
+                    "recovery": if is_error {
+                        "inspect the preserved output tail, then correct the command, cwd, timeout, or failing code before retrying"
+                    } else {
+                        "none"
+                    }
+                }),
+            );
+        }
+
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content,
             is_error,
-            artifacts: file_changes.map(|changes| changes.artifact),
+            artifacts: Some(artifacts),
         })
     }
 }

@@ -16,6 +16,45 @@ mod tool_impl;
 
 pub use tool_impl::RunShellTool;
 
+pub(crate) fn uses_managed_background(parsed_args: &serde_json::Value) -> bool {
+    let Ok(parsed) = serde_json::from_value::<parser::RunShellArgs>(parsed_args.clone()) else {
+        return false;
+    };
+    if !parsed
+        .service_action
+        .as_deref()
+        .unwrap_or("run")
+        .trim()
+        .eq_ignore_ascii_case("run")
+    {
+        return false;
+    }
+    if parsed.background
+        || parsed
+            .ready_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    {
+        return true;
+    }
+
+    let invocation = if let Some(program) = parsed.program.as_deref() {
+        Some((program.to_string(), parsed.args))
+    } else if let Some(command) = parsed.command.as_deref() {
+        parser::split_simple_command_string(command)
+            .ok()
+            .and_then(|parts| {
+                let (program, args) = parts.split_first()?;
+                Some((program.clone(), args.to_vec()))
+            })
+    } else {
+        None
+    };
+
+    invocation
+        .is_some_and(|(program, args)| tool_impl::looks_like_persistent_service(&program, &args))
+}
+
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
@@ -54,6 +93,8 @@ use shell_adapter::{
     build_env_from, bytes_to_clamped_string, clamp_timeout, execute_inner, format_output,
     resolve_program, RunShellOutput,
 };
+#[cfg(test)]
+use tool_impl::looks_like_persistent_service;
 
 #[cfg(test)]
 mod tests;

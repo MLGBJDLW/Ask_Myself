@@ -340,12 +340,29 @@ pub(super) fn bytes_to_clamped_string(bytes: &[u8], max: usize) -> (String, bool
     if bytes.len() <= max {
         (String::from_utf8_lossy(bytes).into_owned(), false)
     } else {
-        // Walk back to a UTF-8-safe boundary.
-        let mut cut = max;
-        while cut > 0 && (bytes[cut] & 0b1100_0000) == 0b1000_0000 {
-            cut -= 1;
+        const MARKER: &[u8] = b"\n[... output middle omitted ...]\n";
+        if max <= MARKER.len() + 16 {
+            let mut cut = max;
+            while cut > 0 && (bytes[cut] & 0b1100_0000) == 0b1000_0000 {
+                cut -= 1;
+            }
+            return (String::from_utf8_lossy(&bytes[..cut]).into_owned(), true);
         }
-        (String::from_utf8_lossy(&bytes[..cut]).into_owned(), true)
+
+        let content_budget = max - MARKER.len();
+        let mut head_end = content_budget / 2;
+        while head_end > 0 && (bytes[head_end] & 0b1100_0000) == 0b1000_0000 {
+            head_end -= 1;
+        }
+        let mut tail_start = bytes.len().saturating_sub(content_budget - head_end);
+        while tail_start < bytes.len() && (bytes[tail_start] & 0b1100_0000) == 0b1000_0000 {
+            tail_start += 1;
+        }
+        let mut clamped = Vec::with_capacity(max);
+        clamped.extend_from_slice(&bytes[..head_end]);
+        clamped.extend_from_slice(MARKER);
+        clamped.extend_from_slice(&bytes[tail_start..]);
+        (String::from_utf8_lossy(&clamped).into_owned(), true)
     }
 }
 
@@ -377,8 +394,14 @@ pub(super) fn spawn_background_process(
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Keep bounded tails in the managed-service registry. Besides making
+        // status calls useful, startup logs are often the only reliable way
+        // to discover the ephemeral URL selected by a dev server.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Until startup succeeds, the child is not yet reachable through the
+        // managed-service registry. Cancellation must not orphan it.
+        .kill_on_drop(true)
         .env_clear();
     for (key, value) in build_env() {
         cmd.env(key, value);
@@ -549,7 +572,7 @@ pub(super) fn format_output(output: &RunShellOutput) -> String {
         result.push_str("\n── stdout ──\n");
         result.push_str(&output.stdout);
         if output.truncated_stdout {
-            result.push_str("\n[... truncated to 64KB]");
+            result.push_str("\n[... truncated to 64KB; head and tail preserved]");
         }
         if !output.stdout.ends_with('\n') {
             result.push('\n');
@@ -560,7 +583,7 @@ pub(super) fn format_output(output: &RunShellOutput) -> String {
         result.push_str("\n── stderr ──\n");
         result.push_str(&output.stderr);
         if output.truncated_stderr {
-            result.push_str("\n[... truncated to 64KB]");
+            result.push_str("\n[... truncated to 64KB; head and tail preserved]");
         }
         if !output.stderr.ends_with('\n') {
             result.push('\n');

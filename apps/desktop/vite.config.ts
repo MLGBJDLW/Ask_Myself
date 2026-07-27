@@ -12,7 +12,7 @@ function manualChunks(id: string) {
   if (id.includes("framer-motion")) {
     return "vendor-motion";
   }
-  if (id.includes("lucide-react")) {
+  if (id.includes("lucide-react") || id.includes("react-icons")) {
     return "vendor-icons";
   }
   if (id.includes("@tauri-apps")) {

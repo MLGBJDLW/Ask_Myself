@@ -320,7 +320,7 @@ test('Nexus mode explains its cost, persists per conversation, and reaches the b
   const dialog = page.getByTestId('chat-nexus-dialog');
   await expect(dialog).toBeVisible();
   await expect(page.getByRole('dialog', { name: 'About Nexus mode' })).toHaveCSS('opacity', '1');
-  await expect(dialog).toContainText('64K delegated tokens');
+  await expect(dialog).toContainText('96K delegated tokens');
   await expect(dialog).toContainText('same blind spot');
   await page.getByTestId('chat-nexus-confirm').click();
 
@@ -342,6 +342,12 @@ test('Nexus mode explains its cost, persists per conversation, and reaches the b
   await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
   await page.getByTestId('chat-nexus-mode').click();
   await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'false');
+
+  await page.getByTestId('chat-nexus-mode').click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('chat-nexus-mode-banner').getByRole('button', { name: 'Details' }).click();
+  await expect(dialog).toBeVisible();
 });
 
 test('Nexus activation respects reduced-motion preferences', async ({ page }) => {

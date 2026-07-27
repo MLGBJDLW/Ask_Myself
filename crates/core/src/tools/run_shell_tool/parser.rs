@@ -12,7 +12,8 @@ pub(super) struct RunShellArgs {
     pub(super) program: Option<String>,
     #[serde(default)]
     pub(super) args: Vec<String>,
-    pub(super) cwd: String,
+    #[serde(default)]
+    pub(super) cwd: Option<String>,
     #[serde(default)]
     pub(super) timeout_secs: Option<u64>,
     #[serde(default)]
