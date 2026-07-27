@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -162,8 +163,21 @@ struct HtmlExtraction {
 pub(crate) struct BrowserRenderedHtml {
     pub(crate) final_url: reqwest::Url,
     pub(crate) html: String,
+    pub(crate) title: Option<String>,
+    pub(crate) rendered_text: String,
+    pub(crate) interactive_elements: Vec<serde_json::Value>,
+    pub(crate) diagnostics: BrowserDiagnostics,
     pub(crate) blocked_requests: usize,
     pub(crate) screenshot_png: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserDiagnostics {
+    pub(crate) console_entries: Vec<String>,
+    pub(crate) runtime_exceptions: Vec<String>,
+    pub(crate) network_failures: Vec<String>,
+    pub(crate) http_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +328,49 @@ fn validate_url_for_fetch_blocking(url: &str) -> Result<reqwest::Url, String> {
     let parsed = validate_url(url)?;
     validate_resolved_host_blocking(&parsed)?;
     Ok(parsed)
+}
+
+fn is_loopback_url(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn normalize_browser_capture_url(url: &str) -> Result<reqwest::Url, String> {
+    let mut parsed = reqwest::Url::parse(url).map_err(|error| format!("Invalid URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Browser capture only supports http and https URLs".to_string());
+    }
+    match parsed.host_str().map(str::to_ascii_lowercase).as_deref() {
+        Some("0.0.0.0") | Some("::") | Some("[::]") => parsed
+            .set_host(Some("127.0.0.1"))
+            .map_err(|_| "failed to normalize local development URL".to_string())?,
+        _ => {}
+    }
+    Ok(parsed)
+}
+
+async fn validate_url_for_browser_capture(url: &str) -> Result<reqwest::Url, String> {
+    let parsed = normalize_browser_capture_url(url)?;
+    if is_loopback_url(&parsed) {
+        return Ok(parsed);
+    }
+    validate_url_for_fetch(parsed.as_str()).await
+}
+
+fn validate_url_for_browser_capture_blocking(
+    url: &str,
+    allow_loopback: bool,
+) -> Result<reqwest::Url, String> {
+    let parsed = normalize_browser_capture_url(url)?;
+    if allow_loopback && is_loopback_url(&parsed) {
+        return Ok(parsed);
+    }
+    validate_url_for_fetch_blocking(parsed.as_str())
 }
 
 pub(crate) fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
@@ -1248,7 +1305,11 @@ fn browser_internal_url(url: &str) -> bool {
         || lower.starts_with("chrome-error://")
 }
 
-fn browser_request_allowed(url: &str, cache: &Mutex<HashMap<String, bool>>) -> bool {
+fn browser_request_allowed(
+    url: &str,
+    cache: &Mutex<HashMap<String, bool>>,
+    allow_loopback: bool,
+) -> bool {
     if browser_internal_url(url) {
         return true;
     }
@@ -1258,11 +1319,55 @@ fn browser_request_allowed(url: &str, cache: &Mutex<HashMap<String, bool>>) -> b
         }
     }
 
-    let allowed = validate_url_for_fetch_blocking(url).is_ok();
+    let allowed = validate_url_for_browser_capture_blocking(url, allow_loopback).is_ok();
     if let Ok(mut cache) = cache.lock() {
         cache.insert(url.to_string(), allowed);
     }
     allowed
+}
+
+fn push_browser_diagnostic(target: &mut Vec<String>, value: String) {
+    const MAX_DIAGNOSTICS_PER_KIND: usize = 50;
+    const MAX_DIAGNOSTIC_CHARS: usize = 2_000;
+    let value = truncate_note(&value, MAX_DIAGNOSTIC_CHARS);
+    if target.len() >= MAX_DIAGNOSTICS_PER_KIND || target.iter().any(|existing| existing == &value)
+    {
+        return;
+    }
+    target.push(value);
+}
+
+fn extract_interactive_elements(html: &str) -> Vec<serde_json::Value> {
+    let document = Html::parse_document(html);
+    let Ok(selector) =
+        Selector::parse("a[href], button, input, textarea, select, [role=button], [role=link]")
+    else {
+        return Vec::new();
+    };
+    document
+        .select(&selector)
+        .take(100)
+        .map(|element| {
+            let value = element.value();
+            let text = element
+                .text()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            serde_json::json!({
+                "tag": value.name(),
+                "text": truncate_note(&text, 240),
+                "id": value.attr("id"),
+                "role": value.attr("role"),
+                "ariaLabel": value.attr("aria-label"),
+                "name": value.attr("name"),
+                "href": value.attr("href"),
+                "type": value.attr("type"),
+            })
+        })
+        .collect()
 }
 
 async fn render_html_with_browser(url: reqwest::Url) -> Result<BrowserRenderedHtml, String> {
@@ -1272,20 +1377,84 @@ async fn render_html_with_browser(url: reqwest::Url) -> Result<BrowserRenderedHt
 }
 
 pub(crate) async fn capture_browser_page(url: &str) -> Result<BrowserRenderedHtml, String> {
-    let url = validate_url_for_fetch(url).await?;
+    let url = validate_url_for_browser_capture(url).await?;
     render_html_with_browser(url).await
+}
+
+fn browser_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("NEXA_BROWSER_EXECUTABLE") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    #[cfg(windows)]
+    {
+        for base in [
+            std::env::var_os("PROGRAMFILES"),
+            std::env::var_os("PROGRAMFILES(X86)"),
+            std::env::var_os("LOCALAPPDATA"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let base = PathBuf::from(base);
+            candidates.push(base.join("Google/Chrome/Application/chrome.exe"));
+            candidates.push(base.join("Microsoft/Edge/Application/msedge.exe"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    for candidate in [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ] {
+        candidates.push(PathBuf::from(candidate));
+    }
+
+    candidates.retain(|candidate| candidate.is_file());
+    candidates.dedup();
+    candidates
+}
+
+fn launch_browser_for_capture() -> Result<headless_chrome::Browser, String> {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    let mut launch_errors = Vec::new();
+    for executable in browser_executable_candidates() {
+        let options = LaunchOptionsBuilder::default()
+            .headless(true)
+            .path(Some(executable.clone()))
+            .build()
+            .map_err(|error| format!("invalid browser launch options: {error}"))?;
+        match Browser::new(options) {
+            Ok(browser) => return Ok(browser),
+            Err(error) => launch_errors.push(format!("{}: {error}", executable.display())),
+        }
+    }
+
+    Browser::default().map_err(|error| {
+        let attempted = if launch_errors.is_empty() {
+            "no configured or installed Edge/Chrome/Chromium candidate was found".to_string()
+        } else {
+            launch_errors.join("; ")
+        };
+        format!(
+            "failed to launch browser: {error}. Attempted fallbacks: {attempted}. Set NEXA_BROWSER_EXECUTABLE to a Chrome, Edge, or Chromium executable."
+        )
+    })
 }
 
 fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRenderedHtml, String> {
     use headless_chrome::browser::tab::RequestPausedDecision;
+    use headless_chrome::protocol::cdp::types::Event;
     use headless_chrome::protocol::cdp::Fetch::{
         events::RequestPausedEvent, FailRequest, RequestPattern, RequestStage,
     };
     use headless_chrome::protocol::cdp::Network;
     use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
-    use headless_chrome::Browser;
-
-    let browser = Browser::default().map_err(|e| format!("failed to launch browser: {e}"))?;
+    let browser = launch_browser_for_capture()?;
     let tab = browser
         .new_tab()
         .map_err(|e| format!("failed to open browser tab: {e}"))?;
@@ -1295,6 +1464,75 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
         Some("zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
         None,
     );
+
+    let allow_loopback = is_loopback_url(&url);
+    let diagnostics = Arc::new(Mutex::new(BrowserDiagnostics::default()));
+    tab.enable_log()
+        .and_then(|tab| tab.enable_runtime())
+        .map_err(|error| format!("failed to enable browser diagnostics: {error}"))?;
+    tab.call_method(Network::Enable {
+        max_total_buffer_size: None,
+        max_resource_buffer_size: None,
+        max_post_data_size: None,
+        report_direct_socket_traffic: None,
+        enable_durable_messages: None,
+    })
+    .map_err(|error| format!("failed to enable browser network diagnostics: {error}"))?;
+    let diagnostics_for_listener = Arc::clone(&diagnostics);
+    tab.add_event_listener(Arc::new(move |event: &Event| {
+        let Ok(mut diagnostics) = diagnostics_for_listener.lock() else {
+            return;
+        };
+        match event {
+            Event::LogEntryAdded(event) => push_browser_diagnostic(
+                &mut diagnostics.console_entries,
+                format!(
+                    "{:?}: {}",
+                    event.params.entry.level, event.params.entry.text
+                ),
+            ),
+            Event::RuntimeConsoleAPICalled(event) => push_browser_diagnostic(
+                &mut diagnostics.console_entries,
+                format!("{:?}", event.params),
+            ),
+            Event::RuntimeExceptionThrown(event) => {
+                let details = &event.params.exception_details;
+                push_browser_diagnostic(
+                    &mut diagnostics.runtime_exceptions,
+                    format!(
+                        "{} at {}:{}:{}",
+                        details.text,
+                        details.url.as_deref().unwrap_or("<inline>"),
+                        details.line_number,
+                        details.column_number,
+                    ),
+                );
+            }
+            Event::NetworkLoadingFailed(event) => push_browser_diagnostic(
+                &mut diagnostics.network_failures,
+                format!(
+                    "{:?} request {:?}: {} (blocked: {:?})",
+                    event.params.Type,
+                    event.params.request_id,
+                    event.params.error_text,
+                    event.params.blocked_reason,
+                ),
+            ),
+            Event::NetworkResponseReceived(event) if event.params.response.status >= 400 => {
+                push_browser_diagnostic(
+                    &mut diagnostics.http_errors,
+                    format!(
+                        "{} {} {}",
+                        event.params.response.status,
+                        event.params.response.status_text,
+                        event.params.response.url,
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }))
+    .map_err(|error| format!("failed to install browser diagnostics listener: {error}"))?;
 
     let blocked_requests = Arc::new(AtomicUsize::new(0));
     let request_cache = Arc::new(Mutex::new(HashMap::<String, bool>::new()));
@@ -1314,6 +1552,7 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
             if browser_request_allowed(
                 &intercepted.params.request.url,
                 cache_for_interceptor.as_ref(),
+                allow_loopback,
             ) {
                 RequestPausedDecision::Continue(None)
             } else {
@@ -1331,7 +1570,7 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
         .map_err(|e| format!("browser navigation failed: {e}"))?;
     std::thread::sleep(Duration::from_millis(JS_RENDER_SETTLE_MS));
 
-    let final_url = validate_url_for_fetch_blocking(&tab.get_url())?;
+    let final_url = validate_url_for_browser_capture_blocking(&tab.get_url(), allow_loopback)?;
     let mut html = tab
         .get_content()
         .map_err(|e| format!("failed to read rendered HTML: {e}"))?;
@@ -1345,10 +1584,21 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
     let screenshot_png = tab
         .capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
         .map_err(|e| format!("failed to capture rendered page screenshot: {e}"))?;
+    let metadata = extract_page_metadata(&html, &final_url);
+    let rendered = extract_html_text(&html, &final_url, FetchMode::Auto, &metadata);
+    let interactive_elements = extract_interactive_elements(&html);
+    let diagnostics = diagnostics
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
 
     Ok(BrowserRenderedHtml {
         final_url,
         html,
+        title: rendered.title,
+        rendered_text: truncate_note(&rendered.text, 20_000),
+        interactive_elements,
+        diagnostics,
         blocked_requests: blocked_requests.load(Ordering::Relaxed),
         screenshot_png,
     })
@@ -1807,10 +2057,46 @@ mod tests {
     fn browser_request_validation_allows_internal_urls_but_blocks_private_networks() {
         let cache = Mutex::new(HashMap::new());
 
-        assert!(browser_request_allowed("about:blank", &cache));
-        assert!(browser_request_allowed("data:text/plain,hello", &cache));
-        assert!(!browser_request_allowed("http://localhost/app.js", &cache));
-        assert!(!browser_request_allowed("http://127.0.0.1/app.js", &cache));
+        assert!(browser_request_allowed("about:blank", &cache, false));
+        assert!(browser_request_allowed(
+            "data:text/plain,hello",
+            &cache,
+            false
+        ));
+        assert!(!browser_request_allowed(
+            "http://localhost/app.js",
+            &cache,
+            false
+        ));
+        assert!(!browser_request_allowed(
+            "http://127.0.0.1/app.js",
+            &cache,
+            false
+        ));
+
+        let local_debug_cache = Mutex::new(HashMap::new());
+        assert!(browser_request_allowed(
+            "http://localhost/app.js",
+            &local_debug_cache,
+            true
+        ));
+        assert!(browser_request_allowed(
+            "http://127.0.0.1/app.js",
+            &local_debug_cache,
+            true
+        ));
+        assert!(!browser_request_allowed(
+            "http://192.168.1.10/private.js",
+            &local_debug_cache,
+            true
+        ));
+    }
+
+    #[test]
+    fn browser_capture_normalizes_unspecified_dev_server_hosts() {
+        let url = normalize_browser_capture_url("http://0.0.0.0:5173/app").unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:5173/app");
+        assert!(is_loopback_url(&url));
     }
 
     #[test]
@@ -1992,6 +2278,56 @@ mod tests {
             classify_body_kind(Some("application/pdf"), b"%PDF-1.7"),
             BodyKind::UnsupportedBinary
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a locally installed Chrome or Chromium browser"]
+    async fn browser_capture_opens_loopback_and_collects_runtime_diagnostics() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut request = [0_u8; 2_048];
+                let read = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..read]);
+                let missing = request.starts_with("GET /missing.js ");
+                let (status, content_type, body) = if missing {
+                    ("404 Not Found", "text/javascript", "missing")
+                } else {
+                    (
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        r#"<!doctype html><html><head><title>Local debug page</title></head><body><main>Rendered local content</main><button aria-label="Save changes">Save</button><script>console.error('console boom'); throw new Error('runtime boom');</script><script src="/missing.js"></script></body></html>"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let captured = capture_browser_page(&format!("http://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        assert_eq!(captured.title.as_deref(), Some("Local debug page"));
+        assert!(captured.rendered_text.contains("Rendered local content"));
+        assert!(captured.interactive_elements.iter().any(|element| {
+            element.get("ariaLabel").and_then(|value| value.as_str()) == Some("Save changes")
+        }));
+        assert!(!captured.diagnostics.console_entries.is_empty());
+        assert!(!captured.diagnostics.runtime_exceptions.is_empty());
+        assert!(captured
+            .diagnostics
+            .http_errors
+            .iter()
+            .any(|entry| entry.contains("404")));
     }
 
     #[test]

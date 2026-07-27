@@ -244,6 +244,8 @@ fn test_build_system_prompt_preserves_core_rules() {
     assert!(prompt.contains("Own the requested outcome"));
     assert!(prompt.contains("Protect user work"));
     assert!(prompt.contains("A tool call is not evidence of success"));
+    assert!(prompt.contains("closed observe-fix-verify loop"));
+    assert!(prompt.contains("browser_evidence_capture"));
     assert!(prompt.contains("keep recent complete turns verbatim"));
     assert!(!prompt.contains("## Tool Contract: run_shell"));
     assert!(prompt.len() < 8_000);
