@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.10.19](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.18...nexa-monorepo-v0.10.19) (2026-07-27)
+
+
+### Features
+
+* **agent:** orchestrate Nexus subagents proactively ([59c044a](https://github.com/MLGBJDLW/Nexa/commit/59c044aff2bf8c3957807c8dd9c3054c2a4f0a96))
+* **agent:** upgrade Nexus and tool reliability ([b813412](https://github.com/MLGBJDLW/Nexa/commit/b813412c760058350c9e4aea4703e179e7629369))
+* **chat:** add dedicated file badge icons ([a08d3d3](https://github.com/MLGBJDLW/Nexa/commit/a08d3d352828a9b795b6b23bcd2e918370b6451e))
+* **chat:** refine Nexus mode activation ([1c15cee](https://github.com/MLGBJDLW/Nexa/commit/1c15cee5533d1f4d7bab00c167eaa15e2c44cb3e))
+* **tools:** add autonomous browser diagnostics ([4481276](https://github.com/MLGBJDLW/Nexa/commit/448127618bf9885fac4396f8791fa846a3e3835e))
+* **tools:** standardize execution contracts ([f2b62b1](https://github.com/MLGBJDLW/Nexa/commit/f2b62b1253d822626aaf435f9d9cad739b3fb44c))
+
+
+### Bug Fixes
+
+* **llm:** normalize Gemini function call turns ([1ad018c](https://github.com/MLGBJDLW/Nexa/commit/1ad018c216ed63d58a88e52d47145becdeec54fa))
+* **skills:** scan proposed resource bundles ([8be9b85](https://github.com/MLGBJDLW/Nexa/commit/8be9b85c084f3101e2a85f8d4ea66bfbb8b060b5))
+* **skills:** support complete large proposals ([e28eba4](https://github.com/MLGBJDLW/Nexa/commit/e28eba431139e216ab617e81ee0b6d6e306f49f5))
+* **tools:** align managed-service scheduling ([93f3217](https://github.com/MLGBJDLW/Nexa/commit/93f32179162613c8241a9d3ffc4c8f6ccc89472c))
+* **tools:** improve shell and edit recovery ([3778651](https://github.com/MLGBJDLW/Nexa/commit/3778651b167e83b0c6d6562108973060354e3810))
+* **tools:** manage long-running local services ([4d3c558](https://github.com/MLGBJDLW/Nexa/commit/4d3c558d5e1b113c3bc838081e2df1201ed6952e))
+* **tools:** narrow server auto-promotion ([775f4f4](https://github.com/MLGBJDLW/Nexa/commit/775f4f45a61a62e46258c1a235c741996a10e997))
+* **tools:** preserve CRLF in recovered edits ([a8182a2](https://github.com/MLGBJDLW/Nexa/commit/a8182a2bdfb38f318af79cbe2af71064a60bfa92))
+
 ## [0.10.18](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.17...nexa-monorepo-v0.10.18) (2026-07-26)
 
 
