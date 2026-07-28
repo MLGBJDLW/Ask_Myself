@@ -34,6 +34,9 @@ const DEFAULT_READY_TIMEOUT_SECS: u64 = 20;
 const MAX_READY_TIMEOUT_SECS: u64 = 120;
 const AUTO_SERVICE_SETTLE_MS: u64 = 1_500;
 const MAX_SERVICE_LOG_BYTES: usize = 32 * 1024;
+const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 30;
+const MAX_WAIT_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Default)]
 struct ManagedServiceLogs {
@@ -304,7 +307,7 @@ async fn start_managed_service(
                 return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
-                    "Background service is ready at {ready_url}. service_id: {call_id}; process_id: {}. Recheck with service_action=status and stop it with service_action=stop when finished.",
+                    "Background service is ready at {ready_url}. service_id: {call_id}; process_id: {}. Recheck with service_action=status, block on completion with service_action=wait, and stop it with service_action=stop when finished.",
                     process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
                 ),
                 is_error: false,
@@ -341,7 +344,7 @@ async fn start_managed_service(
             return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
-                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; continue with browser_evidence_capture when a URL is available, and use service_action=status/stop for lifecycle control.",
+                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
                     process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
                     ready_url.as_ref().map_or_else(
                         || "No loopback URL was discovered yet; status will keep checking startup logs.".to_string(),
@@ -388,6 +391,7 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
     };
 
     if action == "stop" {
+        let (stdout, stderr) = service_log_snapshot(&service.logs).await;
         let kill_error = service.child.kill().await.err();
         let _ = service.child.wait().await;
         return ToolResult {
@@ -405,25 +409,17 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
                 "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
                 "program": service.program,
                 "autoPromoted": service.auto_promoted,
+                "stdoutTail": stdout,
+                "stderrTail": stderr,
             })),
         };
     }
 
     match service.child.try_wait() {
-        Ok(Some(status)) => ToolResult {
-            call_id: call_id.to_string(),
-            content: format!("Managed service {service_id} exited with status {status}."),
-            is_error: true,
-            artifacts: Some(serde_json::json!({
-                "kind": "managedService",
-                "serviceId": service_id,
-                "processId": service.process_id,
-                "status": "exited",
-                "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-                "program": service.program,
-                "autoPromoted": service.auto_promoted,
-            })),
-        },
+        Ok(Some(status)) => {
+            let (stdout, stderr) = service_log_snapshot(&service.logs).await;
+            exited_service_result(call_id, service_id, &service, status, &stdout, &stderr)
+        }
         Err(error) => error_result(
             call_id,
             format!("failed to inspect service {service_id}: {error}"),
@@ -468,6 +464,86 @@ async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolRe
             registry.insert(service_id.to_string(), service);
             result
         }
+    }
+}
+
+fn exited_service_result(
+    call_id: &str,
+    service_id: &str,
+    service: &ManagedService,
+    status: std::process::ExitStatus,
+    stdout: &str,
+    stderr: &str,
+) -> ToolResult {
+    let exit_code = status.code();
+    ToolResult {
+        call_id: call_id.to_string(),
+        content: format!(
+            "Managed service {service_id} exited with status {status}.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+        ),
+        is_error: !status.success(),
+        artifacts: Some(serde_json::json!({
+            "kind": "managedService",
+            "serviceId": service_id,
+            "processId": service.process_id,
+            "status": "exited",
+            "exitCode": exit_code,
+            "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
+            "program": service.program,
+            "autoPromoted": service.auto_promoted,
+            "uptimeMs": service.started_at.elapsed().as_millis() as u64,
+            "stdoutTail": stdout,
+            "stderrTail": stderr,
+        })),
+    }
+}
+
+/// Poll a managed service until it exits or the wait budget runs out.
+///
+/// This is the "check back in a moment" loop: the agent gets the final exit
+/// status and logs as soon as the process finishes instead of guessing how long
+/// to block, and gets a still-running snapshot when the budget elapses so it can
+/// keep working and poll again later.
+async fn wait_for_service(call_id: &str, service_id: &str, wait_timeout_secs: u64) -> ToolResult {
+    let deadline = Instant::now() + Duration::from_secs(wait_timeout_secs);
+    loop {
+        {
+            let mut registry = managed_services().lock().await;
+            let Some(mut service) = registry.remove(service_id) else {
+                return error_result(
+                    call_id,
+                    format!("managed service '{service_id}' was not found or has already stopped"),
+                );
+            };
+            match service.child.try_wait() {
+                Ok(Some(status)) => {
+                    let (stdout, stderr) = service_log_snapshot(&service.logs).await;
+                    return exited_service_result(
+                        call_id, service_id, &service, status, &stdout, &stderr,
+                    );
+                }
+                Err(error) => {
+                    registry.insert(service_id.to_string(), service);
+                    return error_result(
+                        call_id,
+                        format!("failed to inspect service {service_id}: {error}"),
+                    );
+                }
+                Ok(None) => {
+                    registry.insert(service_id.to_string(), service);
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            let mut result = manage_service(call_id, "status", service_id).await;
+            result.content = format!(
+                "Still running after waiting {wait_timeout_secs}s. Continue with other work and poll again with service_action=\"wait\" or service_action=\"status\"; use service_action=\"stop\" to end it.\n{}",
+                result.content
+            );
+            return result;
+        }
+        tokio::time::sleep(SERVICE_POLL_INTERVAL).await;
     }
 }
 
@@ -586,10 +662,10 @@ impl Tool for RunShellTool {
             .unwrap_or("run")
             .trim()
             .to_ascii_lowercase();
-        if !matches!(service_action.as_str(), "run" | "status" | "stop") {
+        if !matches!(service_action.as_str(), "run" | "status" | "wait" | "stop") {
             return Ok(error_result(
                 call_id,
-                "run_shell service_action must be run, status, or stop",
+                "run_shell service_action must be run, status, wait, or stop",
             ));
         }
         if service_action != "run" {
@@ -604,12 +680,20 @@ impl Tool for RunShellTool {
                     format!("service_action={service_action} requires service_id"),
                 ));
             };
+            if service_action == "wait" {
+                let wait_timeout_secs = match parsed.timeout_secs {
+                    None => DEFAULT_WAIT_TIMEOUT_SECS,
+                    Some(0) => MAX_WAIT_TIMEOUT_SECS,
+                    Some(requested) => requested.clamp(1, MAX_WAIT_TIMEOUT_SECS),
+                };
+                return Ok(wait_for_service(call_id, service_id, wait_timeout_secs).await);
+            }
             return Ok(manage_service(call_id, &service_action, service_id).await);
         }
         if parsed.service_id.is_some() {
             return Ok(error_result(
                 call_id,
-                "service_id is only valid with service_action=status or service_action=stop",
+                "service_id is only valid with service_action=status, wait, or stop",
             ));
         }
         let shell_access_mode = db

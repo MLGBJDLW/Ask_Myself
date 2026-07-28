@@ -761,3 +761,38 @@ export function buildLiveTraceTimeline(input: {
 
   return items;
 }
+
+export interface CollapsedLiveTrace {
+  historySections: TimelineSection[];
+  finalItem: Extract<LiveTraceTimelineItem, { kind: 'reply' }>;
+}
+
+/**
+ * Fold a finished turn into a single collapsed trace plus its closing reply.
+ *
+ * The fold is only allowed once the whole run has stopped streaming. A turn
+ * routinely emits intermediate replies between tool rounds, so collapsing as
+ * soon as the trace goes momentarily idle would collapse the entire timeline
+ * and re-expand it on the next thinking delta.
+ */
+export function buildCollapsedLiveTrace(input: {
+  timeline: LiveTraceTimelineItem[];
+  isStreaming: boolean;
+  currentTraceActive: boolean;
+}): CollapsedLiveTrace | null {
+  const { timeline, isStreaming, currentTraceActive } = input;
+  if (isStreaming || currentTraceActive || timeline.length < 2) return null;
+
+  const finalItem = timeline[timeline.length - 1];
+  if (finalItem?.kind !== 'reply' || finalItem.isStreaming) return null;
+
+  const historySections = timeline
+    .slice(0, -1)
+    .flatMap<TimelineSection>((item) =>
+      item.kind === 'thinking'
+        ? item.sections
+        : [{ kind: 'reply', id: `${item.id}-history`, text: item.content }],
+    );
+  if (!hasRenderableTimelineSections(historySections)) return null;
+  return { historySections, finalItem };
+}

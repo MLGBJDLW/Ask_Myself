@@ -445,6 +445,85 @@ async fn test_python_server_script_is_auto_promoted_and_discovers_url() {
 }
 
 #[tokio::test]
+async fn test_service_wait_requires_a_service_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+
+    let result = tool
+        .execute(
+            "wait-without-id",
+            &json!({ "service_action": "wait" }).to_string(),
+            &db,
+            &[],
+        )
+        .await
+        .expect("wait without service_id returns a tool result");
+
+    assert!(result.is_error);
+    assert!(
+        result
+            .content
+            .contains("service_action=wait requires service_id"),
+        "unexpected message: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_unknown_service_action_lists_wait() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+
+    let result = tool
+        .execute(
+            "bad-service-action",
+            &json!({ "service_action": "resume", "service_id": "svc-1" }).to_string(),
+            &db,
+            &[],
+        )
+        .await
+        .expect("invalid service action returns a tool result");
+
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("run, status, wait, or stop"),
+        "unexpected message: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_service_wait_reports_a_missing_service() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+
+    let result = tool
+        .execute(
+            "wait-missing",
+            &json!({
+                "service_action": "wait",
+                "service_id": "service-that-never-existed",
+                "timeout_secs": 1,
+            })
+            .to_string(),
+            &db,
+            &[],
+        )
+        .await
+        .expect("wait on a missing service returns a tool result");
+
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("was not found"),
+        "unexpected message: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
 async fn test_invalid_json_returns_run_shell_contract_error() {
     let tmp = tempfile::tempdir().unwrap();
     let db = db_with_source(tmp.path());
@@ -1157,6 +1236,33 @@ async fn test_python_timeout_kills() {
     .expect("run ok");
     assert!(out.killed_by_timeout);
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+#[ignore = "requires python on PATH; sleeps"]
+async fn test_timeout_preserves_output_produced_before_the_kill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = execute_inner(
+        "python",
+        &[
+            "-u".to_string(),
+            "-c".to_string(),
+            "import time; print('partial progress', flush=True); time.sleep(60)".to_string(),
+        ],
+        tmp.path(),
+        2,
+        None,
+    )
+    .await
+    .expect("run ok");
+
+    assert!(out.killed_by_timeout);
+    assert!(
+        out.stdout.contains("partial progress"),
+        "timed-out command should still report what it printed, got: {:?}",
+        out.stdout
+    );
+    assert!(out.stderr.contains("killed after 2s timeout"));
 }
 
 #[tokio::test]

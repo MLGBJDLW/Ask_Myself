@@ -54,6 +54,7 @@ import {
   extractTurnTrace,
 } from "../../lib/streaming/persistedTrace";
 import {
+  buildCollapsedLiveTrace,
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   buildRoundTimelineSections,
@@ -1448,26 +1449,15 @@ export function ChatMessages(props: ChatMessagesProps) {
     ],
   );
 
-  const collapsedLiveTrace = useMemo(() => {
-    const finalItem = liveTraceTimeline[liveTraceTimeline.length - 1];
-    if (
-      currentTraceActive
-      || liveTraceTimeline.length < 2
-      || finalItem?.kind !== "reply"
-    ) {
-      return null;
-    }
-
-    const historySections = liveTraceTimeline
-      .slice(0, -1)
-      .flatMap<TimelineSection>((item) =>
-        item.kind === "thinking"
-          ? item.sections
-          : [{ kind: "reply", id: `${item.id}-history`, text: item.content }],
-      );
-    if (!hasRenderableTimelineSections(historySections)) return null;
-    return { historySections, finalItem };
-  }, [currentTraceActive, liveTraceTimeline]);
+  const collapsedLiveTrace = useMemo(
+    () =>
+      buildCollapsedLiveTrace({
+        timeline: liveTraceTimeline,
+        isStreaming,
+        currentTraceActive,
+      }),
+    [currentTraceActive, isStreaming, liveTraceTimeline],
+  );
 
 
   const updateActiveTurnNavigation = useCallback(() => {

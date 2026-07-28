@@ -143,7 +143,7 @@ pub(crate) fn parameters_schema() -> Value {
             "background": {
                 "type": "boolean",
                 "default": false,
-                "description": "Start a long-running local web or API service without waiting for it to exit. ready_url is recommended but optional: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted."
+                "description": "Start a long-running command without waiting for it to exit. Use it for local web/API services and for any build, install, test, or migration run that can outlast the default timeout: the call returns a service_id immediately so you can keep working and poll with service_action=wait or status. ready_url is recommended but optional for services: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted."
             },
             "ready_url": {
                 "type": "string",
@@ -158,13 +158,13 @@ pub(crate) fn parameters_schema() -> Value {
             },
             "service_action": {
                 "type": "string",
-                "enum": ["run", "status", "stop"],
+                "enum": ["run", "status", "wait", "stop"],
                 "default": "run",
-                "description": "Use status or stop with a service_id returned by an earlier background run. Omit for ordinary commands."
+                "description": "Use status, wait, or stop with a service_id returned by an earlier background run. status takes one snapshot of health and log tails. wait polls until the process exits or timeout_secs elapses and then returns the exit status with log tails, so prefer it over guessing a sleep. Omit for ordinary commands."
             },
             "service_id": {
                 "type": "string",
-                "description": "Managed service identifier returned by a background run. Required for service_action status or stop."
+                "description": "Managed service identifier returned by a background run. Required for service_action status, wait, or stop."
             },
             "stdin": {
                 "type": "string",
@@ -400,13 +400,13 @@ fn prompt_html_pptx_sentence() -> &'static str {
 
 fn timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; set timeout_secs to 0 only when a long-running install/download/build is intentional and should not have a per-command timeout. Local web/API servers are automatically promoted to managed background services; provide background=true and a loopback ready_url when known, or let the tool discover it from startup logs. Use service_action=status/stop with the returned service_id. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; a timed-out command is killed but still returns the output it produced. Never sit on a long blocking timeout: for anything that may outlast the default, pass background=true and poll the returned service_id with service_action=wait (returns as soon as the process exits) or service_action=status. Local web/API servers are automatically promoted to managed background services; provide a loopback ready_url when known, or let the tool discover it from startup logs. Set timeout_secs to 0 only for a finite foreground install/download/build that must not be interrupted. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
     )
 }
 
 fn prompt_timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s. Use `timeout_secs: 0` only for a finite long install/download/build. Prefer `background: true` plus a loopback `ready_url` for local web/API servers; recognized servers are automatically promoted and can discover a URL from startup logs when it is omitted. Continue after the managed-service result, call `service_action: \"status\"` around browser checks, and `service_action: \"stop\"` when finished."
+        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s, and a timed-out command still returns the output it produced. Do not block on a long timeout and do not fake waiting with sleep commands: run anything that may exceed the default with `background: true`, then poll the returned `service_id` with `service_action: \"wait\"` (returns the moment the process exits, and returns a running snapshot when its own budget elapses so you can keep working) or `service_action: \"status\"` for a single snapshot. Prefer a loopback `ready_url` for local web/API servers; recognized servers are automatically promoted and can discover a URL from startup logs when it is omitted. Continue after the managed-service result, re-check with `status` around browser checks, and call `service_action: \"stop\"` when finished."
     )
 }
 
@@ -420,7 +420,7 @@ fn shell_parameter_description() -> &'static str {
 
 fn timeout_parameter_description() -> String {
     format!(
-        "Timeout in seconds. Default {DEFAULT_TIMEOUT_SECS}. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode for services (ready_url is optional but recommended). The broader agent turn timeout can still stop the run if it is not raised or disabled."
+        "Timeout in seconds for a foreground run. Default {DEFAULT_TIMEOUT_SECS}. A timed-out command is killed and still reports the output it produced. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode plus service_action=wait for anything long-running. With service_action=wait this is the polling budget instead (default 30, max 900, 0 means the 900s cap). The broader agent turn timeout can still stop the run if it is not raised or disabled."
     )
 }
 
