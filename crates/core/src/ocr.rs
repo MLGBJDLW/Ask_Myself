@@ -1195,6 +1195,40 @@ pub fn check_ocr_models_exist(config: &OcrConfig) -> bool {
     required_ocr_model_files_are_valid(&dir)
 }
 
+/// Delete managed PaddleOCR model files at the configured location while
+/// preserving any unrelated files that share the directory.
+pub fn delete_ocr_models(config: &OcrConfig) -> Result<(), CoreError> {
+    let model_dir = ocr_model_dir(config)?;
+    if model_dir.exists() {
+        for filename in [
+            OCR_DET_MODEL_FILE,
+            OCR_CLS_MODEL_FILE,
+            OCR_REC_MODEL_FILE,
+            OCR_DICT_FILE,
+        ] {
+            let path = model_dir.join(filename);
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| {
+                    CoreError::Ocr(format!("failed to delete {}: {error}", path.display()))
+                })?;
+            }
+        }
+        if std::fs::read_dir(&model_dir)
+            .map_err(|error| CoreError::Ocr(error.to_string()))?
+            .next()
+            .is_none()
+        {
+            std::fs::remove_dir(&model_dir).map_err(|error| {
+                CoreError::Ocr(format!(
+                    "failed to remove empty model directory {}: {error}",
+                    model_dir.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn required_ocr_model_files_are_valid(dir: &Path) -> bool {
     looks_like_model_file(&dir.join(OCR_DET_MODEL_FILE), OCR_DET_MIN_BYTES)
         && looks_like_model_file(&dir.join(OCR_REC_MODEL_FILE), OCR_REC_MIN_BYTES)
@@ -1500,6 +1534,39 @@ mod tests {
         };
 
         assert!(check_ocr_models_exist(&config));
+    }
+
+    #[test]
+    fn test_delete_ocr_models_removes_configured_directory() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let model_dir = parent.path().join("paddleocr");
+        std::fs::create_dir(&model_dir).expect("create model directory");
+        std::fs::write(model_dir.join(OCR_DET_MODEL_FILE), b"model").expect("write model");
+        let config = OcrConfig {
+            model_path: model_dir.to_string_lossy().to_string(),
+            ..OcrConfig::default()
+        };
+
+        delete_ocr_models(&config).expect("delete OCR models");
+
+        assert!(!model_dir.exists());
+        assert!(parent.path().exists());
+    }
+
+    #[test]
+    fn test_delete_ocr_models_preserves_unrelated_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(OCR_DET_MODEL_FILE), b"model").expect("write model");
+        std::fs::write(dir.path().join("keep.txt"), b"user data").expect("write unrelated file");
+        let config = OcrConfig {
+            model_path: dir.path().to_string_lossy().to_string(),
+            ..OcrConfig::default()
+        };
+
+        delete_ocr_models(&config).expect("delete OCR models");
+
+        assert!(!dir.path().join(OCR_DET_MODEL_FILE).exists());
+        assert!(dir.path().join("keep.txt").exists());
     }
 
     #[test]

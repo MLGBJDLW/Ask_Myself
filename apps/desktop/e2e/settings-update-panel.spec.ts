@@ -102,9 +102,13 @@ test.beforeEach(async ({ page }) => {
             confirmDestructive: false,
             shellAccessMode: "open",
             toolApprovalMode: "allow_all",
+            windowCloseBehavior: "exit",
             hfMirrorBaseUrl: "https://hf-mirror.com",
             ghproxyBaseUrl: "https://mirror.ghproxy.com",
           };
+        case "save_app_config_cmd":
+          (window as unknown as { __savedAppConfig?: unknown }).__savedAppConfig = _args.config;
+          return null;
         case "get_index_stats":
           return { totalDocuments: 0, totalChunks: 0, ftsRows: 0 };
         case "get_privacy_config":
@@ -171,6 +175,19 @@ test("settings appearance tab owns version and update controls", async ({ page }
   await expect(page.getByText("Current version")).toBeVisible();
   await expect(page.getByRole("main").getByText("v0.2.9")).toBeVisible();
   await expect(page.getByRole("button", { name: "Check for Updates" })).toBeVisible();
+});
+
+test("close-to-tray is visible in appearance and saves immediately", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Appearance" }).click();
+
+  const trayOption = page.getByRole("button", { name: /Keep in system tray/ });
+  await expect(trayOption).toBeVisible();
+  await trayOption.click();
+  await expect(trayOption).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { windowCloseBehavior?: string } }
+  ).__savedAppConfig?.windowCloseBehavior)).toBe("minimize_to_tray");
 });
 
 test("unsupported stored update source falls back to GitHub", async ({ page }) => {

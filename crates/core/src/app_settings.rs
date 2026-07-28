@@ -241,7 +241,7 @@ impl SpeechToTextConfig {
                             .is_some_and(|value| !value.trim().is_empty())
                 }
             }
-            "openai_transcription" => {
+            "openai_transcription" | "dashscope_asr" => {
                 !self.api_key.trim().is_empty()
                     && !self.model.trim().is_empty()
                     && self
@@ -562,6 +562,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub window_close_behavior: WindowCloseBehavior,
 
+    /// Optional root directory for managed local model downloads. An empty
+    /// value keeps the legacy per-model locations for existing installations.
+    #[serde(default)]
+    pub local_model_root: String,
+
     /// Whether destructive tool calls require user confirmation. Default: false
     #[serde(default)]
     pub confirm_destructive: bool,
@@ -763,6 +768,7 @@ impl Default for AppConfig {
             tool_visibility_defaults_version: CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION,
             trace_enabled: default_trace_enabled(),
             window_close_behavior: WindowCloseBehavior::default(),
+            local_model_root: String::new(),
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: crate::approval::ToolApprovalMode::default(),
@@ -973,6 +979,7 @@ mod tests {
         );
         assert!(config.trace_enabled);
         assert_eq!(config.window_close_behavior, WindowCloseBehavior::Exit);
+        assert!(config.local_model_root.is_empty());
         assert_eq!(config.web_search.custom_providers.len(), 5);
         assert!(config
             .web_search
@@ -999,6 +1006,18 @@ mod tests {
         );
         let json = serde_json::to_value(config).expect("serialize app config");
         assert_eq!(json["windowCloseBehavior"], "minimize_to_tray");
+    }
+
+    #[test]
+    fn app_config_roundtrips_custom_local_model_root() {
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "localModelRoot": "D:\\NexaModels"
+        }))
+        .expect("deserialize local model root");
+
+        assert_eq!(config.local_model_root, "D:\\NexaModels");
+        let json = serde_json::to_value(config).expect("serialize app config");
+        assert_eq!(json["localModelRoot"], "D:\\NexaModels");
     }
 
     #[test]

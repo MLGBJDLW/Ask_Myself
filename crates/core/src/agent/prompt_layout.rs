@@ -150,6 +150,11 @@ pub(super) fn select_cache_stable_tool_surface(
 }
 
 fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&str>) -> bool {
+    let is_alibaba_qwen = provider_type == Some(ProviderType::AlibabaModelStudio)
+        && model.is_some_and(|model| {
+            let model_lower = model.to_ascii_lowercase();
+            model_lower.starts_with("qwen") || model_lower.starts_with("qwq")
+        });
     matches!(
         provider_type,
         Some(
@@ -160,9 +165,10 @@ fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&
                 | ProviderType::OpenRouter
                 | ProviderType::DeepSeek
         )
-    ) || model
-        .map(|model| model.to_ascii_lowercase().contains("deepseek"))
-        .unwrap_or(false)
+    ) || is_alibaba_qwen
+        || model
+            .map(|model| model.to_ascii_lowercase().contains("deepseek"))
+            .unwrap_or(false)
 }
 
 pub(super) fn turn_scaffolding_sections(
@@ -298,6 +304,21 @@ mod tests {
         assert!(layout.include_skill_system_prompt);
         assert!(!layout.allow_dynamic_tool_visibility);
         assert!(layout.append_volatile_system_prompt_to_tail);
+    }
+
+    #[test]
+    fn alibaba_qwen_models_keep_prefix_cache_without_affecting_router_models() {
+        let qwen =
+            PromptLayout::for_request(Some(ProviderType::AlibabaModelStudio), Some("qwen3.7-max"));
+        let third_party = PromptLayout::for_request(
+            Some(ProviderType::AlibabaModelStudio),
+            Some("kimi-k2.7-code"),
+        );
+
+        assert!(!qwen.allow_dynamic_tool_visibility);
+        assert!(qwen.append_volatile_system_prompt_to_tail);
+        assert!(third_party.allow_dynamic_tool_visibility);
+        assert!(!third_party.append_volatile_system_prompt_to_tail);
     }
 
     #[test]

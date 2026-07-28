@@ -14,6 +14,7 @@ interface TextToSpeechSettingsPanelProps {
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
   onSave: (config?: AppConfig) => void | Promise<void>;
+  providerScope?: 'all' | 'cloud' | 'local';
 }
 
 export const DEFAULT_TTS_CONFIG: TextToSpeechConfig = {
@@ -41,27 +42,35 @@ export function TextToSpeechSettingsPanel({
   onChange,
   onMarkDirty,
   onSave,
+  providerScope = 'all',
 }: TextToSpeechSettingsPanelProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.textToSpeech ?? DEFAULT_TTS_CONFIG;
-  const activePreset = useMemo(
+  const scopedPresets = useMemo(
+    () => TTS_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
+      || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
+    [providerScope],
+  );
+  const matchedPreset = useMemo(
     () => TTS_PROVIDER_PRESETS.find((preset) =>
       preset.apiStyle === config.apiStyle && preset.provider === config.provider,
-    ) ?? TTS_PROVIDER_PRESETS[0],
+    ),
     [config.apiStyle, config.provider],
   );
+  const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
+  const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
   const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
   const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
-  const configured = localProvider
+  const configured = scopeActive && (localProvider
     ? Boolean(
         config.executablePath?.trim()
         && config.modelPath?.trim()
         && config.tokensPath?.trim()
         && (!localFamilyNeedsVoices || config.voicesPath?.trim()),
       )
-    : Boolean(config.apiKey.trim() && config.model.trim() && config.voice.trim());
+    : Boolean(config.apiKey.trim() && config.model.trim() && config.voice.trim()));
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -69,7 +78,7 @@ export function TextToSpeechSettingsPanel({
   };
 
   const applyPreset = (presetId: string) => {
-    const preset = TTS_PROVIDER_PRESETS.find((candidate) => candidate.id === presetId);
+    const preset = scopedPresets.find((candidate) => candidate.id === presetId);
     if (!preset) return;
     update({
       provider: preset.provider,
@@ -102,7 +111,9 @@ export function TextToSpeechSettingsPanel({
                 ? 'border-success/20 bg-success/10 text-success'
                 : 'border-warning/25 bg-warning/10 text-warning'}
             >
-              {configured
+              {!scopeActive
+                ? t('settings.speechProviderNotActive')
+                : configured
                 ? t('settings.configured')
                 : localProvider
                   ? t('settings.ttsNeedsLocalFiles')
@@ -119,7 +130,7 @@ export function TextToSpeechSettingsPanel({
       {expanded && (
         <div className="border-t border-border px-4 py-4">
           <p className="mb-4 text-xs text-text-tertiary">{t('settings.textToSpeechDesc')}</p>
-          <label className="mb-4 flex items-center justify-between gap-4 rounded-md border border-border/60 bg-surface-1/60 px-3 py-2.5">
+          {providerScope !== 'local' && <label className="mb-4 flex items-center justify-between gap-4 rounded-md border border-border/60 bg-surface-1/60 px-3 py-2.5">
             <span>
               <span className="block text-sm font-medium text-text-primary">{t('settings.ttsAutoSpeakFinal')}</span>
               <span className="block text-[11px] leading-5 text-text-tertiary">{t('settings.ttsAutoSpeakFinalDesc')}</span>
@@ -130,16 +141,17 @@ export function TextToSpeechSettingsPanel({
               onChange={(event) => update({ autoSpeakFinalAnswers: event.target.checked })}
               className="h-4 w-4 accent-accent"
             />
-          </label>
+          </label>}
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
               <select
-                value={activePreset.id}
+                value={scopeActive ? activePreset.id : ''}
                 onChange={(event) => applyPreset(event.target.value)}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
-                {TTS_PROVIDER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                {!scopeActive && <option value="" disabled>{t('settings.selectSpeechProvider')}</option>}
+                {scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
               <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
                 <ProviderIcon provider={activePreset.provider} providerId={activePreset.id} baseUrl={activePreset.baseUrl} size="sm" />

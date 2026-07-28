@@ -1,16 +1,22 @@
-import { AlertTriangle, Brain, HardDrive, Mic, ScanLine } from 'lucide-react';
+import { AlertTriangle, Brain, FolderOpen, HardDrive, Mic, RotateCcw, ScanLine } from 'lucide-react';
+import { open } from '@tauri-apps/plugin-dialog';
+import { useEffect, useState } from 'react';
 import { useTranslation } from '../../i18n';
-import type { OfficeRuntimeReadiness } from '../../lib/api';
+import type { ManagedModelPaths, OfficeRuntimeReadiness } from '../../lib/api';
 import type { DownloadProgress } from '../../types/ingest';
 import type { AppConfig } from '../../types/conversation';
 import type { EmbedderConfig, LocalModelId } from '../../types/embedder';
 import type { OcrDownloadProgress } from '../../types/ocr';
 import type { VideoConfig, VideoDownloadProgress, WhisperModel } from '../../types/video';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
 import { CollapsiblePanel, Section } from './SettingsSection';
 import { ModelCard } from './ModelCard';
 import { NetworkMirrorsPanel } from './NetworkMirrorsPanel';
 import { OfficeRuntimePanel } from './OfficeRuntimePanel';
+import { SpeechToTextSettingsPanel } from './SpeechToTextSettingsPanel';
+import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
 
 interface ModelDownloadsSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -29,6 +35,8 @@ interface ModelDownloadsSectionProps {
   appConfig: AppConfig | null;
   appConfigLoading: boolean;
   deleteEmbedModelConfirmOpen: boolean;
+  managedModelPaths: ManagedModelPaths | null;
+  modelStorageSaving: boolean;
   onEmbedLocalModelChange: (model: LocalModelId) => void;
   onDownloadModel: () => void;
   onCancelDownload: () => void;
@@ -36,7 +44,9 @@ interface ModelDownloadsSectionProps {
   onCloseDeleteEmbedModel: () => void;
   onConfirmDeleteEmbedModel: () => void;
   onDownloadOcrModels: () => void;
+  onDeleteOcrModels: () => void | Promise<void>;
   onWhisperDownload: () => void;
+  onDeleteWhisperModel: () => void | Promise<void>;
   onWhisperModelChange: (model: WhisperModel) => void;
   onPrepareOfficeRuntime: () => void;
   onRefreshOfficeRuntime: () => void;
@@ -44,6 +54,8 @@ interface ModelDownloadsSectionProps {
   onAppConfigChange: (config: AppConfig) => void;
   onAppConfigSave: () => void;
   onMarkModelsDirty: () => void;
+  onApplyManagedModelRoot: (root: string) => void | Promise<void>;
+  onResetManagedModelRoot: () => void | Promise<void>;
 }
 
 function whisperModelSize(model: VideoConfig['whisperModel'] | undefined): string | undefined {
@@ -82,6 +94,8 @@ export function ModelDownloadsSection({
   appConfig,
   appConfigLoading,
   deleteEmbedModelConfirmOpen,
+  managedModelPaths,
+  modelStorageSaving,
   onEmbedLocalModelChange,
   onDownloadModel,
   onCancelDownload,
@@ -89,7 +103,9 @@ export function ModelDownloadsSection({
   onCloseDeleteEmbedModel,
   onConfirmDeleteEmbedModel,
   onDownloadOcrModels,
+  onDeleteOcrModels,
   onWhisperDownload,
+  onDeleteWhisperModel,
   onWhisperModelChange,
   onPrepareOfficeRuntime,
   onRefreshOfficeRuntime,
@@ -97,8 +113,26 @@ export function ModelDownloadsSection({
   onAppConfigChange,
   onAppConfigSave,
   onMarkModelsDirty,
+  onApplyManagedModelRoot,
+  onResetManagedModelRoot,
 }: ModelDownloadsSectionProps) {
   const { t } = useTranslation();
+  const [modelRootDraft, setModelRootDraft] = useState('');
+  const [deleteManagedModel, setDeleteManagedModel] = useState<'ocr' | 'whisper' | null>(null);
+
+  useEffect(() => {
+    if (managedModelPaths?.root) setModelRootDraft(managedModelPaths.root);
+  }, [managedModelPaths?.root]);
+
+  const chooseModelRoot = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: t('settings.localModelStorageChoose'),
+      defaultPath: modelRootDraft || undefined,
+    });
+    if (typeof selected === 'string') setModelRootDraft(selected);
+  };
 
   return (
     <Section
@@ -110,6 +144,64 @@ export function ModelDownloadsSection({
       defaultOpen={false}
     >
       <div className="space-y-4">
+        <div className="rounded-xl border border-border bg-surface-1/70 p-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+              <HardDrive size={18} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-text-primary">{t('settings.localModelStorage')}</p>
+              <p className="mt-1 text-xs leading-relaxed text-text-tertiary">{t('settings.localModelStorageDesc')}</p>
+              <div className="mt-3 flex gap-2">
+                <Input
+                  value={modelRootDraft}
+                  onChange={(event) => setModelRootDraft(event.target.value)}
+                  placeholder={managedModelPaths?.root ?? ''}
+                  aria-label={t('settings.localModelStorage')}
+                  className="min-w-0 flex-1 font-mono text-xs"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<FolderOpen size={14} />}
+                  onClick={() => { void chooseModelRoot(); }}
+                  disabled={modelStorageSaving}
+                >
+                  {t('settings.localModelStorageBrowse')}
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => { void onApplyManagedModelRoot(modelRootDraft.trim()); }}
+                  loading={modelStorageSaving}
+                  disabled={!modelRootDraft.trim()}
+                >
+                  {t('settings.localModelStorageApply')}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<RotateCcw size={14} />}
+                  onClick={() => { void onResetManagedModelRoot(); }}
+                  disabled={modelStorageSaving}
+                >
+                  {t('settings.localModelStorageDefault')}
+                </Button>
+              </div>
+              {managedModelPaths && (
+                <div className="mt-3 grid gap-1 rounded-lg border border-border/70 bg-surface-2/60 p-3 font-mono text-[11px] leading-relaxed text-text-tertiary">
+                  <span>{t('settings.modelsEmbedding')}: {managedModelPaths.embedding}</span>
+                  <span>{t('settings.modelsOcr')}: {managedModelPaths.ocr}</span>
+                  <span>{t('settings.modelsWhisper')}: {managedModelPaths.whisper}</span>
+                </div>
+              )}
+              <p className="mt-2 text-[11px] leading-relaxed text-warning">{t('settings.localModelStorageWarning')}</p>
+            </div>
+          </div>
+        </div>
+
         {/* Embedding Model */}
         <ModelCard
           title={t('settings.modelsEmbedding')}
@@ -180,6 +272,7 @@ export function ModelDownloadsSection({
           }
           size={t('settings.ocrModelSize')}
           onDownload={onDownloadOcrModels}
+          onDelete={() => setDeleteManagedModel('ocr')}
           downloadProgress={ocrProgress ? {
             filename: ocrProgress.filename,
             bytesDownloaded: ocrProgress.bytesDownloaded,
@@ -202,6 +295,7 @@ export function ModelDownloadsSection({
           }
           size={whisperModelSize(videoConfig?.whisperModel)}
           onDownload={onWhisperDownload}
+          onDelete={() => setDeleteManagedModel('whisper')}
           downloadProgress={videoProgress ? {
             filename: videoProgress.filename,
             bytesDownloaded: videoProgress.bytesDownloaded,
@@ -243,6 +337,31 @@ export function ModelDownloadsSection({
             </div>
           )}
         </ModelCard>
+
+        {appConfig && (
+          <div className="space-y-3 rounded-xl border border-border bg-surface-1/40 p-4">
+            <div>
+              <p className="text-sm font-semibold text-text-primary">{t('settings.localSpeechModels')}</p>
+              <p className="mt-1 text-xs leading-relaxed text-text-tertiary">{t('settings.localSpeechModelsDesc')}</p>
+            </div>
+            <TextToSpeechSettingsPanel
+              providerScope="local"
+              appConfig={appConfig}
+              loading={appConfigLoading}
+              onChange={onAppConfigChange}
+              onMarkDirty={onMarkModelsDirty}
+              onSave={onAppConfigSave}
+            />
+            <SpeechToTextSettingsPanel
+              providerScope="local"
+              appConfig={appConfig}
+              loading={appConfigLoading}
+              onChange={onAppConfigChange}
+              onMarkDirty={onMarkModelsDirty}
+              onSave={onAppConfigSave}
+            />
+          </div>
+        )}
 
         <OfficeRuntimePanel
           readiness={officeRuntime}
@@ -287,6 +406,18 @@ export function ModelDownloadsSection({
         open={deleteEmbedModelConfirmOpen}
         onClose={onCloseDeleteEmbedModel}
         onConfirm={onConfirmDeleteEmbedModel}
+        title={t('settings.deleteModel')}
+        message={t('settings.deleteModelConfirm')}
+        confirmText={t('common.delete')}
+        variant="danger"
+      />
+      <ConfirmDialog
+        open={deleteManagedModel !== null}
+        onClose={() => setDeleteManagedModel(null)}
+        onConfirm={() => {
+          const action = deleteManagedModel === 'ocr' ? onDeleteOcrModels : onDeleteWhisperModel;
+          void Promise.resolve(action()).finally(() => setDeleteManagedModel(null));
+        }}
         title={t('settings.deleteModel')}
         message={t('settings.deleteModelConfirm')}
         confirmText={t('common.delete')}

@@ -49,6 +49,34 @@ function loadVoiceStorage(windowOverride = undefined) {
   return module.exports;
 }
 
+function loadVoiceInputRuntime() {
+  const runtimePath = path.join(root, 'src', 'features', 'voice', 'voiceInputRuntime.ts');
+  const runtimeSource = fs.readFileSync(runtimePath, 'utf8');
+  const transpiled = ts.transpileModule(runtimeSource, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  const context = {
+    exports: module.exports,
+    module,
+    require: (specifier) => {
+      if (specifier === 'react') {
+        return {
+          useCallback: (value) => value,
+          useMemo: (value) => value(),
+          useState: (value) => [value, () => {}],
+        };
+      }
+      return {};
+    },
+  };
+  vm.runInNewContext(transpiled.outputText, context, { filename: runtimePath });
+  return module.exports;
+}
+
 function test(name, fn) {
   try {
     fn();
@@ -91,4 +119,20 @@ test('writeSelectedMicDeviceId stores, clears, and emits runtime changes', () =>
   voiceStorage.writeSelectedMicDeviceId(null, storage);
   assert.equal(storage.getItem('nexa-mic-device-id'), null);
   assert.deepEqual(events.map((event) => event.detail.deviceId), ['mic-1', null]);
+});
+
+test('accepts configured DashScope ASR providers for voice input', () => {
+  const { isSpeechToTextConfigured } = loadVoiceInputRuntime();
+  const configured = {
+    provider: 'qwen',
+    apiStyle: 'dashscope_asr',
+    apiKey: 'sk-demo',
+    baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+    model: 'qwen3-asr-flash',
+    language: null,
+  };
+
+  assert.equal(isSpeechToTextConfigured(configured), true);
+  assert.equal(isSpeechToTextConfigured({ ...configured, apiKey: '' }), false);
+  assert.equal(isSpeechToTextConfigured({ ...configured, model: '' }), false);
 });

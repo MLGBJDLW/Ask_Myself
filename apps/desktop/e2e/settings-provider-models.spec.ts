@@ -59,6 +59,22 @@ test.beforeEach(async ({ page }) => {
       llmFallback: false,
       detectionLimit: 2048,
       useCls: false,
+      modelPath: "",
+    };
+
+    const videoConfig = {
+      enabled: false,
+      whisperModel: "base",
+      language: null,
+      translateToEnglish: false,
+      ffmpegPath: null,
+      frameExtractionEnabled: false,
+      frameIntervalSecs: 10,
+      modelPath: "C:\\Nexa\\models\\whisper",
+      sceneThreshold: 0.4,
+      useGpu: true,
+      preferEmbeddedSubtitles: true,
+      beamSize: 5,
     };
 
     const appConfig = {
@@ -77,6 +93,7 @@ test.beforeEach(async ({ page }) => {
       toolApprovalMode: "ask",
       hfMirrorBaseUrl: "https://hf-mirror.com",
       ghproxyBaseUrl: "https://mirror.ghproxy.com",
+      localModelRoot: "",
       imageGeneration: {
         provider: "open_ai",
         apiStyle: "openai_images",
@@ -165,7 +182,36 @@ test.beforeEach(async ({ page }) => {
         case "get_ocr_config_cmd":
           return clone(ocrConfig);
         case "check_ocr_models_cmd":
+          return true;
+        case "get_video_config_cmd":
+          return clone(videoConfig);
+        case "check_whisper_model_cmd":
           return false;
+        case "get_managed_model_paths_cmd": {
+          const customRoot = typeof _args.root === "string" && _args.root.trim()
+            ? _args.root.trim()
+            : null;
+          const root = customRoot || "C:\\Nexa\\models";
+          return {
+            root,
+            embedding: `${root}\\paraphrase-multilingual-MiniLM-L12-v2`,
+            ocr: `${root}\\paddleocr`,
+            whisper: customRoot ? `${root}\\whisper` : "C:\\Nexa\\legacy-whisper",
+          };
+        }
+        case "save_embedder_config_cmd":
+          (window as unknown as { __savedEmbedConfig?: unknown }).__savedEmbedConfig = clone(_args.config);
+          return null;
+        case "save_ocr_config_cmd":
+          (window as unknown as { __savedOcrConfig?: unknown }).__savedOcrConfig = clone(_args.config);
+          return null;
+        case "save_video_config_cmd":
+          Object.assign(videoConfig, clone(_args.config));
+          (window as unknown as { __savedVideoConfig?: unknown }).__savedVideoConfig = clone(videoConfig);
+          return null;
+        case "delete_ocr_models_cmd":
+          (window as unknown as { __ocrDeleted?: boolean }).__ocrDeleted = true;
+          return null;
         default:
           return null;
       }
@@ -199,11 +245,16 @@ test.beforeEach(async ({ page }) => {
 test("settings provider form shows updated preset models for add and edit flows", async ({
   page,
 }) => {
+  const modelField = () =>
+    page
+      .locator("label")
+      .filter({ hasText: "Default Model" })
+      .locator("xpath=../..");
   const expectModelOptions = async (
     modelSelect: Locator,
     expectedNames: string[],
   ) => {
-    const options = await modelSelect.locator("option").allTextContents();
+    const options = await modelField().locator("option, button").allTextContents();
     for (const expectedName of expectedNames) {
       expect(
         options.some((option) => option.includes(expectedName)),
@@ -211,11 +262,6 @@ test("settings provider form shows updated preset models for add and edit flows"
       ).toBe(true);
     }
   };
-  const modelField = () =>
-    page
-      .locator("label")
-      .filter({ hasText: "Default Model" })
-      .locator("xpath=../..");
   const providerField = () =>
     page
       .locator("label")
@@ -248,9 +294,13 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Gemini 3 Flash Preview",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("qwen");
+  await providerField().getByRole("combobox").selectOption("alibaba_model_studio");
   modelSelect = modelField().getByRole("combobox");
   await expectModelOptions(modelSelect, [
+    "DeepSeek V4 Pro",
+    "Kimi K2.7 Code",
+    "GLM-5.2",
+    "MiniMax M2.5",
     "Qwen3.7 Max",
     "Qwen3 Max",
     "Qwen3.5 Plus",
@@ -299,7 +349,9 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
 
-  const minimaxCard = page.getByRole("button", { name: /MiniMax/ });
+  const minimaxCard = page
+    .getByRole("button")
+    .filter({ has: page.locator('[title="MiniMax"]') });
   await expect(minimaxCard).toBeVisible();
   const minimaxGlyph = minimaxCard.locator('[title="MiniMax"] > span');
   await expect(minimaxGlyph).toHaveAttribute("style", /provider-icons\/minimax\.svg/);
@@ -330,6 +382,41 @@ test("settings exposes Qwen3.8 only through the Token Plan endpoint", async ({ p
   const modelSelect = modelField.getByRole("combobox");
   await expect(modelSelect).toHaveValue("qwen3.8-max-preview");
   await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
+});
+
+test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByTitle("Edit").nth(1).click();
+
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const options = await modelField.locator("option, button").allTextContents();
+  expect(options.some((option) => option.includes("Qwen3.7 Max"))).toBe(true);
+  expect(options.some((option) => option.includes("DeepSeek V4 Pro"))).toBe(true);
+  expect(options.some((option) => option.includes("Qwen3.8 Max Preview"))).toBe(false);
+});
+
+test("settings exposes Alibaba Model Studio and SiliconFlow as router presets", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const alibaba = page.getByRole("button", { name: /^Alibaba Cloud Model Studio/ });
+  await expect(alibaba).toContainText("DeepSeek, Kimi, GLM, and MiniMax");
+  await expect(alibaba.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/alibabacloud\.svg/,
+  );
+
+  const siliconFlow = page.getByRole("button", { name: /^SiliconFlow/ });
+  await expect(siliconFlow).toContainText("GLM, DeepSeek, Qwen");
+  await expect(siliconFlow.locator('[title="SiliconFlow"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/siliconflow\.svg/,
+  );
 });
 
 test("settings exposes image generation model config under AI providers", async ({
@@ -399,12 +486,12 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
 
-  await selects.nth(0).selectOption("sherpa-onnx");
-  await expect(selects.nth(1)).toHaveValue("vits");
-  await expect(panel.locator('[title="sherpa-onnx"]')).toContainText("S");
-  await expect(panel.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
-  await expect(panel.getByTestId("tts-local-model")).toBeVisible();
-  await expect(panel.locator("label").filter({ hasText: "API Key" })).toHaveCount(0);
+  await selects.nth(0).selectOption("siliconflow");
+  await expect(selects.nth(1)).toHaveValue("fnlp/MOSS-TTSD-v0.5");
+  await expect(panel.locator('[title="SiliconFlow"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/siliconflow\.svg/,
+  );
 
   const sttPanel = page.getByTestId("speech-to-text-settings-panel");
   await expect(sttPanel.getByRole("heading", { name: "Speech to Text" })).toBeVisible();
@@ -417,11 +504,107 @@ test("settings promotes low-latency speech providers with their own logos", asyn
     "whisper-large-v3-turbo",
   );
 
-  await sttProvider.selectOption("sherpa-zipformer");
-  await expect(sttPanel.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
-  await expect(sttPanel.locator("label").filter({ hasText: "encoder" })).toBeVisible();
-  await expect(sttPanel.locator("label").filter({ hasText: "decoder" })).toBeVisible();
-  await expect(sttPanel.locator("label").filter({ hasText: "joiner" })).toBeVisible();
+  await sttProvider.selectOption("alibaba-qwen-asr");
+  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
+  await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
+    "style",
+    /provider-icons\/alibabacloud\.svg/,
+  );
+
+  await sttProvider.selectOption("siliconflow");
+  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
+    "FunAudioLLM/SenseVoiceSmall",
+  );
+});
+
+test("settings keeps sherpa local models with downloaded models and separates provider categories", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.locator('[data-provider-category="image-generation"]')).toContainText("Image generation");
+  await expect(page.locator('[data-provider-category="text-to-speech"]')).toContainText("Cloud text to speech");
+  await expect(page.locator('[data-provider-category="speech-to-text"]')).toContainText("Cloud speech to text");
+
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+  await expect(page.getByText("Local speech models")).toBeVisible();
+  const localTts = page.getByTestId("text-to-speech-settings-panel");
+  await localTts.locator("button").first().click();
+  await localTts.locator("select").first().selectOption("sherpa-onnx");
+  await expect(localTts.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
+
+  const localStt = page.getByTestId("speech-to-text-settings-panel");
+  await localStt.locator("button").first().click();
+  await localStt.getByTestId("stt-provider-select").selectOption("sherpa-zipformer");
+  await expect(localStt.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
+});
+
+test("settings applies a managed model root and exposes OCR deletion", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+
+  const rootInput = page.getByRole("textbox", { name: "Local model storage" });
+  await expect(rootInput).toHaveValue("C:\\Nexa\\models");
+  await rootInput.fill("D:\\NexaModels");
+  await page.getByRole("button", { name: "Use this location" }).click();
+
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { localModelRoot?: string } }
+  ).__savedAppConfig?.localModelRoot)).toBe("D:\\NexaModels");
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedOcrConfig?: { modelPath?: string } }
+  ).__savedOcrConfig?.modelPath)).toBe("D:\\NexaModels\\paddleocr");
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedVideoConfig?: { modelPath?: string } }
+  ).__savedVideoConfig?.modelPath)).toBe("D:\\NexaModels\\whisper");
+
+  await page.getByRole("button", { name: "Restore default" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { localModelRoot?: string } }
+  ).__savedAppConfig?.localModelRoot)).toBe("");
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedVideoConfig?: { modelPath?: string } }
+  ).__savedVideoConfig?.modelPath)).toBe("C:\\Nexa\\legacy-whisper");
+
+  const ocrCard = page.getByRole("heading", { name: "OCR Model" }).locator("xpath=../../..");
+  await ocrCard.getByRole("button", { name: "Delete model" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __ocrDeleted?: boolean }
+  ).__ocrDeleted)).toBe(true);
+});
+
+test("settings discard restores local speech while keeping persisted Whisper edits", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+
+  const localTts = page.getByTestId("text-to-speech-settings-panel");
+  await localTts.locator("button").first().click();
+  await localTts.locator("select").first().selectOption("sherpa-onnx");
+  let whisperCard = page
+    .getByRole("heading", { name: "Speech Recognition Model" })
+    .locator("xpath=../../..");
+  await whisperCard.getByRole("button", { name: "Expand" }).click();
+  await page.getByRole("button", { name: /^Small / }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedVideoConfig?: { whisperModel?: string } }
+  ).__savedVideoConfig?.whisperModel)).toBe("small");
+
+  await page.getByRole("button", { name: "Appearance" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Discard changes" }).click();
+  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+  const restoredTts = page.getByTestId("text-to-speech-settings-panel");
+  await restoredTts.locator("button").first().click();
+  await expect(restoredTts.locator("select").first()).toHaveValue("");
+  whisperCard = page
+    .getByRole("heading", { name: "Speech Recognition Model" })
+    .locator("xpath=../../..");
+  await whisperCard.getByRole("button", { name: "Expand" }).click();
+  await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
 test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {

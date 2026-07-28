@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use regex::Regex;
 use serde::Deserialize;
 
@@ -12,6 +13,21 @@ use crate::error::CoreError;
 #[derive(Deserialize)]
 struct CloudTranscript {
     text: String,
+}
+
+#[derive(Deserialize)]
+struct DashScopeTranscript {
+    choices: Vec<DashScopeTranscriptChoice>,
+}
+
+#[derive(Deserialize)]
+struct DashScopeTranscriptChoice {
+    message: DashScopeTranscriptMessage,
+}
+
+#[derive(Deserialize)]
+struct DashScopeTranscriptMessage {
+    content: String,
 }
 
 fn transcription_endpoint(base_url: &str) -> String {
@@ -27,11 +43,25 @@ pub async fn transcribe_cloud_wav(
     audio_data: Vec<u8>,
     config: &SpeechToTextConfig,
 ) -> Result<String, CoreError> {
-    if !config.is_configured() || config.api_style != "openai_transcription" {
+    if !config.is_configured() {
         return Err(CoreError::InvalidInput(
             "Cloud speech-to-text is not fully configured".into(),
         ));
     }
+    match config.api_style.as_str() {
+        "openai_transcription" => transcribe_openai_compatible_wav(audio_data, config).await,
+        "dashscope_asr" => transcribe_dashscope_wav(audio_data, config).await,
+        _ => Err(CoreError::InvalidInput(format!(
+            "Unsupported cloud speech-to-text API style: {}",
+            config.api_style
+        ))),
+    }
+}
+
+async fn transcribe_openai_compatible_wav(
+    audio_data: Vec<u8>,
+    config: &SpeechToTextConfig,
+) -> Result<String, CoreError> {
     let endpoint = transcription_endpoint(config.base_url.as_deref().unwrap_or_default());
     let file = reqwest::multipart::Part::bytes(audio_data)
         .file_name("voice.wav")
@@ -70,6 +100,70 @@ pub async fn transcribe_cloud_wav(
     let transcript: CloudTranscript = serde_json::from_str(&body)
         .map_err(|error| CoreError::Parse(format!("Invalid transcription response: {error}")))?;
     Ok(transcript.text.trim().to_string())
+}
+
+fn chat_completions_endpoint(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
+    }
+}
+
+async fn transcribe_dashscope_wav(
+    audio_data: Vec<u8>,
+    config: &SpeechToTextConfig,
+) -> Result<String, CoreError> {
+    let endpoint = chat_completions_endpoint(config.base_url.as_deref().unwrap_or_default());
+    let data_url = format!("data:audio/wav;base64,{}", BASE64.encode(audio_data));
+    let mut asr_options = serde_json::json!({ "enable_itn": true });
+    if let Some(language) = config
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        asr_options["language"] = serde_json::Value::String(language.to_string());
+    }
+    let body = serde_json::json!({
+        "model": config.model.trim(),
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": { "data": data_url }
+            }]
+        }],
+        "stream": false,
+        "asr_options": asr_options
+    });
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .bearer_auth(config.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| CoreError::Llm(format!("Qwen ASR request failed: {error}")))?;
+    let status = response.status();
+    let response_body = response
+        .text()
+        .await
+        .map_err(|error| CoreError::Llm(format!("Qwen ASR response failed: {error}")))?;
+    if !status.is_success() {
+        return Err(CoreError::Llm(format!(
+            "Qwen ASR returned {status}: {}",
+            response_body.chars().take(500).collect::<String>()
+        )));
+    }
+    let transcript: DashScopeTranscript = serde_json::from_str(&response_body)
+        .map_err(|error| CoreError::Parse(format!("Invalid Qwen ASR response: {error}")))?;
+    transcript
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| CoreError::Parse("Qwen ASR returned no transcript text".into()))
 }
 
 fn required_path(value: &Option<String>, label: &str) -> Result<String, CoreError> {
@@ -188,6 +282,10 @@ mod tests {
         assert_eq!(
             transcription_endpoint("https://api.openai.com/v1"),
             "https://api.openai.com/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            chat_completions_endpoint("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         );
         assert_eq!(
             transcription_endpoint("https://example.test/audio/transcriptions/"),

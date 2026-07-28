@@ -7347,6 +7347,59 @@
     ]
   },
   {
+    "id": "siliconflow",
+    "name": "SiliconFlow",
+    "provider": "siliconflow",
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "requiresApiKey": true,
+    "icon": "SF",
+    "description": "Chinese OpenAI-compatible router for GLM, DeepSeek, Qwen, and other hosted open models",
+    "capabilities": {
+      "reasoning": {
+        "effortLevels": [],
+        "thinkingBudget": {
+          "enabled": true,
+          "defaultTokens": 4096,
+          "minTokens": 128,
+          "maxTokens": 32768,
+          "step": 128
+        }
+      },
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "Pro/zai-org/GLM-5",
+        "name": "GLM-5 Pro",
+        "tagKey": "providers.tagLatest",
+        "recommended": true
+      },
+      {
+        "id": "Pro/zai-org/GLM-4.7",
+        "name": "GLM-4.7 Pro"
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V3.2",
+        "name": "DeepSeek V3.2"
+      },
+      {
+        "id": "Pro/deepseek-ai/DeepSeek-V3.2",
+        "name": "DeepSeek V3.2 Pro"
+      },
+      {
+        "id": "Qwen/Qwen3.5-397B-A17B",
+        "name": "Qwen3.5 397B A17B"
+      },
+      {
+        "id": "zai-org/GLM-4.5V",
+        "name": "GLM-4.5V",
+        "capabilities": {
+          "vision": true
+        }
+      }
+    ]
+  },
+  {
     "id": "qwen-token-plan-cn",
     "name": "Qwen Token Plan",
     "provider": "qwen",
@@ -7376,13 +7429,13 @@
     ]
   },
   {
-    "id": "qwen",
-    "name": "Qwen",
-    "provider": "qwen",
+    "id": "alibaba-model-studio",
+    "name": "Alibaba Cloud Model Studio (Bailian)",
+    "provider": "alibaba_model_studio",
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "Qwen3.7 Max/Plus, Qwen3.6 Plus/Flash, QwQ, Qwen3-VL",
+    "description": "Alibaba Cloud router for Qwen plus mainstream third-party DeepSeek, Kimi, GLM, and MiniMax models",
     "capabilities": {
       "reasoning": {
         "effortLevels": [],
@@ -7396,6 +7449,44 @@
       "vision": false
     },
     "models": [
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "tagKey": "providers.tagMostIntelligent",
+        "recommended": true
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "tagKey": "providers.tagFast"
+      },
+      {
+        "id": "kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "tagKey": "providers.tagCode",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "kimi-k2.6",
+        "name": "Kimi K2.6",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2"
+      },
+      {
+        "id": "glm-5.1",
+        "name": "GLM-5.1"
+      },
+      {
+        "id": "MiniMax-M2.5",
+        "name": "MiniMax M2.5"
+      },
       {
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",

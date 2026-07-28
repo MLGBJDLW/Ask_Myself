@@ -288,17 +288,17 @@ export const saveEmbedderConfig = (config: EmbedderConfig) =>
 export const testApiConnection = (apiKey: string, baseUrl: string, model: string, dimensions: number) =>
   invoke<boolean>('test_api_connection_cmd', { apiKey, baseUrl, model, dimensions });
 
-export const checkLocalModel = (localModel?: string) =>
-  invoke<boolean>('check_local_model_cmd', { localModel });
+export const checkLocalModel = (localModel?: string, modelPath?: string) =>
+  invoke<boolean>('check_local_model_cmd', { localModel, modelPath });
 
-export const downloadLocalModel = (localModel?: string) =>
-  invoke<void>('download_local_model_cmd', { localModel });
+export const downloadLocalModel = (localModel?: string, modelPath?: string) =>
+  invoke<void>('download_local_model_cmd', { localModel, modelPath });
 
 export const cancelModelDownload = () =>
   invoke<void>('cancel_model_download_cmd');
 
-export const deleteLocalModel = (localModel?: string) =>
-  invoke<void>('delete_local_model_cmd', { localModel });
+export const deleteLocalModel = (localModel?: string, modelPath?: string) =>
+  invoke<void>('delete_local_model_cmd', { localModel, modelPath });
 
 // ── File ────────────────────────────────────────────────────────────────
 
@@ -1152,6 +1152,19 @@ export const checkOcrModels = (config: OcrConfig) =>
 
 export const downloadOcrModels = (config: OcrConfig) =>
   invoke<void>('download_ocr_models_cmd', { config });
+
+export const deleteOcrModels = (config: OcrConfig) =>
+  invoke<void>('delete_ocr_models_cmd', { config });
+
+export interface ManagedModelPaths {
+  root: string;
+  embedding: string;
+  ocr: string;
+  whisper: string;
+}
+
+export const getManagedModelPaths = (root?: string, localModel?: string) =>
+  invoke<ManagedModelPaths>('get_managed_model_paths_cmd', { root, localModel });
 
 // ── App Config ──────────────────────────────────────────────────────
 

@@ -354,6 +354,7 @@ export interface AppConfig {
   toolVisibilityDefaultsVersion?: number;
   traceEnabled?: boolean;
   windowCloseBehavior?: 'exit' | 'minimize_to_tray';
+  localModelRoot?: string;
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
   toolApprovalMode?: 'ask' | 'allow_all' | 'deny_all';
@@ -496,6 +497,8 @@ export type ProviderType =
   | 'zhipu'
   | 'moonshot'
   | 'qwen'
+  | 'alibaba_model_studio'
+  | 'siliconflow'
   | 'doubao'
   | 'yi'
   | 'baichuan'

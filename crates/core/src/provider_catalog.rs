@@ -112,10 +112,11 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
     let presets = load_provider_presets().ok()?;
     let provider = provider.trim();
     let normalized_base_url = normalize_base_url(base_url);
+    let lookup_provider = provider_key_for_preset_lookup(provider, &normalized_base_url);
 
     if !normalized_base_url.is_empty() {
         if let Some(exact) = presets.iter().find(|preset| {
-            preset.provider == provider
+            preset.provider == lookup_provider
                 && normalize_base_url(Some(&preset.base_url)) == normalized_base_url
         }) {
             return Some(exact.clone());
@@ -124,11 +125,11 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
 
     let mut provider_matches = presets
         .into_iter()
-        .filter(|preset| preset.provider == provider)
+        .filter(|preset| preset.provider == lookup_provider)
         .collect::<Vec<_>>();
     if let Some(default_index) = provider_matches
         .iter()
-        .position(|preset| preset.id == provider)
+        .position(|preset| preset.id == lookup_provider)
     {
         return Some(provider_matches.swap_remove(default_index));
     }
@@ -136,6 +137,18 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         provider_matches.pop()
     } else {
         None
+    }
+}
+
+fn provider_key_for_preset_lookup<'a>(provider: &'a str, normalized_base_url: &str) -> &'a str {
+    let is_legacy_qwen_payg = provider == "qwen"
+        && !normalized_base_url.contains("token-plan.")
+        && (normalized_base_url.contains("dashscope")
+            || normalized_base_url.contains("maas.aliyuncs.com"));
+    if is_legacy_qwen_payg {
+        "alibaba_model_studio"
+    } else {
+        provider
     }
 }
 
@@ -369,19 +382,22 @@ mod tests {
     }
 
     #[test]
-    fn qwen_catalog_separates_pay_as_you_go_from_token_plan() {
+    fn alibaba_model_studio_catalog_routes_qwen_and_third_party_models() {
         let qwen = find_provider_preset(
-            "qwen",
+            "alibaba_model_studio",
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
-        .expect("qwen preset should match");
+        .expect("Alibaba Model Studio preset should match");
         let ids = qwen
             .models
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"qwen3.7-max"));
+        assert_eq!(ids.first(), Some(&"deepseek-v4-pro"));
+        assert!(ids.contains(&"kimi-k2.7-code"));
+        assert!(ids.contains(&"glm-5.2"));
+        assert!(ids.contains(&"MiniMax-M2.5"));
         assert!(ids.contains(&"qwen3.7-plus"));
         assert!(ids.contains(&"qwen3.7-max-2026-06-08"));
         assert!(ids.contains(&"qwen3.6-plus"));
@@ -416,11 +432,22 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            find_provider_preset("qwen", None)
-                .expect("Qwen should keep its pay-as-you-go default")
+            find_provider_preset("alibaba_model_studio", None)
+                .expect("Alibaba Model Studio should keep its pay-as-you-go default")
                 .id,
-            "qwen"
+            "alibaba-model-studio"
         );
+
+        let legacy_qwen = find_provider_preset(
+            "qwen",
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        )
+        .expect("legacy Qwen pay-as-you-go config should migrate to Model Studio");
+        assert_eq!(legacy_qwen.id, "alibaba-model-studio");
+        assert!(legacy_qwen
+            .models
+            .iter()
+            .any(|model| model.id == "deepseek-v4-pro"));
     }
 
     #[test]
@@ -553,11 +580,11 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3-vl-plus"),
+            model_supports_vision_from_catalog(ProviderType::AlibabaModelStudio, "qwen3-vl-plus"),
             Some(true)
         );
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            model_supports_vision_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.6-plus"),
             Some(true)
         );
         assert_eq!(
@@ -593,7 +620,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            model_supports_reasoning_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            model_supports_reasoning_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.6-plus"),
             Some(true)
         );
         assert_eq!(

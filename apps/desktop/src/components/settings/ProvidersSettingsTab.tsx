@@ -1,4 +1,4 @@
-import { Bot, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
+import { Bot, Image as ImageIcon, Mic2, Pencil, Plus, Settings2, Star, Trash2, Volume2, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
@@ -66,6 +66,8 @@ export function ProvidersSettingsTab({
     zhipu: t('settings.providerZhipu'),
     moonshot: t('settings.providerMoonshot'),
     qwen: t('settings.providerQwen'),
+    alibaba_model_studio: t('settings.providerAlibabaModelStudio'),
+    siliconflow: t('settings.providerSiliconFlow'),
     doubao: t('settings.providerDoubao'),
     yi: t('settings.providerYi'),
     baichuan: t('settings.providerBaichuan'),
@@ -150,7 +152,7 @@ export function ProvidersSettingsTab({
             </div>
           ) : (
             <div className="space-y-5">
-              <div className="space-y-2">
+              <div className="space-y-2" data-provider-category="chat-reasoning">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                   <Bot size={14} />
                   <span>{t('settings.commonLlm')}</span>
@@ -226,28 +228,48 @@ export function ProvidersSettingsTab({
 
           {appConfig && (
             <>
-              <ImageGenerationSettingsPanel
-                appConfig={appConfig}
-                agentConfigs={agentConfigs}
-                loading={appConfigLoading}
-                onChange={onAppConfigChange}
-                onMarkDirty={onMarkAppConfigDirty}
-                onSave={onAppConfigSave}
-              />
-              <TextToSpeechSettingsPanel
-                appConfig={appConfig}
-                loading={appConfigLoading}
-                onChange={onAppConfigChange}
-                onMarkDirty={onMarkAppConfigDirty}
-                onSave={onAppConfigSave}
-              />
-              <SpeechToTextSettingsPanel
-                appConfig={appConfig}
-                loading={appConfigLoading}
-                onChange={onAppConfigChange}
-                onMarkDirty={onMarkAppConfigDirty}
-                onSave={onAppConfigSave}
-              />
+              <div className="space-y-2" data-provider-category="image-generation">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+                  <ImageIcon size={14} />
+                  <span>{t('settings.providerCategoryImage')}</span>
+                </div>
+                <ImageGenerationSettingsPanel
+                  appConfig={appConfig}
+                  agentConfigs={agentConfigs}
+                  loading={appConfigLoading}
+                  onChange={onAppConfigChange}
+                  onMarkDirty={onMarkAppConfigDirty}
+                  onSave={onAppConfigSave}
+                />
+              </div>
+              <div className="space-y-2" data-provider-category="text-to-speech">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+                  <Volume2 size={14} />
+                  <span>{t('settings.providerCategoryTts')}</span>
+                </div>
+                <TextToSpeechSettingsPanel
+                  providerScope="cloud"
+                  appConfig={appConfig}
+                  loading={appConfigLoading}
+                  onChange={onAppConfigChange}
+                  onMarkDirty={onMarkAppConfigDirty}
+                  onSave={onAppConfigSave}
+                />
+              </div>
+              <div className="space-y-2" data-provider-category="speech-to-text">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+                  <Mic2 size={14} />
+                  <span>{t('settings.providerCategoryStt')}</span>
+                </div>
+                <SpeechToTextSettingsPanel
+                  providerScope="cloud"
+                  appConfig={appConfig}
+                  loading={appConfigLoading}
+                  onChange={onAppConfigChange}
+                  onMarkDirty={onMarkAppConfigDirty}
+                  onSave={onAppConfigSave}
+                />
+              </div>
             </>
           )}
         </div>

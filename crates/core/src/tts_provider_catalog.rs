@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn shared_catalog_has_fast_defaults_and_voices() {
         let presets = load_tts_provider_presets().expect("valid tts provider catalog");
-        assert_eq!(presets.len(), 7);
+        assert_eq!(presets.len(), 8);
         for preset in presets {
             assert!(preset.models.iter().any(|model| model.recommended));
             assert!(preset.voices.iter().any(|voice| voice.recommended));
@@ -58,5 +58,12 @@ mod tests {
             .expect("sherpa-onnx preset");
         assert!(local.local);
         assert!(!local.requires_api_key);
+        let siliconflow = load_tts_provider_presets()
+            .expect("valid tts provider catalog")
+            .into_iter()
+            .find(|preset| preset.id == "siliconflow")
+            .expect("SiliconFlow preset");
+        assert_eq!(siliconflow.models[0].id, "fnlp/MOSS-TTSD-v0.5");
+        assert_eq!(siliconflow.voices[0].id, "fnlp/MOSS-TTSD-v0.5:alex");
     }
 }

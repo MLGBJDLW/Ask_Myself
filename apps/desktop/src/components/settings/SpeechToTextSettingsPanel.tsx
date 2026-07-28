@@ -15,6 +15,7 @@ interface SpeechToTextSettingsPanelProps {
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
   onSave: (config?: AppConfig) => void | Promise<void>;
+  providerScope?: 'all' | 'cloud' | 'local';
 }
 
 export const DEFAULT_STT_CONFIG: SpeechToTextConfig = {
@@ -40,25 +41,33 @@ export function SpeechToTextSettingsPanel({
   onChange,
   onMarkDirty,
   onSave,
+  providerScope = 'all',
 }: SpeechToTextSettingsPanelProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.speechToText ?? DEFAULT_STT_CONFIG;
-  const activePreset = useMemo(
+  const scopedPresets = useMemo(
+    () => STT_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
+      || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
+    [providerScope],
+  );
+  const matchedPreset = useMemo(
     () => STT_PROVIDER_PRESETS.find((preset) =>
       preset.provider === config.provider
       && preset.apiStyle === config.apiStyle
       && (preset.sherpaModelFamily ?? null) === (
         config.apiStyle === 'sherpa_onnx' ? config.sherpaModelFamily ?? 'sense_voice' : null
       ),
-    ) ?? STT_PROVIDER_PRESETS[0],
+    ),
     [config.apiStyle, config.provider, config.sherpaModelFamily],
   );
+  const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
+  const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
   const isWhisper = config.apiStyle === 'local_whisper';
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
-  const configured = isWhisper || (isSherpa
+  const configured = scopeActive && (isWhisper || (isSherpa
     ? Boolean(
         config.executablePath?.trim()
         && config.tokensPath?.trim()
@@ -66,14 +75,14 @@ export function SpeechToTextSettingsPanel({
           ? config.encoderPath?.trim() && config.decoderPath?.trim() && config.joinerPath?.trim()
           : config.modelPath?.trim()),
       )
-    : Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim()));
+    : Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim())));
 
   const update = (patch: Partial<SpeechToTextConfig>) => {
     onChange({ ...appConfig, speechToText: { ...config, ...patch } });
     onMarkDirty();
   };
   const applyPreset = (id: string) => {
-    const preset = STT_PROVIDER_PRESETS.find((candidate) => candidate.id === id);
+    const preset = scopedPresets.find((candidate) => candidate.id === id);
     if (!preset) return;
     update({
       provider: preset.provider,
@@ -104,7 +113,11 @@ export function SpeechToTextSettingsPanel({
             <Badge variant="default" className={configured
               ? 'border-success/20 bg-success/10 text-success'
               : 'border-warning/25 bg-warning/10 text-warning'}>
-              {configured ? t('settings.configured') : (isSherpa ? t('settings.sttNeedsLocalFiles') : t('settings.needsApiKey'))}
+              {!scopeActive
+                ? t('settings.speechProviderNotActive')
+                : configured
+                  ? t('settings.configured')
+                  : (isSherpa ? t('settings.sttNeedsLocalFiles') : t('settings.needsApiKey'))}
             </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">{activePreset.name} · {config.model}</p>
@@ -120,11 +133,12 @@ export function SpeechToTextSettingsPanel({
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
               <select
                 data-testid="stt-provider-select"
-                value={activePreset.id}
+                value={scopeActive ? activePreset.id : ''}
                 onChange={(event) => applyPreset(event.target.value)}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
-                {STT_PROVIDER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                {!scopeActive && <option value="" disabled>{t('settings.selectSpeechProvider')}</option>}
+                {scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
               <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
                 <ProviderIcon provider={activePreset.provider} providerId={activePreset.id} baseUrl={activePreset.baseUrl} size="sm" />

@@ -152,5 +152,23 @@
       { "id": "18", "name": "Speaker 18 (Kokoro zh/en example)" }
     ],
     "outputFormats": ["wav"]
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow Speech",
+    "provider": "siliconflow",
+    "apiStyle": "openai_speech",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "description": "OpenAI-compatible hosted speech in China with multilingual MOSS-TTSD and editable model and voice IDs.",
+    "models": [
+      { "id": "fnlp/MOSS-TTSD-v0.5", "name": "MOSS-TTSD v0.5", "recommended": true }
+    ],
+    "voices": [
+      { "id": "fnlp/MOSS-TTSD-v0.5:alex", "name": "Alex", "recommended": true },
+      { "id": "fnlp/MOSS-TTSD-v0.5:anna", "name": "Anna" },
+      { "id": "fnlp/MOSS-TTSD-v0.5:bella", "name": "Bella" }
+    ],
+    "outputFormats": ["mp3", "wav", "opus"]
   }
 ]
