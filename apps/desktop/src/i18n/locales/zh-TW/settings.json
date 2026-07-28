@@ -368,7 +368,7 @@
   "shellAccessOpen": "完全開放",
   "shellAccessOpenDesc": "允許任意裸命令且不再確認。僅在你完全信任目前 Agent 與提示詞時使用。",
   "aiProviders": "AI 提供商",
-  "commonLlm": "通用 LLM",
+  "commonLlm": "對話與推理",
   "imageGeneration": "生圖模型",
   "textToSpeech": "文字轉語音",
   "textToSpeechDesc": "設定雲端語音合成，用於快速音訊草稿、旁白與無障礙朗讀。",
@@ -752,4 +752,23 @@
   "sttModelPath": "SenseVoice model path",
   "ttsAutoSpeakFinal": "Read final answers automatically",
   "ttsAutoSpeakFinalDesc": "Speak only the final answer after each turn. A quick switch is also available in the chat header."
+  ,"localModelStorage": "本機模型儲存位置"
+  ,"localModelStorageDesc": "選擇 Nexa 儲存嵌入、OCR 與 Whisper 下載模型的位置。預設路徑會顯示，也可改到其他磁碟。"
+  ,"localModelStorageChoose": "選擇本機模型資料夾"
+  ,"localModelStorageBrowse": "瀏覽"
+  ,"localModelStorageApply": "使用此位置"
+  ,"localModelStorageDefault": "還原預設位置"
+  ,"localModelStorageWarning": "變更位置不會移動或刪除現有模型檔案；後續下載與刪除會使用新資料夾。"
+  ,"localModelStorageUnavailable": "模型設定仍在載入，請稍後再試。"
+  ,"localModelStorageSaved": "已儲存本機模型位置"
+  ,"localModelStorageSaveError": "無法儲存本機模型位置"
+  ,"providerAlibabaModelStudio": "阿里雲百鍊（Model Studio）"
+  ,"providerSiliconFlow": "矽基流動"
+  ,"localSpeechModels": "本機語音模型"
+  ,"localSpeechModelsDesc": "在其他本機下載模型旁設定私有的 sherpa-onnx TTS 與 STT，無需 API Key。"
+  ,"speechProviderNotActive": "未啟用"
+  ,"selectSpeechProvider": "選擇供應商"
+  ,"providerCategoryImage": "圖片生成"
+  ,"providerCategoryTts": "雲端文字轉語音"
+  ,"providerCategoryStt": "雲端語音轉文字"
 }

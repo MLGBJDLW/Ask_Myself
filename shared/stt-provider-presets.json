@@ -40,6 +40,31 @@
     ]
   },
   {
+    "id": "alibaba-qwen-asr",
+    "name": "Alibaba Qwen3 ASR",
+    "provider": "alibaba_model_studio",
+    "apiStyle": "dashscope_asr",
+    "requiresApiKey": true,
+    "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "description": "Qwen3-ASR-Flash recognition through Alibaba Cloud Model Studio, with Mandarin, Cantonese, English, Japanese, Korean, and broad multilingual coverage.",
+    "models": [
+      { "id": "qwen3-asr-flash", "name": "Qwen3 ASR Flash", "recommended": true }
+    ]
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow Transcription",
+    "provider": "siliconflow",
+    "apiStyle": "openai_transcription",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "description": "OpenAI-compatible hosted transcription in China using SenseVoice or TeleSpeech ASR.",
+    "models": [
+      { "id": "FunAudioLLM/SenseVoiceSmall", "name": "SenseVoice Small", "recommended": true },
+      { "id": "TeleAI/TeleSpeechASR", "name": "TeleSpeech ASR" }
+    ]
+  },
+  {
     "id": "sherpa-sense-voice",
     "name": "sherpa-onnx SenseVoice (Local)",
     "provider": "sherpa_onnx",

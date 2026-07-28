@@ -752,4 +752,23 @@
   "sttModelPath": "SenseVoice model path",
   "ttsAutoSpeakFinal": "Read final answers automatically",
   "ttsAutoSpeakFinalDesc": "Speak only the final answer after each turn. A quick switch is also available in the chat header."
+  ,"localModelStorage": "Local model storage"
+  ,"localModelStorageDesc": "Choose where Nexa stores managed embedding, OCR, and Whisper downloads. The default location is shown and can be changed to another drive."
+  ,"localModelStorageChoose": "Choose a local model folder"
+  ,"localModelStorageBrowse": "Browse"
+  ,"localModelStorageApply": "Use this location"
+  ,"localModelStorageDefault": "Restore default"
+  ,"localModelStorageWarning": "Changing the location does not move or delete existing model files. Downloads and delete actions use the newly selected folders."
+  ,"localModelStorageUnavailable": "Model settings are still loading. Try again in a moment."
+  ,"localModelStorageSaved": "Local model location saved"
+  ,"localModelStorageSaveError": "Failed to save the local model location"
+  ,"providerAlibabaModelStudio": "Alibaba Cloud Model Studio (Bailian)"
+  ,"providerSiliconFlow": "SiliconFlow"
+  ,"localSpeechModels": "Local speech models"
+  ,"localSpeechModelsDesc": "Configure private sherpa-onnx TTS and STT beside the other downloaded and local models. No API key is required."
+  ,"speechProviderNotActive": "Not active"
+  ,"selectSpeechProvider": "Select a provider"
+  ,"providerCategoryImage": "Image generation"
+  ,"providerCategoryTts": "Cloud text to speech"
+  ,"providerCategoryStt": "Cloud speech to text"
 }

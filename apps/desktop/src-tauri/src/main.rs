@@ -450,6 +450,8 @@ fn main() {
             commands::save_ocr_config_cmd,
             commands::check_ocr_models_cmd,
             commands::download_ocr_models_cmd,
+            commands::delete_ocr_models_cmd,
+            commands::get_managed_model_paths_cmd,
             // Video
             #[cfg(feature = "video")]
             commands::get_video_config_cmd,

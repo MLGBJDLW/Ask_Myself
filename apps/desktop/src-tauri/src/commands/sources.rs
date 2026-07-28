@@ -782,12 +782,15 @@ pub fn test_api_connection_cmd(
 }
 
 #[tauri::command]
-pub async fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, String> {
+pub async fn check_local_model_cmd(
+    local_model: Option<String>,
+    model_path: Option<String>,
+) -> Result<bool, String> {
     tokio::task::spawn_blocking(move || {
         let model = local_model
             .map(|s| LocalEmbeddingModel::from_config_str(&s))
             .unwrap_or_default();
-        nexa_core::embed::check_local_model_exists_for(None, &model)
+        nexa_core::embed::check_local_model_exists_for(model_path.as_deref(), &model)
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))
@@ -797,6 +800,7 @@ pub async fn check_local_model_cmd(local_model: Option<String>) -> Result<bool, 
 pub async fn download_local_model_cmd(
     app_handle: AppHandle,
     local_model: Option<String>,
+    model_path: Option<String>,
     cancel_flag: tauri::State<'_, DownloadCancelFlag>,
 ) -> Result<(), String> {
     let cancel = cancel_flag.0.clone();
@@ -806,7 +810,7 @@ pub async fn download_local_model_cmd(
             .map(|s| LocalEmbeddingModel::from_config_str(&s))
             .unwrap_or_default();
         nexa_core::embed::download_local_model_for_with_progress(
-            None,
+            model_path.as_deref(),
             &model,
             |progress| {
                 emit_app_event(&app_handle, "model:download-progress", &progress);
@@ -828,13 +832,31 @@ pub fn cancel_model_download_cmd(
 }
 
 #[tauri::command]
-pub fn delete_local_model_cmd(local_model: Option<String>) -> Result<(), String> {
+pub fn delete_local_model_cmd(
+    local_model: Option<String>,
+    model_path: Option<String>,
+) -> Result<(), String> {
     let model = local_model
         .map(|s| LocalEmbeddingModel::from_config_str(&s))
         .unwrap_or_default();
-    let dir = nexa_core::embed::default_model_dir_for(&model).map_err(|e| e.to_string())?;
+    let dir = match model_path.filter(|path| !path.trim().is_empty()) {
+        Some(path) => std::path::PathBuf::from(path),
+        None => nexa_core::embed::default_model_dir_for(&model).map_err(|e| e.to_string())?,
+    };
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        for filename in ["model.onnx", "tokenizer.json"] {
+            let path = dir.join(filename);
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            }
+        }
+        if std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_none()
+        {
+            std::fs::remove_dir(&dir).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }

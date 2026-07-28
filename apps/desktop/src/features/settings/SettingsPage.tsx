@@ -259,6 +259,8 @@ export function SettingsPage() {
   /* ── App Config state ─────────────────────────────────────────────── */
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [appConfigLoading, setAppConfigLoading] = useState(false);
+  const [managedModelPaths, setManagedModelPaths] = useState<api.ManagedModelPaths | null>(null);
+  const [modelStorageSaving, setModelStorageSaving] = useState(false);
   const [officeRuntime, setOfficeRuntime] = useState<api.OfficeRuntimeReadiness | null>(null);
   const [officePreparing, setOfficePreparing] = useState(false);
 
@@ -332,12 +334,22 @@ export function SettingsPage() {
   useEffect(() => {
     if (activeTab !== 'models_embedding') return;
     if (embedConfig?.provider === 'local') {
-      const key = embedConfig.localModel ?? '';
-      getModelStatus('embed', key, () => api.checkLocalModel(embedConfig.localModel))
+      const key = `${embedConfig.localModel ?? ''}:${embedConfig.modelPath ?? ''}`;
+      getModelStatus('embed', key, () => api.checkLocalModel(embedConfig.localModel, embedConfig.modelPath))
         .then(setLocalModelReady)
         .catch(() => setLocalModelReady(false));
     }
-  }, [activeTab, embedConfig?.provider, embedConfig?.localModel]);
+  }, [activeTab, embedConfig?.provider, embedConfig?.localModel, embedConfig?.modelPath]);
+
+  useEffect(() => {
+    if (activeTab !== 'models_embedding') return;
+    void api.getManagedModelPaths(
+      appConfig?.localModelRoot?.trim() || undefined,
+      embedConfig?.localModel,
+    ).then(setManagedModelPaths).catch((error) => {
+      console.error('Failed to resolve managed model paths:', error);
+    });
+  }, [activeTab, appConfig?.localModelRoot, embedConfig?.localModel]);
 
   const handleDownloadModel = async () => {
     await runExclusiveAction('download:embedding-model', async () => {
@@ -345,7 +357,7 @@ export function SettingsPage() {
       if (downloadLoading) return;
       setDownloadLoading(true);
       try {
-        await api.downloadLocalModel(embedConfig.localModel);
+        await api.downloadLocalModel(embedConfig.localModel, embedConfig.modelPath);
         setLocalModelReady(true);
         invalidateModelStatus('embed');
         toast.success(t('settings.embeddingDownloaded'));
@@ -372,7 +384,7 @@ export function SettingsPage() {
   const handleDeleteModel = async () => {
     if (!embedConfig) return;
     try {
-      await api.deleteLocalModel(embedConfig.localModel);
+      await api.deleteLocalModel(embedConfig.localModel, embedConfig.modelPath);
       setLocalModelReady(false);
       invalidateModelStatus('embed');
       toast.success(t('settings.modelDeleted'));
@@ -617,6 +629,60 @@ export function SettingsPage() {
         setOcrDownloading(false);
       }
     });
+  };
+
+  const handleDeleteOcrModels = async () => {
+    if (!ocrConfig) return;
+    try {
+      await api.deleteOcrModels(ocrConfig);
+      setOcrModelsExist(false);
+      invalidateModelStatus('ocr');
+      toast.success(t('settings.modelDeleted'));
+    } catch (error) {
+      toast.error(String(error));
+    }
+  };
+
+  const handleManagedModelRootChange = async (root?: string) => {
+    if (!appConfig || !embedConfig || !ocrConfig || !videoConfig) {
+      toast.error(t('settings.localModelStorageUnavailable'));
+      return;
+    }
+    setModelStorageSaving(true);
+    try {
+      const paths = await api.getManagedModelPaths(root?.trim() || undefined, embedConfig.localModel);
+      const nextAppConfig = { ...appConfig, localModelRoot: root?.trim() ? paths.root : '' };
+      const nextEmbedConfig = { ...embedConfig, modelPath: paths.embedding };
+      const nextOcrConfig = { ...ocrConfig, modelPath: paths.ocr };
+      const nextVideoConfig = { ...videoConfig, modelPath: paths.whisper };
+      await Promise.all([
+        api.saveAppConfig(nextAppConfig),
+        api.saveEmbedderConfig(nextEmbedConfig),
+        api.saveOcrConfig(nextOcrConfig),
+        api.saveVideoConfig(nextVideoConfig),
+      ]);
+      setAppConfig(nextAppConfig);
+      setEmbedConfig(nextEmbedConfig);
+      setOcrConfig(nextOcrConfig);
+      setVideoConfig(nextVideoConfig);
+      setManagedModelPaths(paths);
+      invalidateModelStatus('embed');
+      invalidateModelStatus('ocr');
+      resetWhisperReadiness();
+      const [embeddingReady, ocrReady] = await Promise.all([
+        api.checkLocalModel(nextEmbedConfig.localModel, nextEmbedConfig.modelPath),
+        api.checkOcrModels(nextOcrConfig),
+      ]);
+      setLocalModelReady(embeddingReady);
+      setOcrModelsExist(ocrReady);
+      void refreshWhisperReadiness(nextVideoConfig);
+      markClean('models_embedding');
+      toast.success(t('settings.localModelStorageSaved'));
+    } catch (error) {
+      toast.error(t('settings.localModelStorageSaveError') + ': ' + String(error));
+    } finally {
+      setModelStorageSaving(false);
+    }
   };
 
   const handleSaveOcrConfig = async () => {
@@ -1569,11 +1635,21 @@ export function SettingsPage() {
           appConfig={appConfig}
           appConfigLoading={appConfigLoading}
           deleteEmbedModelConfirmOpen={deleteEmbedModelConfirmOpen}
+          managedModelPaths={managedModelPaths}
+          modelStorageSaving={modelStorageSaving}
           onEmbedLocalModelChange={(localModel) => {
             if (!embedConfig) return;
-            setEmbedConfig({ ...embedConfig, localModel });
-            setLocalModelReady(null);
-            markDirty('models_embedding');
+            void (async () => {
+              const usesManagedRoot = Boolean(appConfig?.localModelRoot?.trim())
+                || (Boolean(embedConfig.modelPath)
+                  && embedConfig.modelPath === managedModelPaths?.embedding);
+              const modelPath = usesManagedRoot
+                ? (await api.getManagedModelPaths(managedModelPaths?.root, localModel)).embedding
+                : embedConfig.modelPath;
+              setEmbedConfig({ ...embedConfig, localModel, modelPath });
+              setLocalModelReady(null);
+              markDirty('models_embedding');
+            })();
           }}
           onDownloadModel={handleDownloadModel}
           onCancelDownload={handleCancelDownload}
@@ -1581,7 +1657,9 @@ export function SettingsPage() {
           onCloseDeleteEmbedModel={() => setDeleteEmbedModelConfirmOpen(false)}
           onConfirmDeleteEmbedModel={() => { void handleDeleteModel(); }}
           onDownloadOcrModels={handleDownloadOcrModels}
+          onDeleteOcrModels={handleDeleteOcrModels}
           onWhisperDownload={handleWhisperDownload}
+          onDeleteWhisperModel={handleWhisperDelete}
           onWhisperModelChange={(whisperModel) => {
             if (!videoConfig) return;
             const updated = withWhisperModel(videoConfig, whisperModel);
@@ -1601,6 +1679,8 @@ export function SettingsPage() {
             if (await handleAppConfigSave()) markClean('models_embedding');
           }}
           onMarkModelsDirty={() => markDirty('models_embedding')}
+          onApplyManagedModelRoot={(root) => handleManagedModelRootChange(root)}
+          onResetManagedModelRoot={() => handleManagedModelRootChange(undefined)}
         />
 
         <EmbeddingConfigSection
