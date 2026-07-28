@@ -488,6 +488,14 @@ impl ShellAccessMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowCloseBehavior {
+    #[default]
+    Exit,
+    MinimizeToTray,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -549,6 +557,10 @@ pub struct AppConfig {
     /// Whether to collect detailed agent traces. Default: true.
     #[serde(default = "default_trace_enabled")]
     pub trace_enabled: bool,
+
+    /// What the main window close button does. Default: exit the application.
+    #[serde(default)]
+    pub window_close_behavior: WindowCloseBehavior,
 
     /// Whether destructive tool calls require user confirmation. Default: false
     #[serde(default)]
@@ -750,6 +762,7 @@ impl Default for AppConfig {
             dynamic_tool_visibility: default_dynamic_tool_visibility(),
             tool_visibility_defaults_version: CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION,
             trace_enabled: default_trace_enabled(),
+            window_close_behavior: WindowCloseBehavior::default(),
             confirm_destructive: false,
             shell_access_mode: ShellAccessMode::Restricted,
             tool_approval_mode: crate::approval::ToolApprovalMode::default(),
@@ -959,6 +972,7 @@ mod tests {
             CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION
         );
         assert!(config.trace_enabled);
+        assert_eq!(config.window_close_behavior, WindowCloseBehavior::Exit);
         assert_eq!(config.web_search.custom_providers.len(), 5);
         assert!(config
             .web_search
@@ -970,6 +984,21 @@ mod tests {
             .custom_providers
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
+    }
+
+    #[test]
+    fn app_config_accepts_minimize_to_tray_close_behavior() {
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "windowCloseBehavior": "minimize_to_tray"
+        }))
+        .expect("deserialize tray close behavior");
+
+        assert_eq!(
+            config.window_close_behavior,
+            WindowCloseBehavior::MinimizeToTray
+        );
+        let json = serde_json::to_value(config).expect("serialize app config");
+        assert_eq!(json["windowCloseBehavior"], "minimize_to_tray");
     }
 
     #[test]

@@ -9,7 +9,7 @@ license.workspace = true
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.5", features = [] }
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"

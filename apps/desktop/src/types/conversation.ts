@@ -353,6 +353,7 @@ export interface AppConfig {
   dynamicToolVisibility?: boolean;
   toolVisibilityDefaultsVersion?: number;
   traceEnabled?: boolean;
+  windowCloseBehavior?: 'exit' | 'minimize_to_tray';
   confirmDestructive?: boolean;
   shellAccessMode?: 'restricted' | 'confirm_all' | 'open';
   toolApprovalMode?: 'ask' | 'allow_all' | 'deny_all';
