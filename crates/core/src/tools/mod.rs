@@ -94,6 +94,7 @@ pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
 pub mod compare_tool;
 pub mod compile_tool;
+pub mod computer_use_tool;
 pub mod conversation_goal_tool;
 pub mod create_file_tool;
 pub mod date_search_tool;
@@ -1322,6 +1323,7 @@ fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
         name,
         "run_shell"
             | "project_tool"
+            | "computer_control"
             | "desktop_automation"
             | "browser_evidence_capture"
             | "download_asset"
@@ -1443,6 +1445,8 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(manage_source_tool::ManageSourceTool));
     registry.register(Box::new(statistics_tool::GetStatisticsTool));
     registry.register(Box::new(date_search_tool::DateSearchTool));
+    registry.register(Box::new(computer_use_tool::ComputerObserveTool));
+    registry.register(Box::new(computer_use_tool::ComputerControlTool));
     registry.register(Box::new(desktop_automation_tool::DesktopAutomationTool));
     registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
     registry.register(Box::new(update_plan_tool::UpdatePlanTool));
@@ -1617,6 +1621,7 @@ mod tests {
             "update_goal",
             "record_verification",
             "project_tool",
+            "computer_control",
             "spawn_subagent",
         ] {
             assert!(
@@ -1631,6 +1636,7 @@ mod tests {
             "search_files",
             "web_search",
             "tool_search",
+            "computer_observe",
         ] {
             assert!(
                 names.iter().any(|name| name == allowed),
@@ -1701,6 +1707,19 @@ mod tests {
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
 
         assert!(names.iter().any(|name| name == "desktop_automation"));
+    }
+
+    #[test]
+    fn select_tools_includes_native_computer_use_for_desktop_tasks() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools(
+            "Capture this app window, then click the Save button with the mouse.",
+            false,
+        );
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "computer_observe"));
+        assert!(names.iter().any(|name| name == "computer_control"));
     }
 
     #[test]

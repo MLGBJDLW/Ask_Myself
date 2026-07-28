@@ -1,4 +1,4 @@
-import { RotateCcw, Save, Settings2, Star } from 'lucide-react';
+import { LogOut, Minimize2, RotateCcw, Save, Settings2, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation, type Locale } from '../../i18n';
 import * as api from '../../lib/api';
@@ -137,6 +137,63 @@ export function AppearanceSettingsTab({
                 {l.name}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="border-t border-border pt-5">
+          <p className="mb-2 text-sm font-medium text-text-primary">{t('settings.windowCloseBehavior')}</p>
+          <p className="mb-3 text-xs leading-relaxed text-text-tertiary">
+            {t('settings.windowCloseBehaviorDesc')}
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {([
+              {
+                value: 'exit' as const,
+                icon: LogOut,
+                label: t('settings.windowCloseExit'),
+                description: t('settings.windowCloseExitDesc'),
+              },
+              {
+                value: 'minimize_to_tray' as const,
+                icon: Minimize2,
+                label: t('settings.windowCloseTray'),
+                description: t('settings.windowCloseTrayDesc'),
+              },
+            ]).map((option) => {
+              const selected = (appConfig?.windowCloseBehavior ?? 'exit') === option.value;
+              const Icon = option.icon;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={!appConfig || appConfigLoading}
+                  aria-pressed={selected}
+                  onClick={() => appConfig && onAppConfigChange({
+                    ...appConfig,
+                    windowCloseBehavior: option.value,
+                  })}
+                  className={`group flex min-h-20 items-start gap-3 rounded-lg border px-3 py-3 text-left transition-all duration-fast disabled:cursor-not-allowed disabled:opacity-55 ${
+                    selected
+                      ? 'border-accent/60 bg-accent-subtle text-text-primary ring-1 ring-accent/15'
+                      : 'border-border bg-surface-1/70 text-text-secondary hover:border-border-hover hover:bg-surface-2'
+                  }`}
+                >
+                  <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${
+                    selected
+                      ? 'border-accent/35 bg-accent/10 text-accent'
+                      : 'border-border bg-surface-2 text-text-tertiary group-hover:text-text-secondary'
+                  }`}>
+                    <Icon size={15} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{option.label}</span>
+                    <span className="mt-1 block text-xs leading-relaxed text-text-tertiary">
+                      {option.description}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 

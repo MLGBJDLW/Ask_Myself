@@ -18,8 +18,13 @@ use commands::{
     AgentState, AppState, ApprovalState, DownloadCancelFlag, DreamingSchedulerState,
     McpManagerState, TaskOrchestratorSchedulerState,
 };
+use nexa_core::app_settings::WindowCloseBehavior;
 use nexa_core::db::Database;
-use tauri::Manager;
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager,
+};
 use tauri_plugin_window_state::StateFlags;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -112,6 +117,51 @@ fn persisted_window_state_flags() -> StateFlags {
     StateFlags::all() & !StateFlags::DECORATIONS
 }
 
+const TRAY_SHOW_ID: &str = "tray_show";
+const TRAY_QUIT_ID: &str = "tray_quit";
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "Show Nexa", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit Nexa", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let icon = app.default_window_icon().cloned();
+
+    let mut tray = TrayIconBuilder::with_id("nexa-main")
+        .tooltip("Nexa")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => show_main_window(app),
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = icon {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -181,6 +231,7 @@ fn main() {
             app.manage(ApprovalState::default());
             app.manage(commands::TerminalState::default());
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
+            install_tray(app)?;
 
             // Initialise the file watcher for auto-indexing.
             let handle = app.handle().clone();
@@ -495,8 +546,26 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => {
+            let minimize_to_tray = app_handle
+                .try_state::<AppState>()
+                .and_then(|state| state.db.load_app_config().ok())
+                .is_some_and(|config| {
+                    config.window_close_behavior == WindowCloseBehavior::MinimizeToTray
+                });
+            if minimize_to_tray {
+                api.prevent_close();
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+        }
+        tauri::RunEvent::Exit => {
             if let Some(scheduler_state) = app_handle.try_state::<TaskOrchestratorSchedulerState>()
             {
                 commands::shutdown_task_orchestrator_scheduler(&scheduler_state);
@@ -512,6 +581,7 @@ fn main() {
                 });
             }
         }
+        _ => {}
     });
 }
 

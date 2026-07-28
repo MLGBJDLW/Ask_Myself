@@ -340,9 +340,10 @@ test('keeps the first live thinking and tool call visible when a new conversatio
   await page.goto('/chat');
 
   await expect(page.getByText('Planning the lookup first.').first()).toBeVisible();
-  await page.waitForTimeout(80);
-  await expect(page.getByText('Planning the lookup first.').first()).toBeVisible({ timeout: 50 });
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
-
   await expect(page.getByText('Final answer: keep the timeout guard and surface retry limits.')).toBeVisible();
+
+  const chatLog = page.getByLabel('Chat messages');
+  await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
+  await expect(chatLog.getByText('Planning the lookup first.')).toBeVisible();
+  await expect(chatLog.getByTestId('tool-call-card')).toBeVisible();
 });

@@ -4,15 +4,19 @@
 
 Nexa separates browser observation from privileged desktop input. An
 in-process, read-only browser-debug lane can open public and loopback local
-pages, while full computer use remains a connector. The connector integration
-classifies `mcp__computer_use__*` and
-`mcp__windows_computer_use__*` tools as the **Computer Use Connector** while
-retaining the existing high-risk MCP approval policy.
+pages. On Windows, the built-in `computer_observe` and `computer_control`
+tools now provide observation-scoped window capture and approval-gated input.
+Other platforms can still use a connector: `mcp__computer_use__*` and
+`mcp__windows_computer_use__*` are classified as the **Computer Use
+Connector** and retain the existing high-risk MCP approval policy.
 
-This boundary lets an independently installed, platform-specific service own
-screen capture, accessibility APIs, and input injection. Nexa owns the agent
-loop, model selection, tool approval, audit events, cancellation, and result
-handling.
+The Windows implementation keeps observations and actions as separate tool
+surfaces. Window pixels are captured through Windows Graphics Capture and are
+ephemeral; they are forwarded only to the immediately following model step.
+Mouse and keyboard input uses the native Windows input path and is serialized
+behind Nexa's high-risk approval boundary. A connector keeps the same split
+when an independently installed platform-specific service owns capture,
+accessibility APIs, and input injection.
 
 ## Why this shape
 
@@ -26,9 +30,9 @@ existing MCP lifecycle.
 ```mermaid
 flowchart LR
     A["Nexa agent and vision model"] --> B["Tool approval and audit"]
-    B --> C["Computer Use MCP connector"]
-    C --> D["Observation: screenshot and accessibility tree"]
-    C --> E["Action: click, type, scroll, key press"]
+    B --> C["Built-in Windows tools or Computer Use MCP connector"]
+    C --> D["Observation: window list and screenshot"]
+    C --> E["Action: focus, click, drag, type, scroll, key press"]
     D --> A
     E --> F["Windows desktop"]
     F --> D
@@ -36,12 +40,12 @@ flowchart LR
 
 ## Connector contract
 
-An implementation should expose separate observation and action tools:
+Every implementation exposes separate observation and action tools:
 
 - `screenshot` and `observe` are read-only but their returned pixels and text
   remain untrusted data.
-- `click`, `type`, `key`, `scroll`, and app-launching operations are mutating
-  and require explicit approval according to Nexa's MCP policy.
+- `click`, `drag`, `type`, `key`, `scroll`, focus, and app-launching operations
+  are mutating and require explicit approval according to Nexa's tool policy.
 - Element identifiers must be scoped to the observation that produced them;
   stale identifiers must fail closed.
 - Every action result must report the focused window, action performed, and a
@@ -69,9 +73,14 @@ content remains untrusted data.
 
 ## Current status
 
-Read-only browser observation and local web diagnostics are built in. Users can
-configure a compatible MCP server for clicks, typing, scrolling, app launch,
-and accessibility-tree observation without Nexa misclassifying it as a generic
-connector. Shipping or silently installing a privileged Windows automation
-runtime remains out of scope until its package, signing, permission prompts,
-and update channel can be verified.
+Read-only browser observation and local web diagnostics are built in. Windows
+also has native top-level-window enumeration, occlusion-resilient window
+capture, cursor observation, focus, mouse move/click/drag/scroll, text entry,
+and bounded key sequences. Each action requires a non-expired observation
+token, revalidates the window process before input, and returns a fresh
+post-action screenshot or an explicit observation error. Minimized windows
+must be restored before capture.
+
+Users can still configure a compatible MCP server for accessibility-tree
+observation, richer element identifiers, app discovery, and non-Windows
+platform support without Nexa misclassifying it as a generic connector.

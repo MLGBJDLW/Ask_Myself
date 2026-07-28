@@ -101,6 +101,7 @@ import type {
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
+  conversationId?: string | null;
   messages: ConversationMessage[];
   turns: ConversationTurn[];
   streamText: string;
@@ -1529,6 +1530,12 @@ export function ChatMessages(props: ChatMessagesProps) {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    shouldAutoFollowRef.current = true;
+    setIsNearBottom(true);
+    setUnreadCount(0);
+  }, [props.conversationId]);
+
   const scrollToContainerBottom = useCallback((behavior: ScrollBehavior) => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -1564,7 +1571,12 @@ export function ChatMessages(props: ChatMessagesProps) {
     setHasOverflow(overflow);
     setIsNearBottom(!overflow || nearBottom);
 
-    if (!overflow || nearBottom) {
+    if (!overflow) {
+      setUnreadCount(0);
+      return;
+    }
+
+    if (nearBottom) {
       shouldAutoFollowRef.current = true;
       setUnreadCount(0);
       return;
@@ -1587,7 +1599,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     const { nearBottom, overflow } = getScrollMetrics();
     setHasOverflow(overflow);
     if (!overflow) {
-      shouldAutoFollowRef.current = true;
       setIsNearBottom(true);
       setUnreadCount(0);
       return;

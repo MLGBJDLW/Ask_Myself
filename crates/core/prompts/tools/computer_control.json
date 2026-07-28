@@ -1,0 +1,82 @@
+{
+  "name": "computer_control",
+  "description": "Control a previously observed Windows window with approval-gated mouse or keyboard input. Every call requires the fresh observation_id and window_id returned by computer_observe (or the preceding computer_control result), verifies that the same process/title still owns the handle, focuses that window, performs one bounded action, and returns a new screenshot observation when possible. Coordinates are relative to the captured image and are scaled to the current window bounds.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["focus_window", "move_mouse", "click", "drag", "scroll", "type_text", "key"],
+        "description": "Approved desktop input action to perform."
+      },
+      "observation_id": {
+        "type": "string",
+        "description": "Fresh token returned by computer_observe or the previous computer_control result."
+      },
+      "window_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Window id from the referenced observation."
+      },
+      "x": {
+        "type": "number",
+        "minimum": 0,
+        "description": "X coordinate in the referenced captured image. Required for mouse actions."
+      },
+      "y": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Y coordinate in the referenced captured image. Required for mouse actions."
+      },
+      "to_x": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Destination X coordinate in the referenced captured image. Required for drag."
+      },
+      "to_y": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Destination Y coordinate in the referenced captured image. Required for drag."
+      },
+      "button": {
+        "type": "string",
+        "enum": ["left", "right", "middle"],
+        "description": "Mouse button for click. Defaults to left."
+      },
+      "click_count": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3,
+        "description": "Number of clicks. Defaults to 1."
+      },
+      "scroll_x": {
+        "type": "integer",
+        "minimum": -20,
+        "maximum": 20,
+        "description": "Horizontal wheel steps; positive scrolls right."
+      },
+      "scroll_y": {
+        "type": "integer",
+        "minimum": -20,
+        "maximum": 20,
+        "description": "Vertical wheel steps; positive scrolls down."
+      },
+      "text": {
+        "type": "string",
+        "maxLength": 4000,
+        "description": "Text for type_text. Never place secrets in tool arguments."
+      },
+      "key_sequence": {
+        "type": "string",
+        "description": "Shortcut such as ctrl+s, shift+tab, escape, or f5. Required for key."
+      },
+      "reason": {
+        "type": "string",
+        "maxLength": 240,
+        "description": "Brief user-facing reason shown in the approval request."
+      }
+    },
+    "required": ["action", "observation_id", "window_id"],
+    "additionalProperties": false
+  }
+}

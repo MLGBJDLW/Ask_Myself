@@ -321,6 +321,7 @@ test('recall mode can hand vague clues into chat with the active source scope', 
   await page.locator('button').filter({ hasText: 'Filters' }).click();
   await page.getByRole('button', { name: 'retries' }).click();
   await page.getByText('Recall with vague clues').waitFor();
+  await page.getByRole('button', { name: 'Expand' }).click();
   await page.getByLabel('What do you remember?').fill('Something about retry guards and timeout limits.');
   await page.locator('button').filter({ hasText: 'Recall with AI' }).click();
 

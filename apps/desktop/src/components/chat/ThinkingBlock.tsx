@@ -198,14 +198,18 @@ export function ThinkingBlock({
   const thinkingMood = moodOrder[Math.floor(elapsed / 6) % moodOrder.length] ?? THINKING_MOODS[0];
 
   return (
-    <div className="mb-2">
+    <div
+      className="thinking-trace mb-2"
+      data-trace-active={traceActive ? 'true' : 'false'}
+    >
+      <span className="thinking-trace-node" aria-hidden="true" />
       <button
         type="button"
         data-testid="thinking-trace-toggle"
         data-trace-state={isStreaming ? "active" : "complete"}
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
-        className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"
+        className="thinking-trace-header flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"
       >
         <ChevronRight
           size={12}
@@ -235,7 +239,7 @@ export function ThinkingBlock({
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >
-            <div className={`mt-1 ml-4 border-l pl-3 ${traceActive ? 'border-accent/30' : 'border-border/35'}`}>
+            <div className="thinking-trace-body mt-1 pl-1">
               <div
                 ref={scrollContainerRef}
                 onScroll={(e) => {
@@ -249,7 +253,7 @@ export function ThinkingBlock({
                 <div className="space-y-1">
                   {effectiveSections ? (
                     effectiveSections.map((sec, secIdx) => (
-                      <div key={secIdx}>
+                      <div className="thinking-trace-section" key={secIdx}>
                         {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
                         {sec.text && (
                           <ReactMarkdown
@@ -280,7 +284,7 @@ export function ThinkingBlock({
               </div>
             </div>
             {children && (
-              <div className="ml-4 mt-1 space-y-0.5 pb-0.5">
+              <div className="thinking-trace-children mt-1 space-y-0.5 pb-0.5 pl-1">
                 {children}
               </div>
             )}

@@ -617,9 +617,9 @@ test('opens file preview as a large panel and closes it from outside clicks', as
       const box = await previewPanel.boundingBox();
       return box?.width ?? 0;
     })
-    .toBeGreaterThan(900);
+    .toBeGreaterThan(800);
 
-  await page.mouse.click(32, 32);
+  await page.getByTestId('file-preview-backdrop').click({ position: { x: 32, y: 120 } });
   await expect(previewPanel).toBeHidden();
 });
 

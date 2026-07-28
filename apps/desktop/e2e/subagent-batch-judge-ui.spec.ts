@@ -373,6 +373,7 @@ test('renders batch subagent and judgement artifacts', async ({ page }) => {
   await page.goto('/chat/conv-batch-judge');
 
   const chatLog = page.getByLabel('Chat messages');
+  await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(chatLog.getByText('Parallel audit of three approaches')).toBeVisible();
   await expect(chatLog.getByText('parallel 2')).toBeVisible();
   const firstBatchRun = chatLog.getByRole('button', { name: /Critic\s+Complete\s+Audit approach A/i }).first();
@@ -380,7 +381,7 @@ test('renders batch subagent and judgement artifacts', async ({ page }) => {
   await firstBatchRun.click();
   await expect(chatLog.getByText('Evidence handoff')).toBeVisible();
 
-  await expect(chatLog.getByText('Choose the safer approach')).toBeVisible();
+  await expect(chatLog.getByText('Choose the safer approach').first()).toBeVisible();
   await expect(chatLog.getByText('single_best')).toBeVisible();
   await expect(chatLog.getByText('Approach B is the safer choice.')).toBeVisible();
   await expect(chatLog.getByText('winners worker-b')).toBeVisible();

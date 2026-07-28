@@ -1359,6 +1359,7 @@ export function ChatPage() {
               </div>
             )}
             <ChatMessages
+              conversationId={chat.activeId}
               messages={chat.messages}
               turns={chat.turns}
               streamText={chat.streamText}

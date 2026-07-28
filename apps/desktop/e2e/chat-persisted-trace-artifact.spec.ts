@@ -267,7 +267,7 @@ test('renders persisted trace artifacts as a single unified timeline', async ({ 
   await expect(page.getByRole('button', { name: /Create File.*chapter-1\.md.*\+140.*-0/ })).toBeVisible();
   await expect(page.getByText('Recovered from persisted trace data.')).toBeVisible();
   await expect(page.getByText('Final answer from persisted trace artifacts.')).toBeVisible();
-  await expect(page.getByText('Draft fix')).toBeVisible();
+  await expect(page.getByTestId('task-board-collapsed').getByText('Draft fix', { exact: true })).toBeVisible();
 
   const headerStats = page.getByTestId('tool-card-header-diff-stats').first();
   await expect(headerStats).toBeVisible();

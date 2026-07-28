@@ -126,8 +126,8 @@ pub(crate) fn tool_timeout_for_call(
     let minimum = match tool_name {
         "web_search" | "fetch_url" => 60,
         "web_research_context" | "browser_evidence_capture" => 90,
-        "download_asset" | "desktop_automation" | "extract_image_text" | "reindex_document"
-        | "run_health_check" => 120,
+        "download_asset" | "desktop_automation" | "computer_observe" | "computer_control"
+        | "extract_image_text" | "reindex_document" | "run_health_check" => 120,
         "compile_document" | "prepare_document_tools" => 180,
         "generate_image" | "synthesize_speech" | "spawn_subagent_batch" => 240,
         "spawn_subagent" => 180,

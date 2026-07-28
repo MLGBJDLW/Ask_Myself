@@ -21,7 +21,9 @@ mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 
 run(process.execPath, [
-  join(root, 'node_modules', 'typescript', 'bin', 'tsc'),
+  // Contract tests transpile through the TypeScript compiler API-compatible
+  // 6.x bridge, while production type-checking uses the native 7.x `tsc`.
+  join(root, 'node_modules', 'typescript', 'bin', 'tsc6'),
   '-p',
   join(root, 'tsconfig.streaming-tests.json'),
 ]);
