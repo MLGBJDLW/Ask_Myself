@@ -25,7 +25,7 @@ interface AppearanceSettingsTabProps {
   appConfigLoading: boolean;
   developerMode: boolean;
   onAppConfigChange: (config: AppConfig) => void;
-  onAppConfigSave: () => void;
+  onAppConfigSave: (config?: AppConfig) => void;
   onDeveloperModeChange: (enabled: boolean) => void;
   onRerunWizard: () => void;
 }
@@ -168,10 +168,12 @@ export function AppearanceSettingsTab({
                   type="button"
                   disabled={!appConfig || appConfigLoading}
                   aria-pressed={selected}
-                  onClick={() => appConfig && onAppConfigChange({
-                    ...appConfig,
-                    windowCloseBehavior: option.value,
-                  })}
+                  onClick={() => {
+                    if (!appConfig) return;
+                    const nextConfig = { ...appConfig, windowCloseBehavior: option.value };
+                    onAppConfigChange(nextConfig);
+                    onAppConfigSave(nextConfig);
+                  }}
                   className={`group flex min-h-20 items-start gap-3 rounded-lg border px-3 py-3 text-left transition-all duration-fast disabled:cursor-not-allowed disabled:opacity-55 ${
                     selected
                       ? 'border-accent/60 bg-accent-subtle text-text-primary ring-1 ring-accent/15'
@@ -647,7 +649,7 @@ export function AppearanceSettingsTab({
                   size="sm"
                   icon={<Save size={14} />}
                   loading={appConfigLoading}
-                  onClick={onAppConfigSave}
+                  onClick={() => onAppConfigSave()}
                 >
                   {t('common.save')}
                 </Button>

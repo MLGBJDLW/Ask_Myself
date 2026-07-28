@@ -1608,7 +1608,7 @@ export function SettingsPage() {
           appConfigLoading={appConfigLoading}
           developerMode={developerMode}
           onAppConfigChange={setAppConfig}
-          onAppConfigSave={() => { void handleAppConfigSave(); }}
+          onAppConfigSave={(config) => { void handleAppConfigSave(config); }}
           onDeveloperModeChange={setDeveloperMode}
           onRerunWizard={() => { void handleRerunWizard(); }}
         />
