@@ -730,9 +730,96 @@ body {
 }
 
 .chat-tool-card {
+  --tool-tone: var(--color-accent);
   position: relative;
   isolation: isolate;
   transform-origin: center;
+}
+
+.chat-tool-card[data-tool-tone='search'],
+.chat-tool-card[data-tool-tone='code'],
+.chat-tool-card[data-tool-tone='subagent'] {
+  --tool-tone: var(--color-info);
+}
+
+.chat-tool-card[data-tool-tone='evidence'],
+.chat-tool-card[data-tool-tone='edit'],
+.chat-tool-card[data-tool-tone='shell'],
+.chat-tool-card[data-tool-tone='verification'] {
+  --tool-tone: var(--color-success);
+}
+
+.chat-tool-card[data-tool-tone='web'],
+.chat-tool-card[data-tool-tone='plan'] {
+  --tool-tone: var(--color-warning);
+}
+
+.chat-tool-card[data-tool-tone='files'] {
+  --tool-tone: var(--color-text-tertiary);
+}
+
+.chat-tool-card[data-tool-state='error'] {
+  --tool-tone: var(--color-danger);
+}
+
+.chat-tool-card.tool-tone-surface {
+  border-color: color-mix(in srgb, var(--tool-tone) 26%, var(--color-border));
+  border-left-color: color-mix(in srgb, var(--tool-tone) 72%, var(--color-border));
+  background:
+    linear-gradient(
+      104deg,
+      color-mix(in srgb, var(--tool-tone) 7%, var(--color-surface-1)) 0%,
+      color-mix(in srgb, var(--color-surface-0) 82%, transparent) 58%
+    );
+  box-shadow:
+    inset 0 1px color-mix(in srgb, var(--color-text-primary) 4%, transparent),
+    0 2px 10px color-mix(in srgb, var(--color-surface-0) 35%, transparent);
+}
+
+.chat-tool-card.tool-tone-surface:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--tool-tone) 42%, var(--color-border-hover));
+  border-left-color: var(--tool-tone);
+  background:
+    linear-gradient(
+      104deg,
+      color-mix(in srgb, var(--tool-tone) 11%, var(--color-surface-1)) 0%,
+      color-mix(in srgb, var(--color-surface-1) 86%, transparent) 66%
+    );
+}
+
+.tool-tone-icon {
+  border-color: color-mix(in srgb, var(--tool-tone) 30%, var(--color-border));
+  background: color-mix(in srgb, var(--tool-tone) 12%, var(--color-surface-1));
+  color: color-mix(in srgb, var(--tool-tone) 86%, var(--color-text-primary));
+  box-shadow: inset 0 1px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
+}
+
+.tool-tone-detail {
+  border-color: color-mix(in srgb, var(--tool-tone) 30%, var(--color-border));
+}
+
+.tool-result-surface {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--tool-tone) 18%, var(--color-border));
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem 0.625rem 0.9rem;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--tool-tone) 7%, transparent), transparent 32%),
+    color-mix(in srgb, var(--color-surface-0) 86%, transparent);
+  box-shadow: inset 0 1px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
+}
+
+.tool-result-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--tool-tone) 68%, transparent);
+}
+
+.tool-result-surface[data-result-tone='error'] {
+  --tool-tone: var(--color-danger);
 }
 
 .chat-tool-card > * {
@@ -756,19 +843,19 @@ body {
 }
 
 .chat-tool-card[data-tool-state='running'] {
-  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  border-color: color-mix(in srgb, var(--tool-tone) 42%, var(--color-border));
   background-image: linear-gradient(
     90deg,
     transparent,
-    color-mix(in srgb, var(--color-accent) 88%, white),
+    color-mix(in srgb, var(--tool-tone) 88%, white),
     transparent
   );
   background-position: calc(100% - 0.5rem) 0;
   background-repeat: no-repeat;
   background-size: 2.75rem 2px;
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
-    0 0 14px color-mix(in srgb, var(--color-accent) 9%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--tool-tone) 14%, transparent),
+    0 0 14px color-mix(in srgb, var(--tool-tone) 9%, transparent);
 }
 
 .chat-trace-panel[data-tool-state='running']::before {
@@ -793,10 +880,10 @@ body {
       from var(--chat-tool-card-flow-angle),
       transparent 0deg,
       transparent 268deg,
-      color-mix(in srgb, var(--color-accent) 18%, transparent) 286deg,
-      color-mix(in srgb, var(--color-accent) 82%, transparent) 310deg,
-      color-mix(in srgb, white 88%, var(--color-accent)) 324deg,
-      color-mix(in srgb, var(--color-accent) 76%, transparent) 338deg,
+      color-mix(in srgb, var(--tool-tone) 18%, transparent) 286deg,
+      color-mix(in srgb, var(--tool-tone) 82%, transparent) 310deg,
+      color-mix(in srgb, white 88%, var(--tool-tone)) 324deg,
+      color-mix(in srgb, var(--tool-tone) 76%, transparent) 338deg,
       transparent 354deg,
       transparent 360deg
     );
@@ -808,7 +895,7 @@ body {
       linear-gradient(#000 0 0) content-box,
       linear-gradient(#000 0 0);
     mask-composite: exclude;
-    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--color-accent) 58%, transparent));
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--tool-tone) 58%, transparent));
     animation: chat-tool-card-border-flow 2.4s linear infinite;
   }
 }
@@ -828,6 +915,87 @@ body {
   box-shadow: 0 0 10px var(--color-accent-subtle);
   pointer-events: none;
   opacity: 0.82;
+}
+
+.thinking-trace {
+  position: relative;
+  padding-left: 1.25rem;
+}
+
+.thinking-trace::before {
+  content: "";
+  position: absolute;
+  top: 0.52rem;
+  bottom: 0.38rem;
+  left: 0.36rem;
+  width: 1px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-accent) 48%, transparent),
+    color-mix(in srgb, var(--color-border-hover) 72%, transparent) 42%,
+    color-mix(in srgb, var(--color-border) 36%, transparent)
+  );
+}
+
+.thinking-trace-node {
+  position: absolute;
+  top: 0.36rem;
+  left: 0.125rem;
+  z-index: 1;
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 36%, var(--color-surface-1));
+  box-shadow:
+    0 0 0 3px var(--color-surface-0),
+    0 0 10px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.thinking-trace[data-trace-active='true'] .thinking-trace-node {
+  background: var(--color-accent);
+  animation: thinking-node-breathe 2.4s ease-in-out infinite;
+}
+
+.thinking-trace-header {
+  min-height: 1.25rem;
+}
+
+.thinking-trace-body,
+.thinking-trace-children {
+  position: relative;
+}
+
+.thinking-trace-section {
+  position: relative;
+  min-height: 0.7rem;
+}
+
+.thinking-trace-section::before {
+  content: "";
+  position: absolute;
+  top: 0.56rem;
+  left: -1.125rem;
+  z-index: 1;
+  width: 0.3rem;
+  height: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 32%, var(--color-border));
+  border-radius: 999px;
+  background: var(--color-surface-1);
+}
+
+@keyframes thinking-node-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 3px var(--color-surface-0),
+      0 0 6px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px var(--color-surface-0),
+      0 0 13px color-mix(in srgb, var(--color-accent) 38%, transparent);
+  }
 }
 
 .thinking-status-text {
@@ -897,6 +1065,10 @@ body {
     animation: none;
     --chat-tool-card-flow-angle: 318deg;
     filter: drop-shadow(0 0 2px color-mix(in srgb, var(--color-accent) 48%, transparent));
+  }
+
+  .thinking-trace[data-trace-active='true'] .thinking-trace-node {
+    animation: none;
   }
 }
 

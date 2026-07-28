@@ -317,6 +317,43 @@ function DiffStatsSummaryPanel({ stats }: { stats: DiffStatsArtifact }) {
   );
 }
 
+function visibleToolResult(
+  content: string | undefined,
+  structuredResult: boolean,
+  failed: boolean,
+): string | null {
+  const trimmed = content?.trim();
+  if (!trimmed) return null;
+  if (structuredResult && !failed) return null;
+  if (!failed && /^(?:ok|done|success|completed)[.!]?$/i.test(trimmed)) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return trimmed;
+  }
+}
+
+function ToolResultSurface({
+  content,
+  error,
+  compact = false,
+}: {
+  content: string;
+  error?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div className="tool-result-surface" data-result-tone={error ? 'error' : 'default'}>
+      <pre className={`whitespace-pre-wrap break-words overflow-y-auto font-mono ${
+        compact ? 'max-h-36 text-[10px] leading-relaxed' : 'max-h-56 text-[11px] leading-relaxed'
+      } ${error ? 'text-danger' : 'text-text-secondary'}`}>
+        {content}
+      </pre>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -418,115 +455,50 @@ const TOOL_LABELS: Record<string, string> = {
 const TOOL_LABEL_KEYS = Object.keys(TOOL_LABELS).sort((a, b) => b.length - a.length);
 const TOOL_LABEL_SUBSTRING_KEYS = TOOL_LABEL_KEYS.filter((key) => key !== 'file');
 
-type ToolTone = {
-  panel: string;
-  icon: string;
-  detailBorder: string;
-};
-
-const TOOL_TONES: Record<string, ToolTone> = {
-  search: {
-    panel: 'border-info/25 border-l-info/75 bg-info/5 hover:border-info/35 hover:bg-info/10',
-    icon: 'border-info/25 bg-info/10 text-info',
-    detailBorder: 'border-info/25',
-  },
-  evidence: {
-    panel: 'border-emerald-500/25 border-l-emerald-500/75 bg-emerald-500/5 hover:border-emerald-500/35 hover:bg-emerald-500/10',
-    icon: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400',
-    detailBorder: 'border-emerald-500/25',
-  },
-  code: {
-    panel: 'border-blue-500/25 border-l-blue-500/75 bg-blue-500/5 hover:border-blue-500/35 hover:bg-blue-500/10',
-    icon: 'border-blue-500/25 bg-blue-500/10 text-blue-400',
-    detailBorder: 'border-blue-500/25',
-  },
-  files: {
-    panel: 'border-slate-500/25 border-l-slate-500/75 bg-slate-500/5 hover:border-slate-500/35 hover:bg-slate-500/10',
-    icon: 'border-slate-500/25 bg-slate-500/10 text-slate-400',
-    detailBorder: 'border-slate-500/25',
-  },
-  edit: {
-    panel: 'border-teal-500/25 border-l-teal-500/75 bg-teal-500/5 hover:border-teal-500/35 hover:bg-teal-500/10',
-    icon: 'border-teal-500/25 bg-teal-500/10 text-teal-400',
-    detailBorder: 'border-teal-500/25',
-  },
-  graph: {
-    panel: 'border-violet-500/25 border-l-violet-500/75 bg-violet-500/5 hover:border-violet-500/35 hover:bg-violet-500/10',
-    icon: 'border-violet-500/25 bg-violet-500/10 text-violet-400',
-    detailBorder: 'border-violet-500/25',
-  },
-  web: {
-    panel: 'border-orange-500/25 border-l-orange-500/75 bg-orange-500/5 hover:border-orange-500/35 hover:bg-orange-500/10',
-    icon: 'border-orange-500/25 bg-orange-500/10 text-orange-400',
-    detailBorder: 'border-orange-500/25',
-  },
-  shell: {
-    panel: 'border-emerald-500/25 border-l-emerald-500/75 bg-emerald-500/5 hover:border-emerald-500/35 hover:bg-emerald-500/10',
-    icon: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400',
-    detailBorder: 'border-emerald-500/25',
-  },
-  image: {
-    panel: 'border-fuchsia-500/25 border-l-fuchsia-500/75 bg-fuchsia-500/5 hover:border-fuchsia-500/35 hover:bg-fuchsia-500/10',
-    icon: 'border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-400',
-    detailBorder: 'border-fuchsia-500/25',
-  },
-  skill: {
-    panel: 'border-purple-500/25 border-l-purple-500/75 bg-purple-500/5 hover:border-purple-500/35 hover:bg-purple-500/10',
-    icon: 'border-purple-500/25 bg-purple-500/10 text-purple-400',
-    detailBorder: 'border-purple-500/25',
-  },
-  plan: {
-    panel: 'border-amber-500/25 border-l-amber-500/75 bg-amber-500/5 hover:border-amber-500/35 hover:bg-amber-500/10',
-    icon: 'border-amber-500/25 bg-amber-500/10 text-amber-400',
-    detailBorder: 'border-amber-500/25',
-  },
-  verification: {
-    panel: 'border-success/25 border-l-success/75 bg-success/5 hover:border-success/35 hover:bg-success/10',
-    icon: 'border-success/25 bg-success/10 text-success',
-    detailBorder: 'border-success/25',
-  },
-  subagent: {
-    panel: 'border-cyan-500/25 border-l-cyan-500/75 bg-cyan-500/5 hover:border-cyan-500/35 hover:bg-cyan-500/10',
-    icon: 'border-cyan-500/25 bg-cyan-500/10 text-cyan-400',
-    detailBorder: 'border-cyan-500/25',
-  },
-  default: {
-    panel: 'border-border/45 border-l-border-hover bg-surface-0/35 hover:border-border/70 hover:bg-surface-0/55',
-    icon: 'border-border/45 bg-surface-1/65 text-text-tertiary',
-    detailBorder: 'border-border/35',
-  },
-};
-
-const TOOL_TONE_KEYS = Object.keys(TOOL_TONES).filter((key) => key !== 'default');
+type ToolTone =
+  | 'search'
+  | 'evidence'
+  | 'code'
+  | 'files'
+  | 'edit'
+  | 'graph'
+  | 'web'
+  | 'shell'
+  | 'image'
+  | 'skill'
+  | 'plan'
+  | 'verification'
+  | 'subagent'
+  | 'default';
 
 function getToolTone(name?: string): ToolTone {
   const lower = (name || '').toLowerCase();
   if (lower.includes('knowledge_graph') || lower.includes('related_concepts') || lower.includes('chunk_context')) {
-    return TOOL_TONES.graph;
+    return 'graph';
   }
   if (lower.includes('retrieve') || lower.includes('evidence') || lower.includes('document')) {
-    return TOOL_TONES.evidence;
+    return 'evidence';
   }
-  if (lower.includes('code')) return TOOL_TONES.code;
+  if (lower.includes('code')) return 'code';
   if (lower.includes('grep') || lower.includes('glob') || lower.includes('read_file') || lower.includes('list_dir')) {
-    return TOOL_TONES.files;
+    return 'files';
   }
   if (lower.includes('edit') || lower.includes('patch') || lower.includes('write') || lower.includes('create_file')) {
-    return TOOL_TONES.edit;
+    return 'edit';
   }
   if (lower.includes('web') || lower.includes('url') || lower.includes('download') || lower.includes('desktop')) {
-    return TOOL_TONES.web;
+    return 'web';
   }
-  if (lower.includes('shell') || lower.includes('terminal') || lower.includes('command')) return TOOL_TONES.shell;
-  if (lower.includes('image')) return TOOL_TONES.image;
-  if (lower.includes('skill')) return TOOL_TONES.skill;
-  if (lower.includes('plan')) return TOOL_TONES.plan;
+  if (lower.includes('shell') || lower.includes('terminal') || lower.includes('command')) return 'shell';
+  if (lower.includes('image')) return 'image';
+  if (lower.includes('skill')) return 'skill';
+  if (lower.includes('plan')) return 'plan';
   if (lower.includes('verification') || lower.includes('security') || lower.includes('approval')) {
-    return TOOL_TONES.verification;
+    return 'verification';
   }
-  if (lower.includes('subagent')) return TOOL_TONES.subagent;
-  const key = TOOL_TONE_KEYS.find((candidate) => lower.includes(candidate));
-  return key ? (TOOL_TONES[key] ?? TOOL_TONES.default) : TOOL_TONES.default;
+  if (lower.includes('subagent')) return 'subagent';
+  if (lower.includes('search')) return 'search';
+  return 'default';
 }
 
 function getToolIcon(name?: string) {
@@ -1605,18 +1577,13 @@ export function ToolCallCard({
     }
   }, [graphUsage, isPending]);
 
-  // Auto-collapse file mutation details when execution finishes; users can manually re-open.
+  // Completed tool details collapse into the timeline summary. In-flight edits
+  // stay compact as well, avoiding a second "live" card below the edit row.
   useEffect(() => {
     if (!isPending) {
       setExpanded(false);
     }
   }, [isPending]);
-
-  useEffect(() => {
-    if (isPending && isFileChangeRender && fileDiff) {
-      setExpanded(true);
-    }
-  }, [fileDiff, isFileChangeRender, isPending]);
 
   if (questionRequest && !inline) {
     return (
@@ -1687,13 +1654,34 @@ export function ToolCallCard({
     statusLabel,
   ].filter((value): value is string => Boolean(value)).join(', ');
   const traceSoft = !failedStatus;
-  const visibleFormattedArgs = fileDiff || diffStats || isFileChangeRender || suppressNoisyLiveArgs ? null : formattedArgs;
+  const hasStructuredResult = Boolean(
+    searchItems ||
+    subagentRun ||
+    subagentBatch ||
+    subagentJudgement ||
+    skillActivation ||
+    planArtifact ||
+    verificationArtifact ||
+    fileDiff ||
+    diffStats ||
+    generatedImage ||
+    generatedAudio ||
+    graphUsage,
+  );
+  const visibleResultContent = visibleToolResult(content, hasStructuredResult, failedStatus);
+  const hideCompletedArgs = !isPending && !failedStatus && Boolean(
+    visibleResultContent || hasStructuredResult,
+  );
+  const visibleFormattedArgs =
+    fileDiff || diffStats || isFileChangeRender || suppressNoisyLiveArgs || hideCompletedArgs
+      ? null
+      : formattedArgs;
   const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;
   const expandableDetails = Boolean(
     visibleFormattedArgs ||
-    content ||
+    visibleResultContent ||
     searchItems ||
     subagentRun ||
     subagentBatch ||
@@ -1709,18 +1697,12 @@ export function ToolCallCard({
     streamingArgsPreview,
   );
   const toolTone = getToolTone(safeToolName);
-  const traceToneClass = failedStatus
-    ? 'border-danger/25 border-l-danger/75 bg-danger/10 hover:border-danger/35 hover:bg-danger/15'
-    : toolTone.panel;
-  const traceIconToneClass = failedStatus
-    ? 'border-danger/25 bg-danger/10 text-danger'
-    : toolTone.icon;
+  const traceToneClass = 'tool-tone-surface';
+  const traceIconToneClass = 'tool-tone-icon';
   const statusBadgeClass = failedStatus
     ? 'border-danger/25 bg-danger/10 text-danger'
     : 'border-success/20 bg-success/10 text-success';
-  const traceDetailBorderClass = failedStatus
-    ? 'border-danger/25'
-    : toolTone.detailBorder;
+  const traceDetailBorderClass = 'tool-tone-detail';
   const tracePreviewText = headerSummary;
 
   if (trace) {
@@ -1732,11 +1714,12 @@ export function ToolCallCard({
           aria-expanded={expandableDetails ? detailsExpanded : undefined}
           aria-label={toolCardAriaLabel}
           aria-busy={isPending}
-          className={`chat-tool-card group inline-grid min-h-7 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 overflow-hidden rounded-lg border border-l-2 px-2 py-1 text-left shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`chat-tool-card group inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 overflow-hidden rounded-md border border-l-2 px-2 py-1 text-left transition-colors disabled:cursor-default sm:max-w-[36rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           disabled={!expandableDetails}
           title={capabilitySummary ?? undefined}
           data-testid="tool-call-card"
           data-tool-state={toolCardState}
+          data-tool-tone={toolTone}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
             <Icon className="h-3 w-3 shrink-0" />
@@ -1854,16 +1837,12 @@ export function ToolCallCard({
                 ) : diffStats ? (
                   <>
                     <DiffStatsSummaryPanel stats={diffStats} />
-                    {content && (
-                      <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
-                        {content}
-                      </pre>
+                    {visibleResultContent && (
+                      <ToolResultSurface content={visibleResultContent} error={failedStatus} compact />
                     )}
                   </>
-                ) : content ? (
-                  <pre className={`whitespace-pre-wrap break-words text-[11px] leading-relaxed ${isError ? 'text-danger' : 'text-text-secondary'}`}>
-                    {content}
-                  </pre>
+                ) : visibleResultContent ? (
+                  <ToolResultSurface content={visibleResultContent} error={failedStatus} compact />
                 ) : null}
               </div>
             </motion.div>
@@ -1883,9 +1862,10 @@ export function ToolCallCard({
           aria-label={toolCardAriaLabel}
           aria-busy={isPending}
           disabled={!expandableDetails}
-          className={`chat-tool-card inline-grid min-h-7 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 overflow-hidden rounded-lg border border-l-2 px-1.5 py-1 text-left shadow-[0_1px_0_rgba(255,255,255,0.035)] transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
+          className={`chat-tool-card inline-grid min-h-8 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 overflow-hidden rounded-md border border-l-2 px-2 py-1 text-left transition-colors disabled:cursor-default sm:max-w-[32rem] ${expandableDetails ? 'cursor-pointer' : 'cursor-default'} ${traceToneClass}`}
           data-testid="tool-call-card"
           data-tool-state={toolCardState}
+          data-tool-tone={toolTone}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${traceIconToneClass}`}>
             <Icon className="h-3 w-3 shrink-0" />
@@ -1994,16 +1974,12 @@ export function ToolCallCard({
                 ) : diffStats ? (
                   <div className="space-y-1.5">
                     <DiffStatsSummaryPanel stats={diffStats} />
-                    {content && (
-                      <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
-                        {content}
-                      </pre>
+                    {visibleResultContent && (
+                      <ToolResultSurface content={visibleResultContent} error={failedStatus} compact />
                     )}
                   </div>
-                ) : content ? (
-                  <pre className={`text-[11px] whitespace-pre-wrap break-words max-h-32 overflow-y-auto ${isError ? 'text-danger' : 'text-text-tertiary'}`}>
-                    {content}
-                  </pre>
+                ) : visibleResultContent ? (
+                  <ToolResultSurface content={visibleResultContent} error={failedStatus} compact />
                 ) : null}
               </div>
             </motion.div>
@@ -2027,10 +2003,11 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="chat-image-panel chat-tool-card my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
+        className="chat-image-panel chat-tool-card tool-tone-surface my-2 overflow-hidden rounded-md border"
         data-state={generatedImage ? 'ready' : 'loading'}
         data-testid="tool-call-card"
         data-tool-state={toolCardState}
+        data-tool-tone={toolTone}
         aria-busy={isPending}
       >
         <div className="flex min-h-11 items-center gap-2 border-b border-border/40 px-3 py-2">
@@ -2080,9 +2057,10 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="chat-tool-card my-2 overflow-hidden rounded-md border border-border/55 bg-surface-0/55"
+        className="chat-tool-card tool-tone-surface my-2 overflow-hidden rounded-md border"
         data-testid="tool-call-card"
         data-tool-state={toolCardState}
+        data-tool-tone={toolTone}
       >
         <div className="flex min-h-11 items-center gap-2 border-b border-border/40 px-3 py-2">
           <Volume2 className="h-4 w-4 shrink-0 text-accent" />
@@ -2127,9 +2105,10 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="chat-tool-card my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/55 p-2"
+        className="chat-tool-card tool-tone-surface my-0.5 overflow-hidden rounded-md border p-2"
         data-testid="tool-call-card"
         data-tool-state={toolCardState}
+        data-tool-tone={toolTone}
         aria-busy={isPending}
       >
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary">
@@ -2175,9 +2154,10 @@ export function ToolCallCard({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="chat-tool-card my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/55 p-2"
+        className="chat-tool-card tool-tone-surface my-0.5 overflow-hidden rounded-md border p-2"
         data-testid="tool-call-card"
         data-tool-state={toolCardState}
+        data-tool-tone={toolTone}
         aria-busy={isPending}
       >
         <div className="mb-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-secondary">
@@ -2232,10 +2212,11 @@ export function ToolCallCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="chat-tool-card chat-trace-panel my-0.5 overflow-hidden rounded-lg border border-border/60 bg-surface-0/70 shadow-[0_1px_0_rgba(255,255,255,0.04)]"
+      className="chat-tool-card chat-trace-panel tool-tone-surface my-0.5 overflow-hidden rounded-md border"
       data-trace-soft={traceSoft ? 'true' : 'false'}
       data-testid="tool-call-card"
       data-tool-state={toolCardState}
+      data-tool-tone={toolTone}
       aria-busy={isPending}
     >
       {/* Header */}
@@ -2343,13 +2324,8 @@ export function ToolCallCard({
               ) : diffStats ? (
                 <div className="space-y-2">
                   <DiffStatsSummaryPanel stats={diffStats} />
-                  {content && (
-                    <pre
-                      className={`text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto
-                        ${isError ? 'text-danger' : 'text-text-secondary'}`}
-                    >
-                      {content}
-                    </pre>
+                  {visibleResultContent && (
+                    <ToolResultSurface content={visibleResultContent} error={failedStatus} />
                   )}
                 </div>
               ) : graphUsage ? (
@@ -2359,13 +2335,8 @@ export function ToolCallCard({
                   {trustBoundary && <TrustBoundaryPills boundary={trustBoundary} />}
                   <SearchResultCards items={searchItems} />
                 </>
-              ) : content ? (
-                <pre
-                  className={`text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto
-                    ${isError ? 'text-danger' : 'text-text-secondary'}`}
-                >
-                  {content}
-                </pre>
+              ) : visibleResultContent ? (
+                <ToolResultSurface content={visibleResultContent} error={failedStatus} />
               ) : null}
             </div>
           </motion.div>

@@ -438,12 +438,18 @@ test('keeps live thinking and file edit badges mounted until persisted messages 
   await page.waitForTimeout(120);
   const chatLog = page.getByLabel('Chat messages');
   await expect(page.getByText('Checking the retry note first.')).toBeVisible();
+  const thinkingTrace = chatLog.locator('.thinking-trace').first();
+  await expect(thinkingTrace).toHaveAttribute('data-trace-active', 'true');
+  await expect(thinkingTrace.locator('.thinking-trace-node')).toBeVisible();
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
   const liveCreateFile = chatLog.getByRole('button', { name: /Create File.*retry-summary\.md/i });
   await expect(liveCreateFile).toHaveCount(1);
   await expect(liveCreateFile).toHaveAttribute('data-testid', 'tool-call-card');
   await expect(liveCreateFile).toHaveAttribute('data-tool-state', 'running');
+  await expect(liveCreateFile).toHaveAttribute('data-tool-tone', 'edit');
   await expect(liveCreateFile).toHaveAttribute('aria-busy', 'true');
+  await expect(liveCreateFile).toBeDisabled();
+  await expect(liveCreateFile).not.toHaveAttribute('aria-expanded', /.+/);
   await expect(liveCreateFile).not.toContainText(/Running tool/i);
   await expect(liveCreateFile.getByTestId('tool-card-status')).toHaveCount(0);
   await expect(liveCreateFile.locator('.animate-spin')).toHaveCount(0);
@@ -465,6 +471,8 @@ test('keeps live thinking and file edit badges mounted until persisted messages 
   const liveEditFile = chatLog.getByRole('button', { name: /Edit file.*retries\.md/i });
   await expect(liveEditFile).toHaveCount(1);
   await expect(liveEditFile).toHaveAttribute('data-tool-state', 'running');
+  await expect(liveEditFile).toBeDisabled();
+  await expect(liveEditFile).not.toHaveAttribute('aria-expanded', /.+/);
   await expect(liveEditFile.getByTestId('tool-card-header-additions')).toHaveAttribute('data-value', '+2');
   await expect(liveEditFile.getByTestId('tool-card-header-deletions')).toHaveAttribute('data-value', '-1');
 
