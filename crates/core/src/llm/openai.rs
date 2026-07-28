@@ -502,18 +502,21 @@ fn completion_response_to_stream_chunks(
     chunks
 }
 
+fn is_alibaba_hosted_qwen(model: &str, provider_type: Option<&ProviderType>) -> bool {
+    if provider_type != Some(&ProviderType::AlibabaModelStudio) {
+        return false;
+    }
+    let model_lower = model.to_ascii_lowercase();
+    model_lower.starts_with("qwen") || model_lower.starts_with("qwq")
+}
+
 /// Some code-specialized OpenAI-compatible models require tool-call
 /// `function.arguments` to be a JSON object instead of a JSON-encoded string.
 fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) {
+    if provider_type == Some(&ProviderType::Qwen) || is_alibaba_hosted_qwen(model, provider_type) {
         return true;
     }
     let model_lower = model.to_lowercase();
-    if provider_type == Some(&ProviderType::AlibabaModelStudio)
-        && (model_lower.starts_with("qwen") || model_lower.starts_with("qwq"))
-    {
-        return true;
-    }
     model_lower.contains("codex")
 }
 
@@ -521,7 +524,7 @@ fn supports_anthropic_style_cache_control(
     model: &str,
     provider_type: Option<&ProviderType>,
 ) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) {
+    if provider_type == Some(&ProviderType::Qwen) || is_alibaba_hosted_qwen(model, provider_type) {
         return true;
     }
     let model_lower = model.to_lowercase();
@@ -1835,6 +1838,43 @@ data: [DONE]
             body["tools"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
+    }
+
+    #[test]
+    fn alibaba_qwen_models_keep_cache_markers_without_affecting_router_models() {
+        let request_for = |model: &str| CompletionRequest {
+            model: model.to_string(),
+            messages: vec![Message::text(Role::System, "stable system")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: Some(vec![ToolDefinition {
+                name: "search".into(),
+                description: "Search".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]),
+            stop: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::AlibabaModelStudio),
+            parallel_tool_calls: true,
+        };
+
+        let qwen =
+            serde_json::to_value(build_request_body(&request_for("qwen3.7-max"), false)).unwrap();
+        assert_eq!(
+            qwen["messages"][0]["content"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            qwen["tools"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+
+        let third_party =
+            serde_json::to_value(build_request_body(&request_for("kimi-k2.7-code"), false))
+                .unwrap();
+        assert!(third_party["messages"][0]["content"].is_string());
+        assert!(third_party["tools"][0].get("cache_control").is_none());
     }
 
     #[test]
