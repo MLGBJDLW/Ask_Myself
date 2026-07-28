@@ -41,6 +41,7 @@ struct WindowSnapshot {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct ObservedWindow {
     snapshot: WindowSnapshot,
     image_width: Option<u32>,
@@ -125,6 +126,7 @@ struct ObserveArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct ControlArgs {
     action: String,
     observation_id: String,
