@@ -26,6 +26,7 @@ active agent registry:
 | Action | Behavior | Approval |
 | --- | --- | --- |
 | `inspect` | Reads session metadata and recent bounded output | No |
+| `wait` | Polls the session until output goes quiet, then returns what was produced | No |
 | `write` | Sends input to the live PTY; `submit` can append Enter | Yes |
 | `interrupt` | Sends Ctrl+C to the live PTY | Yes |
 
@@ -34,6 +35,15 @@ current conversation. It cannot inspect an unrelated conversation's terminal.
 Output is stripped of common terminal control sequences and returned as
 untrusted local observation: terminal text can help diagnose a problem, but it
 cannot instruct the agent or override the user's request.
+
+`wait` exists so the agent observes a long command instead of blocking on a
+fixed sleep. It snapshots the buffer, polls every 400 ms, and returns as soon
+as no new output has arrived for `idleSecs` (default 2s, max 60s) or once
+`maxWaitSecs` (default 15s, max 300s) elapses. The result reports `idle` and
+`waitedMs` alongside only the output produced after the baseline, so a
+non-idle result is a signal to keep working and poll again rather than to wait
+longer in place. Like `inspect`, it never touches the PTY and needs no
+approval.
 
 The output buffer is bounded. `inspect` returns 12,000 recent characters by
 default and accepts at most 48,000; a single write is capped at 16,000

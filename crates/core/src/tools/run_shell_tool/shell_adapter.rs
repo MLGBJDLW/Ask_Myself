@@ -1,15 +1,19 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::super::run_shell_contract::{
     invalid_shell_selector_type_message, unsupported_shell_selector_message, DEFAULT_TIMEOUT_SECS,
     MAX_OUTPUT_BYTES, MIN_TIMEOUT_SECS,
 };
+
+/// How long to keep draining a timed-out command's pipes after killing it.
+const PIPE_FLUSH_GRACE: Duration = Duration::from_millis(400);
 
 const ENV_STRIP_PATTERNS: &[&str] = &[
     "KEY",
@@ -454,15 +458,45 @@ pub(super) async fn execute_inner(
         None
     };
 
-    let wait = child.wait_with_output();
+    // Read both pipes incrementally instead of `wait_with_output()`. A command
+    // that hits the timeout is the case where its output matters most, and
+    // `wait_with_output()` discards everything the process already printed.
+    let stdout_sink = Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+    let stderr_sink = Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|pipe| tokio::spawn(drain_pipe(pipe, Arc::clone(&stdout_sink))));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|pipe| tokio::spawn(drain_pipe(pipe, Arc::clone(&stderr_sink))));
+
+    let wait = child.wait();
     let result = if timeout_secs == 0 {
         Ok(wait.await)
     } else {
         tokio::time::timeout(Duration::from_secs(timeout_secs), wait).await
     };
 
+    let killed_by_timeout = result.is_err();
+    if killed_by_timeout {
+        if let Some(task) = &stdin_task {
+            task.abort();
+        }
+        // The child owns the pipes; killing it lets the drain tasks reach EOF
+        // so the partial output collected so far can still be reported.
+        let _ = child.kill().await;
+    }
+    join_pipe_task(stdout_task, killed_by_timeout).await;
+    join_pipe_task(stderr_task, killed_by_timeout).await;
+    let stdout_bytes = std::mem::take(&mut *stdout_sink.lock().await);
+    let stderr_bytes = std::mem::take(&mut *stderr_sink.lock().await);
+    let (stdout, truncated_stdout) = bytes_to_clamped_string(&stdout_bytes, MAX_OUTPUT_BYTES);
+    let (mut stderr, truncated_stderr) = bytes_to_clamped_string(&stderr_bytes, MAX_OUTPUT_BYTES);
+
     match result {
-        Ok(Ok(output)) => {
+        Ok(Ok(status)) => {
             if let Some(task) = stdin_task {
                 match task.await {
                     Ok(Ok(())) => {}
@@ -471,38 +505,63 @@ pub(super) async fn execute_inner(
                     Err(e) => return Err(format!("stdin writer task failed: {e}")),
                 }
             }
-            let (stdout, t_out) = bytes_to_clamped_string(&output.stdout, MAX_OUTPUT_BYTES);
-            let (stderr, t_err) = bytes_to_clamped_string(&output.stderr, MAX_OUTPUT_BYTES);
             Ok(RunShellOutput {
-                exit_code: output.status.code(),
+                exit_code: status.code(),
                 stdout,
                 stderr,
                 duration_ms: started.elapsed().as_millis(),
-                truncated_stdout: t_out,
-                truncated_stderr: t_err,
+                truncated_stdout,
+                truncated_stderr,
                 killed_by_timeout: false,
             })
         }
         Ok(Err(e)) => Err(format!("process wait failed: {e}")),
         Err(_) => {
-            if let Some(task) = stdin_task {
-                task.abort();
+            if !stderr.is_empty() && !stderr.ends_with('\n') {
+                stderr.push('\n');
             }
-            // Timeout: child is dropped at end of scope (kill_on_drop). We
-            // don't have access to the child after wait_with_output consumed
-            // it, but kill_on_drop took ownership of the pipes and will
-            // terminate the process when the future is dropped.
+            stderr.push_str(&format!("run_shell: killed after {timeout_secs}s timeout"));
             Ok(RunShellOutput {
                 exit_code: None,
-                stdout: String::new(),
-                stderr: format!("run_shell: killed after {timeout_secs}s timeout"),
+                stdout,
+                stderr,
                 duration_ms: started.elapsed().as_millis(),
-                truncated_stdout: false,
-                truncated_stderr: false,
+                truncated_stdout,
+                truncated_stderr,
                 killed_by_timeout: true,
             })
         }
     }
+}
+
+async fn drain_pipe<R>(mut reader: R, sink: Arc<tokio::sync::Mutex<Vec<u8>>>)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => sink.lock().await.extend_from_slice(&buffer[..read]),
+        }
+    }
+}
+
+/// Wait for a pipe drain task. After a timeout kill the reader should reach EOF
+/// almost immediately, but a grandchild that inherited the pipe can hold it
+/// open, so the post-kill wait is bounded and the task is then aborted.
+async fn join_pipe_task(task: Option<tokio::task::JoinHandle<()>>, bounded: bool) {
+    let Some(mut task) = task else { return };
+    if bounded {
+        if tokio::time::timeout(PIPE_FLUSH_GRACE, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
+        return;
+    }
+    let _ = task.await;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +617,9 @@ pub(super) fn format_output(output: &RunShellOutput) -> String {
 
     if output.killed_by_timeout {
         result.push_str("⏱ Process killed (timeout)\n");
+        result.push_str(
+            "Output produced before the kill is included below. If the command legitimately needs more time, re-run it with background: true and poll it with service_action=\"wait\" instead of blocking on a larger timeout.\n",
+        );
     } else if let Some(code) = output.exit_code {
         if code == 0 {
             result.push_str(&format!("✓ Exit code: {}\n", code));
