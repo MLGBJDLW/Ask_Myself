@@ -218,6 +218,26 @@ impl ToolPermissionKey {
             return Self::new(&invocation.tool_name, "project_tool_catalog", action);
         }
 
+        if invocation.tool_name == "computer_control" {
+            let action = args
+                .get("action")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|action| !action.is_empty())
+                .unwrap_or("<unknown>");
+            let window_id = args
+                .get("window_id")
+                .or_else(|| args.get("windowId"))
+                .and_then(|value| value.as_u64())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            return Self::new(
+                &invocation.tool_name,
+                "desktop_window",
+                format!("{window_id}:{action}"),
+            );
+        }
+
         if invocation.tool_name == "mcp_tool" || invocation.tool_name.starts_with("mcp__") {
             return Self::new(&invocation.tool_name, "mcp_tool", &invocation.tool_name);
         }
@@ -929,6 +949,37 @@ mod tests {
         );
         assert_eq!(lint.target_kind, "project_tool");
         assert_eq!(lint.target_value, "lint@abcdef012345");
+    }
+
+    #[test]
+    fn permission_key_scopes_computer_control_to_window_and_action() {
+        let click = permission_key_for_tool(
+            "computer_control",
+            &serde_json::json!({
+                "action": "click",
+                "observation_id": "observation-a",
+                "window_id": 42,
+                "x": 120,
+                "y": 80
+            }),
+        );
+        let type_text = permission_key_for_tool(
+            "computer_control",
+            &serde_json::json!({
+                "action": "type_text",
+                "observation_id": "observation-a",
+                "window_id": 42,
+                "text": "hello"
+            }),
+        );
+
+        assert_ne!(click.permission_key(), type_text.permission_key());
+        assert_eq!(click.target_kind, "desktop_window");
+        assert_eq!(click.target_value, "42:click");
+        assert_eq!(
+            type_text.permission_key(),
+            "computer_control|desktop_window|42:type_text"
+        );
     }
 
     #[test]
