@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.22](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.21...nexa-monorepo-v0.10.22) (2026-07-28)
+
+
+### Features
+
+* **models:** refresh local embedding and OCR options ([28b3d6e](https://github.com/MLGBJDLW/Nexa/commit/28b3d6e4612092543ab345b51996ec284172e767))
+* **settings:** share provider credentials across capabilities ([98a24a3](https://github.com/MLGBJDLW/Nexa/commit/98a24a3d1e8ec859dfeb6dc5656030d68d2813cb))
+* share provider credentials and refresh local retrieval models ([0fb7489](https://github.com/MLGBJDLW/Nexa/commit/0fb7489b1f20ced5c25afe43cb499133975b70be))
+
+
+### Bug Fixes
+
+* **ingest:** skip unsupported binary artifacts ([7c0419d](https://github.com/MLGBJDLW/Nexa/commit/7c0419d3bc7174fa4245001d4677472b1eb0d51a))
+* **models:** harden OCR and embedding downloads ([ddbbc49](https://github.com/MLGBJDLW/Nexa/commit/ddbbc4993e4a3f3bd7edd417a60064fc8ea0d521))
+* **settings:** scope shared credentials to configured endpoints ([9346352](https://github.com/MLGBJDLW/Nexa/commit/934635291f87541a18226d01daba59e3a3273a2d))
+
 ## [0.10.21](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.20...nexa-monorepo-v0.10.21) (2026-07-28)
 
 
