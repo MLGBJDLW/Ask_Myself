@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 #[cfg(feature = "video")]
 use std::io::BufReader;
+use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
@@ -19,6 +20,24 @@ use crate::visual_document::{OoxmlPackageKind, ParsedVisualArtifact};
 // Encoding-aware file reading
 // ---------------------------------------------------------------------------
 
+const BINARY_SNIFF_BYTES: usize = 8192;
+
+fn bytes_appear_binary(raw: &[u8]) -> bool {
+    if raw.starts_with(&[0xFF, 0xFE]) || raw.starts_with(&[0xFE, 0xFF]) {
+        return false;
+    }
+    raw.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
+}
+
+/// Read a small prefix to identify an unknown file as binary without loading
+/// the complete payload. UTF-16 text BOMs are intentionally treated as text.
+pub fn file_appears_binary(path: &std::path::Path) -> Result<bool, CoreError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut prefix = [0_u8; BINARY_SNIFF_BYTES];
+    let bytes_read = file.read(&mut prefix)?;
+    Ok(bytes_appear_binary(&prefix[..bytes_read]))
+}
+
 /// Read a file as text with encoding detection.
 ///
 /// 1. Rejects binary files (null bytes in first 8 KB).
@@ -30,8 +49,7 @@ pub fn read_text_file(path: &std::path::Path) -> Result<String, CoreError> {
     let raw = std::fs::read(path)?;
 
     // Binary check — look for null bytes in first 8 KB.
-    let check_len = raw.len().min(8192);
-    if raw[..check_len].contains(&0) {
+    if bytes_appear_binary(&raw) {
         return Err(CoreError::Parse(format!(
             "File appears to be binary: {}",
             path.display()
@@ -2029,6 +2047,18 @@ mod tests {
             detect_mime_type(Path::new("data.bin")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn test_binary_sniff_preserves_utf16_text() {
+        let mut binary = NamedTempFile::new().unwrap();
+        binary.write_all(b"compiled\0payload").unwrap();
+        assert!(file_appears_binary(binary.path()).unwrap());
+
+        let mut utf16 = NamedTempFile::new().unwrap();
+        utf16.write_all(&[0xFF, 0xFE, b'H', 0, b'i', 0]).unwrap();
+        assert!(!file_appears_binary(utf16.path()).unwrap());
+        assert_eq!(read_text_file(utf16.path()).unwrap(), "Hi");
     }
 
     #[test]
