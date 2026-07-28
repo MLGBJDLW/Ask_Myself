@@ -119,7 +119,7 @@
   "hfMirrorLabel": "HuggingFaceミラーURL",
   "hfMirrorHint": "huggingface.coがブロックされている場合のフォールバックとして使用されます。空=無効。",
   "ghproxyLabel": "GitHubプロキシURL",
-  "ghproxyHint": "FFmpegバイナリのダウンロードに使用されます。空=無効。",
+  "ghproxyHint": "OCRやFFmpegなど、組み込みのGitHubダウンロードのフォールバックに使用されます。空=無効。",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
   "webSearchProfile": "Provider profile",

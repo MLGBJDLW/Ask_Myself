@@ -119,7 +119,7 @@
   "hfMirrorLabel": "HuggingFace 미러 URL",
   "hfMirrorHint": "huggingface.co가 차단된 경우 대체로 사용됩니다. 비어 있음 = 비활성화.",
   "ghproxyLabel": "GitHub 프록시 URL",
-  "ghproxyHint": "FFmpeg 바이너리 다운로드에 사용됩니다. 비어 있음 = 비활성화.",
+  "ghproxyHint": "OCR 및 FFmpeg와 같은 기본 GitHub 다운로드의 대체 경로로 사용됩니다. 비어 있음 = 비활성화.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
   "webSearchProfile": "Provider profile",

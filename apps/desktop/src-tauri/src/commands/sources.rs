@@ -799,11 +799,14 @@ pub async fn check_local_model_cmd(
 #[tauri::command]
 pub async fn download_local_model_cmd(
     app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
     local_model: Option<String>,
     model_path: Option<String>,
     cancel_flag: tauri::State<'_, DownloadCancelFlag>,
 ) -> Result<(), String> {
     let cancel = cancel_flag.0.clone();
+    let app_cfg = state.db.load_app_config().map_err(|e| e.to_string())?;
+    let hf_mirror_base = app_cfg.hf_mirror_base_url.clone();
     cancel.store(false, Ordering::Relaxed);
     tokio::task::spawn_blocking(move || {
         let model = local_model
@@ -812,6 +815,7 @@ pub async fn download_local_model_cmd(
         nexa_core::embed::download_local_model_for_with_progress(
             model_path.as_deref(),
             &model,
+            &hf_mirror_base,
             |progress| {
                 emit_app_event(&app_handle, "model:download-progress", &progress);
             },

@@ -32,8 +32,9 @@ pub async fn download_ocr_models_cmd(
 ) -> Result<(), String> {
     let app_cfg = state.db.load_app_config().map_err(|e| e.to_string())?;
     let hf_mirror_base = app_cfg.hf_mirror_base_url.clone();
+    let ghproxy_base = app_cfg.ghproxy_base_url.clone();
     tokio::task::spawn_blocking(move || {
-        nexa_core::ocr::download_ocr_models(&config, &hf_mirror_base, |progress| {
+        nexa_core::ocr::download_ocr_models(&config, &hf_mirror_base, &ghproxy_base, |progress| {
             emit_app_event(&app_handle, "ocr:download-progress", &progress);
         })
         .map_err(|e| e.to_string())

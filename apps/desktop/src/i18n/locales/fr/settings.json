@@ -119,7 +119,7 @@
   "hfMirrorLabel": "URL du miroir HuggingFace",
   "hfMirrorHint": "Utilisé en secours lorsque huggingface.co est bloqué. Vide = désactivé.",
   "ghproxyLabel": "URL du proxy GitHub",
-  "ghproxyHint": "Utilisé pour les téléchargements des binaires FFmpeg. Vide = désactivé.",
+  "ghproxyHint": "Utilisé en secours pour les téléchargements GitHub intégrés, notamment OCR et FFmpeg. Vide = désactivé.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
   "webSearchProfile": "Provider profile",

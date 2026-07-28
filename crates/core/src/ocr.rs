@@ -205,11 +205,7 @@ impl OcrEngine {
             None
         };
 
-        let dictionary: Vec<String> = std::fs::read_to_string(&dict_path)
-            .map_err(|e| CoreError::Ocr(format!("read dictionary: {e}")))?
-            .lines()
-            .map(|l| l.to_string())
-            .collect();
+        let dictionary = read_ocr_dictionary(&dict_path)?;
 
         tracing::info!(
             "PaddleOCR engine loaded (det={}, cls={}, rec={}, dict={} chars)",
@@ -227,6 +223,18 @@ impl OcrEngine {
             config: config.clone(),
         })
     }
+}
+
+fn read_ocr_dictionary(path: &Path) -> Result<Vec<String>, CoreError> {
+    let mut dictionary: Vec<String> = std::fs::read_to_string(path)
+        .map_err(|e| CoreError::Ocr(format!("read dictionary: {e}")))?
+        .lines()
+        .map(|line| line.to_string())
+        .collect();
+    // PaddleOCR and RapidOCR append a space class after the file-backed
+    // dictionary; index 0 remains the CTC blank token.
+    dictionary.push(" ".to_string());
+    Ok(dictionary)
 }
 
 /// Load an ONNX session from a model file.
@@ -1112,19 +1120,23 @@ pub(crate) fn extract_images_from_pdf_page(
 const OCR_DET_MODEL_FILE: &str = "pp-ocrv5-det.onnx";
 const OCR_CLS_MODEL_FILE: &str = "pp-ocrv4-cls.onnx";
 const OCR_REC_MODEL_FILE: &str = "pp-ocrv5-rec.onnx";
-const OCR_DICT_FILE: &str = "ppocr_keys_v1.txt";
+const OCR_DICT_FILE: &str = "ppocrv5_dict.txt";
 const LEGACY_OCR_DET_MODEL_FILE: &str = "pp-ocrv4-det.onnx";
 const LEGACY_OCR_REC_MODEL_FILE: &str = "pp-ocrv4-rec.onnx";
+const LEGACY_OCR_DICT_FILE: &str = "ppocr_keys_v1.txt";
 
 const OCR_DET_MIN_BYTES: u64 = 1_000_000;
 const OCR_CLS_MIN_BYTES: u64 = 100_000;
 const OCR_REC_MIN_BYTES: u64 = 1_000_000;
 const OCR_DICT_MIN_BYTES: u64 = 1_000;
-const OCR_DICT_MIN_LINES: usize = 100;
+// PP-OCRv5's Chinese dictionary contains 18,382 entries. Keeping this floor
+// above the 6,623-entry v4 dictionary also prevents stale caches from loading.
+const OCR_DICT_MIN_LINES: usize = 18_000;
 
 struct OcrModelDownload {
     filename: &'static str,
     url: &'static str,
+    fallback_url: &'static str,
     min_bytes: u64,
     kind: OcrModelDownloadKind,
 }
@@ -1139,18 +1151,21 @@ const OCR_MODEL_DOWNLOADS: &[OcrModelDownload] = &[
     OcrModelDownload {
         filename: OCR_DET_MODEL_FILE,
         url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+        fallback_url: "https://huggingface.co/pitapo/rapidocr/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_mobile_det.onnx",
         min_bytes: OCR_DET_MIN_BYTES,
         kind: OcrModelDownloadKind::Onnx,
     },
     OcrModelDownload {
         filename: OCR_REC_MODEL_FILE,
         url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+        fallback_url: "https://huggingface.co/pitapo/rapidocr/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile_infer.onnx",
         min_bytes: OCR_REC_MIN_BYTES,
         kind: OcrModelDownloadKind::Onnx,
     },
     OcrModelDownload {
         filename: OCR_DICT_FILE,
-        url: "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.9/ppocr/utils/ppocr_keys_v1.txt",
+        url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
+        fallback_url: "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/ppocrv5_dict.txt",
         min_bytes: OCR_DICT_MIN_BYTES,
         kind: OcrModelDownloadKind::Dictionary,
     },
@@ -1171,21 +1186,86 @@ fn hf_endpoint_override() -> Option<String> {
         .and_then(|value| normalized_base_url(&value))
 }
 
-fn ocr_download_primary_url(download: &OcrModelDownload, hf_endpoint: Option<&str>) -> String {
-    match hf_endpoint {
-        Some(endpoint) if download.url.starts_with("https://huggingface.co/") => {
-            download.url.replacen("https://huggingface.co", endpoint, 1)
-        }
-        _ => download.url.to_string(),
+fn push_unique_url(urls: &mut Vec<String>, url: String) {
+    if !urls.iter().any(|candidate| candidate == &url) {
+        urls.push(url);
     }
 }
 
-fn ocr_download_mirror_url(download: &OcrModelDownload, hf_mirror_base: &str) -> Option<String> {
-    let base = normalized_base_url(hf_mirror_base)?;
-    download
-        .url
-        .strip_prefix("https://huggingface.co/")
-        .map(|path| format!("{base}/{path}"))
+fn append_ocr_source_candidates(
+    urls: &mut Vec<String>,
+    url: &str,
+    prefer_mirror: bool,
+    hf_endpoint: Option<&str>,
+    hf_mirror_base: &str,
+    ghproxy_base: &str,
+) {
+    if let Some(path) = url.strip_prefix("https://huggingface.co/") {
+        let endpoint_url = hf_endpoint.map(|base| format!("{base}/{path}"));
+        let mirror_url = normalized_base_url(hf_mirror_base).map(|base| format!("{base}/{path}"));
+
+        if prefer_mirror {
+            if let Some(candidate) = endpoint_url.clone() {
+                push_unique_url(urls, candidate);
+            }
+            if let Some(candidate) = mirror_url.clone() {
+                push_unique_url(urls, candidate);
+            }
+        }
+        push_unique_url(urls, endpoint_url.unwrap_or_else(|| url.to_string()));
+        if !prefer_mirror {
+            if let Some(candidate) = mirror_url {
+                push_unique_url(urls, candidate);
+            }
+        }
+        push_unique_url(urls, url.to_string());
+        return;
+    }
+
+    let is_github = url.starts_with("https://github.com/")
+        || url.starts_with("https://raw.githubusercontent.com/");
+    let proxy_url = if is_github {
+        normalized_base_url(ghproxy_base).map(|base| format!("{base}/{url}"))
+    } else {
+        None
+    };
+    if prefer_mirror {
+        if let Some(candidate) = proxy_url.clone() {
+            push_unique_url(urls, candidate);
+        }
+    }
+    push_unique_url(urls, url.to_string());
+    if !prefer_mirror {
+        if let Some(candidate) = proxy_url {
+            push_unique_url(urls, candidate);
+        }
+    }
+}
+
+fn ocr_download_urls(
+    download: &OcrModelDownload,
+    hf_endpoint: Option<&str>,
+    hf_mirror_base: &str,
+    ghproxy_base: &str,
+) -> Vec<String> {
+    let mut urls = Vec::new();
+    append_ocr_source_candidates(
+        &mut urls,
+        download.url,
+        false,
+        hf_endpoint,
+        hf_mirror_base,
+        ghproxy_base,
+    );
+    append_ocr_source_candidates(
+        &mut urls,
+        download.fallback_url,
+        true,
+        hf_endpoint,
+        hf_mirror_base,
+        ghproxy_base,
+    );
+    urls
 }
 
 /// Check whether required PaddleOCR model files exist and look usable.
@@ -1209,6 +1289,7 @@ pub fn delete_ocr_models(config: &OcrConfig) -> Result<(), CoreError> {
             OCR_DICT_FILE,
             LEGACY_OCR_DET_MODEL_FILE,
             LEGACY_OCR_REC_MODEL_FILE,
+            LEGACY_OCR_DICT_FILE,
         ] {
             let path = model_dir.join(filename);
             if path.exists() {
@@ -1314,32 +1395,35 @@ fn download_ocr_bytes_from_url(
     Ok((bytes, total_bytes))
 }
 
-fn download_ocr_bytes_with_fallback(
+fn download_ocr_bytes_from_candidates(
     client: &reqwest::blocking::Client,
     download: &OcrModelDownload,
-    primary_url: &str,
-    mirror_url: Option<&str>,
+    urls: &[String],
 ) -> Result<(Vec<u8>, Option<u64>), CoreError> {
-    match download_ocr_bytes_from_url(client, download, primary_url) {
-        Ok(result) => Ok(result),
-        Err(primary_err) => match mirror_url {
-            Some(mirror) => {
-                tracing::warn!(
-                    "Primary OCR model download failed ({primary_err}); retrying via mirror {mirror}"
-                );
-                download_ocr_bytes_from_url(client, download, mirror).map_err(|mirror_err| {
-                    CoreError::Ocr(format!("primary: {primary_err}; mirror: {mirror_err}"))
-                })
+    let mut errors = Vec::new();
+    for (index, url) in urls.iter().enumerate() {
+        match download_ocr_bytes_from_url(client, download, url) {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                errors.push(error.to_string());
+                if let Some(next_url) = urls.get(index + 1) {
+                    tracing::warn!(
+                        "OCR download failed for {} ({error}); retrying via {next_url}",
+                        download.filename
+                    );
+                }
             }
-            None => Err(primary_err),
-        },
+        }
     }
+
+    Err(CoreError::Ocr(errors.join("; ")))
 }
 
 /// Download required PaddleOCR ONNX models from maintained model hosts.
 pub fn download_ocr_models(
     config: &OcrConfig,
     hf_mirror_base: &str,
+    ghproxy_base: &str,
     on_progress: impl Fn(OcrDownloadProgress),
 ) -> Result<(), CoreError> {
     let dir = ocr_model_dir(config)?;
@@ -1364,14 +1448,13 @@ pub fn download_ocr_models(
         }
 
         tracing::info!("Downloading OCR model: {}", download.filename);
-        let primary_url = ocr_download_primary_url(download, hf_endpoint.as_deref());
-        let mirror_url = ocr_download_mirror_url(download, hf_mirror_base);
-        let (bytes, total_bytes) = download_ocr_bytes_with_fallback(
-            &client,
+        let urls = ocr_download_urls(
             download,
-            &primary_url,
-            mirror_url.as_deref(),
-        )?;
+            hf_endpoint.as_deref(),
+            hf_mirror_base,
+            ghproxy_base,
+        );
+        let (bytes, total_bytes) = download_ocr_bytes_from_candidates(&client, download, &urls)?;
 
         on_progress(OcrDownloadProgress {
             filename: download.filename.to_string(),
@@ -1561,6 +1644,8 @@ mod tests {
     fn test_delete_ocr_models_preserves_unrelated_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join(OCR_DET_MODEL_FILE), b"model").expect("write model");
+        std::fs::write(dir.path().join(LEGACY_OCR_DICT_FILE), b"legacy dictionary")
+            .expect("write legacy dictionary");
         std::fs::write(dir.path().join("keep.txt"), b"user data").expect("write unrelated file");
         let config = OcrConfig {
             model_path: dir.path().to_string_lossy().to_string(),
@@ -1570,41 +1655,64 @@ mod tests {
         delete_ocr_models(&config).expect("delete OCR models");
 
         assert!(!dir.path().join(OCR_DET_MODEL_FILE).exists());
+        assert!(!dir.path().join(LEGACY_OCR_DICT_FILE).exists());
         assert!(dir.path().join("keep.txt").exists());
     }
 
     #[test]
-    fn test_ocr_mirror_urls_only_apply_to_huggingface_downloads() {
-        let urls: Vec<_> = OCR_MODEL_DOWNLOADS
-            .iter()
-            .filter_map(|download| ocr_download_mirror_url(download, "https://hf-mirror.com/"))
-            .collect();
+    fn test_ocr_dictionary_appends_the_space_class() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dict.txt");
+        std::fs::write(&path, "one\ntwo\n").expect("write dictionary");
 
-        assert!(urls.is_empty());
+        let dictionary = read_ocr_dictionary(&path).expect("read dictionary");
+
+        assert_eq!(dictionary, vec!["one", "two", " "]);
     }
 
     #[test]
-    fn test_ocr_mirror_urls_empty_base_disables_mirror() {
-        assert!(OCR_MODEL_DOWNLOADS
-            .iter()
-            .all(|download| ocr_download_mirror_url(download, "").is_none()));
+    fn test_every_ocr_download_has_an_independent_fallback() {
+        for download in OCR_MODEL_DOWNLOADS {
+            let urls = ocr_download_urls(
+                download,
+                None,
+                "https://hf-mirror.com/",
+                "https://mirror.ghproxy.com/",
+            );
+            assert_eq!(urls.first().map(String::as_str), Some(download.url));
+            assert!(
+                urls.len() >= 2,
+                "{} should have at least one fallback URL",
+                download.filename
+            );
+        }
     }
 
     #[test]
-    fn test_ocr_primary_url_preserves_non_huggingface_hosts() {
+    fn test_ocr_model_fallback_uses_the_configured_huggingface_mirror() {
         let det = OCR_MODEL_DOWNLOADS
             .iter()
             .find(|download| download.filename == OCR_DET_MODEL_FILE)
             .expect("det download");
+        let urls = ocr_download_urls(det, None, "https://hf-mirror.com/", "");
+
+        assert!(urls.iter().any(|url| {
+            url == "https://hf-mirror.com/pitapo/rapidocr/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_mobile_det.onnx"
+        }));
+        assert!(urls.iter().any(|url| url == det.fallback_url));
+    }
+
+    #[test]
+    fn test_ocr_dictionary_fallback_uses_the_configured_github_proxy() {
         let dict = OCR_MODEL_DOWNLOADS
             .iter()
             .find(|download| download.filename == OCR_DICT_FILE)
             .expect("dict download");
+        let urls = ocr_download_urls(dict, None, "", "https://mirror.ghproxy.com/");
 
-        let det_url = ocr_download_primary_url(det, Some("https://hf-mirror.com"));
-        assert_eq!(det_url, det.url);
-
-        let dict_url = ocr_download_primary_url(dict, Some("https://hf-mirror.com"));
-        assert_eq!(dict_url, dict.url);
+        assert!(urls
+            .iter()
+            .any(|url| url == &format!("https://mirror.ghproxy.com/{}", dict.fallback_url)));
+        assert!(urls.iter().any(|url| url == dict.fallback_url));
     }
 }

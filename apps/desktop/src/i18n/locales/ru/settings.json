@@ -119,7 +119,7 @@
   "hfMirrorLabel": "URL зеркала HuggingFace",
   "hfMirrorHint": "Используется как запасной вариант, когда huggingface.co заблокирован. Пусто = отключено.",
   "ghproxyLabel": "URL прокси GitHub",
-  "ghproxyHint": "Используется для загрузки бинарных файлов FFmpeg. Пусто = отключено.",
+  "ghproxyHint": "Используется как резерв для встроенных загрузок с GitHub, включая OCR и FFmpeg. Пусто = отключено.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
   "webSearchProfile": "Provider profile",

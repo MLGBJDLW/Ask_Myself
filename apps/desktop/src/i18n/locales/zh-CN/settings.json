@@ -119,7 +119,7 @@
   "hfMirrorLabel": "HuggingFace 镜像 URL",
   "hfMirrorHint": "当 huggingface.co 被屏蔽时作为回退使用。留空 = 禁用。",
   "ghproxyLabel": "GitHub 代理 URL",
-  "ghproxyHint": "用于 FFmpeg 二进制下载。留空 = 禁用。",
+  "ghproxyHint": "用于 OCR、FFmpeg 等内置 GitHub 下载的备用源。留空 = 禁用。",
   "webSearchTitle": "Web 搜索",
   "webSearchDesc": "免 API Key 的公网搜索路由、重排和 provider 健康状态。",
   "webSearchProfile": "Provider 配置档",

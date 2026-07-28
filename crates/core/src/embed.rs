@@ -160,6 +160,7 @@ pub struct DownloadProgress {
 pub fn download_local_model_for_with_progress(
     model_path: Option<&str>,
     model: &LocalEmbeddingModel,
+    hf_mirror_base: &str,
     on_progress: impl Fn(DownloadProgress),
     cancel: &AtomicBool,
 ) -> Result<(), CoreError> {
@@ -167,7 +168,7 @@ pub fn download_local_model_for_with_progress(
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => default_model_dir_for(model)?,
     };
-    download_model_files_with_progress(&dir, model, on_progress, cancel)
+    download_model_files_with_progress(&dir, model, hf_mirror_base, on_progress, cancel)
 }
 
 // ── Embedder trait ──────────────────────────────────────────────────
@@ -748,22 +749,6 @@ impl LocalEmbeddingModel {
         }
     }
 
-    pub fn fallback_model_url(&self) -> &str {
-        match self {
-            Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
-            Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/onnx/model.onnx",
-            Self::Qwen3Embedding06B => "https://hf-mirror.com/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx",
-        }
-    }
-
-    pub fn fallback_tokenizer_url(&self) -> &str {
-        match self {
-            Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json",
-            Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/tokenizer.json",
-            Self::Qwen3Embedding06B => "https://hf-mirror.com/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
-        }
-    }
-
     /// Conservative max chars per chunk: ~3 chars/token for multilingual safety (CJK).
     pub fn max_chunk_chars(&self) -> usize {
         match self {
@@ -1068,11 +1053,12 @@ pub fn default_model_root() -> Result<PathBuf, CoreError> {
 
 /// Download `model.onnx` and `tokenizer.json` from HuggingFace.
 ///
-/// Tries the primary HuggingFace URL first, then falls back to the
-/// `hf-mirror.com` mirror (useful in regions where HuggingFace is blocked).
+/// Tries the primary HuggingFace URL first, then falls back to the default
+/// mirror (useful in regions where HuggingFace is blocked).
 ///
 /// Requires `reqwest` with the `blocking` feature.
 fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Result<(), CoreError> {
+    const DEFAULT_HF_MIRROR_BASE: &str = "https://hf-mirror.com";
     use std::time::Duration;
 
     std::fs::create_dir_all(target_dir)?;
@@ -1085,34 +1071,19 @@ fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Resul
         .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
 
     let files = [
-        (model.model_url(), model.fallback_model_url(), "model.onnx"),
-        (
-            model.tokenizer_url(),
-            model.fallback_tokenizer_url(),
-            "tokenizer.json",
-        ),
+        (model.model_url(), "model.onnx"),
+        (model.tokenizer_url(), "tokenizer.json"),
     ];
 
-    for (primary_url, mirror_url, filename) in &files {
+    for (primary_url, filename) in &files {
         let dest = target_dir.join(filename);
         if dest.exists() {
             tracing::info!("{filename} already exists, skipping download");
             continue;
         }
 
-        let response = match download_single(&client, primary_url, filename) {
-            Ok(resp) => resp,
-            Err(primary_err) => {
-                tracing::warn!(
-                    "Primary download failed for {filename}: {primary_err}, trying mirror..."
-                );
-                download_single(&client, mirror_url, filename).map_err(|mirror_err| {
-                    CoreError::Embedding(format!(
-                        "download {filename} failed — primary: {primary_err}; mirror: {mirror_err}"
-                    ))
-                })?
-            }
-        };
+        let urls = embedding_download_urls(primary_url, DEFAULT_HF_MIRROR_BASE);
+        let response = download_embedding_response(&client, &urls, filename)?;
 
         let bytes = response
             .bytes()
@@ -1129,6 +1100,7 @@ fn download_model_files(target_dir: &Path, model: &LocalEmbeddingModel) -> Resul
 fn download_model_files_with_progress(
     target_dir: &Path,
     model: &LocalEmbeddingModel,
+    hf_mirror_base: &str,
     on_progress: impl Fn(DownloadProgress),
     cancel: &AtomicBool,
 ) -> Result<(), CoreError> {
@@ -1145,36 +1117,21 @@ fn download_model_files_with_progress(
         .map_err(|e| CoreError::Embedding(format!("create HTTP client: {e}")))?;
 
     let files = [
-        (model.model_url(), model.fallback_model_url(), "model.onnx"),
-        (
-            model.tokenizer_url(),
-            model.fallback_tokenizer_url(),
-            "tokenizer.json",
-        ),
+        (model.model_url(), "model.onnx"),
+        (model.tokenizer_url(), "tokenizer.json"),
     ];
 
     let total_files = files.len();
 
-    for (file_index, (primary_url, mirror_url, filename)) in files.iter().enumerate() {
+    for (file_index, (primary_url, filename)) in files.iter().enumerate() {
         let dest = target_dir.join(filename);
         if dest.exists() {
             tracing::info!("{filename} already exists, skipping download");
             continue;
         }
 
-        let response = match download_single(&client, primary_url, filename) {
-            Ok(resp) => resp,
-            Err(primary_err) => {
-                tracing::warn!(
-                    "Primary download failed for {filename}: {primary_err}, trying mirror..."
-                );
-                download_single(&client, mirror_url, filename).map_err(|mirror_err| {
-                    CoreError::Embedding(format!(
-                        "download {filename} failed — primary: {primary_err}; mirror: {mirror_err}"
-                    ))
-                })?
-            }
-        };
+        let urls = embedding_download_urls(primary_url, hf_mirror_base);
+        let response = download_embedding_response(&client, &urls, filename)?;
 
         let total_bytes = response.content_length();
         let mut bytes_downloaded: u64 = 0;
@@ -1235,6 +1192,62 @@ fn download_single(
     }
 
     Ok(response)
+}
+
+fn push_unique_download_url(urls: &mut Vec<String>, url: String) {
+    if !urls.iter().any(|candidate| candidate == &url) {
+        urls.push(url);
+    }
+}
+
+fn embedding_download_urls(primary_url: &str, hf_mirror_base: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let hf_path = primary_url.strip_prefix("https://huggingface.co/");
+    let hf_endpoint = std::env::var("HF_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty());
+
+    if let (Some(path), Some(endpoint)) = (hf_path, hf_endpoint.as_deref()) {
+        push_unique_download_url(&mut urls, format!("{endpoint}/{path}"));
+    } else {
+        push_unique_download_url(&mut urls, primary_url.to_string());
+    }
+
+    if let Some(path) = hf_path {
+        let mirror = hf_mirror_base.trim().trim_end_matches('/');
+        if !mirror.is_empty() {
+            push_unique_download_url(&mut urls, format!("{mirror}/{path}"));
+        }
+    }
+    push_unique_download_url(&mut urls, primary_url.to_string());
+    urls
+}
+
+fn download_embedding_response(
+    client: &reqwest::blocking::Client,
+    urls: &[String],
+    filename: &str,
+) -> Result<reqwest::blocking::Response, CoreError> {
+    let mut errors = Vec::new();
+    for (index, url) in urls.iter().enumerate() {
+        match download_single(client, url, filename) {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                errors.push(format!("{url}: {error}"));
+                if let Some(next_url) = urls.get(index + 1) {
+                    tracing::warn!(
+                        "Embedding download failed for {filename} ({error}); retrying via {next_url}"
+                    );
+                }
+            }
+        }
+    }
+
+    Err(CoreError::Embedding(format!(
+        "download {filename} failed: {}",
+        errors.join("; ")
+    )))
 }
 
 // ── API Embedder (OpenAI-compatible) ─────────────────────────────────
@@ -1882,6 +1895,27 @@ mod tests {
         assert_eq!(model.dimensions(), 1024);
         assert_eq!(model.max_length(), 8192);
         assert!(model.model_url().ends_with("model_quantized.onnx"));
+    }
+
+    #[test]
+    fn test_every_embedding_file_uses_the_configured_huggingface_mirror() {
+        for model in [
+            LocalEmbeddingModel::MultilingualMiniLM,
+            LocalEmbeddingModel::MultilingualE5Base,
+            LocalEmbeddingModel::Qwen3Embedding06B,
+        ] {
+            for primary_url in [model.model_url(), model.tokenizer_url()] {
+                let urls = embedding_download_urls(primary_url, "https://hf-mirror.example/");
+                let path = primary_url
+                    .strip_prefix("https://huggingface.co/")
+                    .expect("HuggingFace model URL");
+
+                assert!(urls.iter().any(|url| url == primary_url));
+                assert!(urls
+                    .iter()
+                    .any(|url| url == &format!("https://hf-mirror.example/{path}")));
+            }
+        }
     }
 
     #[test]

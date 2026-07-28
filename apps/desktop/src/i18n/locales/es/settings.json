@@ -119,7 +119,7 @@
   "hfMirrorLabel": "URL del espejo de HuggingFace",
   "hfMirrorHint": "Se usa como respaldo cuando huggingface.co está bloqueado. Vacío = desactivado.",
   "ghproxyLabel": "URL del proxy de GitHub",
-  "ghproxyHint": "Se usa para descargas de binarios de FFmpeg. Vacío = desactivado.",
+  "ghproxyHint": "Se usa como respaldo para descargas integradas de GitHub, como OCR y FFmpeg. Vacío = desactivado.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
   "webSearchProfile": "Provider profile",
