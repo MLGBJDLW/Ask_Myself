@@ -250,6 +250,7 @@ export function ProvidersSettingsTab({
                 <TextToSpeechSettingsPanel
                   providerScope="cloud"
                   appConfig={appConfig}
+                  agentConfigs={agentConfigs}
                   loading={appConfigLoading}
                   onChange={onAppConfigChange}
                   onMarkDirty={onMarkAppConfigDirty}
@@ -264,6 +265,7 @@ export function ProvidersSettingsTab({
                 <SpeechToTextSettingsPanel
                   providerScope="cloud"
                   appConfig={appConfig}
+                  agentConfigs={agentConfigs}
                   loading={appConfigLoading}
                   onChange={onAppConfigChange}
                   onMarkDirty={onMarkAppConfigDirty}

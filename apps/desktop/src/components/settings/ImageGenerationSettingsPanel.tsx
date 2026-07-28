@@ -16,6 +16,10 @@ import {
   type ImageProviderPreset,
 } from "../../lib/imageProviderPresets";
 import { ProviderIcon } from "../../lib/providerIcons";
+import {
+  findSharedProviderCredential,
+  providerCredentialScope,
+} from "../../lib/providerCredentials";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
@@ -66,6 +70,8 @@ function configFromPreset(
   current: ImageGenerationConfig,
   preset: ImageProviderPreset,
 ): ImageGenerationConfig {
+  const preservesCredential = providerCredentialScope(current.provider, current.baseUrl) ===
+    providerCredentialScope(preset.provider, preset.baseUrl);
   return {
     ...current,
     provider: preset.provider,
@@ -75,6 +81,7 @@ function configFromPreset(
     size: firstSize(preset),
     quality: firstOption(preset.qualityOptions),
     outputFormat: firstOption(preset.outputFormats),
+    apiKey: preservesCredential ? current.apiKey : "",
   };
 }
 
@@ -122,7 +129,10 @@ function presetForAgentConfig(
 ): ImageProviderPreset | null {
   if (config.provider === "custom") return null;
 
-  const candidates = providerPresets.filter((preset) => preset.provider === config.provider);
+  const credentialScope = providerCredentialScope(config.provider, config.baseUrl);
+  const candidates = providerPresets.filter(
+    (preset) => providerCredentialScope(preset.provider, preset.baseUrl) === credentialScope,
+  );
   if (candidates.length === 0) return null;
 
   const baseUrl = normalizeUrl(config.baseUrl);
@@ -137,16 +147,6 @@ function presetForAgentConfig(
   }
 
   return candidates.find((preset) => preset.id !== "custom-openai-images") ?? candidates[0] ?? null;
-}
-
-function findSharedKeySource(
-  provider: string,
-  agentConfigs: AgentConfig[],
-): AgentConfig | null {
-  const candidates = agentConfigs.filter(
-    (config) => config.provider === provider && config.apiKey.trim(),
-  );
-  return candidates.find((config) => config.isDefault) ?? candidates[0] ?? null;
 }
 
 function runtimeCheckVariant(check: PluginRuntimeCheck) {
@@ -211,8 +211,8 @@ export function ImageGenerationSettingsPanel({
     activePreset.models.length > 0 &&
     activePreset.models.some((model) => model.id === imageConfig.model);
   const sharedKeySource = useMemo(
-    () => findSharedKeySource(activePreset.provider, agentConfigs),
-    [activePreset.provider, agentConfigs],
+    () => findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl),
+    [activePreset.baseUrl, activePreset.provider, agentConfigs],
   );
   const resolvedApiKey = imageConfig.apiKey.trim() || sharedKeySource?.apiKey.trim() || "";
   const usesSharedProviderKey = !imageConfig.apiKey.trim() && Boolean(sharedKeySource);
@@ -243,16 +243,7 @@ export function ImageGenerationSettingsPanel({
       providerPresets.find((candidate) => candidate.id === presetId) ??
       providerPresets[0] ??
       IMAGE_PROVIDER_PRESETS[0];
-    updateImageConfig({
-      ...imageConfig,
-      provider: preset.provider,
-      apiStyle: preset.apiStyle,
-      baseUrl: preset.baseUrl,
-      model: getDefaultImageModel(preset),
-      size: firstSize(preset),
-      quality: firstOption(preset.qualityOptions),
-      outputFormat: firstOption(preset.outputFormats),
-    });
+    updateImageConfig(configFromPreset(imageConfig, preset));
   };
 
   const currentPresetId = activePreset.id;

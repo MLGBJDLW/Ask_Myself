@@ -22,6 +22,28 @@
     ]
   },
   {
+    "id": "alibaba-model-studio-cn",
+    "name": "Alibaba Model Studio Embeddings (Beijing)",
+    "provider": "alibaba_model_studio",
+    "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "description": "Qwen multilingual embeddings on Model Studio's Beijing endpoint; reuses the matching pay-as-you-go API key.",
+    "models": [
+      {
+        "id": "qwen3.7-text-embedding",
+        "name": "Qwen3.7 Text Embedding",
+        "dimensions": 1024,
+        "supportsDimensionOverride": true,
+        "recommended": true
+      },
+      {
+        "id": "text-embedding-v4",
+        "name": "Text Embedding v4",
+        "dimensions": 1024,
+        "supportsDimensionOverride": true
+      }
+    ]
+  },
+  {
     "id": "jina",
     "name": "Jina AI Embeddings",
     "provider": "jina",

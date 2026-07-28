@@ -2,8 +2,12 @@ import { useMemo, useState } from 'react';
 import { ChevronDown, Eye, EyeOff, Save, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
+import {
+  findSharedProviderCredential,
+  providerCredentialScope,
+} from '../../lib/providerCredentials';
 import { defaultTtsItem, TTS_PROVIDER_PRESETS } from '../../lib/ttsProviderPresets';
-import type { AppConfig, TextToSpeechConfig } from '../../types/conversation';
+import type { AgentConfig, AppConfig, TextToSpeechConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -14,6 +18,7 @@ interface TextToSpeechSettingsPanelProps {
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
   onSave: (config?: AppConfig) => void | Promise<void>;
+  agentConfigs?: AgentConfig[];
   providerScope?: 'all' | 'cloud' | 'local';
 }
 
@@ -42,6 +47,7 @@ export function TextToSpeechSettingsPanel({
   onChange,
   onMarkDirty,
   onSave,
+  agentConfigs = [],
   providerScope = 'all',
 }: TextToSpeechSettingsPanelProps) {
   const { t } = useTranslation();
@@ -63,6 +69,11 @@ export function TextToSpeechSettingsPanel({
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
   const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
   const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
+  const sharedKeySource = !localProvider
+    ? findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl)
+    : null;
+  const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
+  const materializedConfig = { ...config, apiKey: resolvedApiKey };
   const configured = scopeActive && (localProvider
     ? Boolean(
         config.executablePath?.trim()
@@ -70,7 +81,7 @@ export function TextToSpeechSettingsPanel({
         && config.tokensPath?.trim()
         && (!localFamilyNeedsVoices || config.voicesPath?.trim()),
       )
-    : Boolean(config.apiKey.trim() && config.model.trim() && config.voice.trim()));
+    : Boolean(resolvedApiKey && config.model.trim() && config.voice.trim()));
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -80,12 +91,15 @@ export function TextToSpeechSettingsPanel({
   const applyPreset = (presetId: string) => {
     const preset = scopedPresets.find((candidate) => candidate.id === presetId);
     if (!preset) return;
+    const preservesCredential = providerCredentialScope(activePreset.provider, activePreset.baseUrl) ===
+      providerCredentialScope(preset.provider, preset.baseUrl);
     update({
       provider: preset.provider,
       apiStyle: preset.apiStyle,
       baseUrl: preset.baseUrl,
       model: defaultTtsItem(preset.models)?.id ?? '',
       voice: defaultTtsItem(preset.voices)?.id ?? '',
+      apiKey: preservesCredential ? config.apiKey : '',
       outputFormat: preset.outputFormats[0] ?? 'mp3',
       executablePath: preset.local ? (config.executablePath || 'sherpa-onnx-offline-tts') : config.executablePath,
     });
@@ -178,6 +192,11 @@ export function TextToSpeechSettingsPanel({
                     {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                   </button>
                 </div>
+                {sharedKeySource && !config.apiKey.trim() && (
+                  <p className="text-xs text-text-tertiary">
+                    {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
+                  </p>
+                )}
               </div>
             )}
 
@@ -295,7 +314,7 @@ export function TextToSpeechSettingsPanel({
               size="sm"
               icon={<Save size={14} />}
               loading={loading}
-              onClick={() => void onSave({ ...appConfig, textToSpeech: config })}
+              onClick={() => void onSave({ ...appConfig, textToSpeech: materializedConfig })}
               disabled={!configured}
             >
               {t('common.save')}

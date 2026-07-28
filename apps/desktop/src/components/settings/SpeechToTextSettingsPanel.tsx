@@ -3,8 +3,12 @@ import { ChevronDown, Eye, EyeOff, Mic2, Save } from 'lucide-react';
 
 import { useTranslation } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
+import {
+  findSharedProviderCredential,
+  providerCredentialScope,
+} from '../../lib/providerCredentials';
 import { defaultSttItem, STT_PROVIDER_PRESETS } from '../../lib/sttProviderPresets';
-import type { AppConfig, SpeechToTextConfig } from '../../types/conversation';
+import type { AgentConfig, AppConfig, SpeechToTextConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -15,6 +19,7 @@ interface SpeechToTextSettingsPanelProps {
   onChange: (config: AppConfig) => void;
   onMarkDirty: () => void;
   onSave: (config?: AppConfig) => void | Promise<void>;
+  agentConfigs?: AgentConfig[];
   providerScope?: 'all' | 'cloud' | 'local';
 }
 
@@ -41,6 +46,7 @@ export function SpeechToTextSettingsPanel({
   onChange,
   onMarkDirty,
   onSave,
+  agentConfigs = [],
   providerScope = 'all',
 }: SpeechToTextSettingsPanelProps) {
   const { t } = useTranslation();
@@ -67,6 +73,11 @@ export function SpeechToTextSettingsPanel({
   const isWhisper = config.apiStyle === 'local_whisper';
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
+  const sharedKeySource = !isWhisper && !isSherpa
+    ? findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl)
+    : null;
+  const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
+  const materializedConfig = { ...config, apiKey: resolvedApiKey };
   const configured = scopeActive && (isWhisper || (isSherpa
     ? Boolean(
         config.executablePath?.trim()
@@ -75,7 +86,7 @@ export function SpeechToTextSettingsPanel({
           ? config.encoderPath?.trim() && config.decoderPath?.trim() && config.joinerPath?.trim()
           : config.modelPath?.trim()),
       )
-    : Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim())));
+    : Boolean(resolvedApiKey && config.baseUrl?.trim() && config.model.trim())));
 
   const update = (patch: Partial<SpeechToTextConfig>) => {
     onChange({ ...appConfig, speechToText: { ...config, ...patch } });
@@ -84,11 +95,14 @@ export function SpeechToTextSettingsPanel({
   const applyPreset = (id: string) => {
     const preset = scopedPresets.find((candidate) => candidate.id === id);
     if (!preset) return;
+    const preservesCredential = providerCredentialScope(activePreset.provider, activePreset.baseUrl) ===
+      providerCredentialScope(preset.provider, preset.baseUrl);
     update({
       provider: preset.provider,
       apiStyle: preset.apiStyle,
       baseUrl: preset.baseUrl || null,
       model: defaultSttItem(preset.models)?.id ?? '',
+      apiKey: preservesCredential ? config.apiKey : '',
       sherpaModelFamily: preset.sherpaModelFamily ?? 'sense_voice',
       executablePath: preset.apiStyle === 'sherpa_onnx'
         ? (config.executablePath || (preset.sherpaModelFamily === 'zipformer' ? 'sherpa-onnx' : 'sherpa-onnx-offline'))
@@ -156,6 +170,11 @@ export function SpeechToTextSettingsPanel({
                       {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                   </div>
+                  {sharedKeySource && !config.apiKey.trim() && (
+                    <p className="text-xs text-text-tertiary">
+                      {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-text-primary">{t('settings.baseUrl')}</label>
@@ -219,7 +238,7 @@ export function SpeechToTextSettingsPanel({
             )}
           </div>
           <div className="mt-4 flex justify-end border-t border-border pt-3">
-            <Button type="button" variant="primary" size="sm" icon={<Save size={14} />} loading={loading} onClick={() => void onSave({ ...appConfig, speechToText: config })} disabled={!configured}>
+            <Button type="button" variant="primary" size="sm" icon={<Save size={14} />} loading={loading} onClick={() => void onSave({ ...appConfig, speechToText: materializedConfig })} disabled={!configured}>
               {t('common.save')}
             </Button>
           </div>

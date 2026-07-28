@@ -485,6 +485,11 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await selects.nth(0).selectOption("dashscope-cosyvoice");
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
+  await expect(panel.getByText("Qwen CN API key")).toBeVisible();
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }
+  ).__savedAppConfig?.textToSpeech?.apiKey)).toBe("sk-qwen-demo");
 
   await selects.nth(0).selectOption("siliconflow");
   await expect(selects.nth(1)).toHaveValue("fnlp/MOSS-TTSD-v0.5");
@@ -506,10 +511,15 @@ test("settings promotes low-latency speech providers with their own logos", asyn
 
   await sttProvider.selectOption("alibaba-qwen-asr");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
+  await expect(sttPanel.getByText("Qwen CN API key")).toBeVisible();
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
     "style",
     /provider-icons\/alibabacloud\.svg/,
   );
+  await sttPanel.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { speechToText?: { apiKey?: string } } }
+  ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
 
   await sttProvider.selectOption("siliconflow");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
@@ -607,7 +617,7 @@ test("settings discard restores local speech while keeping persisted Whisper edi
   await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
-test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {
+test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
 
@@ -618,6 +628,18 @@ test("settings promotes Jina and Mistral embedding presets with fixed dimensions
   await section.getByRole("button", { name: "API", exact: true }).click();
 
   const selects = section.locator("select");
+  await selects.nth(0).selectOption("alibaba-model-studio-cn");
+  await expect(selects.nth(1)).toHaveValue("qwen3.7-text-embedding");
+  await expect(section.getByRole("spinbutton")).toHaveValue("1024");
+  await expect(section.getByText("Qwen CN API key")).toBeVisible();
+  await section.getByRole("button", { name: "Save Config" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedEmbedConfig?: { apiKey?: string; apiModel?: string } }
+  ).__savedEmbedConfig)).toEqual(expect.objectContaining({
+    apiKey: "sk-qwen-demo",
+    apiModel: "qwen3.7-text-embedding",
+  }));
+
   await selects.nth(0).selectOption("jina");
   await expect(selects.nth(1)).toHaveValue("jina-embeddings-v5-text-small");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");

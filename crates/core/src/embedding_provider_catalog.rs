@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn shared_catalog_is_valid_and_has_recommended_models() {
         let presets = load_embedding_provider_presets().expect("valid embedding provider catalog");
-        assert!(presets.len() >= 4);
+        assert!(presets.len() >= 5);
         for preset in presets.iter().filter(|preset| preset.id != "custom") {
             assert!(preset.models.iter().any(|model| model.recommended));
         }
@@ -71,5 +71,13 @@ mod tests {
             .expect("mistral model");
         assert!(!mistral.supports_dimension_override);
         assert_eq!(mistral.dimensions, 1024);
+
+        let qwen = find_embedding_model(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "qwen3.7-text-embedding",
+        )
+        .expect("qwen model");
+        assert!(qwen.supports_dimension_override);
+        assert_eq!(qwen.dimensions, 1024);
     }
 }
