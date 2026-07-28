@@ -25,3 +25,14 @@ export const TTS_PROVIDER_PRESETS = ttsProviderPresets as TtsProviderPreset[];
 export function defaultTtsItem(items: TtsCatalogItem[]): TtsCatalogItem | null {
   return items.find((item) => item.recommended) ?? items[0] ?? null;
 }
+
+/** Resolve the catalog entry that backs a saved text-to-speech configuration. */
+export function findTtsProviderPreset(config: {
+  provider: string;
+  apiStyle: string;
+} | null | undefined): TtsProviderPreset | null {
+  if (!config) return null;
+  return TTS_PROVIDER_PRESETS.find(
+    (preset) => preset.provider === config.provider && preset.apiStyle === config.apiStyle,
+  ) ?? null;
+}

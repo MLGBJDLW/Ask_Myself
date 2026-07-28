@@ -1,8 +1,22 @@
-import { AlertTriangle, Brain, FolderOpen, HardDrive, Mic, RotateCcw, ScanLine } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  AudioLines,
+  Brain,
+  FolderOpen,
+  HardDrive,
+  Mic,
+  Mic2,
+  RotateCcw,
+  ScanLine,
+  Volume2,
+} from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from '../../i18n';
 import type { ManagedModelPaths, OfficeRuntimeReadiness } from '../../lib/api';
+import { findSttProviderPreset } from '../../lib/sttProviderPresets';
+import { findTtsProviderPreset } from '../../lib/ttsProviderPresets';
 import type { DownloadProgress } from '../../types/ingest';
 import type { AppConfig } from '../../types/conversation';
 import type { EmbedderConfig, LocalModelId } from '../../types/embedder';
@@ -15,8 +29,6 @@ import { CollapsiblePanel, Section } from './SettingsSection';
 import { ModelCard } from './ModelCard';
 import { NetworkMirrorsPanel } from './NetworkMirrorsPanel';
 import { OfficeRuntimePanel } from './OfficeRuntimePanel';
-import { SpeechToTextSettingsPanel } from './SpeechToTextSettingsPanel';
-import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
 
 interface ModelDownloadsSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -54,8 +66,35 @@ interface ModelDownloadsSectionProps {
   onAppConfigChange: (config: AppConfig) => void;
   onAppConfigSave: () => void;
   onMarkModelsDirty: () => void;
+  onOpenSpeechSettings: () => void;
   onApplyManagedModelRoot: (root: string) => void | Promise<void>;
   onResetManagedModelRoot: () => void | Promise<void>;
+}
+
+function SpeechEngineSummary({
+  icon,
+  label,
+  engine,
+  local,
+}: {
+  icon: ReactNode;
+  label: string;
+  engine: string;
+  local: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-surface-2/60 px-3 py-2">
+      <span className="shrink-0 text-text-tertiary">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] uppercase tracking-wide text-text-tertiary">{label}</p>
+        <p className="truncate text-xs font-medium text-text-primary">{engine}</p>
+      </div>
+      <span className="shrink-0 rounded-full border border-border/70 bg-surface-1 px-2 py-0.5 text-[10px] text-text-tertiary">
+        {local ? t('settings.speechRuntimeLocal') : t('settings.speechRuntimeCloud')}
+      </span>
+    </div>
+  );
 }
 
 function whisperModelSize(model: VideoConfig['whisperModel'] | undefined): string | undefined {
@@ -124,12 +163,15 @@ export function ModelDownloadsSection({
   onAppConfigChange,
   onAppConfigSave,
   onMarkModelsDirty,
+  onOpenSpeechSettings,
   onApplyManagedModelRoot,
   onResetManagedModelRoot,
 }: ModelDownloadsSectionProps) {
   const { t } = useTranslation();
   const [modelRootDraft, setModelRootDraft] = useState('');
   const [deleteManagedModel, setDeleteManagedModel] = useState<'ocr' | 'whisper' | null>(null);
+  const sttPreset = useMemo(() => findSttProviderPreset(appConfig?.speechToText), [appConfig?.speechToText]);
+  const ttsPreset = useMemo(() => findTtsProviderPreset(appConfig?.textToSpeech), [appConfig?.textToSpeech]);
 
   useEffect(() => {
     if (managedModelPaths?.root) setModelRootDraft(managedModelPaths.root);
@@ -350,32 +392,54 @@ export function ModelDownloadsSection({
                 <AlertTriangle size={14} className="mt-0.5 shrink-0 text-info" />
                 <p className="text-xs text-info">{t('settings.videoModelChangeWarning')}</p>
               </div>
+              <div className="flex items-start gap-2 rounded-lg border border-border/70 bg-surface-2/60 p-2">
+                <Mic2 size={14} className="mt-0.5 shrink-0 text-text-tertiary" />
+                <p className="text-xs leading-5 text-text-tertiary">
+                  {appConfig?.speechToText?.apiStyle === 'local_whisper'
+                    ? t('settings.whisperDictationActive')
+                    : t('settings.whisperDictationInactive', {
+                        engine: sttPreset?.name ?? t('settings.speechEngineUnset'),
+                      })}
+                </p>
+              </div>
             </div>
           )}
         </ModelCard>
 
         {appConfig && (
-          <div className="space-y-3 rounded-xl border border-border bg-surface-1/40 p-4">
-            <div>
-              <p className="text-sm font-semibold text-text-primary">{t('settings.localSpeechModels')}</p>
-              <p className="mt-1 text-xs leading-relaxed text-text-tertiary">{t('settings.localSpeechModelsDesc')}</p>
+          <div className="rounded-xl border border-border bg-surface-1/40 p-4" data-testid="speech-engine-link-card">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+                <AudioLines size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-text-primary">{t('settings.speechEngines')}</p>
+                <p className="mt-1 text-xs leading-relaxed text-text-tertiary">{t('settings.speechEnginesLinkDesc')}</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <SpeechEngineSummary
+                    icon={<Volume2 size={14} />}
+                    label={t('settings.textToSpeech')}
+                    engine={ttsPreset?.name ?? t('settings.speechEngineUnset')}
+                    local={ttsPreset?.local === true}
+                  />
+                  <SpeechEngineSummary
+                    icon={<Mic2 size={14} />}
+                    label={t('settings.speechToText')}
+                    engine={sttPreset?.name ?? t('settings.speechEngineUnset')}
+                    local={sttPreset?.local === true}
+                  />
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-3"
+                  icon={<ArrowUpRight size={14} />}
+                  onClick={onOpenSpeechSettings}
+                >
+                  {t('settings.speechEnginesConfigure')}
+                </Button>
+              </div>
             </div>
-            <TextToSpeechSettingsPanel
-              providerScope="local"
-              appConfig={appConfig}
-              loading={appConfigLoading}
-              onChange={onAppConfigChange}
-              onMarkDirty={onMarkModelsDirty}
-              onSave={onAppConfigSave}
-            />
-            <SpeechToTextSettingsPanel
-              providerScope="local"
-              appConfig={appConfig}
-              loading={appConfigLoading}
-              onChange={onAppConfigChange}
-              onMarkDirty={onMarkModelsDirty}
-              onSave={onAppConfigSave}
-            />
           </div>
         )}
 

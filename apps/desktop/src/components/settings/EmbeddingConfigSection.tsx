@@ -17,6 +17,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Section } from './SettingsSection';
+import { SharedCredentialNotice } from './SharedCredentialNotice';
 
 interface EmbeddingConfigSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -201,11 +202,12 @@ export function EmbeddingConfigSection({
                     placeholder="sk-..."
                   />
                 </div>
-                {sharedKeySource && !embedConfig.apiKey.trim() && (
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
-                  </p>
-                )}
+                <SharedCredentialNotice
+                  source={sharedKeySource}
+                  hasOwnKey={Boolean(embedConfig.apiKey.trim())}
+                  onApply={() => updateConfig({ apiKey: sharedKeySource?.apiKey ?? '' })}
+                  onReset={() => updateConfig({ apiKey: '' })}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingBaseUrl')}</label>

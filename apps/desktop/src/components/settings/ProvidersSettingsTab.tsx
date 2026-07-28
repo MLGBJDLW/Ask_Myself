@@ -1,4 +1,4 @@
-import { Bot, Image as ImageIcon, Mic2, Pencil, Plus, Settings2, Star, Trash2, Volume2, X } from 'lucide-react';
+import { AudioLines, Bot, Image as ImageIcon, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
@@ -242,13 +242,13 @@ export function ProvidersSettingsTab({
                   onSave={onAppConfigSave}
                 />
               </div>
-              <div className="space-y-2" data-provider-category="text-to-speech">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  <Volume2 size={14} />
-                  <span>{t('settings.providerCategoryTts')}</span>
+              <div className="space-y-3" data-provider-category="speech">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+                  <AudioLines size={14} />
+                  <span>{t('settings.providerCategorySpeech')}</span>
                 </div>
+                <p className="text-xs leading-5 text-text-tertiary">{t('settings.providerCategorySpeechDesc')}</p>
                 <TextToSpeechSettingsPanel
-                  providerScope="cloud"
                   appConfig={appConfig}
                   agentConfigs={agentConfigs}
                   loading={appConfigLoading}
@@ -256,14 +256,7 @@ export function ProvidersSettingsTab({
                   onMarkDirty={onMarkAppConfigDirty}
                   onSave={onAppConfigSave}
                 />
-              </div>
-              <div className="space-y-2" data-provider-category="speech-to-text">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  <Mic2 size={14} />
-                  <span>{t('settings.providerCategoryStt')}</span>
-                </div>
                 <SpeechToTextSettingsPanel
-                  providerScope="cloud"
                   appConfig={appConfig}
                   agentConfigs={agentConfigs}
                   loading={appConfigLoading}

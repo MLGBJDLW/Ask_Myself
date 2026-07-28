@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, Eye, EyeOff, Mic2, Save } from 'lucide-react';
+import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Mic2, Save } from 'lucide-react';
 
 import { useTranslation } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
@@ -7,11 +7,12 @@ import {
   findSharedProviderCredential,
   providerCredentialScope,
 } from '../../lib/providerCredentials';
-import { defaultSttItem, STT_PROVIDER_PRESETS } from '../../lib/sttProviderPresets';
+import { defaultSttItem, findSttProviderPreset, STT_PROVIDER_PRESETS } from '../../lib/sttProviderPresets';
 import type { AgentConfig, AppConfig, SpeechToTextConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { SharedCredentialNotice } from './SharedCredentialNotice';
 
 interface SpeechToTextSettingsPanelProps {
   appConfig: AppConfig;
@@ -21,6 +22,7 @@ interface SpeechToTextSettingsPanelProps {
   onSave: (config?: AppConfig) => void | Promise<void>;
   agentConfigs?: AgentConfig[];
   providerScope?: 'all' | 'cloud' | 'local';
+  defaultExpanded?: boolean;
 }
 
 export const DEFAULT_STT_CONFIG: SpeechToTextConfig = {
@@ -48,9 +50,10 @@ export function SpeechToTextSettingsPanel({
   onSave,
   agentConfigs = [],
   providerScope = 'all',
+  defaultExpanded = false,
 }: SpeechToTextSettingsPanelProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.speechToText ?? DEFAULT_STT_CONFIG;
   const scopedPresets = useMemo(
@@ -58,22 +61,20 @@ export function SpeechToTextSettingsPanel({
       || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
     [providerScope],
   );
+  const cloudPresets = useMemo(() => scopedPresets.filter((preset) => preset.local !== true), [scopedPresets]);
+  const localPresets = useMemo(() => scopedPresets.filter((preset) => preset.local === true), [scopedPresets]);
+  const groupedCatalog = cloudPresets.length > 0 && localPresets.length > 0;
   const matchedPreset = useMemo(
-    () => STT_PROVIDER_PRESETS.find((preset) =>
-      preset.provider === config.provider
-      && preset.apiStyle === config.apiStyle
-      && (preset.sherpaModelFamily ?? null) === (
-        config.apiStyle === 'sherpa_onnx' ? config.sherpaModelFamily ?? 'sense_voice' : null
-      ),
-    ),
-    [config.apiStyle, config.provider, config.sherpaModelFamily],
+    () => findSttProviderPreset(config),
+    [config],
   );
   const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
   const isWhisper = config.apiStyle === 'local_whisper';
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
-  const sharedKeySource = !isWhisper && !isSherpa
+  const runsOnDevice = isWhisper || isSherpa;
+  const sharedKeySource = !runsOnDevice
     ? findSharedProviderCredential(agentConfigs, config.provider, config.baseUrl)
     : null;
   const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
@@ -133,6 +134,10 @@ export function SpeechToTextSettingsPanel({
                   ? t('settings.configured')
                   : (isSherpa ? t('settings.sttNeedsLocalFiles') : t('settings.needsApiKey'))}
             </Badge>
+            <Badge variant="default" className="gap-1 text-[10px]">
+              {runsOnDevice ? <Laptop size={10} /> : <Cloud size={10} />}
+              {runsOnDevice ? t('settings.speechRuntimeLocal') : t('settings.speechRuntimeCloud')}
+            </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">{activePreset.name} · {config.model}</p>
         </div>
@@ -152,15 +157,29 @@ export function SpeechToTextSettingsPanel({
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
                 {!scopeActive && <option value="" disabled>{t('settings.selectSpeechProvider')}</option>}
-                {scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                {groupedCatalog ? (
+                  <>
+                    <optgroup label={t('settings.speechProviderGroupCloud')}>
+                      {cloudPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                    </optgroup>
+                    <optgroup label={t('settings.speechProviderGroupLocal')}>
+                      {localPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                    </optgroup>
+                  </>
+                ) : (
+                  scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)
+                )}
               </select>
+              {groupedCatalog && (
+                <p className="text-[11px] leading-5 text-text-tertiary">{t('settings.speechProviderCatalogHint')}</p>
+              )}
               <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
                 <ProviderIcon provider={activePreset.provider} providerId={activePreset.id} baseUrl={activePreset.baseUrl} size="sm" />
                 <p className="text-xs leading-5 text-text-tertiary">{activePreset.description}</p>
               </div>
             </div>
 
-            {!isWhisper && !isSherpa && (
+            {!runsOnDevice && (
               <>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-text-primary">{t('settings.apiKey')}</label>
@@ -170,11 +189,12 @@ export function SpeechToTextSettingsPanel({
                       {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                   </div>
-                  {sharedKeySource && !config.apiKey.trim() && (
-                    <p className="text-xs text-text-tertiary">
-                      {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
-                    </p>
-                  )}
+                  <SharedCredentialNotice
+                    source={sharedKeySource}
+                    hasOwnKey={Boolean(config.apiKey.trim())}
+                    onApply={() => update({ apiKey: sharedKeySource?.apiKey ?? '' })}
+                    onReset={() => update({ apiKey: '' })}
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-text-primary">{t('settings.baseUrl')}</label>
