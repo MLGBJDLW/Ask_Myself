@@ -757,10 +757,17 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
     let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
     let is_deepseek = is_deepseek_reasoner(&request.model);
     let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
-    let is_qwen_provider = matches!(request.provider_type, Some(ProviderType::Qwen));
+    let is_qwen_provider = matches!(
+        request.provider_type,
+        Some(ProviderType::Qwen | ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
+    );
+    let is_router_provider = matches!(
+        request.provider_type,
+        Some(ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
+    );
     let model_lower = request.model.to_lowercase();
     let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
-        || model_lower.contains("deepseek");
+        || (model_lower.contains("deepseek") && !is_router_provider);
     let deepseek_thinking_requested =
         request.thinking_budget.is_some() || request.reasoning_effort.is_some();
     let deepseek_thinking_mode = if is_deepseek_provider {
@@ -1684,6 +1691,28 @@ data: [DONE]
         assert!(body.get("thinking").is_none());
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn router_thinking_uses_native_enable_thinking_fields() {
+        for provider_type in [ProviderType::AlibabaModelStudio, ProviderType::SiliconFlow] {
+            let request = CompletionRequest {
+                model: "deepseek-ai/DeepSeek-V3.2".to_string(),
+                messages: vec![Message::text(Role::User, "hello")],
+                temperature: Some(0.4),
+                max_tokens: Some(100),
+                tools: None,
+                stop: None,
+                thinking_budget: Some(4096),
+                reasoning_effort: None,
+                provider_type: Some(provider_type),
+                parallel_tool_calls: true,
+            };
+            let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+            assert_eq!(body["enable_thinking"], true);
+            assert_eq!(body["thinking_budget"], 4096);
+            assert!(body.get("thinking").is_none());
+        }
     }
 
     #[test]

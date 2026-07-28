@@ -369,19 +369,22 @@ mod tests {
     }
 
     #[test]
-    fn qwen_catalog_separates_pay_as_you_go_from_token_plan() {
+    fn alibaba_model_studio_catalog_routes_qwen_and_third_party_models() {
         let qwen = find_provider_preset(
-            "qwen",
+            "alibaba_model_studio",
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
-        .expect("qwen preset should match");
+        .expect("Alibaba Model Studio preset should match");
         let ids = qwen
             .models
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"qwen3.7-max"));
+        assert_eq!(ids.first(), Some(&"deepseek-v4-pro"));
+        assert!(ids.contains(&"kimi-k2.7-code"));
+        assert!(ids.contains(&"glm-5.2"));
+        assert!(ids.contains(&"MiniMax-M2.5"));
         assert!(ids.contains(&"qwen3.7-plus"));
         assert!(ids.contains(&"qwen3.7-max-2026-06-08"));
         assert!(ids.contains(&"qwen3.6-plus"));
@@ -416,10 +419,10 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            find_provider_preset("qwen", None)
-                .expect("Qwen should keep its pay-as-you-go default")
+            find_provider_preset("alibaba_model_studio", None)
+                .expect("Alibaba Model Studio should keep its pay-as-you-go default")
                 .id,
-            "qwen"
+            "alibaba-model-studio"
         );
     }
 

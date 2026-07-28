@@ -451,6 +451,8 @@ pub enum ProviderType {
     Zhipu,
     Moonshot,
     Qwen,
+    AlibabaModelStudio,
+    SiliconFlow,
     Doubao,
     Yi,
     Baichuan,
@@ -552,6 +554,9 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
             // Most models support vision; deny embedding/text-only
             !(m.contains("embedding") || m.contains("text"))
         }
+        ProviderType::AlibabaModelStudio => {
+            m.contains("vl") || m.contains("vision") || m.starts_with("kimi-k2.6")
+        }
         ProviderType::Moonshot => {
             // Deny old moonshot-v1-* text-only models
             !m.starts_with("moonshot-v1")
@@ -567,6 +572,9 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
         ProviderType::Baichuan => {
             // Most models support vision; deny embedding/text-only
             !(m.contains("embedding") || m.contains("text"))
+        }
+        ProviderType::SiliconFlow => {
+            m.contains("vl") || m.contains("vision") || m.contains("glm-4.5v")
         }
         ProviderType::Ollama | ProviderType::LmStudio => {
             // Local models: allow if name hints at vision capability
@@ -610,6 +618,18 @@ mod tests {
         ));
         assert!(model_supports_vision(&ProviderType::Qwen, "qwen3-vl-plus"));
         assert!(model_supports_vision(&ProviderType::Qwen, "qwen3.6-plus"));
+        assert!(!model_supports_vision(
+            &ProviderType::AlibabaModelStudio,
+            "deepseek-v4-pro"
+        ));
+        assert!(model_supports_vision(
+            &ProviderType::AlibabaModelStudio,
+            "kimi-k2.6"
+        ));
+        assert!(model_supports_vision(
+            &ProviderType::SiliconFlow,
+            "zai-org/GLM-4.5V"
+        ));
         assert!(model_supports_vision(
             &ProviderType::LmStudio,
             "local-vision-model"

@@ -90,6 +90,23 @@ const PROVIDER_REGISTRY: &[ProviderRegistryEntry] = &[
         adapter: ProviderAdapterKind::OpenAiCompatible,
     },
     ProviderRegistryEntry {
+        provider_type: ProviderType::AlibabaModelStudio,
+        canonical_key: "alibaba_model_studio",
+        aliases: &[
+            "alibaba",
+            "alibaba_cloud",
+            "alibaba_model_studio",
+            "dashscope",
+        ],
+        adapter: ProviderAdapterKind::OpenAiCompatible,
+    },
+    ProviderRegistryEntry {
+        provider_type: ProviderType::SiliconFlow,
+        canonical_key: "siliconflow",
+        aliases: &["siliconflow", "silicon_flow"],
+        adapter: ProviderAdapterKind::OpenAiCompatible,
+    },
+    ProviderRegistryEntry {
         provider_type: ProviderType::Doubao,
         canonical_key: "doubao",
         aliases: &["doubao"],
@@ -137,6 +154,18 @@ pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> Provid
     }
     if base_url_lower.contains("openrouter.ai") {
         return ProviderType::OpenRouter;
+    }
+    if base_url_lower.contains("siliconflow.cn") {
+        return ProviderType::SiliconFlow;
+    }
+    // Keep the dedicated Token Plan/legacy Qwen provider identity when the
+    // caller selected it explicitly. Pay-as-you-go Bailian uses the new
+    // `alibaba_model_studio` key.
+    if provider_type_from_key(provider) == Some(ProviderType::Qwen) {
+        return ProviderType::Qwen;
+    }
+    if base_url_lower.contains("dashscope") || base_url_lower.contains("maas.aliyuncs.com") {
+        return ProviderType::AlibabaModelStudio;
     }
 
     provider_type_from_key(provider).unwrap_or(ProviderType::Custom)
@@ -188,6 +217,17 @@ mod tests {
         assert_eq!(
             provider_adapter_for_type(ProviderType::Qwen),
             ProviderAdapterKind::OpenAiCompatible
+        );
+        assert_eq!(
+            provider_type_for_parts("custom", Some("https://api.siliconflow.cn/v1")),
+            ProviderType::SiliconFlow
+        );
+        assert_eq!(
+            provider_type_for_parts(
+                "custom",
+                Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+            ),
+            ProviderType::AlibabaModelStudio
         );
         assert_eq!(
             provider_adapter_for_type(ProviderType::Anthropic),
