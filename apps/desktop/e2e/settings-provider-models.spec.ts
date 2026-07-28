@@ -206,7 +206,8 @@ test.beforeEach(async ({ page }) => {
           (window as unknown as { __savedOcrConfig?: unknown }).__savedOcrConfig = clone(_args.config);
           return null;
         case "save_video_config_cmd":
-          (window as unknown as { __savedVideoConfig?: unknown }).__savedVideoConfig = clone(_args.config);
+          Object.assign(videoConfig, clone(_args.config));
+          (window as unknown as { __savedVideoConfig?: unknown }).__savedVideoConfig = clone(videoConfig);
           return null;
         case "delete_ocr_models_cmd":
           (window as unknown as { __ocrDeleted?: boolean }).__ocrDeleted = true;
@@ -573,7 +574,7 @@ test("settings applies a managed model root and exposes OCR deletion", async ({ 
   ).__ocrDeleted)).toBe(true);
 });
 
-test("settings discard restores local speech and Whisper model edits", async ({ page }) => {
+test("settings discard restores local speech while keeping persisted Whisper edits", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
   await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
@@ -586,6 +587,9 @@ test("settings discard restores local speech and Whisper model edits", async ({ 
     .locator("xpath=../../..");
   await whisperCard.getByRole("button", { name: "Expand" }).click();
   await page.getByRole("button", { name: /^Small / }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedVideoConfig?: { whisperModel?: string } }
+  ).__savedVideoConfig?.whisperModel)).toBe("small");
 
   await page.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Discard changes" }).click();
@@ -600,7 +604,7 @@ test("settings discard restores local speech and Whisper model edits", async ({ 
     .getByRole("heading", { name: "Speech Recognition Model" })
     .locator("xpath=../../..");
   await whisperCard.getByRole("button", { name: "Expand" }).click();
-  await expect(page.getByRole("button", { name: /^Base / })).toHaveClass(/border-accent/);
+  await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
 test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {

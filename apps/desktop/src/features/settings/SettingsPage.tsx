@@ -23,7 +23,7 @@ import type { PrivacyConfig, RedactRule } from '../../types/privacy';
 import type { EmbedderConfig } from '../../types/embedder';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory, AgentProceduralMemory } from '../../types/conversation';
 import type { OcrConfig } from '../../types/ocr';
-import type { VideoConfig } from '../../types/video';
+import type { VideoConfig, WhisperModel } from '../../types/video';
 import type { Skill, SkillChangeProposal, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../../types/extensions';
 import type { TraceSummary, AgentTrace } from '../../types/trace';
 import type { QualityEvalReport } from '../../types/qualityEval';
@@ -791,6 +791,25 @@ export function SettingsPage() {
     } finally {
       setVideoSaveLoading(false);
     }
+  };
+
+  const handleManagedWhisperModelChange = async (whisperModel: WhisperModel) => {
+    if (!videoConfig) return;
+    const previous = videoConfig;
+    const updated = withWhisperModel(previous, whisperModel);
+    await runExclusiveAction('save:managed-whisper-model', async () => {
+      setVideoConfig(updated);
+      resetWhisperReadiness();
+      try {
+        await api.saveVideoConfig(updated);
+        await refreshWhisperReadiness(updated);
+      } catch {
+        setVideoConfig(previous);
+        resetWhisperReadiness();
+        void refreshWhisperReadiness(previous);
+        toast.error(t('settings.ocrSaveError'));
+      }
+    });
   };
 
   const loadPrivacyConfig = useCallback(async () => {
@@ -1668,12 +1687,7 @@ export function SettingsPage() {
           onWhisperDownload={handleWhisperDownload}
           onDeleteWhisperModel={handleWhisperDelete}
           onWhisperModelChange={(whisperModel) => {
-            if (!videoConfig) return;
-            const updated = withWhisperModel(videoConfig, whisperModel);
-            setVideoConfig(updated);
-            resetWhisperReadiness();
-            markDirty('models_embedding');
-            void refreshWhisperReadiness(updated);
+            void handleManagedWhisperModelChange(whisperModel);
           }}
           onPrepareOfficeRuntime={handlePrepareOfficeRuntime}
           onRefreshOfficeRuntime={() => {
