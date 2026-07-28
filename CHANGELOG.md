@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.20](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.19...nexa-monorepo-v0.10.20) (2026-07-28)
+
+
+### Features
+
+* **agent:** Add native Windows computer use ([fed92be](https://github.com/MLGBJDLW/Nexa/commit/fed92be0b5d03e280921f607a9391ea47e82d445))
+* **chat:** Refine thinking and tool activity visuals ([394bcaf](https://github.com/MLGBJDLW/Nexa/commit/394bcafcfe3907fcaff512efff14279e337c7ba1))
+* **desktop:** Add configurable tray close behavior ([7e19482](https://github.com/MLGBJDLW/Nexa/commit/7e194828549672bd9089b8bffc4d09e5cbd284ba))
+* upgrade desktop controls and activity UI ([6297113](https://github.com/MLGBJDLW/Nexa/commit/62971132e04e773b0b4ab235bba89601a56afb84))
+
+
+### Bug Fixes
+
+* **ci:** Allow platform-specific computer use fields ([43f01b0](https://github.com/MLGBJDLW/Nexa/commit/43f01b0ba1d67920a8f0b5f856729f8ab5a69b07))
+* **desktop:** Stabilize compact interaction views ([148f90c](https://github.com/MLGBJDLW/Nexa/commit/148f90c0e3bdfbef2094b173919472aa61202360))
+
 ## [0.10.19](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.18...nexa-monorepo-v0.10.19) (2026-07-27)
 
 
