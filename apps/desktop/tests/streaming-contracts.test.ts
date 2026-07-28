@@ -17,6 +17,7 @@ import {
   getToolTitleTarget,
 } from '../src/lib/streaming/toolCardPresentation';
 import {
+  buildCollapsedLiveTrace,
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   persistedTraceItemToTimelineSections,
@@ -1887,6 +1888,72 @@ test('timeline view model merges adjacent thinking trace events into one section
     timeline[0].sections[0].text,
     'First thought\nSecond thought',
     'adjacent thinking text should be joined without visual section splitting',
+  );
+});
+
+test('live trace only folds into a summary after the turn stops streaming', () => {
+  const events: TraceEvent[] = [
+    { id: 'thinking-1', kind: 'thinking', text: 'Reading the failing test' },
+    { id: 'tool-1', kind: 'tool', toolCall: traceToolCall({ callId: 'call-1' }) },
+    { id: 'reply-1', kind: 'reply', text: 'Found the cause, checking one more file.' },
+  ];
+  const visible = visibleTraceEventsForTimeline(events);
+
+  // Mid-turn: the model emitted an intermediate reply between tool rounds, so
+  // the trace is momentarily idle but the run has not finished.
+  const midTurnTimeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visible,
+    isStreaming: true,
+    currentTraceActive: false,
+    streamText: '',
+    displayedText: '',
+  });
+  assert(midTurnTimeline.length >= 2, 'mid-turn timeline should have history and a reply');
+  assertEqual(
+    buildCollapsedLiveTrace({
+      timeline: midTurnTimeline,
+      isStreaming: true,
+      currentTraceActive: false,
+    }),
+    null,
+    'an intermediate reply must not collapse the whole live trace',
+  );
+
+  // Turn finished: the trace folds into one summary plus the closing reply.
+  const finishedTimeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visible,
+    isStreaming: false,
+    currentTraceActive: false,
+    streamText: '',
+    displayedText: '',
+  });
+  const collapsed = buildCollapsedLiveTrace({
+    timeline: finishedTimeline,
+    isStreaming: false,
+    currentTraceActive: false,
+  });
+  assert(collapsed !== null, 'a finished turn should fold its trace');
+  assertEqual(collapsed.finalItem.kind, 'reply', 'the closing reply stays outside the fold');
+  assert(collapsed.historySections.length > 0, 'folded trace keeps the turn history');
+});
+
+test('live trace never folds while the current trace is still active', () => {
+  const events: TraceEvent[] = [
+    { id: 'reply-1', kind: 'reply', text: 'Interim answer' },
+    { id: 'thinking-1', kind: 'thinking', text: 'Now verifying' },
+  ];
+  const timeline = buildLiveTraceTimeline({
+    visibleTraceEvents: visibleTraceEventsForTimeline(events),
+    isStreaming: true,
+    currentTraceActive: true,
+    streamText: '',
+    displayedText: '',
+  });
+
+  assertEqual(
+    buildCollapsedLiveTrace({ timeline, isStreaming: true, currentTraceActive: true }),
+    null,
+    'an active trace must stay expanded',
   );
 });
 
