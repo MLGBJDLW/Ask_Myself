@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.23](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.22...nexa-monorepo-v0.10.23) (2026-07-28)
+
+
+### Features
+
+* **settings:** unify speech provider configuration ([cf856e6](https://github.com/MLGBJDLW/Nexa/commit/cf856e63ae33d1e40fcccf58a6e392b7594fca10))
+* **settings:** unify speech provider configuration and visualize microphone input ([4512a34](https://github.com/MLGBJDLW/Nexa/commit/4512a3473309d4b5be3377b24c30fdd23b1cd095))
+* **tools:** poll long-running commands instead of waiting out timeouts ([d5e9984](https://github.com/MLGBJDLW/Nexa/commit/d5e99841ea442653740fcf8bb776d6047ad5f624))
+* **tools:** poll long-running work instead of waiting out timeouts ([86eeda9](https://github.com/MLGBJDLW/Nexa/commit/86eeda9a0cede8e706da5bfa9ef28d40153a1c38))
+* **voice:** visualize live microphone input ([fbc44ac](https://github.com/MLGBJDLW/Nexa/commit/fbc44ac9404cf659a49ac12071a12c881dfad045))
+
+
+### Bug Fixes
+
+* **chat:** collapse the turn trace only once the turn ends ([8198288](https://github.com/MLGBJDLW/Nexa/commit/8198288f67bfd1b236718f9bc9864912d37b8a87))
+
 ## [0.10.22](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.21...nexa-monorepo-v0.10.22) (2026-07-28)
 
 
