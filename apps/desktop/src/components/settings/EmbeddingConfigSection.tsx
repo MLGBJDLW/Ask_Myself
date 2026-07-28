@@ -154,7 +154,11 @@ export function EmbeddingConfigSection({
                 </div>
               </div>
               <p className="text-xs text-text-tertiary">
-                {embedConfig.localModel === 'MultilingualE5Base' ? t('settings.embeddingModelQuality') : t('settings.embeddingModelLight')}
+                {embedConfig.localModel === 'Qwen3Embedding06B'
+                  ? t('settings.embeddingModelBest')
+                  : embedConfig.localModel === 'MultilingualE5Base'
+                    ? t('settings.embeddingModelQuality')
+                    : t('settings.embeddingModelLight')}
               </p>
             </div>
           )}

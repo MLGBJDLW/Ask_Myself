@@ -559,7 +559,7 @@ fn embed_source_inner(
 
     for chunk in missing.chunks(EMBED_BATCH_SIZE) {
         let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_batch(&texts)?;
+        let vectors = embedder.embed_documents(&texts)?;
         for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
             all_batch.push((chunk_id.clone(), model.clone(), vector));
         }
@@ -719,7 +719,7 @@ pub fn rebuild_embeddings_with_progress(
 
     for chunk in all_chunks.chunks(EMBED_BATCH_SIZE) {
         let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_batch(&texts)?;
+        let vectors = embedder.embed_documents(&texts)?;
         for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
             all_batch.push((chunk_id.clone(), model.clone(), vector));
         }

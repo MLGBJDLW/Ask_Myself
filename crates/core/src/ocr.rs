@@ -1,6 +1,6 @@
 //! OCR module — ONNX-based PaddleOCR for text extraction from images.
 //!
-//! Provides a lazy-initialized, thread-safe OCR engine using PP-OCRv4
+//! Provides a lazy-initialized, thread-safe OCR engine using PP-OCRv5
 //! ONNX models (detection + optional classification + recognition).
 //! Falls back to LLM Vision API when confidence is below threshold.
 
@@ -252,10 +252,10 @@ fn ocr_model_dir(config: &OcrConfig) -> Result<PathBuf, CoreError> {
         .join("paddleocr"))
 }
 
-// ── ImageNet normalisation constants ────────────────────────────────
+// ── PaddleOCR normalisation constants ───────────────────────────────
 
-const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+const PADDLE_OCR_MEAN: [f32; 3] = [0.5, 0.5, 0.5];
+const PADDLE_OCR_STD: [f32; 3] = [0.5, 0.5, 0.5];
 
 // ── Internal types ──────────────────────────────────────────────────
 
@@ -335,7 +335,7 @@ impl OcrEngine {
     /// Pre-process image for the detection model.
     ///
     /// Resize longest side to `det_limit_side_len`, pad to multiple of 32,
-    /// normalize with ImageNet mean/std.
+    /// normalize with PaddleOCR's 0.5 mean/std contract.
     fn preprocess_det(&self, rgb: &image::RgbImage) -> DetInput {
         let (w, h) = (rgb.width(), rgb.height());
         let limit = self.config.det_limit_side_len as f32;
@@ -369,7 +369,7 @@ impl OcrEngine {
                 for c in 0..3 {
                     let val = pixel[c] as f32 / 255.0;
                     tensor[[0, c, y as usize, x as usize]] =
-                        (val - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+                        (val - PADDLE_OCR_MEAN[c]) / PADDLE_OCR_STD[c];
                 }
             }
         }
@@ -524,7 +524,7 @@ impl OcrEngine {
                     for c in 0..3 {
                         let val = pixel[c] as f32 / 255.0;
                         tensor[[i, c, y as usize, x as usize]] =
-                            (val - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+                            (val - PADDLE_OCR_MEAN[c]) / PADDLE_OCR_STD[c];
                     }
                 }
             }
@@ -595,7 +595,7 @@ impl OcrEngine {
                     for c in 0..3 {
                         let val = pixel[c] as f32 / 255.0;
                         tensor[[0, c, y as usize, x as usize]] =
-                            (val - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+                            (val - PADDLE_OCR_MEAN[c]) / PADDLE_OCR_STD[c];
                     }
                 }
             }
@@ -1109,10 +1109,12 @@ pub(crate) fn extract_images_from_pdf_page(
 
 // ── Model download ──────────────────────────────────────────────────
 
-const OCR_DET_MODEL_FILE: &str = "pp-ocrv4-det.onnx";
+const OCR_DET_MODEL_FILE: &str = "pp-ocrv5-det.onnx";
 const OCR_CLS_MODEL_FILE: &str = "pp-ocrv4-cls.onnx";
-const OCR_REC_MODEL_FILE: &str = "pp-ocrv4-rec.onnx";
+const OCR_REC_MODEL_FILE: &str = "pp-ocrv5-rec.onnx";
 const OCR_DICT_FILE: &str = "ppocr_keys_v1.txt";
+const LEGACY_OCR_DET_MODEL_FILE: &str = "pp-ocrv4-det.onnx";
+const LEGACY_OCR_REC_MODEL_FILE: &str = "pp-ocrv4-rec.onnx";
 
 const OCR_DET_MIN_BYTES: u64 = 1_000_000;
 const OCR_CLS_MIN_BYTES: u64 = 100_000;
@@ -1136,13 +1138,13 @@ enum OcrModelDownloadKind {
 const OCR_MODEL_DOWNLOADS: &[OcrModelDownload] = &[
     OcrModelDownload {
         filename: OCR_DET_MODEL_FILE,
-        url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+        url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
         min_bytes: OCR_DET_MIN_BYTES,
         kind: OcrModelDownloadKind::Onnx,
     },
     OcrModelDownload {
         filename: OCR_REC_MODEL_FILE,
-        url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
+        url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
         min_bytes: OCR_REC_MIN_BYTES,
         kind: OcrModelDownloadKind::Onnx,
     },
@@ -1205,6 +1207,8 @@ pub fn delete_ocr_models(config: &OcrConfig) -> Result<(), CoreError> {
             OCR_CLS_MODEL_FILE,
             OCR_REC_MODEL_FILE,
             OCR_DICT_FILE,
+            LEGACY_OCR_DET_MODEL_FILE,
+            LEGACY_OCR_REC_MODEL_FILE,
         ] {
             let path = model_dir.join(filename);
             if path.exists() {
@@ -1570,17 +1574,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ocr_mirror_urls_swap_huggingface_host() {
+    fn test_ocr_mirror_urls_only_apply_to_huggingface_downloads() {
         let urls: Vec<_> = OCR_MODEL_DOWNLOADS
             .iter()
             .filter_map(|download| ocr_download_mirror_url(download, "https://hf-mirror.com/"))
             .collect();
 
-        assert_eq!(urls.len(), 2);
-        assert!(urls
-            .iter()
-            .all(|url| url.starts_with("https://hf-mirror.com/")));
-        assert!(urls.iter().all(|url| !url.contains("huggingface.co")));
+        assert!(urls.is_empty());
     }
 
     #[test]
@@ -1591,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ocr_primary_url_uses_hf_endpoint_for_huggingface_only() {
+    fn test_ocr_primary_url_preserves_non_huggingface_hosts() {
         let det = OCR_MODEL_DOWNLOADS
             .iter()
             .find(|download| download.filename == OCR_DET_MODEL_FILE)
@@ -1602,8 +1602,7 @@ mod tests {
             .expect("dict download");
 
         let det_url = ocr_download_primary_url(det, Some("https://hf-mirror.com"));
-        assert!(det_url.starts_with("https://hf-mirror.com/"));
-        assert!(!det_url.contains("huggingface.co"));
+        assert_eq!(det_url, det.url);
 
         let dict_url = ocr_download_primary_url(dict, Some("https://hf-mirror.com"));
         assert_eq!(dict_url, dict.url);

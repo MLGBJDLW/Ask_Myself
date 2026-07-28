@@ -77,6 +77,17 @@ function whisperModelSize(model: VideoConfig['whisperModel'] | undefined): strin
   }
 }
 
+function embeddingModelSize(model: LocalModelId | undefined): string {
+  switch (model) {
+    case 'Qwen3Embedding06B':
+      return '~614 MB';
+    case 'MultilingualE5Base':
+      return '~470 MB';
+    default:
+      return '~46 MB';
+  }
+}
+
 export function ModelDownloadsSection({
   embedConfig,
   localModelReady,
@@ -215,7 +226,7 @@ export function ModelDownloadsSection({
             : localModelReady ? 'downloaded'
             : 'not-downloaded'
           }
-          size={embedConfig?.localModel === 'MultilingualE5Base' ? '~470 MB' : '~46 MB'}
+          size={embeddingModelSize(embedConfig?.localModel)}
           onDownload={onDownloadModel}
           onCancel={onCancelDownload}
           onDelete={onRequestDeleteEmbedModel}
@@ -224,8 +235,13 @@ export function ModelDownloadsSection({
           {embedConfig?.provider === 'local' && (
             <div className="space-y-3">
               <p className="text-sm font-medium text-text-primary">{t('settings.embeddingLocalModelSelect')}</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                 {([
+                  {
+                    id: 'Qwen3Embedding06B' as const,
+                    label: t('settings.embeddingModelBest'),
+                    desc: t('settings.embeddingModelBestDesc'),
+                  },
                   {
                     id: 'MultilingualMiniLM' as const,
                     label: t('settings.embeddingModelLight'),
@@ -376,7 +392,7 @@ export function ModelDownloadsSection({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-tertiary">
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-accent" />
-              {t('settings.modelsEmbedding')}: {embedConfig?.localModel === 'MultilingualE5Base' ? '~470 MB' : '~46 MB'}
+              {t('settings.modelsEmbedding')}: {embeddingModelSize(embedConfig?.localModel)}
             </span>
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-success" />

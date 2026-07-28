@@ -1,4 +1,4 @@
-export type LocalModelId = 'MultilingualMiniLM' | 'MultilingualE5Base';
+export type LocalModelId = 'MultilingualMiniLM' | 'MultilingualE5Base' | 'Qwen3Embedding06B';
 
 export interface EmbedderConfig {
   provider: 'local' | 'api' | 'tfidf';

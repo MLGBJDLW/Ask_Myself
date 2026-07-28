@@ -27,7 +27,7 @@ pub struct EmbedderConfig {
     pub api_model: String,
     pub model_path: String,
     pub vector_dimensions: u32,
-    /// Which local ONNX model to use: `"MultilingualMiniLM"` (default) or `"MultilingualE5Base"`.
+    /// Which local ONNX model to use. Defaults to `"MultilingualMiniLM"`.
     #[serde(default)]
     pub local_model: String,
 }
@@ -185,6 +185,17 @@ pub trait Embedder: Send + Sync {
 
     /// Embed a batch of texts.
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError>;
+
+    /// Embed a search query. Models with asymmetric query/document prompts
+    /// can override this while symmetric embedders keep the default behavior.
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        self.embed(text)
+    }
+
+    /// Embed documents for indexing.
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        self.embed_batch(texts)
+    }
 }
 
 // ── TF-IDF Embedder ─────────────────────────────────────────────────
@@ -690,8 +701,10 @@ pub enum LocalEmbeddingModel {
     /// ~46 MB, 384-dim, 50+ languages. Default, fast.
     #[default]
     MultilingualMiniLM,
-    /// ~470 MB, 768-dim, 100+ languages. Highest quality.
+    /// ~470 MB, 768-dim, 100+ languages. Balanced legacy option.
     MultilingualE5Base,
+    /// ~614 MB INT8, 1024-dim, 100+ languages. 32K-capable; capped to 8K here.
+    Qwen3Embedding06B,
 }
 
 impl LocalEmbeddingModel {
@@ -699,6 +712,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "paraphrase-multilingual-MiniLM-L12-v2",
             Self::MultilingualE5Base => "multilingual-e5-base",
+            Self::Qwen3Embedding06B => "Qwen3-Embedding-0.6B",
         }
     }
 
@@ -706,6 +720,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => 384,
             Self::MultilingualE5Base => 768,
+            Self::Qwen3Embedding06B => 1024,
         }
     }
 
@@ -713,6 +728,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => 128,
             Self::MultilingualE5Base => 512,
+            Self::Qwen3Embedding06B => 8192,
         }
     }
 
@@ -720,6 +736,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
             Self::MultilingualE5Base => "https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/onnx/model.onnx",
+            Self::Qwen3Embedding06B => "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx",
         }
     }
 
@@ -727,6 +744,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json",
             Self::MultilingualE5Base => "https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/tokenizer.json",
+            Self::Qwen3Embedding06B => "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
         }
     }
 
@@ -734,6 +752,7 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
             Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/onnx/model.onnx",
+            Self::Qwen3Embedding06B => "https://hf-mirror.com/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx",
         }
     }
 
@@ -741,23 +760,23 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "https://hf-mirror.com/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json",
             Self::MultilingualE5Base => "https://hf-mirror.com/intfloat/multilingual-e5-base/resolve/main/tokenizer.json",
+            Self::Qwen3Embedding06B => "https://hf-mirror.com/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
         }
-    }
-
-    /// Whether this model requires a prefix on input texts (e.g. E5 models).
-    pub fn requires_prefix(&self) -> bool {
-        matches!(self, Self::MultilingualE5Base)
     }
 
     /// Conservative max chars per chunk: ~3 chars/token for multilingual safety (CJK).
     pub fn max_chunk_chars(&self) -> usize {
-        self.max_length() * 3
+        match self {
+            Self::Qwen3Embedding06B => 6000,
+            _ => self.max_length() * 3,
+        }
     }
 
     /// Parse from string stored in DB / config.
     pub fn from_config_str(s: &str) -> Self {
         match s {
             "multilingual-e5-base" | "MultilingualE5Base" => Self::MultilingualE5Base,
+            "Qwen3-Embedding-0.6B" | "Qwen3Embedding06B" => Self::Qwen3Embedding06B,
             _ => Self::MultilingualMiniLM, // default
         }
     }
@@ -767,7 +786,33 @@ impl LocalEmbeddingModel {
         match self {
             Self::MultilingualMiniLM => "MultilingualMiniLM",
             Self::MultilingualE5Base => "MultilingualE5Base",
+            Self::Qwen3Embedding06B => "Qwen3Embedding06B",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmbeddingInputKind {
+    Query,
+    Document,
+}
+
+fn prepare_embedding_input(
+    model: &LocalEmbeddingModel,
+    kind: EmbeddingInputKind,
+    text: &str,
+) -> String {
+    match (model, kind) {
+        (LocalEmbeddingModel::MultilingualE5Base, EmbeddingInputKind::Query) => {
+            format!("query: {text}")
+        }
+        (LocalEmbeddingModel::MultilingualE5Base, EmbeddingInputKind::Document) => {
+            format!("passage: {text}")
+        }
+        (LocalEmbeddingModel::Qwen3Embedding06B, EmbeddingInputKind::Query) => format!(
+            "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text}"
+        ),
+        _ => text.to_string(),
     }
 }
 
@@ -837,7 +882,18 @@ impl OnnxEmbedder {
             }))
             .map_err(|e| CoreError::Embedding(format!("set truncation: {e}")))?;
 
-        tokenizer.with_padding(Some(tokenizers::PaddingParams::default()));
+        let mut padding = tokenizer.get_padding().cloned().unwrap_or_default();
+        if model == LocalEmbeddingModel::Qwen3Embedding06B {
+            padding.direction = tokenizers::PaddingDirection::Left;
+            if let Some((token, id)) = ["<|endoftext|>", "<|im_end|>"]
+                .into_iter()
+                .find_map(|token| tokenizer.token_to_id(token).map(|id| (token, id)))
+            {
+                padding.pad_id = id;
+                padding.pad_token = token.to_string();
+            }
+        }
+        tokenizer.with_padding(Some(padding));
 
         Ok(Self {
             session: std::sync::Mutex::new(session),
@@ -857,7 +913,8 @@ impl Embedder for OnnxEmbedder {
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
-        let results = self.embed_batch(&[text])?;
+        let prepared = prepare_embedding_input(&self.model, EmbeddingInputKind::Query, text);
+        let results = self.embed_batch(&[prepared.as_str()])?;
         results
             .into_iter()
             .next()
@@ -869,19 +926,9 @@ impl Embedder for OnnxEmbedder {
             return Ok(vec![]);
         }
 
-        // E5 models require "query: " or "passage: " prefix.
-        // For batch embedding (typically documents), use "passage: ".
-        let prefixed: Vec<String>;
-        let input_texts: Vec<&str> = if self.model.requires_prefix() {
-            prefixed = texts.iter().map(|t| format!("passage: {t}")).collect();
-            prefixed.iter().map(|s| s.as_str()).collect()
-        } else {
-            texts.to_vec()
-        };
-
         let encodings = self
             .tokenizer
-            .encode_batch(input_texts, true)
+            .encode_batch(texts.to_vec(), true)
             .map_err(|e| CoreError::Embedding(format!("tokenization: {e}")))?;
 
         let batch_size = encodings.len();
@@ -890,13 +937,19 @@ impl Embedder for OnnxEmbedder {
         let mut input_ids = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
         let mut attention_mask = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
         let mut token_type_ids = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
+        let mut position_ids = ndarray::Array2::<i64>::zeros((batch_size, seq_len));
 
         for (i, enc) in encodings.iter().enumerate() {
+            let mut position = 0_i64;
             for (j, &id) in enc.get_ids().iter().enumerate() {
                 input_ids[[i, j]] = id as i64;
             }
             for (j, &mask) in enc.get_attention_mask().iter().enumerate() {
                 attention_mask[[i, j]] = mask as i64;
+                if mask != 0 {
+                    position_ids[[i, j]] = position;
+                    position += 1;
+                }
             }
             for (j, &tid) in enc.get_type_ids().iter().enumerate() {
                 token_type_ids[[i, j]] = tid as i64;
@@ -918,47 +971,65 @@ impl Embedder for OnnxEmbedder {
             .inputs()
             .iter()
             .any(|i| i.name() == "token_type_ids");
+        let has_position_ids = session.inputs().iter().any(|i| i.name() == "position_ids");
 
-        let outputs = if has_token_type_ids {
+        let mut inputs = ort::inputs! {
+            "input_ids" => input_ids_tensor,
+            "attention_mask" => attention_mask_tensor
+        };
+        if has_token_type_ids {
             let token_type_ids_tensor = ort::value::Tensor::from_array(token_type_ids)
                 .map_err(|e| CoreError::Embedding(format!("token_type_ids tensor: {e}")))?;
-            session.run(ort::inputs! {
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor,
-                "token_type_ids" => token_type_ids_tensor
-            })
-        } else {
-            session.run(ort::inputs! {
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor
-            })
+            inputs.push(("token_type_ids".into(), token_type_ids_tensor.into()));
         }
-        .map_err(|e| CoreError::Embedding(format!("inference: {e}")))?;
+        if has_position_ids {
+            let position_ids_tensor = ort::value::Tensor::from_array(position_ids)
+                .map_err(|e| CoreError::Embedding(format!("position_ids tensor: {e}")))?;
+            inputs.push(("position_ids".into(), position_ids_tensor.into()));
+        }
+        let outputs = session
+            .run(inputs)
+            .map_err(|e| CoreError::Embedding(format!("inference: {e}")))?;
 
         // last_hidden_state: [batch, seq_len, hidden_size]
         let hidden = outputs[0]
             .try_extract_array::<f32>()
             .map_err(|e| CoreError::Embedding(format!("extract output: {e}")))?;
+        if hidden.ndim() != 3 {
+            return Err(CoreError::Embedding(format!(
+                "expected rank-3 last_hidden_state, got rank {}",
+                hidden.ndim()
+            )));
+        }
         let hidden_size = hidden.shape()[2];
 
-        // Mean pooling with attention mask, then L2-normalize.
+        // Qwen3 uses the last non-padding token. Encoder-style models use
+        // attention-mask mean pooling. All vectors are L2-normalized.
         let mut results = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
             let mask = encodings[i].get_attention_mask();
             let mut pooled = vec![0.0f32; hidden_size];
-            let mut mask_sum = 0.0f32;
-
-            for j in 0..seq_len {
-                let m = mask[j] as f32;
-                mask_sum += m;
+            if self.model == LocalEmbeddingModel::Qwen3Embedding06B {
+                let last_token = mask
+                    .iter()
+                    .rposition(|value| *value != 0)
+                    .ok_or_else(|| CoreError::Embedding("empty attention mask".into()))?;
                 for k in 0..hidden_size {
-                    pooled[k] += hidden[ndarray::IxDyn(&[i, j, k])] * m;
+                    pooled[k] = hidden[ndarray::IxDyn(&[i, last_token, k])];
                 }
-            }
-
-            if mask_sum > 0.0 {
-                for v in pooled.iter_mut() {
-                    *v /= mask_sum;
+            } else {
+                let mut mask_sum = 0.0f32;
+                for j in 0..seq_len {
+                    let weight = mask[j] as f32;
+                    mask_sum += weight;
+                    for k in 0..hidden_size {
+                        pooled[k] += hidden[ndarray::IxDyn(&[i, j, k])] * weight;
+                    }
+                }
+                if mask_sum > 0.0 {
+                    for value in &mut pooled {
+                        *value /= mask_sum;
+                    }
                 }
             }
 
@@ -967,6 +1038,19 @@ impl Embedder for OnnxEmbedder {
         }
 
         Ok(results)
+    }
+
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        self.embed(text)
+    }
+
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        let prepared: Vec<String> = texts
+            .iter()
+            .map(|text| prepare_embedding_input(&self.model, EmbeddingInputKind::Document, text))
+            .collect();
+        let input_texts: Vec<&str> = prepared.iter().map(String::as_str).collect();
+        self.embed_batch(&input_texts)
     }
 }
 
@@ -1789,6 +1873,52 @@ mod tests {
     }
 
     // ── ONNX embedder ──────────────────────────────────────────────
+
+    #[test]
+    fn test_qwen3_embedding_model_contract() {
+        let model = LocalEmbeddingModel::from_config_str("Qwen3Embedding06B");
+        assert_eq!(model, LocalEmbeddingModel::Qwen3Embedding06B);
+        assert_eq!(model.model_name(), "Qwen3-Embedding-0.6B");
+        assert_eq!(model.dimensions(), 1024);
+        assert_eq!(model.max_length(), 8192);
+        assert!(model.model_url().ends_with("model_quantized.onnx"));
+    }
+
+    #[test]
+    fn test_asymmetric_embedding_inputs_match_model_contracts() {
+        assert_eq!(
+            prepare_embedding_input(
+                &LocalEmbeddingModel::MultilingualE5Base,
+                EmbeddingInputKind::Query,
+                "refund policy",
+            ),
+            "query: refund policy"
+        );
+        assert_eq!(
+            prepare_embedding_input(
+                &LocalEmbeddingModel::MultilingualE5Base,
+                EmbeddingInputKind::Document,
+                "refund policy",
+            ),
+            "passage: refund policy"
+        );
+        assert_eq!(
+            prepare_embedding_input(
+                &LocalEmbeddingModel::Qwen3Embedding06B,
+                EmbeddingInputKind::Query,
+                "退款政策",
+            ),
+            "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:退款政策"
+        );
+        assert_eq!(
+            prepare_embedding_input(
+                &LocalEmbeddingModel::Qwen3Embedding06B,
+                EmbeddingInputKind::Document,
+                "退款政策",
+            ),
+            "退款政策"
+        );
+    }
 
     #[test]
     #[ignore] // requires model download (~46 MB)
