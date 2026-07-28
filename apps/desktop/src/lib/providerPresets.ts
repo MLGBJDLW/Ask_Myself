@@ -54,17 +54,28 @@ function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
   return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
+function providerKeyForPresetLookup(provider: string, normalizedBaseUrl: string): string {
+  const isLegacyQwenPayg = provider === "qwen"
+    && !normalizedBaseUrl.includes("token-plan.")
+    && (
+      normalizedBaseUrl.includes("dashscope")
+      || normalizedBaseUrl.includes("maas.aliyuncs.com")
+    );
+  return isLegacyQwenPayg ? "alibaba_model_studio" : provider;
+}
+
 export function findProviderPreset(input: {
   provider: string;
   baseUrl?: string | null;
 }): ProviderPreset | null {
   const provider = input.provider.trim();
   const normalizedBaseUrl = normalizePresetBaseUrl(input.baseUrl);
+  const lookupProvider = providerKeyForPresetLookup(provider, normalizedBaseUrl);
 
   if (normalizedBaseUrl) {
     const exactMatch = PROVIDER_PRESETS.find(
       (preset) =>
-        preset.provider === provider &&
+        preset.provider === lookupProvider &&
         normalizePresetBaseUrl(preset.baseUrl) === normalizedBaseUrl,
     );
     if (exactMatch) {
@@ -73,9 +84,9 @@ export function findProviderPreset(input: {
   }
 
   const providerMatches = PROVIDER_PRESETS.filter(
-    (preset) => preset.provider === provider,
+    (preset) => preset.provider === lookupProvider,
   );
-  const defaultMatch = providerMatches.find((preset) => preset.id === provider);
+  const defaultMatch = providerMatches.find((preset) => preset.id === lookupProvider);
   if (defaultMatch) {
     return defaultMatch;
   }

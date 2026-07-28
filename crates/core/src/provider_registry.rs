@@ -158,10 +158,11 @@ pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> Provid
     if base_url_lower.contains("siliconflow.cn") {
         return ProviderType::SiliconFlow;
     }
-    // Keep the dedicated Token Plan/legacy Qwen provider identity when the
-    // caller selected it explicitly. Pay-as-you-go Bailian uses the new
-    // `alibaba_model_studio` key.
-    if provider_type_from_key(provider) == Some(ProviderType::Qwen) {
+    // Keep the dedicated Token Plan identity. Older pay-as-you-go configs used
+    // the `qwen` key with a DashScope URL and now belong to Model Studio.
+    if provider_type_from_key(provider) == Some(ProviderType::Qwen)
+        && (base_url_lower.is_empty() || base_url_lower.contains("token-plan."))
+    {
         return ProviderType::Qwen;
     }
     if base_url_lower.contains("dashscope") || base_url_lower.contains("maas.aliyuncs.com") {
@@ -228,6 +229,20 @@ mod tests {
                 Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
             ),
             ProviderType::AlibabaModelStudio
+        );
+        assert_eq!(
+            provider_type_for_parts(
+                "qwen",
+                Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+            ),
+            ProviderType::AlibabaModelStudio
+        );
+        assert_eq!(
+            provider_type_for_parts(
+                "qwen",
+                Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
+            ),
+            ProviderType::Qwen
         );
         assert_eq!(
             provider_adapter_for_type(ProviderType::Anthropic),

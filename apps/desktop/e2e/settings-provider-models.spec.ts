@@ -188,12 +188,15 @@ test.beforeEach(async ({ page }) => {
         case "check_whisper_model_cmd":
           return false;
         case "get_managed_model_paths_cmd": {
-          const root = String(_args.root || "C:\\Nexa\\models");
+          const customRoot = typeof _args.root === "string" && _args.root.trim()
+            ? _args.root.trim()
+            : null;
+          const root = customRoot || "C:\\Nexa\\models";
           return {
             root,
             embedding: `${root}\\paraphrase-multilingual-MiniLM-L12-v2`,
             ocr: `${root}\\paddleocr`,
-            whisper: `${root}\\whisper`,
+            whisper: customRoot ? `${root}\\whisper` : "C:\\Nexa\\legacy-whisper",
           };
         }
         case "save_embedder_config_cmd":
@@ -380,6 +383,21 @@ test("settings exposes Qwen3.8 only through the Token Plan endpoint", async ({ p
   await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
 });
 
+test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByTitle("Edit").nth(1).click();
+
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const options = await modelField.locator("option, button").allTextContents();
+  expect(options.some((option) => option.includes("Qwen3.7 Max"))).toBe(true);
+  expect(options.some((option) => option.includes("DeepSeek V4 Pro"))).toBe(true);
+  expect(options.some((option) => option.includes("Qwen3.8 Max Preview"))).toBe(false);
+});
+
 test("settings exposes Alibaba Model Studio and SiliconFlow as router presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
@@ -539,12 +557,50 @@ test("settings applies a managed model root and exposes OCR deletion", async ({ 
     window as unknown as { __savedVideoConfig?: { modelPath?: string } }
   ).__savedVideoConfig?.modelPath)).toBe("D:\\NexaModels\\whisper");
 
+  await page.getByRole("button", { name: "Restore default" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { localModelRoot?: string } }
+  ).__savedAppConfig?.localModelRoot)).toBe("");
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedVideoConfig?: { modelPath?: string } }
+  ).__savedVideoConfig?.modelPath)).toBe("C:\\Nexa\\legacy-whisper");
+
   const ocrCard = page.getByRole("heading", { name: "OCR Model" }).locator("xpath=../../..");
   await ocrCard.getByRole("button", { name: "Delete model" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __ocrDeleted?: boolean }
   ).__ocrDeleted)).toBe(true);
+});
+
+test("settings discard restores local speech and Whisper model edits", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+
+  const localTts = page.getByTestId("text-to-speech-settings-panel");
+  await localTts.locator("button").first().click();
+  await localTts.locator("select").first().selectOption("sherpa-onnx");
+  let whisperCard = page
+    .getByRole("heading", { name: "Speech Recognition Model" })
+    .locator("xpath=../../..");
+  await whisperCard.getByRole("button", { name: "Expand" }).click();
+  await page.getByRole("button", { name: /^Small / }).click();
+
+  await page.getByRole("button", { name: "Appearance" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Discard changes" }).click();
+  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Models & Embedding" }).click();
+  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
+  const restoredTts = page.getByTestId("text-to-speech-settings-panel");
+  await restoredTts.locator("button").first().click();
+  await expect(restoredTts.locator("select").first()).toHaveValue("");
+  whisperCard = page
+    .getByRole("heading", { name: "Speech Recognition Model" })
+    .locator("xpath=../../..");
+  await whisperCard.getByRole("button", { name: "Expand" }).click();
+  await expect(page.getByRole("button", { name: /^Base / })).toHaveClass(/border-accent/);
 });
 
 test("settings promotes Jina and Mistral embedding presets with fixed dimensions", async ({ page }) => {

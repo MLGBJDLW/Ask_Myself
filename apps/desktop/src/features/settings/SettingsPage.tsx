@@ -448,6 +448,7 @@ export function SettingsPage() {
     try {
       const cfg = await api.getAppConfig();
       setAppConfig(cfg);
+      return true;
     } catch {
       setAppConfig({
         timeoutDefaultsVersion: 1,
@@ -495,6 +496,7 @@ export function SettingsPage() {
           language: null,
         },
       });
+      return false;
     }
   }, []);
 
@@ -851,8 +853,12 @@ export function SettingsPage() {
   const discardActiveTabChanges = useCallback(async () => {
     switch (activeTab) {
       case 'models_embedding': {
-        const reloaded = await loadEmbedConfig();
-        if (!reloaded) return false;
+        const [embedReloaded, appReloaded, videoReloaded] = await Promise.all([
+          loadEmbedConfig(),
+          loadAppConfig(),
+          loadVideoConfig(),
+        ]);
+        if (!embedReloaded || !appReloaded || !videoReloaded) return false;
         break;
       }
       case 'data_privacy': {
@@ -861,7 +867,8 @@ export function SettingsPage() {
         break;
       }
       case 'extensions': {
-        await loadAppConfig();
+        const reloaded = await loadAppConfig();
+        if (!reloaded) return false;
         setExtensionsAppConfigDirty(false);
         break;
       }
@@ -1665,7 +1672,7 @@ export function SettingsPage() {
             const updated = withWhisperModel(videoConfig, whisperModel);
             setVideoConfig(updated);
             resetWhisperReadiness();
-            markDirty('video');
+            markDirty('models_embedding');
             void refreshWhisperReadiness(updated);
           }}
           onPrepareOfficeRuntime={handlePrepareOfficeRuntime}

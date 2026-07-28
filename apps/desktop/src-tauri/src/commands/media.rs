@@ -61,7 +61,8 @@ pub fn get_managed_model_paths_cmd(
     root: Option<String>,
     local_model: Option<String>,
 ) -> Result<ManagedModelPaths, String> {
-    let root = match root.filter(|path| !path.trim().is_empty()) {
+    let custom_root = root.filter(|path| !path.trim().is_empty());
+    let root = match custom_root.as_deref() {
         Some(path) => {
             let path = std::path::PathBuf::from(path.trim());
             if !path.is_absolute() {
@@ -74,10 +75,22 @@ pub fn get_managed_model_paths_cmd(
     let model = local_model
         .map(|value| nexa_core::embed::LocalEmbeddingModel::from_config_str(&value))
         .unwrap_or_default();
+    let whisper = if custom_root.is_some() {
+        root.join("whisper")
+    } else {
+        #[cfg(feature = "video")]
+        {
+            std::path::PathBuf::from(nexa_core::video::VideoConfig::default().model_path)
+        }
+        #[cfg(not(feature = "video"))]
+        {
+            root.join("whisper")
+        }
+    };
     Ok(ManagedModelPaths {
         embedding: root.join(model.model_name()).to_string_lossy().into_owned(),
         ocr: root.join("paddleocr").to_string_lossy().into_owned(),
-        whisper: root.join("whisper").to_string_lossy().into_owned(),
+        whisper: whisper.to_string_lossy().into_owned(),
         root: root.to_string_lossy().into_owned(),
     })
 }
@@ -208,7 +221,7 @@ pub async fn transcribe_audio_buffer_cmd(
     let app_config = db.load_app_config().map_err(|e| e.to_string())?;
     let speech_config = app_config.speech_to_text;
     match speech_config.api_style.as_str() {
-        "openai_transcription" => {
+        "openai_transcription" | "dashscope_asr" => {
             nexa_core::speech_to_text::transcribe_cloud_wav(audio_data, &speech_config)
                 .await
                 .map_err(|e| e.to_string())
@@ -256,6 +269,36 @@ fn with_voice_wav<T>(
     }
     let _guard = WavGuard(wav_path.clone());
     operation(&wav_path)
+}
+
+#[cfg(all(test, feature = "video"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_model_defaults_preserve_the_legacy_whisper_location() {
+        let paths = get_managed_model_paths_cmd(None, None).expect("default paths should resolve");
+
+        assert_eq!(
+            std::path::PathBuf::from(paths.whisper),
+            std::path::PathBuf::from(nexa_core::video::VideoConfig::default().model_path),
+        );
+    }
+
+    #[test]
+    fn managed_model_custom_root_moves_whisper_with_the_other_models() {
+        let custom_root = std::env::current_dir()
+            .expect("current directory should resolve")
+            .join("custom-model-root");
+        let paths =
+            get_managed_model_paths_cmd(Some(custom_root.to_string_lossy().into_owned()), None)
+                .expect("custom paths should resolve");
+
+        assert_eq!(
+            std::path::PathBuf::from(paths.whisper),
+            custom_root.join("whisper"),
+        );
+    }
 }
 
 #[cfg(feature = "video")]

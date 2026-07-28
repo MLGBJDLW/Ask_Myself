@@ -44,7 +44,7 @@ export function normalizeTranscript(text: string): string {
 
 export function isSpeechToTextConfigured(config?: SpeechToTextConfig | null): boolean {
   if (!config || config.apiStyle === 'local_whisper') return true;
-  if (config.apiStyle === 'openai_transcription') {
+  if (config.apiStyle === 'openai_transcription' || config.apiStyle === 'dashscope_asr') {
     return Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim());
   }
   if (config.apiStyle === 'sherpa_onnx') {

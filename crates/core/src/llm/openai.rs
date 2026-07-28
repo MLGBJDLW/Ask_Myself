@@ -509,6 +509,11 @@ fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>
         return true;
     }
     let model_lower = model.to_lowercase();
+    if provider_type == Some(&ProviderType::AlibabaModelStudio)
+        && (model_lower.starts_with("qwen") || model_lower.starts_with("qwq"))
+    {
+        return true;
+    }
     model_lower.contains("codex")
 }
 
@@ -1667,6 +1672,22 @@ data: [DONE]
                 "args": ["-c", "print(1)"]
             })
         );
+    }
+
+    #[test]
+    fn alibaba_qwen_models_use_raw_tool_arguments_without_affecting_router_models() {
+        assert!(requires_raw_tool_arguments(
+            "qwen3.7-max",
+            Some(&ProviderType::AlibabaModelStudio),
+        ));
+        assert!(requires_raw_tool_arguments(
+            "qwq-plus",
+            Some(&ProviderType::AlibabaModelStudio),
+        ));
+        assert!(!requires_raw_tool_arguments(
+            "deepseek-v4",
+            Some(&ProviderType::AlibabaModelStudio),
+        ));
     }
 
     #[test]
