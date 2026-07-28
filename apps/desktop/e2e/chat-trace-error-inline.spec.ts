@@ -195,7 +195,7 @@ test('surfaces timeout state without falling back to a separate error bubble', a
   await page.goto('/chat');
 
   await expect(page.getByText('Investigating the failing connection path.').first()).toBeVisible();
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(page.getByLabel('Chat messages').getByTestId('tool-call-card')).toBeVisible();
   await expect(page.getByText('Connection lost', { exact: true })).toBeVisible();
   await expect(page.getByText('An error occurred')).toHaveCount(0);
 });

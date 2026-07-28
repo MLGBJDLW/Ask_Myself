@@ -233,7 +233,7 @@ test('renders persisted multi-step traces in chronological order', async ({ page
 
   const text = chatLogText ?? '';
   expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('search_knowledge_base')).toBeGreaterThan(text.indexOf('phase one thinking'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('search_knowledge_base'));
+  expect(text.indexOf('Search')).toBeGreaterThan(text.indexOf('phase one thinking'));
+  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('Search'));
   expect(text.indexOf('final-reply-segment')).toBeGreaterThan(text.indexOf('phase two thinking'));
 });

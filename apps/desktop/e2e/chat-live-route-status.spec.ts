@@ -403,7 +403,7 @@ test("hides internal context manifest details from trace tool chips", async ({
 
   await page.goto("/chat");
 
-  await expect(page.getByText("fetch_url")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Fetch URL/ })).toBeVisible();
   const chatLog = page.getByLabel("Chat messages");
   await expect(chatLog.getByText("Context used", { exact: true })).toHaveCount(0);
   await expect(chatLog.getByText("Preparing context manifest")).toHaveCount(0);

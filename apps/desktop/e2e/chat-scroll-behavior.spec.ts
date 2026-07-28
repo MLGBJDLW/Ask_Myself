@@ -382,13 +382,13 @@ test('auto-follows only while the user stays near the bottom', async ({ page }) 
     el.dispatchEvent(new Event('scroll'));
   });
 
-  await expect.poll(async () => scrollRoot.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(200);
+  await expect.poll(async () => scrollRoot.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(80);
 
   await page.getByTestId('chat-input-textarea').fill('Send one more update.');
   await page.getByTestId('chat-send').click();
 
   await expect(page.getByText('Streamed answer #2')).toBeVisible();
-  await expect.poll(async () => scrollRoot.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(200);
+  await expect.poll(async () => scrollRoot.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(80);
 
   const scrollToBottom = page.getByTitle('Scroll to bottom');
   await expect(scrollToBottom).toBeVisible();

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileCode2, FilePenLine, FilePlus2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
-import { FileBadge } from '../ui/FileBadge';
+import { FileBadge, isAbsoluteFileSystemPath } from '../ui/FileBadge';
 import { DiffStatsTicker } from './DiffStatsTicker';
 
 type FileDiffLineType = 'context' | 'addition' | 'deletion';
@@ -498,15 +498,24 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
                     <Icon size={14} strokeWidth={1.9} />
                   </span>
                   <span className="shrink-0 text-xs font-medium text-text-secondary">{rowOperationLabel}</span>
-                  <FileBadge path={previewPath} className="min-w-0 flex-1" />
-                    <DiffStatsTicker
-                      additions={diff.additions}
-                      deletions={diff.deletions}
-                      compact
-                      live={false}
-                      showFiles={false}
-                      showReplacements={false}
-                    />
+                  {isAbsoluteFileSystemPath(previewPath) ? (
+                    <FileBadge path={previewPath} className="min-w-0 flex-1" />
+                  ) : (
+                    <span
+                      className="min-w-0 flex-1 truncate text-xs font-medium text-text-secondary"
+                      title={previewPath}
+                    >
+                      {basename(previewPath)}
+                    </span>
+                  )}
+                  <DiffStatsTicker
+                    additions={diff.additions}
+                    deletions={diff.deletions}
+                    compact
+                    live={false}
+                    showFiles={false}
+                    showReplacements={false}
+                  />
                 </button>
                 {expanded && (
                   <div className="border-t border-border/40">
@@ -594,7 +603,16 @@ export function FileDiffPreview({
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <FileBadge path={previewPath} className="min-w-0 max-w-full" />
+            {isAbsoluteFileSystemPath(previewPath) ? (
+              <FileBadge path={previewPath} className="min-w-0 max-w-full" />
+            ) : (
+              <span
+                className="inline-flex min-w-0 max-w-full items-center rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-xs font-medium text-text-secondary"
+                title={previewPath}
+              >
+                <span className="truncate">{basename(previewPath)}</span>
+              </span>
+            )}
           </div>
         </div>
         <DiffStatsTicker

@@ -401,8 +401,15 @@ export function TaskCenterPage() {
           api.getAgentRunEvents(selected.run.id).catch(() => []),
           api.listWorkflowAutomationSchedulerEventsForTaskRun(selected.run.id).catch(() => []),
         ]);
+        const safeEvents = Array.isArray(nextEvents) ? nextEvents : [];
+        const safeArtifacts = Array.isArray(nextArtifacts) ? nextArtifacts : [];
+        const safeSavedArtifacts = Array.isArray(nextSavedArtifacts) ? nextSavedArtifacts : [];
+        const safeMemories = Array.isArray(nextMemories) ? nextMemories : [];
+        const safeCheckpoints = Array.isArray(nextCheckpoints) ? nextCheckpoints : [];
+        const safeRunEvents = Array.isArray(nextRunEvents) ? nextRunEvents : [];
+        const safeSchedulerEvents = Array.isArray(nextSchedulerEvents) ? nextSchedulerEvents : [];
         const versionPairs = await Promise.all(
-          nextSavedArtifacts.slice(0, 12).map(async (artifact) => {
+          safeSavedArtifacts.slice(0, 12).map(async (artifact) => {
             try {
               const versions = await api.listAgentTaskArtifactVersions(artifact.id);
               return [artifact.id, versions] as const;
@@ -412,17 +419,17 @@ export function TaskCenterPage() {
           }),
         );
         if (cancelled) return;
-        setEvents(taskCenterHistoryFromEvents(nextEvents, nextRunEvents, nextSchedulerEvents));
-        setGraph(nextGraph);
+        setEvents(taskCenterHistoryFromEvents(safeEvents, safeRunEvents, safeSchedulerEvents));
+        setGraph(nextGraph ?? null);
         setInvestigationGraph(nextInvestigationGraph);
-        setResumeCheckpoints(nextCheckpoints);
-        setArtifacts(nextArtifacts);
-        setSavedArtifacts(nextSavedArtifacts);
+        setResumeCheckpoints(safeCheckpoints);
+        setArtifacts(safeArtifacts);
+        setSavedArtifacts(safeSavedArtifacts);
         setArtifactVersions(Object.fromEntries(versionPairs));
         setEditingArtifactId((current) =>
-          current && nextSavedArtifacts.some((artifact) => artifact.id === current) ? current : null,
+          current && safeSavedArtifacts.some((artifact) => artifact.id === current) ? current : null,
         );
-        setProjectMemories(nextMemories);
+        setProjectMemories(safeMemories);
       } catch (error) {
         if (!cancelled) toast.error(String(error));
       } finally {
@@ -634,6 +641,8 @@ export function TaskCenterPage() {
   const canResume = Boolean(selected && (selected.run.status === 'paused' || latestCheckpoint));
   const investigationNodes = investigationGraph?.nodes ?? [];
   const investigationEdges = investigationGraph?.edges ?? [];
+  const investigationCitations = investigationGraph?.citations ?? [];
+  const investigationOpenQuestions = investigationGraph?.openQuestions ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface-0">
@@ -905,11 +914,11 @@ export function TaskCenterPage() {
                             ))}
                           </div>
                         )}
-                        {investigationGraph?.citations.length ? (
+                        {investigationCitations.length ? (
                           <div>
                             <div className="mb-1 text-xs font-medium text-text-tertiary">{copy.citations}</div>
                             <div className="space-y-1">
-                              {investigationGraph.citations.slice(0, 6).map((citation) => (
+                              {investigationCitations.slice(0, 6).map((citation) => (
                                 <div key={citation} className="break-all rounded-md border border-border/60 bg-surface-0/75 px-2 py-1.5 text-xs text-text-secondary">
                                   {citation}
                                 </div>
@@ -917,11 +926,11 @@ export function TaskCenterPage() {
                             </div>
                           </div>
                         ) : null}
-                        {investigationGraph?.openQuestions.length ? (
+                        {investigationOpenQuestions.length ? (
                           <div>
                             <div className="mb-1 text-xs font-medium text-text-tertiary">{copy.openQuestions}</div>
                             <div className="space-y-1">
-                              {investigationGraph.openQuestions.slice(0, 6).map((question) => (
+                              {investigationOpenQuestions.slice(0, 6).map((question) => (
                                 <div key={question} className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-xs text-warning">
                                   {question}
                                 </div>

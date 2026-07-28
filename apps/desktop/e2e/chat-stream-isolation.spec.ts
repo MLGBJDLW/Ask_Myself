@@ -345,19 +345,22 @@ test('keeps stream content isolated to the conversation that started it', async 
   await page.getByTestId('chat-input-textarea').fill('Check retries for chat A.');
   await page.getByTestId('chat-send').click();
 
-  await expect(page.getByText('Investigating retries only for chat A.')).toBeVisible();
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  const chatLog = page.getByLabel('Chat messages');
+  await page.waitForTimeout(100);
 
   await page.getByRole('button', { name: /Stream B/ }).click();
 
   await expect(page.getByText('This is the other chat.')).toBeVisible();
   await expect(page.getByTestId('chat-send')).toBeVisible();
   await expect(page.getByText('Investigating retries only for chat A.')).toHaveCount(0);
-  await expect(page.getByText('search_knowledge_base')).toHaveCount(0);
+  await expect(chatLog.getByTestId('tool-call-card')).toHaveCount(0);
   await expect(page.getByText('Final answer for chat A only.')).toHaveCount(0);
 
+  await page.waitForTimeout(300);
   await page.getByRole('button', { name: /Stream A/ }).click();
+  await expect(page.getByText('Final answer for chat A only.')).toBeVisible();
+  await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(page.getByText('Investigating retries only for chat A.')).toBeVisible();
   await expect(page.getByText('This is the other chat.')).toHaveCount(0);
-  await expect(page.getByText('search_knowledge_base')).toBeVisible();
+  await expect(chatLog.getByTestId('tool-call-card')).toBeVisible();
 });

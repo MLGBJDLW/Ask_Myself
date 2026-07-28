@@ -227,20 +227,18 @@ test('keeps persisted tool-round replies interleaved with trace thinking', async
   await page.goto('/chat/conv-persisted-round-replies');
 
   const thinkingToggles = page.locator('button').filter({ hasText: 'Thinking completed' });
-  await expect(thinkingToggles).toHaveCount(2);
-  await expect(thinkingToggles.nth(0)).toHaveAttribute('aria-expanded', 'false');
-  await expect(thinkingToggles.nth(1)).toHaveAttribute('aria-expanded', 'false');
-  await thinkingToggles.nth(0).click();
-  await thinkingToggles.nth(1).click();
+  await expect(thinkingToggles).toHaveCount(1);
+  await expect(thinkingToggles).toHaveAttribute('aria-expanded', 'false');
+  await thinkingToggles.click();
 
   const chatLogText = await page.getByLabel('Chat messages').textContent();
   expect(chatLogText).toBeTruthy();
 
   const text = chatLogText ?? '';
   expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('read_file')).toBeGreaterThan(text.indexOf('phase one thinking'));
+  expect(text.indexOf('Read file')).toBeGreaterThan(text.indexOf('phase one thinking'));
   expect(text.indexOf('first-round-reply')).toBeGreaterThan(text.indexOf('phase one thinking'));
   expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('first-round-reply'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('read_file'));
+  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('Read file'));
   expect(text.indexOf('final-round-reply')).toBeGreaterThan(text.indexOf('phase two thinking'));
 });

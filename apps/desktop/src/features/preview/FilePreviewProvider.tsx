@@ -1164,6 +1164,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
+              data-testid="file-preview-backdrop"
               className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[1px]"
               onClick={close}
               aria-hidden="true"

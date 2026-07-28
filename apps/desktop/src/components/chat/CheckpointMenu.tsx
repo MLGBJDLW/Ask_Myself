@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Bookmark, GitBranch, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -44,10 +45,23 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
   const [loading, setLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [branchingId, setBranchingId] = useState<string | null>(null);
+  const [panelPosition, setPanelPosition] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const firstRestoreButtonRef = useRef<HTMLButtonElement>(null);
+
+  const updatePanelPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = panelRef.current?.offsetWidth || 320;
+    const height = panelRef.current?.offsetHeight || 288;
+    setPanelPosition({
+      left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+      top: Math.max(8, rect.top - height - 4),
+    });
+  }, []);
 
   /* ── Load checkpoints when dropdown opens ───────────────────────── */
   const load = useCallback(async () => {
@@ -70,6 +84,25 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
     }
   }, [open, load]);
 
+  useLayoutEffect(() => {
+    if (!open) {
+      setPanelPosition(null);
+      return;
+    }
+    updatePanelPosition();
+  }, [checkpoints.length, loading, open, updatePanelPosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => updatePanelPosition();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open, updatePanelPosition]);
+
   const closeMenu = useCallback((restoreFocus = true) => {
     setOpen(false);
     if (restoreFocus) {
@@ -81,7 +114,12 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        ref.current
+        && !ref.current.contains(target)
+        && !panelRef.current?.contains(target)
+      ) {
         closeMenu(false);
       }
     };
@@ -167,7 +205,7 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
       </button>
 
       {/* Dropdown (opens upward since button is near bottom) */}
-      <AnimatePresence>
+      {typeof document !== 'undefined' ? createPortal(<AnimatePresence>
         {open && (
           <motion.div
             ref={panelRef}
@@ -180,8 +218,9 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
             aria-modal="false"
             aria-label={t('chat.checkpoints')}
             tabIndex={-1}
+            style={panelPosition ?? { left: 0, top: 0, visibility: 'hidden' }}
             className="
-              absolute right-0 bottom-full mb-1 z-50
+              fixed z-[100]
               w-80 max-h-72 overflow-y-auto
               bg-surface-1 border border-border rounded-lg shadow-lg
             "
@@ -279,7 +318,7 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
             )}
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>, document.body) : null}
     </div>
   );
 }

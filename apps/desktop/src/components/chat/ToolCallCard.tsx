@@ -334,6 +334,30 @@ function visibleToolResult(
   }
 }
 
+function toolResultHeaderSummary(content: string | undefined): string | null {
+  const trimmed = content?.trim();
+  if (!trimmed) return null;
+
+  let summary = trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === 'string') {
+      summary = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>;
+      const candidate = [record.message, record.error, record.summary, record.detail]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      if (candidate) summary = candidate;
+    }
+  } catch {
+    // Plain-text failures are already the most useful summary.
+  }
+
+  const firstLine = summary.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  if (!firstLine) return null;
+  return firstLine.length > 96 ? `${firstLine.slice(0, 95)}…` : firstLine;
+}
+
 function ToolResultSurface({
   content,
   error,
@@ -1566,7 +1590,9 @@ export function ToolCallCard({
     window.dispatchEvent(new Event(TERMINAL_OPEN_EVENT));
   }, []);
 
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(
+    () => !isPending && Boolean(subagentBatch || subagentJudgement),
+  );
 
   useEffect(() => {
     if (!isPending && graphUsage) {
@@ -1577,13 +1603,14 @@ export function ToolCallCard({
     }
   }, [graphUsage, isPending]);
 
-  // Completed tool details collapse into the timeline summary. In-flight edits
-  // stay compact as well, avoiding a second "live" card below the edit row.
+  // Completed tool details collapse into the timeline summary. Collaboration
+  // results stay open because their worker evidence and judgement are primary
+  // output, rather than low-value implementation detail.
   useEffect(() => {
     if (!isPending) {
-      setExpanded(false);
+      setExpanded(Boolean(subagentBatch || subagentJudgement));
     }
-  }, [isPending]);
+  }, [isPending, subagentBatch, subagentJudgement]);
 
   if (questionRequest && !inline) {
     return (
@@ -1607,8 +1634,18 @@ export function ToolCallCard({
   }
 
   const failedStatus = isUnsuccessfulToolCallStatus(status);
+  const failedResultSummary = failedStatus ? toolResultHeaderSummary(content) : null;
   const baseHeaderSummary = skillActivation
     ? t('chat.skillActivationReady')
+    : subagentBatch
+      ? [
+          subagentBatch.batchGoal || t('chat.subagentParallelRun'),
+          typeof subagentBatch.effectiveMaxParallel === 'number'
+            ? t('chat.subagentParallelCount', { count: String(subagentBatch.effectiveMaxParallel) })
+            : null,
+        ].filter((value): value is string => Boolean(value)).join(' · ')
+    : subagentJudgement
+      ? subagentJudgement.task || t('chat.subagentJudgementFallback')
     : planArtifact
       ? t('chat.planStepsCompleted', {
           completed: String(planArtifact.steps.filter(step => step.status === 'completed').length),
@@ -1635,7 +1672,7 @@ export function ToolCallCard({
             ? null
             : `${headerDiffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
         : failedStatus
-          ? briefResult
+          ? failedResultSummary ?? briefResult
           : null;
   const headerSummary = [
     baseHeaderSummary,
@@ -1815,10 +1852,32 @@ export function ToolCallCard({
                           {t('chat.subagentConfidence', { value: subagentJudgement.confidence })}
                         </span>
                       )}
+                      {subagentJudgement.winnerIds.length > 0 && (
+                        <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-accent">
+                          {t('chat.subagentWinners', { value: subagentJudgement.winnerIds.join(', ') })}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm text-text-primary">{subagentJudgement.summary}</div>
                     {subagentJudgement.rationale && (
                       <div className="mt-2 text-xs text-text-secondary">{subagentJudgement.rationale}</div>
+                    )}
+                    {subagentJudgement.rubric && subagentJudgement.rubric.length > 0 && (
+                      <div className="mt-3">
+                        <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
+                          {t('chat.subagentRubric')}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {subagentJudgement.rubric.map((item, index) => (
+                            <span
+                              key={`trace-judge-rubric-${index}`}
+                              className="inline-flex items-center rounded-md border border-border/60 bg-surface-0 px-2 py-1 text-[11px] text-text-secondary"
+                            >
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 ) : searchItems ? (

@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("nexa-locale", "en");
+    localStorage.setItem("nexa-developer-mode", "true");
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
