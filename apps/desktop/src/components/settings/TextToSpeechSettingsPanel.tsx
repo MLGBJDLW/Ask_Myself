@@ -1,16 +1,17 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, Eye, EyeOff, Save, Volume2 } from 'lucide-react';
+import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Save, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
 import {
   findSharedProviderCredential,
   providerCredentialScope,
 } from '../../lib/providerCredentials';
-import { defaultTtsItem, TTS_PROVIDER_PRESETS } from '../../lib/ttsProviderPresets';
+import { defaultTtsItem, findTtsProviderPreset, TTS_PROVIDER_PRESETS } from '../../lib/ttsProviderPresets';
 import type { AgentConfig, AppConfig, TextToSpeechConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { SharedCredentialNotice } from './SharedCredentialNotice';
 
 interface TextToSpeechSettingsPanelProps {
   appConfig: AppConfig;
@@ -20,6 +21,7 @@ interface TextToSpeechSettingsPanelProps {
   onSave: (config?: AppConfig) => void | Promise<void>;
   agentConfigs?: AgentConfig[];
   providerScope?: 'all' | 'cloud' | 'local';
+  defaultExpanded?: boolean;
 }
 
 export const DEFAULT_TTS_CONFIG: TextToSpeechConfig = {
@@ -49,9 +51,10 @@ export function TextToSpeechSettingsPanel({
   onSave,
   agentConfigs = [],
   providerScope = 'all',
+  defaultExpanded = false,
 }: TextToSpeechSettingsPanelProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.textToSpeech ?? DEFAULT_TTS_CONFIG;
   const scopedPresets = useMemo(
@@ -59,11 +62,12 @@ export function TextToSpeechSettingsPanel({
       || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
     [providerScope],
   );
+  const cloudPresets = useMemo(() => scopedPresets.filter((preset) => preset.local !== true), [scopedPresets]);
+  const localPresets = useMemo(() => scopedPresets.filter((preset) => preset.local === true), [scopedPresets]);
+  const groupedCatalog = cloudPresets.length > 0 && localPresets.length > 0;
   const matchedPreset = useMemo(
-    () => TTS_PROVIDER_PRESETS.find((preset) =>
-      preset.apiStyle === config.apiStyle && preset.provider === config.provider,
-    ),
-    [config.apiStyle, config.provider],
+    () => findTtsProviderPreset(config),
+    [config],
   );
   const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
@@ -133,6 +137,10 @@ export function TextToSpeechSettingsPanel({
                   ? t('settings.ttsNeedsLocalFiles')
                   : t('settings.needsApiKey')}
             </Badge>
+            <Badge variant="default" className="gap-1 text-[10px]">
+              {localProvider ? <Laptop size={10} /> : <Cloud size={10} />}
+              {localProvider ? t('settings.speechRuntimeLocal') : t('settings.speechRuntimeCloud')}
+            </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">
             {activePreset.name} · {config.model} · {config.voice}
@@ -160,13 +168,28 @@ export function TextToSpeechSettingsPanel({
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
               <select
+                data-testid="tts-provider-select"
                 value={scopeActive ? activePreset.id : ''}
                 onChange={(event) => applyPreset(event.target.value)}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
                 {!scopeActive && <option value="" disabled>{t('settings.selectSpeechProvider')}</option>}
-                {scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                {groupedCatalog ? (
+                  <>
+                    <optgroup label={t('settings.speechProviderGroupCloud')}>
+                      {cloudPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                    </optgroup>
+                    <optgroup label={t('settings.speechProviderGroupLocal')}>
+                      {localPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                    </optgroup>
+                  </>
+                ) : (
+                  scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)
+                )}
               </select>
+              {groupedCatalog && (
+                <p className="text-[11px] leading-5 text-text-tertiary">{t('settings.speechProviderCatalogHint')}</p>
+              )}
               <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
                 <ProviderIcon provider={activePreset.provider} providerId={activePreset.id} baseUrl={activePreset.baseUrl} size="sm" />
                 <p className="text-xs leading-5 text-text-tertiary">{activePreset.description}</p>
@@ -192,10 +215,13 @@ export function TextToSpeechSettingsPanel({
                     {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                   </button>
                 </div>
-                {sharedKeySource && !config.apiKey.trim() && (
-                  <p className="text-xs text-text-tertiary">
-                    {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
-                  </p>
+                {sharedKeySource && (
+                  <SharedCredentialNotice
+                    source={sharedKeySource}
+                    hasOwnKey={Boolean(config.apiKey.trim())}
+                    onApply={() => update({ apiKey: sharedKeySource.apiKey })}
+                    onReset={() => update({ apiKey: '' })}
+                  />
                 )}
               </div>
             )}

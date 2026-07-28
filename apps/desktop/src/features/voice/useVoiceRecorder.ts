@@ -7,6 +7,8 @@ export interface UseVoiceRecorderReturn {
   stopRecording: () => Promise<Uint8Array | null>;
   cancelRecording: () => void;
   recordingDuration: number;
+  /** Analyser tapped off the live capture graph, for waveform visualization. */
+  analyser: AnalyserNode | null;
 }
 
 /**
@@ -21,6 +23,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
 
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -44,6 +47,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     audioCtxRef.current = null;
     streamRef.current = null;
     buffersRef.current = [];
+    setAnalyser(null);
     setRecordingDuration(0);
   }, []);
 
@@ -88,6 +92,13 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     source.connect(processor);
     // Must connect to destination for onaudioprocess to fire
     processor.connect(audioCtx.destination);
+
+    // Tapped off the same graph so the waveform shows the audio actually being
+    // recorded instead of opening a second microphone stream.
+    const analyserNode = audioCtx.createAnalyser();
+    analyserNode.fftSize = 1024;
+    source.connect(analyserNode);
+    setAnalyser(analyserNode);
 
     setIsRecording(true);
     setRecordingDuration(0);
@@ -139,7 +150,15 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     cleanup();
   }, [cleanup]);
 
-  return { isRecording, isProcessing, startRecording, stopRecording, cancelRecording, recordingDuration };
+  return {
+    isRecording,
+    isProcessing,
+    startRecording,
+    stopRecording,
+    cancelRecording,
+    recordingDuration,
+    analyser,
+  };
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

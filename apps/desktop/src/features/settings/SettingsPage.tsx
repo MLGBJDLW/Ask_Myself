@@ -1703,6 +1703,7 @@ export function SettingsPage() {
             if (await handleAppConfigSave()) markClean('models_embedding');
           }}
           onMarkModelsDirty={() => markDirty('models_embedding')}
+          onOpenSpeechSettings={() => handleTabChange('providers')}
           onApplyManagedModelRoot={(root) => handleManagedModelRootChange(root)}
           onResetManagedModelRoot={() => handleManagedModelRootChange(undefined)}
         />

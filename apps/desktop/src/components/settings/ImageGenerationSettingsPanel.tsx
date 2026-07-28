@@ -23,6 +23,7 @@ import {
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { SharedCredentialNotice } from "./SharedCredentialNotice";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -377,6 +378,14 @@ export function ImageGenerationSettingsPanel({
                   ? t('settings.dedicatedApiKeySource')
                   : t('settings.noApiKeySource')}
             </p>
+            <SharedCredentialNotice
+              source={sharedKeySource}
+              hasOwnKey={Boolean(imageConfig.apiKey.trim())}
+              onApply={() =>
+                updateImageConfig({ ...imageConfig, apiKey: sharedKeySource?.apiKey ?? "" })
+              }
+              onReset={() => updateImageConfig({ ...imageConfig, apiKey: "" })}
+            />
           </div>
 
           <div className="space-y-2">

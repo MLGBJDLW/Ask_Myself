@@ -3,6 +3,7 @@ import { Mic, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
+import { MicrophoneWaveform } from '../voice/MicrophoneWaveform';
 
 interface VoiceInputButtonProps {
   onTranscript: (text: string) => void;
@@ -12,7 +13,7 @@ interface VoiceInputButtonProps {
 export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonProps) {
   const { t } = useTranslation();
   const voiceRuntime = useVoiceInputRuntime();
-  const { isRecording, busy, cancelRecording, recordingDuration, toggleRecording, formatDuration } =
+  const { isRecording, busy, cancelRecording, recordingDuration, toggleRecording, formatDuration, analyser } =
     voiceRuntime;
 
   // Cancel on Escape
@@ -75,6 +76,12 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       ) : isRecording ? (
         <>
           <span className="recording-indicator" />
+          <MicrophoneWaveform
+            analyser={analyser}
+            barCount={12}
+            className="h-4"
+            label={t('voice.waveformLabel')}
+          />
           <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
         </>
       ) : (
