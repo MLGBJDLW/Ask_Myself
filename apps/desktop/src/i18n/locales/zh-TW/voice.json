@@ -11,5 +11,10 @@
   "microphoneDefault": "系統預設",
   "microphoneRefresh": "重新整理裝置",
   "microphoneDeviceN": "裝置",
-  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings",
+  "waveformLabel": "即時麥克風音量",
+  "microphoneTestStart": "測試麥克風",
+  "microphoneTestStop": "停止測試",
+  "microphoneTestDesc": "開始測試後說話，波形應隨你的聲音起伏。",
+  "microphoneTestUnavailable": "無法開啟此麥克風，請換一個裝置再試。"
 }

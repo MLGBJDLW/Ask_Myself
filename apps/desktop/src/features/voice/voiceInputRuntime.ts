@@ -233,6 +233,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       isTranscribing: transcribing,
       busy,
       recordingDuration: recorder.recordingDuration,
+      analyser: recorder.analyser,
       toggleRecording,
       cancelRecording: recorder.cancelRecording,
       transcribeWav,

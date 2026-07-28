@@ -11,5 +11,10 @@
   "microphoneDefault": "システムデフォルト",
   "microphoneRefresh": "デバイスを更新",
   "microphoneDeviceN": "デバイス",
-  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings"
+  "providerNotConfigured": "Configure the selected speech-to-text provider in Settings",
+  "waveformLabel": "Live microphone level",
+  "microphoneTestStart": "Test microphone",
+  "microphoneTestStop": "Stop test",
+  "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
+  "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again."
 }

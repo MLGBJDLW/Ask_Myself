@@ -17,6 +17,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Input } from '../ui/Input';
+import { MicrophoneTestPanel } from './MicrophoneTestPanel';
 import { Section } from './SettingsSection';
 
 interface VideoSettingsSectionProps {
@@ -254,6 +255,7 @@ export function VideoSettingsSection({
                   <RefreshCw size={14} />
                 </button>
               </div>
+              <MicrophoneTestPanel deviceId={micDeviceId} />
             </div>
           </div>
 
