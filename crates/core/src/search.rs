@@ -734,7 +734,7 @@ pub fn hybrid_search(db: &Database, query: &SearchQuery) -> Result<SearchResult,
                                 );
                                 tfidf_vector_search(db, trimmed, internal_limit)
                             } else {
-                                match embedder.embed(trimmed) {
+                                match embedder.embed_query(trimmed) {
                                     Ok(query_vec) => {
                                         if query_vec.iter().all(|&v| v == 0.0) {
                                             Vec::new()
@@ -866,7 +866,7 @@ fn tfidf_vector_search(db: &Database, query_text: &str, limit: usize) -> Vec<(St
     match db.load_embedder_state("tfidf-v1") {
         Ok(Some((vocab, idf))) => {
             let embedder = TfIdfEmbedder::from_vocabulary(vocab, idf);
-            match embedder.embed(query_text) {
+            match embedder.embed_query(query_text) {
                 Ok(query_vec) => {
                     if query_vec.iter().all(|&v| v == 0.0) {
                         return Vec::new();

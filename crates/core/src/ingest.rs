@@ -15,7 +15,9 @@ use tracing::{debug, info, warn};
 use crate::db::Database;
 use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
-use crate::parse::{parse_file, ParsedChunk, ParsedDocument};
+use crate::parse::{
+    detect_mime_type, file_appears_binary, parse_file, ParsedChunk, ParsedDocument,
+};
 use crate::privacy::{self, PrivacyConfig};
 
 // ---------------------------------------------------------------------------
@@ -42,6 +44,9 @@ const CODE_SOURCE_FILENAMES: &[&str] = &[
     "podfile",
     "rakefile",
     "settings.gradle",
+];
+const GENERATED_BINARY_EXTENSIONS: &[&str] = &[
+    "class", "dll", "dylib", "exe", "o", "obj", "pdb", "pyc", "pyo", "so", "wasm",
 ];
 
 /// Configurable file-size limits for ingestion.
@@ -93,6 +98,19 @@ fn is_code_source_file(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| CODE_SOURCE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+fn is_unhandled_binary_file(path: &Path) -> bool {
+    if detect_mime_type(path) != "application/octet-stream" {
+        return false;
+    }
+
+    let generated_artifact = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| GENERATED_BINARY_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    generated_artifact || file_appears_binary(path).unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +325,18 @@ fn scan_source_inner(
             continue;
         }
 
+        let file_path_str = file_path.to_string_lossy();
+        if is_unhandled_binary_file(file_path) {
+            debug!(
+                "Skipping unsupported binary file for knowledge embedding: {}",
+                file_path.display()
+            );
+            let _ = db.clear_scan_error(source_id, &file_path_str);
+            result.files_skipped += 1;
+            files_processed += 1;
+            continue;
+        }
+
         result.files_scanned += 1;
         files_processed += 1;
 
@@ -338,7 +368,6 @@ fn scan_source_inner(
         }
 
         // Skip files that have repeatedly failed (backoff).
-        let file_path_str = file_path.to_string_lossy();
         if !db
             .should_retry_scan(source_id, &file_path_str)
             .unwrap_or(true)
@@ -400,15 +429,18 @@ fn scan_source_inner(
     // Purge stale documents: entries in the DB whose files no longer exist on disk.
     for (doc_path, (_doc_id, _hash)) in &existing_docs {
         let existing_path = Path::new(doc_path);
-        if is_code_source_file(existing_path) {
-            info!("Purging code document from knowledge source: {}", doc_path);
+        if is_code_source_file(existing_path) || is_unhandled_binary_file(existing_path) {
+            info!(
+                "Purging unsupported document from knowledge source: {}",
+                doc_path
+            );
             match db.delete_document_by_path(doc_path) {
                 Ok(true) => result.files_purged += 1,
                 Ok(false) => {
-                    debug!("Code document already removed: {}", doc_path);
+                    debug!("Unsupported document already removed: {}", doc_path);
                 }
                 Err(e) => {
-                    let msg = format!("Failed to purge code document {}: {}", doc_path, e);
+                    let msg = format!("Failed to purge unsupported document {}: {}", doc_path, e);
                     warn!("{}", msg);
                     result.errors.push(msg);
                 }
@@ -527,7 +559,7 @@ fn embed_source_inner(
 
     for chunk in missing.chunks(EMBED_BATCH_SIZE) {
         let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_batch(&texts)?;
+        let vectors = embedder.embed_documents(&texts)?;
         for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
             all_batch.push((chunk_id.clone(), model.clone(), vector));
         }
@@ -687,7 +719,7 @@ pub fn rebuild_embeddings_with_progress(
 
     for chunk in all_chunks.chunks(EMBED_BATCH_SIZE) {
         let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_batch(&texts)?;
+        let vectors = embedder.embed_documents(&texts)?;
         for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
             all_batch.push((chunk_id.clone(), model.clone(), vector));
         }
@@ -1193,6 +1225,17 @@ pub fn ingest_single_file(
         return Ok(IngestFileResult::Unchanged);
     }
 
+    if is_unhandled_binary_file(path) {
+        debug!(
+            "Skipping unsupported binary file for knowledge embedding: {}",
+            path.display()
+        );
+        let path_str = path.to_string_lossy();
+        let _ = db.clear_scan_error(source_id, &path_str);
+        let _ = db.delete_document_by_path(path_str.as_ref())?;
+        return Ok(IngestFileResult::Unchanged);
+    }
+
     // Load file size limits from app config.
     let app_cfg = db.load_app_config().unwrap_or_default();
     let file_limits = FileSizeLimits {
@@ -1535,6 +1578,32 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert!(docs.keys().any(|path| path.ends_with("notes.md")));
         assert!(docs.keys().all(|path| !path.ends_with("app.ts")));
+    }
+
+    #[test]
+    fn test_scan_source_skips_compiled_and_unknown_binary_files_without_errors() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("notes.md"),
+            "# Notes\n\nReadable knowledge content remains indexable while generated binary files are ignored safely.",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("module.pyc"),
+            [0xA7, 0x0D, 0x0D, 0x0A, 0xFF, 0xFE],
+        )
+        .unwrap();
+        fs::write(tmp.path().join("cache.bin"), b"binary\0payload").unwrap();
+
+        let db = test_db();
+        let sid = create_test_source(&db, tmp.path(), vec![], vec![]);
+
+        let result = scan_source(&db, &sid).unwrap();
+        assert_eq!(result.files_scanned, 1);
+        assert_eq!(result.files_added, 1);
+        assert_eq!(result.files_skipped, 2);
+        assert_eq!(result.files_failed, 0);
+        assert!(result.errors.is_empty());
     }
 
     #[test]

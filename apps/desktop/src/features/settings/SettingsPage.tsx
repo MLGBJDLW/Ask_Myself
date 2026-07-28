@@ -395,15 +395,16 @@ export function SettingsPage() {
     }
   };
 
-  const handleTestConnection = async () => {
-    if (!embedConfig) return;
+  const handleTestConnection = async (configOverride?: EmbedderConfig) => {
+    const config = configOverride ?? embedConfig;
+    if (!config) return;
     setTestLoading(true);
     try {
       const ok = await api.testApiConnection(
-        embedConfig.apiKey,
-        embedConfig.apiBaseUrl,
-        embedConfig.apiModel,
-        embedConfig.vectorDimensions,
+        config.apiKey,
+        config.apiBaseUrl,
+        config.apiModel,
+        config.vectorDimensions,
       );
       if (ok) {
         toast.success(t('settings.embeddingTestSuccess'));
@@ -417,11 +418,13 @@ export function SettingsPage() {
     }
   };
 
-  const handleSaveEmbedConfig = async () => {
-    if (!embedConfig) return;
+  const handleSaveEmbedConfig = async (configOverride?: EmbedderConfig) => {
+    const config = configOverride ?? embedConfig;
+    if (!config) return;
     setEmbedSaveLoading(true);
     try {
-      await api.saveEmbedderConfig(embedConfig);
+      await api.saveEmbedderConfig(config);
+      setEmbedConfig(config);
       markClean('models_embedding');
       toast.success(t('settings.privacySaved'));
     } catch {
@@ -1491,7 +1494,7 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'providers') {
+    if (activeTab === 'providers' || activeTab === 'models_embedding') {
       loadAgentConfigs();
     }
   }, [activeTab, loadAgentConfigs]);
@@ -1711,6 +1714,7 @@ export function SettingsPage() {
           embedSaveLoading={embedSaveLoading}
           rebuildEmbedLoading={rebuildEmbedLoading}
           embedRebuildProgress={embedRebuildProgress}
+          agentConfigs={agentConfigs}
           onConfigChange={setEmbedConfig}
           onMarkDirty={() => markDirty('models_embedding')}
           onTestConnection={handleTestConnection}

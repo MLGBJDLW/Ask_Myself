@@ -595,7 +595,7 @@ pub struct AppConfig {
     #[serde(default = "default_hf_mirror_base_url")]
     pub hf_mirror_base_url: String,
 
-    /// GitHub reverse-proxy base URL used for FFmpeg binary downloads.
+    /// GitHub reverse-proxy base URL used for built-in GitHub downloads.
     /// Empty string disables the fallback. Default: `https://mirror.ghproxy.com`.
     #[serde(default = "default_ghproxy_base_url")]
     pub ghproxy_base_url: String,

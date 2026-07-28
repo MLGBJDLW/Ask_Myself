@@ -6,7 +6,12 @@ import {
   findEmbeddingProviderPreset,
 } from '../../lib/embeddingProviderPresets';
 import { ProviderIcon } from '../../lib/providerIcons';
+import {
+  findSharedProviderCredential,
+  providerCredentialScope,
+} from '../../lib/providerCredentials';
 import type { EmbedderConfig } from '../../types/embedder';
+import type { AgentConfig } from '../../types/conversation';
 import type { ScanProgress } from '../../types/ingest';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -20,10 +25,11 @@ interface EmbeddingConfigSectionProps {
   embedSaveLoading: boolean;
   rebuildEmbedLoading: boolean;
   embedRebuildProgress: ScanProgress | null;
+  agentConfigs: AgentConfig[];
   onConfigChange: (config: EmbedderConfig) => void;
   onMarkDirty: () => void;
-  onTestConnection: () => void;
-  onSave: () => void;
+  onTestConnection: (config?: EmbedderConfig) => void;
+  onSave: (config?: EmbedderConfig) => void;
   onRebuild: () => void;
 }
 
@@ -34,6 +40,7 @@ export function EmbeddingConfigSection({
   embedSaveLoading,
   rebuildEmbedLoading,
   embedRebuildProgress,
+  agentConfigs,
   onConfigChange,
   onMarkDirty,
   onTestConnection,
@@ -51,15 +58,30 @@ export function EmbeddingConfigSection({
   const activeApiPreset = embedConfig
     ? findEmbeddingProviderPreset(embedConfig.apiBaseUrl)
     : null;
+  const sharedKeySource = embedConfig && activeApiPreset
+    ? findSharedProviderCredential(
+        agentConfigs,
+        activeApiPreset.provider,
+        activeApiPreset.baseUrl,
+      )
+    : null;
+  const resolvedApiKey = embedConfig?.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
+  const materializedConfig = embedConfig
+    ? { ...embedConfig, apiKey: resolvedApiKey }
+    : null;
 
   const applyApiPreset = (presetId: string) => {
     const preset = EMBEDDING_PROVIDER_PRESETS.find((candidate) => candidate.id === presetId);
     if (!preset || !embedConfig) return;
     const model = defaultEmbeddingModel(preset);
+    const preservesCredential = activeApiPreset &&
+      providerCredentialScope(activeApiPreset.provider, activeApiPreset.baseUrl) ===
+        providerCredentialScope(preset.provider, preset.baseUrl);
     updateConfig({
       apiBaseUrl: preset.baseUrl,
       apiModel: model?.id ?? '',
       vectorDimensions: model?.dimensions ?? embedConfig.vectorDimensions,
+      apiKey: preservesCredential ? embedConfig.apiKey : '',
     });
   };
 
@@ -132,7 +154,11 @@ export function EmbeddingConfigSection({
                 </div>
               </div>
               <p className="text-xs text-text-tertiary">
-                {embedConfig.localModel === 'MultilingualE5Base' ? t('settings.embeddingModelQuality') : t('settings.embeddingModelLight')}
+                {embedConfig.localModel === 'Qwen3Embedding06B'
+                  ? t('settings.embeddingModelBest')
+                  : embedConfig.localModel === 'MultilingualE5Base'
+                    ? t('settings.embeddingModelQuality')
+                    : t('settings.embeddingModelLight')}
               </p>
             </div>
           )}
@@ -175,6 +201,11 @@ export function EmbeddingConfigSection({
                     placeholder="sk-..."
                   />
                 </div>
+                {sharedKeySource && !embedConfig.apiKey.trim() && (
+                  <p className="text-xs text-text-tertiary">
+                    {t('settings.providerApiKeySource', { provider: sharedKeySource.name })}
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingBaseUrl')}</label>
@@ -221,8 +252,8 @@ export function EmbeddingConfigSection({
                 size="sm"
                 icon={testLoading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
                 loading={testLoading}
-                onClick={onTestConnection}
-                disabled={!embedConfig.apiKey.trim() || !embedConfig.apiBaseUrl.trim()}
+                onClick={() => onTestConnection(materializedConfig ?? undefined)}
+                disabled={!resolvedApiKey || !embedConfig.apiBaseUrl.trim()}
               >
                 {t('settings.embeddingTestConnection')}
               </Button>
@@ -249,7 +280,7 @@ export function EmbeddingConfigSection({
                 size="md"
                 icon={<Save size={16} />}
                 loading={embedSaveLoading}
-                onClick={onSave}
+                onClick={() => onSave(materializedConfig ?? undefined)}
               >
                 {t('settings.embeddingSave')}
               </Button>
