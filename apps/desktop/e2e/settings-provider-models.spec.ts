@@ -527,6 +527,40 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   );
 });
 
+test("settings never reuses a provider key for a user-edited endpoint", async ({ page }) => {
+  const baseUrlInput = (panel: Locator) => panel
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..")
+    .getByRole("textbox");
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const imagePanel = page.getByTestId("image-generation-settings-panel");
+  await expect(imagePanel.getByText("Qwen CN API key")).toBeVisible();
+  await imagePanel.getByRole("button", { name: "Expand image generation settings" }).click();
+  await baseUrlInput(imagePanel).fill("https://proxy.example.com/v1");
+  await expect(imagePanel.getByText("Qwen CN API key")).toHaveCount(0);
+  await expect(imagePanel.getByRole("button", { name: "Save" })).toBeDisabled();
+
+  const ttsPanel = page.getByTestId("text-to-speech-settings-panel");
+  await ttsPanel.locator("button").first().click();
+  await ttsPanel.locator("select").first().selectOption("dashscope-cosyvoice");
+  await expect(ttsPanel.getByText("Qwen CN API key")).toBeVisible();
+  await baseUrlInput(ttsPanel).fill("http://dashscope.aliyuncs.com/api/v1/services/audio/tts");
+  await expect(ttsPanel.getByText("Qwen CN API key")).toHaveCount(0);
+  await expect(ttsPanel.getByRole("button", { name: "Save" })).toBeDisabled();
+
+  const sttPanel = page.getByTestId("speech-to-text-settings-panel");
+  await sttPanel.locator("button").first().click();
+  await sttPanel.getByTestId("stt-provider-select").selectOption("alibaba-qwen-asr");
+  await expect(sttPanel.getByText("Qwen CN API key")).toBeVisible();
+  await baseUrlInput(sttPanel).fill("https://dashscope.aliyuncs.com:8443/api/v1/services/audio/asr/transcription");
+  await expect(sttPanel.getByText("Qwen CN API key")).toHaveCount(0);
+  await expect(sttPanel.getByRole("button", { name: "Save" })).toBeDisabled();
+});
+
 test("settings keeps sherpa local models with downloaded models and separates provider categories", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();

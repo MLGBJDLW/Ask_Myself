@@ -74,7 +74,7 @@ export function SpeechToTextSettingsPanel({
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
   const sharedKeySource = !isWhisper && !isSherpa
-    ? findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl)
+    ? findSharedProviderCredential(agentConfigs, config.provider, config.baseUrl)
     : null;
   const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
   const materializedConfig = { ...config, apiKey: resolvedApiKey };
@@ -95,7 +95,7 @@ export function SpeechToTextSettingsPanel({
   const applyPreset = (id: string) => {
     const preset = scopedPresets.find((candidate) => candidate.id === id);
     if (!preset) return;
-    const preservesCredential = providerCredentialScope(activePreset.provider, activePreset.baseUrl) ===
+    const preservesCredential = providerCredentialScope(config.provider, config.baseUrl) ===
       providerCredentialScope(preset.provider, preset.baseUrl);
     update({
       provider: preset.provider,

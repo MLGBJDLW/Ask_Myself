@@ -211,8 +211,8 @@ export function ImageGenerationSettingsPanel({
     activePreset.models.length > 0 &&
     activePreset.models.some((model) => model.id === imageConfig.model);
   const sharedKeySource = useMemo(
-    () => findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl),
-    [activePreset.baseUrl, activePreset.provider, agentConfigs],
+    () => findSharedProviderCredential(agentConfigs, imageConfig.provider, imageConfig.baseUrl),
+    [agentConfigs, imageConfig.baseUrl, imageConfig.provider],
   );
   const resolvedApiKey = imageConfig.apiKey.trim() || sharedKeySource?.apiKey.trim() || "";
   const usesSharedProviderKey = !imageConfig.apiKey.trim() && Boolean(sharedKeySource);

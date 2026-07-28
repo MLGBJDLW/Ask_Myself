@@ -70,7 +70,7 @@ export function TextToSpeechSettingsPanel({
   const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
   const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
   const sharedKeySource = !localProvider
-    ? findSharedProviderCredential(agentConfigs, activePreset.provider, activePreset.baseUrl)
+    ? findSharedProviderCredential(agentConfigs, config.provider, config.baseUrl)
     : null;
   const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
   const materializedConfig = { ...config, apiKey: resolvedApiKey };
@@ -91,7 +91,7 @@ export function TextToSpeechSettingsPanel({
   const applyPreset = (presetId: string) => {
     const preset = scopedPresets.find((candidate) => candidate.id === presetId);
     if (!preset) return;
-    const preservesCredential = providerCredentialScope(activePreset.provider, activePreset.baseUrl) ===
+    const preservesCredential = providerCredentialScope(config.provider, config.baseUrl) ===
       providerCredentialScope(preset.provider, preset.baseUrl);
     update({
       provider: preset.provider,

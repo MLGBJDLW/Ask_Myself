@@ -10,13 +10,13 @@ function normalizedUrl(value: string | null | undefined): string {
   return (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
 }
 
-function endpointHost(value: string | null | undefined): string {
+function endpointUrl(value: string | null | undefined): URL | null {
   const normalized = normalizedUrl(value);
-  if (!normalized) return '';
+  if (!normalized) return null;
   try {
-    return new URL(normalized).hostname;
+    return new URL(normalized);
   } catch {
-    return normalized;
+    return null;
   }
 }
 
@@ -34,19 +34,21 @@ export function providerCredentialScope(
 ): string {
   const normalizedProvider = provider.trim().toLowerCase();
   const normalizedBaseUrl = normalizedUrl(baseUrl);
-  const host = endpointHost(baseUrl);
+  const endpoint = endpointUrl(baseUrl);
+  const host = endpoint?.hostname ?? '';
+  const usesTrustedTransport = endpoint?.protocol === 'https:' && !endpoint.port;
 
   if (normalizedBaseUrl.includes('token-plan.') || normalizedBaseUrl.includes('coding.dashscope.')) {
     return `endpoint:${normalizedBaseUrl}`;
   }
 
-  if (host === 'dashscope-intl.aliyuncs.com' || host === 'ap-southeast-1.maas.aliyuncs.com') {
+  if (usesTrustedTransport && (host === 'dashscope-intl.aliyuncs.com' || host === 'ap-southeast-1.maas.aliyuncs.com')) {
     return 'alibaba-model-studio:singapore';
   }
-  if (host === 'dashscope-us.aliyuncs.com' || host === 'us-east-1.maas.aliyuncs.com') {
+  if (usesTrustedTransport && (host === 'dashscope-us.aliyuncs.com' || host === 'us-east-1.maas.aliyuncs.com')) {
     return 'alibaba-model-studio:virginia';
   }
-  if (host === 'dashscope.aliyuncs.com' || host === 'cn-beijing.maas.aliyuncs.com') {
+  if (usesTrustedTransport && (host === 'dashscope.aliyuncs.com' || host === 'cn-beijing.maas.aliyuncs.com')) {
     return 'alibaba-model-studio:beijing';
   }
 
@@ -61,7 +63,9 @@ export function providerCredentialScope(
     ['api.siliconflow.cn', 'siliconflow'],
     ['open.bigmodel.cn', 'zhipu'],
   ];
-  const knownHost = hostScopes.find(([candidate]) => host === candidate);
+  const knownHost = usesTrustedTransport
+    ? hostScopes.find(([candidate]) => host === candidate)
+    : null;
   if (knownHost) return knownHost[1];
 
   // Unknown or user-edited endpoints are never assumed to share credentials,
