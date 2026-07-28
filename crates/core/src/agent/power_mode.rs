@@ -226,7 +226,7 @@ mod tests {
         let policy = resolve_agent_power_policy(input(
             AgentPowerMode::Nexus,
             ProviderType::Qwen,
-            "qwen3.7-max",
+            "qwen3.8-max-preview",
         ));
 
         assert_eq!(policy.reasoning_effort, Some(ReasoningEffort::Low));

@@ -556,11 +556,11 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3-vl-plus"),
+            model_supports_vision_from_catalog(ProviderType::AlibabaModelStudio, "qwen3-vl-plus"),
             Some(true)
         );
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            model_supports_vision_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.6-plus"),
             Some(true)
         );
         assert_eq!(
@@ -596,7 +596,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            model_supports_reasoning_from_catalog(ProviderType::Qwen, "qwen3.6-plus"),
+            model_supports_reasoning_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.6-plus"),
             Some(true)
         );
         assert_eq!(
