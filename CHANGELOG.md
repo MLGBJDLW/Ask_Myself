@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.21](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.20...nexa-monorepo-v0.10.21) (2026-07-28)
+
+
+### Features
+
+* **providers:** add Alibaba and SiliconFlow routers ([9320f44](https://github.com/MLGBJDLW/Nexa/commit/9320f444f47fd05a8fdaf33e6a8c8a3ff1f63bed))
+* **settings:** improve local models and provider routing ([0c49667](https://github.com/MLGBJDLW/Nexa/commit/0c49667d614040053d817a5dacabd64d4e6fb1a7))
+* **settings:** manage local models and speech providers ([de2b450](https://github.com/MLGBJDLW/Nexa/commit/de2b450b0443f991586b70b2788d3c3511647cff))
+
+
+### Bug Fixes
+
+* **providers:** preserve Alibaba Qwen prompt caching ([8111562](https://github.com/MLGBJDLW/Nexa/commit/81115620ddbc9a36a8fa96cc4917e62497cdb97b))
+* **settings:** address connector review feedback ([aa65b79](https://github.com/MLGBJDLW/Nexa/commit/aa65b798cd7146ef6778abe1b4f8900bae4d2cb3))
+* **settings:** persist close-to-tray selection immediately ([6ee466f](https://github.com/MLGBJDLW/Nexa/commit/6ee466f8448f8911db2f9ea722f380e6af12b97a))
+* **settings:** persist managed Whisper selection ([73d95aa](https://github.com/MLGBJDLW/Nexa/commit/73d95aa7574f0426132bca4c9282184e8147d14e))
+
 ## [0.10.20](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.19...nexa-monorepo-v0.10.20) (2026-07-28)
 
 
