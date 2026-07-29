@@ -7429,6 +7429,54 @@
     ]
   },
   {
+    "id": "qwen-cloud-intl",
+    "name": "QwenCloud (International)",
+    "provider": "alibaba_model_studio",
+    "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "requiresApiKey": true,
+    "icon": "🪶",
+    "description": "QwenCloud pay-as-you-go international endpoint with multimodal Qwen3.7 models and regular sk API keys",
+    "capabilities": {
+      "reasoning": {
+        "effortLevels": [],
+        "thinkingBudget": {
+          "enabled": true,
+          "defaultTokens": 10000,
+          "minTokens": 1,
+          "step": 500
+        }
+      },
+      "vision": true
+    },
+    "models": [
+      {
+        "id": "qwen3.7-flash",
+        "name": "Qwen3.7 Flash",
+        "tagKey": "providers.tagFast",
+        "recommended": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-plus",
+        "name": "Qwen3.7 Plus",
+        "tagKey": "providers.tagBestBalance",
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-max",
+        "name": "Qwen3.7 Max",
+        "tagKey": "providers.tagMostIntelligent",
+        "capabilities": {
+          "vision": true
+        }
+      }
+    ]
+  },
+  {
     "id": "alibaba-model-studio",
     "name": "Alibaba Cloud Model Studio (Bailian)",
     "provider": "alibaba_model_studio",

@@ -86,7 +86,9 @@ export function findProviderPreset(input: {
   const providerMatches = PROVIDER_PRESETS.filter(
     (preset) => preset.provider === lookupProvider,
   );
-  const defaultMatch = providerMatches.find((preset) => preset.id === lookupProvider);
+  const defaultMatch = providerMatches.find(
+    (preset) => preset.id === lookupProvider || preset.id.replace(/-/g, '_') === lookupProvider,
+  );
   if (defaultMatch) {
     return defaultMatch;
   }

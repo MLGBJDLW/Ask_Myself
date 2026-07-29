@@ -130,10 +130,9 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         .into_iter()
         .filter(|preset| preset.provider == lookup_provider)
         .collect::<Vec<_>>();
-    if let Some(default_index) = provider_matches
-        .iter()
-        .position(|preset| preset.id == lookup_provider)
-    {
+    if let Some(default_index) = provider_matches.iter().position(|preset| {
+        preset.id == lookup_provider || preset.id.replace('-', "_") == lookup_provider
+    }) {
         return Some(provider_matches.swap_remove(default_index));
     }
     if provider_matches.len() == 1 {
@@ -434,6 +433,26 @@ mod tests {
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         );
         assert!(migrated_qwen.is_none());
+
+        let qwen_cloud = find_provider_preset(
+            "alibaba_model_studio",
+            Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+        )
+        .expect("QwenCloud international preset should match its pay-as-you-go endpoint");
+        assert_eq!(qwen_cloud.id, "qwen-cloud-intl");
+        let flash = qwen_cloud
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.7-flash")
+            .expect("Qwen3.7 Flash should be listed for QwenCloud");
+        assert_eq!(flash.recommended, Some(true));
+        assert_eq!(
+            flash
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.vision),
+            Some(true)
+        );
     }
 
     #[test]
