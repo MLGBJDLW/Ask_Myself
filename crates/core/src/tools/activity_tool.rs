@@ -76,6 +76,7 @@ impl Tool for ActivityObserveTool {
         let ToolExecutionContext {
             call_id,
             arguments,
+            conversation_id,
             activity_runtime,
             ..
         } = context;
@@ -91,6 +92,14 @@ impl Tool for ActivityObserveTool {
         let runtime = activity_runtime.ok_or_else(|| {
             CoreError::Internal("Activity Runtime is unavailable for this tool call".to_string())
         })?;
+        let record = runtime.get(activity_id).ok_or_else(|| {
+            CoreError::InvalidInput(format!("Activity '{activity_id}' was not found"))
+        })?;
+        if record.conversation_id.as_deref() != conversation_id {
+            return Err(CoreError::InvalidInput(
+                "Activity belongs to a different conversation".to_string(),
+            ));
+        }
         let observation = runtime
             .observe(
                 activity_id,
@@ -148,5 +157,32 @@ mod tests {
         let observation = &result.artifacts.unwrap()["activity"];
         assert_eq!(observation["events"].as_array().unwrap().len(), 1);
         assert_eq!(observation["events"][0]["seq"], 2);
+    }
+
+    #[tokio::test]
+    async fn observe_tool_rejects_another_conversations_activity() {
+        let db = Database::open_memory().unwrap();
+        let runtime = ActivityRuntime::new();
+        let activity = runtime
+            .start(
+                ActivitySpec::new(ActivitySurface::Process, "run_shell")
+                    .with_conversation_id("conversation-1"),
+            )
+            .unwrap();
+        let arguments = serde_json::json!({
+            "activityId": activity.activity_id,
+            "waitUpToMs": 0,
+        })
+        .to_string();
+
+        let error = ActivityObserveTool
+            .execute(
+                ToolExecutionContext::new("observe-2", &arguments, &db, &[])
+                    .with_conversation_id(Some("conversation-2"))
+                    .with_activity_runtime(&runtime),
+            )
+            .await
+            .expect_err("cross-conversation activity output must stay private");
+        assert!(error.to_string().contains("different conversation"));
     }
 }

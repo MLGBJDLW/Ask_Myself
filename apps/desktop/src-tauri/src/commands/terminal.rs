@@ -144,7 +144,8 @@ pub fn terminal_start_session_cmd(
             .master
             .take_writer()
             .map_err(|err| format!("failed to attach terminal input: {err}"))?;
-        if let Some(integration) = shell_integration_bootstrap(candidate.label, candidate.program) {
+        let shell_label = resolved_shell_label(candidate.label, candidate.program);
+        if let Some(integration) = shell_integration_bootstrap(&shell_label, candidate.program) {
             writer
                 .write_all(integration.as_bytes())
                 .and_then(|_| writer.flush())
@@ -157,7 +158,7 @@ pub fn terminal_start_session_cmd(
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
             killer: Arc::new(Mutex::new(child.clone_killer())),
-            shell: candidate.label.to_string(),
+            shell: shell_label,
             cwd: cwd.display().to_string(),
             process_id,
             conversation_id: conversation_id.clone(),
@@ -658,6 +659,24 @@ add-zsh-hook precmd __nexa_precmd"#
     None
 }
 
+fn resolved_shell_label(label: &str, program: &str) -> String {
+    if label != "Default Shell" {
+        return label.to_string();
+    }
+    let program_name = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    match program_name.as_str() {
+        "zsh" => "Zsh".to_string(),
+        "bash" => "Bash".to_string(),
+        "sh" | "dash" => "sh".to_string(),
+        "pwsh" | "powershell" => "PowerShell".to_string(),
+        _ => program_name,
+    }
+}
+
 fn resolve_terminal_cwd(input: Option<String>) -> Result<PathBuf, String> {
     let cwd = match input {
         Some(raw) if !raw.trim().is_empty() => PathBuf::from(raw.trim()),
@@ -854,6 +873,12 @@ mod tests {
         let powershell = shell_integration_bootstrap("PowerShell", "pwsh.exe").unwrap();
         assert!(powershell.contains("$nexaSucceeded=$?"));
         assert!(powershell.contains("$global:LASTEXITCODE"));
+
+        assert_eq!(resolved_shell_label("Default Shell", "/bin/zsh"), "Zsh");
+        assert_eq!(
+            resolved_shell_label("Default Shell", "/usr/bin/fish"),
+            "fish"
+        );
     }
 
     #[cfg(windows)]

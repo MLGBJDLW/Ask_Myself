@@ -117,6 +117,13 @@ struct ObservationCapture {
     screenshot: Vec<u8>,
 }
 
+fn oldest_observation_id(observations: &HashMap<String, BrowserObservation>) -> Option<String> {
+    observations
+        .iter()
+        .min_by_key(|(_, observation)| observation.created_at)
+        .map(|(observation_id, _)| observation_id.clone())
+}
+
 type SharedSession = Arc<Mutex<BrowserSession>>;
 
 fn browser_sessions() -> &'static Mutex<HashMap<String, SharedSession>> {
@@ -338,7 +345,7 @@ fn observe_tab(
         },
     );
     if session.observations.len() > MAX_OBSERVATIONS {
-        if let Some(oldest) = session.observations.keys().next().cloned() {
+        if let Some(oldest) = oldest_observation_id(&session.observations) {
             session.observations.remove(&oldest);
         }
     }
@@ -1008,5 +1015,27 @@ mod tests {
         assert!(!belongs_to_conversation(&owner, Some("conversation-2")));
         assert!(!belongs_to_conversation(&owner, None));
         assert!(belongs_to_conversation(&None, None));
+    }
+
+    #[test]
+    fn browser_observation_eviction_selects_the_oldest_capture() {
+        let newer = Instant::now();
+        let older = newer - Duration::from_secs(1);
+        let observation = |created_at| BrowserObservation {
+            created_at,
+            tab_id: "tab-1".to_string(),
+            url: "https://example.com".to_string(),
+            content_hash: "hash".to_string(),
+            elements: Vec::new(),
+        };
+        let observations = HashMap::from([
+            ("newest".to_string(), observation(newer)),
+            ("oldest".to_string(), observation(older)),
+        ]);
+
+        assert_eq!(
+            oldest_observation_id(&observations).as_deref(),
+            Some("oldest")
+        );
     }
 }

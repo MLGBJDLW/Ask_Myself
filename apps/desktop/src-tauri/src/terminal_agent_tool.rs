@@ -45,6 +45,38 @@ fn default_action() -> String {
     "inspect".to_string()
 }
 
+fn reserve_terminal_activity(
+    active_activities: &Mutex<HashMap<String, String>>,
+    session_id: &str,
+    activity_id: &str,
+) -> Result<(), CoreError> {
+    let mut active = active_activities
+        .lock()
+        .map_err(|_| CoreError::Internal("terminal activity map is unavailable".to_string()))?;
+    if let Some(existing_id) = active.get(session_id) {
+        return Err(CoreError::InvalidInput(format!(
+            "Terminal session {session_id} is busy with activity {existing_id}; observe, interrupt, or wait for its completion marker before starting another command."
+        )));
+    }
+    active.insert(session_id.to_string(), activity_id.to_string());
+    Ok(())
+}
+
+fn clear_terminal_activity(
+    active_activities: &Mutex<HashMap<String, String>>,
+    session_id: &str,
+    activity_id: &str,
+) {
+    if let Ok(mut active) = active_activities.lock() {
+        if active
+            .get(session_id)
+            .is_some_and(|active_id| active_id == activity_id)
+        {
+            active.remove(session_id);
+        }
+    }
+}
+
 impl TerminalAgentTool {
     pub fn new(state: TerminalState) -> Self {
         Self {
@@ -187,14 +219,17 @@ impl TerminalAgentTool {
                     .write_session(&snapshot.session.id, "\u{3}")
                     .map_err(CoreError::InvalidInput)?;
                 if let Some(runtime) = activity_runtime {
-                    if let Ok(active) = self.active_activities.lock() {
-                        if let Some(activity_id) = active.get(&snapshot.session.id) {
-                            let _ = runtime.transition(
-                                activity_id,
-                                ActivityState::Cancelled,
-                                serde_json::json!({ "reason": "terminal_interrupt" }),
-                            );
-                        }
+                    let activity_id = self
+                        .active_activities
+                        .lock()
+                        .ok()
+                        .and_then(|active| active.get(&snapshot.session.id).cloned());
+                    if let Some(activity_id) = activity_id {
+                        let _ = runtime.transition(
+                            &activity_id,
+                            ActivityState::Cancelled,
+                            serde_json::json!({ "reason": "terminal_interrupt" }),
+                        );
                     }
                 }
                 Ok(ToolResult {
@@ -225,7 +260,13 @@ impl TerminalAgentTool {
                 let runtime = activity_runtime.ok_or_else(|| {
                     CoreError::Internal("Activity Runtime is unavailable".to_string())
                 })?;
-                self.observe_activity(call_id, &snapshot.session.id, &args, runtime)
+                self.observe_activity(
+                    call_id,
+                    conversation_id,
+                    &snapshot.session.id,
+                    &args,
+                    runtime,
+                )
                     .await
             }
             "detach" => {
@@ -283,33 +324,56 @@ impl TerminalAgentTool {
                 "terminal_session command exceeds {MAX_INPUT_CHARS} characters"
             )));
         }
+        if !terminal_activity_run_supported(&snapshot.session.shell) {
+            return Err(CoreError::InvalidInput(format!(
+                "terminal_session run is unavailable for {} because that shell has no reliable lifecycle-marker integration; use write/inspect or start a PowerShell, Bash, or Zsh session.",
+                snapshot.session.shell
+            )));
+        }
 
         let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
-        let record = runtime.start(
+        reserve_terminal_activity(&self.active_activities, &snapshot.session.id, call_id)?;
+        let record = match runtime.start(
             ActivitySpec::new(ActivitySurface::Terminal, "terminal_session")
                 .with_activity_id(call_id)
                 .with_session_id(&snapshot.session.id)
                 .with_conversation_id(conversation_id)
                 .with_cwd(&snapshot.session.cwd),
-        )?;
-        runtime.append(
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                clear_terminal_activity(&self.active_activities, &snapshot.session.id, call_id);
+                return Err(error);
+            }
+        };
+        if let Err(error) = runtime.append(
             call_id,
             ActivityEventKind::CommandStarted,
             serde_json::json!({
                 "commandId": command_id,
                 "commandHash": blake3::hash(command.as_bytes()).to_hex().to_string(),
             }),
-        )?;
+        ) {
+            let _ = runtime.transition(
+                call_id,
+                ActivityState::Failed,
+                serde_json::json!({ "reason": "command_setup_failed" }),
+            );
+            clear_terminal_activity(&self.active_activities, &snapshot.session.id, call_id);
+            return Err(error);
+        }
 
         let baseline_cursor = snapshot.output_end;
         let payload = terminal_command_payload(&snapshot.session.shell, &command_id, command);
-        self.state
-            .write_session(&snapshot.session.id, &payload)
-            .map_err(CoreError::InvalidInput)?;
-        self.active_activities
-            .lock()
-            .map_err(|_| CoreError::Internal("terminal activity map is unavailable".to_string()))?
-            .insert(snapshot.session.id.clone(), call_id.to_string());
+        if let Err(error) = self.state.write_session(&snapshot.session.id, &payload) {
+            let _ = runtime.transition(
+                call_id,
+                ActivityState::Failed,
+                serde_json::json!({ "reason": "terminal_write_failed", "error": error }),
+            );
+            clear_terminal_activity(&self.active_activities, &snapshot.session.id, call_id);
+            return Err(CoreError::InvalidInput(error));
+        }
 
         spawn_terminal_activity_watcher(
             self.state.clone(),
@@ -342,6 +406,7 @@ impl TerminalAgentTool {
     async fn observe_activity(
         &self,
         call_id: &str,
+        conversation_id: &str,
         session_id: &str,
         args: &TerminalAgentArgs,
         runtime: &ActivityRuntime,
@@ -367,6 +432,16 @@ impl TerminalAgentTool {
                     )
                 })?
         };
+        let record = runtime.get(&activity_id).ok_or_else(|| {
+            CoreError::InvalidInput(format!("Terminal activity '{activity_id}' was not found"))
+        })?;
+        if record.conversation_id.as_deref() != Some(conversation_id)
+            || record.session_id.as_deref() != Some(session_id)
+        {
+            return Err(CoreError::InvalidInput(
+                "Terminal activity belongs to a different conversation or session".to_string(),
+            ));
+        }
         let observation = runtime
             .observe(
                 &activity_id,
@@ -392,19 +467,48 @@ enum ShellMarker {
 
 fn terminal_command_payload(shell: &str, command_id: &str, command: &str) -> String {
     if shell.contains("PowerShell") {
-        return format!("[Console]::Write(\"`e]633;B;{command_id}`a\"); {command}\r");
+        return format!(
+            "[Console]::Write(\"`e]633;B;{command_id}`a\"); & {{ {command} }}; $nexaSucceeded=$?; $nexaExit=if ($nexaSucceeded) {{ 0 }} elseif ($null -ne $global:LASTEXITCODE -and $global:LASTEXITCODE -ne 0) {{ $global:LASTEXITCODE }} else {{ 1 }}; [Console]::Write(\"`e]633;D;$nexaExit`a\")\r"
+        );
     }
     if matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh") {
-        return format!("printf '\\033]633;B;{command_id}\\007'; {command}\n");
+        return format!(
+            "printf '\\033]633;B;{command_id}\\007'\n{command}\n__nexa_exit=$?\nprintf '\\033]633;D;%s\\007' \"$__nexa_exit\"\n"
+        );
     }
     format!("{command}\r")
 }
 
+fn terminal_activity_run_supported(shell: &str) -> bool {
+    shell.contains("PowerShell")
+        || matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh")
+}
+
+#[cfg(test)]
 fn parse_shell_markers(output: &str) -> Vec<ShellMarker> {
+    let mut pending = String::new();
+    drain_shell_markers(&mut pending, output)
+}
+
+fn drain_shell_markers(pending: &mut String, output: &str) -> Vec<ShellMarker> {
+    const PREFIX: &str = "\u{1b}]633;";
     let mut markers = Vec::new();
-    let mut remaining = output;
-    while let Some(start) = remaining.find("\u{1b}]633;") {
-        remaining = &remaining[start + 6..];
+    pending.push_str(output);
+    loop {
+        let Some(start) = pending.find(PREFIX) else {
+            let keep = (1..PREFIX.len())
+                .rev()
+                .find(|length| pending.ends_with(&PREFIX[..*length]))
+                .unwrap_or(0);
+            if pending.len() > keep {
+                pending.drain(..pending.len() - keep);
+            }
+            break;
+        };
+        if start > 0 {
+            pending.drain(..start);
+        }
+        let remaining = &pending[PREFIX.len()..];
         let Some((end, terminator_len)) = remaining
             .find('\u{7}')
             .map(|end| (end, 1))
@@ -412,7 +516,7 @@ fn parse_shell_markers(output: &str) -> Vec<ShellMarker> {
         else {
             break;
         };
-        let payload = &remaining[..end];
+        let payload = remaining[..end].to_string();
         if let Some(command_id) = payload.strip_prefix("B;") {
             markers.push(ShellMarker::CommandStarted(command_id.to_string()));
         } else if let Some(exit_code) = payload.strip_prefix("D;") {
@@ -424,7 +528,7 @@ fn parse_shell_markers(output: &str) -> Vec<ShellMarker> {
         } else if let Some(cwd) = payload.strip_prefix("P;Cwd=") {
             markers.push(ShellMarker::CwdChanged(cwd.to_string()));
         }
-        remaining = &remaining[end + terminator_len..];
+        pending.drain(..PREFIX.len() + end + terminator_len);
     }
     markers
 }
@@ -475,13 +579,21 @@ fn spawn_terminal_activity_watcher(
 ) {
     tokio::spawn(async move {
         let mut command_started = false;
+        let mut marker_buffer = String::new();
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
-            if runtime
-                .get(&activity_id)
-                .is_none_or(|record| record.state.is_terminal())
-            {
-                return;
+            match runtime.get(&activity_id) {
+                None => {
+                    clear_terminal_activity(&active_activities, &session_id, &activity_id);
+                    return;
+                }
+                Some(record)
+                    if record.state.is_terminal() && record.state != ActivityState::Cancelled =>
+                {
+                    clear_terminal_activity(&active_activities, &session_id, &activity_id);
+                    return;
+                }
+                Some(_) => {}
             }
             let snapshot = match state.snapshot_session(&session_id, MAX_OUTPUT_CHARS) {
                 Ok(snapshot) => snapshot,
@@ -491,6 +603,7 @@ fn spawn_terminal_activity_watcher(
                         ActivityState::Orphaned,
                         serde_json::json!({ "reason": error }),
                     );
+                    clear_terminal_activity(&active_activities, &session_id, &activity_id);
                     return;
                 }
             };
@@ -519,7 +632,7 @@ fn spawn_terminal_activity_watcher(
                     serde_json::json!({ "data": visible }),
                 );
             }
-            for marker in parse_shell_markers(&delta) {
+            for marker in drain_shell_markers(&mut marker_buffer, &delta) {
                 match marker {
                     ShellMarker::CommandStarted(marker_id) if marker_id == command_id => {
                         command_started = true;
@@ -543,14 +656,7 @@ fn spawn_terminal_activity_watcher(
                             state,
                             serde_json::json!({ "exitCode": exit_code }),
                         );
-                        if let Ok(mut active) = active_activities.lock() {
-                            if active
-                                .get(&session_id)
-                                .is_some_and(|active_id| active_id == &activity_id)
-                            {
-                                active.remove(&session_id);
-                            }
-                        }
+                        clear_terminal_activity(&active_activities, &session_id, &activity_id);
                         return;
                     }
                     ShellMarker::CwdChanged(cwd) => {
@@ -806,6 +912,38 @@ mod tests {
     }
 
     #[test]
+    fn terminal_run_requires_marker_integration() {
+        assert!(!terminal_activity_run_supported("Command Prompt"));
+        assert!(terminal_activity_run_supported("PowerShell"));
+        assert!(terminal_activity_run_supported("Zsh"));
+
+        let powershell = terminal_command_payload("PowerShell", "cmd_1", "Get-Item missing");
+        assert!(powershell.contains("633;B;cmd_1"));
+        assert!(powershell.contains("$nexaSucceeded=$?"));
+        assert!(powershell.contains("633;D;$nexaExit"));
+
+        let bash = terminal_command_payload("Bash", "cmd_2", "false");
+        assert!(bash.contains("633;B;cmd_2"));
+        assert!(bash.contains("__nexa_exit=$?"));
+        assert!(bash.contains("633;D;%s"));
+    }
+
+    #[test]
+    fn terminal_run_reservation_rejects_concurrent_commands() {
+        let active = Mutex::new(HashMap::new());
+        reserve_terminal_activity(&active, "terminal-1", "activity-1").unwrap();
+
+        let error = reserve_terminal_activity(&active, "terminal-1", "activity-2")
+            .expect_err("a reserved terminal must reject a second command");
+        assert!(error
+            .to_string()
+            .contains("is busy with activity activity-1"));
+
+        clear_terminal_activity(&active, "terminal-1", "activity-1");
+        reserve_terminal_activity(&active, "terminal-1", "activity-2").unwrap();
+    }
+
+    #[test]
     fn terminal_observe_is_cursor_based_and_has_no_idle_heuristic() {
         let tool = TerminalAgentTool::new(TerminalState::default());
         let schema = tool.parameters_schema();
@@ -831,6 +969,20 @@ mod tests {
                 ShellMarker::CommandFinished(7),
                 ShellMarker::PromptReady,
             ]
+        );
+    }
+
+    #[test]
+    fn shell_marker_decoder_preserves_markers_split_across_terminal_reads() {
+        let mut pending = String::new();
+        assert!(drain_shell_markers(&mut pending, "text\u{1b}]633;B;cmd_").is_empty());
+        assert_eq!(
+            drain_shell_markers(&mut pending, "1\u{7}output\u{1b}]633;D;"),
+            vec![ShellMarker::CommandStarted("cmd_1".to_string())]
+        );
+        assert_eq!(
+            drain_shell_markers(&mut pending, "0\u{7}"),
+            vec![ShellMarker::CommandFinished(0)]
         );
     }
 

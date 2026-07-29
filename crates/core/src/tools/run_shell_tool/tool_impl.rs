@@ -36,6 +36,7 @@ pub struct RunShellTool;
 const AUTO_SERVICE_SETTLE_MS: u64 = 1_500;
 const MAX_SERVICE_LOG_BYTES: usize = 32 * 1024;
 const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const SERVICE_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 3;
 const MAX_WAIT_TIMEOUT_SECS: u64 = 3;
 
@@ -350,6 +351,27 @@ async fn service_log_snapshot(
     logs.clone()
 }
 
+async fn await_service_output_task(task: Option<tokio::task::JoinHandle<()>>, timeout: Duration) {
+    let Some(mut task) = task else {
+        return;
+    };
+    if tokio::time::timeout(timeout, &mut task).await.is_err() {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn drain_service_output_tasks(
+    stdout_task: Option<tokio::task::JoinHandle<()>>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
+    timeout: Duration,
+) {
+    tokio::join!(
+        await_service_output_task(stdout_task, timeout),
+        await_service_output_task(stderr_task, timeout),
+    );
+}
+
 async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
@@ -513,12 +535,11 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if let Some(task) = stdout_task {
-                    let _ = task.await;
-                }
-                if let Some(task) = stderr_task {
-                    let _ = task.await;
-                }
+                // The leader may have exited while descendants still hold its pipes.
+                // Terminate the whole tree before draining so finalization cannot hang.
+                process_tree.terminate();
+                drain_service_output_tasks(stdout_task, stderr_task, SERVICE_LOG_DRAIN_TIMEOUT)
+                    .await;
                 let log_snapshot = service_log_snapshot(&logs).await;
                 let service = ManagedService {
                     child,
@@ -700,12 +721,12 @@ async fn manage_service(
         service.process_tree.terminate();
         let kill_error = service.child.kill().await.err();
         let _ = service.child.wait().await;
-        if let Some(task) = service.stdout_task.take() {
-            let _ = task.await;
-        }
-        if let Some(task) = service.stderr_task.take() {
-            let _ = task.await;
-        }
+        drain_service_output_tasks(
+            service.stdout_task.take(),
+            service.stderr_task.take(),
+            SERVICE_LOG_DRAIN_TIMEOUT,
+        )
+        .await;
         let log_snapshot = service_log_snapshot(&service.logs).await;
         let _ = service.activity_runtime.transition(
             service_id,
@@ -895,12 +916,15 @@ async fn finalize_exited_service(
     mut service: ManagedService,
     status: std::process::ExitStatus,
 ) -> ToolResult {
-    if let Some(task) = service.stdout_task.take() {
-        let _ = task.await;
-    }
-    if let Some(task) = service.stderr_task.take() {
-        let _ = task.await;
-    }
+    // A descendant can outlive the leader while retaining inherited stdout or
+    // stderr. Kill the process tree first, then bound the pipe-drain wait.
+    service.process_tree.terminate();
+    drain_service_output_tasks(
+        service.stdout_task.take(),
+        service.stderr_task.take(),
+        SERVICE_LOG_DRAIN_TIMEOUT,
+    )
+    .await;
     let log_snapshot = service_log_snapshot(&service.logs).await;
     let stored_result =
         exited_service_result(service_id, service_id, &service, status, &log_snapshot).await;
@@ -1063,6 +1087,14 @@ mod review_regression_tests {
         assert_eq!(completed.call_id, "later-status-call");
         assert_eq!(completed.content, "completed");
         completed_services().lock().await.remove(&service_id);
+    }
+
+    #[tokio::test]
+    async fn log_drain_aborts_pipe_collectors_that_never_reach_eof() {
+        let blocked = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        drain_service_output_tasks(Some(blocked), None, Duration::from_millis(10)).await;
     }
 }
 
