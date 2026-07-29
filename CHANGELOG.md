@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.0...nexa-monorepo-v0.11.1) (2026-07-29)
+
+
+### Features
+
+* **runtime:** unify long-lived activity execution ([c85382a](https://github.com/MLGBJDLW/Nexa/commit/c85382ab566b021a3ff9d38587493c814b7acb29))
+* **runtime:** unify long-lived activity execution ([f7ce599](https://github.com/MLGBJDLW/Nexa/commit/f7ce599dabbe622a763cd481c60edae63f866f05))
+
+
+### Bug Fixes
+
+* **core:** gate desktop signature thresholds ([f96542b](https://github.com/MLGBJDLW/Nexa/commit/f96542bf285aedc720f5846a2e6c20059991dff2))
+* **runtime:** address activity lifecycle review ([6a48f6a](https://github.com/MLGBJDLW/Nexa/commit/6a48f6afdcd7cd003279ed08313bb41cabf9a83e))
+* **runtime:** close activity isolation gaps ([4a07d52](https://github.com/MLGBJDLW/Nexa/commit/4a07d521d0fd0c56cabc0e292756541ab2227b1c))
+* **runtime:** isolate provider lifecycle ids ([996a197](https://github.com/MLGBJDLW/Nexa/commit/996a1979ae68ced5dac10c0aad31ac33459960fc))
+* **runtime:** serialize durable observations ([d36cef5](https://github.com/MLGBJDLW/Nexa/commit/d36cef563d93c7702be779da9e48a2554bd40e44))
+* **runtime:** stabilize monitored interactions ([1763607](https://github.com/MLGBJDLW/Nexa/commit/176360704a54bebf77b24a5afbee685192ae4848))
+* **terminal:** make marker support explicit ([33eb123](https://github.com/MLGBJDLW/Nexa/commit/33eb123bd57025d31906eba45f1703e1e6ba10d2))
+
 ## [0.11.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.25...nexa-monorepo-v0.11.0) (2026-07-29)
 
 
