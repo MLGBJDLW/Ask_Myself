@@ -148,5 +148,11 @@ jobs:
           key: ${{ runner.os }}-cargo-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-nexa-v1-
 
+      - name: Prepare Tauri frontend stub
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path apps/desktop/dist | Out-Null
+          Set-Content -Path apps/desktop/dist/index.html -Value '<!doctype html><html></html>'
+
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop
