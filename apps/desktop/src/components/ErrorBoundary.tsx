@@ -32,9 +32,7 @@ interface State {
 
 function getStoredLocale(): string {
   try {
-    return localStorage.getItem('nexa-locale')
-      || localStorage.getItem('ask-myself-locale')
-      || 'en';
+    return localStorage.getItem('nexa-locale') || 'en';
   } catch {
     return 'en';
   }

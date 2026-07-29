@@ -75,6 +75,7 @@ export type {
   ToolAccessInfo,
   ToolPermissionPolicy,
   ToolPermissionPolicyList,
+  UsageSnapshot,
 } from "./conversation";
 export type {
   EntityType,

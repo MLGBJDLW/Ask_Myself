@@ -558,13 +558,22 @@ export interface UsageTotal {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
-  cacheAveragePromptTokens?: number;
-  cacheAverageReadTokens?: number;
-  cacheAverageMissTokens?: number;
-  cacheAverageCreationTokens?: number;
-  cacheAverageSampleCount?: number;
   lastPromptTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;
+}
+
+export interface UsageSnapshot {
+  source: 'provider' | 'normalized' | 'estimated';
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  thinkingTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  cacheCreationTokens: number;
+  lastPromptTokens: number;
+  contextBreakdown?: ContextUsageBreakdown;
+  providerRaw: unknown;
 }
 
 export interface AgentEvent {

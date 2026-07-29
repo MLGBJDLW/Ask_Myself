@@ -88,6 +88,7 @@ pub mod tools;
 pub mod trace;
 pub mod trajectory;
 pub mod tts_provider_catalog;
+pub mod usage_snapshot;
 #[cfg(feature = "video")]
 pub mod video;
 pub mod visual_document;

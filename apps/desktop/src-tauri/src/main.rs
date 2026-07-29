@@ -339,6 +339,8 @@ fn main() {
             commands::list_recent_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_run_events_cmd,
+            commands::get_run_usage_snapshot_cmd,
+            commands::get_conversation_usage_snapshot_cmd,
             commands::get_agent_subtask_runs_cmd,
             commands::get_agent_execution_graph_cmd,
             commands::get_agent_task_artifacts_cmd,

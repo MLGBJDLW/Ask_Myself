@@ -27,6 +27,7 @@ import type {
   AgentTaskRunListItem,
   AgentTaskRunEvent,
   AgentRunEvent,
+  UsageSnapshot,
   AgentTurnHandle,
   AgentSubtaskRun,
   AgentExecutionGraph,
@@ -841,6 +842,12 @@ export const getAgentTaskRunEvents = (runId: string) =>
 
 export const getAgentRunEvents = (runId: string) =>
   invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId });
+
+export const getRunUsageSnapshot = (runId: string) =>
+  invoke<UsageSnapshot | null>('get_run_usage_snapshot_cmd', { runId });
+
+export const getConversationUsageSnapshot = (conversationId: string) =>
+  invoke<UsageSnapshot | null>('get_conversation_usage_snapshot_cmd', { conversationId });
 
 export const getAgentSubtaskRuns = (runId: string) =>
   invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });

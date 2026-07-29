@@ -1295,6 +1295,52 @@ Every answer that uses knowledge base search results.
          FROM tool_approval_policies;
          DROP TABLE tool_approval_policies;",
     ),
+    (
+        "v079_migrate_qwen_payg_provider_ids",
+        "UPDATE conversations
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND EXISTS (
+             SELECT 1 FROM agent_configs config
+             WHERE lower(trim(config.provider)) = 'qwen'
+               AND lower(trim(config.model)) = lower(trim(conversations.model))
+               AND lower(COALESCE(config.base_url, '')) NOT LIKE '%token-plan.%'
+               AND (
+                 lower(COALESCE(config.base_url, '')) LIKE '%dashscope%'
+                 OR lower(COALESCE(config.base_url, '')) LIKE '%maas.aliyuncs.com%'
+               )
+           );
+         UPDATE agent_task_runs
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(COALESCE(provider, ''))) = 'qwen'
+           AND EXISTS (
+             SELECT 1 FROM agent_configs config
+             WHERE lower(trim(config.provider)) = 'qwen'
+               AND lower(trim(config.model)) = lower(trim(COALESCE(agent_task_runs.model, '')))
+               AND lower(COALESCE(config.base_url, '')) NOT LIKE '%token-plan.%'
+               AND (
+                 lower(COALESCE(config.base_url, '')) LIKE '%dashscope%'
+                 OR lower(COALESCE(config.base_url, '')) LIKE '%maas.aliyuncs.com%'
+               )
+           );
+         UPDATE agent_configs
+         SET summarization_provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND lower(trim(COALESCE(summarization_provider, ''))) = 'qwen'
+           AND lower(COALESCE(base_url, '')) NOT LIKE '%token-plan.%'
+           AND (
+             lower(COALESCE(base_url, '')) LIKE '%dashscope%'
+             OR lower(COALESCE(base_url, '')) LIKE '%maas.aliyuncs.com%'
+           );
+         UPDATE agent_configs
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND lower(COALESCE(base_url, '')) NOT LIKE '%token-plan.%'
+           AND (
+             lower(COALESCE(base_url, '')) LIKE '%dashscope%'
+             OR lower(COALESCE(base_url, '')) LIKE '%maas.aliyuncs.com%'
+           );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1609,6 +1655,51 @@ mod tests {
             )
             .unwrap();
         assert!(!legacy_table_exists);
+    }
+
+    #[test]
+    fn migrates_persisted_qwen_payg_provider_ids_without_touching_token_plan() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO agent_configs
+                (id, name, provider, api_key, base_url, model, summarization_provider)
+             VALUES
+                ('payg', 'Pay as you go', 'qwen', '',
+                 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'qwen'),
+                ('token-plan', 'Token plan', 'qwen', '',
+                 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+                 'qwen3.8-max-preview', 'qwen');
+             DELETE FROM _migrations
+             WHERE name = 'v079_migrate_qwen_payg_provider_ids';",
+        )
+        .expect("simulate pre-v079 provider configuration");
+
+        run_migrations(&conn).expect("upgrade should rewrite persisted provider ids");
+
+        let payg: (String, String) = conn
+            .query_row(
+                "SELECT provider, summarization_provider FROM agent_configs WHERE id = 'payg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            payg,
+            (
+                "alibaba_model_studio".to_string(),
+                "alibaba_model_studio".to_string()
+            )
+        );
+
+        let token_plan: String = conn
+            .query_row(
+                "SELECT provider FROM agent_configs WHERE id = 'token-plan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(token_plan, "qwen");
     }
 
     #[test]

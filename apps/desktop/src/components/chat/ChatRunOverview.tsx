@@ -27,14 +27,9 @@ interface TokenUsage {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
-  cacheAveragePromptTokens?: number;
-  cacheAverageReadTokens?: number;
-  cacheAverageMissTokens?: number;
-  cacheAverageCreationTokens?: number;
-  cacheAverageSampleCount?: number;
   contextBreakdown?: ContextUsageBreakdown;
   isEstimated: boolean;
-  source: 'live' | 'cached' | 'estimated';
+  source: 'live' | 'provider' | 'normalized' | 'estimated';
 }
 
 interface RuntimeProfile {
@@ -53,7 +48,6 @@ interface CacheUsageStats {
   missTokens: number;
   creationTokens: number;
   hitPercent: number | null;
-  sampleCount: number;
 }
 
 interface ChatRunOverviewProps {
@@ -132,23 +126,13 @@ function safeTokenCount(value: number | undefined): number {
 function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   if (!usage || usage.isEstimated) return null;
 
-  const sampleCount = safeTokenCount(usage.cacheAverageSampleCount);
-  const useAverage = sampleCount > 0;
-  const readTokens = safeTokenCount(
-    useAverage ? usage.cacheAverageReadTokens : usage.cacheReadTokens,
-  );
-  const promptTokens = safeTokenCount(
-    useAverage ? usage.cacheAveragePromptTokens : usage.promptTokens,
-  );
-  let missTokens = safeTokenCount(
-    useAverage ? usage.cacheAverageMissTokens : usage.cacheMissTokens,
-  );
+  const readTokens = safeTokenCount(usage.cacheReadTokens);
+  const promptTokens = safeTokenCount(usage.promptTokens);
+  let missTokens = safeTokenCount(usage.cacheMissTokens);
   if (missTokens <= 0 && readTokens > 0 && promptTokens > readTokens) {
     missTokens = promptTokens - readTokens;
   }
-  const creationTokens = safeTokenCount(
-    useAverage ? usage.cacheAverageCreationTokens : usage.cacheCreationTokens,
-  );
+  const creationTokens = safeTokenCount(usage.cacheCreationTokens);
   if (readTokens + missTokens + creationTokens <= 0) return null;
 
   const denominator = missTokens > 0
@@ -165,7 +149,6 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
     missTokens,
     creationTokens,
     hitPercent,
-    sampleCount,
   };
 }
 
@@ -242,17 +225,17 @@ export function ChatRunOverview({
           : usage
             ? usage.source === 'live'
               ? t('chat.contextUsageLive')
-              : usage.source === 'cached'
-                ? t('chat.contextUsageCached')
-                : t('chat.contextUsageEstimated')
+              : usage.source === 'estimated'
+                ? t('chat.contextUsageEstimated')
+                : t('chat.contextUsageCached')
             : t('chat.contextNoUsage');
 
   const usageSourceLabel = usage
     ? usage.source === 'live'
       ? t('chat.contextUsageLive')
-      : usage.source === 'cached'
-        ? t('chat.contextUsageCached')
-        : t('chat.contextUsageEstimated')
+      : usage.source === 'estimated'
+        ? t('chat.contextUsageEstimated')
+        : t('chat.contextUsageCached')
     : t('chat.contextNoUsage');
 
   const statusTone = contextRisk === 'danger'
@@ -301,9 +284,7 @@ export function ChatRunOverview({
         })
         : t('chat.cacheRead', { read: formatTokens(cacheStats.readTokens) })
     : t('chat.contextHudNoCacheSamples');
-  const cacheSampleLabel = cacheStats && cacheStats.sampleCount > 0
-    ? t('chat.cacheAverageTurns', { count: String(cacheStats.sampleCount) })
-    : cacheDetailLabel;
+  const cacheSampleLabel = cacheDetailLabel;
 
   const tokenUsageLabel = usage
     ? t('chat.tokenUsage', {

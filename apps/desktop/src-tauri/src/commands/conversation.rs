@@ -249,6 +249,28 @@ pub async fn get_agent_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_run_usage_snapshot_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Option<nexa_core::usage_snapshot::UsageSnapshot>, String> {
+    state
+        .db
+        .get_run_usage_snapshot(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_conversation_usage_snapshot_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<nexa_core::usage_snapshot::UsageSnapshot>, String> {
+    state
+        .db
+        .get_conversation_usage_snapshot(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_subtask_runs_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,

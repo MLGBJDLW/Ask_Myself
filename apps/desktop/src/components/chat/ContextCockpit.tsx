@@ -13,7 +13,7 @@ interface TokenUsage {
   cacheCreationTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;
   isEstimated: boolean;
-  source: 'live' | 'cached' | 'estimated';
+  source: 'live' | 'provider' | 'normalized' | 'estimated';
 }
 
 interface ContextUsageSegment {
@@ -92,9 +92,9 @@ export function ContextCockpit({
   const usageSourceLabel = usage
     ? usage.source === 'live'
       ? t('chat.contextUsageLive')
-      : usage.source === 'cached'
-        ? t('chat.contextUsageCached')
-        : t('chat.contextUsageEstimated')
+      : usage.source === 'estimated'
+        ? t('chat.contextUsageEstimated')
+        : t('chat.contextUsageCached')
     : t('chat.contextNoUsage');
 
   let riskTone = 'border-border/70 bg-surface-0/70 text-text-secondary';

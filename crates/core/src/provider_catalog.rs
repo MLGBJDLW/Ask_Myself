@@ -112,7 +112,7 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
     let presets = load_provider_presets().ok()?;
     let provider = provider.trim();
     let normalized_base_url = normalize_base_url(base_url);
-    let lookup_provider = provider_key_for_preset_lookup(provider, &normalized_base_url);
+    let lookup_provider = provider;
 
     if !normalized_base_url.is_empty() {
         if let Some(exact) = presets.iter().find(|preset| {
@@ -120,6 +120,9 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
                 && normalize_base_url(Some(&preset.base_url)) == normalized_base_url
         }) {
             return Some(exact.clone());
+        }
+        if provider == "qwen" {
+            return None;
         }
     }
 
@@ -137,18 +140,6 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         provider_matches.pop()
     } else {
         None
-    }
-}
-
-fn provider_key_for_preset_lookup<'a>(provider: &'a str, normalized_base_url: &str) -> &'a str {
-    let is_legacy_qwen_payg = provider == "qwen"
-        && !normalized_base_url.contains("token-plan.")
-        && (normalized_base_url.contains("dashscope")
-            || normalized_base_url.contains("maas.aliyuncs.com"));
-    if is_legacy_qwen_payg {
-        "alibaba_model_studio"
-    } else {
-        provider
     }
 }
 
@@ -438,16 +429,11 @@ mod tests {
             "alibaba-model-studio"
         );
 
-        let legacy_qwen = find_provider_preset(
+        let migrated_qwen = find_provider_preset(
             "qwen",
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        )
-        .expect("legacy Qwen pay-as-you-go config should migrate to Model Studio");
-        assert_eq!(legacy_qwen.id, "alibaba-model-studio");
-        assert!(legacy_qwen
-            .models
-            .iter()
-            .any(|model| model.id == "deepseek-v4-pro"));
+        );
+        assert!(migrated_qwen.is_none());
     }
 
     #[test]

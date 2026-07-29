@@ -17,6 +17,7 @@ import type {
   ContextUsageBreakdown,
   ImageAttachment,
   UsageTotal,
+  UsageSnapshot,
 } from '../types/conversation';
 import { appTimeMs } from './dateTime';
 import { formatUserError } from './userError';
@@ -35,110 +36,6 @@ function generateTitle(message: string): string {
     return truncated.slice(0, lastSpace) + '...';
   }
   return truncated + '...';
-}
-
-const USAGE_CACHE_KEY = 'chat-token-usage-v1';
-
-interface StoredUsageEntry {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  thinkingTokens: number;
-  cacheReadTokens?: number;
-  cacheMissTokens?: number;
-  cacheCreationTokens?: number;
-  cacheSampleCount?: number;
-  cachePromptTotal?: number;
-  cacheReadTotal?: number;
-  cacheMissTotal?: number;
-  cacheCreationTotal?: number;
-  lastPromptTokens: number;
-  contextBreakdown?: ContextUsageBreakdown;
-  updatedAt: number;
-}
-
-function sanitizeNumber(input: unknown, fallback = 0): number {
-  if (typeof input !== 'number' || !Number.isFinite(input)) return fallback;
-  return Math.max(0, Math.round(input));
-}
-
-function averageTokens(total: number | undefined, sampleCount: number): number | undefined {
-  if (!Number.isFinite(total) || sampleCount <= 0) return undefined;
-  return Math.max(0, Math.round((total ?? 0) / sampleCount));
-}
-
-function sanitizeContextBreakdown(input: unknown): ContextUsageBreakdown | undefined {
-  if (!input || typeof input !== 'object') return undefined;
-  const record = input as Record<string, unknown>;
-  if (!Array.isArray(record.segments)) return undefined;
-  const segments = record.segments
-    .filter((segment): segment is Record<string, unknown> => Boolean(segment) && typeof segment === 'object')
-    .map((segment) => ({
-      kind: typeof segment.kind === 'string' ? segment.kind : '',
-      tokens: sanitizeNumber(segment.tokens),
-    }))
-    .filter((segment) => segment.kind.length > 0 && segment.tokens > 0);
-  if (segments.length === 0) return undefined;
-  const segmentTotal = segments.reduce((sum, segment) => sum + segment.tokens, 0);
-  return {
-    totalTokens: sanitizeNumber(record.totalTokens, segmentTotal),
-    segments,
-  };
-}
-
-function buildFallbackContextBreakdown(
-  messages: ConversationMessage[],
-  promptTokens: number,
-): ContextUsageBreakdown | undefined {
-  const totalTokens = sanitizeNumber(promptTokens);
-  if (totalTokens <= 0) return undefined;
-
-  const tokenSum = (roles: ConversationMessage['role'][]) => messages.reduce((sum, message) => {
-    if (!roles.includes(message.role)) return sum;
-    return sum + sanitizeNumber(message.tokenCount);
-  }, 0);
-  const conversationTokens = tokenSum(['user', 'assistant']);
-  const thinkingTokens = messages.reduce((sum, message) => {
-    if (message.role !== 'assistant' || !message.thinking) return sum;
-    return sum + Math.max(1, Math.round(message.thinking.length / 4));
-  }, 0);
-  const toolResultTokens = tokenSum(['tool']);
-  const toolCalls = messages.flatMap(message => message.toolCalls ?? []);
-  const hasMcpToolCall = toolCalls.some(call => call.name === 'mcp_tool' || call.name.startsWith('mcp__'));
-  const hasBuiltinToolCall = toolCalls.some(call => call.name !== 'mcp_tool' && !call.name.startsWith('mcp__'));
-
-  const promptsFloor = Math.max(1, Math.round(totalTokens * 0.18));
-  const mcpTokens = hasMcpToolCall ? Math.max(1, Math.round(totalTokens * 0.06)) : 0;
-  const toolTokens = hasBuiltinToolCall ? Math.max(1, Math.round(totalTokens * 0.04)) : 0;
-  const knownTokens = conversationTokens + thinkingTokens + toolResultTokens + mcpTokens + toolTokens;
-  const promptSegmentTokens = Math.max(promptsFloor, totalTokens - knownTokens);
-  const rawSegments = [
-    { kind: 'prompts', tokens: promptSegmentTokens },
-    { kind: 'conversation', tokens: conversationTokens },
-    { kind: 'thinking', tokens: thinkingTokens },
-    { kind: 'toolResults', tokens: toolResultTokens },
-    { kind: 'tools', tokens: toolTokens },
-    { kind: 'mcp', tokens: mcpTokens },
-  ].filter(segment => segment.tokens > 0);
-
-  const rawTotal = rawSegments.reduce((sum, segment) => sum + segment.tokens, 0);
-  if (rawTotal <= 0) return undefined;
-
-  let scaledTotal = 0;
-  const segments = rawSegments.map(segment => {
-    const tokens = Math.max(1, Math.round((segment.tokens / rawTotal) * totalTokens));
-    scaledTotal += tokens;
-    return { kind: segment.kind, tokens };
-  });
-  const largest = segments.reduce((maxIndex, segment, index) => (
-    segment.tokens > segments[maxIndex].tokens ? index : maxIndex
-  ), 0);
-  segments[largest] = {
-    ...segments[largest],
-    tokens: Math.max(1, segments[largest].tokens + totalTokens - scaledTotal),
-  };
-
-  return { totalTokens, segments };
 }
 
 /**
@@ -242,136 +139,6 @@ function mergeLocalMessageState(
   }
 
   return insertMessagesByCreatedAt(merged, preservedSteering);
-}
-
-function normalizeUsage(usage: UsageTotal): UsageTotal {
-  const promptTokens = sanitizeNumber(usage.promptTokens);
-  const completionTokens = sanitizeNumber(usage.completionTokens);
-  const totalTokens = sanitizeNumber(usage.totalTokens, promptTokens + completionTokens);
-  const thinkingTokens = sanitizeNumber(usage.thinkingTokens ?? 0);
-  const cacheReadTokens = sanitizeNumber(usage.cacheReadTokens ?? 0);
-  const cacheMissTokens = sanitizeNumber(usage.cacheMissTokens ?? 0);
-  const cacheCreationTokens = sanitizeNumber(usage.cacheCreationTokens ?? 0);
-  const cacheAverageSampleCount = sanitizeNumber(usage.cacheAverageSampleCount ?? 0);
-  const cacheAveragePromptTokens = averageTokens(
-    sanitizeNumber(usage.cacheAveragePromptTokens ?? 0),
-    cacheAverageSampleCount > 0 ? 1 : 0,
-  );
-  const cacheAverageReadTokens = averageTokens(
-    sanitizeNumber(usage.cacheAverageReadTokens ?? 0),
-    cacheAverageSampleCount > 0 ? 1 : 0,
-  );
-  const cacheAverageMissTokens = averageTokens(
-    sanitizeNumber(usage.cacheAverageMissTokens ?? 0),
-    cacheAverageSampleCount > 0 ? 1 : 0,
-  );
-  const cacheAverageCreationTokens = averageTokens(
-    sanitizeNumber(usage.cacheAverageCreationTokens ?? 0),
-    cacheAverageSampleCount > 0 ? 1 : 0,
-  );
-  const lastPromptTokens = sanitizeNumber(usage.lastPromptTokens ?? promptTokens, promptTokens);
-  const contextBreakdown = sanitizeContextBreakdown(usage.contextBreakdown);
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    thinkingTokens,
-    cacheReadTokens,
-    cacheMissTokens,
-    cacheCreationTokens,
-    cacheAveragePromptTokens,
-    cacheAverageReadTokens,
-    cacheAverageMissTokens,
-    cacheAverageCreationTokens,
-    cacheAverageSampleCount: cacheAverageSampleCount > 0 ? cacheAverageSampleCount : undefined,
-    lastPromptTokens,
-    contextBreakdown,
-  };
-}
-
-function usageAverageFromStoredEntry(entry: StoredUsageEntry): Partial<UsageTotal> {
-  const sampleCount = sanitizeNumber(entry.cacheSampleCount ?? 0);
-  if (sampleCount <= 0) return {};
-  return {
-    cacheAveragePromptTokens: averageTokens(entry.cachePromptTotal, sampleCount) ?? 0,
-    cacheAverageReadTokens: averageTokens(entry.cacheReadTotal, sampleCount) ?? 0,
-    cacheAverageMissTokens: averageTokens(entry.cacheMissTotal, sampleCount) ?? 0,
-    cacheAverageCreationTokens: averageTokens(entry.cacheCreationTotal, sampleCount) ?? 0,
-    cacheAverageSampleCount: sampleCount,
-  };
-}
-
-function storedEntryToUsage(entry: StoredUsageEntry): UsageTotal {
-  return {
-    promptTokens: entry.promptTokens,
-    completionTokens: entry.completionTokens,
-    totalTokens: entry.totalTokens,
-    thinkingTokens: entry.thinkingTokens,
-    cacheReadTokens: entry.cacheReadTokens,
-    cacheMissTokens: entry.cacheMissTokens,
-    cacheCreationTokens: entry.cacheCreationTokens,
-    lastPromptTokens: entry.lastPromptTokens,
-    contextBreakdown: entry.contextBreakdown,
-    ...usageAverageFromStoredEntry(entry),
-  };
-}
-
-function readUsageCache(): Record<string, StoredUsageEntry> {
-  try {
-    const raw = localStorage.getItem(USAGE_CACHE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return {};
-    const entries = Object.entries(parsed as Record<string, unknown>);
-    const next: Record<string, StoredUsageEntry> = {};
-    for (const [conversationId, value] of entries) {
-      if (!conversationId || !value || typeof value !== 'object') continue;
-      const row = value as Record<string, unknown>;
-      const promptTokens = sanitizeNumber(row.promptTokens);
-      const completionTokens = sanitizeNumber(row.completionTokens);
-      const totalTokens = sanitizeNumber(row.totalTokens, promptTokens + completionTokens);
-      const thinkingTokens = sanitizeNumber(row.thinkingTokens ?? 0);
-      const cacheReadTokens = sanitizeNumber(row.cacheReadTokens ?? 0);
-      const cacheMissTokens = sanitizeNumber(row.cacheMissTokens ?? 0);
-      const cacheCreationTokens = sanitizeNumber(row.cacheCreationTokens ?? 0);
-      const cacheSampleCount = sanitizeNumber(row.cacheSampleCount ?? 0);
-      const cachePromptTotal = sanitizeNumber(row.cachePromptTotal ?? 0);
-      const cacheReadTotal = sanitizeNumber(row.cacheReadTotal ?? 0);
-      const cacheMissTotal = sanitizeNumber(row.cacheMissTotal ?? 0);
-      const cacheCreationTotal = sanitizeNumber(row.cacheCreationTotal ?? 0);
-      const lastPromptTokens = sanitizeNumber(row.lastPromptTokens ?? promptTokens, promptTokens);
-      const contextBreakdown = sanitizeContextBreakdown(row.contextBreakdown);
-      const updatedAt = sanitizeNumber(row.updatedAt ?? Date.now(), Date.now());
-      next[conversationId] = {
-        promptTokens,
-        completionTokens,
-        totalTokens,
-        thinkingTokens,
-        cacheReadTokens,
-        cacheMissTokens,
-        cacheCreationTokens,
-        cacheSampleCount,
-        cachePromptTotal,
-        cacheReadTotal,
-        cacheMissTotal,
-        cacheCreationTotal,
-        lastPromptTokens,
-        contextBreakdown,
-        updatedAt,
-      };
-    }
-    return next;
-  } catch {
-    return {};
-  }
-}
-
-function writeUsageCache(cache: Record<string, StoredUsageEntry>) {
-  try {
-    localStorage.setItem(USAGE_CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    // ignore localStorage failures
-  }
 }
 
 async function resolveContextWindowForConfig(config: AgentConfig | null): Promise<number> {
@@ -511,14 +278,9 @@ export interface UseChatSessionReturn {
     cacheReadTokens?: number;
     cacheMissTokens?: number;
     cacheCreationTokens?: number;
-    cacheAveragePromptTokens?: number;
-    cacheAverageReadTokens?: number;
-    cacheAverageMissTokens?: number;
-    cacheAverageCreationTokens?: number;
-    cacheAverageSampleCount?: number;
     contextBreakdown?: ContextUsageBreakdown;
     isEstimated: boolean;
-    source: 'live' | 'cached' | 'estimated';
+    source: 'live' | 'provider' | 'normalized' | 'estimated';
   } | null;
   lastCached: boolean;
   finishReason: string | null;
@@ -589,7 +351,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const [defaultContextWindow, setDefaultContextWindow] = useState<number>(0);
   const [contextWindow, setContextWindow] = useState<number>(0);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [cachedUsage, setCachedUsage] = useState<UsageTotal | null>(null);
+  const [usageSnapshot, setUsageSnapshot] = useState<UsageSnapshot | null>(null);
 
   // Internal conversation id used when the caller does not control routing.
   const [internalConversationId, setInternalConversationId] = useState<string | null>(null);
@@ -604,9 +366,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     personaId?: string | null;
     options?: ChatSendOptions;
   } | null>(null);
-  const usageCacheRef = useRef<Record<string, StoredUsageEntry>>(readUsageCache());
-  const lastUsageRef = useRef<UsageTotal | null>(null);
-  const recordedUsageSampleRef = useRef<string | null>(null);
   const knownStreamConversationsRef = useRef<Set<string>>(new Set());
   const suppressedLiveUsageRef = useRef<Set<string>>(new Set());
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
@@ -703,105 +462,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
   }, [runningConversationIds]);
 
-  useEffect(() => {
-    lastUsageRef.current = lastUsage;
-  }, [lastUsage]);
-
-  const setUsageCacheForConversation = useCallback((conversationId: string, usage: UsageTotal) => {
-    const normalized = normalizeUsage(usage);
-    const previous = usageCacheRef.current[conversationId];
-    const nextEntry: StoredUsageEntry = {
-      promptTokens: normalized.promptTokens,
-      completionTokens: normalized.completionTokens,
-      totalTokens: normalized.totalTokens,
-      thinkingTokens: normalized.thinkingTokens ?? 0,
-      cacheReadTokens: normalized.cacheReadTokens ?? 0,
-      cacheMissTokens: normalized.cacheMissTokens ?? 0,
-      cacheCreationTokens: normalized.cacheCreationTokens ?? 0,
-      cacheSampleCount: previous?.cacheSampleCount ?? 0,
-      cachePromptTotal: previous?.cachePromptTotal ?? 0,
-      cacheReadTotal: previous?.cacheReadTotal ?? 0,
-      cacheMissTotal: previous?.cacheMissTotal ?? 0,
-      cacheCreationTotal: previous?.cacheCreationTotal ?? 0,
-      lastPromptTokens: normalized.lastPromptTokens ?? normalized.promptTokens,
-      contextBreakdown: normalized.contextBreakdown,
-      updatedAt: Date.now(),
-    };
-    usageCacheRef.current = {
-      ...usageCacheRef.current,
-      [conversationId]: nextEntry,
-    };
-    writeUsageCache(usageCacheRef.current);
-    setCachedUsage(storedEntryToUsage(nextEntry));
-  }, []);
-
-  const recordUsageCacheSampleForConversation = useCallback((conversationId: string, usage: UsageTotal) => {
-    const normalized = normalizeUsage(usage);
-    const readTokens = normalized.cacheReadTokens ?? 0;
-    const missTokens = normalized.cacheMissTokens ?? 0;
-    const creationTokens = normalized.cacheCreationTokens ?? 0;
-    if (readTokens + missTokens + creationTokens <= 0) return;
-
-    const promptTokens = normalized.lastPromptTokens ?? normalized.promptTokens;
-    const signature = [
-      conversationId,
-      normalized.promptTokens,
-      normalized.completionTokens,
-      normalized.totalTokens,
-      normalized.thinkingTokens ?? 0,
-      promptTokens,
-      readTokens,
-      missTokens,
-      creationTokens,
-    ].join(':');
-    if (recordedUsageSampleRef.current === signature) return;
-    recordedUsageSampleRef.current = signature;
-
-    const previous = usageCacheRef.current[conversationId];
-    const nextEntry: StoredUsageEntry = {
-      promptTokens: normalized.promptTokens,
-      completionTokens: normalized.completionTokens,
-      totalTokens: normalized.totalTokens,
-      thinkingTokens: normalized.thinkingTokens ?? 0,
-      cacheReadTokens: readTokens,
-      cacheMissTokens: missTokens,
-      cacheCreationTokens: creationTokens,
-      cacheSampleCount: (previous?.cacheSampleCount ?? 0) + 1,
-      cachePromptTotal: (previous?.cachePromptTotal ?? 0) + promptTokens,
-      cacheReadTotal: (previous?.cacheReadTotal ?? 0) + readTokens,
-      cacheMissTotal: (previous?.cacheMissTotal ?? 0) + missTokens,
-      cacheCreationTotal: (previous?.cacheCreationTotal ?? 0) + creationTokens,
-      lastPromptTokens: promptTokens,
-      contextBreakdown: normalized.contextBreakdown,
-      updatedAt: Date.now(),
-    };
-
-    usageCacheRef.current = {
-      ...usageCacheRef.current,
-      [conversationId]: nextEntry,
-    };
-    writeUsageCache(usageCacheRef.current);
-    if (activeId === conversationId) {
-      setCachedUsage(storedEntryToUsage(nextEntry));
-    }
-  }, [activeId]);
-
-  const deleteUsageCacheForConversations = useCallback((conversationIds: string[]) => {
-    if (conversationIds.length === 0) return;
-    const next = { ...usageCacheRef.current };
-    let changed = false;
-    for (const id of conversationIds) {
-      if (id in next) {
-        delete next[id];
-        changed = true;
-      }
-    }
-    if (changed) {
-      usageCacheRef.current = next;
-      writeUsageCache(next);
-    }
-  }, []);
-
   /* ── Load conversations ─────────────────────────────────────────── */
   const loadConversations = useCallback(async () => {
     try {
@@ -889,7 +549,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   useEffect(() => {
     if (!activeId) {
       setOpenedConversation(null);
-      setCachedUsage(null);
+      setUsageSnapshot(null);
       setCustomSystemPrompt(externalSystemPrompt ?? '');
       setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
@@ -902,6 +562,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     );
     setCustomSystemPrompt(systemPromptCacheRef.current[activeId] ?? '');
     setContextWindow(contextWindowCacheRef.current[activeId] ?? defaultContextWindow);
+    setUsageSnapshot(null);
 
     if (isStreaming) {
       setLoadingMsgs(false);
@@ -909,15 +570,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
     let cancelled = false;
     setLoadingMsgs(true);
-    const restored = usageCacheRef.current[activeId];
-    setCachedUsage(restored ? storedEntryToUsage(restored) : null);
-
     void (async () => {
       try {
-        const [[conv, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
+        const [[conv, msgs], conversationTurns, agentTaskRuns, durableUsage] = await Promise.all([
           api.getConversation(activeId),
           api.getConversationTurns(activeId),
           api.getAgentTaskRuns(activeId),
+          api.getConversationUsageSnapshot(activeId),
         ]);
         if (cancelled) return;
         setOpenedConversation(conv);
@@ -927,6 +586,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
         setTaskRunsForConversation(activeId, agentTaskRuns);
+        setUsageSnapshot(durableUsage);
         const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
         if (resumableRun && !streamHasVisiblePreview(activeId)) {
           Promise.all([
@@ -998,16 +658,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       : null;
     if (completedConversationId) {
       knownStreamConversationsRef.current.delete(completedConversationId);
-      const completedUsage = lastUsageRef.current;
-      if (completedUsage) {
-        recordUsageCacheSampleForConversation(completedConversationId, completedUsage);
-      }
       // Re-fetch messages after agent is done.
       const refreshConversationPromise = Promise.all([
         api.getConversation(completedConversationId),
         api.getConversationTurns(completedConversationId),
         api.getAgentTaskRuns(completedConversationId),
-      ]).then(([[conv, msgs], conversationTurns, agentTaskRuns]) => {
+        api.getConversationUsageSnapshot(completedConversationId),
+      ]).then(([[conv, msgs], conversationTurns, agentTaskRuns, durableUsage]) => {
         if (!cancelled) {
           // Safety net (also covers pre-Tier-B persisted rows): preserve any
           // imageAttachments present in prior in-memory state when the backend
@@ -1019,6 +676,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setTaskRunsForConversation(completedConversationId, agentTaskRuns);
           if (activeId === completedConversationId) {
             setOpenedConversation(conv);
+            setUsageSnapshot(durableUsage);
           }
           setConversations((prev) => {
             if (conv.archivedAt) {
@@ -1089,7 +747,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }
     }
     return () => { cancelled = true; };
-  }, [activeId, isStreaming, loadConversations, recordUsageCacheSampleForConversation, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
+  }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1098,12 +756,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       toast.error(streamError);
     }
   }, [streamError]);
-
-  useEffect(() => {
-    if (!activeId || !lastUsage) return;
-    if (suppressedLiveUsageRef.current.has(activeId)) return;
-    setUsageCacheForConversation(activeId, lastUsage);
-  }, [activeId, lastUsage, setUsageCacheForConversation]);
 
   /* ── Handle auto-compacted notification ──────────────────────────── */
   useEffect(() => {
@@ -1123,7 +775,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const createNewConversation = useCallback(() => {
     setInternalConversationId(null);
     setCustomSystemPrompt('');
-    setCachedUsage(null);
+    setUsageSnapshot(null);
     setAgentConfig(defaultAgentConfigRef.current);
     setContextWindow(defaultContextWindow);
     setChatError(null);
@@ -1134,7 +786,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     async (id: string) => {
       try {
         await api.deleteConversation(id);
-        deleteUsageCacheForConversations([id]);
         setConversations((prev) => prev.filter((c) => c.id !== id));
         setMessageCache(prev => {
           const next = { ...prev };
@@ -1155,7 +806,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         delete contextWindowCacheRef.current[id];
         if (activeId === id) {
           setInternalConversationId(null);
-          setCachedUsage(null);
+          setUsageSnapshot(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
         }
@@ -1163,14 +814,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
-    [activeId, defaultContextWindow, deleteUsageCacheForConversations, t],
+    [activeId, defaultContextWindow, t],
   );
 
   const deleteConversationsBatch = useCallback(
     async (ids: string[]) => {
       try {
         await api.deleteConversationsBatch(ids);
-        deleteUsageCacheForConversations(ids);
         const idSet = new Set(ids);
         setConversations((prev) => prev.filter((c) => !idSet.has(c.id)));
         setMessageCache(prev => {
@@ -1194,7 +844,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         });
         if (activeId && idSet.has(activeId)) {
           setInternalConversationId(null);
-          setCachedUsage(null);
+          setUsageSnapshot(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
         }
@@ -1202,14 +852,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
-    [activeId, defaultContextWindow, deleteUsageCacheForConversations, t],
+    [activeId, defaultContextWindow, t],
   );
 
   const deleteAllConversations = useCallback(async () => {
     try {
       await api.deleteAllConversations();
-      usageCacheRef.current = {};
-      writeUsageCache({});
       setConversations([]);
       setInternalConversationId(null);
       setMessageCache({});
@@ -1217,7 +865,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setTaskRunCache({});
       systemPromptCacheRef.current = {};
       contextWindowCacheRef.current = {};
-      setCachedUsage(null);
+      setUsageSnapshot(null);
       setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
     } catch (e) {
@@ -1313,7 +961,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           imageAttachments: null,
         };
         setMessagesForConversation(steeringConversationId, (prev) => [...prev, optimisticMsg]);
-        recordedUsageSampleRef.current = null;
         knownStreamConversationsRef.current.add(steeringConversationId);
 
         try {
@@ -1420,7 +1067,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         imageAttachments: attachments ?? null,
       };
       setMessagesForConversation(convId, (prev) => [...prev, optimisticMsg]);
-      recordedUsageSampleRef.current = null;
       knownStreamConversationsRef.current.add(convId);
       suppressedLiveUsageRef.current.delete(convId);
 
@@ -1525,7 +1171,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     lastUserMessageRef.current = { content, attachments, personaId, options };
 
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
-    recordedUsageSampleRef.current = null;
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
 
@@ -1579,7 +1224,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       imageAttachments: null,
     };
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
-    recordedUsageSampleRef.current = null;
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
 
@@ -1590,24 +1234,22 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const reloadMessages = useCallback(async (options?: { resetUsage?: boolean }) => {
     if (!activeId) return;
     if (options?.resetUsage) {
-      if (activeId in usageCacheRef.current) {
-        const next = { ...usageCacheRef.current };
-        delete next[activeId];
-        usageCacheRef.current = next;
-        writeUsageCache(next);
-      }
-      setCachedUsage(null);
+      setUsageSnapshot(null);
       suppressedLiveUsageRef.current.add(activeId);
     }
     try {
-      const [[, msgs], conversationTurns, agentTaskRuns] = await Promise.all([
+      const [[, msgs], conversationTurns, agentTaskRuns, durableUsage] = await Promise.all([
         api.getConversation(activeId),
         api.getConversationTurns(activeId),
         api.getAgentTaskRuns(activeId),
+        options?.resetUsage
+          ? Promise.resolve(null)
+          : api.getConversationUsageSnapshot(activeId),
       ]);
       setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
       setTurnsForConversation(activeId, conversationTurns);
       setTaskRunsForConversation(activeId, agentTaskRuns);
+      setUsageSnapshot(durableUsage);
     } catch { /* ignore */ }
   }, [activeId, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
@@ -1643,17 +1285,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const scopedRateLimited = activeId && !liveUsageSuppressed ? rateLimited : false;
   const scopedError = activeId ? chatError : null;
 
-  const usageForView = scopedLastUsage ? normalizeUsage(scopedLastUsage) : (cachedUsage ? normalizeUsage(cachedUsage) : null);
-  const usageAverageForView = cachedUsage ? normalizeUsage(cachedUsage) : null;
-  const estimatedPromptTokens = messages.reduce((sum, msg) => {
-    if (!Number.isFinite(msg.tokenCount) || msg.tokenCount <= 0) return sum;
-    return sum + msg.tokenCount;
-  }, 0);
+  const usageForView = scopedLastUsage ?? usageSnapshot;
 
   const tokenUsage = contextWindow > 0
     ? (usageForView
       ? (() => {
           const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
+          const source = scopedLastUsage ? 'live' as const : usageSnapshot?.source ?? 'normalized';
           return {
             promptTokens,
             aggregatePromptTokens: usageForView.promptTokens,
@@ -1664,41 +1302,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             cacheReadTokens: usageForView.cacheReadTokens ?? 0,
             cacheMissTokens: usageForView.cacheMissTokens ?? 0,
             cacheCreationTokens: usageForView.cacheCreationTokens ?? 0,
-            cacheAveragePromptTokens:
-              usageForView.cacheAveragePromptTokens ?? usageAverageForView?.cacheAveragePromptTokens,
-            cacheAverageReadTokens:
-              usageForView.cacheAverageReadTokens ?? usageAverageForView?.cacheAverageReadTokens,
-            cacheAverageMissTokens:
-              usageForView.cacheAverageMissTokens ?? usageAverageForView?.cacheAverageMissTokens,
-            cacheAverageCreationTokens:
-              usageForView.cacheAverageCreationTokens ?? usageAverageForView?.cacheAverageCreationTokens,
-            cacheAverageSampleCount:
-              usageForView.cacheAverageSampleCount ?? usageAverageForView?.cacheAverageSampleCount,
-            contextBreakdown: usageForView.contextBreakdown ?? buildFallbackContextBreakdown(messages, promptTokens),
-            isEstimated: false,
-            source: (scopedLastUsage ? 'live' : 'cached') as 'live' | 'cached',
+            contextBreakdown: usageForView.contextBreakdown,
+            isEstimated: source === 'estimated',
+            source,
           };
         })()
-      : (estimatedPromptTokens > 0
-        ? {
-            promptTokens: estimatedPromptTokens,
-            totalTokens: estimatedPromptTokens,
-            contextWindow,
-            completionTokens: 0,
-            thinkingTokens: 0,
-            cacheReadTokens: 0,
-            cacheMissTokens: 0,
-            cacheCreationTokens: 0,
-            cacheAveragePromptTokens: 0,
-            cacheAverageReadTokens: 0,
-            cacheAverageMissTokens: 0,
-            cacheAverageCreationTokens: 0,
-            cacheAverageSampleCount: 0,
-            contextBreakdown: buildFallbackContextBreakdown(messages, estimatedPromptTokens),
-            isEstimated: true,
-            source: 'estimated' as const,
-          }
-        : null))
+      : null)
     : null;
 
   const runtimeProfile = buildRuntimeProfile(agentConfig, activeConversation, contextWindow, t);

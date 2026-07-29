@@ -173,6 +173,63 @@ test('built-in capabilities are described directly as capability packages', () =
   assert(!types.includes('interface PluginManifest'), 'frontend must project CapabilityPackageView');
 });
 
+test('usage HUD reads durable backend snapshots without a local second truth', () => {
+  const session = source('src/lib/useChatSession.ts');
+  const api = source('src/lib/api.ts');
+  for (const legacyName of [
+    'chat-token-usage-v1',
+    'StoredUsageEntry',
+    'readUsageCache',
+    'writeUsageCache',
+    'recordUsageCacheSampleForConversation',
+    'buildFallbackContextBreakdown',
+    'usageCacheRef',
+  ]) {
+    assert(!session.includes(legacyName), `useChatSession must not retain ${legacyName}`);
+  }
+  assert(
+    api.includes('getConversationUsageSnapshot'),
+    'desktop API must expose the durable conversation usage snapshot',
+  );
+  assert(
+    api.includes('getRunUsageSnapshot'),
+    'desktop API must expose the durable run usage snapshot',
+  );
+});
+
+test('browser storage upgrades run through one versioned migration entry point', () => {
+  const migrations = source('src/lib/localStorageMigrations.ts');
+  const theme = source('src/lib/theme.ts');
+  const i18n = source('src/i18n/context.tsx');
+  assert(
+    migrations.includes('nexa-local-migration-version'),
+    'local storage migrations must persist their applied version',
+  );
+  assert(!theme.includes('ask-myself-theme'), 'theme module must not run historical migrations');
+  assert(!i18n.includes('ask-myself-locale'), 'i18n module must not run historical migrations');
+});
+
+test('sunset compatibility is migrated or versioned before removal', () => {
+  const providerCatalog = source('../../crates/core/src/provider_catalog.rs');
+  const createFile = source('../../crates/core/src/tools/create_file_tool.rs');
+  const createFileSchema = source('../../crates/core/prompts/tools/create_file.json');
+  assert(
+    !providerCatalog.includes('provider_key_for_preset_lookup'),
+    'provider preset lookup must not rewrite persisted legacy ids at runtime',
+  );
+  assert(
+    createFileSchema.includes('x-nexa-protocol-version'),
+    'create_file schema must advertise its argument protocol version',
+  );
+  for (const field of ['introducedIn=', 'deprecatedIn=', 'removeIn=', 'migration=', 'owner=']) {
+    assert(createFile.includes(field), `create_file compatibility lifecycle must declare ${field}`);
+  }
+  assert(
+    createFile.includes('compatibility_hit = args.overwrite'),
+    'create_file must emit structured telemetry for legacy overwrite hits',
+  );
+});
+
 for (const { name, fn } of tests) {
   try {
     fn();
