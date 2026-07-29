@@ -1,5 +1,6 @@
 import type { AgentFrontendEvent } from '../../types';
 import type {
+  ActivityEvent,
   ArtifactPayload,
   ToolRunItem,
 } from '../../types/conversation';
@@ -495,6 +496,10 @@ export function applyToolCallProgressEvent(
       ?? '';
     const note = typeof noteRaw === 'string' ? noteRaw.trim() : '';
     if (!note) return;
+    const activityRaw = event.activity ?? raw.activity;
+    const activity = activityRaw && typeof activityRaw === 'object'
+      ? activityRaw as ActivityEvent
+      : undefined;
 
     const patchCall = (tc: ToolCallEvent): ToolCallEvent => {
       const nextStatus: ToolCallEvent['status'] =
@@ -505,7 +510,26 @@ export function applyToolCallProgressEvent(
         tc.argsStatus === 'streaming' || tc.argsStatus === 'pending'
           ? 'ready'
           : tc.argsStatus;
-      return { ...tc, status: nextStatus, argsStatus: nextArgsStatus };
+      const chunk = activity
+        && (activity.kind === 'stdout_chunk' || activity.kind === 'stderr_chunk')
+        && typeof activity.payload?.data === 'string'
+          ? activity.payload.data
+          : '';
+      const content = chunk
+        ? `${tc.content ?? ''}${chunk}`.slice(-64 * 1024)
+        : tc.content;
+      const activityEvents = activity
+        ? [...(tc.activityEvents ?? []), activity].slice(-200)
+        : tc.activityEvents;
+      return {
+        ...tc,
+        status: nextStatus,
+        argsStatus: nextArgsStatus,
+        content,
+        progressNote: note,
+        activityCursor: activity?.seq ?? tc.activityCursor,
+        activityEvents,
+      };
     };
 
     let matched = false;

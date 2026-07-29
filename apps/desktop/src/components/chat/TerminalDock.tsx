@@ -174,6 +174,8 @@ export function TerminalDock({
   const [isTall, setIsTall] = useState(false);
   const [selectedShell, setSelectedShell] = useState<TerminalShell>('default');
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
+  const [availableSessions, setAvailableSessions] = useState<TerminalSessionInfo[]>([]);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [status, setStatus] = useState<TerminalStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState('');
@@ -185,6 +187,7 @@ export function TerminalDock({
   const outputBufferRef = useRef('');
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startingRef = useRef(false);
+  const restoringRef = useRef(false);
 
   const toggleTerminalPanel = useCallback(() => {
     setIsOpen((value) => !value);
@@ -202,6 +205,20 @@ export function TerminalDock({
   const appendSystemLine = useCallback((message: string) => {
     appendTerminalData(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
   }, [appendTerminalData]);
+
+  const attachSession = useCallback(async (info: TerminalSessionInfo) => {
+    const snapshot = await api.snapshotTerminalSession(info.id, MAX_BUFFER_CHARS);
+    sessionIdRef.current = info.id;
+    outputBufferRef.current = clampOutputBuffer(snapshot.output);
+    setSession(snapshot.session);
+    setSelection('');
+    setError(null);
+    setStatus('running');
+    xtermRef.current?.reset();
+    if (outputBufferRef.current) {
+      xtermRef.current?.write(outputBufferRef.current);
+    }
+  }, []);
 
   const resizeActiveTerminal = useCallback(() => {
     const term = xtermRef.current;
@@ -229,6 +246,7 @@ export function TerminalDock({
     }
     sessionIdRef.current = null;
     setSession(null);
+    setAvailableSessions((sessions) => sessions.filter((item) => item.id !== sessionId));
     setSelection('');
     setStatus(nextStatus);
     try {
@@ -245,19 +263,17 @@ export function TerminalDock({
     setIsOpen(false);
     setIsTall(false);
     setError(null);
-    outputBufferRef.current = '';
-    xtermRef.current?.reset();
-    void closeActiveSession('idle');
-  }, [closeActiveSession]);
+    if (!sessionIdRef.current) {
+      setStatus('idle');
+      setSession(null);
+      outputBufferRef.current = '';
+      xtermRef.current?.reset();
+    }
+  }, []);
 
   const startSession = useCallback(async (shell: TerminalShell = selectedShell) => {
     if (startingRef.current) return;
     startingRef.current = true;
-    const previousSessionId = sessionIdRef.current;
-    sessionIdRef.current = null;
-    if (previousSessionId) {
-      await api.closeTerminalSession(previousSessionId).catch(() => undefined);
-    }
 
     setIsOpen(true);
     setError(null);
@@ -269,14 +285,21 @@ export function TerminalDock({
 
     try {
       const term = xtermRef.current;
-      const info = await api.startTerminalSession({
+      const started = await api.startTerminalSession({
         shell,
         rows: term?.rows ?? 24,
         cols: term?.cols ?? 80,
         conversationId: conversationId ?? null,
       });
+      const info = conversationId
+        ? await api.bindTerminalSession(started.id, conversationId)
+        : started;
       sessionIdRef.current = info.id;
       setSession(info);
+      setAvailableSessions((sessions) => [
+        ...sessions.filter((item) => item.id !== info.id),
+        info,
+      ]);
       setStatus('running');
       appendSystemLine(`${info.shell} · ${info.cwd}`);
       resizeActiveTerminal();
@@ -309,6 +332,7 @@ export function TerminalDock({
         appendSystemLine(exitText);
         sessionIdRef.current = null;
         setSession(null);
+        setAvailableSessions((sessions) => sessions.filter((item) => item.id !== payload.sessionId));
         setSelection('');
         setStatus('exited');
         return;
@@ -433,31 +457,51 @@ export function TerminalDock({
   }, [theme]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (sessionIdRef.current || status !== 'idle') return;
-    void startSession(selectedShell);
-  }, [isOpen, selectedShell, startSession, status]);
+    let cancelled = false;
+    restoringRef.current = true;
+    setIsRestoring(true);
+    sessionIdRef.current = null;
+    setSession(null);
+    setSelection('');
+    setStatus('idle');
+    outputBufferRef.current = '';
+    xtermRef.current?.reset();
 
-  useEffect(() => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId || !session || status !== 'running') return;
-    void api.bindTerminalSession(sessionId, conversationId ?? null)
-      .then((updated) => setSession(updated))
-      .catch((bindError) => {
-        const message = bindError instanceof Error ? bindError.message : String(bindError);
-        console.warn('[TerminalDock] conversation binding failed:', message);
-      });
-  }, [conversationId, session?.id, status]);
-
-  useEffect(() => {
-    return () => {
-      const sessionId = sessionIdRef.current;
-      sessionIdRef.current = null;
-      if (sessionId) {
-        void api.closeTerminalSession(sessionId).catch(() => undefined);
+    const restore = async () => {
+      try {
+        const sessions = await api.listTerminalSessions();
+        if (cancelled) return;
+        const matching = conversationId
+          ? sessions.filter((item) => item.conversationId === conversationId)
+          : sessions.filter((item) => !item.conversationId);
+        setAvailableSessions(matching);
+        if (!conversationId) return;
+        const active = await api.activeTerminalSession(conversationId);
+        if (!cancelled && active) {
+          await attachSession(active);
+        }
+      } catch (restoreError) {
+        if (!cancelled) {
+          console.warn('[TerminalDock] session restore failed:', restoreError);
+        }
+      } finally {
+        restoringRef.current = false;
+        if (!cancelled) {
+          setIsRestoring(false);
+        }
       }
     };
-  }, []);
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachSession, conversationId]);
+
+  useEffect(() => {
+    if (!isOpen || isRestoring || restoringRef.current) return;
+    if (sessionIdRef.current || status !== 'idle') return;
+    void startSession(selectedShell);
+  }, [isOpen, isRestoring, selectedShell, startSession, status]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -492,6 +536,26 @@ export function TerminalDock({
       void startSession(value);
     }
   };
+
+  const handleSessionChange = useCallback((sessionId: string) => {
+    const next = availableSessions.find((item) => item.id === sessionId);
+    if (!next) return;
+    void (async () => {
+      const active = conversationId
+        ? await api.bindTerminalSession(next.id, conversationId)
+        : next;
+      await attachSession(active);
+    })().catch((switchError) => {
+      const message = switchError instanceof Error ? switchError.message : String(switchError);
+      setError(message);
+      setStatus('error');
+    });
+  }, [attachSession, availableSessions, conversationId]);
+
+  const restartActiveSession = useCallback(async () => {
+    await closeActiveSession('idle');
+    await startSession(selectedShell);
+  }, [closeActiveSession, selectedShell, startSession]);
 
   const handleOpen = () => {
     setIsOpen(true);
@@ -561,6 +625,21 @@ export function TerminalDock({
             </option>
           ))}
         </select>
+        {availableSessions.length > 1 && (
+          <select
+            value={session?.id ?? ''}
+            onChange={(event) => handleSessionChange(event.target.value)}
+            className="h-8 max-w-44 rounded-md border border-border/55 bg-surface-0 px-2 text-xs text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
+            aria-label="Active terminal session"
+            title="Active terminal session"
+          >
+            {availableSessions.map((item, index) => (
+              <option key={item.id} value={item.id}>
+                {`${index + 1}: ${item.shell}${item.processId ? ` #${item.processId}` : ''}`}
+              </option>
+            ))}
+          </select>
+        )}
         {session && (
           <div className="min-w-0 flex-1 truncate text-[11px] text-text-tertiary">
             {session.shell}
@@ -629,7 +708,7 @@ export function TerminalDock({
             icon={<RotateCcw size={14} />}
             aria-label="Restart terminal"
             title="Restart terminal"
-            onClick={() => void startSession(selectedShell)}
+            onClick={() => void restartActiveSession()}
             disabled={status === 'starting'}
           />
           <Button
@@ -657,7 +736,7 @@ export function TerminalDock({
             iconOnly
             icon={<X size={14} />}
             aria-label="Close terminal"
-            title="Close terminal"
+            title="Collapse terminal without stopping it"
             onClick={closeTerminalDock}
           />
         </div>

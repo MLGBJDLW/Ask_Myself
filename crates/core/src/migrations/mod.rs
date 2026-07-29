@@ -1526,6 +1526,33 @@ Every answer that uses knowledge base search results.
             OR json_type(s.output_json, '$.usageTotal') = 'object'
           );",
     ),
+    (
+        "v081_activity_runtime",
+        "CREATE TABLE IF NOT EXISTS activity_records (
+            activity_id TEXT PRIMARY KEY NOT NULL,
+            state TEXT NOT NULL,
+            conversation_id TEXT,
+            task_run_id TEXT,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_records_conversation
+            ON activity_records(conversation_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_activity_records_task_run
+            ON activity_records(task_run_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_activity_records_state
+            ON activity_records(state, updated_at);
+        CREATE TABLE IF NOT EXISTS activity_events (
+            activity_id TEXT NOT NULL REFERENCES activity_records(activity_id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL CHECK(seq > 0),
+            kind TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            PRIMARY KEY(activity_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_events_timestamp
+            ON activity_events(timestamp);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

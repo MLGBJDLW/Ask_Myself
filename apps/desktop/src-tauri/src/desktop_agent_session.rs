@@ -43,7 +43,7 @@ use nexa_core::llm::{
 };
 use nexa_core::mcp::McpManager;
 use nexa_core::ocr::extract_text_from_image;
-use nexa_core::package_host::PackageRuntimeAssembler;
+use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
@@ -67,6 +67,27 @@ use crate::terminal_agent_tool::TerminalAgentTool;
 
 const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+const REQUIRED_ACTIVITY_RUNTIME_TOOLS: &[&str] = &[
+    "activity_observe",
+    "browser_session",
+    "run_shell",
+    "tool_search",
+];
+
+fn missing_core_runtime_tools(registry: &ToolRegistry) -> Vec<&'static str> {
+    let tool_names = registry.tool_names();
+    REQUIRED_ACTIVITY_RUNTIME_TOOLS
+        .iter()
+        .copied()
+        .filter(|required| !tool_names.iter().any(|name| name == required))
+        .collect()
+}
+
+fn canonical_builtin_tool_registry() -> ToolRegistry {
+    PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+        .expect("built-in package manifests must remain valid")
+        .builtin_tool_registry()
+}
 
 pub struct DesktopAgentTurnRuntime {
     pub timeout_secs: u64,
@@ -1311,7 +1332,7 @@ pub async fn build_desktop_agent_session_dependencies(
         .map(PackageRuntimeAssembler::builtin_tool_registry)
         .unwrap_or_else(|error| {
             warn!("Failed to initialize Package Runtime Assembler: {error}");
-            ToolRegistry::new()
+            canonical_builtin_tool_registry()
         });
     emit_agent_frontend_event_with_presentation(
         app_handle,
@@ -1363,6 +1384,7 @@ pub async fn build_desktop_agent_session_dependencies(
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
     }
     let before_package_filter_count = tools.tool_names().len();
+    let last_known_good_tools = tools.clone();
     tools = match package_assembler.and_then(|assembler| assembler.assemble_tool_registry(tools)) {
         Ok(capabilities) => {
             let after_package_filter_count = capabilities.tools.tool_names().len();
@@ -1371,13 +1393,24 @@ pub async fn build_desktop_agent_session_dependencies(
                     "Package Runtime Assembler resolved tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
                 );
             }
-            capabilities.tools
+            let missing_core_tools = missing_core_runtime_tools(&capabilities.tools);
+            if missing_core_tools.is_empty() {
+                info!(
+                    "RegistryHealth status=healthy tool_count={after_package_filter_count} missing_core_tools=[]"
+                );
+                capabilities.tools
+            } else {
+                warn!(
+                    "RegistryHealth status=degraded tool_count={after_package_filter_count} missing_core_tools={missing_core_tools:?}; retaining last-known-good registry"
+                );
+                last_known_good_tools.clone()
+            }
         }
         Err(error) => {
             warn!(
                 "Failed to filter tool registry through Package Host for task run {task_run_id}: {error}"
             );
-            ToolRegistry::new()
+            last_known_good_tools
         }
     };
     delegation_runtime.set_tool_registry(tools.clone());
@@ -1517,7 +1550,13 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
     });
 
     let executor_cancel_token = cancel_token.clone();
+    let activity_runtime = nexa_core::activity::ActivityRuntime::with_database((*db).clone())
+        .unwrap_or_else(|error| {
+            warn!("Failed to initialize persistent Activity Runtime: {error}");
+            nexa_core::activity::ActivityRuntime::new()
+        });
     let mut executor = AgentExecutor::new(provider, dependencies.tools, executor_config)
+        .with_activity_runtime(activity_runtime)
         .with_cancel_token(executor_cancel_token)
         .with_steering_receiver(steering_rx);
     executor = executor.with_approval_callback(approval_cb);
@@ -1832,6 +1871,15 @@ mod tests {
     use nexa_core::conversation::{CollectionContext, CreateConversationInput, ImageAttachment};
     use nexa_core::llm::ProviderType;
     use nexa_core::sources::CreateSourceInput;
+
+    #[test]
+    fn registry_health_requires_activity_runtime_core_tools() {
+        assert!(missing_core_runtime_tools(&canonical_builtin_tool_registry()).is_empty());
+        assert_eq!(
+            missing_core_runtime_tools(&ToolRegistry::new()),
+            REQUIRED_ACTIVITY_RUNTIME_TOOLS
+        );
+    }
 
     fn test_agent_config() -> DbAgentConfig {
         DbAgentConfig {

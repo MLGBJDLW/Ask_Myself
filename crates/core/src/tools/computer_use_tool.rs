@@ -45,12 +45,14 @@ struct ObservedWindow {
     snapshot: WindowSnapshot,
     image_width: Option<u32>,
     image_height: Option<u32>,
+    screenshot_hash: Option<String>,
 }
 
 #[derive(Debug)]
 struct ObservationRecord {
     id: String,
     created_at: Instant,
+    conversation_id: Option<String>,
     windows: Vec<ObservedWindow>,
 }
 
@@ -59,7 +61,10 @@ fn observation_store() -> &'static Mutex<VecDeque<ObservationRecord>> {
     STORE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-fn remember_observation(windows: Vec<ObservedWindow>) -> Result<String, CoreError> {
+fn remember_observation(
+    conversation_id: Option<&str>,
+    windows: Vec<ObservedWindow>,
+) -> Result<String, CoreError> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = Instant::now();
     let mut store = observation_store()
@@ -77,12 +82,17 @@ fn remember_observation(windows: Vec<ObservedWindow>) -> Result<String, CoreErro
     store.push_back(ObservationRecord {
         id: id.clone(),
         created_at: now,
+        conversation_id: conversation_id.map(str::to_string),
         windows,
     });
     Ok(id)
 }
 
-fn observed_window(observation_id: &str, window_id: u64) -> Result<ObservedWindow, CoreError> {
+fn observed_window(
+    conversation_id: Option<&str>,
+    observation_id: &str,
+    window_id: u64,
+) -> Result<ObservedWindow, CoreError> {
     let now = Instant::now();
     let store = observation_store()
         .lock()
@@ -99,6 +109,12 @@ fn observed_window(observation_id: &str, window_id: u64) -> Result<ObservedWindo
     if now.duration_since(record.created_at) > OBSERVATION_TTL {
         return Err(CoreError::InvalidInput(
             "Computer observation expired. Run computer_observe again before acting.".to_string(),
+        ));
+    }
+    if record.conversation_id.as_deref() != conversation_id {
+        return Err(CoreError::InvalidInput(
+            "Computer observation belongs to a different conversation. Observe the window again before acting."
+                .to_string(),
         ));
     }
     record
@@ -210,6 +226,8 @@ struct ControlOutcome {
     capture: Option<CapturedWindow>,
     observation_error: Option<String>,
     cursor_position: Option<(i32, i32)>,
+    target_verified: bool,
+    state_changed: bool,
 }
 
 fn local_desktop_trust_boundary() -> serde_json::Value {
@@ -240,6 +258,7 @@ fn capture_data(observation_id: &str, capture: &CapturedWindow) -> serde_json::V
         "nativeImageWidth": capture.native_image_width,
         "nativeImageHeight": capture.native_image_height,
         "coordinateSpace": "captured_image_pixels",
+        "screenshotHash": blake3::hash(&capture.png).to_hex().to_string(),
         "expiresInSeconds": OBSERVATION_TTL.as_secs()
     })
 }
@@ -273,7 +292,7 @@ impl Tool for ComputerObserveTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Automation]
+        &[ToolCategory::DesktopInteract]
     }
 
     async fn execute(
@@ -285,6 +304,7 @@ impl Tool for ComputerObserveTool {
             arguments,
             db: _db,
             source_scope: _source_scope,
+            conversation_id,
             ..
         } = context;
         let args: ObserveArgs = serde_json::from_str(arguments).map_err(|error| {
@@ -297,6 +317,7 @@ impl Tool for ComputerObserveTool {
                 let windows = blocking(platform::list_windows).await?;
                 let windows: Vec<WindowSnapshot> = windows.into_iter().take(max_results).collect();
                 let observation_id = remember_observation(
+                    conversation_id,
                     windows
                         .iter()
                         .cloned()
@@ -304,6 +325,7 @@ impl Tool for ComputerObserveTool {
                             snapshot,
                             image_width: None,
                             image_height: None,
+                            screenshot_hash: None,
                         })
                         .collect(),
                 )?;
@@ -342,14 +364,18 @@ impl Tool for ComputerObserveTool {
                 let window_id = args.window_id.ok_or_else(|| {
                     CoreError::InvalidInput("capture_window requires window_id.".to_string())
                 })?;
-                let observed = observed_window(observation_id, window_id)?;
+                let observed = observed_window(conversation_id, observation_id, window_id)?;
                 let capture =
                     blocking(move || platform::capture_window(&observed.snapshot)).await?;
-                let fresh_observation_id = remember_observation(vec![ObservedWindow {
-                    snapshot: capture.snapshot.clone(),
-                    image_width: Some(capture.image_width),
-                    image_height: Some(capture.image_height),
-                }])?;
+                let fresh_observation_id = remember_observation(
+                    conversation_id,
+                    vec![ObservedWindow {
+                        snapshot: capture.snapshot.clone(),
+                        image_width: Some(capture.image_width),
+                        image_height: Some(capture.image_height),
+                        screenshot_hash: Some(blake3::hash(&capture.png).to_hex().to_string()),
+                    }],
+                )?;
                 let data = capture_data(&fresh_observation_id, &capture);
                 let content = format!(
                     "Captured window {} ('{}') at {}x{} image pixels. Use observationId {} and these image coordinates for the next computer_control action.",
@@ -419,7 +445,7 @@ impl Tool for ComputerControlTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Automation]
+        &[ToolCategory::DesktopInteract]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -464,24 +490,54 @@ impl Tool for ComputerControlTool {
             arguments,
             db: _db,
             source_scope: _source_scope,
+            conversation_id,
+            activity_runtime,
             ..
         } = context;
         let args: ControlArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid computer_control arguments: {error}"))
         })?;
         let action = ControlAction::parse(&args.action)?;
-        let observed = observed_window(&args.observation_id, args.window_id)?;
+        let observed = observed_window(conversation_id, &args.observation_id, args.window_id)?;
         let window_id = args.window_id;
         let reason = args.reason.clone();
-        let outcome = blocking(move || platform::control_window(action, &args, &observed)).await?;
+        if let Some(runtime) = activity_runtime {
+            let mut spec = crate::activity::ActivitySpec::new(
+                crate::activity::ActivitySurface::Desktop,
+                "computer_control",
+            )
+            .with_activity_id(call_id);
+            if let Some(conversation_id) = conversation_id {
+                spec = spec.with_conversation_id(conversation_id);
+            }
+            runtime.start(spec)?;
+        }
+        let outcome =
+            match blocking(move || platform::control_window(action, &args, &observed)).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    if let Some(runtime) = activity_runtime {
+                        let _ = runtime.transition(
+                            call_id,
+                            crate::activity::ActivityState::Failed,
+                            serde_json::json!({ "error": error.to_string() }),
+                        );
+                    }
+                    return Err(error);
+                }
+            };
 
         let (fresh_observation_id, capture_data_value, attachments) =
             if let Some(capture) = outcome.capture.as_ref() {
-                let observation_id = remember_observation(vec![ObservedWindow {
-                    snapshot: capture.snapshot.clone(),
-                    image_width: Some(capture.image_width),
-                    image_height: Some(capture.image_height),
-                }])?;
+                let observation_id = remember_observation(
+                    conversation_id,
+                    vec![ObservedWindow {
+                        snapshot: capture.snapshot.clone(),
+                        image_width: Some(capture.image_width),
+                        image_height: Some(capture.image_height),
+                        screenshot_hash: Some(blake3::hash(&capture.png).to_hex().to_string()),
+                    }],
+                )?;
                 (
                     Some(observation_id.clone()),
                     Some(capture_data(&observation_id, capture)),
@@ -493,6 +549,9 @@ impl Tool for ComputerControlTool {
 
         let data = serde_json::json!({
             "action": action.label(),
+            "actionApplied": true,
+            "targetVerified": outcome.target_verified,
+            "stateChanged": outcome.state_changed,
             "windowId": window_id,
             "reason": reason,
             "observationId": fresh_observation_id,
@@ -500,6 +559,18 @@ impl Tool for ComputerControlTool {
             "observationError": outcome.observation_error,
             "cursorPosition": outcome.cursor_position.map(|(x, y)| serde_json::json!({ "x": x, "y": y }))
         });
+        if let Some(runtime) = activity_runtime {
+            let _ = runtime.append(
+                call_id,
+                crate::activity::ActivityEventKind::DesktopObservation,
+                data.clone(),
+            );
+            let _ = runtime.transition(
+                call_id,
+                crate::activity::ActivityState::Completed,
+                serde_json::json!({ "stateChanged": outcome.state_changed }),
+            );
+        }
         let mut content = outcome.summary;
         if let Some(observation_id) = fresh_observation_id {
             content.push_str(&format!(
@@ -518,6 +589,7 @@ impl Tool for ComputerControlTool {
                 data: Some(data),
                 artifacts: Some(serde_json::json!({
                     "kind": "computerControl",
+                    "activityId": activity_runtime.map(|_| call_id),
                     "approved": true,
                     "trustBoundary": local_desktop_trust_boundary()
                 })),
@@ -559,7 +631,8 @@ mod platform {
 
     const MAX_CAPTURE_EDGE: u32 = 1_600;
     const INPUT_SETTLE: Duration = Duration::from_millis(70);
-    const POST_ACTION_SETTLE: Duration = Duration::from_millis(160);
+    const POST_ACTION_STATE_BUDGET: Duration = Duration::from_millis(1_200);
+    const POST_ACTION_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
 
     use std::time::Duration;
 
@@ -964,6 +1037,17 @@ mod platform {
         observed: &ObservedWindow,
     ) -> Result<ControlOutcome, CoreError> {
         let (_, current) = current_window(&observed.snapshot)?;
+        let pre_action_capture = capture_window(&current)?;
+        let pre_action_hash = blake3::hash(&pre_action_capture.png).to_hex().to_string();
+        if observed
+            .screenshot_hash
+            .as_ref()
+            .is_some_and(|expected| expected != &pre_action_hash)
+        {
+            return Err(invalid(
+                "Desktop observation is stale because the captured window changed. Observe it again before acting.",
+            ));
+        }
         focus_window(&current)?;
         let mut input = enigo()?;
 
@@ -1054,21 +1138,54 @@ mod platform {
             }
         };
 
-        thread::sleep(POST_ACTION_SETTLE);
         let cursor_position = input.location().ok();
-        match capture_window(&current) {
-            Ok(capture) => Ok(ControlOutcome {
+        let deadline = std::time::Instant::now() + POST_ACTION_STATE_BUDGET;
+        let mut latest_capture = None;
+        let mut latest_hash = pre_action_hash.clone();
+        let mut stable_samples = 0_u8;
+        while std::time::Instant::now() < deadline {
+            if let Ok(capture) = capture_window(&current) {
+                let hash = blake3::hash(&capture.png).to_hex().to_string();
+                if hash == latest_hash {
+                    stable_samples = stable_samples.saturating_add(1);
+                } else {
+                    stable_samples = 0;
+                    latest_hash = hash;
+                }
+                latest_capture = Some(capture);
+                if latest_hash != pre_action_hash && stable_samples >= 2 {
+                    break;
+                }
+            }
+            thread::sleep(POST_ACTION_SAMPLE_INTERVAL);
+        }
+        match latest_capture.or_else(|| capture_window(&current).ok()) {
+            Some(capture) => Ok(ControlOutcome {
+                state_changed: latest_hash != pre_action_hash,
+                target_verified: true,
                 summary,
                 capture: Some(capture),
                 observation_error: None,
                 cursor_position,
             }),
-            Err(error) => Ok(ControlOutcome {
-                summary,
-                capture: None,
-                observation_error: Some(error.to_string()),
-                cursor_position,
-            }),
+            None => match capture_window(&current) {
+                Ok(capture) => Ok(ControlOutcome {
+                    summary,
+                    capture: Some(capture),
+                    observation_error: None,
+                    cursor_position,
+                    target_verified: true,
+                    state_changed: false,
+                }),
+                Err(error) => Ok(ControlOutcome {
+                    summary,
+                    capture: None,
+                    observation_error: Some(error.to_string()),
+                    cursor_position,
+                    target_verified: true,
+                    state_changed: false,
+                }),
+            },
         }
     }
 }
@@ -1127,20 +1244,25 @@ mod tests {
             maximized: false,
             focused: true,
         };
-        let observation_id = remember_observation(vec![ObservedWindow {
-            snapshot: snapshot.clone(),
-            image_width: Some(800),
-            image_height: Some(600),
-        }])
+        let observation_id = remember_observation(
+            Some("conversation-1"),
+            vec![ObservedWindow {
+                snapshot: snapshot.clone(),
+                image_width: Some(800),
+                image_height: Some(600),
+                screenshot_hash: None,
+            }],
+        )
         .unwrap();
 
         assert_eq!(
-            observed_window(&observation_id, snapshot.id)
+            observed_window(Some("conversation-1"), &observation_id, snapshot.id)
                 .unwrap()
                 .snapshot,
             snapshot
         );
-        assert!(observed_window(&observation_id, 99).is_err());
+        assert!(observed_window(Some("conversation-1"), &observation_id, 99).is_err());
+        assert!(observed_window(Some("conversation-2"), &observation_id, snapshot.id).is_err());
     }
 
     #[test]

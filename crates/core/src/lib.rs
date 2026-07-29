@@ -12,6 +12,7 @@ pub const APP_DIR: &str = "nexa";
 /// User-agent string for outbound HTTP requests.
 pub const USER_AGENT: &str = "nexa/1.0";
 
+pub mod activity;
 pub mod agent;
 pub mod agent_run;
 pub mod agent_session;

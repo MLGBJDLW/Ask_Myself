@@ -293,6 +293,7 @@ const WEB_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
         "web_research_context",
         "fetch_url",
         "browser_evidence_capture",
+        "browser_session",
         "download_asset",
     ],
     settings_surfaces: &["network", "web-search"],
@@ -333,6 +334,7 @@ const DESKTOP_AUTOMATION_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabili
     surface: EcosystemSurfaceKind::HostSurface,
     tools: &[
         "run_shell",
+        "activity_observe",
         "desktop_automation",
         "computer_observe",
         "computer_control",

@@ -118,7 +118,8 @@ fn route_pack_for_route(kind: AgentRouteKind) -> String {
              - For general coding exploration, use grep_files/search_files with high-signal identifiers, error text, imports, routes, tests, config keys, or tool names before read_file/read_files.\n\
              - After search or code_intelligence returns candidate paths and line numbers, read only the relevant files or ranges needed to understand and edit safely.\n\
              - Keep edits scoped to the request and local patterns; verify with the narrowest useful test, project_tool run, or focused run_shell command.\n\
-             - Prefer dedicated file/project tools for plain-text reads and edits. Use run_shell when a command, build, test, generated artifact, or scripted workflow is the right tool.\n\n{}",
+             - Prefer dedicated file/project tools for plain-text reads and edits. Use run_shell when a command, build, test, generated artifact, or scripted workflow is the right tool; external commands automatically detach when still running, so continue through activity_observe instead of guessing a timeout.\n\
+             - For an existing user terminal, prefer terminal_session inspect/run/observe over starting a substitute shell. For a local dev URL or interactive SPA, hand the ready URL to browser_session and use observation-scoped element refs.\n\n{}",
             run_shell_contract::system_prompt_section()
         ),
         AgentRouteKind::FileOperation => format!(
@@ -130,7 +131,8 @@ fn route_pack_for_route(kind: AgentRouteKind) -> String {
             run_shell_contract::system_prompt_section()
         ),
         AgentRouteKind::WebLookup => "## Route Pack: Web Lookup\n\
-             - Use fetch_url for URLs the user provides. Use web_search for external facts that may have changed or when the knowledge base is insufficient.\n\
+             - Use fetch_url for ordinary static page text. Use browser_session for JavaScript apps, authenticated flows, interaction, localhost, or page-state debugging; use its atomic observations and never reuse an element ref after the page changes.\n\
+             - Use web_search for external facts that may have changed or when the knowledge base is insufficient.\n\
              - Prefer authoritative sources and fetch full pages before citing; do not cite search snippets as evidence.\n\
              - Use the user's language for queries when appropriate, and use 1 focused query for simple lookups or 2-3 distinct angles for broad research.\n\
              - Cite fetched web evidence with real URL identifiers and distinguish web evidence from local knowledge-base evidence."

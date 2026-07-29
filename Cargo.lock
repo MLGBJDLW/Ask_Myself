@@ -3626,7 +3626,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexa-core"
-version = "0.10.25"
+version = "0.11.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3648,6 +3648,7 @@ dependencies = [
  "ignore",
  "image",
  "imageproc",
+ "libc",
  "lopdf",
  "ndarray",
  "notify",
@@ -3682,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "nexa-desktop"
-version = "0.10.25"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

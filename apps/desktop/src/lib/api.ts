@@ -367,6 +367,9 @@ export const snapshotTerminalSession = (sessionId: string, maxChars = 24_000) =>
 export const listTerminalSessions = () =>
   invoke<TerminalSessionInfo[]>('terminal_list_sessions_cmd');
 
+export const activeTerminalSession = (conversationId: string) =>
+  invoke<TerminalSessionInfo | null>('terminal_active_session_cmd', { conversationId });
+
 export interface FilePreview {
   path: string;
   displayName: string;

@@ -1370,6 +1370,7 @@ mod tests {
             AgentEvent::ToolCallProgress {
                 call_id: "call-1".to_string(),
                 note: "searching".to_string(),
+                activity: None,
             },
             AgentEvent::ToolCallResult {
                 call_id: "call-1".to_string(),

@@ -143,7 +143,8 @@ pub(crate) fn parameters_schema() -> Value {
             "background": {
                 "type": "boolean",
                 "default": false,
-                "description": "Start a long-running command without waiting for it to exit. Use it for local web/API services and for any build, install, test, or migration run that can outlast the default timeout: the call returns a service_id immediately so you can keep working and poll with service_action=wait or status. ready_url is recommended but optional for services: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted."
+                "deprecated": true,
+                "description": "Deprecated compatibility hint. External commands without stdin are observed briefly and automatically detached when still running; callers never need to predict whether a command will be long-lived."
             },
             "ready_url": {
                 "type": "string",
@@ -154,13 +155,14 @@ pub(crate) fn parameters_schema() -> Value {
                 "minimum": 1,
                 "maximum": 120,
                 "default": 20,
-                "description": "How long to poll ready_url while starting a background service."
+                "deprecated": true,
+                "description": "Deprecated compatibility field. Startup observation is bounded to about 1.5 seconds; use activity_observe or service_action=wait for incremental readiness events."
             },
             "service_action": {
                 "type": "string",
                 "enum": ["run", "status", "wait", "stop"],
                 "default": "run",
-                "description": "Use status, wait, or stop with a service_id returned by an earlier background run. status takes one snapshot of health and log tails. wait polls until the process exits or timeout_secs elapses and then returns the exit status with log tails, so prefer it over guessing a sleep. Omit for ordinary commands."
+                "description": "Use status, wait, or stop with a service_id returned by a detached run. status takes one snapshot. wait returns on the next completion/state change and is capped at a 3-second observation quantum. Prefer activity_observe with a cursor for incremental events. Omit for ordinary commands."
             },
             "service_id": {
                 "type": "string",
@@ -236,9 +238,7 @@ pub(crate) fn expected_format() -> Value {
             "backgroundService": {
                 "command": "python -m http.server 8080",
                 "cwd": "D:/workspace",
-                "background": true,
-                "ready_url": "http://127.0.0.1:8080",
-                "ready_timeout_secs": 20
+                "ready_url": "http://127.0.0.1:8080"
             }
         },
         "rules": [
@@ -249,7 +249,7 @@ pub(crate) fn expected_format() -> Value {
             "args must be an array of argv strings.",
             "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
             "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
-            "Long-running web/API servers are automatically promoted to managed background services. Prefer background=true and provide a loopback ready_url when known; otherwise run_shell discovers a URL from startup logs or returns a running service after a stability check. Check it with service_action=status before or after browser inspection, and stop it with service_action=stop when finished."
+            "Every external command without stdin is observed briefly and automatically detached if it is still running. Never predict duration and never wait by sleeping. Continue with the returned activityId/cursor via activity_observe; service_action=status/wait/stop remains available for compatibility."
         ]
     })
 }
@@ -400,14 +400,12 @@ fn prompt_html_pptx_sentence() -> &'static str {
 
 fn timeout_sentence() -> String {
     format!(
-        "Output is capped at 64 KB per stream. Default timeout {DEFAULT_TIMEOUT_SECS}s; a timed-out command is killed but still returns the output it produced. Never sit on a long blocking timeout: for anything that may outlast the default, pass background=true and poll the returned service_id with service_action=wait (returns as soon as the process exits) or service_action=status. Local web/API servers are automatically promoted to managed background services; provide a loopback ready_url when known, or let the tool discover it from startup logs. Set timeout_secs to 0 only for a finite foreground install/download/build that must not be interrupted. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it."
+        "Output is capped at 64 KB per stream. External commands without stdin are observed briefly, then automatically detached if still running; callers do not predict duration. Follow the returned activityId/cursor with activity_observe, whose wait is capped at 2.5 seconds. Native filesystem operations and stdin-driven commands remain finite foreground runs with default timeout {DEFAULT_TIMEOUT_SECS}s."
     )
 }
 
 fn prompt_timeout_sentence() -> String {
-    format!(
-        "Output is capped at 64 KB per stream; default timeout {DEFAULT_TIMEOUT_SECS}s, and a timed-out command still returns the output it produced. Do not block on a long timeout and do not fake waiting with sleep commands: run anything that may exceed the default with `background: true`, then poll the returned `service_id` with `service_action: \"wait\"` (returns the moment the process exits, and returns a running snapshot when its own budget elapses so you can keep working) or `service_action: \"status\"` for a single snapshot. Prefer a loopback `ready_url` for local web/API servers; recognized servers are automatically promoted and can discover a URL from startup logs when it is omitted. Continue after the managed-service result, re-check with `status` around browser checks, and call `service_action: \"stop\"` when finished."
-    )
+    "Output is capped at 64 KB per stream. External commands without stdin automatically detach after a brief observation window if still running. Do not set background based on guessed duration and do not fake waiting with sleep commands. Follow the returned `activityId` and `cursor` through `activity_observe`; each observation waits at most 2.5 seconds and returns on new events. Compatibility status/wait/stop calls remain available, with wait capped at 3 seconds.".to_string()
 }
 
 fn windows_paths_sentence() -> &'static str {
@@ -420,7 +418,7 @@ fn shell_parameter_description() -> &'static str {
 
 fn timeout_parameter_description() -> String {
     format!(
-        "Timeout in seconds for a foreground run. Default {DEFAULT_TIMEOUT_SECS}. A timed-out command is killed and still reports the output it produced. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode plus service_action=wait for anything long-running. With service_action=wait this is the polling budget instead (default 30, max 900, 0 means the 900s cap). The broader agent turn timeout can still stop the run if it is not raised or disabled."
+        "Timeout in seconds for a finite foreground run (native filesystem operations or commands using stdin). Default {DEFAULT_TIMEOUT_SECS}. External commands without stdin automatically detach if still running. With service_action=wait this is only a short observation budget and is capped at 3 seconds."
     )
 }
 

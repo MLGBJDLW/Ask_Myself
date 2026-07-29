@@ -44,7 +44,10 @@ impl ExecutorAgentSession {
     ) -> Self {
         Self {
             config,
-            executor: AgentExecutor::new(provider, tools, executor_config),
+            executor: AgentExecutor::new(provider, tools, executor_config).with_activity_runtime(
+                crate::activity::ActivityRuntime::with_database(db.clone())
+                    .unwrap_or_else(|_| crate::activity::ActivityRuntime::new()),
+            ),
             db,
             history: Vec::new(),
             source_scope_override: None,

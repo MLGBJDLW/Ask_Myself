@@ -17,6 +17,7 @@ const MAX_TERMINAL_OUTPUT_CHARS: usize = 180_000;
 #[derive(Clone, Default)]
 pub struct TerminalState {
     sessions: Arc<Mutex<HashMap<String, TerminalSession>>>,
+    active_by_conversation: Arc<Mutex<HashMap<String, String>>>,
 }
 
 struct TerminalSession {
@@ -131,10 +132,16 @@ pub fn terminal_start_session_cmd(
             .master
             .try_clone_reader()
             .map_err(|err| format!("failed to attach terminal output: {err}"))?;
-        let writer = pair
+        let mut writer = pair
             .master
             .take_writer()
             .map_err(|err| format!("failed to attach terminal input: {err}"))?;
+        if let Some(integration) = shell_integration_bootstrap(candidate.label) {
+            writer
+                .write_all(integration.as_bytes())
+                .and_then(|_| writer.flush())
+                .map_err(|err| format!("failed to enable terminal shell integration: {err}"))?;
+        }
         let process_id = child.process_id();
         let session_id = Uuid::new_v4().to_string();
         let output = Arc::new(Mutex::new(String::new()));
@@ -156,6 +163,13 @@ pub fn terminal_start_session_cmd(
                 .map_err(|_| "terminal session state is unavailable".to_string())?;
             sessions.insert(session_id.clone(), session);
         }
+        if let Some(conversation_id) = conversation_id.as_ref() {
+            state
+                .active_by_conversation
+                .lock()
+                .map_err(|_| "terminal activity mapping is unavailable".to_string())?
+                .insert(conversation_id.clone(), session_id.clone());
+        }
 
         spawn_terminal_reader(
             app_handle.clone(),
@@ -167,6 +181,7 @@ pub fn terminal_start_session_cmd(
         spawn_terminal_waiter(
             app_handle,
             state.sessions.clone(),
+            state.active_by_conversation.clone(),
             session_id.clone(),
             child,
         );
@@ -247,20 +262,15 @@ pub fn terminal_snapshot_session_cmd(
 pub fn terminal_list_sessions_cmd(
     state: State<'_, TerminalState>,
 ) -> Result<Vec<TerminalSessionInfo>, String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "terminal session state is unavailable".to_string())?;
-    Ok(sessions
-        .iter()
-        .map(|(id, session)| TerminalSessionInfo {
-            id: id.clone(),
-            shell: session.shell.clone(),
-            cwd: session.cwd.clone(),
-            process_id: session.process_id,
-            conversation_id: session.conversation_id.clone(),
-        })
-        .collect())
+    state.list_sessions()
+}
+
+#[tauri::command]
+pub fn terminal_active_session_cmd(
+    state: State<'_, TerminalState>,
+    conversation_id: String,
+) -> Result<Option<TerminalSessionInfo>, String> {
+    state.active_session(&conversation_id)
 }
 
 fn spawn_terminal_reader(
@@ -318,6 +328,41 @@ fn spawn_terminal_reader(
 }
 
 impl TerminalState {
+    pub fn active_session(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<TerminalSessionInfo>, String> {
+        let session_id = self
+            .active_by_conversation
+            .lock()
+            .map_err(|_| "terminal active-session state is unavailable".to_string())?
+            .get(conversation_id)
+            .cloned();
+        let Some(session_id) = session_id else {
+            return Ok(None);
+        };
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "terminal session state is unavailable".to_string())?;
+        Ok(sessions
+            .get(&session_id)
+            .map(|session| session_info(&session_id, session)))
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<TerminalSessionInfo>, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "terminal session state is unavailable".to_string())?;
+        let mut listed = sessions
+            .iter()
+            .map(|(id, session)| session_info(id, session))
+            .collect::<Vec<_>>();
+        listed.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(listed)
+    }
+
     pub fn write_session(&self, session_id: &str, data: &str) -> Result<(), String> {
         let writer = {
             let sessions = self
@@ -347,6 +392,16 @@ impl TerminalState {
             sessions.remove(session_id)
         };
         if let Some(session) = session {
+            if let Some(conversation_id) = session.conversation_id.as_ref() {
+                if let Ok(mut active) = self.active_by_conversation.lock() {
+                    if active
+                        .get(conversation_id)
+                        .is_some_and(|id| id == session_id)
+                    {
+                        active.remove(conversation_id);
+                    }
+                }
+            }
             let mut killer = session
                 .killer
                 .lock()
@@ -372,8 +427,23 @@ impl TerminalState {
         let session = sessions
             .get_mut(session_id)
             .ok_or_else(|| "terminal session is no longer running".to_string())?;
+        let previous_conversation_id = session.conversation_id.clone();
         session.conversation_id = normalize_conversation_id(conversation_id);
-        Ok(session_info(session_id, session))
+        let info = session_info(session_id, session);
+        drop(sessions);
+        let mut active = self
+            .active_by_conversation
+            .lock()
+            .map_err(|_| "terminal activity mapping is unavailable".to_string())?;
+        if let Some(previous) = previous_conversation_id {
+            if active.get(&previous).is_some_and(|id| id == session_id) {
+                active.remove(&previous);
+            }
+        }
+        if let Some(current) = info.conversation_id.as_ref() {
+            active.insert(current.clone(), session_id.to_string());
+        }
+        Ok(info)
     }
 
     pub fn snapshot_session(
@@ -420,15 +490,17 @@ impl TerminalState {
                 }
                 requested.to_string()
             } else {
-                sessions
-                    .iter()
-                    .find(|(_, session)| {
-                        session.conversation_id.as_deref() == Some(conversation_id)
-                    })
-                    .map(|(id, _)| id.clone())
-                    .ok_or_else(|| {
-                        "no running terminal is linked to the current conversation".to_string()
-                    })?
+                let active = self
+                    .active_by_conversation
+                    .lock()
+                    .map_err(|_| "terminal activity mapping is unavailable".to_string())?;
+                let session_id = active.get(conversation_id).cloned().ok_or_else(|| {
+                    "no active terminal is linked to the current conversation".to_string()
+                })?;
+                if !sessions.contains_key(&session_id) {
+                    return Err("the active terminal is no longer running".to_string());
+                }
+                session_id
             }
         };
         self.snapshot_session(&session_id, max_chars)
@@ -494,13 +566,26 @@ fn terminal_stop_succeeded(error: &std::io::Error) -> bool {
 fn spawn_terminal_waiter(
     app_handle: AppHandle,
     sessions: Arc<Mutex<HashMap<String, TerminalSession>>>,
+    active_by_conversation: Arc<Mutex<HashMap<String, String>>>,
     session_id: String,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
 ) {
     thread::spawn(move || {
         let result = child.wait();
         if let Ok(mut sessions) = sessions.lock() {
-            sessions.remove(&session_id);
+            let conversation_id = sessions
+                .remove(&session_id)
+                .and_then(|session| session.conversation_id);
+            if let (Some(conversation_id), Ok(mut active)) =
+                (conversation_id, active_by_conversation.lock())
+            {
+                if active
+                    .get(&conversation_id)
+                    .is_some_and(|active_id| active_id == &session_id)
+                {
+                    active.remove(&conversation_id);
+                }
+            }
         }
         let (exit_code, signal, data) = match result {
             Ok(status) => (
@@ -526,6 +611,23 @@ fn spawn_terminal_waiter(
             },
         );
     });
+}
+
+fn shell_integration_bootstrap(shell: &str) -> Option<String> {
+    if shell.contains("PowerShell") {
+        return Some(
+            "$global:NexaOriginalPrompt=${function:prompt}; function global:prompt { $nexaExit=if ($null -eq $global:LASTEXITCODE) { 0 } else { $global:LASTEXITCODE }; [Console]::Write(\"`e]633;D;$nexaExit`a`e]633;P;Cwd=$($PWD.Path)`a`e]633;A`a\"); if ($global:NexaOriginalPrompt) { & $global:NexaOriginalPrompt } else { \"PS $($PWD.Path)> \" } }\r"
+                .to_string(),
+        );
+    }
+    if matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh") {
+        return Some(
+            r#"PROMPT_COMMAND='__nexa_exit=$?; printf "\033]633;D;%s\007\033]633;P;Cwd=%s\007\033]633;A\007" "$__nexa_exit" "$PWD"'"#
+                .to_string()
+                + "\n",
+        );
+    }
+    None
 }
 
 fn resolve_terminal_cwd(input: Option<String>) -> Result<PathBuf, String> {

@@ -20,27 +20,28 @@ fn test_tool_timeout_zero_disables_outer_timeout() {
 }
 
 #[test]
-fn test_tool_timeout_honors_run_shell_no_timeout() {
+fn test_tool_timeout_honors_finite_run_shell_no_timeout() {
     let timeout = tool_timeout_for_call(
         Some(30),
         "run_shell",
-        &serde_json::json!({ "timeout_secs": 0 }),
+        &serde_json::json!({ "program": "python", "args": ["-"], "stdin": "print('ok')", "timeout_secs": 0 }),
     );
     assert_eq!(timeout, None);
 }
 
 #[test]
-fn test_tool_timeout_keeps_background_readiness_bounded() {
+fn test_tool_timeout_keeps_auto_detached_process_bounded() {
     let timeout = tool_timeout_for_call(
         Some(30),
         "run_shell",
         &serde_json::json!({
+            "command": "python -m http.server 8080",
             "timeout_secs": 0,
             "background": true,
             "ready_timeout_secs": 75,
         }),
     );
-    assert_eq!(timeout, Some(Duration::from_secs(80)));
+    assert_eq!(timeout, Some(Duration::from_secs(30)));
 }
 
 #[test]
@@ -48,7 +49,7 @@ fn test_tool_timeout_extends_for_long_run_shell_timeout() {
     let timeout = tool_timeout_for_call(
         Some(30),
         "run_shell",
-        &serde_json::json!({ "timeout_secs": 600 }),
+        &serde_json::json!({ "program": "python", "args": ["-"], "stdin": "print('ok')", "timeout_secs": 600 }),
     );
     assert_eq!(timeout, Some(Duration::from_secs(605)));
 }

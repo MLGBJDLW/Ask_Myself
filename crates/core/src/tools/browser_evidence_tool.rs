@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::error::CoreError;
 
-use super::fetch_url_tool::{capture_browser_page, FetchUrlTool};
+use super::fetch_url_tool::capture_browser_page;
 use super::{Tool, ToolCategory, ToolDef, ToolOutput, ToolOutputAttachment, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
@@ -23,10 +23,6 @@ struct BrowserEvidenceCaptureArgs {
     max_length: Option<usize>,
     #[serde(default)]
     mode: Option<String>,
-}
-
-fn artifact_string<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(|item| item.as_str())
 }
 
 fn compact_excerpt(value: &str, max_chars: usize) -> String {
@@ -74,7 +70,7 @@ impl Tool for BrowserEvidenceCaptureTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Web]
+        &[ToolCategory::BrowserRead]
     }
 
     async fn execute(
@@ -85,127 +81,50 @@ impl Tool for BrowserEvidenceCaptureTool {
             call_id,
             arguments,
             db,
-            source_scope,
-            conversation_id,
-            tool_registry,
-            cancel_token,
+            ..
         } = context;
         let args: BrowserEvidenceCaptureArgs = serde_json::from_str(arguments).map_err(|err| {
             CoreError::InvalidInput(format!("Invalid browser_evidence_capture arguments: {err}"))
         })?;
         let max_length = args.max_length.unwrap_or(6_000).clamp(500, 20_000);
-        let mode = args.mode.unwrap_or_else(|| "auto".to_string());
-        let fetch_args = serde_json::json!({
-            "url": args.url,
-            "max_length": max_length,
-            "mode": mode,
-            "include_assets": false,
-        })
-        .to_string();
-
-        let fetch_tool = FetchUrlTool;
-        let fetch = fetch_tool
-            .execute(crate::tools::ToolExecutionContext {
-                call_id: &format!("{call_id}:fetch"),
-                arguments: &fetch_args,
-                db,
-                source_scope,
-                conversation_id,
-                tool_registry,
-                cancel_token,
-            })
-            .await?;
-        let browser_capture = capture_browser_page(&args.url).await;
-        if fetch.is_error && browser_capture.is_err() {
-            let browser_error = browser_capture.err().unwrap_or_default();
-            return Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: format!(
-                    "{}\nBrowser capture also failed: {browser_error}",
-                    fetch.content
-                ),
-                is_error: true,
-                artifacts: fetch.artifacts,
-            });
-        }
-
-        let fetch_artifacts = fetch
-            .artifacts
+        let _mode = args.mode.unwrap_or_else(|| "auto".to_string());
+        let browser_capture = match capture_browser_page(&args.url).await {
+            Ok(capture) => capture,
+            Err(browser_error) => {
+                return Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: format!("Browser capture failed: {browser_error}"),
+                    is_error: true,
+                    artifacts: Some(serde_json::json!({
+                        "kind": "browserEvidenceCapture",
+                        "error": browser_error,
+                    })),
+                });
+            }
+        };
+        let final_url = browser_capture.final_url.to_string();
+        let title = browser_capture
+            .title
             .clone()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let final_url = artifact_string(&fetch_artifacts, "finalUrl")
-            .or_else(|| artifact_string(&fetch_artifacts, "url"))
-            .unwrap_or(&args.url)
-            .to_string();
-        let fetch_title = artifact_string(&fetch_artifacts, "title")
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_string);
-        let extraction_method = artifact_string(&fetch_artifacts, "extractionMethod")
-            .unwrap_or("readable_text")
-            .to_string();
-        let (
-            screenshot,
-            screenshot_error,
-            blocked_requests,
-            browser_final_url,
-            rendered_title,
-            rendered_text,
-            interactive_elements,
-            diagnostics,
-        ) = match browser_capture {
-            Ok(rendered) => (
-                Some(rendered.screenshot_png),
-                None,
-                rendered.blocked_requests,
-                Some(rendered.final_url.to_string()),
-                rendered.title,
-                Some(rendered.rendered_text),
-                rendered.interactive_elements,
-                rendered.diagnostics,
-            ),
-            Err(error) => (
-                None,
-                Some(error),
-                0,
-                None,
-                None,
-                None,
-                Vec::new(),
-                Default::default(),
-            ),
-        };
-        let final_url = browser_final_url.unwrap_or(final_url);
-        let title = rendered_title
-            .or(fetch_title)
             .unwrap_or_else(|| "Captured web page".to_string());
-        let excerpt = if fetch.is_error {
-            rendered_text
-                .filter(|text| !text.trim().is_empty())
-                .map(|text| compact_excerpt(&text, max_length))
-                .unwrap_or_else(|| {
-                    "Readable text extraction failed. Inspect the attached browser screenshot as untrusted visual evidence."
-                        .to_string()
-                })
-        } else {
-            compact_excerpt(&fetch.content, max_length)
-        };
+        let excerpt = compact_excerpt(&browser_capture.rendered_text, max_length);
+        let extraction_method = "atomic_browser_observation";
         let capture = db.record_browser_evidence_capture(
             &args.url,
             &final_url,
             &title,
             &excerpt,
-            &extraction_method,
+            extraction_method,
         )?;
 
-        let attachments = screenshot
-            .map(|png| {
-                vec![ToolOutputAttachment {
-                    name: "browser-page.png".to_string(),
-                    mime_type: "image/png".to_string(),
-                    data: serde_json::json!({ "base64": STANDARD.encode(png) }),
-                }]
-            })
-            .unwrap_or_default();
+        let attachments = vec![ToolOutputAttachment {
+            name: "browser-page.png".to_string(),
+            mime_type: "image/png".to_string(),
+            data: serde_json::json!({ "base64": STANDARD.encode(&browser_capture.screenshot_png) }),
+        }];
+        let diagnostics = browser_capture.diagnostics;
+        let interactive_elements = browser_capture.interactive_elements;
+        let blocked_requests = browser_capture.blocked_requests;
         let diagnostics_for_llm = [
             diagnostic_summary("Console", &diagnostics.console_entries),
             diagnostic_summary("JavaScript exceptions", &diagnostics.runtime_exceptions),
@@ -242,10 +161,9 @@ impl Tool for BrowserEvidenceCaptureTool {
             artifacts: Some(serde_json::json!({
                 "kind": "browserEvidenceCapture",
                 "capture": capture,
-                "fetch": fetch_artifacts,
                 "visual": {
                     "screenshotAttached": !attachments.is_empty(),
-                    "screenshotError": screenshot_error,
+                    "atomicObservation": true,
                     "blockedRequests": blocked_requests,
                     "interactiveElements": interactive_elements,
                     "diagnostics": diagnostics,

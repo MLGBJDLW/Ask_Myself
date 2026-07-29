@@ -30,6 +30,16 @@ pub enum ToolCategory {
     Knowledge,
     /// URL fetching
     Web,
+    /// Local command and managed-process execution.
+    Process,
+    /// User-visible PTY sessions and shell command lifecycle.
+    Terminal,
+    /// Static or rendered browser observations without page mutation.
+    BrowserRead,
+    /// Stateful browser sessions and page interaction.
+    BrowserInteract,
+    /// Native desktop observation and interaction.
+    DesktopInteract,
     /// Detailed document inspection & comparison
     DocumentAnalysis,
     /// Subagent / multi-agent tools
@@ -72,6 +82,11 @@ pub fn category_label(category: ToolCategory) -> &'static str {
         ToolCategory::SourceManagement => "source_management",
         ToolCategory::Knowledge => "knowledge",
         ToolCategory::Web => "web",
+        ToolCategory::Process => "process",
+        ToolCategory::Terminal => "terminal",
+        ToolCategory::BrowserRead => "browser_read",
+        ToolCategory::BrowserInteract => "browser_interact",
+        ToolCategory::DesktopInteract => "desktop_interact",
         ToolCategory::DocumentAnalysis => "document_analysis",
         ToolCategory::SubAgent => "delegation",
         ToolCategory::Mcp => "mcp",
@@ -263,13 +278,26 @@ fn generic_access_profile(
     let can_execute = matches!(
         capabilities.render_kind,
         ToolRenderKind::CommandExecution | ToolRenderKind::Subagent
-    ) || categories
-        .iter()
-        .any(|category| matches!(category, ToolCategory::Automation | ToolCategory::SubAgent));
-    let can_access_network = categories
-        .iter()
-        .any(|category| matches!(category, ToolCategory::Web | ToolCategory::Mcp))
-        || name.starts_with("mcp__");
+    ) || categories.iter().any(|category| {
+        matches!(
+            category,
+            ToolCategory::Process
+                | ToolCategory::Terminal
+                | ToolCategory::BrowserInteract
+                | ToolCategory::DesktopInteract
+                | ToolCategory::Automation
+                | ToolCategory::SubAgent
+        )
+    });
+    let can_access_network = categories.iter().any(|category| {
+        matches!(
+            category,
+            ToolCategory::Web
+                | ToolCategory::BrowserRead
+                | ToolCategory::BrowserInteract
+                | ToolCategory::Mcp
+        )
+    }) || name.starts_with("mcp__");
     let can_write = !capabilities.read_only || capabilities.destructive;
     let risk_level = if can_execute && (can_write || can_access_network) {
         ApprovalRisk::High
