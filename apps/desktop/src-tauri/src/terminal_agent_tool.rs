@@ -466,7 +466,7 @@ enum ShellMarker {
 fn terminal_command_payload(shell: &str, command_id: &str, command: &str) -> Option<String> {
     if shell.contains("PowerShell") {
         return Some(format!(
-            "[Console]::Write(\"`e]633;B;{command_id}`a\"); & {{ {command} }}; $nexaSucceeded=$?; $nexaExit=if ($nexaSucceeded) {{ 0 }} elseif ($null -ne $global:LASTEXITCODE -and $global:LASTEXITCODE -ne 0) {{ $global:LASTEXITCODE }} else {{ 1 }}; [Console]::Write(\"`e]633;D;$nexaExit`a\")\r"
+            "[Console]::Write(\"`e]633;B;{command_id}`a\");\r\n& {{\r\n{command}\r\n}}\r\n$nexaSucceeded=$?; $nexaExit=if ($nexaSucceeded) {{ 0 }} elseif ($null -ne $global:LASTEXITCODE -and $global:LASTEXITCODE -ne 0) {{ $global:LASTEXITCODE }} else {{ 1 }}; [Console]::Write(\"`e]633;D;$nexaExit`a\")\r"
         ));
     }
     if matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh") {
@@ -913,6 +913,10 @@ mod tests {
         assert!(powershell.contains("633;B;cmd_1"));
         assert!(powershell.contains("$nexaSucceeded=$?"));
         assert!(powershell.contains("633;D;$nexaExit"));
+
+        let commented =
+            terminal_command_payload("PowerShell", "cmd_1", "Write-Output hi # note").unwrap();
+        assert!(commented.contains("& {\r\nWrite-Output hi # note\r\n}\r\n$nexaSucceeded=$?"));
 
         let bash = terminal_command_payload("Bash", "cmd_2", "false").unwrap();
         assert!(bash.contains("633;B;cmd_2"));

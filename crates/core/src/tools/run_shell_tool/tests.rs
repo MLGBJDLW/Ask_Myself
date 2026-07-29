@@ -396,12 +396,13 @@ async fn test_external_command_emits_a_completed_process_activity() {
         .expect("run_shell result");
 
     assert!(!result.is_error, "unexpected result: {}", result.content);
-    assert_eq!(
-        result.artifacts.as_ref().unwrap()["activityId"],
-        "node-version-activity"
-    );
+    let activity_id = result.artifacts.as_ref().unwrap()["activityId"]
+        .as_str()
+        .expect("process activity id");
+    assert!(activity_id.starts_with("process_"));
+    assert_ne!(activity_id, "node-version-activity");
     let observation = runtime
-        .observe("node-version-activity", 0, Duration::from_millis(0))
+        .observe(activity_id, 0, Duration::from_millis(0))
         .await
         .unwrap();
     assert_eq!(

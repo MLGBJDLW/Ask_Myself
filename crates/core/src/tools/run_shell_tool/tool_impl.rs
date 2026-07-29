@@ -58,6 +58,7 @@ struct ManagedServiceLogs {
 struct ManagedService {
     child: tokio::process::Child,
     process_tree: ProcessTreeGuard,
+    activity_id: String,
     process_id: Option<u32>,
     program: String,
     ready_url: Option<reqwest::Url>,
@@ -70,6 +71,10 @@ struct ManagedService {
     conversation_id: Option<String>,
     stdout_task: Option<tokio::task::JoinHandle<()>>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn new_process_activity_id() -> String {
+    format!("process_{}", uuid::Uuid::new_v4())
 }
 
 #[derive(Clone)]
@@ -213,7 +218,7 @@ fn spawn_service_monitor(service_id: String) {
                     drop(services);
                     service.process_tree.terminate();
                     let _ = service.activity_runtime.transition(
-                        &service_id,
+                        &service.activity_id,
                         ActivityState::Failed,
                         serde_json::json!({ "error": error.to_string() }),
                     );
@@ -477,8 +482,9 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         }
     }
 
+    let activity_id = new_process_activity_id();
     let mut activity_spec = ActivitySpec::new(ActivitySurface::Process, TOOL_NAME)
-        .with_activity_id(call_id)
+        .with_activity_id(&activity_id)
         .with_cwd(cwd.display().to_string());
     if let Some(conversation_id) = conversation_id {
         activity_spec = activity_spec.with_conversation_id(conversation_id);
@@ -494,7 +500,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         Ok(spawned) => spawned,
         Err(error) => {
             let _ = activity_runtime.transition(
-                call_id,
+                &activity_id,
                 ActivityState::Failed,
                 serde_json::json!({ "error": error }),
             );
@@ -504,7 +510,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
     let logs = Arc::new(tokio::sync::Mutex::new(ManagedServiceLogs::default()));
     let process_id = child.id();
     let _ = activity_runtime.append(
-        call_id,
+        &activity_id,
         ActivityEventKind::CommandStarted,
         serde_json::json!({
             "program": program,
@@ -518,7 +524,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
             Arc::clone(&logs),
             true,
             activity_runtime.clone(),
-            call_id.to_string(),
+            activity_id.clone(),
         )
     });
     let stderr_task = child.stderr.take().map(|stderr| {
@@ -527,7 +533,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
             Arc::clone(&logs),
             false,
             activity_runtime.clone(),
-            call_id.to_string(),
+            activity_id.clone(),
         )
     });
     let started_at = Instant::now();
@@ -544,6 +550,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 let service = ManagedService {
                     child,
                     process_tree,
+                    activity_id,
                     process_id,
                     program: program.to_string(),
                     ready_url: requested_ready_url,
@@ -565,7 +572,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 process_tree.terminate();
                 let _ = child.kill().await;
                 let _ = activity_runtime.transition(
-                    call_id,
+                    &activity_id,
                     ActivityState::Failed,
                     serde_json::json!({ "error": error.to_string() }),
                 );
@@ -583,12 +590,12 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         if let Some(ready_url) = ready_url.as_ref() {
             if readiness_probe(ready_url).await {
                 let _ = activity_runtime.append(
-                    call_id,
+                    &activity_id,
                     ActivityEventKind::ReadyUrl,
                     serde_json::json!({ "url": ready_url.as_str() }),
                 );
                 let _ = activity_runtime.transition(
-                    call_id,
+                    &activity_id,
                     ActivityState::Ready,
                     serde_json::json!({ "url": ready_url.as_str() }),
                 );
@@ -597,6 +604,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     ManagedService {
                         child,
                         process_tree,
+                        activity_id: activity_id.clone(),
                         process_id,
                         program: program.to_string(),
                         ready_url: Some(ready_url.clone()),
@@ -621,8 +629,8 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
-                    "activityId": call_id,
-                    "cursor": activity_runtime.get(call_id).map(|record| record.last_event_seq),
+                    "activityId": activity_id,
+                    "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "ready",
@@ -644,6 +652,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 ManagedService {
                     child,
                     process_tree,
+                    activity_id: activity_id.clone(),
                     process_id,
                     program: program.to_string(),
                     ready_url: ready_url.clone(),
@@ -672,8 +681,8 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
-                    "activityId": call_id,
-                    "cursor": activity_runtime.get(call_id).map(|record| record.last_event_seq),
+                    "activityId": activity_id,
+                    "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "running",
@@ -738,9 +747,10 @@ async fn status_service(
             let program = service.program.clone();
             let auto_promoted = service.auto_promoted;
             let uptime_ms = service.started_at.elapsed().as_millis() as u64;
+            let activity_id = service.activity_id.clone();
             let cursor = service
                 .activity_runtime
-                .get(service_id)
+                .get(&activity_id)
                 .map(|record| record.last_event_seq);
             drop(registry);
             let healthy = match ready_url.as_ref() {
@@ -767,7 +777,7 @@ async fn status_service(
                 is_error: healthy == Some(false),
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
-                    "activityId": service_id,
+                    "activityId": activity_id,
                     "cursor": cursor,
                     "serviceId": service_id,
                     "processId": process_id,
@@ -831,7 +841,7 @@ async fn manage_service(
     .await;
     let log_snapshot = service_log_snapshot(&service.logs).await;
     let _ = service.activity_runtime.transition(
-        service_id,
+        &service.activity_id,
         ActivityState::Cancelled,
         serde_json::json!({ "reason": "stopped_by_tool" }),
     );
@@ -844,8 +854,8 @@ async fn manage_service(
         is_error: false,
         artifacts: Some(serde_json::json!({
             "kind": "managedService",
-            "activityId": service_id,
-            "cursor": service.activity_runtime.get(service_id).map(|record| record.last_event_seq),
+            "activityId": service.activity_id,
+            "cursor": service.activity_runtime.get(&service.activity_id).map(|record| record.last_event_seq),
             "serviceId": service_id,
             "processId": service.process_id,
             "status": "stopped",
@@ -876,12 +886,12 @@ async fn exited_service_result(
         ActivityState::Failed
     };
     let _ = service.activity_runtime.append(
-        service_id,
+        &service.activity_id,
         ActivityEventKind::CommandFinished,
         serde_json::json!({ "exitCode": exit_code }),
     );
     let _ = service.activity_runtime.transition(
-        service_id,
+        &service.activity_id,
         state,
         serde_json::json!({ "exitCode": exit_code }),
     );
@@ -912,12 +922,15 @@ async fn exited_service_result(
         .map(|changes| changes.artifact)
         .unwrap_or_else(|| serde_json::json!({ "kind": "managedService" }));
     if let Some(object) = artifacts.as_object_mut() {
-        object.insert("activityId".to_string(), serde_json::json!(service_id));
+        object.insert(
+            "activityId".to_string(),
+            serde_json::json!(service.activity_id),
+        );
         object.insert(
             "cursor".to_string(),
             serde_json::json!(service
                 .activity_runtime
-                .get(service_id)
+                .get(&service.activity_id)
                 .map(|record| record.last_event_seq)),
         );
         object.insert(
@@ -1086,6 +1099,16 @@ mod review_regression_tests {
             &vec![b'x'; MAX_SERVICE_LOG_BYTES + 128]
         ));
         assert!(output.len() <= MAX_SERVICE_LOG_BYTES);
+    }
+
+    #[test]
+    fn process_activity_ids_are_independent_of_provider_call_ids() {
+        let first = new_process_activity_id();
+        let second = new_process_activity_id();
+
+        assert!(first.starts_with("process_"));
+        assert_ne!(first, second);
+        assert_ne!(first, "call_0");
     }
 
     #[tokio::test]
