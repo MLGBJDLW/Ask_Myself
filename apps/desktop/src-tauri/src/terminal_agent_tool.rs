@@ -324,14 +324,13 @@ impl TerminalAgentTool {
                 "terminal_session command exceeds {MAX_INPUT_CHARS} characters"
             )));
         }
-        if !terminal_activity_run_supported(&snapshot.session.shell) {
-            return Err(CoreError::InvalidInput(format!(
+        let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
+        let payload = terminal_command_payload(&snapshot.session.shell, &command_id, command)
+            .ok_or_else(|| CoreError::InvalidInput(format!(
                 "terminal_session run is unavailable for {} because that shell has no reliable lifecycle-marker integration; use write/inspect or start a PowerShell, Bash, or Zsh session.",
                 snapshot.session.shell
-            )));
-        }
+            )))?;
 
-        let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
         reserve_terminal_activity(&self.active_activities, &snapshot.session.id, call_id)?;
         let record = match runtime.start(
             ActivitySpec::new(ActivitySurface::Terminal, "terminal_session")
@@ -364,7 +363,6 @@ impl TerminalAgentTool {
         }
 
         let baseline_cursor = snapshot.output_end;
-        let payload = terminal_command_payload(&snapshot.session.shell, &command_id, command);
         if let Err(error) = self.state.write_session(&snapshot.session.id, &payload) {
             let _ = runtime.transition(
                 call_id,
@@ -465,23 +463,18 @@ enum ShellMarker {
     CwdChanged(String),
 }
 
-fn terminal_command_payload(shell: &str, command_id: &str, command: &str) -> String {
+fn terminal_command_payload(shell: &str, command_id: &str, command: &str) -> Option<String> {
     if shell.contains("PowerShell") {
-        return format!(
+        return Some(format!(
             "[Console]::Write(\"`e]633;B;{command_id}`a\"); & {{ {command} }}; $nexaSucceeded=$?; $nexaExit=if ($nexaSucceeded) {{ 0 }} elseif ($null -ne $global:LASTEXITCODE -and $global:LASTEXITCODE -ne 0) {{ $global:LASTEXITCODE }} else {{ 1 }}; [Console]::Write(\"`e]633;D;$nexaExit`a\")\r"
-        );
+        ));
     }
     if matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh") {
-        return format!(
+        return Some(format!(
             "printf '\\033]633;B;{command_id}\\007'\n{command}\n__nexa_exit=$?\nprintf '\\033]633;D;%s\\007' \"$__nexa_exit\"\n"
-        );
+        ));
     }
-    format!("{command}\r")
-}
-
-fn terminal_activity_run_supported(shell: &str) -> bool {
-    shell.contains("PowerShell")
-        || matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh")
+    None
 }
 
 #[cfg(test)]
@@ -913,16 +906,15 @@ mod tests {
 
     #[test]
     fn terminal_run_requires_marker_integration() {
-        assert!(!terminal_activity_run_supported("Command Prompt"));
-        assert!(terminal_activity_run_supported("PowerShell"));
-        assert!(terminal_activity_run_supported("Zsh"));
+        assert!(terminal_command_payload("Command Prompt", "cmd_0", "dir").is_none());
 
-        let powershell = terminal_command_payload("PowerShell", "cmd_1", "Get-Item missing");
+        let powershell =
+            terminal_command_payload("PowerShell", "cmd_1", "Get-Item missing").unwrap();
         assert!(powershell.contains("633;B;cmd_1"));
         assert!(powershell.contains("$nexaSucceeded=$?"));
         assert!(powershell.contains("633;D;$nexaExit"));
 
-        let bash = terminal_command_payload("Bash", "cmd_2", "false");
+        let bash = terminal_command_payload("Bash", "cmd_2", "false").unwrap();
         assert!(bash.contains("633;B;cmd_2"));
         assert!(bash.contains("__nexa_exit=$?"));
         assert!(bash.contains("633;D;%s"));
