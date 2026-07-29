@@ -249,7 +249,7 @@ test.beforeEach(async ({ page }) => {
         }
         case 'list_tool_access_map_cmd':
           return clone(toolAccess);
-        case 'list_tool_approval_policies_cmd':
+        case 'list_tool_permission_policies_cmd':
           return {
             session: [{ toolName: 'run_shell', decision: 'allow_session' }],
             persisted: [{ toolName: 'edit_file', decision: 'never', createdAt: nowIso }],

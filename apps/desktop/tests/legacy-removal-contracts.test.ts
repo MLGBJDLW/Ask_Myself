@@ -133,6 +133,46 @@ test('Tool execution has one context-based entry point', () => {
   }
 });
 
+test('tool approvals use structured permission policies exclusively', () => {
+  const approval = source('../../crates/core/src/approval.rs');
+  const session = source('src-tauri/src/desktop_agent_session.rs');
+
+  for (const symbol of [
+    'get_tool_approval_policy',
+    'save_tool_approval_policy',
+    'delete_tool_approval_policy',
+  ]) {
+    assert(!approval.includes(symbol), `approval storage must not expose ${symbol}`);
+    assert(!session.includes(symbol), `desktop runtime must not fall back through ${symbol}`);
+  }
+  assert(
+    approval.includes('resolve_tool_permission_policy'),
+    'approval storage must resolve exact and wildcard structured policies',
+  );
+  assert(
+    !approval.includes('pub permission_key: Option<String>'),
+    'persisted permission policies must not model legacy rows with optional keys',
+  );
+});
+
+test('built-in capabilities are described directly as capability packages', () => {
+  const packages = source('../../crates/core/src/plugins.rs');
+  const api = source('src/lib/api.ts');
+  const types = source('src/types/conversation.ts');
+
+  for (const legacyName of [
+    'PluginManifest',
+    'BuiltinPlugin',
+    'ToolPluginInfo',
+    'builtin_plugin_manifests',
+    'plugin_for_tool',
+  ]) {
+    assert(!packages.includes(legacyName), `capability package registry must not retain ${legacyName}`);
+  }
+  assert(!api.includes('listBuiltinPlugins'), 'desktop API must expose capability packages');
+  assert(!types.includes('interface PluginManifest'), 'frontend must project CapabilityPackageView');
+});
+
 for (const { name, fn } of tests) {
   try {
     fn();

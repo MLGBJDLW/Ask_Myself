@@ -3,7 +3,7 @@ import type {
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
-  ToolPluginInfo,
+  CapabilityOwner,
   ToolRenderKind,
   ToolRunCapabilities,
 } from '../../types/conversation';
@@ -70,7 +70,7 @@ function persistedToolCallFromRecord(toolCall: Record<string, unknown>): ToolCal
   )
     ? toolCall.argsStatus
     : defaultArgsStatusForToolCall(status, argumentsText);
-  const plugin = asRecord(toolCall.plugin);
+  const owner = asRecord(toolCall.owner);
   const capabilities = asRecord(toolCall.capabilities);
   const artifacts = asRecord(toolCall.artifacts);
 
@@ -83,7 +83,7 @@ function persistedToolCallFromRecord(toolCall: Record<string, unknown>): ToolCal
       typeof toolCall.renderKind === 'string'
         ? toolCall.renderKind as ToolRenderKind
         : undefined,
-    plugin: plugin ? plugin as unknown as ToolPluginInfo : undefined,
+    owner: owner ? owner as unknown as CapabilityOwner : undefined,
     capabilities: capabilities ? capabilities as unknown as ToolRunCapabilities : undefined,
     argsStatus,
     argsBytes:

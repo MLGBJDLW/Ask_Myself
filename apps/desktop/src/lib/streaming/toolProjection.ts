@@ -34,13 +34,13 @@ export function createToolCall(partial: {
   argsStatus?: ToolCallEvent['argsStatus'];
   renderKind?: ToolCallEvent['renderKind'];
   capabilities?: ToolCallEvent['capabilities'];
-  plugin?: ToolCallEvent['plugin'];
+  owner?: ToolCallEvent['owner'];
 }): ToolCallEvent {
   const argumentsText = partial.arguments ?? '';
   return {
     callId: partial.callId,
     toolName: partial.toolName,
-    plugin: partial.plugin,
+    owner: partial.owner,
     arguments: argumentsText,
     status: partial.status ?? 'starting',
     renderKind: partial.renderKind,
@@ -76,7 +76,7 @@ function patchToolCallFromRun(prev: ToolCallEvent, run: ToolRunItem): ToolCallEv
     status,
     renderKind: run.renderKind ?? prev.renderKind,
     capabilities: run.capabilities ?? prev.capabilities,
-    plugin: run.plugin ?? prev.plugin,
+    owner: run.owner ?? prev.owner,
     argsStatus: argsStatusForToolRun(run, status),
     argsBytes: Math.max(prev.argsBytes, argumentsText.length),
     content: run.content ?? prev.content,
@@ -215,7 +215,7 @@ export function applyToolRunEvent(state: StreamToolProjectionState, run: ToolRun
       argsStatus: argsStatusForToolRun(run, status),
       renderKind: run.renderKind,
       capabilities: run.capabilities,
-      plugin: run.plugin,
+      owner: run.owner,
     });
     const nextCall = patchToolCallFromRun(base, run);
     insertPendingToolCall(state, nextCall, roundThinking);

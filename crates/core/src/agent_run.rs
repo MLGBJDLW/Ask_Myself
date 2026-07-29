@@ -1146,7 +1146,7 @@ mod tests {
             run: ToolRunItem {
                 call_id: "call-1".to_string(),
                 tool_name: "search_knowledge_base".to_string(),
-                plugin: crate::plugins::plugin_for_tool("search_knowledge_base"),
+                owner: crate::plugins::capability_owner_for_tool("search_knowledge_base"),
                 status: ToolRunStatus::Completed,
                 arguments: None,
                 render_kind: ToolRenderKind::Search,
@@ -1444,7 +1444,7 @@ mod tests {
         ToolRunItem {
             call_id: "call-1".to_string(),
             tool_name: "search_knowledge_base".to_string(),
-            plugin: crate::plugins::plugin_for_tool("search_knowledge_base"),
+            owner: crate::plugins::capability_owner_for_tool("search_knowledge_base"),
             status,
             arguments: Some("{}".to_string()),
             render_kind: ToolRenderKind::Search,

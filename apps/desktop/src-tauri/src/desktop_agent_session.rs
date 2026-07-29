@@ -1438,29 +1438,17 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
                 return decision;
             }
 
-            if let Ok(Some(policy)) = db.get_tool_permission_policy(&req.permission_key) {
+            let permission_key = ToolPermissionKey::from_request(&req);
+            if let Ok(Some(policy)) = db.resolve_tool_permission_policy(&permission_key) {
                 if policy == "never" {
                     return ApprovalDecision::Deny;
                 }
             }
-            let allow_legacy_tool_policy = req.tool_name != "project_tool";
-            if allow_legacy_tool_policy {
-                if let Ok(Some(policy)) = db.get_tool_approval_policy(&req.tool_name) {
-                    if policy == "never" {
-                        return ApprovalDecision::Deny;
-                    }
-                }
-            }
 
             if matches!(
-                store.get(&req.permission_key),
+                store.resolve(&permission_key),
                 Some(ApprovalDecision::AllowSession)
-            ) || (allow_legacy_tool_policy
-                && matches!(
-                    store.get(&req.tool_name),
-                    Some(ApprovalDecision::AllowSession)
-                ))
-            {
+            ) {
                 return ApprovalDecision::AllowOnce;
             }
 

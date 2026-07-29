@@ -9,7 +9,7 @@ function preparingFileRun(additions: number, content: string): ToolRunItem {
   return {
     callId: 'call-live-file',
     toolName: 'create_file',
-    plugin: {
+    owner: {
       id: 'file-workspace',
       name: 'File Workspace',
       capability: 'Scoped file work',

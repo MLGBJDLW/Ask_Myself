@@ -1285,6 +1285,16 @@ Every answer that uses knowledge base search results.
            AND COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.persistence'), ''), 'durable') = 'durable'
          ON CONFLICT(run_id, event_seq) DO NOTHING;",
     ),
+    (
+        "v078_migrate_tool_approval_policies",
+        "INSERT OR IGNORE INTO tool_permission_policies (
+            permission_key, tool_name, target_kind, target_value, decision, created_at
+         )
+         SELECT
+            tool_name || '|tool|*', tool_name, 'tool', '*', decision, created_at
+         FROM tool_approval_policies;
+         DROP TABLE tool_approval_policies;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1541,6 +1551,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migrates_tool_name_approval_policies_to_structured_wildcards() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "CREATE TABLE tool_approval_policies (
+                tool_name TEXT PRIMARY KEY NOT NULL,
+                decision TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO tool_approval_policies (tool_name, decision, created_at)
+             VALUES ('create_file', 'never', '2026-07-01T00:00:00Z');
+             DELETE FROM _migrations
+             WHERE name = 'v078_migrate_tool_approval_policies';",
+        )
+        .expect("simulate pre-v078 approval storage");
+
+        run_migrations(&conn).expect("upgrade should migrate approval policies");
+
+        let migrated: (String, String, String, String, String) = conn
+            .query_row(
+                "SELECT permission_key, tool_name, target_kind, target_value, decision
+                 FROM tool_permission_policies
+                 WHERE permission_key = 'create_file|tool|*'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("structured wildcard policy");
+        assert_eq!(
+            migrated,
+            (
+                "create_file|tool|*".to_string(),
+                "create_file".to_string(),
+                "tool".to_string(),
+                "*".to_string(),
+                "never".to_string(),
+            )
+        );
+
+        let legacy_table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'tool_approval_policies'",
+                [],
+                |row| row.get::<_, i64>(0).map(|count| count > 0),
+            )
+            .unwrap();
+        assert!(!legacy_table_exists);
     }
 
     #[test]

@@ -3,25 +3,26 @@ use serde_json::json;
 use crate::office_runtime::{OfficeDependencyStatus, OfficeRuntimeReadiness};
 
 use super::{
-    PluginCheckSeverity, PluginManifest, PluginProviderCatalog, PluginRuntimeCheck,
-    PluginRuntimeStatus, PluginSettingsField, PluginSettingsSchema,
+    CapabilityCheckSeverity, CapabilityPackageView, CapabilityProviderCatalog,
+    CapabilityRuntimeCheck, CapabilityRuntimeStatus, CapabilitySettingsField,
+    CapabilitySettingsSchema,
 };
 
 pub(super) fn enrich_manifest(
-    mut manifest: PluginManifest,
+    mut manifest: CapabilityPackageView,
     readiness: Option<&OfficeRuntimeReadiness>,
-) -> PluginManifest {
+) -> CapabilityPackageView {
     manifest.settings_schema = Some(settings_schema());
     manifest.provider_catalogs = vec![document_format_catalog(), python_package_catalog()];
     manifest.runtime_checks = runtime_checks(readiness);
     manifest
 }
 
-fn settings_schema() -> PluginSettingsSchema {
-    PluginSettingsSchema {
+fn settings_schema() -> CapabilitySettingsSchema {
+    CapabilitySettingsSchema {
         config_key: "officeRuntime".to_string(),
         fields: vec![
-            PluginSettingsField {
+            CapabilitySettingsField {
                 key: "managedEnvironment".to_string(),
                 label: "Managed Python environment".to_string(),
                 kind: "readOnlyPath".to_string(),
@@ -32,7 +33,7 @@ fn settings_schema() -> PluginSettingsSchema {
                 options_source: None,
                 default_value: Some(json!("runtimes/office-python")),
             },
-            PluginSettingsField {
+            CapabilitySettingsField {
                 key: "requirements".to_string(),
                 label: "Python requirements".to_string(),
                 kind: "readOnlyPath".to_string(),
@@ -44,7 +45,7 @@ fn settings_schema() -> PluginSettingsSchema {
                 options_source: Some("officeRuntime.requirementsPath".to_string()),
                 default_value: None,
             },
-            PluginSettingsField {
+            CapabilitySettingsField {
                 key: "prepareAction".to_string(),
                 label: "Prepare action".to_string(),
                 kind: "workflow".to_string(),
@@ -60,8 +61,8 @@ fn settings_schema() -> PluginSettingsSchema {
     }
 }
 
-fn document_format_catalog() -> PluginProviderCatalog {
-    PluginProviderCatalog {
+fn document_format_catalog() -> CapabilityProviderCatalog {
+    CapabilityProviderCatalog {
         id: "officeDocumentFormats".to_string(),
         label: "Office document formats".to_string(),
         item_kind: "documentFormat".to_string(),
@@ -105,8 +106,8 @@ fn document_format_catalog() -> PluginProviderCatalog {
     }
 }
 
-fn python_package_catalog() -> PluginProviderCatalog {
-    PluginProviderCatalog {
+fn python_package_catalog() -> CapabilityProviderCatalog {
+    CapabilityProviderCatalog {
         id: "officePythonPackages".to_string(),
         label: "Office Python packages".to_string(),
         item_kind: "pythonPackage".to_string(),
@@ -150,13 +151,13 @@ fn python_package_catalog() -> PluginProviderCatalog {
     }
 }
 
-fn runtime_checks(readiness: Option<&OfficeRuntimeReadiness>) -> Vec<PluginRuntimeCheck> {
+fn runtime_checks(readiness: Option<&OfficeRuntimeReadiness>) -> Vec<CapabilityRuntimeCheck> {
     let Some(readiness) = readiness else {
         return vec![check(
             "readiness",
             "Runtime readiness",
-            PluginRuntimeStatus::Unknown,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Unknown,
+            CapabilityCheckSeverity::Info,
             "Office runtime readiness is checked by the desktop host.",
         )];
     };
@@ -174,17 +175,29 @@ fn runtime_checks(readiness: Option<&OfficeRuntimeReadiness>) -> Vec<PluginRunti
     checks
 }
 
-fn readiness_status(status: &str) -> (PluginRuntimeStatus, PluginCheckSeverity) {
+fn readiness_status(status: &str) -> (CapabilityRuntimeStatus, CapabilityCheckSeverity) {
     match status {
-        "ready" => (PluginRuntimeStatus::Pass, PluginCheckSeverity::Info),
-        "degraded" => (PluginRuntimeStatus::Warning, PluginCheckSeverity::Warning),
-        "missing" => (PluginRuntimeStatus::Warning, PluginCheckSeverity::Warning),
-        "blocked" => (PluginRuntimeStatus::Error, PluginCheckSeverity::Error),
-        _ => (PluginRuntimeStatus::Unknown, PluginCheckSeverity::Info),
+        "ready" => (CapabilityRuntimeStatus::Pass, CapabilityCheckSeverity::Info),
+        "degraded" => (
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
+        ),
+        "missing" => (
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
+        ),
+        "blocked" => (
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
+        ),
+        _ => (
+            CapabilityRuntimeStatus::Unknown,
+            CapabilityCheckSeverity::Info,
+        ),
     }
 }
 
-fn dependency_check(dep: &OfficeDependencyStatus) -> PluginRuntimeCheck {
+fn dependency_check(dep: &OfficeDependencyStatus) -> CapabilityRuntimeCheck {
     let (status, severity) = dependency_status(dep);
     check(
         &format!("dependency-{}", dep.id),
@@ -195,14 +208,31 @@ fn dependency_check(dep: &OfficeDependencyStatus) -> PluginRuntimeCheck {
     )
 }
 
-fn dependency_status(dep: &OfficeDependencyStatus) -> (PluginRuntimeStatus, PluginCheckSeverity) {
+fn dependency_status(
+    dep: &OfficeDependencyStatus,
+) -> (CapabilityRuntimeStatus, CapabilityCheckSeverity) {
     match dep.status.as_str() {
-        "ready" => (PluginRuntimeStatus::Pass, PluginCheckSeverity::Info),
-        "broken" if dep.required => (PluginRuntimeStatus::Error, PluginCheckSeverity::Error),
-        "broken" => (PluginRuntimeStatus::Warning, PluginCheckSeverity::Warning),
-        "missing" if dep.required => (PluginRuntimeStatus::Error, PluginCheckSeverity::Error),
-        "missing" => (PluginRuntimeStatus::Warning, PluginCheckSeverity::Warning),
-        _ => (PluginRuntimeStatus::Unknown, PluginCheckSeverity::Info),
+        "ready" => (CapabilityRuntimeStatus::Pass, CapabilityCheckSeverity::Info),
+        "broken" if dep.required => (
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
+        ),
+        "broken" => (
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
+        ),
+        "missing" if dep.required => (
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
+        ),
+        "missing" => (
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
+        ),
+        _ => (
+            CapabilityRuntimeStatus::Unknown,
+            CapabilityCheckSeverity::Info,
+        ),
     }
 }
 
@@ -232,11 +262,11 @@ fn dependency_message(dep: &OfficeDependencyStatus) -> String {
 fn check(
     id: &str,
     label: &str,
-    status: PluginRuntimeStatus,
-    severity: PluginCheckSeverity,
+    status: CapabilityRuntimeStatus,
+    severity: CapabilityCheckSeverity,
     message: &str,
-) -> PluginRuntimeCheck {
-    PluginRuntimeCheck {
+) -> CapabilityRuntimeCheck {
+    CapabilityRuntimeCheck {
         id: id.to_string(),
         label: label.to_string(),
         status,
@@ -284,17 +314,20 @@ mod tests {
         }
     }
 
-    fn manifest() -> PluginManifest {
-        PluginManifest {
+    fn manifest() -> CapabilityPackageView {
+        CapabilityPackageView {
             id: "office-documents".to_string(),
             name: "Office Documents".to_string(),
             capability: "Document generation and analysis".to_string(),
             description: "test".to_string(),
             built_in: true,
-            ecosystem_surface: crate::ecosystem::EcosystemSurfaceKind::CapabilityPackage,
+            surface: crate::ecosystem::EcosystemSurfaceKind::CapabilityPackage,
+            version: 1,
             tools: vec!["prepare_document_tools".to_string()],
+            skills: Vec::new(),
             settings_surfaces: vec!["office-runtime".to_string()],
             workflows: vec!["generate-presentation".to_string()],
+            permissions: crate::capability_package::CapabilityPackagePermissions::default(),
             settings_schema: None,
             provider_catalogs: Vec::new(),
             runtime_checks: Vec::new(),
@@ -314,7 +347,7 @@ mod tests {
             .iter()
             .any(|catalog| catalog.id == "officeDocumentFormats"));
         assert!(manifest.runtime_checks.iter().any(|check| {
-            check.id == "dependency-openpyxl" && check.status == PluginRuntimeStatus::Error
+            check.id == "dependency-openpyxl" && check.status == CapabilityRuntimeStatus::Error
         }));
     }
 
@@ -323,7 +356,7 @@ mod tests {
         let manifest = enrich_manifest(manifest(), None);
 
         assert!(manifest.runtime_checks.iter().any(|check| {
-            check.id == "readiness" && check.status == PluginRuntimeStatus::Unknown
+            check.id == "readiness" && check.status == CapabilityRuntimeStatus::Unknown
         }));
     }
 }

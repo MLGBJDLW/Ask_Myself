@@ -264,7 +264,7 @@ test.beforeEach(async ({ page }) => {
             const contextToolRun = (status: "running" | "completed") => ({
               callId: "context-tool-call",
               toolName: "fetch_url",
-              plugin: {
+              owner: {
                 id: "web",
                 name: "Web",
                 capability: "fetch",

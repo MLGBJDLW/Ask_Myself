@@ -161,7 +161,7 @@ function toolRun(input: {
   return {
     callId: input.callId,
     toolName: 'search_knowledge_base',
-    plugin: {
+    owner: {
       id: 'knowledge',
       name: 'Knowledge',
       capability: 'search',

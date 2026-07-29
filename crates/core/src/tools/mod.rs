@@ -13,7 +13,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::ToolDefinition;
 use crate::models::Source;
-use crate::plugins::ToolPluginInfo;
+use crate::plugins::CapabilityOwner;
 use crate::tool_visibility_policy::{
     decide_tool_visibility, ToolVisibilityDecision, ToolVisibilityInput,
 };
@@ -305,7 +305,7 @@ pub struct ToolAccessProfile {
 pub struct ToolInvocation {
     pub call_id: String,
     pub tool_name: String,
-    pub plugin: ToolPluginInfo,
+    pub owner: CapabilityOwner,
     pub arguments: serde_json::Value,
     pub capabilities: ToolRunCapabilities,
     pub access_profile: ToolAccessProfile,
@@ -768,8 +768,8 @@ impl ToolRegistry {
         self.capability_descriptor(name, args).access_profile
     }
 
-    pub fn plugin_info(&self, name: &str) -> ToolPluginInfo {
-        crate::plugins::plugin_for_tool(name)
+    pub fn plugin_info(&self, name: &str) -> CapabilityOwner {
+        crate::plugins::capability_owner_for_tool(name)
     }
 
     pub fn build_invocation(
@@ -782,11 +782,11 @@ impl ToolRegistry {
         let descriptor = self.capability_descriptor(&tool_name, &arguments);
         let capabilities = descriptor.capabilities;
         let access_profile = descriptor.access_profile;
-        let plugin = descriptor.package;
+        let owner = descriptor.owner;
         ToolInvocation {
             call_id: call_id.into(),
             tool_name,
-            plugin,
+            owner,
             wait_for_previous: invocation_waits_for_previous(&arguments),
             arguments,
             capabilities,
@@ -1290,7 +1290,7 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
     if arg_size > max_bytes {
         let lower = name.to_ascii_lowercase();
         let guidance = if lower == "manage_skill" || lower.contains("manage_skill") {
-            "Keep SKILL.md and its declared resource bundle within the package safety envelope; use the filesystem importer for exceptionally large binary assets."
+            "Keep SKILL.md and its declared resource bundle within the owner safety envelope; use the filesystem importer for exceptionally large binary assets."
         } else if max_bytes == MAX_FILE_MUTATION_ARG_BYTES {
             "Split very large rewrites into smaller targeted edits, or use run_shell stdin for bulk generated content."
         } else {
@@ -1859,7 +1859,7 @@ mod tests {
         let descriptor = registry.capability_descriptor("create_file", &args);
 
         assert_eq!(descriptor.name, "create_file");
-        assert_eq!(descriptor.package.id, "file-workspace");
+        assert_eq!(descriptor.owner.id, "file-workspace");
         assert_eq!(descriptor.categories, vec!["filesystem".to_string()]);
         assert_eq!(descriptor.ui.render_kind, ToolRenderKind::FileChange);
         assert_eq!(descriptor.ui.display_category, "filesystem");
@@ -2014,8 +2014,8 @@ mod tests {
 
             assert_eq!(descriptor.name, name);
             assert!(
-                !descriptor.package.id.is_empty(),
-                "{} should belong to a capability package",
+                !descriptor.owner.id.is_empty(),
+                "{} should belong to a capability owner",
                 descriptor.name
             );
             assert_eq!(
@@ -2043,7 +2043,7 @@ mod tests {
         let descriptor =
             registry.capability_descriptor("web_search", &serde_json::json!({ "query": "nexa" }));
 
-        assert_eq!(descriptor.package.id, "web-research");
+        assert_eq!(descriptor.owner.id, "web-research");
         assert_eq!(descriptor.ui.render_kind, ToolRenderKind::Search);
         assert!(descriptor.capabilities.read_only);
         assert_eq!(
@@ -2065,7 +2065,7 @@ mod tests {
             &serde_json::json!({ "url": "https://example.com/image.png", "filename": "image.png" }),
         );
 
-        assert_eq!(descriptor.package.id, "web-research");
+        assert_eq!(descriptor.owner.id, "web-research");
         assert_eq!(descriptor.ui.render_kind, ToolRenderKind::FileChange);
         assert!(!descriptor.capabilities.read_only);
         assert!(descriptor.access_profile.can_access_network);
@@ -2240,7 +2240,7 @@ mod tests {
 
         assert_eq!(invocation.call_id, "call-1");
         assert_eq!(invocation.tool_name, "create_file");
-        assert_eq!(invocation.plugin.id, "file-workspace");
+        assert_eq!(invocation.owner.id, "file-workspace");
         assert!(invocation.wait_for_previous);
         assert!(invocation.capabilities.destructive);
         assert!(invocation.access_profile.can_write);

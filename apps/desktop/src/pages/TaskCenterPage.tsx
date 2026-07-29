@@ -38,7 +38,7 @@ import type {
   AgentTaskArtifactSummary,
   AgentTaskArtifactVersion,
   AgentTaskRunListItem,
-  ApprovalPolicyList,
+  ToolPermissionPolicyList,
   ToolAccessInfo,
 } from '../types/conversation';
 import type {
@@ -319,7 +319,7 @@ export function TaskCenterPage() {
   const [artifactDraft, setArtifactDraft] = useState<ArtifactDraft>({ title: '', summary: '', content: '' });
   const [savingArtifactId, setSavingArtifactId] = useState<string | null>(null);
   const [toolAccess, setToolAccess] = useState<ToolAccessInfo[]>([]);
-  const [approvalPolicies, setApprovalPolicies] = useState<ApprovalPolicyList>({ persisted: [], session: [] });
+  const [approvalPolicies, setApprovalPolicies] = useState<ToolPermissionPolicyList>({ persisted: [], session: [] });
   const [projectMemories, setProjectMemories] = useState<api.ProjectMemory[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -339,7 +339,7 @@ export function TaskCenterPage() {
       const [recentTasks, accessMap, policies, recentSchedulerEvents] = await Promise.all([
         api.listRecentAgentTaskRuns(80),
         api.listToolAccessMap(),
-        api.listToolApprovalPolicies().catch(() => ({ persisted: [], session: [] })),
+        api.listToolPermissionPolicies().catch(() => ({ persisted: [], session: [] })),
         api.listWorkflowAutomationSchedulerEvents(null, 50).catch((): WorkflowAutomationSchedulerEvent[] => []),
       ]);
       setTasks(recentTasks);

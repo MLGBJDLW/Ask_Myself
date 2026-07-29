@@ -635,7 +635,7 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::conversation::{
-        desktop_package_host_snapshot, filter_desktop_builtin_plugins_by_package_host,
+        desktop_package_host_snapshot, filter_desktop_capability_views_by_package_host,
         set_desktop_package_host_package_enabled, set_desktop_package_host_package_health,
     };
     use super::preview::{
@@ -1091,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_builtin_plugins_are_filtered_by_package_host_state() {
+    fn desktop_capability_views_are_filtered_by_package_host_state() {
         let db = Database::open_memory().unwrap();
         db.set_package_host_package_enabled("office-documents", false)
             .unwrap();
@@ -1101,9 +1101,9 @@ mod tests {
         )
         .unwrap();
 
-        let manifests = filter_desktop_builtin_plugins_by_package_host(
+        let manifests = filter_desktop_capability_views_by_package_host(
             &db,
-            nexa_core::plugins::builtin_plugin_manifests(),
+            nexa_core::plugins::builtin_capability_views(),
         )
         .unwrap();
         let ids = manifests

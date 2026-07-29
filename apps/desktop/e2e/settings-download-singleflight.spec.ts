@@ -85,9 +85,9 @@ test.beforeEach(async ({ page }) => {
         case "list_skills_cmd":
         case "list_mcp_servers_cmd":
         case "list_projects_cmd":
-        case "list_builtin_plugins_cmd":
+        case "list_capability_packages_cmd":
           return [];
-        case "list_tool_approval_policies_cmd":
+        case "list_tool_permission_policies_cmd":
           return { persisted: [], session: [] };
         case "get_app_config_cmd":
           return appConfig;

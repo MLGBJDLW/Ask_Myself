@@ -35,7 +35,7 @@ import type {
   AgentTaskArtifactVersion,
   CreateAgentTaskArtifactInput,
   UpdateAgentTaskArtifactInput,
-  PluginManifest,
+  CapabilityPackageView,
   PackageHealthState,
   PackageHostSnapshot,
   ToolAccessInfo,
@@ -891,8 +891,8 @@ export const captureBrowserEvidence = (
   mode: mode ?? null,
 });
 
-export const listBuiltinPlugins = (options?: { includeRuntimeChecks?: boolean }) =>
-  invoke<PluginManifest[]>('list_builtin_plugins_cmd', {
+export const listCapabilityPackages = (options?: { includeRuntimeChecks?: boolean }) =>
+  invoke<CapabilityPackageView[]>('list_capability_packages_cmd', {
     includeRuntimeChecks: options?.includeRuntimeChecks ?? false,
   });
 
@@ -1545,20 +1545,18 @@ export const suggestExplorations = (limit?: number) =>
 
 
 // ── Tool Approval ────────────────────────────────────────────────────
-import type { ApprovalDecisionValue, ApprovalPolicyList } from '../types';
+import type { ApprovalDecisionValue, ToolPermissionPolicyList } from '../types';
 
 export const approveToolCall = (requestId: string, decision: ApprovalDecisionValue) =>
   invoke<void>('approve_tool_call_cmd', { requestId, decision });
 
-export const listToolApprovalPolicies = () =>
-  invoke<ApprovalPolicyList>('list_tool_approval_policies_cmd');
+export const listToolPermissionPolicies = () =>
+  invoke<ToolPermissionPolicyList>('list_tool_permission_policies_cmd');
 
-export const deleteToolApprovalPolicy = (
-  toolName: string,
+export const deleteToolPermissionPolicy = (
   scope: 'session' | 'forever',
-  permissionKey?: string | null,
-) =>
-  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope, permissionKey });
+  permissionKey: string,
+) => invoke<void>('delete_tool_permission_policy_cmd', { scope, permissionKey });
 
-export const clearToolApprovalPolicies = () =>
-  invoke<void>('clear_tool_approval_policies_cmd');
+export const clearToolPermissionPolicies = () =>
+  invoke<void>('clear_tool_permission_policies_cmd');

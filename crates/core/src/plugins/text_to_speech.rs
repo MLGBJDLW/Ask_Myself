@@ -4,27 +4,28 @@ use crate::app_settings::TextToSpeechConfig;
 use crate::tts_provider_catalog::load_tts_provider_presets;
 
 use super::{
-    PluginCheckSeverity, PluginManifest, PluginProviderCatalog, PluginRuntimeCheck,
-    PluginRuntimeStatus, PluginSettingsField, PluginSettingsSchema,
+    CapabilityCheckSeverity, CapabilityPackageView, CapabilityProviderCatalog,
+    CapabilityRuntimeCheck, CapabilityRuntimeStatus, CapabilitySettingsField,
+    CapabilitySettingsSchema,
 };
 
 pub(super) fn enrich_manifest(
-    mut manifest: PluginManifest,
+    mut manifest: CapabilityPackageView,
     config: Option<&TextToSpeechConfig>,
-) -> PluginManifest {
+) -> CapabilityPackageView {
     manifest.settings_schema = Some(settings_schema());
     manifest.provider_catalogs = vec![provider_catalog()];
     manifest.runtime_checks = runtime_checks(config);
     manifest
 }
 
-fn provider_catalog() -> PluginProviderCatalog {
+fn provider_catalog() -> CapabilityProviderCatalog {
     let items = load_tts_provider_presets()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|preset| to_value(preset).ok())
         .collect();
-    PluginProviderCatalog {
+    CapabilityProviderCatalog {
         id: "ttsProviders".to_string(),
         label: "Text-to-speech providers".to_string(),
         item_kind: "providerPreset".to_string(),
@@ -32,8 +33,8 @@ fn provider_catalog() -> PluginProviderCatalog {
     }
 }
 
-fn settings_schema() -> PluginSettingsSchema {
-    PluginSettingsSchema {
+fn settings_schema() -> CapabilitySettingsSchema {
+    CapabilitySettingsSchema {
         config_key: "textToSpeech".to_string(),
         fields: vec![
             field(
@@ -96,8 +97,8 @@ fn field(
     required: bool,
     secret: bool,
     options_source: Option<&str>,
-) -> PluginSettingsField {
-    PluginSettingsField {
+) -> CapabilitySettingsField {
+    CapabilitySettingsField {
         key: key.to_string(),
         label: label.to_string(),
         kind: kind.to_string(),
@@ -109,13 +110,13 @@ fn field(
     }
 }
 
-fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck> {
+fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<CapabilityRuntimeCheck> {
     let Some(config) = config else {
         return vec![check(
             "configuration",
             "Configuration",
-            PluginRuntimeStatus::Unknown,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Unknown,
+            CapabilityCheckSeverity::Info,
             "Text-to-speech settings have not been loaded.",
         )];
     };
@@ -124,11 +125,11 @@ fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck
             "local-runtime",
             "Local runtime",
             if config.is_configured() {
-                PluginRuntimeStatus::Pass
+                CapabilityRuntimeStatus::Pass
             } else {
-                PluginRuntimeStatus::Error
+                CapabilityRuntimeStatus::Error
             },
-            PluginCheckSeverity::Error,
+            CapabilityCheckSeverity::Error,
             if config.is_configured() {
                 "sherpa-onnx executable and model files are configured."
             } else {
@@ -142,11 +143,11 @@ fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck
             "api-key",
             "API key",
             if config.api_key.trim().is_empty() {
-                PluginRuntimeStatus::Warning
+                CapabilityRuntimeStatus::Warning
             } else {
-                PluginRuntimeStatus::Pass
+                CapabilityRuntimeStatus::Pass
             },
-            PluginCheckSeverity::Warning,
+            CapabilityCheckSeverity::Warning,
             if config.api_key.trim().is_empty() {
                 "Add a provider API key before synthesizing speech."
             } else {
@@ -157,11 +158,11 @@ fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck
             "model-and-voice",
             "Model and voice",
             if config.model.trim().is_empty() || config.voice.trim().is_empty() {
-                PluginRuntimeStatus::Error
+                CapabilityRuntimeStatus::Error
             } else {
-                PluginRuntimeStatus::Pass
+                CapabilityRuntimeStatus::Pass
             },
-            PluginCheckSeverity::Error,
+            CapabilityCheckSeverity::Error,
             if config.model.trim().is_empty() || config.voice.trim().is_empty() {
                 "Choose both a speech model and voice."
             } else {
@@ -174,11 +175,11 @@ fn runtime_checks(config: Option<&TextToSpeechConfig>) -> Vec<PluginRuntimeCheck
 fn check(
     id: &str,
     label: &str,
-    status: PluginRuntimeStatus,
-    severity: PluginCheckSeverity,
+    status: CapabilityRuntimeStatus,
+    severity: CapabilityCheckSeverity,
     message: &str,
-) -> PluginRuntimeCheck {
-    PluginRuntimeCheck {
+) -> CapabilityRuntimeCheck {
+    CapabilityRuntimeCheck {
         id: id.to_string(),
         label: label.to_string(),
         status,
@@ -210,6 +211,6 @@ mod tests {
         let checks = runtime_checks(Some(&config));
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].id, "local-runtime");
-        assert_eq!(checks[0].status, PluginRuntimeStatus::Pass);
+        assert_eq!(checks[0].status, CapabilityRuntimeStatus::Pass);
     }
 }

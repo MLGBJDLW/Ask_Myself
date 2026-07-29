@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::approval::ApprovalRisk;
-use crate::plugins::ToolPluginInfo;
+use crate::plugins::CapabilityOwner;
 use crate::tools::{
     default_tool_registry, ToolCapabilityDescriptor, ToolInputStreamingMode, ToolInterruptBehavior,
     ToolRegistry, ToolRenderKind,
@@ -13,7 +13,7 @@ use crate::tools::{
 #[serde(rename_all = "camelCase")]
 pub struct ToolAccessInfo {
     pub name: String,
-    pub plugin: ToolPluginInfo,
+    pub owner: CapabilityOwner,
     pub category: String,
     pub can_read: bool,
     pub can_write: bool,
@@ -37,7 +37,7 @@ impl ToolAccessInfo {
         let capabilities = descriptor.capabilities;
         Self {
             name: descriptor.name,
-            plugin: descriptor.package,
+            owner: descriptor.owner,
             category: profile.category,
             can_read: profile.can_read,
             can_write: profile.can_write,
@@ -133,7 +133,7 @@ mod tests {
         };
 
         let shell = by_name("run_shell");
-        assert_eq!(shell.plugin.id, "desktop-automation");
+        assert_eq!(shell.owner.id, "desktop-automation");
         assert!(shell.can_execute);
         assert!(shell.needs_approval);
         assert_eq!(shell.risk_level, ApprovalRisk::High);
@@ -143,19 +143,19 @@ mod tests {
         assert!(editor.needs_approval);
 
         let fetch = by_name("fetch_url");
-        assert_eq!(fetch.plugin.id, "web-research");
+        assert_eq!(fetch.owner.id, "web-research");
         assert!(fetch.can_access_network);
         assert!(!fetch.can_write);
 
         let download_asset = by_name("download_asset");
-        assert_eq!(download_asset.plugin.id, "web-research");
+        assert_eq!(download_asset.owner.id, "web-research");
         assert!(download_asset.can_access_network);
         assert!(download_asset.can_write);
         assert!(download_asset.needs_approval);
         assert_eq!(download_asset.risk_level, ApprovalRisk::Medium);
 
         let search = by_name("search_knowledge_base");
-        assert_eq!(search.plugin.id, "knowledge-base");
+        assert_eq!(search.owner.id, "knowledge-base");
         assert_eq!(search.category, "knowledge");
         assert!(!search.can_write);
 
@@ -164,7 +164,7 @@ mod tests {
         assert!(memory.can_write);
 
         let office = by_name("get_document_info");
-        assert_eq!(office.plugin.id, "office-documents");
+        assert_eq!(office.owner.id, "office-documents");
         assert_eq!(office.category, "document_analysis");
         assert!(office.can_read);
         assert!(!office.can_write);
@@ -192,7 +192,7 @@ mod tests {
         );
 
         let web_search = by_name("web_search");
-        assert_eq!(web_search.plugin.id, "web-research");
+        assert_eq!(web_search.owner.id, "web-research");
         assert_eq!(web_search.category, "web");
         assert_eq!(web_search.render_kind, ToolRenderKind::Search);
         assert!(web_search.read_only);
@@ -200,13 +200,13 @@ mod tests {
         assert!(!web_search.can_write);
 
         let web_context = by_name("web_research_context");
-        assert_eq!(web_context.plugin.id, "web-research");
+        assert_eq!(web_context.owner.id, "web-research");
         assert_eq!(web_context.category, "web");
         assert!(web_context.read_only);
         assert!(web_context.can_access_network);
 
         let unknown_mcp = by_name("mcp__unknown__dangerous");
-        assert_eq!(unknown_mcp.plugin.id, "mcp-connectors");
+        assert_eq!(unknown_mcp.owner.id, "mcp-connectors");
         assert_eq!(unknown_mcp.category, "mcp");
         assert!(!unknown_mcp.read_only);
         assert_eq!(unknown_mcp.risk_level, ApprovalRisk::High);

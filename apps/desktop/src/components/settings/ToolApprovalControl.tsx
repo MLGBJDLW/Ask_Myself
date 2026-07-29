@@ -4,11 +4,11 @@ import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import type {
-  ApprovalPolicy,
-  ApprovalPolicyList,
+  ToolPermissionPolicy,
+  ToolPermissionPolicyList,
   ApprovalRisk,
   ToolAccessInfo,
-  ToolPluginInfo,
+  CapabilityOwner,
 } from '../../types';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -33,7 +33,7 @@ function riskVariant(risk: ApprovalRisk) {
 }
 
 interface ToolAccessGroup {
-  plugin: ToolPluginInfo;
+  owner: CapabilityOwner;
   tools: ToolAccessInfo[];
   riskLevel: ApprovalRisk;
   needsApprovalCount: number;
@@ -43,7 +43,7 @@ interface ToolAccessGroup {
   canAccessNetwork: boolean;
 }
 
-function fallbackPlugin(tool: ToolAccessInfo): ToolPluginInfo {
+function fallbackPlugin(tool: ToolAccessInfo): CapabilityOwner {
   return {
     id: tool.category || 'tooling',
     name: tool.category || 'Tooling',
@@ -60,14 +60,14 @@ function highestRisk(tools: ToolAccessInfo[]): ApprovalRisk {
 
 export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps) {
   const { t } = useTranslation();
-  const [policies, setPolicies] = useState<ApprovalPolicyList>({ persisted: [], session: [] });
+  const [policies, setPolicies] = useState<ToolPermissionPolicyList>({ persisted: [], session: [] });
   const [accessMap, setAccessMap] = useState<ToolAccessInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     const [policyResult, accessResult] = await Promise.allSettled([
-      api.listToolApprovalPolicies(),
+      api.listToolPermissionPolicies(),
       api.listToolAccessMap(),
     ]);
     if (policyResult.status === 'fulfilled') {
@@ -88,9 +88,9 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
 
   useEffect(() => { void load(); }, [load]);
 
-  const remove = useCallback(async (p: ApprovalPolicy, scope: 'session' | 'forever') => {
+  const remove = useCallback(async (p: ToolPermissionPolicy, scope: 'session' | 'forever') => {
     try {
-      await api.deleteToolApprovalPolicy(p.toolName, scope, p.permissionKey);
+      await api.deleteToolPermissionPolicy(scope, p.permissionKey);
       await load();
     } catch (err) {
       console.error('[approval] delete policy failed', err);
@@ -100,7 +100,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
 
   const clearAll = useCallback(async () => {
     try {
-      await api.clearToolApprovalPolicies();
+      await api.clearToolPermissionPolicies();
       await load();
     } catch (err) {
       toast.error(String(err));
@@ -116,8 +116,8 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
     () => {
       const groups = new Map<string, ToolAccessGroup>();
       for (const tool of accessMap) {
-        const plugin = tool.plugin ?? fallbackPlugin(tool);
-        const existing = groups.get(plugin.id);
+        const owner = tool.owner ?? fallbackPlugin(tool);
+        const existing = groups.get(owner.id);
         if (existing) {
           existing.tools.push(tool);
           existing.riskLevel = highestRisk(existing.tools);
@@ -127,8 +127,8 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
           existing.canExecute ||= tool.canExecute;
           existing.canAccessNetwork ||= tool.canAccessNetwork;
         } else {
-          groups.set(plugin.id, {
-            plugin,
+          groups.set(owner.id, {
+            owner,
             tools: [tool],
             riskLevel: tool.riskLevel,
             needsApprovalCount: tool.needsApproval ? 1 : 0,
@@ -151,7 +151,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
         .sort(
           (left, right) =>
             riskRank(left.riskLevel) - riskRank(right.riskLevel)
-            || left.plugin.name.localeCompare(right.plugin.name),
+            || left.owner.name.localeCompare(right.owner.name),
         );
     },
     [accessMap],
@@ -265,14 +265,14 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
           <div className="max-h-96 space-y-2 overflow-auto pr-1">
             {accessGroups.map((group) => (
               <details
-                key={group.plugin.id}
+                key={group.owner.id}
                 className="group rounded-md border border-border/60 bg-surface-1"
                 open={group.riskLevel === 'high'}
               >
                 <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-medium text-text-primary">{group.plugin.name}</span>
+                      <span className="truncate text-sm font-medium text-text-primary">{group.owner.name}</span>
                       <Badge variant={riskVariant(group.riskLevel)} className="text-[10px]">
                         {group.riskLevel === 'high'
                           ? t('settings.toolRiskHigh')
@@ -288,7 +288,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
                       )}
                     </div>
                     <div className="mt-0.5 truncate text-xs text-text-tertiary">
-                      {group.plugin.capability}
+                      {group.owner.capability}
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-1">
@@ -300,7 +300,7 @@ export function ToolApprovalControl({ mode, onChange }: ToolApprovalControlProps
                 </summary>
                 <div className="border-t border-border/50 px-3 py-2">
                   <div className="mb-2 text-xs leading-relaxed text-text-tertiary">
-                    {group.plugin.description}
+                    {group.owner.description}
                   </div>
                   <div className="grid gap-1.5">
                     {group.tools.map((tool) => (

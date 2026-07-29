@@ -159,7 +159,7 @@ test.beforeEach(async ({ page }) => {
             _args.config,
           );
           return null;
-        case "list_builtin_plugins_cmd":
+        case "list_capability_packages_cmd":
           return [
             {
               id: "image-generation",

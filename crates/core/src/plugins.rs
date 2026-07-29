@@ -1,8 +1,4 @@
-//! Built-in ecosystem surface metadata.
-//!
-//! The public type names still use `Plugin` for compatibility with existing
-//! desktop calls, but this module classifies built-in capabilities by their
-//! ecosystem surface so "plugin" does not become the umbrella term.
+//! Built-in capability package declarations and UI projections.
 
 pub(crate) mod image_generation;
 pub(crate) mod office_documents;
@@ -15,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolPluginInfo {
+pub struct CapabilityOwner {
     pub id: String,
     pub name: String,
     pub capability: String,
@@ -24,7 +20,7 @@ pub struct ToolPluginInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginProviderCatalog {
+pub struct CapabilityProviderCatalog {
     pub id: String,
     pub label: String,
     pub item_kind: String,
@@ -33,14 +29,14 @@ pub struct PluginProviderCatalog {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginSettingsSchema {
+pub struct CapabilitySettingsSchema {
     pub config_key: String,
-    pub fields: Vec<PluginSettingsField>,
+    pub fields: Vec<CapabilitySettingsField>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginSettingsField {
+pub struct CapabilitySettingsField {
     pub key: String,
     pub label: String,
     pub kind: String,
@@ -55,7 +51,7 @@ pub struct PluginSettingsField {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum PluginRuntimeStatus {
+pub enum CapabilityRuntimeStatus {
     Pass,
     Warning,
     Error,
@@ -64,7 +60,7 @@ pub enum PluginRuntimeStatus {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum PluginCheckSeverity {
+pub enum CapabilityCheckSeverity {
     Info,
     Warning,
     Error,
@@ -72,77 +68,58 @@ pub enum PluginCheckSeverity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginRuntimeCheck {
+pub struct CapabilityRuntimeCheck {
     pub id: String,
     pub label: String,
-    pub status: PluginRuntimeStatus,
-    pub severity: PluginCheckSeverity,
+    pub status: CapabilityRuntimeStatus,
+    pub severity: CapabilityCheckSeverity,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginManifest {
+pub struct CapabilityPackageView {
     pub id: String,
     pub name: String,
     pub capability: String,
     pub description: String,
     pub built_in: bool,
-    pub ecosystem_surface: EcosystemSurfaceKind,
+    pub surface: EcosystemSurfaceKind,
+    pub version: u32,
     pub tools: Vec<String>,
-    pub settings_surfaces: Vec<String>,
+    pub skills: Vec<String>,
     pub workflows: Vec<String>,
+    pub settings_surfaces: Vec<String>,
+    pub permissions: CapabilityPackagePermissions,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings_schema: Option<PluginSettingsSchema>,
+    pub settings_schema: Option<CapabilitySettingsSchema>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provider_catalogs: Vec<PluginProviderCatalog>,
+    pub provider_catalogs: Vec<CapabilityProviderCatalog>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_checks: Vec<PluginRuntimeCheck>,
-}
-
-impl PluginManifest {
-    pub fn to_capability_manifest(&self) -> CapabilityPackageManifest {
-        CapabilityPackageManifest {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            surface: self.ecosystem_surface,
-            description: self.description.clone(),
-            version: 1,
-            tools: self.tools.clone(),
-            skills: Vec::new(),
-            workflows: self.workflows.clone(),
-            settings_surfaces: self.settings_surfaces.clone(),
-            runtime_checks: self
-                .runtime_checks
-                .iter()
-                .map(|check| check.id.clone())
-                .collect(),
-            permissions: CapabilityPackagePermissions::default(),
-        }
-    }
+    pub runtime_checks: Vec<CapabilityRuntimeCheck>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PluginManifestContext<'a> {
+pub struct CapabilityPackageViewContext<'a> {
     pub app_config: Option<&'a AppConfig>,
     pub office_runtime: Option<&'a crate::office_runtime::OfficeRuntimeReadiness>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BuiltinPlugin {
+struct BuiltinCapabilityDeclaration {
     id: &'static str,
     name: &'static str,
     capability: &'static str,
     description: &'static str,
-    ecosystem_surface: EcosystemSurfaceKind,
+    surface: EcosystemSurfaceKind,
     tools: &'static [&'static str],
     settings_surfaces: &'static [&'static str],
     workflows: &'static [&'static str],
 }
 
-impl BuiltinPlugin {
-    fn info(self) -> ToolPluginInfo {
-        ToolPluginInfo {
+impl BuiltinCapabilityDeclaration {
+    fn info(self) -> CapabilityOwner {
+        CapabilityOwner {
             id: self.id.to_string(),
             name: self.name.to_string(),
             capability: self.capability.to_string(),
@@ -150,15 +127,15 @@ impl BuiltinPlugin {
         }
     }
 
-    fn base_manifest(self) -> PluginManifest {
-        PluginManifest {
+    fn manifest(self) -> CapabilityPackageManifest {
+        CapabilityPackageManifest {
             id: self.id.to_string(),
             name: self.name.to_string(),
-            capability: self.capability.to_string(),
             description: self.description.to_string(),
-            built_in: true,
-            ecosystem_surface: self.ecosystem_surface,
+            surface: self.surface,
+            version: 1,
             tools: self.tools.iter().map(|tool| (*tool).to_string()).collect(),
+            skills: Vec::new(),
             settings_surfaces: self
                 .settings_surfaces
                 .iter()
@@ -169,28 +146,44 @@ impl BuiltinPlugin {
                 .iter()
                 .map(|workflow| (*workflow).to_string())
                 .collect(),
-            settings_schema: None,
-            provider_catalogs: Vec::new(),
             runtime_checks: Vec::new(),
+            permissions: CapabilityPackagePermissions::default(),
         }
     }
 
-    fn manifest(self, context: PluginManifestContext<'_>) -> PluginManifest {
-        let manifest = self.base_manifest();
-        if self.id == IMAGE_PLUGIN.id {
+    fn view(self, context: CapabilityPackageViewContext<'_>) -> CapabilityPackageView {
+        let manifest = self.manifest();
+        let view = CapabilityPackageView {
+            id: manifest.id,
+            name: manifest.name,
+            capability: self.capability.to_string(),
+            description: manifest.description,
+            built_in: true,
+            surface: manifest.surface,
+            version: manifest.version,
+            tools: manifest.tools,
+            skills: manifest.skills,
+            workflows: manifest.workflows,
+            settings_surfaces: manifest.settings_surfaces,
+            permissions: manifest.permissions,
+            settings_schema: None,
+            provider_catalogs: Vec::new(),
+            runtime_checks: Vec::new(),
+        };
+        if self.id == IMAGE_PACKAGE.id {
             image_generation::enrich_manifest(
-                manifest,
+                view,
                 context.app_config.map(|config| &config.image_generation),
             )
-        } else if self.id == TTS_PLUGIN.id {
+        } else if self.id == TTS_PACKAGE.id {
             text_to_speech::enrich_manifest(
-                manifest,
+                view,
                 context.app_config.map(|config| &config.text_to_speech),
             )
-        } else if self.id == OFFICE_PLUGIN.id {
-            office_documents::enrich_manifest(manifest, context.office_runtime)
+        } else if self.id == OFFICE_PACKAGE.id {
+            office_documents::enrich_manifest(view, context.office_runtime)
         } else {
-            manifest
+            view
         }
     }
 
@@ -199,12 +192,12 @@ impl BuiltinPlugin {
     }
 }
 
-const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const CORE_AGENT_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "core-agent",
     name: "Core Agent",
     capability: "Run orchestration",
     description: "Routes tasks, coordinates user input, tracks plans, and records verification without owning domain tools.",
-    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
+    surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "tool_search",
         "update_plan",
@@ -217,12 +210,12 @@ const CORE_AGENT_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["task-planning", "verification"],
 };
 
-const KNOWLEDGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const KNOWLEDGE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "knowledge-base",
     name: "Knowledge Base",
     capability: "Local evidence retrieval",
     description: "Searches, indexes, and inspects local knowledge sources with evidence metadata.",
-    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
+    surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "search_knowledge_base",
         "retrieve_evidence",
@@ -241,13 +234,13 @@ const KNOWLEDGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["ask-knowledge-base", "manage-sources"],
 };
 
-const OFFICE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const OFFICE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "office-documents",
     name: "Office Documents",
     capability: "Document generation and analysis",
     description:
         "Prepares document runtimes and works with PPT, DOCX, XLSX, PDF, HTML, and OCR image flows.",
-    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
+    surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "prepare_document_tools",
         "get_document_info",
@@ -265,36 +258,36 @@ const OFFICE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     ],
 };
 
-const IMAGE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const IMAGE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "image-generation",
     name: "Image Generation",
     capability: "Image creation",
     description:
         "Routes image requests through provider-specific adapters and stores generated assets.",
-    ecosystem_surface: EcosystemSurfaceKind::Adapter,
+    surface: EcosystemSurfaceKind::Adapter,
     tools: &["generate_image"],
     settings_surfaces: &["image-generation"],
     workflows: &["generate-image"],
 };
 
-const TTS_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const TTS_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "text-to-speech",
     name: "Text to Speech",
     capability: "Speech synthesis",
     description: "Synthesizes speech through cloud providers and returns a transient audio asset.",
-    ecosystem_surface: EcosystemSurfaceKind::Adapter,
+    surface: EcosystemSurfaceKind::Adapter,
     tools: &["synthesize_speech"],
     settings_surfaces: &["text-to-speech"],
     workflows: &["synthesize-speech"],
 };
 
-const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const WEB_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "web-research",
     name: "Web Research",
     capability: "Network research",
     description:
         "Fetches remote pages and web search results with explicit network trust metadata.",
-    ecosystem_surface: EcosystemSurfaceKind::Adapter,
+    surface: EcosystemSurfaceKind::Adapter,
     tools: &[
         "web_search",
         "web_research_context",
@@ -306,13 +299,13 @@ const WEB_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["research-web", "web-research-context"],
 };
 
-const FILE_WORKSPACE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const FILE_WORKSPACE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "file-workspace",
     name: "File Workspace",
     capability: "Scoped file work",
     description:
         "Reads, searches, edits, and archives files through source-scoped workspace tools.",
-    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
+    surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "read_file",
         "read_files",
@@ -332,12 +325,12 @@ const FILE_WORKSPACE_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["inspect-files", "edit-files", "run-project-tool"],
 };
 
-const DESKTOP_AUTOMATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const DESKTOP_AUTOMATION_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "desktop-automation",
     name: "Desktop Automation",
     capability: "System and desktop actions",
     description: "Runs local commands and controlled desktop actions behind approval gates.",
-    ecosystem_surface: EcosystemSurfaceKind::HostSurface,
+    surface: EcosystemSurfaceKind::HostSurface,
     tools: &[
         "run_shell",
         "desktop_automation",
@@ -349,13 +342,13 @@ const DESKTOP_AUTOMATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["run-command", "control-desktop"],
 };
 
-const MEMORY_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const MEMORY_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "agent-memory",
     name: "Agent Memory",
     capability: "Reusable working context",
     description:
         "Manages playbooks, sessions, skills, scratchpads, feedback, and durable agent memory.",
-    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
+    surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "search_playbooks",
         "manage_playbook",
@@ -372,24 +365,24 @@ const MEMORY_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["reuse-playbooks", "manage-memory", "manage-skills"],
 };
 
-const EVALUATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const EVALUATION_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "agent-evaluation",
     name: "Agent Evaluation",
     capability: "Quality checks",
     description:
         "Runs readiness previews and quality checks for agent configuration and workflows.",
-    ecosystem_surface: EcosystemSurfaceKind::CorePlatform,
+    surface: EcosystemSurfaceKind::CorePlatform,
     tools: &["agent_harness_dry_run"],
     settings_surfaces: &["agent-quality"],
     workflows: &["dry-run-agent"],
 };
 
-const DELEGATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const DELEGATION_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "delegation",
     name: "Delegation",
     capability: "Subagent work",
     description: "Delegates bounded work to subagents and adjudicates their outputs.",
-    ecosystem_surface: EcosystemSurfaceKind::CapabilityPackage,
+    surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "spawn_subagent",
         "spawn_subagent_batch",
@@ -399,95 +392,91 @@ const DELEGATION_PLUGIN: BuiltinPlugin = BuiltinPlugin {
     workflows: &["parallel-agent-work"],
 };
 
-const MCP_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const MCP_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "mcp-connectors",
     name: "MCP Connectors",
     capability: "External connectors",
     description:
         "Exposes server-defined tools from configured MCP connectors with explicit approval policy.",
-    ecosystem_surface: EcosystemSurfaceKind::Connector,
+    surface: EcosystemSurfaceKind::Connector,
     tools: &["mcp_tool"],
     settings_surfaces: &["mcp"],
     workflows: &["connector-tool-call"],
 };
 
-const COMPUTER_USE_CONNECTOR_PLUGIN: BuiltinPlugin = BuiltinPlugin {
+const COMPUTER_USE_CONNECTOR_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
     id: "computer-use-connector",
     name: "Computer Use Connector",
     capability: "Vision-guided UI automation",
     description:
         "Classifies tools from an isolated computer-use MCP service so observation and actions stay behind Nexa's connector approval boundary.",
-    ecosystem_surface: EcosystemSurfaceKind::Connector,
+    surface: EcosystemSurfaceKind::Connector,
     tools: &["mcp__computer_use__*"],
     settings_surfaces: &["mcp", "tool-approvals"],
     workflows: &["observe-decide-act"],
 };
 
-const BUILTIN_PLUGINS: &[BuiltinPlugin] = &[
-    CORE_AGENT_PLUGIN,
-    KNOWLEDGE_PLUGIN,
-    OFFICE_PLUGIN,
-    IMAGE_PLUGIN,
-    TTS_PLUGIN,
-    WEB_PLUGIN,
-    FILE_WORKSPACE_PLUGIN,
-    DESKTOP_AUTOMATION_PLUGIN,
-    MEMORY_PLUGIN,
-    EVALUATION_PLUGIN,
-    DELEGATION_PLUGIN,
-    COMPUTER_USE_CONNECTOR_PLUGIN,
-    MCP_PLUGIN,
+const BUILTIN_PACKAGES: &[BuiltinCapabilityDeclaration] = &[
+    CORE_AGENT_PACKAGE,
+    KNOWLEDGE_PACKAGE,
+    OFFICE_PACKAGE,
+    IMAGE_PACKAGE,
+    TTS_PACKAGE,
+    WEB_PACKAGE,
+    FILE_WORKSPACE_PACKAGE,
+    DESKTOP_AUTOMATION_PACKAGE,
+    MEMORY_PACKAGE,
+    EVALUATION_PACKAGE,
+    DELEGATION_PACKAGE,
+    COMPUTER_USE_CONNECTOR_PACKAGE,
+    MCP_PACKAGE,
 ];
 
-pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
-    builtin_plugin_manifests_for_config(None)
+pub fn builtin_capability_views() -> Vec<CapabilityPackageView> {
+    builtin_capability_views_for_config(None)
 }
 
-pub fn builtin_plugin_manifests_for_config(app_config: Option<&AppConfig>) -> Vec<PluginManifest> {
-    builtin_plugin_manifests_with_context(PluginManifestContext {
+pub fn builtin_capability_views_for_config(
+    app_config: Option<&AppConfig>,
+) -> Vec<CapabilityPackageView> {
+    builtin_capability_views_with_context(CapabilityPackageViewContext {
         app_config,
         office_runtime: None,
     })
 }
 
-pub fn builtin_plugin_manifests_with_context(
-    context: PluginManifestContext<'_>,
-) -> Vec<PluginManifest> {
-    BUILTIN_PLUGINS
+pub fn builtin_capability_views_with_context(
+    context: CapabilityPackageViewContext<'_>,
+) -> Vec<CapabilityPackageView> {
+    BUILTIN_PACKAGES
         .iter()
-        .map(|plugin| plugin.manifest(context))
+        .map(|package| package.view(context))
         .collect()
 }
 
 pub fn builtin_capability_manifests() -> Vec<CapabilityPackageManifest> {
-    builtin_capability_manifests_with_context(PluginManifestContext::default())
-}
-
-pub fn builtin_capability_manifests_with_context(
-    context: PluginManifestContext<'_>,
-) -> Vec<CapabilityPackageManifest> {
-    builtin_plugin_manifests_with_context(context)
-        .into_iter()
-        .map(|manifest| manifest.to_capability_manifest())
+    BUILTIN_PACKAGES
+        .iter()
+        .map(|package| package.manifest())
         .collect()
 }
 
-pub fn plugin_for_tool(name: &str) -> ToolPluginInfo {
-    plugin_for_tool_name(name).info()
+pub fn capability_owner_for_tool(name: &str) -> CapabilityOwner {
+    capability_for_tool_name(name).info()
 }
 
-fn plugin_for_tool_name(name: &str) -> BuiltinPlugin {
+fn capability_for_tool_name(name: &str) -> BuiltinCapabilityDeclaration {
     if is_computer_use_connector_tool(name) {
-        return COMPUTER_USE_CONNECTOR_PLUGIN;
+        return COMPUTER_USE_CONNECTOR_PACKAGE;
     }
     if name == "mcp_tool" || name.starts_with("mcp__") {
-        return MCP_PLUGIN;
+        return MCP_PACKAGE;
     }
-    BUILTIN_PLUGINS
+    BUILTIN_PACKAGES
         .iter()
         .copied()
-        .find(|plugin| plugin.owns_tool(name))
-        .unwrap_or(CORE_AGENT_PLUGIN)
+        .find(|package| package.owns_tool(name))
+        .unwrap_or(CORE_AGENT_PACKAGE)
 }
 
 fn is_computer_use_connector_tool(name: &str) -> bool {
@@ -503,39 +492,60 @@ mod tests {
 
     #[test]
     fn maps_tools_to_capability_packages() {
-        assert_eq!(plugin_for_tool("generate_image").id, "image-generation");
-        assert_eq!(plugin_for_tool("synthesize_speech").id, "text-to-speech");
-        assert_eq!(plugin_for_tool("compile_document").id, "office-documents");
-        assert_eq!(plugin_for_tool("run_shell").id, "desktop-automation");
-        assert_eq!(plugin_for_tool("web_search").id, "web-research");
-        assert_eq!(plugin_for_tool("web_research_context").id, "web-research");
-        assert_eq!(plugin_for_tool("download_asset").id, "web-research");
         assert_eq!(
-            plugin_for_tool("mcp__custom__dangerous").id,
+            capability_owner_for_tool("generate_image").id,
+            "image-generation"
+        );
+        assert_eq!(
+            capability_owner_for_tool("synthesize_speech").id,
+            "text-to-speech"
+        );
+        assert_eq!(
+            capability_owner_for_tool("compile_document").id,
+            "office-documents"
+        );
+        assert_eq!(
+            capability_owner_for_tool("run_shell").id,
+            "desktop-automation"
+        );
+        assert_eq!(capability_owner_for_tool("web_search").id, "web-research");
+        assert_eq!(
+            capability_owner_for_tool("web_research_context").id,
+            "web-research"
+        );
+        assert_eq!(
+            capability_owner_for_tool("download_asset").id,
+            "web-research"
+        );
+        assert_eq!(
+            capability_owner_for_tool("mcp__custom__dangerous").id,
             "mcp-connectors"
         );
         assert_eq!(
-            plugin_for_tool("mcp__computer_use__computer").id,
+            capability_owner_for_tool("mcp__computer_use__computer").id,
             "computer-use-connector"
         );
         assert_eq!(
-            plugin_for_tool("mcp__computer-use__screenshot").id,
+            capability_owner_for_tool("mcp__computer-use__screenshot").id,
             "computer-use-connector"
         );
     }
 
     #[test]
     fn question_tool_belongs_to_the_core_agent_package() {
-        assert_eq!(plugin_for_tool("request_user_input").id, "core-agent");
+        assert_eq!(
+            capability_owner_for_tool("request_user_input").id,
+            "core-agent"
+        );
     }
 
     #[test]
     fn builtin_manifests_expose_package_metadata() {
-        let manifests = builtin_plugin_manifests();
+        let manifests = builtin_capability_views();
         let office = manifests
             .iter()
-            .find(|plugin| plugin.id == "office-documents")
-            .expect("missing office plugin");
+            .find(|package| package.id == "office-documents")
+            .expect("missing office capability package");
 
         assert!(office.tools.iter().any(|tool| tool == "compile_document"));
         assert!(office
@@ -546,13 +556,13 @@ mod tests {
 
     #[test]
     fn builtin_manifests_classify_ecosystem_surfaces() {
-        let manifests = builtin_plugin_manifests();
+        let manifests = builtin_capability_views();
 
         let kind_for = |id: &str| {
             manifests
                 .iter()
                 .find(|manifest| manifest.id == id)
-                .map(|manifest| manifest.ecosystem_surface)
+                .map(|manifest| manifest.surface)
         };
 
         assert_eq!(
@@ -590,34 +600,34 @@ mod tests {
     }
 
     #[test]
-    fn builtin_capability_manifests_derive_from_compat_manifests() {
-        let compat_manifests = builtin_plugin_manifests();
+    fn builtin_views_project_canonical_capability_manifests() {
+        let views = builtin_capability_views();
         let capability_manifests = builtin_capability_manifests();
 
-        assert_eq!(capability_manifests.len(), compat_manifests.len());
+        assert_eq!(capability_manifests.len(), views.len());
         for capability_manifest in &capability_manifests {
             crate::capability_package::validate_capability_manifest(capability_manifest)
                 .expect("builtin capability manifest should validate");
-            let compat = compat_manifests
+            let view = views
                 .iter()
                 .find(|manifest| manifest.id == capability_manifest.id)
-                .expect("capability manifest should come from compat manifest");
+                .expect("capability manifest should project to a view");
 
-            assert_eq!(capability_manifest.name, compat.name);
-            assert_eq!(capability_manifest.surface, compat.ecosystem_surface);
-            assert_eq!(capability_manifest.description, compat.description);
-            assert_eq!(capability_manifest.tools, compat.tools);
+            assert_eq!(capability_manifest.name, view.name);
+            assert_eq!(capability_manifest.surface, view.surface);
+            assert_eq!(capability_manifest.description, view.description);
+            assert_eq!(capability_manifest.tools, view.tools);
             assert_eq!(
                 capability_manifest.settings_surfaces,
-                compat.settings_surfaces
+                view.settings_surfaces
             );
-            assert_eq!(capability_manifest.workflows, compat.workflows);
+            assert_eq!(capability_manifest.workflows, view.workflows);
         }
     }
 
     #[test]
     fn default_registry_tools_are_declared_by_one_builtin_manifest() {
-        let manifests = builtin_plugin_manifests();
+        let manifests = builtin_capability_views();
         let registry = crate::tools::default_tool_registry();
 
         for tool_name in registry.tool_names() {
