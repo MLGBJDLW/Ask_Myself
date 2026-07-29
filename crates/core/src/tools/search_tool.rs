@@ -394,11 +394,15 @@ impl Tool for SearchTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: SearchArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
             Err(e) => {
@@ -608,7 +612,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-1", &args, &db, &[scoped]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[scoped],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error);
         assert!(result
@@ -674,7 +686,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-1", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error);
         assert!(result.content.contains("Retrieval confidence: low"));
@@ -698,7 +718,15 @@ mod tests {
     async fn search_returns_retryable_contract_error_without_query() {
         let db = Database::open_memory().unwrap();
         let tool = SearchTool;
-        let result = tool.execute("call-1", "{}", &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                "{}",
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(result.is_error);
         assert!(result.content.contains("Code: missing_query"));
@@ -720,7 +748,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-1", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(result.is_error);
         let artifacts = result.artifacts.unwrap();

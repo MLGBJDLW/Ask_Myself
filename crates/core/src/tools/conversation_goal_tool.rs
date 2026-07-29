@@ -1,12 +1,14 @@
 //! Tools for inspecting and explicitly closing a durable conversation goal.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::conversation::ConversationGoalStatus;
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolDef, ToolResult};
@@ -48,22 +50,16 @@ impl Tool for GetGoalTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        Err(missing_conversation_id())
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        _arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         let conversation_id = conversation_id.ok_or_else(missing_conversation_id)?;
         let goal = db.get_conversation_goal(conversation_id)?;
         let artifacts = match &goal {
@@ -113,22 +109,16 @@ impl Tool for UpdateGoalTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        Err(missing_conversation_id())
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         let conversation_id = conversation_id.ok_or_else(missing_conversation_id)?;
         let args: UpdateGoalArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid update_goal arguments: {error}"))
@@ -182,12 +172,14 @@ mod tests {
             .unwrap();
 
         let result = UpdateGoalTool
-            .execute_with_context(
-                "call-1",
-                r#"{"status":"complete"}"#,
-                &db,
-                &[],
-                Some(&conversation.id),
+            .execute(
+                crate::tools::ToolExecutionContext::new(
+                    "call-1",
+                    r#"{"status":"complete"}"#,
+                    &db,
+                    &[],
+                )
+                .with_conversation_id(Some(&conversation.id)),
             )
             .await
             .unwrap();

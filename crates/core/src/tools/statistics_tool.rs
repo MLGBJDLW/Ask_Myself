@@ -1,11 +1,13 @@
 //! GetStatisticsTool — returns knowledge base health metrics.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{
@@ -44,11 +46,15 @@ impl Tool for GetStatisticsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: GetStatisticsArgs =
             serde_json::from_str(arguments).unwrap_or(GetStatisticsArgs { source_id: None });
 
@@ -341,7 +347,15 @@ mod tests {
         let db = setup_db();
         let tool = GetStatisticsTool;
 
-        let result = tool.execute("call1", "{}", &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call1",
+                "{}",
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error);
         assert!(result.content.contains("Sources: 2"));
@@ -361,7 +375,12 @@ mod tests {
         let tool = GetStatisticsTool;
 
         let result = tool
-            .execute("call2", r#"{"source_id": "s1"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call2",
+                r#"{"source_id": "s1"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -381,7 +400,12 @@ mod tests {
         let tool = GetStatisticsTool;
 
         let result = tool
-            .execute("call3", r#"{"source_id": "nonexistent"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call3",
+                r#"{"source_id": "nonexistent"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

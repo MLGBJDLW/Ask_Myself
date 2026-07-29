@@ -105,6 +105,34 @@ test('canonical Run Events have no task-event compatibility bridge', () => {
   );
 });
 
+test('Tool execution has one context-based entry point', () => {
+  const tools = source('../../crates/core/src/tools/mod.rs');
+  assert(!tools.includes('execute_with_context'), 'Tool API must not expose execute_with_context');
+  assert(!tools.includes('execute_with_run_context'), 'Tool API must not expose a transitional run entry point');
+  assert(
+    /async fn execute\(\s*&self,\s*context: ToolExecutionContext<'_>,?\s*\)/m.test(tools),
+    'Tool::execute must receive ToolExecutionContext',
+  );
+
+  for (const relativePath of [
+    '../../crates/core/src/agent/direct_dispatch_runner.rs',
+    '../../crates/core/src/agent/tool_dispatch.rs',
+  ]) {
+    const runtime = source(relativePath);
+    assert(!runtime.includes('execute_with_context'), `${relativePath} must use ToolRegistry::execute`);
+    assert(!runtime.includes('execute_with_run_context'), `${relativePath} must use ToolRegistry::execute`);
+  }
+
+  for (const relativePath of [
+    '../../crates/core/src/tools/create_file_tool.rs',
+    '../../crates/core/src/tools/edit_file_tool.rs',
+    '../../crates/core/src/tools/multi_edit_tool.rs',
+    '../../crates/core/src/tools/write_note_tool.rs',
+  ]) {
+    assert(!source(relativePath).includes('execute_impl('), `${relativePath} must implement the canonical entry point directly`);
+  }
+});
+
 for (const { name, fn } of tests) {
   try {
     fn();

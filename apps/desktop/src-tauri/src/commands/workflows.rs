@@ -1016,7 +1016,12 @@ pub async fn capture_browser_evidence_cmd(
     .to_string();
     let tool = BrowserEvidenceCaptureTool;
     let result = tool
-        .execute("manual-browser-evidence-capture", &args, &state.db, &[])
+        .execute(nexa_core::tools::ToolExecutionContext::new(
+            "manual-browser-evidence-capture",
+            &args,
+            &state.db,
+            &[],
+        ))
         .await
         .map_err(|err| err.to_string())?;
     if result.is_error {

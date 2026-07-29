@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::web_search::{
     SearchLanguage, SearchRegion, TimeRange, WebSearchArgs, WebSearchProviderProfile,
@@ -267,11 +266,17 @@ impl Tool for WebResearchContextTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            tool_registry,
+            cancel_token,
+        } = context;
         let args: WebResearchContextArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
             Err(e) => {
@@ -355,7 +360,15 @@ impl Tool for WebResearchContextTool {
                 .to_string();
                 let fetch_call_id = format!("{call_id}:fetch:{}", source_index + 1);
                 match fetch_tool
-                    .execute(&fetch_call_id, &fetch_args, db, source_scope)
+                    .execute(crate::tools::ToolExecutionContext {
+                        call_id: &fetch_call_id,
+                        arguments: &fetch_args,
+                        db,
+                        source_scope,
+                        conversation_id,
+                        tool_registry,
+                        cancel_token,
+                    })
                     .await
                 {
                     Ok(fetch_result) if !fetch_result.is_error => {

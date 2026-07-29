@@ -56,7 +56,7 @@ impl AgentExecutor {
         // Execute the tool directly.
         let result = self
             .tools
-            .execute_with_run_context(
+            .execute(
                 &dispatch.tool_name,
                 crate::tools::ToolExecutionContext {
                     call_id: &call_id,

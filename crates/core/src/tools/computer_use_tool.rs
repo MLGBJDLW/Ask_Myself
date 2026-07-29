@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolOutput, ToolOutputAttachment, ToolResult};
@@ -279,11 +278,15 @@ impl Tool for ComputerObserveTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: ObserveArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid computer_observe arguments: {error}"))
         })?;
@@ -454,11 +457,15 @@ impl Tool for ComputerControlTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: ControlArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid computer_control arguments: {error}"))
         })?;

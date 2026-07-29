@@ -500,7 +500,7 @@ impl AgentExecutor {
 
                         let tool_start = std::time::Instant::now();
                         let execute_tool = async {
-                            let exec_fut = self.tools.execute_with_run_context(
+                            let exec_fut = self.tools.execute(
                                 &tc.name,
                                 crate::tools::ToolExecutionContext {
                                     call_id: &tc.id,

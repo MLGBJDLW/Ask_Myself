@@ -92,11 +92,15 @@ impl Tool for PrepareDocumentToolsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: PrepareDocumentToolsArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid prepare_document_tools arguments: {e}"))
         })?;

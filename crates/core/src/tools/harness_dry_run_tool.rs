@@ -1,11 +1,13 @@
 //! HarnessDryRunTool - read-only readiness report for the local agent harness.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
@@ -84,11 +86,15 @@ impl Tool for HarnessDryRunTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: HarnessDryRunArgs = if arguments.trim().is_empty() {
             HarnessDryRunArgs {
                 include_recent_events: Some(true),
@@ -300,7 +306,15 @@ mod tests {
     async fn dry_run_reports_blocked_without_default_config() {
         let db = Database::open_memory().unwrap();
         let tool = HarnessDryRunTool;
-        let result = tool.execute("call-1", "{}", &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                "{}",
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("blocked"));
     }

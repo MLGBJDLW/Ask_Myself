@@ -1,11 +1,13 @@
 //! SessionSearchTool - agent-facing cross-conversation search.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
@@ -42,11 +44,15 @@ impl Tool for SessionSearchTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: SessionSearchArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid search_sessions arguments: {e}"))
         })?;
@@ -106,7 +112,12 @@ mod tests {
             "limit": 5
         });
         let result = tool
-            .execute("call-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error);

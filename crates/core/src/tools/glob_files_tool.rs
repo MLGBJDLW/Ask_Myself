@@ -1,5 +1,8 @@
 //! GlobFilesTool - source-scoped path globbing for local files.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -8,7 +11,6 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::path_utils::{resolve_path_for_file_access, PathKind};
@@ -71,11 +73,15 @@ impl Tool for GlobFilesTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: GlobFilesArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid glob_files arguments: {e}")))?;
 
@@ -292,7 +298,12 @@ mod tests {
         let args = serde_json::json!({ "pattern": "*.md" });
 
         let result = tool
-            .execute("glob-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "glob-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -313,7 +324,12 @@ mod tests {
         let args = serde_json::json!({ "pattern": "*.md" });
 
         let result = tool
-            .execute("glob-2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "glob-2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

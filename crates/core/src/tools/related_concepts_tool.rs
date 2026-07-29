@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
@@ -54,11 +53,15 @@ impl Tool for RelatedConceptsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: RelatedConceptsArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid get_related_concepts arguments: {e}"))
         })?;

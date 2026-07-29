@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::execution_environment::{ExecutionEnvironment, ExecutionRequest};
 use async_trait::async_trait;
@@ -640,11 +639,15 @@ impl Tool for RunShellTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let parsed = match parse_run_shell_args(arguments) {
             Ok(parsed) => parsed,
             Err(err) => {

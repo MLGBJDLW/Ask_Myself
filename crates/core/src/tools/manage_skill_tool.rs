@@ -203,11 +203,15 @@ impl Tool for ManageSkillTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ManageSkillArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid manage_skill arguments: {e}")))?;
 
@@ -595,7 +599,12 @@ mod tests {
             "limit": 3
         });
         let listed = tool
-            .execute("call-list", &list_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-list",
+                &list_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!listed.is_error);
@@ -611,7 +620,12 @@ mod tests {
             "skill_id": "builtin-evidence-first"
         });
         let viewed = tool
-            .execute("call-view", &view_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-view",
+                &view_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!viewed.is_error);
@@ -631,7 +645,12 @@ mod tests {
             "skill_id": "builtin-pptx-presentation-design"
         });
         let activated = tool
-            .execute("call-activate", &activate_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-activate",
+                &activate_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!activated.is_error);
@@ -654,7 +673,12 @@ mod tests {
             "resource_path": "references/pptx-playbook.md"
         });
         let resource = tool
-            .execute("call-resource", &resource_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-resource",
+                &resource_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!resource.is_error);
@@ -669,7 +693,12 @@ mod tests {
             "skill_id": "doc-script-editor"
         });
         let slug_viewed = tool
-            .execute("call-view-slug", &slug_view_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-view-slug",
+                &slug_view_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!slug_viewed.is_error);
@@ -706,7 +735,12 @@ mod tests {
 
         assert!(tool.requires_confirmation(&args));
         let result = tool
-            .execute("call-helper", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-helper",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -738,7 +772,12 @@ mod tests {
             "rationale": "Repeated JSON contract failures."
         });
         let result = tool
-            .execute("call-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error);
@@ -753,7 +792,12 @@ mod tests {
             "proposal_id": proposals[0].id
         });
         let applied = tool
-            .execute("call-2", &apply_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &apply_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!applied.is_error);
@@ -783,7 +827,12 @@ mod tests {
         });
 
         let proposed = tool
-            .execute("call-large", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-large",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!proposed.is_error, "proposal failed: {}", proposed.content);

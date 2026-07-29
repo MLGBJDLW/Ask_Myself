@@ -57,11 +57,15 @@ impl Tool for ExtractImageTextTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ExtractImageTextArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid extract_image_text arguments: {e}"))
         })?;
@@ -324,12 +328,12 @@ mod tests {
 
         let tool = ExtractImageTextTool;
         let result = tool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-1",
                 &serde_json::json!({ "path": image_path.to_string_lossy() }).to_string(),
                 &db,
                 &[],
-            )
+            ))
             .await
             .expect("tool result");
 

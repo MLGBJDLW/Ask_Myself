@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use rusqlite::params;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{ensure_source_in_scope, Tool, ToolDef, ToolResult};
@@ -46,11 +45,15 @@ impl Tool for ListDocumentsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ListDocumentsArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid list_documents arguments: {e}"))
         })?;

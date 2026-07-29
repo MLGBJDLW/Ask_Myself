@@ -322,6 +322,31 @@ pub struct ToolExecutionContext<'a> {
     pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
 }
 
+impl<'a> ToolExecutionContext<'a> {
+    /// Build the minimal context used by isolated tools and focused tests.
+    pub fn new(
+        call_id: &'a str,
+        arguments: &'a str,
+        db: &'a Database,
+        source_scope: &'a [String],
+    ) -> Self {
+        Self {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id: None,
+            tool_registry: None,
+            cancel_token: None,
+        }
+    }
+
+    pub fn with_conversation_id(mut self, conversation_id: Option<&'a str>) -> Self {
+        self.conversation_id = conversation_id;
+        self
+    }
+}
+
 pub fn invocation_waits_for_previous(args: &serde_json::Value) -> bool {
     args.get("wait_for_previous")
         .or_else(|| args.get("waitForPrevious"))
@@ -600,52 +625,8 @@ pub trait Tool: Send + Sync {
         self.capability_descriptor(args).access_profile
     }
 
-    /// Execute the tool with the given JSON-encoded arguments.
-    ///
-    /// `source_scope` restricts results to the given source IDs when non-empty
-    /// (used for per-conversation source scoping).
-    async fn execute(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-    ) -> Result<ToolResult, CoreError>;
-
-    /// Context-aware variant of [`Tool::execute`] used by the registry.
-    ///
-    /// Conversation-scoped tools (e.g. `update_scratchpad`) override this to
-    /// receive the active `conversation_id`. The default impl falls back to
-    /// [`Tool::execute`] so existing tools need no changes.
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        _conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute(call_id, arguments, db, source_scope).await
-    }
-
-    /// Deep execution interface used by the agent runtime.
-    ///
-    /// The default bridges to the legacy argument list, while newer tools can
-    /// use cancellation and other execution context without widening every call
-    /// site again.
-    async fn execute_with_run_context(
-        &self,
-        ctx: ToolExecutionContext<'_>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_with_context(
-            ctx.call_id,
-            ctx.arguments,
-            ctx.db,
-            ctx.source_scope,
-            ctx.conversation_id,
-        )
-        .await
-    }
+    /// Execute this tool with the complete runtime identity, scope, and services.
+    async fn execute(&self, context: ToolExecutionContext<'_>) -> Result<ToolResult, CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -868,57 +849,8 @@ impl ToolRegistry {
         stable_tool_definitions(definitions)
     }
 
-    /// Execute a tool by name, returning an error if the tool is not found.
+    /// Execute a tool by name through the single context-based runtime entry point.
     pub async fn execute(
-        &self,
-        name: &str,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-    ) -> Result<ToolResult, CoreError> {
-        let (tool, arguments) = match self.prepare_execution(name, call_id, arguments) {
-            Ok(prepared) => prepared,
-            Err(result) => return Ok(result),
-        };
-        let result = tool.execute(call_id, &arguments, db, source_scope).await;
-        Ok(normalize_tool_execution_result(
-            call_id,
-            name,
-            tool.parameters_schema(),
-            result,
-        ))
-    }
-
-    /// Conversation-aware variant of [`ToolRegistry::execute`].
-    ///
-    /// Passes the active `conversation_id` to the tool so conversation-scoped
-    /// tools (e.g. `update_scratchpad`) can look up or mutate their state.
-    pub async fn execute_with_context(
-        &self,
-        name: &str,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        let (tool, arguments) = match self.prepare_execution(name, call_id, arguments) {
-            Ok(prepared) => prepared,
-            Err(result) => return Ok(result),
-        };
-        let result = tool
-            .execute_with_context(call_id, &arguments, db, source_scope, conversation_id)
-            .await;
-        Ok(normalize_tool_execution_result(
-            call_id,
-            name,
-            tool.parameters_schema(),
-            result,
-        ))
-    }
-
-    pub async fn execute_with_run_context(
         &self,
         name: &str,
         ctx: ToolExecutionContext<'_>,
@@ -929,7 +861,7 @@ impl ToolRegistry {
         };
         let call_id = ctx.call_id;
         let result = tool
-            .execute_with_run_context(ToolExecutionContext {
+            .execute(ToolExecutionContext {
                 call_id: ctx.call_id,
                 arguments: &arguments,
                 db: ctx.db,
@@ -1508,11 +1440,15 @@ mod tests {
 
         async fn execute(
             &self,
-            call_id: &str,
-            arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
+            context: crate::tools::ToolExecutionContext<'_>,
         ) -> Result<ToolResult, CoreError> {
+            let crate::tools::ToolExecutionContext {
+                call_id,
+                arguments,
+                db: _db,
+                source_scope: _source_scope,
+                ..
+            } = context;
             Ok(ToolResult {
                 call_id: call_id.to_string(),
                 content: arguments.to_string(),
@@ -1540,11 +1476,15 @@ mod tests {
 
         async fn execute(
             &self,
-            _call_id: &str,
-            _arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
+            context: crate::tools::ToolExecutionContext<'_>,
         ) -> Result<ToolResult, CoreError> {
+            let crate::tools::ToolExecutionContext {
+                call_id: _call_id,
+                arguments: _arguments,
+                db: _db,
+                source_scope: _source_scope,
+                ..
+            } = context;
             Err(CoreError::InvalidInput(
                 "the requested field is stale".to_string(),
             ))
@@ -1571,11 +1511,15 @@ mod tests {
 
         async fn execute(
             &self,
-            call_id: &str,
-            _arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
+            context: crate::tools::ToolExecutionContext<'_>,
         ) -> Result<ToolResult, CoreError> {
+            let crate::tools::ToolExecutionContext {
+                call_id,
+                arguments: _arguments,
+                db: _db,
+                source_scope: _source_scope,
+                ..
+            } = context;
             Ok(ToolResult {
                 call_id: call_id.to_string(),
                 content: "ok".to_string(),
@@ -2040,7 +1984,10 @@ mod tests {
         .to_string();
 
         let result = registry
-            .execute("manage_skill", "call-large-skill", &args, &db, &[])
+            .execute(
+                "manage_skill",
+                crate::tools::ToolExecutionContext::new("call-large-skill", &args, &db, &[]),
+            )
             .await
             .unwrap();
 
@@ -2171,15 +2118,18 @@ mod tests {
         let result = registry
             .execute(
                 "echo_arguments",
-                "call-normalize",
-                "```json\n{\"startLine\": 7}\n```",
-                &db,
-                &[],
+                crate::tools::ToolExecutionContext::new(
+                    "call-normalize",
+                    "```json\n{\"startLine\": 7}\n```",
+                    &db,
+                    &[],
+                ),
             )
             .await
             .unwrap();
 
         assert!(!result.is_error);
+        assert_eq!(result.call_id, "call-normalize");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&result.content).unwrap()["start_line"],
             7
@@ -2196,34 +2146,45 @@ mod tests {
         let invalid = registry
             .execute(
                 "echo_arguments",
-                "call-invalid",
-                r#"{"startLine":"seven"}"#,
-                &db,
-                &[],
+                crate::tools::ToolExecutionContext::new(
+                    "call-invalid",
+                    r#"{"startLine":"seven"}"#,
+                    &db,
+                    &[],
+                ),
             )
             .await
             .unwrap();
         assert!(invalid.is_error);
+        assert_eq!(invalid.call_id, "call-invalid");
         assert_eq!(
             invalid.artifacts.as_ref().unwrap()["code"],
             "invalid_argument_type"
         );
 
         let failed = registry
-            .execute("failing_tool", "call-failed", "{}", &db, &[])
+            .execute(
+                "failing_tool",
+                crate::tools::ToolExecutionContext::new("call-failed", "{}", &db, &[]),
+            )
             .await
             .unwrap();
         assert!(failed.is_error);
+        assert_eq!(failed.call_id, "call-failed");
         assert_eq!(
             failed.artifacts.as_ref().unwrap()["code"],
             "invalid_tool_request"
         );
 
         let unknown = registry
-            .execute("echo_argument", "call-unknown", "{}", &db, &[])
+            .execute(
+                "echo_argument",
+                crate::tools::ToolExecutionContext::new("call-unknown", "{}", &db, &[]),
+            )
             .await
             .unwrap();
         assert!(unknown.is_error);
+        assert_eq!(unknown.call_id, "call-unknown");
         assert_eq!(unknown.artifacts.as_ref().unwrap()["code"], "unknown_tool");
         assert!(unknown.content.contains("echo_arguments"));
     }

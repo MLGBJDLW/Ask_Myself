@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
@@ -51,11 +50,15 @@ impl Tool for HealthCheckTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: HealthCheckArgs = serde_json::from_str(arguments).unwrap_or(HealthCheckArgs {
             check_type: default_check_type(),
             stale_days: default_stale_days(),

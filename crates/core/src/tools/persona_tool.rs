@@ -1,11 +1,13 @@
 //! PersonaTool - active conversation persona switching.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::persona::{enabled_persona_by_id, list_personas, PersonaProfile};
 
@@ -89,23 +91,16 @@ impl Tool for PersonaTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_with_context(call_id, arguments, db, source_scope, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: PersonaArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid manage_persona arguments: {e}"))
         })?;
@@ -211,12 +206,9 @@ mod tests {
         });
 
         let result = tool
-            .execute_with_context(
-                "call-1",
-                &args.to_string(),
-                &db,
-                &[],
-                Some(&conversation.id),
+            .execute(
+                crate::tools::ToolExecutionContext::new("call-1", &args.to_string(), &db, &[])
+                    .with_conversation_id(Some(&conversation.id)),
             )
             .await
             .unwrap();
@@ -236,7 +228,10 @@ mod tests {
         });
 
         let err = tool
-            .execute_with_context("call-1", &args.to_string(), &db, &[], None)
+            .execute(
+                crate::tools::ToolExecutionContext::new("call-1", &args.to_string(), &db, &[])
+                    .with_conversation_id(None),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("active conversation context"));

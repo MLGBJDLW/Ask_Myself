@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[cfg(test)]
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::CreateFileCheckpointInput;
@@ -167,37 +168,16 @@ impl Tool for CreateFileTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
-            .await
-    }
-}
-
-impl CreateFileTool {
-    async fn execute_impl(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: CreateFileArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid create_file arguments: {error}"))
         })?;
@@ -460,7 +440,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -497,7 +482,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -518,7 +508,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -544,7 +539,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("append-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "append-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -585,7 +585,12 @@ mod tests {
             }),
         ] {
             let result = tool
-                .execute("append-invalid", &args.to_string(), &db, &[])
+                .execute(crate::tools::ToolExecutionContext::new(
+                    "append-invalid",
+                    &args.to_string(),
+                    &db,
+                    &[],
+                ))
                 .await
                 .unwrap();
             assert!(result.is_error);
@@ -605,7 +610,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -623,7 +633,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-rel", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-rel",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -645,7 +660,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-docx", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-docx",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -664,7 +684,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -684,7 +709,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -705,7 +735,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-open", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-open",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

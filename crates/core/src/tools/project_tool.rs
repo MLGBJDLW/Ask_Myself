@@ -201,11 +201,15 @@ impl Tool for ProjectTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ProjectToolArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid project_tool arguments: {e}")))?;
         match args.action {
@@ -849,7 +853,12 @@ mod tests {
         let tool = ProjectTool;
         let list_args = json!({ "action": "list" });
         let list_result = tool
-            .execute("project-tools-1", &list_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "project-tools-1",
+                &list_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -875,7 +884,12 @@ mod tests {
 
         let describe_args = json!({ "action": "describe", "name": "lint" });
         let describe_result = tool
-            .execute("project-tools-2", &describe_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "project-tools-2",
+                &describe_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -955,7 +969,12 @@ mod tests {
 
         let missing_hash = json!({ "action": "run", "name": "lint" });
         let err = tool
-            .execute("project-tools-run-1", &missing_hash.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "project-tools-run-1",
+                &missing_hash.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("requires manifestHash"));
@@ -966,7 +985,12 @@ mod tests {
             "manifestHash": "00000000000000000000000000000000"
         });
         let err = tool
-            .execute("project-tools-run-2", &wrong_hash.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "project-tools-run-2",
+                &wrong_hash.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("manifest changed"));
@@ -1002,7 +1026,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("project-tools-run-env", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "project-tools-run-env",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

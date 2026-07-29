@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::mcp::client::McpClient;
 use crate::mcp::McpToolInfo;
@@ -66,11 +65,15 @@ impl Tool for McpTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: Value =
             serde_json::from_str(arguments).unwrap_or(Value::Object(Default::default()));
         let mut client = self.client.lock().await;
