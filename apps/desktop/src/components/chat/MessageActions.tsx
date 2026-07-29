@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
-import { Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Pencil, Trash2 } from 'lucide-react';
+import { Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Pencil, Trash2, Volume2, Loader2, Pause, Play, RefreshCw } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
+import { useSpeechPlayback } from '../../features/voice/SpeechPlaybackProvider';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -30,18 +31,24 @@ export interface MessageActionsProps {
   onDelete?: (messageId: string) => void;
   /** Align actions with the owning message. */
   align?: 'start' | 'end';
+  /** Offer unified speech playback for a final assistant reply. */
+  showSpeech?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', showRetry, onRetry, isUser, messageId, conversationId, onEdit, onDelete, align = 'start' }: MessageActionsProps) {
+export function MessageActions({ text, showFeedback, chunkIds = [], queryText = '', showRetry, onRetry, isUser, messageId, conversationId, onEdit, onDelete, align = 'start', showSpeech = false }: MessageActionsProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const speech = useSpeechPlayback();
+  const speechState = messageId && speech.state.status !== 'idle' && speech.state.messageId === messageId
+    ? speech.state
+    : null;
 
   const handleCopy = useCallback(async () => {
     try {
@@ -107,11 +114,37 @@ export function MessageActions({ text, showFeedback, chunkIds = [], queryText = 
         className={actionBtn}
       >
         {copied ? (
-          <Check className="h-3.5 w-3.5 text-green-500" />
+          <Check className="h-3.5 w-3.5 text-success" />
         ) : (
           <Copy className="h-3.5 w-3.5" />
         )}
       </button>
+      {showSpeech && messageId && text.trim() && (
+        <button
+          type="button"
+          onClick={() => {
+            if (speechState?.status === 'playing') speech.pause();
+            else if (speechState?.status === 'paused') void speech.resume();
+            else void speech.speakMessage(messageId, text);
+          }}
+          disabled={speechState?.status === 'synthesizing'}
+          title={speechState?.status === 'playing'
+            ? 'Pause speech'
+            : speechState?.status === 'paused'
+              ? 'Resume speech'
+              : speechState?.status === 'error'
+                ? `${speechState.error} Retry`
+                : 'Read this reply'}
+          aria-label={speechState?.status === 'playing' ? 'Pause speech' : speechState?.status === 'paused' ? 'Resume speech' : 'Read this reply'}
+          className={`${actionBtn} ${speechState?.status === 'playing' ? 'text-accent' : ''} ${speechState?.status === 'error' ? 'text-danger' : ''}`}
+        >
+          {speechState?.status === 'synthesizing' ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : speechState?.status === 'playing' ? <Pause className="h-3.5 w-3.5" />
+              : speechState?.status === 'paused' ? <Play className="h-3.5 w-3.5" />
+                : speechState?.status === 'error' ? <RefreshCw className="h-3.5 w-3.5" />
+                  : <Volume2 className="h-3.5 w-3.5" />}
+        </button>
+      )}
       {isUser && onEdit && (
         <button
           type="button"
