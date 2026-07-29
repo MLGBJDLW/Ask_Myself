@@ -2051,7 +2051,11 @@ pub fn analyze_video(
         .join(" ");
 
     // 5. Optionally extract frames for OCR
+    #[cfg(feature = "ocr")]
     let mut frame_texts = Vec::new();
+    #[cfg(not(feature = "ocr"))]
+    let frame_texts = Vec::new();
+    #[cfg(feature = "ocr")]
     if config.frame_extraction_enabled {
         on_progress(VideoProcessingProgress {
             phase: "extracting_frames".into(),
@@ -2078,23 +2082,20 @@ pub fn analyze_video(
         };
 
         // OCR each frame using existing OCR pipeline
-        #[cfg(feature = "ocr")]
-        {
-            use crate::ocr::{extract_text_from_image, OcrConfig};
-            let ocr_config = OcrConfig::default();
-            for (i, frame_path) in frame_paths.iter().enumerate() {
-                on_progress(VideoProcessingProgress {
-                    phase: "ocr".into(),
-                    progress_pct: 70.0 + (i as f32 / frame_paths.len() as f32) * 25.0,
-                    detail: Some(format!("OCR frame {}/{}", i + 1, frame_paths.len())),
-                });
-                if let Ok(frame_bytes) = std::fs::read(frame_path) {
-                    if let Ok(result) =
-                        extract_text_from_image(&frame_bytes, "image/jpeg", &ocr_config, None)
-                    {
-                        if !result.full_text.trim().is_empty() {
-                            frame_texts.push(result.full_text);
-                        }
+        use crate::ocr::{extract_text_from_image, OcrConfig};
+        let ocr_config = OcrConfig::default();
+        for (i, frame_path) in frame_paths.iter().enumerate() {
+            on_progress(VideoProcessingProgress {
+                phase: "ocr".into(),
+                progress_pct: 70.0 + (i as f32 / frame_paths.len() as f32) * 25.0,
+                detail: Some(format!("OCR frame {}/{}", i + 1, frame_paths.len())),
+            });
+            if let Ok(frame_bytes) = std::fs::read(frame_path) {
+                if let Ok(result) =
+                    extract_text_from_image(&frame_bytes, "image/jpeg", &ocr_config, None)
+                {
+                    if !result.full_text.trim().is_empty() {
+                        frame_texts.push(result.full_text);
                     }
                 }
             }

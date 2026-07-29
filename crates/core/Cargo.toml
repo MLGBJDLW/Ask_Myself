@@ -23,10 +23,10 @@ quick-xml = "0.41"
 strsim = "0.11"
 thiserror = "2"
 tracing = "0.1"
-ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"] }
+ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"], optional = true }
 tiktoken-rs = "0.11.0"
-tokenizers = { version = "0.23", default-features = false, features = ["progressbar", "onig"] }
-ndarray = "0.17"
+tokenizers = { version = "0.23", default-features = false, features = ["progressbar", "onig"], optional = true }
+ndarray = { version = "0.17", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "multipart", "stream", "cookies", "gzip", "brotli", "deflate", "zstd", "charset", "http2"], default-features = false }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
@@ -58,9 +58,11 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsA
 windows-capture = "2.0.0"
 
 [features]
-default = ["ocr"]
-ocr = []
-video = ["candle-core", "candle-nn", "candle-transformers", "hound", "tempfile", "xz2", "tar"]
+default = ["ocr", "local-embeddings"]
+onnx-runtime = ["dep:ort", "dep:ndarray"]
+local-embeddings = ["onnx-runtime", "dep:tokenizers"]
+ocr = ["onnx-runtime"]
+video = ["candle-core", "candle-nn", "candle-transformers", "hound", "tempfile", "xz2", "tar", "dep:tokenizers"]
 
 [dev-dependencies]
 tempfile = "3"
