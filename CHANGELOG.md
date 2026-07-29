@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.25...nexa-monorepo-v0.11.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **theme:** Theme selection now supports versioned custom profiles and managed background assets in addition to built-in theme IDs.
+* **usage:** Global AI usage now comes from the invocation ledger instead of cumulative run-event totals.
+
+### Features
+
+* **theme:** add customizable Theme Studio ([ad80f20](https://github.com/MLGBJDLW/Nexa/commit/ad80f202bd0bac8006f04dc123c4b9940387c10a))
+* **usage:** add canonical AI usage accounting ([faeb8b6](https://github.com/MLGBJDLW/Nexa/commit/faeb8b6bb7568d9c8a43fa1b3a82da256b5f729d))
+* **voice:** unify managed speech playback ([b6c0a9b](https://github.com/MLGBJDLW/Nexa/commit/b6c0a9b48826b6c6474791186820b6aef79c2e3b))
+
+
+### Bug Fixes
+
+* **usage:** run legacy backfill only once ([66bd102](https://github.com/MLGBJDLW/Nexa/commit/66bd1021bdd26e532f56be1cc8db605a9985df8f))
+
 ## [0.10.25](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.24...nexa-monorepo-v0.10.25) (2026-07-29)
 
 
