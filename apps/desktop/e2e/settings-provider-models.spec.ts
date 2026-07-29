@@ -354,7 +354,7 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
 });
 
-test("settings exposes Qwen3.8 only through the Token Plan endpoint", async ({ page }) => {
+test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
@@ -378,6 +378,38 @@ test("settings exposes Qwen3.8 only through the Token Plan endpoint", async ({ p
   const modelSelect = modelField.getByRole("combobox");
   await expect(modelSelect).toHaveValue("qwen3.8-max-preview");
   await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
+  await expect(modelSelect.locator("option")).toHaveCount(1);
+  await expect(modelSelect.locator('option[value="qwen3.7-flash"]')).toHaveCount(0);
+});
+
+test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const qwenCloudCard = page.getByRole("button", { name: /^QwenCloud \(International\)/ });
+  await expect(qwenCloudCard).toContainText("pay-as-you-go international endpoint");
+  await qwenCloudCard.click();
+
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await expect(baseUrlField.getByRole("textbox")).toHaveValue(
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  );
+
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const modelSelect = modelField.getByRole("combobox");
+  await expect(modelSelect).toHaveValue("qwen3.7-flash");
+  await expect(modelSelect.locator("option")).toContainText([
+    "Qwen3.7 Flash",
+    "Qwen3.7 Plus",
+    "Qwen3.7 Max",
+  ]);
 });
 
 test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog", async ({ page }) => {
@@ -461,7 +493,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await panel.locator("button").first().click();
 
   const selects = panel.locator("select");
-  await expect(selects.nth(0).locator("option")).toHaveCount(7);
+  await expect(selects.nth(0).locator("option")).toHaveCount(8);
   await expect(selects.nth(1)).toHaveValue("gpt-4o-mini-tts");
   await selects.nth(0).selectOption("groq");
   await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
@@ -481,7 +513,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await selects.nth(0).selectOption("dashscope-cosyvoice");
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
-  await expect(panel.getByText("Qwen CN API key")).toBeVisible();
+  await expect(panel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await panel.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }
@@ -498,7 +530,10 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttPanel.getByRole("heading", { name: "Speech to Text" })).toBeVisible();
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
-  await expect(sttProvider.locator("option")).toHaveCount(6);
+  await expect(sttProvider.locator("option")).toHaveCount(9);
+
+  await sttProvider.selectOption("openai-live");
+  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("gpt-live-transcribe");
 
   await sttProvider.selectOption("groq");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
@@ -507,7 +542,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
 
   await sttProvider.selectOption("alibaba-qwen-asr");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
-  await expect(sttPanel.getByText("Qwen CN API key")).toBeVisible();
+  await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
     "style",
     /provider-icons\/alibabacloud\.svg/,
@@ -543,36 +578,32 @@ test("settings never reuses a provider key for a user-edited endpoint", async ({
   const ttsPanel = page.getByTestId("text-to-speech-settings-panel");
   await ttsPanel.locator("button").first().click();
   await ttsPanel.locator("select").first().selectOption("dashscope-cosyvoice");
-  await expect(ttsPanel.getByText("Qwen CN API key")).toBeVisible();
+  await expect(ttsPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await baseUrlInput(ttsPanel).fill("http://dashscope.aliyuncs.com/api/v1/services/audio/tts");
-  await expect(ttsPanel.getByText("Qwen CN API key")).toHaveCount(0);
+  await expect(ttsPanel.getByTestId("shared-credential-notice")).toHaveCount(0);
   await expect(ttsPanel.getByRole("button", { name: "Save" })).toBeDisabled();
 
   const sttPanel = page.getByTestId("speech-to-text-settings-panel");
   await sttPanel.locator("button").first().click();
   await sttPanel.getByTestId("stt-provider-select").selectOption("alibaba-qwen-asr");
-  await expect(sttPanel.getByText("Qwen CN API key")).toBeVisible();
+  await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await baseUrlInput(sttPanel).fill("https://dashscope.aliyuncs.com:8443/api/v1/services/audio/asr/transcription");
-  await expect(sttPanel.getByText("Qwen CN API key")).toHaveCount(0);
+  await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveCount(0);
   await expect(sttPanel.getByRole("button", { name: "Save" })).toBeDisabled();
 });
 
-test("settings keeps sherpa local models with downloaded models and separates provider categories", async ({ page }) => {
+test("settings keeps local and cloud speech engines in one provider category", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await expect(page.locator('[data-provider-category="image-generation"]')).toContainText("Image generation");
-  await expect(page.locator('[data-provider-category="text-to-speech"]')).toContainText("Cloud text to speech");
-  await expect(page.locator('[data-provider-category="speech-to-text"]')).toContainText("Cloud speech to text");
-
-  await page.getByRole("button", { name: "Models & Embedding" }).click();
-  await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
-  await expect(page.getByText("Local speech models")).toBeVisible();
-  const localTts = page.getByTestId("text-to-speech-settings-panel");
+  const speechCategory = page.locator('[data-provider-category="speech"]');
+  await expect(speechCategory).toContainText("Speech");
+  const localTts = speechCategory.getByTestId("text-to-speech-settings-panel");
   await localTts.locator("button").first().click();
   await localTts.locator("select").first().selectOption("sherpa-onnx");
   await expect(localTts.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
 
-  const localStt = page.getByTestId("speech-to-text-settings-panel");
+  const localStt = speechCategory.getByTestId("speech-to-text-settings-panel");
   await localStt.locator("button").first().click();
   await localStt.getByTestId("stt-provider-select").selectOption("sherpa-zipformer");
   await expect(localStt.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
@@ -614,14 +645,11 @@ test("settings applies a managed model root and exposes OCR deletion", async ({ 
   ).__ocrDeleted)).toBe(true);
 });
 
-test("settings discard restores local speech while keeping persisted Whisper edits", async ({ page }) => {
+test("settings discard leaves speech drafts unpersisted while keeping saved Whisper edits", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
   await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
 
-  const localTts = page.getByTestId("text-to-speech-settings-panel");
-  await localTts.locator("button").first().click();
-  await localTts.locator("select").first().selectOption("sherpa-onnx");
   let whisperCard = page
     .getByRole("heading", { name: "Speech Recognition Model" })
     .locator("xpath=../../..");
@@ -631,15 +659,21 @@ test("settings discard restores local speech while keeping persisted Whisper edi
     window as unknown as { __savedVideoConfig?: { whisperModel?: string } }
   ).__savedVideoConfig?.whisperModel)).toBe("small");
 
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  const localTts = page.getByTestId("text-to-speech-settings-panel");
+  await localTts.locator("button").first().click();
+  await localTts.locator("select").first().selectOption("sherpa-onnx");
+
   await page.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Discard changes" }).click();
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
 
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: unknown }
+  ).__savedAppConfig)).toBeUndefined();
+
   await page.getByRole("button", { name: "Models & Embedding" }).click();
   await page.getByRole("button", { name: /^Models Manage AI models/ }).click();
-  const restoredTts = page.getByTestId("text-to-speech-settings-panel");
-  await restoredTts.locator("button").first().click();
-  await expect(restoredTts.locator("select").first()).toHaveValue("");
   whisperCard = page
     .getByRole("heading", { name: "Speech Recognition Model" })
     .locator("xpath=../../..");
@@ -661,7 +695,7 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
   await selects.nth(0).selectOption("alibaba-model-studio-cn");
   await expect(selects.nth(1)).toHaveValue("qwen3.7-text-embedding");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
-  await expect(section.getByText("Qwen CN API key")).toBeVisible();
+  await expect(section.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await section.getByRole("button", { name: "Save Config" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedEmbedConfig?: { apiKey?: string; apiModel?: string } }
