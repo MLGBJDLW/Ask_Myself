@@ -305,7 +305,7 @@ export function Layout() {
       className="relative isolate flex h-full min-h-0 overflow-hidden bg-surface-0 text-text-primary"
       data-app-area={location.pathname === '/' ? 'home' : 'task'}
     >
-      <div className="dream-backdrop" aria-hidden="true" />
+      <div className="app-theme-backdrop" aria-hidden="true" />
       {/* Sidebar */}
       <motion.aside
         className="relative z-10 flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
