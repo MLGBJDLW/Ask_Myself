@@ -692,14 +692,13 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
     }
 }
 
-async fn manage_service(
+async fn status_service(
     call_id: &str,
-    action: &str,
     service_id: &str,
     conversation_id: Option<&str>,
 ) -> ToolResult {
     let mut registry = managed_services().lock().await;
-    let Some(mut service) = registry.remove(service_id) else {
+    let Some(service) = registry.get_mut(service_id) else {
         drop(registry);
         if let Some(result) = inactive_service_result(call_id, service_id, conversation_id).await {
             return result;
@@ -710,69 +709,25 @@ async fn manage_service(
         );
     };
     if !belongs_to_conversation(&service.conversation_id, conversation_id) {
-        registry.insert(service_id.to_string(), service);
         return error_result(
             call_id,
             "managed service belongs to a different conversation",
         );
     }
-
-    if action == "stop" {
-        service.process_tree.terminate();
-        let kill_error = service.child.kill().await.err();
-        let _ = service.child.wait().await;
-        drain_service_output_tasks(
-            service.stdout_task.take(),
-            service.stderr_task.take(),
-            SERVICE_LOG_DRAIN_TIMEOUT,
-        )
-        .await;
-        let log_snapshot = service_log_snapshot(&service.logs).await;
-        let _ = service.activity_runtime.transition(
-            service_id,
-            ActivityState::Cancelled,
-            serde_json::json!({ "reason": "stopped_by_tool" }),
-        );
-        let result = ToolResult {
-            call_id: call_id.to_string(),
-            content: kill_error.map_or_else(
-                || format!("Stopped managed service {service_id}."),
-                |error| format!("Managed service {service_id} had already exited: {error}"),
-            ),
-            is_error: false,
-            artifacts: Some(serde_json::json!({
-                "kind": "managedService",
-                "activityId": service_id,
-                "cursor": service.activity_runtime.get(service_id).map(|record| record.last_event_seq),
-                "serviceId": service_id,
-                "processId": service.process_id,
-                "status": "stopped",
-                "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-                "program": service.program,
-                "autoPromoted": service.auto_promoted,
-                "stdoutTail": log_snapshot.stdout,
-                "stderrTail": log_snapshot.stderr,
-                "stdoutTruncated": log_snapshot.stdout_truncated,
-                "stderrTruncated": log_snapshot.stderr_truncated,
-            })),
-        };
-        cache_completed_service(service_id, result.clone(), service.conversation_id.clone()).await;
-        return result;
-    }
-
-    match service.child.try_wait() {
+    let process_status = service.child.try_wait();
+    match process_status {
         Ok(Some(status)) => {
+            let service = registry
+                .remove(service_id)
+                .expect("managed service disappeared while locked");
             mark_service_finalizing(service_id, &service).await;
             drop(registry);
             finalize_exited_service(call_id, service_id, service, status).await
         }
-        Err(error) => {
-            registry.insert(service_id.to_string(), service);
-            error_result(
-                call_id,
-                format!("failed to inspect service {service_id}: {error}"),
-            )
-        }
+        Err(error) => error_result(
+            call_id,
+            format!("failed to inspect service {service_id}: {error}"),
+        ),
         Ok(None) => {
             let log_snapshot = service_log_snapshot(&service.logs).await;
             if service.ready_url.is_none() {
@@ -787,9 +742,6 @@ async fn manage_service(
                 .activity_runtime
                 .get(service_id)
                 .map(|record| record.last_event_seq);
-            // Reinsert before the network probe so the asynchronous lifecycle
-            // monitor never observes a transiently missing running service.
-            registry.insert(service_id.to_string(), service);
             drop(registry);
             let healthy = match ready_url.as_ref() {
                 Some(url) => Some(readiness_probe(url).await),
@@ -832,6 +784,82 @@ async fn manage_service(
             }
         }
     }
+}
+
+async fn manage_service(
+    call_id: &str,
+    action: &str,
+    service_id: &str,
+    conversation_id: Option<&str>,
+) -> ToolResult {
+    if action == "status" {
+        return status_service(call_id, service_id, conversation_id).await;
+    }
+    if action != "stop" {
+        return error_result(call_id, format!("unsupported service action '{action}'"));
+    }
+
+    let mut registry = managed_services().lock().await;
+    let Some(mut service) = registry.remove(service_id) else {
+        drop(registry);
+        if let Some(result) = inactive_service_result(call_id, service_id, conversation_id).await {
+            return result;
+        }
+        return error_result(
+            call_id,
+            format!("managed service '{service_id}' was not found or has already stopped"),
+        );
+    };
+    if !belongs_to_conversation(&service.conversation_id, conversation_id) {
+        registry.insert(service_id.to_string(), service);
+        return error_result(
+            call_id,
+            "managed service belongs to a different conversation",
+        );
+    }
+    mark_service_finalizing(service_id, &service).await;
+    drop(registry);
+
+    service.process_tree.terminate();
+    let kill_error = service.child.kill().await.err();
+    let _ = service.child.wait().await;
+    drain_service_output_tasks(
+        service.stdout_task.take(),
+        service.stderr_task.take(),
+        SERVICE_LOG_DRAIN_TIMEOUT,
+    )
+    .await;
+    let log_snapshot = service_log_snapshot(&service.logs).await;
+    let _ = service.activity_runtime.transition(
+        service_id,
+        ActivityState::Cancelled,
+        serde_json::json!({ "reason": "stopped_by_tool" }),
+    );
+    let result = ToolResult {
+        call_id: call_id.to_string(),
+        content: kill_error.map_or_else(
+            || format!("Stopped managed service {service_id}."),
+            |error| format!("Managed service {service_id} had already exited: {error}"),
+        ),
+        is_error: false,
+        artifacts: Some(serde_json::json!({
+            "kind": "managedService",
+            "activityId": service_id,
+            "cursor": service.activity_runtime.get(service_id).map(|record| record.last_event_seq),
+            "serviceId": service_id,
+            "processId": service.process_id,
+            "status": "stopped",
+            "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
+            "program": service.program,
+            "autoPromoted": service.auto_promoted,
+            "stdoutTail": log_snapshot.stdout,
+            "stderrTail": log_snapshot.stderr,
+            "stdoutTruncated": log_snapshot.stdout_truncated,
+            "stderrTruncated": log_snapshot.stderr_truncated,
+        })),
+    };
+    cache_completed_service(service_id, result.clone(), service.conversation_id.clone()).await;
+    result
 }
 
 async fn exited_service_result(
