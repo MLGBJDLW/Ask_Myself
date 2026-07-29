@@ -538,6 +538,11 @@ pub struct AgentExecutor {
     confirmation_callback: Option<ConfirmationCallback>,
     approval_callback: Option<ApprovalCallback>,
     prompt_cache_tracker: StdMutex<PromptCacheTracker>,
+    /// Separates invocation ids for short-lived executors that do not have a
+    /// persisted conversation turn (notably detached subagents).
+    usage_scope_id: String,
+    usage_run_id: Option<String>,
+    usage_subtask_run_id: Option<String>,
 }
 
 impl AgentExecutor {
@@ -555,6 +560,9 @@ impl AgentExecutor {
             confirmation_callback: None,
             approval_callback: None,
             prompt_cache_tracker: StdMutex::new(PromptCacheTracker::default()),
+            usage_scope_id: Uuid::new_v4().to_string(),
+            usage_run_id: None,
+            usage_subtask_run_id: None,
         }
     }
 
@@ -564,6 +572,20 @@ impl AgentExecutor {
     /// checkpoint, save any partial conversation, and return gracefully.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach stable ledger identity for executors that run outside a normal
+    /// conversation turn, such as delegated workers.
+    pub fn with_usage_identity(
+        mut self,
+        scope_id: impl Into<String>,
+        run_id: Option<String>,
+        subtask_run_id: Option<String>,
+    ) -> Self {
+        self.usage_scope_id = scope_id.into();
+        self.usage_run_id = run_id;
+        self.usage_subtask_run_id = subtask_run_id;
         self
     }
 

@@ -1733,6 +1733,14 @@ async fn run_subagent_once(
     };
 
     let executor = AgentExecutor::new(provider, tools, config)
+        .with_usage_identity(
+            format!(
+                "subagent:{}",
+                subtask_run_id.as_deref().unwrap_or(&session_id)
+            ),
+            parent_task_run_id.clone(),
+            subtask_run_id.clone(),
+        )
         .with_cancel_token(worker_cancel_token.clone())
         .with_skills_override(enabled_skills);
 
@@ -2575,6 +2583,7 @@ impl Tool for JudgeSubagentResultsTool {
             arguments,
             db,
             source_scope: _source_scope,
+            conversation_id,
             ..
         } = context;
         let mut args: JudgeSubagentResultsArgs = serde_json::from_str(arguments).map_err(|e| {
@@ -2836,6 +2845,60 @@ impl Tool for JudgeSubagentResultsTool {
                 }
             }
         };
+
+        let provider_type = self.runtime.base_config.provider_type;
+        let provider_id = nexa_core::usage_analytics::provider_type_id(provider_type);
+        let (estimated_cost_micros, currency, pricing_version) =
+            nexa_core::usage_analytics::usage_cost_metadata(provider_type);
+        let raw_usage =
+            serde_json::to_value(&response.usage).unwrap_or_else(|_| serde_json::json!({}));
+        let invocation_id = format!(
+            "judge:{}:{}",
+            subtask_run_id
+                .as_deref()
+                .or(parent_task_run_id.as_deref())
+                .or(conversation_id)
+                .unwrap_or("detached"),
+            call_id
+        );
+        if let Err(error) = db.record_ai_usage(&nexa_core::usage_analytics::AiUsageRecordInput {
+            invocation_id: &invocation_id,
+            occurred_at: None,
+            provider_id,
+            provider_type: provider_id,
+            model_id: &model,
+            raw_model_id: Some(&model),
+            modality: "language_model",
+            operation_kind: "judge",
+            conversation_id,
+            turn_id: None,
+            run_id: parent_task_run_id.as_deref(),
+            subtask_run_id: subtask_run_id.as_deref(),
+            project_id: None,
+            prompt_tokens: u64::from(response.usage.prompt_tokens),
+            completion_tokens: u64::from(response.usage.completion_tokens),
+            thinking_tokens: u64::from(response.usage.thinking_tokens.unwrap_or(0)),
+            total_tokens: u64::from(
+                response.usage.total_tokens.max(
+                    response
+                        .usage
+                        .prompt_tokens
+                        .saturating_add(response.usage.completion_tokens),
+                ),
+            ),
+            cache_read_tokens: u64::from(response.usage.cache_read_tokens.unwrap_or(0)),
+            cache_miss_tokens: u64::from(response.usage.cache_miss_tokens.unwrap_or(0)),
+            cache_creation_tokens: u64::from(response.usage.cache_creation_tokens.unwrap_or(0)),
+            usage_source: "provider",
+            request_status: "success",
+            latency_ms: None,
+            estimated_cost_micros,
+            currency,
+            pricing_version,
+            provider_raw: &raw_usage,
+        }) {
+            warn!("Failed to persist judge usage: {error}");
+        }
 
         let raw_response = response.content.trim().to_string();
         let parsed = extract_json_block(&raw_response)

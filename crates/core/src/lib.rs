@@ -47,6 +47,7 @@ pub mod knowledge_loop;
 pub mod learning;
 pub mod lint;
 pub mod llm;
+pub mod managed_assets;
 pub mod mcp;
 pub mod media;
 pub mod migrations;
@@ -88,6 +89,7 @@ pub mod tools;
 pub mod trace;
 pub mod trajectory;
 pub mod tts_provider_catalog;
+pub mod usage_analytics;
 pub mod usage_snapshot;
 #[cfg(feature = "video")]
 pub mod video;

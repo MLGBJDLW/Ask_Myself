@@ -3584,12 +3584,18 @@ pub fn build_title_generation_context(
 /// Sends the first user message (and optionally the start of the assistant
 /// reply) to the LLM with a short system prompt asking for a concise title.
 /// Falls back to simple truncation if the LLM call fails.
-pub async fn generate_title(
+#[derive(Debug, Clone)]
+pub struct TitleGenerationResult {
+    pub title: String,
+    pub usage: Option<crate::llm::Usage>,
+}
+
+pub async fn generate_title_with_usage(
     provider: &dyn crate::llm::LlmProvider,
     model: &str,
     provider_type: Option<crate::llm::ProviderType>,
     context: &TitleGenerationContext,
-) -> String {
+) -> TitleGenerationResult {
     let user_content = format!("Conversation excerpt:\n{}", context.excerpt);
 
     let request = crate::llm::CompletionRequest {
@@ -3616,14 +3622,31 @@ pub async fn generate_title(
     {
         Ok(Ok(response)) => {
             let title = sanitize_generated_title(&response.content);
-            if title.is_empty() {
-                fallback_title(&context.fallback_message)
-            } else {
-                title
+            TitleGenerationResult {
+                title: if title.is_empty() {
+                    fallback_title(&context.fallback_message)
+                } else {
+                    title
+                },
+                usage: Some(response.usage),
             }
         }
-        _ => fallback_title(&context.fallback_message),
+        _ => TitleGenerationResult {
+            title: fallback_title(&context.fallback_message),
+            usage: None,
+        },
     }
+}
+
+pub async fn generate_title(
+    provider: &dyn crate::llm::LlmProvider,
+    model: &str,
+    provider_type: Option<crate::llm::ProviderType>,
+    context: &TitleGenerationContext,
+) -> String {
+    generate_title_with_usage(provider, model, provider_type, context)
+        .await
+        .title
 }
 
 fn sanitize_generated_title(raw: &str) -> String {

@@ -243,7 +243,14 @@ impl AgentExecutor {
                                             })
                                             .await;
                                         let recovered = self
-                                            .recover_context_overflow(messages, model, tx)
+                                            .recover_context_overflow(
+                                                messages,
+                                                model,
+                                                tx,
+                                                db,
+                                                conversation_id,
+                                                turn_id,
+                                            )
                                             .await?;
                                         if !recovered {
                                             emit_error_and_finalize_turn(

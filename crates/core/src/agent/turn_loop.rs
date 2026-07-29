@@ -98,7 +98,14 @@ impl AgentExecutor {
         turn_state.transition_to(TurnPhase::PreparingContext);
         let history_before_summarization = prompt_cache::message_sequence_fingerprint(&history);
         let history = self
-            .summarize_if_needed(history, model, max_response_tokens)
+            .summarize_if_needed(
+                history,
+                model,
+                max_response_tokens,
+                db,
+                conversation_id,
+                turn_id,
+            )
             .await;
         let history_was_compacted =
             history_before_summarization != prompt_cache::message_sequence_fingerprint(&history);
@@ -524,6 +531,9 @@ impl AgentExecutor {
             );
             prompt_was_compacted |= self
                 .compact_before_model_step_if_needed(LongTaskCompactionContext {
+                    db,
+                    conversation_id,
+                    turn_id,
                     tx: &tx,
                     model,
                     messages: &mut messages,
@@ -546,7 +556,7 @@ impl AgentExecutor {
                 },
             );
 
-            let model_step = self
+            let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
                     tx: &tx,
@@ -566,7 +576,21 @@ impl AgentExecutor {
                     context_recovery_attempts: &mut context_recovery_attempts,
                     force_non_streaming_llm: &mut force_non_streaming_llm,
                 })
-                .await?;
+                .await;
+            let model_step = match model_step_result {
+                Ok(step) => step,
+                Err(error) => {
+                    self.record_model_step_failure(
+                        db,
+                        conversation_id,
+                        turn_id,
+                        model,
+                        iteration,
+                        &error,
+                    );
+                    return Err(error);
+                }
+            };
             let model_step::ModelStepOutput {
                 mut full_content,
                 tool_calls,
@@ -591,6 +615,9 @@ impl AgentExecutor {
             let usage_report = self
                 .record_model_step_usage(
                     usage_accounting::UsageAccountingContext {
+                        db,
+                        conversation_id,
+                        turn_id,
                         tx: &tx,
                         model,
                         messages: &mut messages,

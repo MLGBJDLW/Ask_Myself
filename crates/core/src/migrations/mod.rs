@@ -1341,6 +1341,183 @@ Every answer that uses knowledge base search results.
              OR lower(COALESCE(base_url, '')) LIKE '%maas.aliyuncs.com%'
            );",
     ),
+    (
+        "v080_canonical_ai_usage_accounting",
+        "CREATE TABLE IF NOT EXISTS ai_usage_records (
+            id TEXT PRIMARY KEY NOT NULL,
+            invocation_id TEXT NOT NULL UNIQUE,
+            occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+            provider_id TEXT NOT NULL DEFAULT 'unknown',
+            provider_type TEXT NOT NULL DEFAULT 'unknown',
+            model_id TEXT NOT NULL DEFAULT 'unknown',
+            raw_model_id TEXT,
+            modality TEXT NOT NULL DEFAULT 'language_model',
+            operation_kind TEXT NOT NULL DEFAULT 'agent_main',
+            conversation_id TEXT,
+            turn_id TEXT,
+            run_id TEXT,
+            subtask_run_id TEXT,
+            project_id TEXT,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK(prompt_tokens >= 0),
+            completion_tokens INTEGER NOT NULL DEFAULT 0 CHECK(completion_tokens >= 0),
+            thinking_tokens INTEGER NOT NULL DEFAULT 0 CHECK(thinking_tokens >= 0),
+            total_tokens INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
+            cache_miss_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_miss_tokens >= 0),
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_creation_tokens >= 0),
+            usage_source TEXT NOT NULL DEFAULT 'provider',
+            request_status TEXT NOT NULL DEFAULT 'success',
+            latency_ms INTEGER,
+            estimated_cost_micros INTEGER,
+            currency TEXT,
+            pricing_version TEXT,
+            provider_raw_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_occurred_at
+            ON ai_usage_records(occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_provider_model
+            ON ai_usage_records(provider_id, model_id, occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_operation
+            ON ai_usage_records(operation_kind, occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_run
+            ON ai_usage_records(run_id);
+
+        CREATE TABLE IF NOT EXISTS ai_model_pricing (
+            id TEXT PRIMARY KEY NOT NULL,
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            effective_from TEXT NOT NULL,
+            effective_to TEXT,
+            input_micros_per_million INTEGER,
+            output_micros_per_million INTEGER,
+            cache_read_micros_per_million INTEGER,
+            cache_write_micros_per_million INTEGER,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            pricing_version TEXT NOT NULL,
+            UNIQUE(provider_id, model_id, effective_from)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_model_pricing_lookup
+            ON ai_model_pricing(provider_id, model_id, effective_from, effective_to);
+
+        INSERT OR IGNORE INTO ai_usage_records (
+            id, invocation_id, occurred_at, provider_id, provider_type,
+            model_id, raw_model_id, modality, operation_kind,
+            conversation_id, turn_id, run_id,
+            prompt_tokens, completion_tokens, thinking_tokens, total_tokens,
+            cache_read_tokens, cache_miss_tokens, cache_creation_tokens,
+            usage_source, request_status, provider_raw_json
+        )
+        SELECT
+            'legacy-' || r.id,
+            'legacy-run:' || r.id,
+            COALESCE(e.created_at, r.finished_at, r.created_at),
+            COALESCE(NULLIF(r.provider, ''), 'unknown'),
+            COALESCE(NULLIF(r.provider, ''), 'unknown'),
+            COALESCE(NULLIF(r.model, ''), 'unknown'),
+            r.model,
+            'language_model',
+            'legacy_unclassified',
+            r.conversation_id,
+            r.turn_id,
+            r.id,
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.promptTokens'), 0)),
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.completionTokens'), 0)),
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.thinkingTokens'), 0)),
+            MAX(
+                COALESCE(json_extract(e.payload_json, '$.usageTotal.totalTokens'), 0),
+                COALESCE(json_extract(e.payload_json, '$.usageTotal.promptTokens'), 0)
+                    + COALESCE(json_extract(e.payload_json, '$.usageTotal.completionTokens'), 0)
+            ),
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.cacheReadTokens'), 0)),
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.cacheMissTokens'), 0)),
+            MAX(0, COALESCE(json_extract(e.payload_json, '$.usageTotal.cacheCreationTokens'), 0)),
+            'legacy_migrated',
+            CASE WHEN r.status = 'failed' THEN 'error' ELSE 'success' END,
+            COALESCE(json_extract(e.payload_json, '$.usageTotal'), '{}')
+        FROM agent_task_runs r
+        JOIN agent_run_events e ON e.run_id = r.id
+        WHERE e.event_seq = (
+            SELECT MAX(latest.event_seq)
+            FROM agent_run_events latest
+            WHERE latest.run_id = r.id
+              AND latest.kind IN ('usageUpdated', 'done')
+              AND json_valid(latest.payload_json)
+              AND json_type(latest.payload_json, '$.usageTotal') = 'object'
+        );
+
+        INSERT OR IGNORE INTO ai_usage_records (
+            id, invocation_id, occurred_at, provider_id, provider_type,
+            model_id, raw_model_id, modality, operation_kind,
+            conversation_id, turn_id, run_id, subtask_run_id,
+            prompt_tokens, completion_tokens, thinking_tokens, total_tokens,
+            cache_read_tokens, cache_miss_tokens, cache_creation_tokens,
+            usage_source, request_status, provider_raw_json
+        )
+        SELECT
+            'legacy-subtask-' || s.id,
+            'legacy-subtask:' || s.id,
+            COALESCE(s.finished_at, s.updated_at, s.created_at),
+            COALESCE(NULLIF(r.provider, ''), 'unknown'),
+            COALESCE(NULLIF(r.provider, ''), 'unknown'),
+            COALESCE(NULLIF(r.model, ''), 'unknown'),
+            r.model,
+            'language_model',
+            'subagent',
+            r.conversation_id,
+            r.turn_id,
+            r.id,
+            s.id,
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.promptTokens'),
+                json_extract(s.output_json, '$.usageTotal.promptTokens'), 0
+            )),
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.completionTokens'),
+                json_extract(s.output_json, '$.usageTotal.completionTokens'), 0
+            )),
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.thinkingTokens'),
+                json_extract(s.output_json, '$.usageTotal.thinkingTokens'), 0
+            )),
+            MAX(
+                COALESCE(
+                    json_extract(s.output_json, '$.run.usageTotal.totalTokens'),
+                    json_extract(s.output_json, '$.usageTotal.totalTokens'), 0
+                ),
+                COALESCE(
+                    json_extract(s.output_json, '$.run.usageTotal.promptTokens'),
+                    json_extract(s.output_json, '$.usageTotal.promptTokens'), 0
+                ) + COALESCE(
+                    json_extract(s.output_json, '$.run.usageTotal.completionTokens'),
+                    json_extract(s.output_json, '$.usageTotal.completionTokens'), 0
+                )
+            ),
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.cacheReadTokens'),
+                json_extract(s.output_json, '$.usageTotal.cacheReadTokens'), 0
+            )),
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.cacheMissTokens'),
+                json_extract(s.output_json, '$.usageTotal.cacheMissTokens'), 0
+            )),
+            MAX(0, COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal.cacheCreationTokens'),
+                json_extract(s.output_json, '$.usageTotal.cacheCreationTokens'), 0
+            )),
+            'legacy_migrated',
+            CASE WHEN s.status = 'failed' THEN 'error' ELSE 'success' END,
+            COALESCE(
+                json_extract(s.output_json, '$.run.usageTotal'),
+                json_extract(s.output_json, '$.usageTotal'), '{}'
+            )
+        FROM agent_subtask_runs s
+        JOIN agent_task_runs r ON r.id = s.parent_run_id
+        WHERE json_valid(s.output_json)
+          AND (
+            json_type(s.output_json, '$.run.usageTotal') = 'object'
+            OR json_type(s.output_json, '$.usageTotal') = 'object'
+          );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1482,6 +1659,8 @@ mod tests {
         assert!(tables.contains(&"dream_runs".to_string()));
         assert!(tables.contains(&"dream_run_events".to_string()));
         assert!(tables.contains(&"dream_artifacts".to_string()));
+        assert!(tables.contains(&"ai_usage_records".to_string()));
+        assert!(tables.contains(&"ai_model_pricing".to_string()));
     }
 
     #[test]
@@ -1499,6 +1678,74 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn backfills_legacy_subagent_usage_artifacts() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO conversations (id, provider, model)
+             VALUES ('conv-usage-backfill', 'open_ai', 'gpt-test');
+             INSERT INTO messages (id, conversation_id, role, content)
+             VALUES ('msg-usage-backfill', 'conv-usage-backfill', 'user', 'test');
+             INSERT INTO conversation_turns (id, conversation_id, user_message_id)
+             VALUES ('turn-usage-backfill', 'conv-usage-backfill', 'msg-usage-backfill');
+             INSERT INTO agent_task_runs
+                (id, conversation_id, turn_id, user_message_id, provider, model, status, phase)
+             VALUES
+                ('run-usage-backfill', 'conv-usage-backfill', 'turn-usage-backfill',
+                 'msg-usage-backfill', 'open_ai', 'gpt-test', 'completed', 'done');",
+        )
+        .expect("insert legacy subagent parents");
+        let output = serde_json::json!({
+            "kind": "subagent_run",
+            "run": {
+                "usageTotal": {
+                    "promptTokens": 120,
+                    "completionTokens": 30,
+                    "totalTokens": 150,
+                    "cacheReadTokens": 80
+                }
+            }
+        });
+        conn.execute(
+            "INSERT INTO agent_subtask_runs
+                (id, parent_run_id, status, phase, output_json)
+             VALUES ('subtask-usage-backfill', 'run-usage-backfill',
+                     'completed', 'done', ?1)",
+            [output.to_string()],
+        )
+        .expect("insert legacy subagent artifact");
+
+        run_migrations(&conn).expect("usage migration should backfill subagent artifact");
+        run_migrations(&conn).expect("subagent usage backfill should be idempotent");
+
+        let stored: (String, String, i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT operation_kind, subtask_run_id, prompt_tokens,
+                        completion_tokens, total_tokens, usage_source
+                 FROM ai_usage_records
+                 WHERE invocation_id = 'legacy-subtask:subtask-usage-backfill'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("backfilled subagent usage record");
+        assert_eq!(stored.0, "subagent");
+        assert_eq!(stored.1, "subtask-usage-backfill");
+        assert_eq!(stored.2, 120);
+        assert_eq!(stored.3, 30);
+        assert_eq!(stored.4, 150);
+        assert_eq!(stored.5, "legacy_migrated");
     }
 
     #[test]
