@@ -301,7 +301,7 @@ impl TerminalAgentTool {
             }),
         )?;
 
-        let baseline_output = snapshot.output.clone();
+        let baseline_cursor = snapshot.output_end;
         let payload = terminal_command_payload(&snapshot.session.shell, &command_id, command);
         self.state
             .write_session(&snapshot.session.id, &payload)
@@ -318,7 +318,7 @@ impl TerminalAgentTool {
             snapshot.session.id.clone(),
             call_id.to_string(),
             command_id.clone(),
-            baseline_output,
+            baseline_cursor,
         );
 
         let observation = runtime
@@ -429,8 +429,39 @@ fn parse_shell_markers(output: &str) -> Vec<ShellMarker> {
     markers
 }
 
-fn terminal_output_delta<'a>(previous: &str, current: &'a str) -> &'a str {
-    current.strip_prefix(previous).unwrap_or(current)
+struct TerminalOutputDelta<'a> {
+    data: &'a str,
+    dropped_before_cursor: Option<u64>,
+}
+
+fn terminal_output_delta(
+    snapshot: &crate::commands::TerminalSessionSnapshot,
+    after_cursor: u64,
+) -> TerminalOutputDelta<'_> {
+    if after_cursor >= snapshot.output_end {
+        return TerminalOutputDelta {
+            data: "",
+            dropped_before_cursor: None,
+        };
+    }
+    if after_cursor < snapshot.output_start {
+        return TerminalOutputDelta {
+            data: &snapshot.output,
+            dropped_before_cursor: Some(snapshot.output_start),
+        };
+    }
+    let relative = after_cursor.saturating_sub(snapshot.output_start) as usize;
+    if relative <= snapshot.output.len() && snapshot.output.is_char_boundary(relative) {
+        TerminalOutputDelta {
+            data: &snapshot.output[relative..],
+            dropped_before_cursor: None,
+        }
+    } else {
+        TerminalOutputDelta {
+            data: &snapshot.output,
+            dropped_before_cursor: Some(snapshot.output_start),
+        }
+    }
 }
 
 fn spawn_terminal_activity_watcher(
@@ -440,7 +471,7 @@ fn spawn_terminal_activity_watcher(
     session_id: String,
     activity_id: String,
     command_id: String,
-    mut previous_output: String,
+    mut output_cursor: u64,
 ) {
     tokio::spawn(async move {
         let mut command_started = false;
@@ -463,11 +494,23 @@ fn spawn_terminal_activity_watcher(
                     return;
                 }
             };
-            if snapshot.output == previous_output {
+            if snapshot.output_end <= output_cursor {
                 continue;
             }
-            let delta = terminal_output_delta(&previous_output, &snapshot.output).to_string();
-            previous_output = snapshot.output;
+            let delta = terminal_output_delta(&snapshot, output_cursor);
+            if let Some(available_from) = delta.dropped_before_cursor {
+                let _ = runtime.append(
+                    &activity_id,
+                    ActivityEventKind::Progress,
+                    serde_json::json!({
+                        "phase": "terminal_output_gap",
+                        "requestedAfter": output_cursor,
+                        "availableFrom": available_from,
+                    }),
+                );
+            }
+            let delta = delta.data.to_string();
+            output_cursor = snapshot.output_end;
             let visible = strip_terminal_control_sequences(&delta);
             if !visible.is_empty() {
                 let _ = runtime.append(
@@ -789,6 +832,40 @@ mod tests {
                 ShellMarker::PromptReady,
             ]
         );
+    }
+
+    fn terminal_snapshot(
+        output: &str,
+        output_start: u64,
+        output_end: u64,
+    ) -> crate::commands::TerminalSessionSnapshot {
+        crate::commands::TerminalSessionSnapshot {
+            session: crate::commands::TerminalSessionInfo {
+                id: "terminal-1".to_string(),
+                shell: "Bash".to_string(),
+                cwd: "/workspace".to_string(),
+                process_id: None,
+                conversation_id: Some("conversation-1".to_string()),
+            },
+            output: output.to_string(),
+            output_start,
+            output_end,
+        }
+    }
+
+    #[test]
+    fn terminal_output_delta_uses_absolute_cursors_across_tail_sizes() {
+        let snapshot = terminal_snapshot("abcdef", 100, 106);
+        let delta = terminal_output_delta(&snapshot, 103);
+        assert_eq!(delta.data, "def");
+        assert_eq!(delta.dropped_before_cursor, None);
+
+        let duplicate = terminal_output_delta(&snapshot, 106);
+        assert_eq!(duplicate.data, "");
+
+        let gap = terminal_output_delta(&snapshot, 90);
+        assert_eq!(gap.data, "abcdef");
+        assert_eq!(gap.dropped_before_cursor, Some(100));
     }
 
     #[test]

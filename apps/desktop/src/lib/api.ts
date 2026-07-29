@@ -333,6 +333,8 @@ export interface TerminalSessionInfo {
 export interface TerminalSessionSnapshot {
   session: TerminalSessionInfo;
   output: string;
+  outputStart: number;
+  outputEnd: number;
 }
 
 export interface TerminalEvent {

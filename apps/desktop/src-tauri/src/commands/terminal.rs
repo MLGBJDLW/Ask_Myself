@@ -28,7 +28,13 @@ struct TerminalSession {
     cwd: String,
     process_id: Option<u32>,
     conversation_id: Option<String>,
-    output: Arc<Mutex<String>>,
+    output: Arc<Mutex<TerminalOutputBuffer>>,
+}
+
+#[derive(Default)]
+struct TerminalOutputBuffer {
+    text: String,
+    start_cursor: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +62,8 @@ pub struct TerminalSessionInfo {
 pub struct TerminalSessionSnapshot {
     pub session: TerminalSessionInfo,
     pub output: String,
+    pub output_start: u64,
+    pub output_end: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,7 +144,7 @@ pub fn terminal_start_session_cmd(
             .master
             .take_writer()
             .map_err(|err| format!("failed to attach terminal input: {err}"))?;
-        if let Some(integration) = shell_integration_bootstrap(candidate.label) {
+        if let Some(integration) = shell_integration_bootstrap(candidate.label, candidate.program) {
             writer
                 .write_all(integration.as_bytes())
                 .and_then(|_| writer.flush())
@@ -144,7 +152,7 @@ pub fn terminal_start_session_cmd(
         }
         let process_id = child.process_id();
         let session_id = Uuid::new_v4().to_string();
-        let output = Arc::new(Mutex::new(String::new()));
+        let output = Arc::new(Mutex::new(TerminalOutputBuffer::default()));
         let session = TerminalSession {
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
@@ -278,7 +286,7 @@ fn spawn_terminal_reader(
     sessions: Arc<Mutex<HashMap<String, TerminalSession>>>,
     session_id: String,
     mut reader: Box<dyn Read + Send>,
-    output: Arc<Mutex<String>>,
+    output: Arc<Mutex<TerminalOutputBuffer>>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
@@ -462,9 +470,13 @@ impl TerminalState {
             .output
             .lock()
             .map_err(|_| "terminal output buffer is unavailable".to_string())?;
+        let max_chars = max_chars.clamp(1, MAX_TERMINAL_OUTPUT_CHARS);
+        let tail_start = terminal_output_tail_start(&output.text, max_chars);
         Ok(TerminalSessionSnapshot {
             session: session_info(session_id, session),
-            output: terminal_output_tail(&output, max_chars.clamp(1, MAX_TERMINAL_OUTPUT_CHARS)),
+            output: output.text[tail_start..].to_string(),
+            output_start: output.start_cursor.saturating_add(tail_start as u64),
+            output_end: output.start_cursor.saturating_add(output.text.len() as u64),
         })
     }
 
@@ -523,24 +535,27 @@ fn normalize_conversation_id(value: Option<String>) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-fn append_terminal_output(output: &mut String, data: &str) {
-    output.push_str(data);
-    if output.len() <= MAX_TERMINAL_OUTPUT_CHARS {
+fn append_terminal_output(output: &mut TerminalOutputBuffer, data: &str) {
+    output.text.push_str(data);
+    if output.text.len() <= MAX_TERMINAL_OUTPUT_CHARS {
         return;
     }
-    let tail = terminal_output_tail(output, MAX_TERMINAL_OUTPUT_CHARS);
-    *output = tail;
+    let start = terminal_output_tail_start(&output.text, MAX_TERMINAL_OUTPUT_CHARS);
+    output.text.drain(..start);
+    output.start_cursor = output.start_cursor.saturating_add(start as u64);
 }
 
+#[cfg(test)]
 fn terminal_output_tail(output: &str, max_chars: usize) -> String {
-    if output.len() <= max_chars {
-        return output.to_string();
-    }
+    output[terminal_output_tail_start(output, max_chars)..].to_string()
+}
+
+fn terminal_output_tail_start(output: &str, max_chars: usize) -> usize {
     let mut start = output.len().saturating_sub(max_chars);
     while start < output.len() && !output.is_char_boundary(start) {
         start += 1;
     }
-    output[start..].to_string()
+    start
 }
 
 fn terminal_stop_succeeded(error: &std::io::Error) -> bool {
@@ -613,14 +628,27 @@ fn spawn_terminal_waiter(
     });
 }
 
-fn shell_integration_bootstrap(shell: &str) -> Option<String> {
+fn shell_integration_bootstrap(shell: &str, program: &str) -> Option<String> {
     if shell.contains("PowerShell") {
         return Some(
-            "$global:NexaOriginalPrompt=${function:prompt}; function global:prompt { $nexaExit=if ($null -eq $global:LASTEXITCODE) { 0 } else { $global:LASTEXITCODE }; [Console]::Write(\"`e]633;D;$nexaExit`a`e]633;P;Cwd=$($PWD.Path)`a`e]633;A`a\"); if ($global:NexaOriginalPrompt) { & $global:NexaOriginalPrompt } else { \"PS $($PWD.Path)> \" } }\r"
+            "$global:NexaOriginalPrompt=${function:prompt}; function global:prompt { $nexaSucceeded=$?; $nexaExit=if ($nexaSucceeded) { 0 } elseif ($null -ne $global:LASTEXITCODE -and $global:LASTEXITCODE -ne 0) { $global:LASTEXITCODE } else { 1 }; [Console]::Write(\"`e]633;D;$nexaExit`a`e]633;P;Cwd=$($PWD.Path)`a`e]633;A`a\"); if ($global:NexaOriginalPrompt) { & $global:NexaOriginalPrompt } else { \"PS $($PWD.Path)> \" } }\r"
                 .to_string(),
         );
     }
-    if matches!(shell, "Bash" | "Git Bash" | "Zsh" | "Default Shell" | "sh") {
+    let program_name = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    if shell == "Zsh" || program_name == "zsh" {
+        return Some(
+            r#"autoload -Uz add-zsh-hook
+function __nexa_precmd { local __nexa_exit=$?; printf '\033]633;D;%s\007\033]633;P;Cwd=%s\007\033]633;A\007' "$__nexa_exit" "$PWD" }
+add-zsh-hook precmd __nexa_precmd"#
+                .to_string()
+                + "\n",
+        );
+    }
+    if matches!(shell, "Bash" | "Git Bash" | "Default Shell" | "sh") {
         return Some(
             r#"PROMPT_COMMAND='__nexa_exit=$?; printf "\033]633;D;%s\007\033]633;P;Cwd=%s\007\033]633;A\007" "$__nexa_exit" "$PWD"'"#
                 .to_string()
@@ -798,6 +826,34 @@ mod tests {
     fn terminal_output_tail_preserves_utf8_boundaries() {
         assert_eq!(terminal_output_tail("abc终端", 4), "端");
         assert_eq!(terminal_output_tail("abc", 20), "abc");
+    }
+
+    #[test]
+    fn terminal_output_cursor_advances_when_the_ring_buffer_trims() {
+        let mut output = TerminalOutputBuffer::default();
+        append_terminal_output(&mut output, &"a".repeat(MAX_TERMINAL_OUTPUT_CHARS));
+        append_terminal_output(&mut output, "终端");
+
+        assert!(output.start_cursor > 0);
+        assert!(output.text.is_char_boundary(0));
+        assert_eq!(
+            output.start_cursor + output.text.len() as u64,
+            (MAX_TERMINAL_OUTPUT_CHARS + "终端".len()) as u64
+        );
+    }
+
+    #[test]
+    fn shell_integration_uses_native_hooks_and_current_command_status() {
+        let zsh = shell_integration_bootstrap("Default Shell", "/bin/zsh").unwrap();
+        assert!(zsh.contains("add-zsh-hook precmd __nexa_precmd"));
+        assert!(!zsh.contains("PROMPT_COMMAND"));
+
+        let bash = shell_integration_bootstrap("Bash", "/bin/bash").unwrap();
+        assert!(bash.contains("PROMPT_COMMAND"));
+
+        let powershell = shell_integration_bootstrap("PowerShell", "pwsh.exe").unwrap();
+        assert!(powershell.contains("$nexaSucceeded=$?"));
+        assert!(powershell.contains("$global:LASTEXITCODE"));
     }
 
     #[cfg(windows)]
