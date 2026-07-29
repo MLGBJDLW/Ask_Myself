@@ -11,18 +11,23 @@ use crate::agent_stream::{
     compact_agent_event_for_frontend, split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS,
     MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
-use crate::agent_stream::{emit_agent_frontend_event, emit_agent_run_frontend_event};
+use crate::agent_stream::{
+    emit_agent_frontend_event_with_presentation, emit_agent_run_frontend_event,
+};
 use crate::agent_task_events::{
-    emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
+    emit_agent_task_run_update, record_agent_run_task_event,
+    record_internal_agent_run_status_task_event,
 };
 use crate::app_events::emit_app_event;
-use crate::desktop_agent_session::DesktopRunningAgentTask;
 use nexa_core::agent::power_mode::AgentPowerMode;
 use nexa_core::agent::{
     build_system_prompt, AgentConfig as ExecutorConfig, AgentEvent, AgentExecutionMode,
     AgentExecutor, AgentRequestKind, AgentSteeringMessage, CancellationToken,
 };
-use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
+use nexa_core::agent_run::{
+    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
+    AgentRunPhase,
+};
 use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
 #[cfg(test)]
 use nexa_core::approval::ToolApprovalMode;
@@ -65,11 +70,11 @@ use nexa_core::project_memory::{
 };
 use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
 use nexa_core::provider_registry::provider_type_for_parts;
+use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
-use nexa_core::tools::default_tool_registry;
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
@@ -121,8 +126,7 @@ pub struct AppState {
 }
 
 pub struct AgentState {
-    /// Map of conversation_id → running agent task state.
-    pub running: TokioMutex<HashMap<String, DesktopRunningAgentTask>>,
+    pub sessions: nexa_core::runtime::AgentSessionManager,
 }
 
 struct TerminalAgentError<'a> {
@@ -138,14 +142,14 @@ fn emit_terminal_agent_error_once(
     terminal_emitted: &AtomicBool,
     db: &Database,
     app_handle: &AppHandle,
-    stream_event_seq: &AtomicU64,
+    stream_event_seq: &AgentRunEventSequencer,
     error: TerminalAgentError<'_>,
 ) {
     if terminal_emitted.swap(true, Ordering::SeqCst) {
         return;
     }
 
-    let event_seq = stream_event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let event_seq = stream_event_seq.next();
     let run_event = AgentRunEvent::terminal_error(
         error.task_run_id,
         Some(error.turn_id),
@@ -660,8 +664,8 @@ mod tests {
     use super::*;
     use crate::desktop_agent_session::{
         build_desktop_agent_session_config, desktop_runtime_package_context,
-        filter_desktop_tool_names_by_package_host, filter_desktop_tool_registry_by_package_host,
-        runtime_session_config_artifact, DesktopAgentSessionConfigInput,
+        filter_desktop_tool_names_by_package_host, runtime_session_config_artifact,
+        DesktopAgentSessionConfigInput,
     };
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -1158,8 +1162,10 @@ mod tests {
         db.set_package_host_package_enabled("office-documents", false)
             .unwrap();
 
-        let tools = filter_desktop_tool_registry_by_package_host(&db, default_tool_registry())
-            .expect("filter tool registry");
+        let tools = nexa_core::package_host::PackageRuntimeAssembler::database_builtin(&db)
+            .and_then(|assembler| assembler.assemble_builtin_capabilities())
+            .expect("assemble tool registry")
+            .tools;
 
         assert!(!tools.contains("compile_document"));
         assert!(!tools.contains("get_document_info"));
@@ -1368,11 +1374,7 @@ mod tests {
                 Some(&serde_json::json!({ "retryable": true })),
             )
             .expect("record scheduler failure");
-        db.conn()
-            .execute(
-                "UPDATE workflow_automation_scheduler_events SET created_at = ?2 WHERE id = ?1",
-                rusqlite::params![failed_event.id, "2099-01-01T08:59:00Z"],
-            )
+        db.update_workflow_scheduler_event_created_at(&failed_event.id, "2099-01-01T08:59:00Z")
             .expect("set scheduler failure time");
 
         let due_runs = task_orchestrator_scheduler_due_runs(&db, "2099-01-01T09:00:00Z")

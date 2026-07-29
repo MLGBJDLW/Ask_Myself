@@ -1781,6 +1781,14 @@ async fn run_subagent_once(
                         }));
                     }
                 }
+                AgentEvent::Steering { content } => {
+                    if !content.trim().is_empty() {
+                        capture.tool_events.push(serde_json::json!({
+                            "phase": "steering",
+                            "content": content,
+                        }));
+                    }
+                }
                 AgentEvent::UsageUpdate { usage_total, .. } => {
                     capture.usage_total = usage_total;
                 }

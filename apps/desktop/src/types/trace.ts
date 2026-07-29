@@ -295,7 +295,7 @@ export interface TrajectoryReplayReport {
   mismatches: TrajectoryReplayMismatch[];
 }
 
-export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out';
+export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'paused';
 export type TrajectoryReplayRuntimeMode = 'recorded_events' | 'mock_runtime';
 
 export interface TrajectoryReplayExecution {

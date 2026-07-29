@@ -684,7 +684,10 @@ mod tests {
         assert!(artifacts.get("graphRetrieval").is_some());
         assert_eq!(artifacts["contextWindow"]["recommended"], true);
         assert_eq!(artifacts["contextWindow"]["tool"], "get_chunk_context");
-        assert_eq!(artifacts["contextManifest"]["version"], 1);
+        assert_eq!(
+            artifacts["contextManifest"]["version"],
+            crate::context_pack::CONTEXT_PACK_VERSION
+        );
         assert_eq!(
             artifacts["contextManifest"]["items"][0]["role"],
             "tool_guidance"

@@ -1,4 +1,5 @@
 import type {
+  AgentRunDisplayKind,
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
@@ -17,7 +18,13 @@ export type PersistedTraceItem =
   | { kind: 'reply'; text: string }
   | { kind: 'tool'; toolCall: ToolCallEvent }
   | { kind: 'skillSelection'; skills: PersistedTraceSkillRef[] }
-  | { kind: 'status'; text: string; tone?: 'muted' | 'success' | 'error' };
+  | {
+      kind: 'status';
+      text: string;
+      tone?: 'muted' | 'success' | 'error';
+      visibility?: 'user' | 'developer' | 'internal';
+      displayKind?: AgentRunDisplayKind;
+    };
 
 export interface PersistedTraceSkillRef {
   id?: string;
@@ -138,6 +145,14 @@ export function extractPersistedTraceItems(
         kind: 'status',
         text: item.text,
         tone: traceTone(item.tone),
+        visibility:
+          item.visibility === 'developer' || item.visibility === 'internal'
+            ? item.visibility
+            : 'user',
+        displayKind:
+          typeof item.displayKind === 'string'
+            ? item.displayKind as AgentRunDisplayKind
+            : 'status',
       });
       continue;
     }

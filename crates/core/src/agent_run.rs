@@ -154,6 +154,211 @@ impl AgentRunEventKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentRunEventVisibility {
+    #[default]
+    User,
+    Developer,
+    Internal,
+}
+
+impl AgentRunEventVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Developer => "developer",
+            Self::Internal => "internal",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "developer" => Some(Self::Developer),
+            "internal" => Some(Self::Internal),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentRunEventPersistence {
+    #[default]
+    Durable,
+    Ephemeral,
+}
+
+impl AgentRunEventPersistence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Durable => "durable",
+            Self::Ephemeral => "ephemeral",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "durable" => Some(Self::Durable),
+            "ephemeral" => Some(Self::Ephemeral),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentRunDisplayKind {
+    Output,
+    Reasoning,
+    #[default]
+    Status,
+    Plan,
+    Tool,
+    Approval,
+    Recovery,
+    Steering,
+    Usage,
+    Compaction,
+    Completion,
+    Error,
+}
+
+impl AgentRunDisplayKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Output => "output",
+            Self::Reasoning => "reasoning",
+            Self::Status => "status",
+            Self::Plan => "plan",
+            Self::Tool => "tool",
+            Self::Approval => "approval",
+            Self::Recovery => "recovery",
+            Self::Steering => "steering",
+            Self::Usage => "usage",
+            Self::Compaction => "compaction",
+            Self::Completion => "completion",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "output" => Some(Self::Output),
+            "reasoning" => Some(Self::Reasoning),
+            "status" => Some(Self::Status),
+            "plan" => Some(Self::Plan),
+            "tool" => Some(Self::Tool),
+            "approval" => Some(Self::Approval),
+            "recovery" => Some(Self::Recovery),
+            "steering" => Some(Self::Steering),
+            "usage" => Some(Self::Usage),
+            "compaction" => Some(Self::Compaction),
+            "completion" => Some(Self::Completion),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentRunEventImportance {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+impl AgentRunEventImportance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "normal" => Some(Self::Normal),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
+fn event_presentation(
+    kind: AgentRunEventKind,
+) -> (
+    AgentRunEventVisibility,
+    AgentRunDisplayKind,
+    AgentRunEventImportance,
+) {
+    match kind {
+        AgentRunEventKind::OutputDelta => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Output,
+            AgentRunEventImportance::Normal,
+        ),
+        AgentRunEventKind::Thinking => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Reasoning,
+            AgentRunEventImportance::Normal,
+        ),
+        AgentRunEventKind::PlanUpdated => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Plan,
+            AgentRunEventImportance::Normal,
+        ),
+        AgentRunEventKind::ToolPreparing
+        | AgentRunEventKind::ToolStarted
+        | AgentRunEventKind::ToolProgress
+        | AgentRunEventKind::ToolCompleted => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Tool,
+            AgentRunEventImportance::Normal,
+        ),
+        AgentRunEventKind::ApprovalRequested | AgentRunEventKind::ApprovalResolved => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Approval,
+            AgentRunEventImportance::High,
+        ),
+        AgentRunEventKind::StreamReset | AgentRunEventKind::RecoveryAttempt => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Recovery,
+            AgentRunEventImportance::High,
+        ),
+        AgentRunEventKind::UsageUpdated => (
+            AgentRunEventVisibility::Developer,
+            AgentRunDisplayKind::Usage,
+            AgentRunEventImportance::Low,
+        ),
+        AgentRunEventKind::AutoCompacted => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Compaction,
+            AgentRunEventImportance::Normal,
+        ),
+        AgentRunEventKind::Done => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Completion,
+            AgentRunEventImportance::High,
+        ),
+        AgentRunEventKind::Error => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Error,
+            AgentRunEventImportance::High,
+        ),
+        AgentRunEventKind::Status => (
+            AgentRunEventVisibility::User,
+            AgentRunDisplayKind::Status,
+            AgentRunEventImportance::Normal,
+        ),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRunEventKindContract {
     pub kind: AgentRunEventKind,
@@ -274,6 +479,14 @@ pub struct AgentRunEvent {
     pub event_seq: u64,
     pub kind: AgentRunEventKind,
     pub phase: AgentRunPhase,
+    #[serde(default)]
+    pub visibility: AgentRunEventVisibility,
+    #[serde(default)]
+    pub persistence: AgentRunEventPersistence,
+    #[serde(default)]
+    pub display_kind: AgentRunDisplayKind,
+    #[serde(default)]
+    pub importance: AgentRunEventImportance,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -361,6 +574,12 @@ impl AgentRunEvent {
                 content.clone(),
                 tone.clone().or_else(|| Some("running".to_string())),
             ),
+            AgentEvent::Steering { content } => (
+                AgentRunEventKind::Status,
+                AgentRunPhase::Responding,
+                content.clone(),
+                Some("accepted".to_string()),
+            ),
             AgentEvent::PlanUpdated { summary, phase, .. } => (
                 AgentRunEventKind::PlanUpdated,
                 phase
@@ -426,6 +645,10 @@ impl AgentRunEvent {
             ),
         };
 
+        let (visibility, mut display_kind, importance) = event_presentation(kind);
+        if matches!(event, AgentEvent::Steering { .. }) {
+            display_kind = AgentRunDisplayKind::Steering;
+        }
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: String::new(),
@@ -433,6 +656,10 @@ impl AgentRunEvent {
             event_seq: 0,
             kind,
             phase,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label,
             status,
             payload: serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
@@ -458,6 +685,22 @@ impl AgentRunEvent {
         self
     }
 
+    pub fn with_presentation(
+        mut self,
+        visibility: AgentRunEventVisibility,
+        display_kind: AgentRunDisplayKind,
+        importance: AgentRunEventImportance,
+    ) -> Self {
+        self.visibility = visibility;
+        self.display_kind = display_kind;
+        self.importance = importance;
+        self
+    }
+
+    pub fn is_durable(&self) -> bool {
+        self.persistence == AgentRunEventPersistence::Durable
+    }
+
     pub fn output_delta(
         run_id: &str,
         turn_id: Option<&str>,
@@ -471,13 +714,19 @@ impl AgentRunEvent {
             StreamBlockChannel::Answer => "answer",
             StreamBlockChannel::Thinking => "thinking",
         };
+        let kind = AgentRunEventKind::OutputDelta;
+        let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
             turn_id: turn_id.unwrap_or_default().to_string(),
             event_seq,
-            kind: AgentRunEventKind::OutputDelta,
+            kind,
             phase: AgentRunPhase::Responding,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label: "Assistant response".to_string(),
             status: Some("streaming".to_string()),
             payload: serde_json::json!({
@@ -491,13 +740,19 @@ impl AgentRunEvent {
     }
 
     pub fn stream_reset(run_id: &str, turn_id: Option<&str>, event_seq: u64, reason: &str) -> Self {
+        let kind = AgentRunEventKind::StreamReset;
+        let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
             turn_id: turn_id.unwrap_or_default().to_string(),
             event_seq,
-            kind: AgentRunEventKind::StreamReset,
+            kind,
             phase: AgentRunPhase::Responding,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label: reason.to_string(),
             status: Some("running".to_string()),
             payload: serde_json::json!({ "reason": reason }),
@@ -513,13 +768,19 @@ impl AgentRunEvent {
         attempt: Option<u32>,
         mode: Option<&str>,
     ) -> Self {
+        let kind = AgentRunEventKind::RecoveryAttempt;
+        let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
             turn_id: turn_id.unwrap_or_default().to_string(),
             event_seq,
-            kind: AgentRunEventKind::RecoveryAttempt,
+            kind,
             phase: AgentRunPhase::Responding,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label: reason.to_string(),
             status: Some("recovering".to_string()),
             payload: serde_json::json!({
@@ -553,13 +814,19 @@ impl AgentRunEvent {
             .entry("content".to_string())
             .or_insert_with(|| serde_json::Value::String(label.to_string()));
 
+        let kind = AgentRunEventKind::Status;
+        let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
             turn_id: turn_id.unwrap_or_default().to_string(),
             event_seq,
-            kind: AgentRunEventKind::Status,
+            kind,
             phase,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label: label.to_string(),
             status: status.map(str::to_string),
             payload: serde_json::Value::Object(payload_map),
@@ -597,13 +864,64 @@ impl AgentRunEvent {
             serde_json::Value::String(status.to_string()),
         );
 
+        let kind = AgentRunEventKind::Error;
+        let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: run_id.to_string(),
             turn_id: turn_id.unwrap_or_default().to_string(),
             event_seq,
-            kind: AgentRunEventKind::Error,
+            kind,
             phase: AgentRunPhase::Done,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
+            label: message.to_string(),
+            status: Some(status.to_string()),
+            payload: serde_json::Value::Object(payload_map),
+            created_at: None,
+        }
+    }
+
+    pub fn terminal_status(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        message: &str,
+        status: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> Self {
+        let mut payload_map = match payload {
+            Some(serde_json::Value::Object(existing)) => existing.clone(),
+            Some(existing) => {
+                let mut map = serde_json::Map::new();
+                map.insert("data".to_string(), existing.clone());
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        payload_map.insert(
+            "message".to_string(),
+            serde_json::Value::String(message.to_string()),
+        );
+        payload_map
+            .entry("usageTotal".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+
+        let kind = AgentRunEventKind::Done;
+        let (visibility, display_kind, importance) = event_presentation(kind);
+        Self {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.to_string(),
+            turn_id: turn_id.unwrap_or_default().to_string(),
+            event_seq,
+            kind,
+            phase: AgentRunPhase::Done,
+            visibility,
+            persistence: AgentRunEventPersistence::Durable,
+            display_kind,
+            importance,
             label: message.to_string(),
             status: Some(status.to_string()),
             payload: serde_json::Value::Object(payload_map),
@@ -812,10 +1130,50 @@ mod tests {
         assert_eq!(run_event.version, AGENT_RUN_EVENT_VERSION);
         assert_eq!(run_event.kind, AgentRunEventKind::Status);
         assert_eq!(run_event.phase, AgentRunPhase::Routing);
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.persistence, AgentRunEventPersistence::Durable);
+        assert_eq!(run_event.display_kind, AgentRunDisplayKind::Status);
+        assert_eq!(run_event.importance, AgentRunEventImportance::Normal);
         assert_eq!(run_event.task_event_type(), "status");
         assert_eq!(run_event.version, 2);
         assert_eq!(run_event.run_id, "run-1");
         assert_eq!(run_event.event_seq, 7);
+    }
+
+    #[test]
+    fn steering_presentation_is_semantic_and_label_agnostic() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::Steering {
+            content: "focus on edge cases instead".to_string(),
+        });
+
+        assert_eq!(run_event.kind, AgentRunEventKind::Status);
+        assert_eq!(run_event.display_kind, AgentRunDisplayKind::Steering);
+        assert_eq!(run_event.label, "focus on edge cases instead");
+        assert_eq!(run_event.status.as_deref(), Some("accepted"));
+    }
+
+    #[test]
+    fn presentation_metadata_is_serialized_as_stable_wire_values() {
+        let event = AgentRunEvent::status_update(
+            "run-1",
+            Some("turn-1"),
+            1,
+            AgentRunPhase::Routing,
+            "Task queued",
+            Some("queued"),
+            None,
+        )
+        .with_presentation(
+            AgentRunEventVisibility::Internal,
+            AgentRunDisplayKind::Status,
+            AgentRunEventImportance::Low,
+        );
+
+        let wire = serde_json::to_value(event).expect("run event should serialize");
+        assert_eq!(wire["visibility"], "internal");
+        assert_eq!(wire["persistence"], "durable");
+        assert_eq!(wire["displayKind"], "status");
+        assert_eq!(wire["importance"], "low");
     }
 
     #[test]

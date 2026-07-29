@@ -1,9 +1,11 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use log::warn;
-use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
+use nexa_core::agent_run::{
+    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
+    AgentRunPhase,
+};
 use nexa_core::conversation::{AgentTaskRun, AgentTaskRunEvent};
 use nexa_core::db::Database;
+use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::task_run::AgentTaskRuntime;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -84,6 +86,9 @@ fn record_and_emit_task_event(
 }
 
 pub(crate) fn persist_durable_run_event(db: &Database, run_event: &AgentRunEvent) {
+    if !run_event.is_durable() {
+        return;
+    }
     if let Err(err) = db.save_agent_run_event(run_event) {
         warn!(
             "Failed to persist durable run event {}#{}: {err}",
@@ -134,19 +139,19 @@ pub(crate) fn record_agent_run_task_event(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record_agent_run_status_task_event(
+pub(crate) fn record_internal_agent_run_status_task_event(
     db: &Database,
     app_handle: &AppHandle,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
-    event_seq: &AtomicU64,
+    event_seq: &AgentRunEventSequencer,
     phase: AgentRunPhase,
     label: &str,
     status: Option<&str>,
     payload: Option<&serde_json::Value>,
 ) {
-    let next_seq = event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let next_seq = event_seq.next();
     let run_event = AgentRunEvent::status_update(
         task_run_id,
         turn_id,
@@ -155,6 +160,11 @@ pub(crate) fn record_agent_run_status_task_event(
         label,
         status,
         payload,
+    )
+    .with_presentation(
+        AgentRunEventVisibility::Internal,
+        AgentRunDisplayKind::Status,
+        AgentRunEventImportance::Low,
     );
     record_agent_run_task_event(
         db,

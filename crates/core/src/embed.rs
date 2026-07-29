@@ -64,23 +64,33 @@ impl EmbedderConfig {
 pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, CoreError> {
     match config.provider.as_str() {
         "local" => {
-            let model_path = if config.model_path.is_empty() {
-                None
-            } else {
-                Some(config.model_path.as_str())
-            };
-            let local_model = config.local_embedding_model();
-            if check_local_model_exists_for(model_path, &local_model) {
-                let model_dir = model_path.map(PathBuf::from);
-                let embedder = OnnxEmbedder::new(model_dir, local_model)?;
-                Ok(Box::new(embedder))
-            } else {
+            #[cfg(not(feature = "local-embeddings"))]
+            {
                 tracing::warn!(
-                    "ONNX model not available, falling back to TF-IDF — \
+                    "local embeddings are disabled at compile time; falling back to TF-IDF"
+                );
+                return Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])));
+            }
+            #[cfg(feature = "local-embeddings")]
+            {
+                let model_path = if config.model_path.is_empty() {
+                    None
+                } else {
+                    Some(config.model_path.as_str())
+                };
+                let local_model = config.local_embedding_model();
+                if check_local_model_exists_for(model_path, &local_model) {
+                    let model_dir = model_path.map(PathBuf::from);
+                    let embedder = OnnxEmbedder::new(model_dir, local_model)?;
+                    Ok(Box::new(embedder))
+                } else {
+                    tracing::warn!(
+                        "ONNX model not available, falling back to TF-IDF — \
                      search quality will be degraded. \
                      Download the model in Settings."
-                );
-                Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])))
+                    );
+                    Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])))
+                }
             }
         }
         "api" => {
@@ -776,12 +786,14 @@ impl LocalEmbeddingModel {
     }
 }
 
+#[cfg(feature = "local-embeddings")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmbeddingInputKind {
     Query,
     Document,
 }
 
+#[cfg(feature = "local-embeddings")]
 fn prepare_embedding_input(
     model: &LocalEmbeddingModel,
     kind: EmbeddingInputKind,
@@ -811,12 +823,14 @@ pub const ONNX_MODEL_NAME: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 /// Produces L2-normalized embeddings suitable for semantic similarity
 /// search.  Model files are downloaded from HuggingFace on first use
 /// and cached locally.
+#[cfg(feature = "local-embeddings")]
 pub struct OnnxEmbedder {
     session: std::sync::Mutex<ort::session::Session>,
     tokenizer: tokenizers::Tokenizer,
     model: LocalEmbeddingModel,
 }
 
+#[cfg(feature = "local-embeddings")]
 impl OnnxEmbedder {
     /// Create a new ONNX embedder.
     ///
@@ -888,6 +902,7 @@ impl OnnxEmbedder {
     }
 }
 
+#[cfg(feature = "local-embeddings")]
 impl Embedder for OnnxEmbedder {
     fn model_name(&self) -> &str {
         self.model.model_name()

@@ -176,14 +176,14 @@ See:
 | Layer | Technology |
 | --- | --- |
 | Desktop shell | Tauri 2 |
-| Frontend | React 18, TypeScript, Tailwind CSS 4 |
+| Frontend | React 19.2, TypeScript, Tailwind CSS 4 |
 | Animation/UI | Framer Motion, Lucide, cmdk |
 | Core backend | Rust |
 | Database | SQLite via `rusqlite` |
 | Search | SQLite FTS5 + local vector search |
 | Embeddings | ONNX Runtime, tokenizers, optional API embeddings |
 | OCR | PaddleOCR ONNX models |
-| Routing | React Router 7 |
+| Routing | React Router 8.3 |
 | Markdown/Math/Diagrams | react-markdown, KaTeX, Mermaid |
 | Build tooling | Vite 6, Cargo |
 

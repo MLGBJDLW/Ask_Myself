@@ -8,6 +8,7 @@ import type {
   AgentRunEvent,
   AgentTaskRun,
   AgentTaskRunEvent,
+  AgentTurnHandle,
 } from '../types/conversation';
 import {
   projectHistoricalEventsToStreamState,
@@ -95,6 +96,7 @@ class StreamStoreImpl {
     const s = this._streams[id];
     if (!s) return undefined;
     return {
+      turnHandle: s.turnHandle,
       isStreaming: s.isStreaming,
       streamText: s.streamText,
       streamRounds: s.streamRounds,
@@ -196,6 +198,14 @@ class StreamStoreImpl {
     state.isStreaming = true;
     this._streams[conversationId] = state;
     this.resetTimeout(conversationId);
+    this.notify(conversationId);
+  }
+
+  /** Bind the authoritative runtime identity returned by the launch handshake. */
+  bindTurnHandle(conversationId: string, handle: AgentTurnHandle): void {
+    const state = this._streams[conversationId];
+    if (!state) return;
+    state.turnHandle = handle;
     this.notify(conversationId);
   }
 
@@ -330,7 +340,12 @@ class StreamStoreImpl {
     const ordering = applyStreamEventOrdering(s, event.eventSeq ?? raw.eventSeq);
     if (!ordering.accepted) return;
     if (ordering.gapDetected) {
-      appendStatusTraceEvent(s, 'Stream event gap detected; replay may be required.', 'muted');
+      appendStatusTraceEvent(
+        s,
+        'Stream event gap detected; replay may be required.',
+        'muted',
+        'internal',
+      );
     }
 
     // Reset inactivity timeout on every event, including empty keepalive

@@ -9,7 +9,6 @@ mod desktop_agent_session;
 mod subagent_tool;
 mod terminal_agent_tool;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -223,7 +222,7 @@ fn main() {
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
             });
             app.manage(AgentState {
-                running: TokioMutex::new(HashMap::new()),
+                sessions: nexa_core::runtime::AgentSessionManager::new(),
             });
             app.manage(McpManagerState {
                 manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),

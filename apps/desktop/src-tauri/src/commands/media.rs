@@ -388,52 +388,35 @@ pub async fn get_video_transcript_cmd(
     validate_path_in_scope(&db, &file_path)?;
 
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.content, c.start_offset, c.end_offset, c.metadata_json
-                 FROM chunks c
-                 JOIN documents d ON d.id = c.document_id
-                 WHERE d.path = ?1
-                 ORDER BY c.chunk_index",
-            )
+        let rows = db
+            .list_document_chunks_by_path(&file_path)
             .map_err(|e| e.to_string())?;
-
-        let rows = stmt
-            .query_map(rusqlite::params![&file_path], |row| {
-                let content: String = row.get(0)?;
-                let start: i64 = row.get(1)?;
-                let end: i64 = row.get(2)?;
-                let meta_json: String = row.get(3)?;
-                Ok((content, start, end, meta_json))
+        let chunks = rows
+            .into_iter()
+            .map(|row| {
+                let heading: Option<String> =
+                    serde_json::from_str::<serde_json::Value>(&row.metadata_json)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("heading_context")
+                                .and_then(|h| h.as_str().map(String::from))
+                        });
+                let chunk_type = if heading
+                    .as_deref()
+                    .is_some_and(|h| h.starts_with("[Frame OCR"))
+                {
+                    "frame_ocr"
+                } else {
+                    "transcript"
+                };
+                TranscriptChunk {
+                    text: row.content,
+                    start_ms: Some(row.start_offset),
+                    end_ms: Some(row.end_offset),
+                    chunk_type: chunk_type.to_string(),
+                }
             })
-            .map_err(|e| e.to_string())?;
-
-        let mut chunks = Vec::new();
-        for row in rows {
-            let (text, start_ms, end_ms, meta_json) = row.map_err(|e| e.to_string())?;
-            let heading: Option<String> = serde_json::from_str::<serde_json::Value>(&meta_json)
-                .ok()
-                .and_then(|v| {
-                    v.get("heading_context")
-                        .and_then(|h| h.as_str().map(String::from))
-                });
-            let chunk_type = if heading
-                .as_deref()
-                .is_some_and(|h| h.starts_with("[Frame OCR"))
-            {
-                "frame_ocr"
-            } else {
-                "transcript"
-            };
-            chunks.push(TranscriptChunk {
-                text,
-                start_ms: Some(start_ms),
-                end_ms: Some(end_ms),
-                chunk_type: chunk_type.to_string(),
-            });
-        }
-
+            .collect::<Vec<_>>();
         Ok(chunks)
     })
     .await
@@ -452,19 +435,12 @@ pub async fn get_video_metadata_cmd(
     validate_path_in_scope(&db, &file_path)?;
 
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn();
-        let result: Result<(String, String), _> = conn.query_row(
-            "SELECT mime_type, metadata FROM documents WHERE path = ?1",
-            rusqlite::params![&file_path],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        );
-
-        match result {
-            Ok((mime_type, metadata_json)) => {
+        match db.get_document_storage_metadata_by_path(&file_path) {
+            Ok(document) => {
                 let meta: serde_json::Value =
-                    serde_json::from_str(&metadata_json).unwrap_or(serde_json::json!({}));
+                    serde_json::from_str(&document.metadata_json).unwrap_or(serde_json::json!({}));
                 Ok(serde_json::json!({
-                    "mimeType": mime_type,
+                    "mimeType": document.mime_type,
                     "durationSecs": meta.get("duration_secs").and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))),
                     "width": meta.get("video_width").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))),
                     "height": meta.get("video_height").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))),
@@ -473,9 +449,6 @@ pub async fn get_video_metadata_cmd(
                     "thumbnailPath": meta.get("thumbnail_path").and_then(|v| v.as_str()),
                     "creationTime": meta.get("video_creation_time").and_then(|v| v.as_str()),
                 }))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Err(format!("No document found for path: {file_path}"))
             }
             Err(e) => Err(e.to_string()),
         }

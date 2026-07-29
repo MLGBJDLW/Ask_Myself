@@ -332,7 +332,10 @@ pub async fn list_tool_access_map_cmd(
     state: tauri::State<'_, AppState>,
     mcp_state: tauri::State<'_, McpManagerState>,
 ) -> Result<Vec<nexa_core::tool_access::ToolAccessInfo>, String> {
-    let mut registry = default_tool_registry();
+    let package_assembler =
+        nexa_core::package_host::PackageRuntimeAssembler::database_builtin(state.db.as_ref())
+            .map_err(|error| error.to_string())?;
+    let mut registry = package_assembler.builtin_tool_registry();
     {
         let mut mcp_manager = mcp_state.manager.lock().await;
         match sync_enabled_mcp_servers(&state.db, &mut mcp_manager).await {
@@ -546,7 +549,7 @@ pub async fn archive_conversation_cmd(
     agent_state: tauri::State<'_, AgentState>,
     id: String,
 ) -> Result<Conversation, String> {
-    if agent_state.running.lock().await.contains_key(&id) {
+    if agent_state.sessions.contains(&id).await {
         return Err("Stop the running agent before archiving this conversation.".to_string());
     }
     state
@@ -876,7 +879,11 @@ pub async fn compact_conversation_cmd(
             None
         };
 
-    let tools = default_tool_registry();
+    let tools =
+        nexa_core::package_host::PackageRuntimeAssembler::database_builtin(state.db.as_ref())
+            .and_then(|assembler| assembler.assemble_builtin_capabilities())
+            .map_err(|error| error.to_string())?
+            .tools;
     let mut executor = AgentExecutor::new(provider, tools, executor_config);
     if let Some(summ_provider) = summarization_provider {
         executor = executor.with_summarization_provider(summ_provider);

@@ -5,7 +5,7 @@
 //! persistence.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,11 +19,17 @@ use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
     AgentRequestKind, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
 };
-use nexa_core::agent_run::AgentRunPhase;
+use nexa_core::agent_run::{
+    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
+};
 use nexa_core::app_settings::AppConfig;
 use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
     ToolPermissionKey,
+};
+use nexa_core::context_pack::{
+    ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
+    ContextTrustLevel,
 };
 use nexa_core::conversation::{
     AgentConfig as DbAgentConfig, AgentSubtaskRun, Conversation, ConversationMessage,
@@ -37,20 +43,19 @@ use nexa_core::llm::{
 };
 use nexa_core::mcp::McpManager;
 use nexa_core::ocr::extract_text_from_image;
-use nexa_core::package_host::PackageSurfaceKind;
+use nexa_core::package_host::PackageRuntimeAssembler;
 use nexa_core::provider_registry::provider_type_for_parts;
+use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
-use nexa_core::tools::{default_tool_registry, ToolRegistry};
+use nexa_core::tools::ToolRegistry;
 use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::agent_stream::emit_agent_frontend_event;
+use crate::agent_stream::{emit_agent_frontend_event, emit_agent_frontend_event_with_presentation};
 use crate::agent_stream_bridge::AgentStreamForwarder;
-use crate::agent_task_events::{
-    emit_agent_task_run_update, record_agent_run_status_task_event, record_agent_run_task_event,
-};
+use crate::agent_task_events::{emit_agent_task_run_update, record_agent_run_task_event};
 use crate::app_events::emit_app_event;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
@@ -69,7 +74,7 @@ pub struct DesktopAgentTurnRuntime {
 pub struct DesktopAgentTurnStream {
     pub app_handle: AppHandle,
     pub task_run_id: String,
-    pub event_seq: Arc<AtomicU64>,
+    pub event_seq: Arc<AgentRunEventSequencer>,
     pub terminal_emitted: Arc<AtomicBool>,
 }
 
@@ -103,6 +108,7 @@ pub struct DesktopAgentTurnConfig {
     pub executor_config: AgentConfig,
     pub source_scope_ids: Vec<String>,
     pub pinned_skill_ids: Vec<String>,
+    pub context_pack: ContextPack,
 }
 
 pub struct DesktopAgentUserContentRequest<'a> {
@@ -136,7 +142,7 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub db: &'a Database,
     pub mcp_manager: &'a tokio::sync::Mutex<McpManager>,
     pub app_handle: &'a AppHandle,
-    pub event_seq: &'a AtomicU64,
+    pub event_seq: &'a AgentRunEventSequencer,
     pub conversation_id: &'a str,
     pub task_run_id: &'a str,
     pub turn_id: &'a str,
@@ -164,7 +170,6 @@ pub struct DesktopAgentTurnFinalization<'a> {
     pub task_run_id: &'a str,
     pub task_orchestrator_run_id: Option<&'a str>,
     pub turn_id: &'a str,
-    pub event_seq: &'a AtomicU64,
     pub outcome: &'a DesktopAgentTurnOutcome,
 }
 
@@ -175,7 +180,7 @@ pub struct DesktopAgentStopFinalization<'a> {
     pub task_run_id: &'a str,
     pub task_orchestrator_run_id: Option<&'a str>,
     pub turn_id: &'a str,
-    pub event_seq: &'a AtomicU64,
+    pub event_seq: &'a AgentRunEventSequencer,
     pub reason: &'a str,
     pub summary: &'a str,
 }
@@ -198,26 +203,6 @@ pub struct DesktopAgentTurnRequest {
     pub stream: DesktopAgentTurnStream,
 }
 
-pub struct DesktopRunningAgentTask {
-    pub cancel_token: CancellationToken,
-    pub task: tokio::task::JoinHandle<()>,
-    pub steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
-    pub task_run_id: String,
-    pub task_orchestrator_run_id: Option<String>,
-    pub turn_id: String,
-    pub stream_event_seq: Arc<AtomicU64>,
-}
-
-pub struct DesktopRunningAgentTaskRequest {
-    pub cancel_token: CancellationToken,
-    pub task: tokio::task::JoinHandle<()>,
-    pub steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
-    pub task_run_id: String,
-    pub task_orchestrator_run_id: Option<String>,
-    pub turn_id: String,
-    pub stream_event_seq: Arc<AtomicU64>,
-}
-
 pub struct DesktopRunningAgentStopRequest {
     pub db: Arc<Database>,
     pub app_handle: AppHandle,
@@ -230,7 +215,7 @@ struct DesktopApprovalCallbackInput {
     conversation_id: String,
     task_run_id: String,
     turn_id: String,
-    event_seq: Arc<AtomicU64>,
+    event_seq: Arc<AgentRunEventSequencer>,
     approval_runtime: DesktopAgentApprovalRuntime,
 }
 
@@ -260,68 +245,19 @@ pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
     })
 }
 
-pub fn build_desktop_running_agent_task(
-    request: DesktopRunningAgentTaskRequest,
-) -> DesktopRunningAgentTask {
-    DesktopRunningAgentTask {
-        cancel_token: request.cancel_token,
-        task: request.task,
-        steering_tx: request.steering_tx,
-        task_run_id: request.task_run_id,
-        task_orchestrator_run_id: request.task_orchestrator_run_id,
-        turn_id: request.turn_id,
-        stream_event_seq: request.stream_event_seq,
-    }
-}
-
-pub fn replace_desktop_running_agent_task(
-    running: &mut HashMap<String, DesktopRunningAgentTask>,
-    conversation_id: String,
-    task: DesktopRunningAgentTask,
-) {
-    if let Some(previous) = running.remove(&conversation_id) {
-        previous.cancel_token.cancel();
-        previous.task.abort();
-    }
-    running.insert(conversation_id, task);
-}
-
-pub fn steer_desktop_running_agent_task(
-    running: &mut HashMap<String, DesktopRunningAgentTask>,
-    conversation_id: &str,
-    message: &str,
-) -> Result<(), String> {
-    let Some(task) = running.get(conversation_id) else {
-        return Err("No running agent for this conversation.".to_string());
-    };
-
-    if task.task.is_finished() {
-        running.remove(conversation_id);
-        return Err("No running agent for this conversation.".to_string());
-    }
-
-    task.steering_tx
-        .send(AgentSteeringMessage::text(message.to_string()))
-        .map_err(|_| "Running agent is no longer accepting steering messages.".to_string())
-}
-
 pub fn request_desktop_running_agent_stop(
-    running: &mut HashMap<String, DesktopRunningAgentTask>,
+    task_state: nexa_core::runtime::ActiveAgentTurn,
     request: DesktopRunningAgentStopRequest,
-) -> bool {
+) {
     let DesktopRunningAgentStopRequest {
         db,
         app_handle,
         conversation_id,
     } = request;
-    let Some(task_state) = running.remove(&conversation_id) else {
-        return false;
-    };
-
-    let task_run_id = task_state.task_run_id.clone();
-    let task_orchestrator_run_id = task_state.task_orchestrator_run_id.clone();
-    let turn_id = task_state.turn_id.clone();
-    let stream_event_seq = Arc::clone(&task_state.stream_event_seq);
+    let task_run_id = task_state.handle.run_id.clone();
+    let task_orchestrator_run_id = task_state.orchestrator_run_id.clone();
+    let turn_id = task_state.handle.turn_id.clone();
+    let stream_event_seq = Arc::clone(&task_state.event_sequencer);
     let _ = db.update_agent_task_run_progress(
         &task_run_id,
         Some("cancelling"),
@@ -374,7 +310,6 @@ pub fn request_desktop_running_agent_stop(
             });
         }
     });
-    true
 }
 
 pub fn annotate_user_artifacts_with_execution_mode(
@@ -1022,22 +957,167 @@ pub fn build_desktop_agent_turn_config(
         subagent_token_budget: db_config.subagent_token_budget.map(|value| value as u32),
     });
     let power_mode_section = power_policy.prompt_section().to_string();
-    let system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
-    let volatile_system_sections = vec![
-        current_turn_time_section,
-        plan_mode_section.to_string(),
-        power_mode_section,
-        goal_section,
-        persona_section,
-        collection_context_section,
-        source_scope_section,
-        memory_section,
-        project_memory_section,
-        agent_memory_section,
-        preference_section,
-        learned_section,
-        scratchpad_section,
+    let base_system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
+    let context_budget = db_config
+        .context_window
+        .and_then(|window| u32::try_from(window).ok())
+        .map(|window| window.saturating_mul(3) / 5);
+    let mut context_assembler = ContextAssembler::new("agent_turn", context_budget);
+    let context_items = [
+        (
+            "system-instructions",
+            ContextItemRole::Instruction,
+            "runtime",
+            "stable runtime and conversation instructions",
+            ContextTrustLevel::System,
+            1_000,
+            ContextItemStability::StablePrefix,
+            base_system_prompt,
+        ),
+        (
+            "current-turn-time",
+            ContextItemRole::Instruction,
+            "runtime.clock",
+            "current turn time",
+            ContextTrustLevel::System,
+            130,
+            ContextItemStability::VolatileSuffix,
+            current_turn_time_section,
+        ),
+        (
+            "execution-mode",
+            ContextItemRole::Instruction,
+            "runtime.execution_mode",
+            "selected execution mode",
+            ContextTrustLevel::System,
+            120,
+            ContextItemStability::VolatileSuffix,
+            plan_mode_section.to_string(),
+        ),
+        (
+            "power-policy",
+            ContextItemRole::Instruction,
+            "runtime.power_policy",
+            "resolved power policy",
+            ContextTrustLevel::System,
+            110,
+            ContextItemStability::VolatileSuffix,
+            power_mode_section,
+        ),
+        (
+            "active-goal",
+            ContextItemRole::Instruction,
+            "conversation.goal",
+            "active user goal",
+            ContextTrustLevel::UserSelected,
+            100,
+            ContextItemStability::VolatileSuffix,
+            goal_section,
+        ),
+        (
+            "persona",
+            ContextItemRole::Instruction,
+            "persona",
+            "selected persona",
+            ContextTrustLevel::UserSelected,
+            90,
+            ContextItemStability::VolatileSuffix,
+            persona_section,
+        ),
+        (
+            "collection-context",
+            ContextItemRole::SourceScope,
+            "conversation.collection",
+            "selected collection context",
+            ContextTrustLevel::UserSelected,
+            80,
+            ContextItemStability::VolatileSuffix,
+            collection_context_section,
+        ),
+        (
+            "source-scope",
+            ContextItemRole::SourceScope,
+            "conversation.sources",
+            "effective source scope",
+            ContextTrustLevel::UserSelected,
+            70,
+            ContextItemStability::VolatileSuffix,
+            source_scope_section,
+        ),
+        (
+            "user-memory",
+            ContextItemRole::Memory,
+            "memory.user",
+            "query-relevant user memory",
+            ContextTrustLevel::AgentMemory,
+            60,
+            ContextItemStability::VolatileSuffix,
+            memory_section,
+        ),
+        (
+            "project-memory",
+            ContextItemRole::Memory,
+            "memory.project",
+            "query-relevant project memory",
+            ContextTrustLevel::AgentMemory,
+            50,
+            ContextItemStability::VolatileSuffix,
+            project_memory_section,
+        ),
+        (
+            "procedural-memory",
+            ContextItemRole::Memory,
+            "memory.procedural",
+            "query-relevant procedural memory",
+            ContextTrustLevel::AgentMemory,
+            40,
+            ContextItemStability::VolatileSuffix,
+            agent_memory_section,
+        ),
+        (
+            "preferences",
+            ContextItemRole::Memory,
+            "memory.preferences",
+            "query-relevant preferences",
+            ContextTrustLevel::AgentMemory,
+            30,
+            ContextItemStability::VolatileSuffix,
+            preference_section,
+        ),
+        (
+            "learned-successes",
+            ContextItemRole::Memory,
+            "memory.learned_successes",
+            "similar successful trajectories",
+            ContextTrustLevel::AgentMemory,
+            20,
+            ContextItemStability::VolatileSuffix,
+            learned_section,
+        ),
+        (
+            "scratchpad",
+            ContextItemRole::Memory,
+            "memory.scratchpad",
+            "conversation scratchpad",
+            ContextTrustLevel::AgentMemory,
+            10,
+            ContextItemStability::VolatileSuffix,
+            scratchpad_section,
+        ),
     ];
+    for (id, role, source, reason, trust, priority, stability, text) in context_items {
+        context_assembler
+            .add(ContextPackItem::text(
+                id, role, source, reason, trust, priority, stability, text,
+            ))
+            .expect("desktop context contributors use stable unique ids");
+    }
+    let context_pack = context_assembler.assemble();
+    let system_prompt = context_pack
+        .prompt_sections_for_stability(ContextItemStability::StablePrefix)
+        .join("\n\n");
+    let volatile_system_sections =
+        context_pack.prompt_sections_for_stability(ContextItemStability::VolatileSuffix);
 
     let executor_config = AgentConfig {
         max_iterations: power_policy.max_iterations,
@@ -1075,6 +1155,7 @@ pub fn build_desktop_agent_turn_config(
         executor_config,
         source_scope_ids,
         pinned_skill_ids,
+        context_pack,
     }
 }
 
@@ -1134,34 +1215,9 @@ pub fn filter_desktop_tool_names_by_package_host(
     db: &Database,
     names: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let snapshot = nexa_core::package_host::database_backed_builtin_package_host_snapshot(db)
-        .map_err(|error| error.to_string())?;
-    let visible_tool_ids = snapshot
-        .runtime_components()
-        .into_iter()
-        .filter(|component| component.kind == PackageSurfaceKind::Capability)
-        .map(|component| component.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    let mcp_visible = snapshot
-        .records
-        .iter()
-        .any(|record| record.id == "mcp-connectors" && record.is_runtime_visible());
-
-    Ok(names
-        .into_iter()
-        .filter(|name| {
-            visible_tool_ids.contains(name.as_str())
-                || (mcp_visible && (name == "mcp_tool" || name.starts_with("mcp__")))
-        })
-        .collect())
-}
-
-pub fn filter_desktop_tool_registry_by_package_host(
-    db: &Database,
-    tools: ToolRegistry,
-) -> Result<ToolRegistry, String> {
-    let allowed_names = filter_desktop_tool_names_by_package_host(db, tools.tool_names())?;
-    Ok(tools.filtered(&allowed_names))
+    PackageRuntimeAssembler::database_builtin(db)
+        .and_then(|assembler| assembler.visible_tool_names(names))
+        .map_err(|error| error.to_string())
 }
 
 pub fn runtime_session_config_artifact(
@@ -1177,6 +1233,7 @@ pub fn runtime_session_config_artifact(
 pub fn build_desktop_agent_initial_task_artifacts(
     selected_skills: &[Skill],
     runtime_session_config: &nexa_core::runtime::AgentSessionConfig,
+    context_pack: &ContextPack,
     execution_mode: AgentExecutionMode,
     executor_config: &AgentConfig,
 ) -> serde_json::Value {
@@ -1185,6 +1242,7 @@ pub fn build_desktop_agent_initial_task_artifacts(
         "version": 1,
         "selectedSkills": build_selected_skills_artifact(selected_skills),
         "runtimeSession": runtime_session_config_artifact(runtime_session_config),
+        "contextPack": context_pack,
     });
     if execution_mode.is_plan() {
         artifacts["executionMode"] = execution_mode_artifact(execution_mode);
@@ -1255,8 +1313,15 @@ pub async fn build_desktop_agent_session_dependencies(
         Vec::new()
     });
 
-    let mut tools = default_tool_registry();
-    emit_agent_frontend_event(
+    let package_assembler = PackageRuntimeAssembler::database_builtin(db);
+    let mut tools = package_assembler
+        .as_ref()
+        .map(PackageRuntimeAssembler::builtin_tool_registry)
+        .unwrap_or_else(|error| {
+            warn!("Failed to initialize Package Runtime Assembler: {error}");
+            ToolRegistry::new()
+        });
+    emit_agent_frontend_event_with_presentation(
         app_handle,
         event_seq,
         conversation_id,
@@ -1266,6 +1331,9 @@ pub async fn build_desktop_agent_session_dependencies(
             content: "Loading tools and MCP servers".to_string(),
             tone: None,
         },
+        AgentRunEventVisibility::Internal,
+        AgentRunDisplayKind::Status,
+        AgentRunEventImportance::Low,
     );
     {
         let mut manager = mcp_manager.lock().await;
@@ -1303,15 +1371,15 @@ pub async fn build_desktop_agent_session_dependencies(
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
     }
     let before_package_filter_count = tools.tool_names().len();
-    tools = match filter_desktop_tool_registry_by_package_host(db, tools) {
-        Ok(filtered) => {
-            let after_package_filter_count = filtered.tool_names().len();
+    tools = match package_assembler.and_then(|assembler| assembler.assemble_tool_registry(tools)) {
+        Ok(capabilities) => {
+            let after_package_filter_count = capabilities.tools.tool_names().len();
             if before_package_filter_count != after_package_filter_count {
                 info!(
-                    "Package Host filtered tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
+                    "Package Runtime Assembler resolved tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
                 );
             }
-            filtered
+            capabilities.tools
         }
         Err(error) => {
             warn!(
@@ -1600,7 +1668,6 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         task_run_id,
         task_orchestrator_run_id,
         turn_id,
-        event_seq,
         outcome,
     } = finalization;
 
@@ -1674,18 +1741,9 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
             warn!("Failed to transition Task Orchestrator run {run_id}: {err}");
         }
     }
-    record_agent_run_status_task_event(
-        db,
-        app_handle,
-        conversation_id,
-        task_run_id,
-        Some(turn_id),
-        event_seq,
-        AgentRunPhase::Done,
-        task_summary,
-        Some(task_status),
-        Some(&task_artifacts),
-    );
+    // The executor's Done/Error event is the canonical terminal event. Task
+    // finalization updates the materialized snapshot only; appending a status
+    // here would make a non-terminal event follow the terminal event.
     emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
 
     if !matches!(&outcome.result, Some(Ok(_))) {
@@ -1720,14 +1778,21 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
             warn!("Failed to cancel Task Orchestrator run {run_id}: {err}");
         }
     }
-    record_agent_run_status_task_event(
+    let run_event = AgentRunEvent::terminal_status(
+        task_run_id,
+        Some(turn_id),
+        event_seq.next(),
+        summary,
+        "cancelled",
+        Some(&artifacts),
+    );
+    record_agent_run_task_event(
         db,
         app_handle,
         conversation_id,
         task_run_id,
-        Some(turn_id),
-        event_seq,
-        AgentRunPhase::Done,
+        &run_event,
+        run_event.task_event_type(),
         summary,
         Some("cancelled"),
         Some(&artifacts),
@@ -2000,55 +2065,6 @@ mod tests {
         let sniffed_config = desktop_memory_extraction_provider_config(&db_config);
 
         assert_eq!(sniffed_config.provider_type, ProviderType::DeepSeek);
-    }
-
-    #[test]
-    fn desktop_running_agent_task_replaces_and_steers() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        let (first_tx, mut first_rx) = mpsc::unbounded_channel();
-        let (second_tx, mut second_rx) = mpsc::unbounded_channel();
-        let first_task = build_desktop_running_agent_task(DesktopRunningAgentTaskRequest {
-            cancel_token: CancellationToken::new(),
-            task: runtime.spawn(async {
-                std::future::pending::<()>().await;
-            }),
-            steering_tx: first_tx,
-            task_run_id: "task-run-1".to_string(),
-            task_orchestrator_run_id: None,
-            turn_id: "turn-1".to_string(),
-            stream_event_seq: Arc::new(AtomicU64::new(0)),
-        });
-        let second_task = build_desktop_running_agent_task(DesktopRunningAgentTaskRequest {
-            cancel_token: CancellationToken::new(),
-            task: runtime.spawn(async {
-                std::future::pending::<()>().await;
-            }),
-            steering_tx: second_tx,
-            task_run_id: "task-run-2".to_string(),
-            task_orchestrator_run_id: None,
-            turn_id: "turn-2".to_string(),
-            stream_event_seq: Arc::new(AtomicU64::new(0)),
-        });
-        let mut running = HashMap::new();
-
-        replace_desktop_running_agent_task(&mut running, "conversation-1".to_string(), first_task);
-        replace_desktop_running_agent_task(&mut running, "conversation-1".to_string(), second_task);
-        steer_desktop_running_agent_task(&mut running, "conversation-1", "keep going")
-            .expect("send steering");
-
-        assert_eq!(running.len(), 1);
-        assert!(first_rx.try_recv().is_err());
-        assert_eq!(
-            second_rx.try_recv().expect("steering message").content,
-            "keep going"
-        );
-
-        if let Some(task) = running.remove("conversation-1") {
-            task.cancel_token.cancel();
-            task.task.abort();
-        }
     }
 
     #[test]

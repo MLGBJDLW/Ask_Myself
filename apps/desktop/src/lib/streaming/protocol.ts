@@ -1,12 +1,14 @@
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
+  AgentTurnHandle,
   ApprovalRequest,
   ArtifactPayload,
   ToolPluginInfo,
   ToolRenderKind,
   ToolRunCapabilities,
 } from '../../types/conversation';
+import type { AgentRunDisplayKind } from '../../types/conversation';
 
 export interface ToolCallEvent {
   callId: string;
@@ -69,6 +71,8 @@ export interface TraceStatusEvent {
   kind: 'status';
   text: string;
   tone?: 'muted' | 'success' | 'error';
+  visibility?: 'user' | 'developer' | 'internal';
+  displayKind?: AgentRunDisplayKind;
 }
 
 export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;
@@ -101,6 +105,8 @@ export interface UsageTotal {
 }
 
 export interface StreamState {
+  /** Runtime-assigned identity available as soon as launch is acknowledged. */
+  turnHandle: AgentTurnHandle | null;
   isStreaming: boolean;
   streamText: string;
   streamRounds: StreamRoundEvent[];

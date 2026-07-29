@@ -128,6 +128,11 @@ export function applyLiveStreamEvent(
       break;
     }
 
+    case 'steering': {
+      applyStatusEvent(state, event, raw);
+      break;
+    }
+
     case 'done': {
       clearStreamWatchdog(state);
       clearToolPreparingTimers(state);

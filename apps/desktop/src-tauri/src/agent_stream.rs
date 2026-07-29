@@ -1,11 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use log::warn;
 use nexa_core::agent::{AgentEvent, StreamBlockChannel, ToolRunItem};
-use nexa_core::agent_run::AgentRunEvent;
+use nexa_core::agent_run::{
+    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
+};
 use nexa_core::db::Database;
 use nexa_core::llm::{ContentPart, Message};
+use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::task_run::AgentTaskRuntime;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -25,19 +27,40 @@ struct AgentFrontendEvent {
 
 pub(crate) fn emit_agent_frontend_event(
     handle: &AppHandle,
-    event_seq: &AtomicU64,
+    event_seq: &AgentRunEventSequencer,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
     event: AgentEvent,
 ) -> AgentRunEvent {
     let event = compact_agent_event_for_frontend(event);
-    let event_seq = event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let event_seq = event_seq.next();
     let run_event = AgentRunEvent::from_agent_event(&event).with_context(
         Some(task_run_id),
         turn_id,
         Some(event_seq),
     );
+    emit_agent_run_frontend_event(handle, conversation_id, &run_event);
+    run_event
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_agent_frontend_event_with_presentation(
+    handle: &AppHandle,
+    event_seq: &AgentRunEventSequencer,
+    conversation_id: &str,
+    task_run_id: &str,
+    turn_id: Option<&str>,
+    event: AgentEvent,
+    visibility: AgentRunEventVisibility,
+    display_kind: AgentRunDisplayKind,
+    importance: AgentRunEventImportance,
+) -> AgentRunEvent {
+    let event = compact_agent_event_for_frontend(event);
+    let event_seq = event_seq.next();
+    let run_event = AgentRunEvent::from_agent_event(&event)
+        .with_context(Some(task_run_id), turn_id, Some(event_seq))
+        .with_presentation(visibility, display_kind, importance);
     emit_agent_run_frontend_event(handle, conversation_id, &run_event);
     run_event
 }
@@ -244,6 +267,9 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
             content: truncate_task_event_text(&content, MAX_TASK_EVENT_TEXT_CHARS),
             tone,
         },
+        AgentEvent::Steering { content } => AgentEvent::Steering {
+            content: truncate_task_event_text(&content, MAX_TASK_EVENT_TEXT_CHARS),
+        },
         AgentEvent::PlanUpdated {
             plan,
             phase,
@@ -273,7 +299,7 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
 }
 
 pub(crate) struct StreamBlockEmitter {
-    event_seq: Arc<AtomicU64>,
+    event_seq: Arc<AgentRunEventSequencer>,
     answer_block_id: String,
     thinking_block_id: String,
     answer_offset: usize,
@@ -281,7 +307,7 @@ pub(crate) struct StreamBlockEmitter {
 }
 
 impl StreamBlockEmitter {
-    pub(crate) fn new(event_seq: Arc<AtomicU64>) -> Self {
+    pub(crate) fn new(event_seq: Arc<AgentRunEventSequencer>) -> Self {
         Self {
             event_seq,
             answer_block_id: new_stream_block_id(StreamBlockChannel::Answer),
@@ -304,7 +330,7 @@ impl StreamBlockEmitter {
         turn_id: Option<&str>,
         event: &AgentEvent,
     ) -> AgentRunEvent {
-        let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let event_seq = self.event_seq.next();
         AgentRunEvent::from_agent_event(event).with_context(
             Some(task_run_id),
             turn_id,
@@ -372,7 +398,7 @@ impl StreamBlockEmitter {
             StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
         };
         for chunk in split_text_by_utf8_bytes(&delta, MAX_STREAM_BLOCK_DELTA_BYTES) {
-            let event_seq = self.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let event_seq = self.event_seq.next();
             let run_event = AgentRunEvent::output_delta(
                 task_run_id,
                 turn_id,

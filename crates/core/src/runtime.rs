@@ -5,14 +5,207 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use crate::agent::AgentExecutionMode;
+use crate::agent::power_mode::AgentPowerMode;
+use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
 use crate::agent_run::{AgentRunEvent, AGENT_RUN_EVENT_VERSION};
 use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
+use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
+
+/// Runtime-owned monotonic sequence for all events in one agent run.
+///
+/// Hosts receive already-sequenced events and never allocate ordering tokens
+/// themselves. Wrap one sequencer in an `Arc` when a run has multiple event
+/// producers (streaming, approval, cancellation, and finalization).
+#[derive(Debug)]
+pub struct AgentRunEventSequencer {
+    last_sequence: AtomicU64,
+}
+
+impl AgentRunEventSequencer {
+    pub fn new(last_sequence: u64) -> Self {
+        Self {
+            last_sequence: AtomicU64::new(last_sequence),
+        }
+    }
+
+    pub fn next(&self) -> u64 {
+        self.last_sequence.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn current(&self) -> u64 {
+        self.last_sequence.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for AgentRunEventSequencer {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+/// Runtime-owned control plane for one active turn.
+///
+/// The host owns transport-only concerns; cancellation, steering, task
+/// lifetime, identifiers, and event ordering stay together here.
+pub struct ActiveAgentTurn {
+    pub handle: AgentTurnHandle,
+    pub cancel_token: CancellationToken,
+    pub task: tokio::task::JoinHandle<()>,
+    pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
+    pub event_sequencer: Arc<AgentRunEventSequencer>,
+    pub orchestrator_run_id: Option<String>,
+}
+
+impl ActiveAgentTurn {
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
+
+    pub fn steer(&self, message: impl Into<String>) -> Result<(), CoreError> {
+        if self.is_finished() {
+            return Err(CoreError::InvalidInput(
+                "Agent turn is no longer running.".to_string(),
+            ));
+        }
+        self.steering_tx
+            .send(AgentSteeringMessage::text(message.into()))
+            .map_err(|_| {
+                CoreError::InvalidInput(
+                    "Agent turn is no longer accepting steering messages.".to_string(),
+                )
+            })
+    }
+
+    pub fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
+
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+}
+
+/// Owns all live turns for a host process.
+///
+/// Registering a second turn for one session cancels and aborts the previous
+/// turn before replacing it, so every host observes the same lifecycle rule.
+#[derive(Default)]
+pub struct AgentSessionManager {
+    active: tokio::sync::Mutex<HashMap<String, ActiveAgentTurn>>,
+}
+
+impl AgentSessionManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn register(&self, turn: ActiveAgentTurn) {
+        let session_id = turn.handle.session_id.clone();
+        let mut active = self.active.lock().await;
+        if let Some(previous) = active.remove(&session_id) {
+            previous.cancel();
+            previous.abort();
+        }
+        active.insert(session_id, turn);
+    }
+
+    pub async fn steer(
+        &self,
+        session_id: &str,
+        message: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let mut active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return Err(CoreError::NotFound(
+                "No running agent turn for this session.".to_string(),
+            ));
+        };
+        if turn.is_finished() {
+            active.remove(session_id);
+            return Err(CoreError::NotFound(
+                "No running agent turn for this session.".to_string(),
+            ));
+        }
+        turn.steer(message)
+    }
+
+    pub async fn take(&self, session_id: &str) -> Option<ActiveAgentTurn> {
+        let turn = self.active.lock().await.remove(session_id)?;
+        (!turn.is_finished()).then_some(turn)
+    }
+
+    pub async fn contains(&self, session_id: &str) -> bool {
+        let mut active = self.active.lock().await;
+        if active
+            .get(session_id)
+            .is_some_and(ActiveAgentTurn::is_finished)
+        {
+            active.remove(session_id);
+            return false;
+        }
+        active.contains_key(session_id)
+    }
+
+    /// Returns `None` only while another runtime operation holds the manager.
+    pub fn try_is_empty(&self) -> Option<bool> {
+        self.active.try_lock().ok().map(|mut active| {
+            active.retain(|_, turn| !turn.is_finished());
+            active.is_empty()
+        })
+    }
+}
+
+/// Canonical host request for starting one agent turn.
+///
+/// Hosts may add transport-specific metadata before handing this request to a
+/// runtime adapter, but the identifiers and execution policy enter through one
+/// versioned boundary. `idempotency_key` is supplied by the caller so retrying
+/// an uncertain launch cannot create a second user message or run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartTurnRequest {
+    #[serde(default = "runtime_protocol_version")]
+    pub version: u16,
+    #[serde(default = "new_runtime_id")]
+    pub idempotency_key: String,
+    pub conversation_id: String,
+    pub message: String,
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub agent_config_id: Option<String>,
+    #[serde(default)]
+    pub persona_id: Option<String>,
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub execution_mode: AgentExecutionMode,
+    #[serde(default)]
+    pub power_mode: AgentPowerMode,
+    #[serde(default)]
+    pub user_artifacts: Option<serde_json::Value>,
+    #[serde(default)]
+    pub task_orchestrator_run_id: Option<String>,
+}
+
+impl StartTurnRequest {
+    pub fn apply_protocol_defaults(&mut self) {
+        if self.version == 0 {
+            self.version = RUNTIME_PROTOCOL_VERSION;
+        }
+        if self.idempotency_key.trim().is_empty() {
+            self.idempotency_key = new_runtime_id();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +402,7 @@ pub enum RuntimeTerminalStatus {
     Failed,
     Cancelled,
     TimedOut,
+    Paused,
 }
 
 impl RuntimeTerminalStatus {
@@ -219,6 +413,7 @@ impl RuntimeTerminalStatus {
         match event.status.as_deref() {
             Some("cancelled") => Some(Self::Cancelled),
             Some("timed_out") => Some(Self::TimedOut),
+            Some("paused") => Some(Self::Paused),
             Some("completed") => Some(Self::Completed),
             _ => Some(Self::Failed),
         }
@@ -230,6 +425,7 @@ impl RuntimeTerminalStatus {
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::TimedOut => "timed_out",
+            Self::Paused => "paused",
         }
     }
 }
@@ -250,6 +446,21 @@ pub struct AgentTurnHandle {
     pub run_id: String,
     pub turn_id: String,
     pub state: AgentTurnState,
+}
+
+impl AgentTurnHandle {
+    pub fn running(
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+        turn_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            run_id: run_id.into(),
+            turn_id: turn_id.into(),
+            state: AgentTurnState::Running,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -466,7 +677,77 @@ fn new_runtime_id() -> String {
 mod tests {
     use super::*;
     use crate::agent::AgentEvent;
-    use crate::agent_run::{AgentRunEventKind, AgentRunPhase};
+    use crate::agent_run::{
+        AgentRunDisplayKind, AgentRunEventImportance, AgentRunEventKind, AgentRunEventPersistence,
+        AgentRunEventVisibility, AgentRunPhase,
+    };
+
+    #[test]
+    fn run_event_sequencer_allocates_one_monotonic_sequence_across_producers() {
+        let sequencer = std::sync::Arc::new(AgentRunEventSequencer::default());
+        let mut producers = Vec::new();
+        for _ in 0..4 {
+            let sequencer = std::sync::Arc::clone(&sequencer);
+            producers.push(std::thread::spawn(move || {
+                (0..25).map(|_| sequencer.next()).collect::<Vec<_>>()
+            }));
+        }
+
+        let mut allocated = producers
+            .into_iter()
+            .flat_map(|producer| producer.join().expect("event producer should finish"))
+            .collect::<Vec<_>>();
+        allocated.sort_unstable();
+
+        assert_eq!(allocated, (1..=100).collect::<Vec<_>>());
+        assert_eq!(sequencer.current(), 100);
+    }
+
+    #[tokio::test]
+    async fn session_manager_replaces_turns_and_routes_steering() {
+        let manager = AgentSessionManager::new();
+        let first_cancel = CancellationToken::new();
+        let first_cancel_observer = first_cancel.clone();
+        let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .register(ActiveAgentTurn {
+                handle: AgentTurnHandle::running("session-1", "run-1", "turn-1"),
+                cancel_token: first_cancel,
+                task: tokio::spawn(std::future::pending::<()>()),
+                steering_tx: first_tx,
+                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                orchestrator_run_id: None,
+            })
+            .await;
+
+        let second_cancel = CancellationToken::new();
+        let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .register(ActiveAgentTurn {
+                handle: AgentTurnHandle::running("session-1", "run-2", "turn-2"),
+                cancel_token: second_cancel,
+                task: tokio::spawn(std::future::pending::<()>()),
+                steering_tx: second_tx,
+                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                orchestrator_run_id: None,
+            })
+            .await;
+
+        assert!(first_cancel_observer.is_cancelled());
+        manager
+            .steer("session-1", "keep going")
+            .await
+            .expect("active turn should accept steering");
+        assert_eq!(
+            second_rx.recv().await.expect("steering message").content,
+            "keep going"
+        );
+
+        let active = manager.take("session-1").await.expect("active turn");
+        active.cancel();
+        active.abort();
+        assert!(!manager.contains("session-1").await);
+    }
 
     #[test]
     fn session_config_defaults_are_runtime_protocol_v1() {
@@ -604,6 +885,10 @@ mod tests {
                 event_seq: 2,
                 kind: AgentRunEventKind::Done,
                 phase: AgentRunPhase::Done,
+                visibility: AgentRunEventVisibility::User,
+                persistence: AgentRunEventPersistence::Durable,
+                display_kind: AgentRunDisplayKind::Completion,
+                importance: AgentRunEventImportance::High,
                 label: "done".to_string(),
                 status: Some("completed".to_string()),
                 payload: serde_json::json!({ "message": "done" }),

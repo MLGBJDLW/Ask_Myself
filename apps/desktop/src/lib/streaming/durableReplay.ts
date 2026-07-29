@@ -61,7 +61,10 @@ function applyDurableReplayItemsToState(
       const reason = typeof item.payload.reason === 'string'
         ? item.payload.reason
         : 'Stream recovery update.';
-      appendStatusTraceEvent(state, reason, 'muted');
+      const visibility = item.payload.visibility === 'developer' || item.payload.visibility === 'internal'
+        ? item.payload.visibility
+        : 'user';
+      appendStatusTraceEvent(state, reason, 'muted', visibility);
       continue;
     }
 

@@ -21,7 +21,7 @@ import {
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   persistedTraceItemToTimelineSections,
-  shouldHideTraceStatus,
+  projectLiveConversationTimeline,
   shouldRenderTraceToolCall,
   skillNamesFromTraceItems,
   skillRefsFromTraceItems,
@@ -1742,31 +1742,16 @@ test('command tool cards do not stream partial arguments into the title target',
   );
 });
 
-test('timeline view model hides low-signal statuses and internal successful tools', () => {
-  assert(shouldHideTraceStatus('Route selected: DirectResponse'), 'direct response route status should hide');
-  assert(shouldHideTraceStatus('Task queued'), 'queued status should hide');
-  assert(
-    shouldHideTraceStatus('Resume checkpoint saved after tool round 12.'),
-    'resume checkpoint bookkeeping should hide',
-  );
-  assert(
-    shouldHideTraceStatus('Stream event gap detected; replay may be required.'),
-    'stream recovery bookkeeping should hide',
-  );
-  assert(
-    shouldHideTraceStatus('Pre-fetched knowledge graph index.'),
-    'automatic retrieval bookkeeping should hide',
-  );
-  assert(
-    shouldHideTraceStatus('Applied user steering before the next model step.'),
-    'internal steering acknowledgement should hide',
-  );
-  assert(
-    shouldHideTraceStatus('Activated 3 deferred tool(s): browser, github, shell'),
-    'deferred tool activation bookkeeping should hide',
-  );
-  assert(!shouldHideTraceStatus('Running shell command'), 'useful status should remain visible');
-  assert(!shouldHideTraceStatus('Retrying after provider timeout'), 'actionable recovery status should remain visible');
+test('timeline view model uses event visibility instead of localized status labels', () => {
+  const visible = visibleTraceEventsForTimeline([
+    { id: 'internal', kind: 'status', text: '任意内部文案', visibility: 'internal' },
+    { id: 'developer', kind: 'status', text: 'Task queued', visibility: 'developer' },
+    { id: 'user', kind: 'status', text: 'Task queued', visibility: 'user' },
+    { id: 'legacy', kind: 'status', text: '未知旧版状态' },
+  ]);
+  assertEqual(visible.length, 2, 'only user and legacy user-visible statuses should remain');
+  assertEqual(visible[0]?.id, 'user', 'labels must not override explicit user visibility');
+  assertEqual(visible[1]?.id, 'legacy', 'legacy events default to user visibility');
   assert(!shouldRenderTraceToolCall('tool_search', undefined, 'done', false), 'successful tool_search should hide');
   assert(shouldRenderTraceToolCall('tool_search', undefined, 'error', true), 'failed tool_search should remain visible');
   assert(!shouldRenderTraceToolCall('update_plan', 'plan', 'done', false), 'board-only plan tool should hide from trace');
@@ -1801,6 +1786,27 @@ test('timeline view model interleaves thinking, tools, and streamed replies', ()
   assert(timeline[2].kind === 'reply', 'third item should be current streaming reply');
   assertEqual(timeline[2].content, 'Fresh streamed answer', 'streaming reply should append after existing reply');
   assertEqual(timeline[2].isStreaming, true, 'current reply remains streaming');
+});
+
+test('canonical live timeline projection owns visibility, rounds, and collapse state', () => {
+  const projection = projectLiveConversationTimeline({
+    traceEvents: [
+      { id: 'internal', kind: 'status', text: 'Task queued', visibility: 'internal' },
+      { id: 'thinking', kind: 'thinking', text: 'Inspecting the runtime' },
+      { id: 'reply', kind: 'reply', text: 'Ready' },
+    ],
+    streamRounds: [],
+    isStreaming: false,
+    isThinking: false,
+    thinkingText: '',
+    toolCalls: [],
+    streamText: 'Ready',
+    displayedText: 'Ready',
+  });
+
+  assertEqual(projection.visibleTraceEvents.length, 2, 'internal events are filtered once');
+  assertEqual(projection.liveTraceTimeline.length, 2, 'timeline is projected once');
+  assert(projection.collapsedLiveTrace !== null, 'completed trace receives one collapse result');
 });
 
 test('timeline view model typewriter text only replaces the active reply event', () => {
@@ -1991,7 +1997,13 @@ test('timeline view model keeps completed rounds when steering adds a new status
   const events: TraceEvent[] = [
     { id: 'round-thinking', kind: 'thinking', text: 'Already investigated retries' },
     { id: 'round-tool', kind: 'tool', toolCall: traceToolCall({ callId: 'round-call' }) },
-    { id: 'steering-status', kind: 'status', text: 'User steering: focus on edge cases instead', tone: 'muted' },
+    {
+      id: 'steering-status',
+      kind: 'status',
+      text: 'focus on edge cases instead',
+      tone: 'muted',
+      displayKind: 'steering',
+    },
   ];
 
   const currentEvents = traceEventsAfterStreamRounds(
@@ -2021,8 +2033,9 @@ test('persisted trace replay omits completed steering controls', () => {
   const sections = persistedTraceItemToTimelineSections({
     item: {
       kind: 'status',
-      text: 'User steering: focus on edge cases instead',
+      text: 'focus on edge cases instead',
       tone: 'muted',
+      displayKind: 'steering',
     },
     id: 'persisted-steering-status',
     trace: true,

@@ -1,9 +1,10 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use nexa_core::agent::AgentEvent;
 use nexa_core::db::Database;
+use nexa_core::runtime::AgentRunEventSequencer;
 use tauri::AppHandle;
 use tokio::sync::mpsc;
 
@@ -21,7 +22,7 @@ pub(crate) struct AgentStreamForwarder {
     conversation_id: String,
     task_run_id: String,
     turn_id: String,
-    event_seq: Arc<AtomicU64>,
+    event_seq: Arc<AgentRunEventSequencer>,
     terminal_emitted: Arc<AtomicBool>,
 }
 
@@ -32,7 +33,7 @@ impl AgentStreamForwarder {
         conversation_id: String,
         task_run_id: String,
         turn_id: String,
-        event_seq: Arc<AtomicU64>,
+        event_seq: Arc<AgentRunEventSequencer>,
         terminal_emitted: Arc<AtomicBool>,
     ) -> Self {
         Self {

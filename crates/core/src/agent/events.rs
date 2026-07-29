@@ -99,6 +99,11 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         tone: Option<String>,
     },
+    /// A user-authored steering message accepted by the active turn.
+    ///
+    /// This is distinct from `Status` so presentation never depends on a
+    /// localized label or text prefix.
+    Steering { content: String },
     /// Updated typed execution plan for the active task run.
     PlanUpdated {
         plan: serde_json::Value,

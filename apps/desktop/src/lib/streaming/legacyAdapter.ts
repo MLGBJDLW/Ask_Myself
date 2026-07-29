@@ -252,6 +252,7 @@ export function replayItemFromTaskEvent(event: AgentTaskRunEvent): ReplayStreamI
         payload: {
           eventSeq: runEvent.eventSeq,
           reason: runEvent.label,
+          visibility: runEvent.visibility,
         },
         eventSeq: runEvent.eventSeq,
       };

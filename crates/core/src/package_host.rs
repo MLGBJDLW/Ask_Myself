@@ -14,6 +14,7 @@ use crate::capability_package::{CapabilityPackageManifest, CapabilityPackagePerm
 use crate::db::Database;
 use crate::ecosystem::EcosystemSurfaceKind;
 use crate::error::CoreError;
+use crate::tools::{default_tool_registry, ToolRegistry};
 
 pub const PACKAGE_HOST_CONTRACT_VERSION: u16 = 1;
 
@@ -221,6 +222,119 @@ pub trait PackageHost: Send + Sync {
     ) -> Result<crate::runtime::RuntimePackageContext, PackageHostContractError> {
         let snapshot = self.snapshot()?;
         Ok(crate::runtime::RuntimePackageContext::from_package_host_snapshot(&snapshot))
+    }
+}
+
+/// Fully assembled runtime capabilities for one Package Host snapshot.
+///
+/// The registry and its ownership map are produced together so callers cannot
+/// instantiate tools and apply package policy as unrelated steps.
+pub struct RuntimeCapabilitySet {
+    pub tools: ToolRegistry,
+    pub package_context: crate::runtime::RuntimePackageContext,
+    pub tool_owners: HashMap<String, String>,
+    pub excluded_tools: Vec<String>,
+}
+
+/// The single package-aware entry point for constructing runtime tools.
+pub struct PackageRuntimeAssembler {
+    snapshot: PackageHostSnapshot,
+}
+
+impl PackageRuntimeAssembler {
+    pub fn from_host(host: &impl PackageHost) -> Result<Self, PackageHostContractError> {
+        Self::new(host.snapshot()?)
+    }
+
+    pub fn database_builtin(db: &Database) -> Result<Self, PackageHostContractError> {
+        Self::from_host(&DatabasePackageHost::builtin(db))
+    }
+
+    pub fn new(snapshot: PackageHostSnapshot) -> Result<Self, PackageHostContractError> {
+        snapshot.validate()?;
+        Ok(Self { snapshot })
+    }
+
+    pub fn snapshot(&self) -> &PackageHostSnapshot {
+        &self.snapshot
+    }
+
+    pub fn builtin_tool_registry(&self) -> ToolRegistry {
+        default_tool_registry()
+    }
+
+    pub fn assemble_builtin_capabilities(
+        &self,
+    ) -> Result<RuntimeCapabilitySet, PackageHostContractError> {
+        self.assemble_tool_registry(self.builtin_tool_registry())
+    }
+
+    pub fn assemble_tool_registry(
+        &self,
+        registry: ToolRegistry,
+    ) -> Result<RuntimeCapabilitySet, PackageHostContractError> {
+        let mut allowed_names = Vec::new();
+        let mut excluded_tools = Vec::new();
+        let mut tool_owners = HashMap::new();
+
+        for tool_name in registry.tool_names() {
+            let owner = self.tool_owner(&tool_name).ok_or_else(|| {
+                PackageHostContractError::UnownedRuntimeTool {
+                    tool_name: tool_name.clone(),
+                }
+            })?;
+            tool_owners.insert(tool_name.clone(), owner.id.clone());
+            if owner.is_runtime_visible() && self.owner_exposes_tool(owner, &tool_name) {
+                allowed_names.push(tool_name);
+            } else {
+                excluded_tools.push(tool_name);
+            }
+        }
+
+        Ok(RuntimeCapabilitySet {
+            tools: registry.filtered(&allowed_names),
+            package_context: crate::runtime::RuntimePackageContext::from_package_host_snapshot(
+                &self.snapshot,
+            ),
+            tool_owners,
+            excluded_tools,
+        })
+    }
+
+    pub fn visible_tool_names(
+        &self,
+        names: Vec<String>,
+    ) -> Result<Vec<String>, PackageHostContractError> {
+        let mut visible = Vec::new();
+        for name in names {
+            let owner = self.tool_owner(&name).ok_or_else(|| {
+                PackageHostContractError::UnownedRuntimeTool {
+                    tool_name: name.clone(),
+                }
+            })?;
+            if owner.is_runtime_visible() && self.owner_exposes_tool(owner, &name) {
+                visible.push(name);
+            }
+        }
+        Ok(visible)
+    }
+
+    fn tool_owner(&self, tool_name: &str) -> Option<&PackageHostRecord> {
+        self.snapshot.records.iter().find(|record| {
+            record.components.iter().any(|component| {
+                component.kind == PackageSurfaceKind::Capability && component.id == tool_name
+            }) || (record.id == "mcp-connectors"
+                && (tool_name == "mcp_tool" || tool_name.starts_with("mcp__")))
+        })
+    }
+
+    fn owner_exposes_tool(&self, owner: &PackageHostRecord, tool_name: &str) -> bool {
+        owner.components.iter().any(|component| {
+            component.kind == PackageSurfaceKind::Capability
+                && component.id == tool_name
+                && component.enabled
+        }) || (owner.id == "mcp-connectors"
+            && (tool_name == "mcp_tool" || tool_name.starts_with("mcp__")))
     }
 }
 
@@ -559,6 +673,8 @@ pub enum PackageHostContractError {
         package_id: String,
         dependency_id: String,
     },
+    #[error("runtime tool {tool_name} has no package owner")]
+    UnownedRuntimeTool { tool_name: String },
     #[error("package host state store error: {message}")]
     StateStore { message: String },
 }
@@ -656,6 +772,39 @@ mod tests {
             PackageHostContractError::MissingDependency {
                 package_id: "pkg-a".to_string(),
                 dependency_id: "missing".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_assembler_assigns_every_builtin_tool_to_one_package() {
+        let assembler = PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+            .expect("builtin package snapshot");
+        let registry = assembler.builtin_tool_registry();
+        let expected_count = registry.tool_names().len();
+
+        let capabilities = assembler
+            .assemble_tool_registry(registry)
+            .expect("builtin tools must all have package owners");
+
+        assert_eq!(capabilities.tool_owners.len(), expected_count);
+        assert_eq!(
+            capabilities.tools.tool_names().len() + capabilities.excluded_tools.len(),
+            expected_count
+        );
+    }
+
+    #[test]
+    fn runtime_assembler_rejects_unowned_dynamic_tools() {
+        let assembler = PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+            .expect("builtin package snapshot");
+
+        assert_eq!(
+            assembler
+                .visible_tool_names(vec!["unowned_tool".to_string()])
+                .unwrap_err(),
+            PackageHostContractError::UnownedRuntimeTool {
+                tool_name: "unowned_tool".to_string(),
             }
         );
     }

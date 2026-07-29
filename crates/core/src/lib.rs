@@ -53,6 +53,9 @@ pub mod migrations;
 pub mod models;
 #[cfg(feature = "ocr")]
 pub mod ocr;
+#[cfg(not(feature = "ocr"))]
+#[path = "ocr_disabled.rs"]
+pub mod ocr;
 pub mod office_runtime;
 pub mod package_host;
 pub mod parse;
@@ -94,3 +97,6 @@ pub mod wiki;
 pub mod work_plan;
 pub mod workflow_automation;
 pub mod workflow_catalog;
+
+#[cfg(test)]
+mod architecture_fitness;

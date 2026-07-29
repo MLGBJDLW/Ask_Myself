@@ -206,6 +206,20 @@ pub struct AgentTaskRun {
     pub finished_at: Option<String>,
 }
 
+/// Identifiers allocated atomically when a user message starts an agent turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTurnLaunchRecord {
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub turn_id: String,
+    pub run_id: String,
+    pub status: String,
+    /// True when an earlier request with the same caller key already created
+    /// the durable message/turn/run tuple.
+    pub reused: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTaskRunListItem {
@@ -1370,6 +1384,201 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    /// Atomically create the user message, conversation turn, and task run.
+    ///
+    /// The caller-provided idempotency key is scoped to the conversation. A
+    /// retry with the same payload returns the original identifiers; reusing a
+    /// key for different input is rejected instead of silently launching the
+    /// wrong turn.
+    pub fn create_agent_turn_and_run(
+        &self,
+        message: &ConversationMessage,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<AgentTurnLaunchRecord, CoreError> {
+        let idempotency_key = idempotency_key.trim();
+        if idempotency_key.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Agent turn idempotency key cannot be empty".to_string(),
+            ));
+        }
+        if idempotency_key.len() > 256 {
+            return Err(CoreError::InvalidInput(
+                "Agent turn idempotency key cannot exceed 256 bytes".to_string(),
+            ));
+        }
+        if message.conversation_id.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Agent turn conversation id cannot be empty".to_string(),
+            ));
+        }
+
+        let role = role_to_str(&message.role);
+        let tool_calls_json = if message.tool_calls.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&message.tool_calls)?)
+        };
+        let artifacts_json = message
+            .artifacts
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let image_attachments_json = message
+            .image_attachments
+            .as_ref()
+            .filter(|attachments| !attachments.is_empty())
+            .map(serde_json::to_string)
+            .transpose()?;
+
+        let turn_id = new_id();
+        let run_id = new_id();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        let existing = tx
+            .query_row(
+                "SELECT r.id, r.turn_id, r.user_message_id, r.status,
+                        m.content, m.artifacts_json, m.image_attachments_json,
+                        r.provider, r.model
+                 FROM agent_task_runs r
+                 JOIN messages m ON m.id = r.user_message_id
+                 WHERE r.conversation_id = ?1 AND r.idempotency_key = ?2",
+                rusqlite::params![&message.conversation_id, idempotency_key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((
+            existing_run_id,
+            existing_turn_id,
+            existing_message_id,
+            status,
+            existing_content,
+            existing_artifacts,
+            existing_attachments,
+            existing_provider,
+            existing_model,
+        )) = existing
+        {
+            let same_request = existing_content == message.content
+                && existing_artifacts == artifacts_json
+                && existing_attachments == image_attachments_json
+                && existing_provider.as_deref() == provider
+                && existing_model.as_deref() == model;
+            if !same_request {
+                return Err(CoreError::InvalidInput(format!(
+                    "Agent turn idempotency key `{idempotency_key}` was already used for different input"
+                )));
+            }
+            return Ok(AgentTurnLaunchRecord {
+                conversation_id: message.conversation_id.clone(),
+                user_message_id: existing_message_id,
+                turn_id: existing_turn_id,
+                run_id: existing_run_id,
+                status,
+                reused: true,
+            });
+        }
+
+        tx.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                &message.id,
+                &message.conversation_id,
+                role,
+                &message.content,
+                &message.tool_call_id,
+                &tool_calls_json,
+                &artifacts_json,
+                message.token_count,
+                message.sort_order,
+                &message.thinking,
+                &image_attachments_json,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&message.conversation_id],
+        )?;
+        tx.execute(
+            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
+             VALUES (?1, ?2, ?3, NULL, 'running')",
+            rusqlite::params![&turn_id, &message.conversation_id, &message.id],
+        )?;
+        tx.execute(
+            "INSERT INTO agent_task_runs
+             (id, conversation_id, turn_id, user_message_id, status, phase, title, provider, model, idempotency_key)
+             VALUES (?1, ?2, ?3, ?4, 'queued', 'queued', ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                &run_id,
+                &message.conversation_id,
+                &turn_id,
+                &message.id,
+                title,
+                provider,
+                model,
+                idempotency_key,
+            ],
+        )?;
+        tx.commit()?;
+
+        Ok(AgentTurnLaunchRecord {
+            conversation_id: message.conversation_id.clone(),
+            user_message_id: message.id.clone(),
+            turn_id,
+            run_id,
+            status: "queued".to_string(),
+            reused: false,
+        })
+    }
+
+    /// Find a previously launched turn without mutating it.
+    pub fn find_agent_turn_by_idempotency_key(
+        &self,
+        conversation_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<AgentTurnLaunchRecord>, CoreError> {
+        let idempotency_key = idempotency_key.trim();
+        if idempotency_key.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, turn_id, user_message_id, status
+             FROM agent_task_runs
+             WHERE conversation_id = ?1 AND idempotency_key = ?2",
+            rusqlite::params![conversation_id, idempotency_key],
+            |row| {
+                Ok(AgentTurnLaunchRecord {
+                    conversation_id: conversation_id.to_string(),
+                    run_id: row.get(0)?,
+                    turn_id: row.get(1)?,
+                    user_message_id: row.get(2)?,
+                    status: row.get(3)?,
+                    reused: true,
+                })
+            },
+        )
+        .optional()
+        .map_err(CoreError::Database)
+    }
+
     /// Mark task runs left active by a previous desktop process as interrupted.
     ///
     /// The in-memory running task handle is process-local. After the app exits,
@@ -3766,6 +3975,90 @@ mod tests {
         let all = db.get_conversation_turns(&conv.id).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, turn.id);
+    }
+
+    #[test]
+    fn test_agent_turn_launch_is_atomic_and_idempotent() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        let message = ConversationMessage {
+            id: "message-first".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Start exactly once".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: Some(serde_json::json!({ "kind": "test" })),
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let first = db
+            .create_agent_turn_and_run(
+                &message,
+                "Start exactly once",
+                Some("openai"),
+                Some("gpt-5"),
+                "client-request-1",
+            )
+            .unwrap();
+        assert!(!first.reused);
+
+        let mut retried_message = message.clone();
+        retried_message.id = "message-retry".to_string();
+        let retry = db
+            .create_agent_turn_and_run(
+                &retried_message,
+                "Start exactly once",
+                Some("openai"),
+                Some("gpt-5"),
+                "client-request-1",
+            )
+            .unwrap();
+
+        assert!(retry.reused);
+        assert_eq!(retry.run_id, first.run_id);
+        assert_eq!(retry.turn_id, first.turn_id);
+        assert_eq!(retry.user_message_id, first.user_message_id);
+        assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
+        assert_eq!(
+            db.get_conversation_turns(&conversation.id).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            db.get_agent_task_runs_for_conversation(&conversation.id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        retried_message.content = "Different payload".to_string();
+        let error = db
+            .create_agent_turn_and_run(
+                &retried_message,
+                "Different payload",
+                Some("openai"),
+                Some("gpt-5"),
+                "client-request-1",
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("already used for different input"));
+        assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
     }
 
     #[test]
