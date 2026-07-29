@@ -158,8 +158,8 @@ pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> Provid
     if base_url_lower.contains("siliconflow.cn") {
         return ProviderType::SiliconFlow;
     }
-    // Keep the dedicated Token Plan identity. Older pay-as-you-go configs used
-    // the `qwen` key with a DashScope URL and now belong to Model Studio.
+    // Keep the dedicated Token Plan identity. Model Studio is selected by its
+    // canonical provider id or detected from its DashScope endpoint.
     if provider_type_from_key(provider) == Some(ProviderType::Qwen)
         && (base_url_lower.is_empty() || base_url_lower.contains("token-plan."))
     {

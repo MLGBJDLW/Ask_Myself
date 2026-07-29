@@ -417,13 +417,13 @@ fn normalize_skill_input(input: &SaveSkillInput) -> Result<SaveSkillInput, CoreE
 }
 
 impl Database {
-    /// List all user skills, newest first. Built-in skills are NOT included.
+    /// List all user skills, newest first. Built-ins live in the static registry,
+    /// while historical database rows were removed by migration v048.
     pub fn list_skills(&self) -> Result<Vec<Skill>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
              FROM skills
-             WHERE id NOT LIKE 'builtin-%'
              ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], skill_from_row)?;
@@ -437,16 +437,6 @@ impl Database {
     /// Create or update a user skill.
     pub fn save_skill(&self, input: &SaveSkillInput) -> Result<Skill, CoreError> {
         let input = normalize_skill_input(input)?;
-        if input
-            .id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("builtin-"))
-        {
-            return Err(CoreError::InvalidInput(
-                "Built-in skills are read-only".into(),
-            ));
-        }
-
         let conn = self.conn();
         let resource_bundle_json = serialize_resource_bundle(&input.resource_bundle)?;
         let id = match &input.id {
@@ -491,11 +481,6 @@ impl Database {
 
     /// Delete a user skill by ID.
     pub fn delete_skill(&self, id: &str) -> Result<(), CoreError> {
-        if id.starts_with("builtin-") {
-            return Err(CoreError::InvalidInput(
-                "Built-in skills cannot be deleted".into(),
-            ));
-        }
         let conn = self.conn();
         let affected = conn.execute("DELETE FROM skills WHERE id = ?1", rusqlite::params![id])?;
         if affected == 0 {
@@ -506,11 +491,6 @@ impl Database {
 
     /// Toggle a user skill's enabled state.
     pub fn toggle_skill(&self, id: &str, enabled: bool) -> Result<(), CoreError> {
-        if id.starts_with("builtin-") {
-            return Err(CoreError::InvalidInput(
-                "Built-in skills cannot be toggled via this API (always on)".into(),
-            ));
-        }
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE skills SET enabled = ?2, updated_at = datetime('now') WHERE id = ?1",
@@ -522,14 +502,14 @@ impl Database {
         Ok(())
     }
 
-    /// Get only enabled user skills (built-ins are NOT included here — combine
-    /// with `load_builtin_skills()` for the full active set).
+    /// Get enabled database-backed user skills. Static built-ins are combined by
+    /// the caller and exact IDs are deduplicated there.
     pub fn get_enabled_skills(&self) -> Result<Vec<Skill>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
              FROM skills
-             WHERE enabled = 1 AND id NOT LIKE 'builtin-%'
+             WHERE enabled = 1
              ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], skill_from_row)?;

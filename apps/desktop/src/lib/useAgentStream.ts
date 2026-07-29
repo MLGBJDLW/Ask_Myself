@@ -1,18 +1,17 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import * as api from './api';
 import { streamStore } from './streamStore';
-import type { ImageAttachment, ApprovalRequest, ArtifactPayload } from '../types/conversation';
+import type {
+  ImageAttachment,
+  ApprovalRequest,
+  ArtifactPayload,
+  UsageTotal,
+} from '../types/conversation';
 import type { StreamState } from './streamStore';
+import type { StreamRoundEvent, ToolCallEvent, TraceEvent } from './streaming/protocol';
 import type { AgentExecutionMode, AgentPowerMode } from './api';
 
-// Re-export types from streamStore for backward compatibility
-export type { ContextUsageBreakdown, ToolCallEvent, StreamRoundEvent, TraceEvent, UsageTotal } from './streamStore';
-
 type AutoCompactedInfo = { summary: string } | null;
-type StreamRoundEvent = import('./streamStore').StreamRoundEvent;
-type ToolCallEvent = import('./streamStore').ToolCallEvent;
-type TraceEvent = import('./streamStore').TraceEvent;
-type UsageTotal = import('./streamStore').UsageTotal;
 
 // Stable references for empty collections (avoids re-renders)
 const EMPTY_ROUNDS: StreamRoundEvent[] = [];

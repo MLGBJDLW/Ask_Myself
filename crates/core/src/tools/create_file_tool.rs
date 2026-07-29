@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[cfg(test)]
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::CreateFileCheckpointInput;
@@ -23,6 +24,7 @@ use super::{file_access_policy, Tool, ToolCategory, ToolDef, ToolResult};
 
 static DEF: OnceLock<ToolDef> = OnceLock::new();
 const DEF_JSON: &str = include_str!("../../prompts/tools/create_file.json");
+const CREATE_FILE_PROTOCOL_VERSION: u16 = 2;
 
 pub struct CreateFileTool;
 
@@ -49,7 +51,11 @@ struct CreateFileArgs {
     content: String,
     #[serde(default)]
     overwrite: bool,
-    /// Explicit write mode. `overwrite` remains supported for compatibility.
+    /// Explicit write mode.
+    ///
+    /// Compatibility lifecycle: introducedIn=0.1, deprecatedIn=0.10.23,
+    /// removeIn=the first release after two consecutive minor versions report
+    /// zero compatibility hits, migration=use mode="overwrite", owner=core-tools.
     #[serde(default)]
     mode: Option<String>,
     /// Required for append mode so retries and dependent chunks cannot silently
@@ -167,40 +173,27 @@ impl Tool for CreateFileTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
-            .await
-    }
-}
-
-impl CreateFileTool {
-    async fn execute_impl(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: CreateFileArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid create_file arguments: {error}"))
         })?;
+        tracing::info!(
+            target: "nexa::tool_protocol",
+            tool = "create_file",
+            current_protocol_version = CREATE_FILE_PROTOCOL_VERSION,
+            argument_protocol_version = if args.overwrite { 1 } else { 2 },
+            compatibility_hit = args.overwrite,
+            "tool protocol invocation"
+        );
         let mode = normalized_mode(&args).map_err(CoreError::InvalidInput)?;
 
         if has_path_traversal(&args.path) {
@@ -374,6 +367,8 @@ impl CreateFileTool {
                 map.insert(
                     "writeProgress".to_string(),
                     json!({
+                        "protocolVersion": CREATE_FILE_PROTOCOL_VERSION,
+                        "legacyOverwriteArgument": args.overwrite,
                         "mode": mode.as_str(),
                         "bytesBefore": bytes_before,
                         "bytesWritten": bytes_written,
@@ -460,7 +455,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -476,6 +476,8 @@ mod tests {
         );
         assert_eq!(artifact["diffStats"]["kind"], "diffStats");
         assert_eq!(artifact["diffStats"]["operation"], "create");
+        assert_eq!(artifact["writeProgress"]["protocolVersion"], 2);
+        assert_eq!(artifact["writeProgress"]["legacyOverwriteArgument"], false);
         assert_eq!(artifact["writeProgress"]["nextExpectedBytes"], 11);
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "hello world");
 
@@ -497,7 +499,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -518,13 +525,26 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert_eq!(
             result.artifacts.as_ref().unwrap()["diff"]["operation"],
             "overwrite"
+        );
+        assert_eq!(
+            result.artifacts.as_ref().unwrap()["writeProgress"]["protocolVersion"],
+            2
+        );
+        assert_eq!(
+            result.artifacts.as_ref().unwrap()["writeProgress"]["legacyOverwriteArgument"],
+            true
         );
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "new content");
     }
@@ -544,7 +564,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("append-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "append-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -585,7 +610,12 @@ mod tests {
             }),
         ] {
             let result = tool
-                .execute("append-invalid", &args.to_string(), &db, &[])
+                .execute(crate::tools::ToolExecutionContext::new(
+                    "append-invalid",
+                    &args.to_string(),
+                    &db,
+                    &[],
+                ))
                 .await
                 .unwrap();
             assert!(result.is_error);
@@ -605,7 +635,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -623,7 +658,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-rel", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-rel",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -645,7 +685,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-docx", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-docx",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -664,7 +709,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -684,7 +734,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -705,7 +760,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-open", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-open",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -723,5 +783,14 @@ mod tests {
             expected_bytes: Some(0),
         };
         assert!(normalized_mode(&args).is_err());
+    }
+
+    #[test]
+    fn schema_advertises_the_current_write_protocol() {
+        let schema = CreateFileTool.parameters_schema();
+        assert_eq!(
+            schema["x-nexa-protocol-version"],
+            CREATE_FILE_PROTOCOL_VERSION
+        );
     }
 }

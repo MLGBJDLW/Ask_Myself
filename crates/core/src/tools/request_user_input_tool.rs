@@ -1,12 +1,14 @@
 //! Structured user-input request rendered as interactive question cards.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolDef, ToolResult};
@@ -114,11 +116,15 @@ impl Tool for RequestUserInputTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: RequestArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid request_user_input arguments: {error}"))
         })?;
@@ -148,12 +154,7 @@ mod tests {
     async fn returns_a_typed_question_request_artifact() {
         let db = Database::open_memory().unwrap();
         let result = RequestUserInputTool
-            .execute(
-                "call-1",
-                r#"{"questions":[{"id":"scope","header":"Scope","question":"Which scope?","type":"single_choice","options":[{"label":"App (Recommended)","description":"This app only."},{"label":"Repo","description":"The full repository."}]}]}"#,
-                &db,
-                &[],
-            )
+            .execute(crate::tools::ToolExecutionContext::new("call-1", r#"{"questions":[{"id":"scope","header":"Scope","question":"Which scope?","type":"single_choice","options":[{"label":"App (Recommended)","description":"This app only."},{"label":"Repo","description":"The full repository."}]}]}"#, &db, &[]))
             .await
             .unwrap();
         assert_eq!(result.artifacts.unwrap()["kind"], "questionRequest");

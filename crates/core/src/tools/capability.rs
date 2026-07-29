@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::approval::ApprovalRisk;
-use crate::plugins::{plugin_for_tool, ToolPluginInfo};
+use crate::plugins::{capability_owner_for_tool, CapabilityOwner};
 
 use super::{
     ToolAccessProfile, ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind,
@@ -57,7 +57,7 @@ pub struct ToolResourceDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct ToolCapabilityDescriptor {
     pub name: String,
-    pub package: ToolPluginInfo,
+    pub owner: CapabilityOwner,
     pub categories: Vec<String>,
     pub ui: ToolUiDescriptor,
     pub resources: ToolResourceDescriptor,
@@ -732,7 +732,7 @@ pub fn capability_descriptor_for_tool(
     let display_category = access_profile.category.clone();
     ToolCapabilityDescriptor {
         name: name.to_string(),
-        package: plugin_for_tool(name),
+        owner: capability_owner_for_tool(name),
         categories: categories
             .iter()
             .map(|category| category_label(*category).to_string())

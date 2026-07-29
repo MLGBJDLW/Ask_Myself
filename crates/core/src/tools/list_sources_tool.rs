@@ -4,7 +4,6 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{scope_is_active, Tool, ToolDef, ToolResult};
@@ -31,11 +30,15 @@ impl Tool for ListSourcesTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let db = db.clone();
         let call_id = call_id.to_string();
         let source_scope = source_scope.to_vec();

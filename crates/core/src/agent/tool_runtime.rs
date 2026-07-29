@@ -36,7 +36,7 @@ pub(super) fn build_tool_run_item(
     let parsed_args = parse_tool_arguments_for_preview(arguments);
     let invocation = tools.build_invocation(call_id, tool_name, parsed_args.clone());
     let capabilities = invocation.capabilities.clone();
-    let plugin = invocation.plugin.clone();
+    let owner = invocation.owner.clone();
     let artifacts =
         artifacts_for_tool_run(artifacts, &invocation, &status, &parsed_args, arguments);
     let displayed_arguments = arguments.map(|arguments| {
@@ -50,7 +50,7 @@ pub(super) fn build_tool_run_item(
     ToolRunItem {
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
-        plugin,
+        owner,
         status,
         arguments: displayed_arguments,
         render_kind: capabilities.render_kind,

@@ -5,6 +5,9 @@
 //! parallel. Designed to save LLM round-trips when the model already knows
 //! which files it wants.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -13,7 +16,6 @@ use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::privacy::{self, PrivacyConfig};
 
@@ -71,11 +73,15 @@ impl Tool for ReadFilesTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ReadFilesArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid read_files arguments: {e}")))?;
 
@@ -260,7 +266,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-1", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("alpha line 1"));
         assert!(result.content.contains("beta line 1"));
@@ -281,7 +295,12 @@ mod tests {
         let args = json!({ "paths": paths }).to_string();
 
         let err = tool
-            .execute("call-over", &args, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-over",
+                &args,
+                &db,
+                &[],
+            ))
             .await
             .expect_err("should reject over-limit");
         match err {
@@ -304,7 +323,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-mix", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-mix",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         // One succeeded, so overall not an error.
         assert!(!result.is_error);
         let artifacts = result.artifacts.unwrap();
@@ -331,7 +358,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-open",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("outside batch"));
@@ -351,7 +386,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-trunc", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-trunc",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(result.content.contains("line0"));
         assert!(result.content.contains("line2"));
         assert!(!result.content.contains("line9"));

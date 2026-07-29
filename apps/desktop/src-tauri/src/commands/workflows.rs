@@ -933,20 +933,7 @@ pub async fn pause_agent_task_run_cmd(
                 AgentRunDisplayKind::Status,
                 AgentRunEventImportance::Low,
             );
-            record_agent_run_task_event(
-                &state.db,
-                &app_handle,
-                &run.conversation_id,
-                &run_id,
-                &run_event,
-                run_event.task_event_type(),
-                "Pause checkpoint saved",
-                Some("paused"),
-                Some(&serde_json::json!({
-                    "checkpointId": checkpoint.id,
-                    "reason": "user_pause"
-                })),
-            );
+            persist_durable_run_event(&state.db, &run_event);
             emit_agent_task_run_update(&state.db, &app_handle, &run.conversation_id, &run_id);
             task_state.cancel_token.cancel();
             let abort_task = task_state.task;
@@ -980,17 +967,8 @@ pub async fn pause_agent_task_run_cmd(
                         "paused",
                         Some(&artifacts),
                     );
-                    record_agent_run_task_event(
-                        &db,
-                        &handle,
-                        &conv_id,
-                        &run_id,
-                        &run_event,
-                        run_event.task_event_type(),
-                        "Paused with a resumable checkpoint",
-                        Some("paused"),
-                        Some(&artifacts),
-                    );
+                    emit_agent_run_frontend_event(&handle, &conv_id, &run_event);
+                    persist_durable_run_event(&db, &run_event);
                     emit_agent_task_run_update(&db, &handle, &conv_id, &run_id);
                 }
             });
@@ -1038,7 +1016,12 @@ pub async fn capture_browser_evidence_cmd(
     .to_string();
     let tool = BrowserEvidenceCaptureTool;
     let result = tool
-        .execute("manual-browser-evidence-capture", &args, &state.db, &[])
+        .execute(nexa_core::tools::ToolExecutionContext::new(
+            "manual-browser-evidence-capture",
+            &args,
+            &state.db,
+            &[],
+        ))
         .await
         .map_err(|err| err.to_string())?;
     if result.is_error {

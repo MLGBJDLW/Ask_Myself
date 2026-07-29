@@ -454,7 +454,6 @@ export function SettingsPage() {
       return true;
     } catch {
       setAppConfig({
-        timeoutDefaultsVersion: 1,
         cacheTtlHours: 24,
         defaultSearchLimit: 20,
         minSearchSimilarity: 0.2,

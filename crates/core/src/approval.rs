@@ -11,8 +11,8 @@
 //!   * `AllowSession`  — stored in-memory by [`SessionApprovalStore`] and
 //!     applies to the remainder of the process lifetime for the same
 //!     tool/target permission key.
-//!   * `Never`         — persisted to `tool_approval_policies` and denies
-//!     the tool until the user clears the rule.
+//!   * `Never`         — persisted as a structured permission policy and
+//!     denies the matching tool target until the user clears the rule.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -378,22 +378,29 @@ impl SessionApprovalStore {
         Self::default()
     }
 
-    pub fn get(&self, tool_name: &str) -> Option<ApprovalDecision> {
+    pub fn get(&self, permission_key: &str) -> Option<ApprovalDecision> {
         self.inner
             .lock()
             .ok()
-            .and_then(|guard| guard.get(tool_name).copied())
+            .and_then(|guard| guard.get(permission_key).copied())
     }
 
-    pub fn set(&self, tool_name: &str, decision: ApprovalDecision) {
+    pub fn resolve(&self, key: &ToolPermissionKey) -> Option<ApprovalDecision> {
+        let guard = self.inner.lock().ok()?;
+        permission_policy_candidates(key)
+            .into_iter()
+            .find_map(|candidate| guard.get(&candidate).copied())
+    }
+
+    pub fn set(&self, permission_key: &str, decision: ApprovalDecision) {
         if let Ok(mut guard) = self.inner.lock() {
-            guard.insert(tool_name.to_string(), decision);
+            guard.insert(permission_key.to_string(), decision);
         }
     }
 
-    pub fn remove(&self, tool_name: &str) {
+    pub fn remove(&self, permission_key: &str) {
         if let Ok(mut guard) = self.inner.lock() {
-            guard.remove(tool_name);
+            guard.remove(permission_key);
         }
     }
 
@@ -441,68 +448,39 @@ impl ToolApprovalMode {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent "never" policies
+// Persistent permission policies
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolApprovalPolicy {
+pub struct ToolPermissionPolicy {
     pub tool_name: String,
     pub decision: String,
     pub created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_value: Option<String>,
+    pub permission_key: String,
+    pub target_kind: String,
+    pub target_value: String,
 }
 
 impl Database {
-    pub fn get_tool_approval_policy(&self, tool_name: &str) -> Result<Option<String>, CoreError> {
-        let conn = self.conn();
-        let row = conn.query_row(
-            "SELECT decision FROM tool_approval_policies WHERE tool_name = ?1",
-            rusqlite::params![tool_name],
-            |r| r.get::<_, String>(0),
-        );
-        match row {
-            Ok(d) => Ok(Some(d)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub fn save_tool_approval_policy(
+    pub fn resolve_tool_permission_policy(
         &self,
-        tool_name: &str,
-        decision: &str,
-    ) -> Result<(), CoreError> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO tool_approval_policies (tool_name, decision) VALUES (?1, ?2)
-             ON CONFLICT(tool_name) DO UPDATE SET decision = excluded.decision,
-                 created_at = datetime('now')",
-            rusqlite::params![tool_name, decision],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_tool_permission_policy(
-        &self,
-        permission_key: &str,
+        key: &ToolPermissionKey,
     ) -> Result<Option<String>, CoreError> {
         let conn = self.conn();
-        let row = conn.query_row(
-            "SELECT decision FROM tool_permission_policies WHERE permission_key = ?1",
-            rusqlite::params![permission_key],
-            |r| r.get::<_, String>(0),
-        );
-        match row {
-            Ok(d) => Ok(Some(d)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+        for permission_key in permission_policy_candidates(key) {
+            let row = conn.query_row(
+                "SELECT decision FROM tool_permission_policies WHERE permission_key = ?1",
+                rusqlite::params![permission_key],
+                |r| r.get::<_, String>(0),
+            );
+            match row {
+                Ok(decision) => return Ok(Some(decision)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
+        Ok(None)
     }
 
     pub fn save_tool_permission_policy(
@@ -541,61 +519,49 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete_tool_approval_policy(&self, tool_name: &str) -> Result<(), CoreError> {
+    pub fn list_tool_permission_policies(&self) -> Result<Vec<ToolPermissionPolicy>, CoreError> {
         let conn = self.conn();
-        conn.execute(
-            "DELETE FROM tool_approval_policies WHERE tool_name = ?1",
-            rusqlite::params![tool_name],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_tool_approval_policies(&self) -> Result<Vec<ToolApprovalPolicy>, CoreError> {
-        let conn = self.conn();
-        let mut targeted_stmt = conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT permission_key, tool_name, target_kind, target_value, decision, created_at
              FROM tool_permission_policies
              ORDER BY created_at DESC",
         )?;
-        let mut policies = targeted_stmt
+        let policies = stmt
             .query_map([], |r| {
-                Ok(ToolApprovalPolicy {
-                    permission_key: Some(r.get(0)?),
+                Ok(ToolPermissionPolicy {
+                    permission_key: r.get(0)?,
                     tool_name: r.get(1)?,
-                    target_kind: Some(r.get(2)?),
-                    target_value: Some(r.get(3)?),
+                    target_kind: r.get(2)?,
+                    target_value: r.get(3)?,
                     decision: r.get(4)?,
                     created_at: r.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-
-        let mut stmt = conn.prepare(
-            "SELECT tool_name, decision, created_at FROM tool_approval_policies
-             ORDER BY created_at DESC",
-        )?;
-        let legacy = stmt
-            .query_map([], |r| {
-                Ok(ToolApprovalPolicy {
-                    tool_name: r.get(0)?,
-                    decision: r.get(1)?,
-                    created_at: r.get(2)?,
-                    permission_key: None,
-                    target_kind: None,
-                    target_value: None,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        policies.extend(legacy);
         Ok(policies)
     }
 
-    pub fn clear_tool_approval_policies(&self) -> Result<(), CoreError> {
+    pub fn clear_tool_permission_policies(&self) -> Result<(), CoreError> {
         let conn = self.conn();
         conn.execute("DELETE FROM tool_permission_policies", [])?;
-        conn.execute("DELETE FROM tool_approval_policies", [])?;
         Ok(())
     }
+}
+
+fn permission_policy_candidates(key: &ToolPermissionKey) -> Vec<String> {
+    let candidates = [
+        key.permission_key(),
+        ToolPermissionKey::new(&key.tool_name, &key.target_kind, "*").permission_key(),
+        ToolPermissionKey::new(&key.tool_name, "tool", "*").permission_key(),
+        ToolPermissionKey::new("*", "tool", "*").permission_key(),
+    ];
+    let mut unique = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if !unique.contains(&candidate) {
+            unique.push(candidate);
+        }
+    }
+    unique
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,19 +989,30 @@ mod tests {
     }
 
     #[test]
-    fn db_policy_roundtrip() {
+    fn db_tool_wildcard_policy_roundtrip() {
         let db = crate::db::Database::open_memory().expect("in-memory db");
-        assert!(db.get_tool_approval_policy("run_shell").unwrap().is_none());
-        db.save_tool_approval_policy("run_shell", "never").unwrap();
+        let wildcard = ToolPermissionKey::new("run_shell", "tool", "*");
+        let request = ToolPermissionKey::new("run_shell", "command", "git status");
+        assert!(db
+            .resolve_tool_permission_policy(&request)
+            .unwrap()
+            .is_none());
+        db.save_tool_permission_policy(&wildcard, "never").unwrap();
         assert_eq!(
-            db.get_tool_approval_policy("run_shell").unwrap().as_deref(),
+            db.resolve_tool_permission_policy(&request)
+                .unwrap()
+                .as_deref(),
             Some("never")
         );
-        let list = db.list_tool_approval_policies().unwrap();
+        let list = db.list_tool_permission_policies().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].tool_name, "run_shell");
-        db.delete_tool_approval_policy("run_shell").unwrap();
-        assert!(db.get_tool_approval_policy("run_shell").unwrap().is_none());
+        db.delete_tool_permission_policy(&wildcard.permission_key())
+            .unwrap();
+        assert!(db
+            .resolve_tool_permission_policy(&request)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1043,29 +1020,21 @@ mod tests {
         let db = crate::db::Database::open_memory().expect("in-memory db");
         let key = ToolPermissionKey::new("run_shell", "command", "git status");
 
-        assert!(db
-            .get_tool_permission_policy(&key.permission_key())
-            .unwrap()
-            .is_none());
+        assert!(db.resolve_tool_permission_policy(&key).unwrap().is_none());
         db.save_tool_permission_policy(&key, "never").unwrap();
 
         assert_eq!(
-            db.get_tool_permission_policy(&key.permission_key())
-                .unwrap()
-                .as_deref(),
+            db.resolve_tool_permission_policy(&key).unwrap().as_deref(),
             Some("never")
         );
-        let list = db.list_tool_approval_policies().unwrap();
+        let list = db.list_tool_permission_policies().unwrap();
         assert!(list.iter().any(|policy| {
-            policy.permission_key.as_deref() == Some("run_shell|command|git%20status")
-                && policy.target_value.as_deref() == Some("git status")
+            policy.permission_key == "run_shell|command|git%20status"
+                && policy.target_value == "git status"
         }));
         db.delete_tool_permission_policy(&key.permission_key())
             .unwrap();
-        assert!(db
-            .get_tool_permission_policy(&key.permission_key())
-            .unwrap()
-            .is_none());
+        assert!(db.resolve_tool_permission_policy(&key).unwrap().is_none());
     }
 
     #[test]
@@ -1079,23 +1048,58 @@ mod tests {
         db.save_tool_permission_policy(&test, "never").unwrap();
 
         assert_eq!(
-            db.get_tool_permission_policy(&lint.permission_key())
-                .unwrap()
-                .as_deref(),
+            db.resolve_tool_permission_policy(&lint).unwrap().as_deref(),
             Some("allow_session")
         );
         assert_eq!(
-            db.get_tool_permission_policy(&test.permission_key())
-                .unwrap()
-                .as_deref(),
+            db.resolve_tool_permission_policy(&test).unwrap().as_deref(),
             Some("never")
         );
-        let list = db.list_tool_approval_policies().unwrap();
+        let list = db.list_tool_permission_policies().unwrap();
         assert_eq!(
             list.iter()
                 .filter(|policy| policy.tool_name == "project_tool")
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn permission_policy_resolution_prefers_exact_then_resource_then_tool_then_global() {
+        let db = crate::db::Database::open_memory().expect("in-memory db");
+        let request = ToolPermissionKey::new("run_shell", "command", "git status");
+        let global = ToolPermissionKey::new("*", "tool", "*");
+        let tool = ToolPermissionKey::new("run_shell", "tool", "*");
+        let resource = ToolPermissionKey::new("run_shell", "command", "*");
+
+        db.save_tool_permission_policy(&global, "global").unwrap();
+        assert_eq!(
+            db.resolve_tool_permission_policy(&request)
+                .unwrap()
+                .as_deref(),
+            Some("global")
+        );
+        db.save_tool_permission_policy(&tool, "tool").unwrap();
+        assert_eq!(
+            db.resolve_tool_permission_policy(&request)
+                .unwrap()
+                .as_deref(),
+            Some("tool")
+        );
+        db.save_tool_permission_policy(&resource, "resource")
+            .unwrap();
+        assert_eq!(
+            db.resolve_tool_permission_policy(&request)
+                .unwrap()
+                .as_deref(),
+            Some("resource")
+        );
+        db.save_tool_permission_policy(&request, "exact").unwrap();
+        assert_eq!(
+            db.resolve_tool_permission_policy(&request)
+                .unwrap()
+                .as_deref(),
+            Some("exact")
         );
     }
 }

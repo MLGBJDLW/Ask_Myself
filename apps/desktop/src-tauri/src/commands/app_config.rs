@@ -36,12 +36,12 @@ pub async fn synthesize_speech_preview_cmd(
     }
     let arguments = serde_json::json!({ "text": trimmed }).to_string();
     let result = SynthesizeSpeechTool
-        .execute(
+        .execute(nexa_core::tools::ToolExecutionContext::new(
             &format!("auto-speech-{}", Uuid::new_v4()),
             &arguments,
             state.db.as_ref(),
             &[],
-        )
+        ))
         .await
         .map_err(|error| error.to_string())?;
     if result.is_error {

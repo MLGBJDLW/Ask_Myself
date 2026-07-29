@@ -249,6 +249,28 @@ pub async fn get_agent_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_run_usage_snapshot_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<Option<nexa_core::usage_snapshot::UsageSnapshot>, String> {
+    state
+        .db
+        .get_run_usage_snapshot(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_conversation_usage_snapshot_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<nexa_core::usage_snapshot::UsageSnapshot>, String> {
+    state
+        .db
+        .get_conversation_usage_snapshot(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_subtask_runs_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
@@ -364,17 +386,19 @@ pub async fn list_tool_access_map_cmd(
 }
 
 #[tauri::command]
-pub fn list_builtin_plugins_cmd(
+pub fn list_capability_packages_cmd(
     state: tauri::State<'_, AppState>,
     app_handle: AppHandle,
     include_runtime_checks: Option<bool>,
-) -> Result<Vec<nexa_core::plugins::PluginManifest>, String> {
+) -> Result<Vec<nexa_core::plugins::CapabilityPackageView>, String> {
     let config = state.db.load_app_config().map_err(|e| e.to_string())?;
     let office_runtime = if include_runtime_checks.unwrap_or(false) {
         match app_handle.path().app_data_dir() {
             Ok(data_dir) => Some(nexa_core::office_runtime::check_office_runtime(&data_dir)),
             Err(error) => {
-                warn!("Failed to resolve app data directory for plugin runtime checks: {error}");
+                warn!(
+                    "Failed to resolve app data directory for capability runtime checks: {error}"
+                );
                 None
             }
         }
@@ -382,21 +406,21 @@ pub fn list_builtin_plugins_cmd(
         None
     };
 
-    Ok(nexa_core::plugins::builtin_plugin_manifests_with_context(
-        nexa_core::plugins::PluginManifestContext {
+    Ok(nexa_core::plugins::builtin_capability_views_with_context(
+        nexa_core::plugins::CapabilityPackageViewContext {
             app_config: Some(&config),
             office_runtime: office_runtime.as_ref(),
         },
     ))
     .and_then(|manifests| {
-        filter_desktop_builtin_plugins_by_package_host(state.db.as_ref(), manifests)
+        filter_desktop_capability_views_by_package_host(state.db.as_ref(), manifests)
     })
 }
 
-pub(crate) fn filter_desktop_builtin_plugins_by_package_host(
+pub(crate) fn filter_desktop_capability_views_by_package_host(
     db: &Database,
-    manifests: Vec<nexa_core::plugins::PluginManifest>,
-) -> Result<Vec<nexa_core::plugins::PluginManifest>, String> {
+    manifests: Vec<nexa_core::plugins::CapabilityPackageView>,
+) -> Result<Vec<nexa_core::plugins::CapabilityPackageView>, String> {
     let snapshot = desktop_package_host_snapshot(db)?;
     let visible_package_ids = snapshot
         .records

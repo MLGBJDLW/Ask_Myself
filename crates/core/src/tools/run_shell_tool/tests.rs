@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::db::Database;
 use crate::sources::CreateSourceInput;
 use std::ffi::OsString;
 
@@ -357,7 +359,12 @@ async fn test_managed_http_service_start_status_and_stop() {
     });
 
     let started = tool
-        .execute("managed-http", &start_args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "managed-http",
+            &start_args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .expect("managed service should return a tool result");
     assert!(
@@ -373,7 +380,12 @@ async fn test_managed_http_service_start_status_and_stop() {
         "cwd": tmp.path().to_string_lossy(),
     });
     let status = tool
-        .execute("managed-http-status", &status_args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "managed-http-status",
+            &status_args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .expect("managed status should return a tool result");
     assert!(
@@ -389,7 +401,12 @@ async fn test_managed_http_service_start_status_and_stop() {
         "cwd": tmp.path().to_string_lossy(),
     });
     let stopped = tool
-        .execute("managed-http-stop", &stop_args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "managed-http-stop",
+            &stop_args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .expect("managed stop should return a tool result");
     assert!(
@@ -423,7 +440,12 @@ async fn test_python_server_script_is_auto_promoted_and_discovers_url() {
     });
 
     let started = tool
-        .execute("auto-python-server", &start_args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "auto-python-server",
+            &start_args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .expect("auto-promoted service result");
     assert!(!started.is_error, "unexpected error: {}", started.content);
@@ -438,7 +460,12 @@ async fn test_python_server_script_is_auto_promoted_and_discovers_url() {
         "cwd": tmp.path().to_string_lossy(),
     });
     let stopped = tool
-        .execute("auto-python-server-stop", &stop_args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "auto-python-server-stop",
+            &stop_args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .expect("managed stop result");
     assert!(!stopped.is_error);
@@ -451,12 +478,12 @@ async fn test_service_wait_requires_a_service_id() {
     let tool = RunShellTool;
 
     let result = tool
-        .execute(
+        .execute(crate::tools::ToolExecutionContext::new(
             "wait-without-id",
             &json!({ "service_action": "wait" }).to_string(),
             &db,
             &[],
-        )
+        ))
         .await
         .expect("wait without service_id returns a tool result");
 
@@ -477,12 +504,12 @@ async fn test_unknown_service_action_lists_wait() {
     let tool = RunShellTool;
 
     let result = tool
-        .execute(
+        .execute(crate::tools::ToolExecutionContext::new(
             "bad-service-action",
             &json!({ "service_action": "resume", "service_id": "svc-1" }).to_string(),
             &db,
             &[],
-        )
+        ))
         .await
         .expect("invalid service action returns a tool result");
 
@@ -501,7 +528,7 @@ async fn test_service_wait_reports_a_missing_service() {
     let tool = RunShellTool;
 
     let result = tool
-        .execute(
+        .execute(crate::tools::ToolExecutionContext::new(
             "wait-missing",
             &json!({
                 "service_action": "wait",
@@ -511,7 +538,7 @@ async fn test_service_wait_reports_a_missing_service() {
             .to_string(),
             &db,
             &[],
-        )
+        ))
         .await
         .expect("wait on a missing service returns a tool result");
 
@@ -530,12 +557,12 @@ async fn test_invalid_json_returns_run_shell_contract_error() {
     let tool = RunShellTool;
 
     let result = tool
-        .execute(
+        .execute(crate::tools::ToolExecutionContext::new(
             "bad-run-shell-json",
             r#"{"program":"python","args":["-c","print("#,
             &db,
             &[],
-        )
+        ))
         .await
         .expect("malformed arguments should be returned as a tool result");
 
@@ -1035,7 +1062,12 @@ async fn test_run_shell_reports_created_text_file_diff() {
     });
 
     let result = tool
-        .execute("run-shell-copy", &args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "run-shell-copy",
+            &args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .unwrap();
 
@@ -1076,7 +1108,12 @@ async fn test_run_shell_reports_modified_text_file_diff() {
     });
 
     let result = tool
-        .execute("run-shell-overwrite", &args.to_string(), &db, &[])
+        .execute(crate::tools::ToolExecutionContext::new(
+            "run-shell-overwrite",
+            &args.to_string(),
+            &db,
+            &[],
+        ))
         .await
         .unwrap();
 

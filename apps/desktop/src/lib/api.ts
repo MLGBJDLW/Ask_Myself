@@ -27,6 +27,7 @@ import type {
   AgentTaskRunListItem,
   AgentTaskRunEvent,
   AgentRunEvent,
+  UsageSnapshot,
   AgentTurnHandle,
   AgentSubtaskRun,
   AgentExecutionGraph,
@@ -35,7 +36,7 @@ import type {
   AgentTaskArtifactVersion,
   CreateAgentTaskArtifactInput,
   UpdateAgentTaskArtifactInput,
-  PluginManifest,
+  CapabilityPackageView,
   PackageHealthState,
   PackageHostSnapshot,
   ToolAccessInfo,
@@ -842,6 +843,12 @@ export const getAgentTaskRunEvents = (runId: string) =>
 export const getAgentRunEvents = (runId: string) =>
   invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId });
 
+export const getRunUsageSnapshot = (runId: string) =>
+  invoke<UsageSnapshot | null>('get_run_usage_snapshot_cmd', { runId });
+
+export const getConversationUsageSnapshot = (conversationId: string) =>
+  invoke<UsageSnapshot | null>('get_conversation_usage_snapshot_cmd', { conversationId });
+
 export const getAgentSubtaskRuns = (runId: string) =>
   invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });
 
@@ -891,8 +898,8 @@ export const captureBrowserEvidence = (
   mode: mode ?? null,
 });
 
-export const listBuiltinPlugins = (options?: { includeRuntimeChecks?: boolean }) =>
-  invoke<PluginManifest[]>('list_builtin_plugins_cmd', {
+export const listCapabilityPackages = (options?: { includeRuntimeChecks?: boolean }) =>
+  invoke<CapabilityPackageView[]>('list_capability_packages_cmd', {
     includeRuntimeChecks: options?.includeRuntimeChecks ?? false,
   });
 
@@ -1053,13 +1060,7 @@ export const agentChat = (
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };
-  return invoke<AgentTurnHandle>('agent_chat_cmd', {
-    request,
-    // Temporary test-host compatibility mirror. The Rust command consumes
-    // only `request`; remove these flat fields in 0.12.0 after downstream
-    // mock hosts have migrated to the versioned request envelope.
-    ...request,
-  });
+  return invoke<AgentTurnHandle>('agent_chat_cmd', { request });
 };
 
 export const agentSteer = (conversationId: string, message: string) =>
@@ -1182,14 +1183,8 @@ export const getManagedModelPaths = (root?: string, localModel?: string) =>
 export const getAppConfig = () =>
   invoke<AppConfig>('get_app_config_cmd');
 
-export const saveAppConfig = (config: AppConfig) => {
-  const configToSave = { ...config } as Record<string, unknown>;
-  delete configToSave.toolTimeoutSecs;
-  delete configToSave.agentTimeoutSecs;
-  delete configToSave.llmTimeoutSecs;
-  delete configToSave.mcpCallTimeoutSecs;
-  return invoke<void>('save_app_config_cmd', { config: configToSave });
-};
+export const saveAppConfig = (config: AppConfig) =>
+  invoke<void>('save_app_config_cmd', { config });
 
 export interface SpeechPreview {
   path: string;
@@ -1306,9 +1301,6 @@ export const toggleSkill = (id: string, enabled: boolean) =>
 export const listBuiltinSkills = () =>
   invoke<Skill[]>('list_builtin_skills_cmd');
 
-const isLegacyBuiltinSkillRow = (skill: Skill) =>
-  skill.builtin === true || skill.id.startsWith('builtin-');
-
 const normalizeSkillList = (skills: Skill[] | null | undefined): Skill[] =>
   Array.isArray(skills) ? skills : [];
 
@@ -1321,7 +1313,7 @@ export const listAllSkills = async () => {
   const userSkills = normalizeSkillList(userResult);
   const builtinIds = new Set(builtins.map((skill) => skill.id));
   const filteredUserSkills = userSkills.filter(
-    (skill) => !isLegacyBuiltinSkillRow(skill) && !builtinIds.has(skill.id),
+    (skill) => !builtinIds.has(skill.id),
   );
   return [...builtins, ...filteredUserSkills];
 };
@@ -1560,20 +1552,18 @@ export const suggestExplorations = (limit?: number) =>
 
 
 // ── Tool Approval ────────────────────────────────────────────────────
-import type { ApprovalDecisionValue, ApprovalPolicyList } from '../types';
+import type { ApprovalDecisionValue, ToolPermissionPolicyList } from '../types';
 
 export const approveToolCall = (requestId: string, decision: ApprovalDecisionValue) =>
   invoke<void>('approve_tool_call_cmd', { requestId, decision });
 
-export const listToolApprovalPolicies = () =>
-  invoke<ApprovalPolicyList>('list_tool_approval_policies_cmd');
+export const listToolPermissionPolicies = () =>
+  invoke<ToolPermissionPolicyList>('list_tool_permission_policies_cmd');
 
-export const deleteToolApprovalPolicy = (
-  toolName: string,
+export const deleteToolPermissionPolicy = (
   scope: 'session' | 'forever',
-  permissionKey?: string | null,
-) =>
-  invoke<void>('delete_tool_approval_policy_cmd', { toolName, scope, permissionKey });
+  permissionKey: string,
+) => invoke<void>('delete_tool_permission_policy_cmd', { scope, permissionKey });
 
-export const clearToolApprovalPolicies = () =>
-  invoke<void>('clear_tool_approval_policies_cmd');
+export const clearToolPermissionPolicies = () =>
+  invoke<void>('clear_tool_permission_policies_cmd');

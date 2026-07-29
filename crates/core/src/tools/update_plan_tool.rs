@@ -1,12 +1,14 @@
 //! UpdatePlanTool - stores a concise execution plan for the current task.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolDef, ToolResult};
@@ -68,11 +70,15 @@ impl Tool for UpdatePlanTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: UpdatePlanArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid update_plan arguments: {e}")))?;
 
@@ -211,7 +217,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-1", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         let artifact = result.artifacts.unwrap();
 
         assert_eq!(artifact["kind"], "plan");

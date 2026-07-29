@@ -53,19 +53,10 @@ impl AgentExecutor {
             })
             .await;
 
-        // Emit ToolCallStart so legacy frontend state shows tool-call UI.
-        let _ = tx
-            .send(AgentEvent::ToolCallStart {
-                call_id: call_id.clone(),
-                tool_name: dispatch.tool_name.clone(),
-                arguments: dispatch.arguments.clone(),
-            })
-            .await;
-
         // Execute the tool directly.
         let result = self
             .tools
-            .execute_with_run_context(
+            .execute(
                 &dispatch.tool_name,
                 crate::tools::ToolExecutionContext {
                     call_id: &call_id,

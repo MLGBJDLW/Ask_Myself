@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+#[cfg(test)]
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
@@ -398,37 +399,16 @@ impl Tool for EditFileTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
-            .await
-    }
-}
-
-impl EditFileTool {
-    async fn execute_impl(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: EditFileArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid edit_file arguments: {e}")))?;
 
@@ -783,7 +763,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -826,7 +811,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-alias", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-alias",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -853,7 +843,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-replace", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-replace",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -879,7 +874,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-range", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-range",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -906,7 +906,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-crlf", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-crlf",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -937,7 +942,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-crlf-indent", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-crlf-indent",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -971,7 +981,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-unicode-quotes", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-unicode-quotes",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -999,7 +1014,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-unicode-scripts", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-unicode-scripts",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -1026,7 +1046,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1049,7 +1074,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1070,7 +1100,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c4", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c4",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -1103,7 +1138,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c5", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c5",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1124,7 +1164,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -1147,7 +1192,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn-rel", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn-rel",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -1174,7 +1224,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1198,7 +1253,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1221,7 +1281,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn-docx", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn-docx",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -1243,7 +1308,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn4", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn4",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1278,7 +1348,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("cn6", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "cn6",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -1304,7 +1379,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c6", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c6",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -1333,7 +1413,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("c-open", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c-open",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -1358,12 +1443,12 @@ mod tests {
         });
 
         let result = tool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "c-allow-all",
                 &args.to_string(),
                 &db,
                 &["unrelated-source-scope".to_string()],
-            )
+            ))
             .await
             .unwrap();
 

@@ -68,26 +68,16 @@ impl Tool for UpdateScratchpadTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        // The scratchpad is conversation-scoped; this entry point is unused.
-        Ok(error_result(
+        let crate::tools::ToolExecutionContext {
             call_id,
-            "update_scratchpad requires a conversation context.",
-        ))
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+            arguments,
+            db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         let Some(conversation_id) = conversation_id else {
             return Ok(error_result(
                 call_id,
@@ -188,7 +178,10 @@ mod tests {
         let tool = UpdateScratchpadTool;
         let args = serde_json::json!({ "action": "append", "content": "first note" });
         let res = tool
-            .execute_with_context("c", &args.to_string(), &db, &[], Some("conv-1"))
+            .execute(
+                crate::tools::ToolExecutionContext::new("c", &args.to_string(), &db, &[])
+                    .with_conversation_id(Some("conv-1")),
+            )
             .await
             .unwrap();
         assert!(!res.is_error);
@@ -202,9 +195,12 @@ mod tests {
         let tool = UpdateScratchpadTool;
         db.upsert_agent_scratchpad("conv-1", "old").unwrap();
         let args = serde_json::json!({ "action": "replace", "content": "brand new" });
-        tool.execute_with_context("c", &args.to_string(), &db, &[], Some("conv-1"))
-            .await
-            .unwrap();
+        tool.execute(
+            crate::tools::ToolExecutionContext::new("c", &args.to_string(), &db, &[])
+                .with_conversation_id(Some("conv-1")),
+        )
+        .await
+        .unwrap();
         let stored = db.get_agent_scratchpad("conv-1").unwrap().unwrap();
         assert_eq!(stored.content, "brand new");
     }
@@ -215,9 +211,12 @@ mod tests {
         let tool = UpdateScratchpadTool;
         db.upsert_agent_scratchpad("conv-1", "x").unwrap();
         let args = serde_json::json!({ "action": "clear" });
-        tool.execute_with_context("c", &args.to_string(), &db, &[], Some("conv-1"))
-            .await
-            .unwrap();
+        tool.execute(
+            crate::tools::ToolExecutionContext::new("c", &args.to_string(), &db, &[])
+                .with_conversation_id(Some("conv-1")),
+        )
+        .await
+        .unwrap();
         assert!(db.get_agent_scratchpad("conv-1").unwrap().is_none());
     }
 
@@ -227,7 +226,10 @@ mod tests {
         let tool = UpdateScratchpadTool;
         let args = serde_json::json!({ "action": "append", "content": "hi" });
         let res = tool
-            .execute_with_context("c", &args.to_string(), &db, &[], None)
+            .execute(
+                crate::tools::ToolExecutionContext::new("c", &args.to_string(), &db, &[])
+                    .with_conversation_id(None),
+            )
             .await
             .unwrap();
         assert!(res.is_error);
@@ -239,7 +241,10 @@ mod tests {
         let tool = UpdateScratchpadTool;
         let args = serde_json::json!({ "action": "zap" });
         let res = tool
-            .execute_with_context("c", &args.to_string(), &db, &[], Some("conv-1"))
+            .execute(
+                crate::tools::ToolExecutionContext::new("c", &args.to_string(), &db, &[])
+                    .with_conversation_id(Some("conv-1")),
+            )
             .await
             .unwrap();
         assert!(res.is_error);

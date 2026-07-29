@@ -1225,6 +1225,122 @@ Every answer that uses knowledge base search results.
                 ELSE 'normal'
             END;",
     ),
+    (
+        "v077_backfill_agent_run_events_from_task_events",
+        "INSERT INTO agent_run_events (
+            run_id, turn_id, event_seq, version, kind, phase,
+            visibility, persistence, display_kind, importance,
+            label, status, payload_json, created_at
+         )
+         SELECT
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.runId'), ''), e.run_id),
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.turnId'), ''), r.turn_id),
+            CAST(json_extract(e.payload_json, '$.agentRun.eventSeq') AS INTEGER),
+            COALESCE(CAST(json_extract(e.payload_json, '$.agentRun.version') AS INTEGER), 2),
+            json_extract(e.payload_json, '$.agentRun.kind'),
+            json_extract(e.payload_json, '$.agentRun.phase'),
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.visibility'), ''), 'user'),
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.persistence'), ''), 'durable'),
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.displayKind'), ''),
+                CASE json_extract(e.payload_json, '$.agentRun.kind')
+                    WHEN 'outputDelta' THEN 'output'
+                    WHEN 'thinking' THEN 'reasoning'
+                    WHEN 'planUpdated' THEN 'plan'
+                    WHEN 'toolPreparing' THEN 'tool'
+                    WHEN 'toolStarted' THEN 'tool'
+                    WHEN 'toolProgress' THEN 'tool'
+                    WHEN 'toolCompleted' THEN 'tool'
+                    WHEN 'approvalRequested' THEN 'approval'
+                    WHEN 'approvalResolved' THEN 'approval'
+                    WHEN 'streamReset' THEN 'recovery'
+                    WHEN 'recoveryAttempt' THEN 'recovery'
+                    WHEN 'usageUpdated' THEN 'usage'
+                    WHEN 'autoCompacted' THEN 'compaction'
+                    WHEN 'done' THEN 'completion'
+                    WHEN 'error' THEN 'error'
+                    ELSE 'status'
+                END),
+            COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.importance'), ''),
+                CASE json_extract(e.payload_json, '$.agentRun.kind')
+                    WHEN 'approvalRequested' THEN 'high'
+                    WHEN 'approvalResolved' THEN 'high'
+                    WHEN 'streamReset' THEN 'high'
+                    WHEN 'recoveryAttempt' THEN 'high'
+                    WHEN 'done' THEN 'high'
+                    WHEN 'error' THEN 'high'
+                    WHEN 'usageUpdated' THEN 'low'
+                    ELSE 'normal'
+                END),
+            COALESCE(json_extract(e.payload_json, '$.agentRun.label'), e.label, ''),
+            COALESCE(json_extract(e.payload_json, '$.agentRun.status'), e.status),
+            COALESCE(json_extract(e.payload_json, '$.agentRun.payload'), '{}'),
+            COALESCE(json_extract(e.payload_json, '$.agentRun.createdAt'), e.created_at)
+         FROM agent_task_run_events e
+         JOIN agent_task_runs r ON r.id = e.run_id
+         WHERE json_valid(e.payload_json)
+           AND json_type(e.payload_json, '$.agentRun') = 'object'
+           AND CAST(json_extract(e.payload_json, '$.agentRun.eventSeq') AS INTEGER) > 0
+           AND NULLIF(json_extract(e.payload_json, '$.agentRun.kind'), '') IS NOT NULL
+           AND NULLIF(json_extract(e.payload_json, '$.agentRun.phase'), '') IS NOT NULL
+           AND COALESCE(NULLIF(json_extract(e.payload_json, '$.agentRun.persistence'), ''), 'durable') = 'durable'
+         ON CONFLICT(run_id, event_seq) DO NOTHING;",
+    ),
+    (
+        "v078_migrate_tool_approval_policies",
+        "INSERT OR IGNORE INTO tool_permission_policies (
+            permission_key, tool_name, target_kind, target_value, decision, created_at
+         )
+         SELECT
+            tool_name || '|tool|*', tool_name, 'tool', '*', decision, created_at
+         FROM tool_approval_policies;
+         DROP TABLE tool_approval_policies;",
+    ),
+    (
+        "v079_migrate_qwen_payg_provider_ids",
+        "UPDATE conversations
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND EXISTS (
+             SELECT 1 FROM agent_configs config
+             WHERE lower(trim(config.provider)) = 'qwen'
+               AND lower(trim(config.model)) = lower(trim(conversations.model))
+               AND lower(COALESCE(config.base_url, '')) NOT LIKE '%token-plan.%'
+               AND (
+                 lower(COALESCE(config.base_url, '')) LIKE '%dashscope%'
+                 OR lower(COALESCE(config.base_url, '')) LIKE '%maas.aliyuncs.com%'
+               )
+           );
+         UPDATE agent_task_runs
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(COALESCE(provider, ''))) = 'qwen'
+           AND EXISTS (
+             SELECT 1 FROM agent_configs config
+             WHERE lower(trim(config.provider)) = 'qwen'
+               AND lower(trim(config.model)) = lower(trim(COALESCE(agent_task_runs.model, '')))
+               AND lower(COALESCE(config.base_url, '')) NOT LIKE '%token-plan.%'
+               AND (
+                 lower(COALESCE(config.base_url, '')) LIKE '%dashscope%'
+                 OR lower(COALESCE(config.base_url, '')) LIKE '%maas.aliyuncs.com%'
+               )
+           );
+         UPDATE agent_configs
+         SET summarization_provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND lower(trim(COALESCE(summarization_provider, ''))) = 'qwen'
+           AND lower(COALESCE(base_url, '')) NOT LIKE '%token-plan.%'
+           AND (
+             lower(COALESCE(base_url, '')) LIKE '%dashscope%'
+             OR lower(COALESCE(base_url, '')) LIKE '%maas.aliyuncs.com%'
+           );
+         UPDATE agent_configs
+         SET provider = 'alibaba_model_studio'
+         WHERE lower(trim(provider)) = 'qwen'
+           AND lower(COALESCE(base_url, '')) NOT LIKE '%token-plan.%'
+           AND (
+             lower(COALESCE(base_url, '')) LIKE '%dashscope%'
+             OR lower(COALESCE(base_url, '')) LIKE '%maas.aliyuncs.com%'
+           );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1383,6 +1499,207 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn backfills_canonical_run_events_from_legacy_task_payloads() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+
+        conn.execute_batch(
+            "INSERT INTO conversations (id, provider, model)
+             VALUES ('conv-run-backfill', 'open_ai', 'gpt-test');
+             INSERT INTO messages (id, conversation_id, role, content)
+             VALUES ('msg-run-backfill', 'conv-run-backfill', 'user', 'test');
+             INSERT INTO conversation_turns (id, conversation_id, user_message_id)
+             VALUES ('turn-run-backfill', 'conv-run-backfill', 'msg-run-backfill');
+             INSERT INTO agent_task_runs
+                (id, conversation_id, turn_id, user_message_id, status, phase)
+             VALUES
+                ('run-backfill', 'conv-run-backfill', 'turn-run-backfill',
+                 'msg-run-backfill', 'running', 'routing');",
+        )
+        .expect("insert legacy run parents");
+
+        let legacy_payload = serde_json::json!({
+            "agentRun": {
+                "version": 2,
+                "runId": "run-backfill",
+                "turnId": "turn-run-backfill",
+                "eventSeq": 7,
+                "kind": "status",
+                "phase": "routing",
+                "visibility": "internal",
+                "persistence": "durable",
+                "displayKind": "status",
+                "importance": "low",
+                "label": "Route selected: Direct",
+                "status": "running",
+                "payload": { "content": "Route selected: Direct" },
+                "createdAt": "2026-07-01T00:00:07Z"
+            }
+        });
+        conn.execute(
+            "INSERT INTO agent_task_run_events
+                (id, run_id, event_type, label, status, payload_json, created_at)
+             VALUES ('legacy-event-7', 'run-backfill', 'status',
+                     'Route selected: Direct', 'running', ?1,
+                     '2026-07-01T00:00:07Z')",
+            [legacy_payload.to_string()],
+        )
+        .expect("insert legacy wrapped run event");
+
+        conn.execute(
+            "DELETE FROM _migrations
+             WHERE name = 'v077_backfill_agent_run_events_from_task_events'",
+            [],
+        )
+        .expect("simulate pre-v077 database");
+        run_migrations(&conn).expect("upgrade should backfill canonical run events");
+        run_migrations(&conn).expect("backfill should remain idempotent");
+
+        let stored: (String, i64, String, String, String, String, String) = conn
+            .query_row(
+                "SELECT run_id, event_seq, turn_id, kind, visibility, importance, payload_json
+                 FROM agent_run_events
+                 WHERE run_id = 'run-backfill' AND event_seq = 7",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .expect("backfilled canonical run event");
+        assert_eq!(stored.0, "run-backfill");
+        assert_eq!(stored.1, 7);
+        assert_eq!(stored.2, "turn-run-backfill");
+        assert_eq!(stored.3, "status");
+        assert_eq!(stored.4, "internal");
+        assert_eq!(stored.5, "low");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored.6).unwrap()["content"],
+            "Route selected: Direct"
+        );
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_run_events
+                 WHERE run_id = 'run-backfill' AND event_seq = 7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migrates_tool_name_approval_policies_to_structured_wildcards() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "CREATE TABLE tool_approval_policies (
+                tool_name TEXT PRIMARY KEY NOT NULL,
+                decision TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO tool_approval_policies (tool_name, decision, created_at)
+             VALUES ('create_file', 'never', '2026-07-01T00:00:00Z');
+             DELETE FROM _migrations
+             WHERE name = 'v078_migrate_tool_approval_policies';",
+        )
+        .expect("simulate pre-v078 approval storage");
+
+        run_migrations(&conn).expect("upgrade should migrate approval policies");
+
+        let migrated: (String, String, String, String, String) = conn
+            .query_row(
+                "SELECT permission_key, tool_name, target_kind, target_value, decision
+                 FROM tool_permission_policies
+                 WHERE permission_key = 'create_file|tool|*'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("structured wildcard policy");
+        assert_eq!(
+            migrated,
+            (
+                "create_file|tool|*".to_string(),
+                "create_file".to_string(),
+                "tool".to_string(),
+                "*".to_string(),
+                "never".to_string(),
+            )
+        );
+
+        let legacy_table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'tool_approval_policies'",
+                [],
+                |row| row.get::<_, i64>(0).map(|count| count > 0),
+            )
+            .unwrap();
+        assert!(!legacy_table_exists);
+    }
+
+    #[test]
+    fn migrates_persisted_qwen_payg_provider_ids_without_touching_token_plan() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO agent_configs
+                (id, name, provider, api_key, base_url, model, summarization_provider)
+             VALUES
+                ('payg', 'Pay as you go', 'qwen', '',
+                 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'qwen'),
+                ('token-plan', 'Token plan', 'qwen', '',
+                 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+                 'qwen3.8-max-preview', 'qwen');
+             DELETE FROM _migrations
+             WHERE name = 'v079_migrate_qwen_payg_provider_ids';",
+        )
+        .expect("simulate pre-v079 provider configuration");
+
+        run_migrations(&conn).expect("upgrade should rewrite persisted provider ids");
+
+        let payg: (String, String) = conn
+            .query_row(
+                "SELECT provider, summarization_provider FROM agent_configs WHERE id = 'payg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            payg,
+            (
+                "alibaba_model_studio".to_string(),
+                "alibaba_model_studio".to_string()
+            )
+        );
+
+        let token_plan: String = conn
+            .query_row(
+                "SELECT provider FROM agent_configs WHERE id = 'token-plan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(token_plan, "qwen");
     }
 
     #[test]

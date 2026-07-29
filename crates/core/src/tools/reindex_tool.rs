@@ -62,11 +62,15 @@ impl Tool for ReindexTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ReindexArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid reindex_document arguments: {e}"))
         })?;
@@ -205,7 +209,15 @@ mod tests {
         // Reindex via tool
         let tool = ReindexTool;
         let args = serde_json::json!({ "path": file.to_string_lossy() }).to_string();
-        let result = tool.execute("c1", &args, &db, &[]).await.expect("execute");
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .expect("execute");
 
         assert!(
             !result.is_error,
@@ -228,7 +240,15 @@ mod tests {
 
         let tool = ReindexTool;
         let args = serde_json::json!({ "source_id": source_id }).to_string();
-        let result = tool.execute("c2", &args, &db, &[]).await.expect("execute");
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .expect("execute");
 
         assert!(
             !result.is_error,
@@ -244,7 +264,15 @@ mod tests {
         let db = Database::open_memory().expect("open in-memory db");
         let tool = ReindexTool;
         let args = "{}";
-        let result = tool.execute("c3", args, &db, &[]).await.expect("execute");
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c3",
+                args,
+                &db,
+                &[],
+            ))
+            .await
+            .expect("execute");
         assert!(result.is_error);
         assert!(result.content.contains("At least one"));
     }

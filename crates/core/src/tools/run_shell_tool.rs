@@ -70,8 +70,6 @@ use super::Tool;
 #[cfg(test)]
 use crate::app_settings::ShellAccessMode;
 #[cfg(test)]
-use crate::db::Database;
-#[cfg(test)]
 use crate::execution_environment::{ExecutionDecisionKind, ExecutionEnvironment, ExecutionRequest};
 #[cfg(test)]
 use crate::models::Source;

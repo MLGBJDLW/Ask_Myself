@@ -19,21 +19,6 @@ export const THEME_IDS = THEMES.map((theme) => theme.id);
 export const LIGHT_THEME_IDS: ThemeId[] = ['light', 'bloom'];
 
 export const STORAGE_KEY = 'nexa-theme';
-const LEGACY_STORAGE_KEYS = ['ask-myself-theme'];
-
-// One-shot migration from pre-Nexa storage keys.
-if (typeof window !== 'undefined' && window.localStorage) {
-  if (!localStorage.getItem(STORAGE_KEY)) {
-    for (const key of LEGACY_STORAGE_KEYS) {
-      const legacy = localStorage.getItem(key);
-      if (legacy) {
-        localStorage.setItem(STORAGE_KEY, legacy);
-        localStorage.removeItem(key);
-        break;
-      }
-    }
-  }
-}
 
 export function isThemeId(value: string): value is ThemeId {
   return THEME_IDS.includes(value as ThemeId);

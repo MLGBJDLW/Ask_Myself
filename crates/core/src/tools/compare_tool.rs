@@ -153,11 +153,15 @@ impl Tool for CompareTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: CompareArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid compare_documents arguments: {e}"))
         })?;
@@ -260,7 +264,12 @@ mod tests {
             "path_b": file_b.to_string_lossy(),
         });
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute");
 
@@ -289,7 +298,12 @@ mod tests {
             "path_b": file_b.to_string_lossy(),
         });
         let result = tool
-            .execute("c2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute");
 
@@ -305,7 +319,12 @@ mod tests {
         // Provide only path_a, missing path_b
         let args = serde_json::json!({ "path_a": "/tmp/x.txt" });
         let result = tool
-            .execute("c3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute");
 

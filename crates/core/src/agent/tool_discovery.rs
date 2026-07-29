@@ -116,7 +116,6 @@ fn tool_search_payload(artifacts: Option<&serde_json::Value>) -> Option<&serde_j
 mod tests {
     use async_trait::async_trait;
 
-    use crate::db::Database;
     use crate::error::CoreError;
     use crate::tools::{Tool, ToolCategory, ToolResult};
 
@@ -150,11 +149,15 @@ mod tests {
 
         async fn execute(
             &self,
-            call_id: &str,
-            _arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
+            context: crate::tools::ToolExecutionContext<'_>,
         ) -> Result<ToolResult, CoreError> {
+            let crate::tools::ToolExecutionContext {
+                call_id,
+                arguments: _arguments,
+                db: _db,
+                source_scope: _source_scope,
+                ..
+            } = context;
             Ok(ToolResult {
                 call_id: call_id.to_string(),
                 content: "ok".to_string(),

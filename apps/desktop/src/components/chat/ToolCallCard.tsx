@@ -61,7 +61,7 @@ import {
   parseSubagentArguments,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
-import type { ArtifactPayload, ToolPluginInfo, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
+import type { ArtifactPayload, CapabilityOwner, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
 import { QuestionRequestPanel } from './QuestionRequestPanel';
@@ -260,7 +260,7 @@ interface ToolCallCardProps {
   toolName?: string;
   arguments?: string;
   status: ToolCallCardStatus;
-  plugin?: ToolPluginInfo;
+  owner?: CapabilityOwner;
   renderKind?: ToolRenderKind;
   capabilities?: ToolRunCapabilities;
   durationMs?: number;
@@ -1468,7 +1468,7 @@ export function ToolCallCard({
   toolName,
   arguments: args,
   status,
-  plugin,
+  owner,
   renderKind,
   capabilities,
   durationMs,
@@ -1541,7 +1541,7 @@ export function ToolCallCard({
     : 0;
   const capabilitySummary = capabilities
     ? [
-        plugin?.name ?? null,
+        owner?.name ?? null,
         capabilities.readOnly ? t('chat.capabilityReadOnly') : t('chat.capabilityWrites'),
         capabilities.concurrencySafe ? t('chat.capabilityParallel') : t('chat.capabilitySerial'),
         capabilities.interruptBehavior === 'cancel' ? t('chat.capabilityCancellable') : t('chat.capabilityBlocking'),

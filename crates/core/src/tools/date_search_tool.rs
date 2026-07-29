@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{ensure_source_in_scope, scope_is_active, Tool, ToolDef, ToolResult};
@@ -78,11 +77,15 @@ impl Tool for DateSearchTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: DateSearchArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid search_by_date arguments: {e}"))
         })?;

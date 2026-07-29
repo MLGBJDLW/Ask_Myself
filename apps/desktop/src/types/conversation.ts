@@ -183,7 +183,6 @@ export interface AgentTaskRunEvent {
   label: string;
   status?: string | null;
   payload?: (Record<string, unknown> & {
-    agentRun?: AgentRunEvent;
     taskTimeline?: TaskTimelineEvent;
   }) | unknown[] | null;
   createdAt: string;
@@ -294,7 +293,7 @@ export interface UpdateAgentTaskArtifactInput {
 export interface ToolCallRequest {
   id: string;
   name: string;
-  plugin?: ToolPluginInfo;
+  owner?: CapabilityOwner;
   arguments: string;
 }
 
@@ -381,7 +380,6 @@ export interface SaveAgentConfigInput {
 }
 
 export interface AppConfig {
-  timeoutDefaultsVersion: number;
   cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;
@@ -560,13 +558,22 @@ export interface UsageTotal {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
-  cacheAveragePromptTokens?: number;
-  cacheAverageReadTokens?: number;
-  cacheAverageMissTokens?: number;
-  cacheAverageCreationTokens?: number;
-  cacheAverageSampleCount?: number;
   lastPromptTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;
+}
+
+export interface UsageSnapshot {
+  source: 'provider' | 'normalized' | 'estimated';
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  thinkingTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  cacheCreationTokens: number;
+  lastPromptTokens: number;
+  contextBreakdown?: ContextUsageBreakdown;
+  providerRaw: unknown;
 }
 
 export interface AgentEvent {
@@ -625,7 +632,7 @@ export interface AgentEvent {
 export type ApprovalRisk = 'low' | 'medium' | 'high';
 export type ApprovalDecisionValue = 'allow_once' | 'allow_session' | 'deny' | 'never';
 
-export interface ToolPluginInfo {
+export interface CapabilityOwner {
   id: string;
   name: string;
   capability: string;
@@ -642,19 +649,19 @@ export type EcosystemSurfaceKind =
   | 'host_surface'
   | 'native_plugin';
 
-export interface PluginProviderCatalog {
+export interface CapabilityProviderCatalog {
   id: string;
   label: string;
   itemKind: string;
   items: unknown[];
 }
 
-export interface PluginSettingsSchema {
+export interface CapabilitySettingsSchema {
   configKey: string;
-  fields: PluginSettingsField[];
+  fields: CapabilitySettingsField[];
 }
 
-export interface PluginSettingsField {
+export interface CapabilitySettingsField {
   key: string;
   label: string;
   kind: string;
@@ -665,26 +672,37 @@ export interface PluginSettingsField {
   defaultValue?: unknown;
 }
 
-export type PluginRuntimeStatus = 'pass' | 'warning' | 'error' | 'unknown';
-export type PluginCheckSeverity = 'info' | 'warning' | 'error';
+export type CapabilityRuntimeStatus = 'pass' | 'warning' | 'error' | 'unknown';
+export type CapabilityCheckSeverity = 'info' | 'warning' | 'error';
 
-export interface PluginRuntimeCheck {
+export interface CapabilityRuntimeCheck {
   id: string;
   label: string;
-  status: PluginRuntimeStatus;
-  severity: PluginCheckSeverity;
+  status: CapabilityRuntimeStatus;
+  severity: CapabilityCheckSeverity;
   message: string;
 }
 
-export interface PluginManifest extends ToolPluginInfo {
+export interface CapabilityPackagePermissions {
+  read: boolean;
+  write: boolean;
+  execute: boolean;
+  network: boolean;
+  nativeCode: boolean;
+}
+
+export interface CapabilityPackageView extends CapabilityOwner {
   builtIn: boolean;
-  ecosystemSurface: EcosystemSurfaceKind;
+  surface: EcosystemSurfaceKind;
+  version: number;
   tools: string[];
+  skills: string[];
   settingsSurfaces: string[];
   workflows: string[];
-  settingsSchema?: PluginSettingsSchema | null;
-  providerCatalogs?: PluginProviderCatalog[];
-  runtimeChecks?: PluginRuntimeCheck[];
+  permissions: CapabilityPackagePermissions;
+  settingsSchema?: CapabilitySettingsSchema | null;
+  providerCatalogs?: CapabilityProviderCatalog[];
+  runtimeChecks?: CapabilityRuntimeCheck[];
 }
 
 export type PackageSurfaceKind =
@@ -733,7 +751,7 @@ export interface PackageHostSnapshot {
 
 export interface ToolAccessInfo {
   name: string;
-  plugin: ToolPluginInfo;
+  owner: CapabilityOwner;
   category: string;
   canRead: boolean;
   canWrite: boolean;
@@ -767,18 +785,18 @@ export interface ApprovalRequest {
   } | null;
 }
 
-export interface ApprovalPolicy {
+export interface ToolPermissionPolicy {
   toolName: string;
   decision: string;
   createdAt?: string;
-  permissionKey?: string | null;
-  targetKind?: string | null;
-  targetValue?: string | null;
+  permissionKey: string;
+  targetKind: string;
+  targetValue: string;
 }
 
-export interface ApprovalPolicyList {
-  persisted: ApprovalPolicy[];
-  session: ApprovalPolicy[];
+export interface ToolPermissionPolicyList {
+  persisted: ToolPermissionPolicy[];
+  session: ToolPermissionPolicy[];
 }
 
 export interface AgentFrontendEvent {
@@ -851,7 +869,7 @@ export interface ToolRunCapabilities {
 export interface ToolRunItem {
   callId: string;
   toolName: string;
-  plugin: ToolPluginInfo;
+  owner: CapabilityOwner;
   status: ToolRunStatus;
   arguments?: string;
   renderKind: ToolRenderKind;

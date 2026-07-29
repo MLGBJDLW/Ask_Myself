@@ -95,6 +95,7 @@ test.beforeEach(async ({ page }) => {
     };
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      if (cmd === 'agent_chat_cmd') args = (args.request as Record<string, unknown>) ?? {};
       switch (cmd) {
         case 'plugin:event|listen': {
           const listenerId = listenerSeq++;
@@ -114,7 +115,6 @@ test.beforeEach(async ({ page }) => {
           return 1047576;
         case 'get_app_config_cmd':
           return {
-            timeoutDefaultsVersion: 1,
             cacheTtlHours: 24,
             defaultSearchLimit: 20,
             minSearchSimilarity: 0.2,

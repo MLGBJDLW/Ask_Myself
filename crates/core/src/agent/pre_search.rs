@@ -38,10 +38,15 @@ impl AgentExecutor {
             .tools
             .execute(
                 "query_knowledge_graph",
-                &pre_graph_id,
-                &graph_args.to_string(),
-                db,
-                source_scope,
+                crate::tools::ToolExecutionContext {
+                    call_id: &pre_graph_id,
+                    arguments: &graph_args.to_string(),
+                    db,
+                    source_scope,
+                    conversation_id,
+                    tool_registry: Some(&self.tools),
+                    cancel_token: Some(&self.cancel_token),
+                },
             )
             .await
         {
@@ -87,10 +92,15 @@ impl AgentExecutor {
             .tools
             .execute(
                 "search_knowledge_base",
-                &pre_search_id,
-                &search_args.to_string(),
-                db,
-                source_scope,
+                crate::tools::ToolExecutionContext {
+                    call_id: &pre_search_id,
+                    arguments: &search_args.to_string(),
+                    db,
+                    source_scope,
+                    conversation_id,
+                    tool_registry: Some(&self.tools),
+                    cancel_token: Some(&self.cancel_token),
+                },
             )
             .await
         {

@@ -4,7 +4,7 @@ import type {
   AgentTurnHandle,
   ApprovalRequest,
   ArtifactPayload,
-  ToolPluginInfo,
+  CapabilityOwner,
   ToolRenderKind,
   ToolRunCapabilities,
 } from '../../types/conversation';
@@ -13,7 +13,7 @@ import type { AgentRunDisplayKind } from '../../types/conversation';
 export interface ToolCallEvent {
   callId: string;
   toolName: string;
-  plugin?: ToolPluginInfo;
+  owner?: CapabilityOwner;
   arguments: string;
   status:
     | 'preparing'
@@ -95,11 +95,6 @@ export interface UsageTotal {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
-  cacheAveragePromptTokens?: number;
-  cacheAverageReadTokens?: number;
-  cacheAverageMissTokens?: number;
-  cacheAverageCreationTokens?: number;
-  cacheAverageSampleCount?: number;
   lastPromptTokens?: number;
   contextBreakdown?: ContextUsageBreakdown;
 }

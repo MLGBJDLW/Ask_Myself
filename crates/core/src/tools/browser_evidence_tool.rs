@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::fetch_url_tool::{capture_browser_page, FetchUrlTool};
@@ -80,11 +79,17 @@ impl Tool for BrowserEvidenceCaptureTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            tool_registry,
+            cancel_token,
+        } = context;
         let args: BrowserEvidenceCaptureArgs = serde_json::from_str(arguments).map_err(|err| {
             CoreError::InvalidInput(format!("Invalid browser_evidence_capture arguments: {err}"))
         })?;
@@ -100,7 +105,15 @@ impl Tool for BrowserEvidenceCaptureTool {
 
         let fetch_tool = FetchUrlTool;
         let fetch = fetch_tool
-            .execute(&format!("{call_id}:fetch"), &fetch_args, db, source_scope)
+            .execute(crate::tools::ToolExecutionContext {
+                call_id: &format!("{call_id}:fetch"),
+                arguments: &fetch_args,
+                db,
+                source_scope,
+                conversation_id,
+                tool_registry,
+                cancel_token,
+            })
             .await?;
         let browser_capture = capture_browser_page(&args.url).await;
         if fetch.is_error && browser_capture.is_err() {

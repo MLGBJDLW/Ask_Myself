@@ -263,11 +263,15 @@ impl Tool for DesktopAutomationTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let mut args: DesktopAutomationArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid desktop_automation arguments: {e}"))
         })?;
@@ -464,7 +468,12 @@ mod tests {
         assert!(!tool.requires_confirmation(&args));
         let db = Database::open_memory().unwrap();
         let result = tool
-            .execute("call-wait", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-wait",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error);

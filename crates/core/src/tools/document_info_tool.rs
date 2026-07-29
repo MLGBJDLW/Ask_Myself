@@ -1,12 +1,14 @@
 //! GetDocumentInfoTool — retrieves metadata about a specific document.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use rusqlite::params;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::path_utils::resolve_existing_file_in_sources;
@@ -44,11 +46,15 @@ impl Tool for GetDocumentInfoTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: GetDocumentInfoArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid get_document_info arguments: {e}"))
         })?;
@@ -311,7 +317,12 @@ mod tests {
         let db = setup_db();
         let tool = GetDocumentInfoTool;
         let result = tool
-            .execute("call-1", r#"{"path": "/tmp/test/hello.md"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                r#"{"path": "/tmp/test/hello.md"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -330,7 +341,15 @@ mod tests {
             .unwrap();
         let tool = GetDocumentInfoTool;
         let args = format!(r#"{{"document_id": "{doc_id}"}}"#);
-        let result = tool.execute("call-2", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("Hello"));
         assert!(result.content.contains("512 bytes"));
@@ -341,7 +360,12 @@ mod tests {
         let db = setup_db();
         let tool = GetDocumentInfoTool;
         let result = tool
-            .execute("call-3", r#"{"path": "/nonexistent/file.md"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-3",
+                r#"{"path": "/nonexistent/file.md"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -352,7 +376,15 @@ mod tests {
     async fn test_get_document_info_no_args() {
         let db = setup_db();
         let tool = GetDocumentInfoTool;
-        let result = tool.execute("call-4", r#"{}"#, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-4",
+                r#"{}"#,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("At least one"));
     }

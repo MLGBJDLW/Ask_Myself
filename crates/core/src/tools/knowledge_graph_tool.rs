@@ -1,12 +1,14 @@
 //! KnowledgeGraphTool — compact entity graph context for agents.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::knowledge_graph::{
     KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgeGraphQuery,
@@ -68,11 +70,15 @@ impl Tool for KnowledgeGraphTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: KnowledgeGraphArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid query_knowledge_graph arguments: {e}"))
         })?;
@@ -1075,12 +1081,12 @@ mod tests {
 
         let tool = KnowledgeGraphTool;
         let result = tool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-1",
                 r#"{"action":"context","limit":10}"#,
                 &db,
                 std::slice::from_ref(&source.id),
-            )
+            ))
             .await
             .expect("execute");
 
@@ -1140,12 +1146,12 @@ mod tests {
             .expect("edge 2");
 
         let result = KnowledgeGraphTool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-2",
                 r#"{"action":"path","entity_name":"Alice","target_name":"Archive"}"#,
                 &db,
                 std::slice::from_ref(&source.id),
-            )
+            ))
             .await
             .expect("execute");
 
@@ -1193,12 +1199,12 @@ mod tests {
             .expect("reverse edge");
 
         let result = KnowledgeGraphTool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-bundle",
                 r#"{"action":"context","limit":10}"#,
                 &db,
                 std::slice::from_ref(&source.id),
-            )
+            ))
             .await
             .expect("execute");
 

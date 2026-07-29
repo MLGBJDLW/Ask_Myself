@@ -3,19 +3,6 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
-    localStorage.setItem(
-      'chat-token-usage-v1',
-      JSON.stringify({
-        'conv-model-switch': {
-          promptTokens: 10000,
-          completionTokens: 250,
-          totalTokens: 10250,
-          thinkingTokens: 0,
-          lastPromptTokens: 10000,
-          updatedAt: Date.now(),
-        },
-      }),
-    );
 
     type Conversation = {
       id: string;
@@ -96,6 +83,7 @@ test.beforeEach(async ({ page }) => {
     (window as unknown as { __lastAgentChatArgs?: Record<string, unknown> | null }).__lastAgentChatArgs = null;
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      if (cmd === 'agent_chat_cmd') args = (args.request as Record<string, unknown>) ?? {};
       switch (cmd) {
         case 'get_wizard_state_cmd':
           return { completed: true };
@@ -162,6 +150,19 @@ test.beforeEach(async ({ page }) => {
         }
         case 'get_conversation_turns_cmd':
           return [];
+        case 'get_conversation_usage_snapshot_cmd':
+          return {
+            source: 'provider',
+            promptTokens: 10000,
+            completionTokens: 250,
+            totalTokens: 10250,
+            thinkingTokens: 0,
+            cacheReadTokens: 0,
+            cacheMissTokens: 10000,
+            cacheCreationTokens: 0,
+            lastPromptTokens: 10000,
+            providerRaw: {},
+          };
         case 'list_sources':
           return [];
         case 'get_conversation_sources_cmd':

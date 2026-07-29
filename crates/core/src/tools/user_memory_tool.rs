@@ -1,11 +1,13 @@
 //! UserMemoryTool - cross-session user memory management.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::personalization::UserMemory;
 
@@ -161,11 +163,15 @@ impl Tool for UserMemoryTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: UserMemoryArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid manage_user_memory arguments: {e}"))
         })?;
@@ -260,7 +266,12 @@ mod tests {
             "content": "Default response language is Chinese."
         });
         let result = tool
-            .execute("call-1", &record.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &record.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error);
@@ -271,7 +282,12 @@ mod tests {
             "limit": 5
         });
         let result = tool
-            .execute("call-2", &search.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &search.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.content.contains("Chinese"));

@@ -1,12 +1,14 @@
 //! ToolSearchTool - searchable enabled tool catalog.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{
@@ -52,21 +54,7 @@ impl Tool for ToolSearchTool {
         &[ToolCategory::Core]
     }
 
-    async fn execute(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
-    ) -> Result<ToolResult, CoreError> {
-        let registry = default_tool_registry();
-        self.execute_against_registry(call_id, arguments, &registry)
-    }
-
-    async fn execute_with_run_context(
-        &self,
-        ctx: ToolExecutionContext<'_>,
-    ) -> Result<ToolResult, CoreError> {
+    async fn execute(&self, ctx: ToolExecutionContext<'_>) -> Result<ToolResult, CoreError> {
         if let Some(registry) = ctx.tool_registry {
             self.execute_against_registry(ctx.call_id, ctx.arguments, registry)
         } else {
@@ -206,11 +194,15 @@ mod tests {
 
         async fn execute(
             &self,
-            call_id: &str,
-            _arguments: &str,
-            _db: &Database,
-            _source_scope: &[String],
+            context: crate::tools::ToolExecutionContext<'_>,
         ) -> Result<ToolResult, CoreError> {
+            let crate::tools::ToolExecutionContext {
+                call_id,
+                arguments: _arguments,
+                db: _db,
+                source_scope: _source_scope,
+                ..
+            } = context;
             Ok(ToolResult {
                 call_id: call_id.to_string(),
                 content: "ok".to_string(),
@@ -225,7 +217,12 @@ mod tests {
         let db = Database::open_memory().unwrap();
         let args = serde_json::json!({ "query": "grep local files" });
         let result = ToolSearchTool
-            .execute("tool-search", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "tool-search",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -240,7 +237,7 @@ mod tests {
         registry.register(Box::new(RuntimeMcpTool));
         let args = serde_json::json!({ "query": "browser snapshot" });
         let result = ToolSearchTool
-            .execute_with_run_context(ToolExecutionContext {
+            .execute(ToolExecutionContext {
                 call_id: "tool-search",
                 arguments: &args.to_string(),
                 db: &db,

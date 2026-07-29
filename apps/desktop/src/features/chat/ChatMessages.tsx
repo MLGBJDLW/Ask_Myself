@@ -48,7 +48,7 @@ import type {
   StreamRoundEvent,
   ToolCallEvent,
   TraceEvent,
-} from "../../lib/useAgentStream";
+} from "../../lib/streaming/protocol";
 import {
   extractPersistedTraceItems,
   extractTurnTrace,
@@ -545,7 +545,7 @@ interface GeneratedImagePreviewItem {
   id: string;
   toolName: string;
   arguments: string;
-  plugin?: ToolCallEvent["plugin"];
+  owner?: ToolCallEvent["owner"];
   content?: string;
   isError?: boolean;
   artifacts: ArtifactPayload;
@@ -1033,7 +1033,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 toolName={section.toolCall.toolName}
                 arguments={section.toolCall.arguments}
                 status={section.toolCall.status}
-                plugin={section.toolCall.plugin}
+                owner={section.toolCall.owner}
                 renderKind={section.toolCall.renderKind}
                 capabilities={section.toolCall.capabilities}
                 durationMs={section.toolCall.durationMs}
@@ -1285,7 +1285,7 @@ export function ChatMessages(props: ChatMessagesProps) {
               toolName: tc.name || "unknown_tool",
               arguments: argumentsText,
               status,
-              plugin: tc.plugin,
+              owner: tc.owner,
               argsStatus: status === "done" ? "done" : "ready",
               argsBytes: argumentsText.length,
               content: toolResult?.content,
@@ -1705,7 +1705,7 @@ export function ChatMessages(props: ChatMessagesProps) {
         id: `generated-image-${msg.id}`,
         toolName: owner.toolCall.name || "generate_image",
         arguments: owner.toolCall.arguments || "",
-        plugin: owner.toolCall.plugin,
+        owner: owner.toolCall.owner,
         content: msg.content,
         artifacts: msg.artifacts,
       });
@@ -1748,7 +1748,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 toolName={item.toolName}
                 arguments={item.arguments}
                 status="done"
-                plugin={item.plugin}
+                owner={item.owner}
                 renderKind="image"
                 content={item.content}
                 isError={item.isError}

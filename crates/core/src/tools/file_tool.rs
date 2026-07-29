@@ -1,12 +1,14 @@
 //! FileTool — reads files from managed source directories.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::privacy;
 
@@ -59,11 +61,15 @@ impl Tool for FileTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: FileArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid read_file arguments: {e}")))?;
 
@@ -206,7 +212,12 @@ mod tests {
         .to_string();
 
         let result = tool
-            .execute("call-1", &args, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args,
+                &db,
+                &[],
+            ))
             .await
             .expect("read_file should fallback for image");
 
@@ -232,7 +243,12 @@ mod tests {
         .to_string();
 
         let err = tool
-            .execute("call-2", &args, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &args,
+                &db,
+                &[],
+            ))
             .await
             .expect_err("unsupported binary should still error");
 
@@ -266,7 +282,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-3", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-3",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error);
         assert!(result.content.contains("Document ID: doc-1"));
@@ -290,7 +314,12 @@ mod tests {
         .to_string();
 
         let result = tool
-            .execute("call-4", &args, &db, &["out-of-scope".to_string()])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-4",
+                &args,
+                &db,
+                &["out-of-scope".to_string()],
+            ))
             .await
             .unwrap();
 
@@ -313,7 +342,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-open",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("hello from outside"));
@@ -358,7 +395,12 @@ mod tests {
         .to_string();
 
         let result = tool
-            .execute("call-docx", &args, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-docx",
+                &args,
+                &db,
+                &[],
+            ))
             .await
             .expect("relative docx read should succeed");
 

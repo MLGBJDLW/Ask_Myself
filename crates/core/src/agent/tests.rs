@@ -721,11 +721,15 @@ impl Tool for MockTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "tool-ok".to_string(),
@@ -751,11 +755,15 @@ impl Tool for NamedMockTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "ok".to_string(),
@@ -1035,11 +1043,15 @@ impl Tool for DeferredCacheTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "ok".to_string(),
@@ -1077,11 +1089,15 @@ impl Tool for OversizedDeferredCacheTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "ok".to_string(),
@@ -1404,11 +1420,15 @@ impl Tool for DelayTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         if self.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
         }
@@ -1447,11 +1467,15 @@ impl Tool for BlockingTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         self.release.notified().await;
         Ok(ToolResult {
             call_id: call_id.to_string(),
@@ -1497,11 +1521,15 @@ impl Tool for LargeReadFileTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: large_read_file_content(),
@@ -1541,11 +1569,15 @@ impl Tool for SerialDelayTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         if self.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
         }
@@ -1585,11 +1617,15 @@ impl Tool for ResourceLockedTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        _arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments: _arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "locked-write-ok".to_string(),

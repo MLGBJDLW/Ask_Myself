@@ -339,6 +339,8 @@ fn main() {
             commands::list_recent_agent_task_runs_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_run_events_cmd,
+            commands::get_run_usage_snapshot_cmd,
+            commands::get_conversation_usage_snapshot_cmd,
             commands::get_agent_subtask_runs_cmd,
             commands::get_agent_execution_graph_cmd,
             commands::get_agent_task_artifacts_cmd,
@@ -351,7 +353,7 @@ fn main() {
             commands::get_task_resume_prompt_cmd,
             commands::get_investigation_graph_cmd,
             commands::list_tool_access_map_cmd,
-            commands::list_builtin_plugins_cmd,
+            commands::list_capability_packages_cmd,
             commands::get_package_host_snapshot_cmd,
             commands::set_package_host_package_enabled_cmd,
             commands::set_package_host_package_health_cmd,
@@ -540,9 +542,9 @@ fn main() {
             commands::suggest_explorations_cmd,
             // Tool approval
             commands::approve_tool_call_cmd,
-            commands::list_tool_approval_policies_cmd,
-            commands::delete_tool_approval_policy_cmd,
-            commands::clear_tool_approval_policies_cmd,
+            commands::list_tool_permission_policies_cmd,
+            commands::delete_tool_permission_policy_cmd,
+            commands::clear_tool_permission_policies_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -168,11 +168,15 @@ impl Tool for SearchFilesTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         execute_search_files("search_files", call_id, arguments, db, source_scope).await
     }
 }
@@ -199,11 +203,15 @@ impl Tool for GrepFilesTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         execute_search_files("grep_files", call_id, arguments, db, source_scope).await
     }
 }
@@ -566,7 +574,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("search-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "search-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -597,7 +610,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("search-2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "search-2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -625,7 +643,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("grep-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "grep-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -657,7 +680,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("grep-2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "grep-2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -684,7 +712,12 @@ mod tests {
         });
 
         let err = tool
-            .execute("grep-3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "grep-3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap_err()
             .to_string();

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
+#[cfg(test)]
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
@@ -92,37 +93,16 @@ impl Tool for MultiEditTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, source_scope, conversation_id)
-            .await
-    }
-}
-
-impl MultiEditTool {
-    async fn execute_impl(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: MultiEditArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid multi_edit arguments: {e}")))?;
 
@@ -445,7 +425,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("multi-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -515,7 +500,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("multi-2", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -538,7 +528,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("multi-3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -549,7 +544,12 @@ mod tests {
             "edits": [{ "old_str": "todo", "new_str": "done", "replace_all": true }]
         });
         let result = tool
-            .execute("multi-4", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-4",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -570,7 +570,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("multi-crlf", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-crlf",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 
@@ -598,7 +603,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("multi-unicode-quotes", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "multi-unicode-quotes",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

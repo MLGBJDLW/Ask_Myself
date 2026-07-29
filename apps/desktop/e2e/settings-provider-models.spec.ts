@@ -78,16 +78,12 @@ test.beforeEach(async ({ page }) => {
     };
 
     const appConfig = {
-      toolTimeoutSecs: 30,
-      agentTimeoutSecs: 180,
       cacheTtlHours: 24,
       defaultSearchLimit: 20,
       minSearchSimilarity: 0.2,
       maxTextFileSize: 104857600,
       maxVideoFileSize: 2147483648,
       maxAudioFileSize: 536870912,
-      llmTimeoutSecs: 300,
-      mcpCallTimeoutSecs: 60,
       confirmDestructive: true,
       shellAccessMode: "restricted",
       toolApprovalMode: "ask",
@@ -163,7 +159,7 @@ test.beforeEach(async ({ page }) => {
             _args.config,
           );
           return null;
-        case "list_builtin_plugins_cmd":
+        case "list_capability_packages_cmd":
           return [
             {
               id: "image-generation",

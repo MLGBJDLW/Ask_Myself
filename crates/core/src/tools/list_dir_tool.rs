@@ -1,5 +1,8 @@
 //! ListDirTool — lists directory contents within registered source roots.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
@@ -8,7 +11,6 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::path_utils::resolve_existing_directory_for_file_access;
@@ -65,11 +67,15 @@ impl Tool for ListDirTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: ListDirArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid list_dir arguments: {e}")))?;
 
@@ -268,7 +274,15 @@ mod tests {
         })
         .to_string();
 
-        let result = tool.execute("call-open", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-open",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
 
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("outside.txt"));

@@ -1,6 +1,9 @@
 //! RetrieveEvidenceTool — retrieves and formats evidence cards by chunk IDs.
 //! SummarizeDocumentTool — gathers all chunks of a document for summarization.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -8,7 +11,6 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{
@@ -46,11 +48,15 @@ impl Tool for RetrieveEvidenceTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: RetrieveEvidenceArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid retrieve_evidence arguments: {e}"))
         })?;
@@ -185,11 +191,15 @@ impl Tool for SummarizeDocumentTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: SummarizeDocumentArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid summarize_document arguments: {e}"))
         })?;
@@ -380,7 +390,12 @@ mod tests {
         let (db, _doc_id, _doc_path) = setup_db_with_chunks(3);
         let tool = SummarizeDocumentTool;
         let result = tool
-            .execute("call-1", r#"{"path": "/tmp/test/notes.md"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                r#"{"path": "/tmp/test/notes.md"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -400,7 +415,15 @@ mod tests {
         let (db, doc_id, _doc_path) = setup_db_with_chunks(2);
         let tool = SummarizeDocumentTool;
         let args = format!(r#"{{"document_id": "{doc_id}"}}"#);
-        let result = tool.execute("call-2", &args, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
         assert!(result.content.contains("Total chunks: 2 (showing 2)"));
         assert!(result.content.contains("Content of chunk 0"));
@@ -419,12 +442,12 @@ mod tests {
         let (db, _doc_id, _doc_path) = setup_db_with_chunks(5);
         let tool = SummarizeDocumentTool;
         let result = tool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-3",
                 r#"{"path": "/tmp/test/notes.md", "max_chunks": 2}"#,
                 &db,
                 &[],
-            )
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -440,7 +463,12 @@ mod tests {
         let (db, _, _) = setup_db_with_chunks(1);
         let tool = SummarizeDocumentTool;
         let result = tool
-            .execute("call-4", r#"{"path": "/nonexistent.md"}"#, &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-4",
+                r#"{"path": "/nonexistent.md"}"#,
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(result.is_error);
@@ -451,7 +479,15 @@ mod tests {
     async fn test_summarize_document_no_args() {
         let (db, _, _) = setup_db_with_chunks(1);
         let tool = SummarizeDocumentTool;
-        let result = tool.execute("call-5", r#"{}"#, &db, &[]).await.unwrap();
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-5",
+                r#"{}"#,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("At least one"));
     }
@@ -461,12 +497,12 @@ mod tests {
         let (db, _doc_id, doc_path) = setup_db_with_chunks(1);
         let tool = SummarizeDocumentTool;
         let result = tool
-            .execute(
+            .execute(crate::tools::ToolExecutionContext::new(
                 "call-6",
                 &format!(r#"{{"path":"{doc_path}"}}"#),
                 &db,
                 &["different-source".to_string()],
-            )
+            ))
             .await
             .unwrap();
 

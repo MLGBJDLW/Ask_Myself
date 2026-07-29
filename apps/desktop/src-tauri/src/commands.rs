@@ -15,8 +15,7 @@ use crate::agent_stream::{
     emit_agent_frontend_event_with_presentation, emit_agent_run_frontend_event,
 };
 use crate::agent_task_events::{
-    emit_agent_task_run_update, record_agent_run_task_event,
-    record_internal_agent_run_status_task_event,
+    emit_agent_task_run_update, persist_durable_run_event, record_internal_agent_run_status_event,
 };
 use crate::app_events::emit_app_event;
 use nexa_core::agent::power_mode::AgentPowerMode;
@@ -159,17 +158,7 @@ fn emit_terminal_agent_error_once(
         error.payload,
     );
     emit_agent_run_frontend_event(app_handle, error.conversation_id, &run_event);
-    record_agent_run_task_event(
-        db,
-        app_handle,
-        error.conversation_id,
-        error.task_run_id,
-        &run_event,
-        "error",
-        error.message,
-        Some(error.status),
-        error.payload,
-    );
+    persist_durable_run_event(db, &run_event);
 }
 
 /// State for the MCP server manager.
@@ -646,7 +635,7 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::conversation::{
-        desktop_package_host_snapshot, filter_desktop_builtin_plugins_by_package_host,
+        desktop_package_host_snapshot, filter_desktop_capability_views_by_package_host,
         set_desktop_package_host_package_enabled, set_desktop_package_host_package_health,
     };
     use super::preview::{
@@ -1102,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_builtin_plugins_are_filtered_by_package_host_state() {
+    fn desktop_capability_views_are_filtered_by_package_host_state() {
         let db = Database::open_memory().unwrap();
         db.set_package_host_package_enabled("office-documents", false)
             .unwrap();
@@ -1112,9 +1101,9 @@ mod tests {
         )
         .unwrap();
 
-        let manifests = filter_desktop_builtin_plugins_by_package_host(
+        let manifests = filter_desktop_capability_views_by_package_host(
             &db,
-            nexa_core::plugins::builtin_plugin_manifests(),
+            nexa_core::plugins::builtin_capability_views(),
         )
         .unwrap();
         let ids = manifests

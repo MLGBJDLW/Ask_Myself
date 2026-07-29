@@ -1,11 +1,13 @@
 //! ManageSourceTool — add or remove knowledge source directories.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::sources::{CreateSourceInput, UpdateSourceInput};
 
@@ -59,11 +61,15 @@ impl Tool for ManageSourceTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: ManageSourceArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid manage_source arguments: {e}"))
         })?;
@@ -191,7 +197,12 @@ mod tests {
             "path": dir.path().to_string_lossy()
         });
         let result = tool
-            .execute("c1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute should succeed");
 
@@ -222,12 +233,24 @@ mod tests {
             "action": "add",
             "path": dir.path().to_string_lossy()
         });
-        tool.execute("c1", &args.to_string(), &db, &[])
-            .await
-            .expect("first add should succeed");
+        tool.execute(crate::tools::ToolExecutionContext::new(
+            "c1",
+            &args.to_string(),
+            &db,
+            &[],
+        ))
+        .await
+        .expect("first add should succeed");
 
         // Second add should fail (duplicate path).
-        let result = tool.execute("c2", &args.to_string(), &db, &[]).await;
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
+            .await;
         assert!(result.is_err(), "duplicate add should error");
     }
 
@@ -243,7 +266,12 @@ mod tests {
             "path": dir.path().to_string_lossy()
         });
         let add_result = tool
-            .execute("c1", &add_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &add_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("add should succeed");
 
@@ -258,7 +286,12 @@ mod tests {
             "source_id": source_id
         });
         let rm_result = tool
-            .execute("c2", &rm_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &rm_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("remove should succeed");
 
@@ -281,9 +314,14 @@ mod tests {
             "action": "add",
             "path": old_dir.path().to_string_lossy()
         });
-        tool.execute("c1", &add_args.to_string(), &db, &[])
-            .await
-            .expect("add should succeed");
+        tool.execute(crate::tools::ToolExecutionContext::new(
+            "c1",
+            &add_args.to_string(),
+            &db,
+            &[],
+        ))
+        .await
+        .expect("add should succeed");
         let source_id = db.list_sources().expect("list sources")[0].id.clone();
 
         let update_args = serde_json::json!({
@@ -292,7 +330,12 @@ mod tests {
             "path": new_dir.path().to_string_lossy()
         });
         let result = tool
-            .execute("c2", &update_args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c2",
+                &update_args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("update should succeed");
 
@@ -318,7 +361,14 @@ mod tests {
             "action": "remove",
             "source_id": "nonexistent-id"
         });
-        let result = tool.execute("c1", &args.to_string(), &db, &[]).await;
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
+            .await;
         assert!(result.is_err(), "removing nonexistent source should error");
     }
 
@@ -328,7 +378,14 @@ mod tests {
         let tool = ManageSourceTool;
 
         let args = serde_json::json!({ "action": "add" });
-        let result = tool.execute("c1", &args.to_string(), &db, &[]).await;
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "c1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
+            .await;
         assert!(result.is_err(), "add without path should error");
     }
 }

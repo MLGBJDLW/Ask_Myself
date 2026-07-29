@@ -1,11 +1,13 @@
 //! SubmitFeedbackTool — records user feedback on search result chunks.
 
+#[cfg(test)]
+use crate::db::Database;
+
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::db::Database;
 use crate::error::CoreError;
 use crate::feedback::FeedbackAction;
 
@@ -55,11 +57,15 @@ impl Tool for SubmitFeedbackTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: SubmitFeedbackArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid submit_feedback arguments: {e}"))
         })?;
@@ -144,7 +150,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("call-1", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute should succeed");
 
@@ -175,7 +186,14 @@ mod tests {
             "kind": "invalid_action"
         });
 
-        let result = tool.execute("call-2", &args.to_string(), &db, &[]).await;
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
+            .await;
         // Serde deserialization should fail for invalid enum variant.
         assert!(result.is_err());
     }
@@ -192,7 +210,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("call-3", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-3",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .expect("execute should succeed");
 

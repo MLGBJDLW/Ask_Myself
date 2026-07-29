@@ -17,7 +17,7 @@ use nexa_core::agent::power_mode::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
-    AgentRequestKind, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    AgentRequestKind, AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
@@ -49,13 +49,15 @@ use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
 use tauri::AppHandle;
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::agent_stream::{emit_agent_frontend_event, emit_agent_frontend_event_with_presentation};
+use crate::agent_stream::{
+    emit_agent_frontend_event, emit_agent_frontend_event_with_presentation,
+    emit_agent_run_frontend_event,
+};
 use crate::agent_stream_bridge::AgentStreamForwarder;
-use crate::agent_task_events::{emit_agent_task_run_update, record_agent_run_task_event};
+use crate::agent_task_events::{emit_agent_task_run_update, persist_durable_run_event};
 use crate::app_events::emit_app_event;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
@@ -278,17 +280,7 @@ pub fn request_desktop_running_agent_stop(
             tone: Some("muted".to_string()),
         },
     );
-    record_agent_run_task_event(
-        &db,
-        &app_handle,
-        &conversation_id,
-        &task_run_id,
-        &run_event,
-        run_event.task_event_type(),
-        "Stop requested",
-        Some("cancelling"),
-        None,
-    );
+    persist_durable_run_event(&db, &run_event);
     emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
 
     task_state.cancel_token.cancel();
@@ -1418,41 +1410,6 @@ pub async fn build_desktop_agent_session_dependencies(
     }
 }
 
-fn build_desktop_confirmation_callback(
-    app_handle: &AppHandle,
-    executor_config: &AgentConfig,
-) -> Option<ConfirmationCallback> {
-    if !executor_config.require_tool_confirmation
-        && !executor_config.shell_access_mode.requires_confirmation()
-    {
-        return None;
-    }
-
-    let dialog_handle = app_handle.clone();
-    Some(Arc::new(move |message: String| {
-        let handle = dialog_handle.clone();
-        Box::pin(async move {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            handle
-                .dialog()
-                .message(&message)
-                .title("Confirm Tool Execution")
-                .kind(MessageDialogKind::Warning)
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "Allow".into(),
-                    "Deny".into(),
-                ))
-                .show(move |confirmed| {
-                    let _ = tx.send(confirmed);
-                });
-            match tokio::time::timeout(Duration::from_secs(30), rx).await {
-                Ok(Ok(confirmed)) => confirmed,
-                _ => !message.starts_with("Run:"),
-            }
-        })
-    }))
-}
-
 fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> ApprovalCallback {
     let DesktopApprovalCallbackInput {
         db,
@@ -1481,29 +1438,17 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
                 return decision;
             }
 
-            if let Ok(Some(policy)) = db.get_tool_permission_policy(&req.permission_key) {
+            let permission_key = ToolPermissionKey::from_request(&req);
+            if let Ok(Some(policy)) = db.resolve_tool_permission_policy(&permission_key) {
                 if policy == "never" {
                     return ApprovalDecision::Deny;
                 }
             }
-            let allow_legacy_tool_policy = req.tool_name != "project_tool";
-            if allow_legacy_tool_policy {
-                if let Ok(Some(policy)) = db.get_tool_approval_policy(&req.tool_name) {
-                    if policy == "never" {
-                        return ApprovalDecision::Deny;
-                    }
-                }
-            }
 
             if matches!(
-                store.get(&req.permission_key),
+                store.resolve(&permission_key),
                 Some(ApprovalDecision::AllowSession)
-            ) || (allow_legacy_tool_policy
-                && matches!(
-                    store.get(&req.tool_name),
-                    Some(ApprovalDecision::AllowSession)
-                ))
-            {
+            ) {
                 return ApprovalDecision::AllowOnce;
             }
 
@@ -1561,7 +1506,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         stream,
     } = request;
 
-    let confirmation_cb = build_desktop_confirmation_callback(&stream.app_handle, &executor_config);
     let approval_cb = build_desktop_approval_callback(DesktopApprovalCallbackInput {
         db: Arc::clone(&db),
         app_handle: stream.app_handle.clone(),
@@ -1576,9 +1520,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
     let mut executor = AgentExecutor::new(provider, dependencies.tools, executor_config)
         .with_cancel_token(executor_cancel_token)
         .with_steering_receiver(steering_rx);
-    if let Some(cb) = confirmation_cb {
-        executor = executor.with_confirmation_callback(cb);
-    }
     executor = executor.with_approval_callback(approval_cb);
     if let Some(provider) = summarization_provider {
         executor = executor.with_summarization_provider(provider);
@@ -1786,17 +1727,8 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
         "cancelled",
         Some(&artifacts),
     );
-    record_agent_run_task_event(
-        db,
-        app_handle,
-        conversation_id,
-        task_run_id,
-        &run_event,
-        run_event.task_event_type(),
-        summary,
-        Some("cancelled"),
-        Some(&artifacts),
-    );
+    emit_agent_run_frontend_event(app_handle, conversation_id, &run_event);
+    persist_durable_run_event(db, &run_event);
     emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
 }
 

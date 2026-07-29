@@ -14,7 +14,7 @@ import { useTranslation } from '../../i18n';
 import type { OfficeDependencyStatus, OfficeRuntimeReadiness } from '../../lib/api';
 import * as api from '../../lib/api';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
-import type { PluginManifest, PluginRuntimeCheck } from '../../types/conversation';
+import type { CapabilityPackageView, CapabilityRuntimeCheck } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
@@ -26,7 +26,7 @@ interface OfficeRuntimePanelProps {
   onAskAiPrepare: () => void;
 }
 
-function runtimeCheckVariant(check: PluginRuntimeCheck) {
+function runtimeCheckVariant(check: CapabilityRuntimeCheck) {
   if (check.status === 'error' || check.severity === 'error') return 'danger' as const;
   if (check.status === 'warning' || check.severity === 'warning') return 'warning' as const;
   if (check.status === 'pass') return 'success' as const;
@@ -43,20 +43,20 @@ export function OfficeRuntimePanel({
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [plugin, setPlugin] = useState<PluginManifest | null>(null);
-  const loadPlugin = useCallback(async () => {
+  const [capabilityPackage, setCapabilityPackage] = useState<CapabilityPackageView | null>(null);
+  const loadCapabilityPackage = useCallback(async () => {
     try {
-      const plugins = await api.listBuiltinPlugins({ includeRuntimeChecks: true });
-      setPlugin(plugins.find((candidate) => candidate.id === 'office-documents') ?? null);
+      const packages = await api.listCapabilityPackages({ includeRuntimeChecks: true });
+      setCapabilityPackage(packages.find((candidate) => candidate.id === 'office-documents') ?? null);
     } catch (error) {
-      console.error('[office-plugin] failed to load plugin manifest', error);
-      setPlugin(null);
+      console.error('[office-capability] failed to load capability package', error);
+      setCapabilityPackage(null);
     }
   }, []);
 
   useEffect(() => {
-    void loadPlugin();
-  }, [loadPlugin]);
+    void loadCapabilityPackage();
+  }, [loadCapabilityPackage]);
 
   const status = readiness?.status ?? 'missing';
   const statusMeta = (() => {
@@ -78,18 +78,18 @@ export function OfficeRuntimePanel({
   const missingRequiredDeps = requiredDeps.filter((dep) => dep.status !== 'ready');
   const canPrepare = Boolean(readiness?.canPrepare) || !readiness;
   const shouldShowRequiredPrepare = !readiness || missingRequiredDeps.length > 0;
-  const visibleRuntimeChecks = (plugin?.runtimeChecks ?? []).filter(
+  const visibleRuntimeChecks = (capabilityPackage?.runtimeChecks ?? []).filter(
     (check) => check.status !== 'unknown' && check.status !== 'pass',
   );
 
   const handlePrepare = async () => {
     await onPrepare();
-    void loadPlugin();
+    void loadCapabilityPackage();
   };
 
   const handleRefresh = async () => {
     await onRefresh();
-    void loadPlugin();
+    void loadCapabilityPackage();
   };
 
   const renderDep = (dep: OfficeDependencyStatus) => (
@@ -131,7 +131,7 @@ export function OfficeRuntimePanel({
             </Badge>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
-            {readiness?.summary ?? plugin?.description ?? t('settings.documentToolsDesc')}
+            {readiness?.summary ?? capabilityPackage?.description ?? t('settings.documentToolsDesc')}
           </p>
           {visibleRuntimeChecks.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">

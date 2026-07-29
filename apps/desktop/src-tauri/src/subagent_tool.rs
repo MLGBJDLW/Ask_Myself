@@ -2249,11 +2249,15 @@ impl Tool for SubagentTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: nexa_core::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let nexa_core::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let args: SpawnSubagentArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid spawn_subagent arguments: {e}"))
         })?;
@@ -2358,11 +2362,15 @@ impl Tool for SubagentBatchTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        source_scope: &[String],
+        context: nexa_core::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let nexa_core::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope,
+            ..
+        } = context;
         let mut args: SpawnSubagentBatchArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid spawn_subagent_batch arguments: {e}"))
         })?;
@@ -2560,11 +2568,15 @@ impl Tool for JudgeSubagentResultsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: nexa_core::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let nexa_core::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let mut args: JudgeSubagentResultsArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid judge_subagent_results arguments: {e}"))
         })?;

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::context::ContextUsageBreakdown;
 use crate::approval::{ApprovalDecision, ApprovalRequest};
 use crate::llm::{Message, Usage};
-use crate::plugins::ToolPluginInfo;
+use crate::plugins::CapabilityOwner;
 use crate::tools::{ToolRenderKind, ToolRunCapabilities};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,7 +195,7 @@ pub struct ToolRunItem {
     pub call_id: String,
     #[serde(rename = "toolName")]
     pub tool_name: String,
-    pub plugin: ToolPluginInfo,
+    pub owner: CapabilityOwner,
     pub status: ToolRunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,

@@ -21,7 +21,6 @@ use reqwest::redirect::Policy;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolResult};
@@ -1856,11 +1855,15 @@ impl Tool for FetchUrlTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: FetchUrlArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid fetch_url arguments: {e}")))?;
 

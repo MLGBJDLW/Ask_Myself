@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+#[cfg(test)]
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::CreateFileCheckpointInput;
@@ -105,35 +106,16 @@ impl Tool for WriteNoteTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, None).await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
-        self.execute_impl(call_id, arguments, db, conversation_id)
-            .await
-    }
-}
-
-impl WriteNoteTool {
-    async fn execute_impl(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         let args: WriteNoteArgs = serde_json::from_str(arguments)
             .map_err(|e| CoreError::InvalidInput(format!("Invalid write_note arguments: {e}")))?;
 
@@ -319,7 +301,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("call-note", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-note",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
         assert!(!result.is_error, "unexpected error: {}", result.content);
@@ -354,7 +341,12 @@ mod tests {
         });
 
         let result = tool
-            .execute("call-note-append", &args.to_string(), &db, &[])
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-note-append",
+                &args.to_string(),
+                &db,
+                &[],
+            ))
             .await
             .unwrap();
 

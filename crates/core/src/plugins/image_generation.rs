@@ -11,14 +11,15 @@ use crate::image_provider_catalog::{
 };
 
 use super::{
-    PluginCheckSeverity, PluginManifest, PluginProviderCatalog, PluginRuntimeCheck,
-    PluginRuntimeStatus, PluginSettingsField, PluginSettingsSchema,
+    CapabilityCheckSeverity, CapabilityPackageView, CapabilityProviderCatalog,
+    CapabilityRuntimeCheck, CapabilityRuntimeStatus, CapabilitySettingsField,
+    CapabilitySettingsSchema,
 };
 
 pub(super) fn enrich_manifest(
-    mut manifest: PluginManifest,
+    mut manifest: CapabilityPackageView,
     config: Option<&ImageGenerationConfig>,
-) -> PluginManifest {
+) -> CapabilityPackageView {
     manifest.settings_schema = Some(settings_schema());
     manifest.provider_catalogs = vec![provider_catalog()];
     manifest.runtime_checks = runtime_checks(config);
@@ -400,14 +401,14 @@ fn normalize_output_format(value: Option<&str>) -> &'static str {
     }
 }
 
-fn provider_catalog() -> PluginProviderCatalog {
+fn provider_catalog() -> CapabilityProviderCatalog {
     let items = load_image_provider_presets()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|preset| serde_json::to_value(preset).ok())
         .collect();
 
-    PluginProviderCatalog {
+    CapabilityProviderCatalog {
         id: "imageProviders".to_string(),
         label: "Image providers".to_string(),
         item_kind: "imageProviderPreset".to_string(),
@@ -415,9 +416,9 @@ fn provider_catalog() -> PluginProviderCatalog {
     }
 }
 
-fn settings_schema() -> PluginSettingsSchema {
+fn settings_schema() -> CapabilitySettingsSchema {
     let defaults = ImageGenerationConfig::default();
-    PluginSettingsSchema {
+    CapabilitySettingsSchema {
         config_key: "imageGeneration".to_string(),
         fields: vec![
             field(
@@ -504,8 +505,8 @@ fn field(
     description: &str,
     options_source: Option<&str>,
     default_value: Option<serde_json::Value>,
-) -> PluginSettingsField {
-    PluginSettingsField {
+) -> CapabilitySettingsField {
+    CapabilitySettingsField {
         key: key.to_string(),
         label: label.to_string(),
         kind: kind.to_string(),
@@ -517,13 +518,13 @@ fn field(
     }
 }
 
-fn runtime_checks(config: Option<&ImageGenerationConfig>) -> Vec<PluginRuntimeCheck> {
+fn runtime_checks(config: Option<&ImageGenerationConfig>) -> Vec<CapabilityRuntimeCheck> {
     let Some(config) = config else {
         return vec![check(
             "configuration",
             "Configuration",
-            PluginRuntimeStatus::Unknown,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Unknown,
+            CapabilityCheckSeverity::Info,
             "Image generation settings have not been loaded yet.",
         )];
     };
@@ -536,7 +537,7 @@ fn runtime_checks(config: Option<&ImageGenerationConfig>) -> Vec<PluginRuntimeCh
     ]
 }
 
-fn provider_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
+fn provider_check(config: &ImageGenerationConfig) -> CapabilityRuntimeCheck {
     let preset = find_image_provider_preset(
         &config.provider,
         Some(config.api_style.as_str()),
@@ -546,42 +547,42 @@ fn provider_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
         check(
             "provider-preset",
             "Provider preset",
-            PluginRuntimeStatus::Pass,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Pass,
+            CapabilityCheckSeverity::Info,
             "Provider, API style, and base URL match a known image provider preset.",
         )
     } else {
         check(
             "provider-preset",
             "Provider preset",
-            PluginRuntimeStatus::Warning,
-            PluginCheckSeverity::Warning,
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
             "This image provider is custom or does not match the shared provider catalog.",
         )
     }
 }
 
-fn api_key_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
+fn api_key_check(config: &ImageGenerationConfig) -> CapabilityRuntimeCheck {
     if config.api_key.trim().is_empty() {
         check(
             "api-key",
             "API key",
-            PluginRuntimeStatus::Error,
-            PluginCheckSeverity::Error,
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
             "Image generation needs a provider API key before generate_image can run.",
         )
     } else {
         check(
             "api-key",
             "API key",
-            PluginRuntimeStatus::Pass,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Pass,
+            CapabilityCheckSeverity::Info,
             "An image provider API key is configured.",
         )
     }
 }
 
-fn base_url_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
+fn base_url_check(config: &ImageGenerationConfig) -> CapabilityRuntimeCheck {
     let base_url = config
         .base_url
         .clone()
@@ -592,8 +593,8 @@ fn base_url_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
         return check(
             "base-url",
             "Base URL",
-            PluginRuntimeStatus::Error,
-            PluginCheckSeverity::Error,
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
             "Image generation needs a base URL for the selected provider.",
         );
     }
@@ -602,28 +603,28 @@ fn base_url_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
         Ok(url) if matches!(url.scheme(), "https" | "http") => check(
             "base-url",
             "Base URL",
-            PluginRuntimeStatus::Pass,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Pass,
+            CapabilityCheckSeverity::Info,
             "The image provider endpoint is a valid HTTP URL.",
         ),
         _ => check(
             "base-url",
             "Base URL",
-            PluginRuntimeStatus::Error,
-            PluginCheckSeverity::Error,
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
             "The image provider base URL is invalid.",
         ),
     }
 }
 
-fn model_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
+fn model_check(config: &ImageGenerationConfig) -> CapabilityRuntimeCheck {
     let model = config.model.trim();
     if model.is_empty() {
         return check(
             "model",
             "Model",
-            PluginRuntimeStatus::Error,
-            PluginCheckSeverity::Error,
+            CapabilityRuntimeStatus::Error,
+            CapabilityCheckSeverity::Error,
             "Image generation needs a default model.",
         );
     }
@@ -637,8 +638,8 @@ fn model_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
         return check(
             "model",
             "Model",
-            PluginRuntimeStatus::Warning,
-            PluginCheckSeverity::Warning,
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
             "A custom image model is configured outside the shared provider catalog.",
         );
     };
@@ -646,16 +647,16 @@ fn model_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
         check(
             "model",
             "Model",
-            PluginRuntimeStatus::Pass,
-            PluginCheckSeverity::Info,
+            CapabilityRuntimeStatus::Pass,
+            CapabilityCheckSeverity::Info,
             "The configured model is available for the selected image provider.",
         )
     } else {
         check(
             "model",
             "Model",
-            PluginRuntimeStatus::Warning,
-            PluginCheckSeverity::Warning,
+            CapabilityRuntimeStatus::Warning,
+            CapabilityCheckSeverity::Warning,
             "The configured model is custom for the selected image provider.",
         )
     }
@@ -664,11 +665,11 @@ fn model_check(config: &ImageGenerationConfig) -> PluginRuntimeCheck {
 fn check(
     id: &str,
     label: &str,
-    status: PluginRuntimeStatus,
-    severity: PluginCheckSeverity,
+    status: CapabilityRuntimeStatus,
+    severity: CapabilityCheckSeverity,
     message: &str,
-) -> PluginRuntimeCheck {
-    PluginRuntimeCheck {
+) -> CapabilityRuntimeCheck {
+    CapabilityRuntimeCheck {
         id: id.to_string(),
         label: label.to_string(),
         status,
@@ -687,16 +688,19 @@ mod tests {
     #[test]
     fn image_manifest_carries_provider_catalog_and_settings_schema() {
         let manifest = enrich_manifest(
-            PluginManifest {
+            CapabilityPackageView {
                 id: "image-generation".to_string(),
                 name: "Image Generation".to_string(),
                 capability: "Image creation".to_string(),
                 description: "test".to_string(),
                 built_in: true,
-                ecosystem_surface: crate::ecosystem::EcosystemSurfaceKind::Adapter,
+                surface: crate::ecosystem::EcosystemSurfaceKind::Adapter,
+                version: 1,
                 tools: vec!["generate_image".to_string()],
+                skills: Vec::new(),
                 settings_surfaces: vec!["image-generation".to_string()],
                 workflows: vec!["generate-image".to_string()],
+                permissions: crate::capability_package::CapabilityPackagePermissions::default(),
                 settings_schema: None,
                 provider_catalogs: Vec::new(),
                 runtime_checks: Vec::new(),
@@ -715,7 +719,7 @@ mod tests {
         assert!(manifest
             .runtime_checks
             .iter()
-            .any(|check| check.id == "api-key" && check.status == PluginRuntimeStatus::Error));
+            .any(|check| check.id == "api-key" && check.status == CapabilityRuntimeStatus::Error));
     }
 
     #[test]

@@ -14,7 +14,6 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::app_settings::TextToSpeechConfig;
-use crate::db::Database;
 use crate::error::CoreError;
 
 use super::{Tool, ToolCategory, ToolDef, ToolInputStreamingMode, ToolResult};
@@ -71,11 +70,15 @@ impl Tool for SynthesizeSpeechTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        db: &Database,
-        _source_scope: &[String],
+        context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let crate::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db,
+            source_scope: _source_scope,
+            ..
+        } = context;
         let args: SynthesizeSpeechArgs = serde_json::from_str(arguments).map_err(|error| {
             CoreError::InvalidInput(format!("Invalid synthesize_speech arguments: {error}"))
         })?;

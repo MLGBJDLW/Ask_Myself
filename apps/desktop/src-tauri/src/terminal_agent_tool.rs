@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use nexa_core::db::Database;
 use nexa_core::error::CoreError;
 use nexa_core::tools::{Tool, ToolCategory, ToolRenderKind, ToolResult};
 use serde::Deserialize;
@@ -391,23 +390,16 @@ impl Tool for TerminalAgentTool {
 
     async fn execute(
         &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
+        context: nexa_core::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        self.execute_for_conversation(call_id, arguments, None)
-            .await
-    }
-
-    async fn execute_with_context(
-        &self,
-        call_id: &str,
-        arguments: &str,
-        _db: &Database,
-        _source_scope: &[String],
-        conversation_id: Option<&str>,
-    ) -> Result<ToolResult, CoreError> {
+        let nexa_core::tools::ToolExecutionContext {
+            call_id,
+            arguments,
+            db: _db,
+            source_scope: _source_scope,
+            conversation_id,
+            ..
+        } = context;
         self.execute_for_conversation(call_id, arguments, conversation_id)
             .await
     }

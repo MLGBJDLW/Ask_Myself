@@ -5,8 +5,8 @@ import type {
   AgentConfig,
   AppConfig,
   ImageGenerationConfig,
-  PluginManifest,
-  PluginRuntimeCheck,
+  CapabilityPackageView,
+  CapabilityRuntimeCheck,
 } from "../../types/conversation";
 import * as api from "../../lib/api";
 import {
@@ -102,8 +102,8 @@ function isImageProviderPreset(value: unknown): value is ImageProviderPreset {
   );
 }
 
-function extractImageProviderPresets(plugin: PluginManifest | null): ImageProviderPreset[] {
-  const catalog = plugin?.providerCatalogs?.find((item) => item.id === "imageProviders");
+function extractImageProviderPresets(capabilityPackage: CapabilityPackageView | null): ImageProviderPreset[] {
+  const catalog = capabilityPackage?.providerCatalogs?.find((item) => item.id === "imageProviders");
   const presets = (catalog?.items ?? []).filter(isImageProviderPreset);
   return presets.length > 0 ? presets : IMAGE_PROVIDER_PRESETS;
 }
@@ -150,7 +150,7 @@ function presetForAgentConfig(
   return candidates.find((preset) => preset.id !== "custom-openai-images") ?? candidates[0] ?? null;
 }
 
-function runtimeCheckVariant(check: PluginRuntimeCheck) {
+function runtimeCheckVariant(check: CapabilityRuntimeCheck) {
   if (check.status === "error" || check.severity === "error") return "danger" as const;
   if (check.status === "warning" || check.severity === "warning") return "warning" as const;
   if (check.status === "pass") return "success" as const;
@@ -169,15 +169,15 @@ export function ImageGenerationSettingsPanel({
   const [expanded, setExpanded] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [preferAgentDefaults, setPreferAgentDefaults] = useState(true);
-  const [plugin, setPlugin] = useState<PluginManifest | null>(null);
+  const [capabilityPackage, setCapabilityPackage] = useState<CapabilityPackageView | null>(null);
   const storedImageConfig = appConfig.imageGeneration ?? DEFAULT_IMAGE_CONFIG;
   const loadPlugin = useCallback(async () => {
     try {
-      const plugins = await api.listBuiltinPlugins();
-      setPlugin(plugins.find((candidate) => candidate.id === "image-generation") ?? null);
+      const packages = await api.listCapabilityPackages();
+      setCapabilityPackage(packages.find((candidate) => candidate.id === "image-generation") ?? null);
     } catch (error) {
-      console.error("[image-plugin] failed to load plugin manifest", error);
-      setPlugin(null);
+      console.error("[image-capability] failed to load capability package", error);
+      setCapabilityPackage(null);
     }
   }, []);
 
@@ -185,7 +185,10 @@ export function ImageGenerationSettingsPanel({
     void loadPlugin();
   }, [loadPlugin]);
 
-  const providerPresets = useMemo(() => extractImageProviderPresets(plugin), [plugin]);
+  const providerPresets = useMemo(
+    () => extractImageProviderPresets(capabilityPackage),
+    [capabilityPackage],
+  );
   const preferredAgentPreset = useMemo(() => {
     const imageCapableConfigs = agentConfigs.filter(
       (config) => config.apiKey.trim() && presetForAgentConfig(config, providerPresets),
@@ -248,7 +251,9 @@ export function ImageGenerationSettingsPanel({
   };
 
   const currentPresetId = activePreset.id;
-  const runtimeChecks = (plugin?.runtimeChecks ?? []).filter((check) => check.status !== "unknown");
+  const runtimeChecks = (capabilityPackage?.runtimeChecks ?? []).filter(
+    (check) => check.status !== "unknown",
+  );
   const runtimeCheckLabels: Record<string, string> = {
     "provider-preset": t('settings.provider'),
     "api-key": t('settings.apiKey'),
