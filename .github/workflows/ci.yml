@@ -60,6 +60,13 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy -p nexa-core -- -D warnings
 
+      - name: Core feature boundary checks
+        run: |
+          cargo check -p nexa-core --no-default-features
+          cargo check -p nexa-core --no-default-features --features local-embeddings
+          cargo check -p nexa-core --no-default-features --features ocr
+          cargo check -p nexa-core --no-default-features --features video
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -121,3 +128,25 @@ jobs:
 
       - name: Cargo test
         run: cargo test -p nexa-core
+
+  windows-check:
+    name: Windows Desktop Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-nexa-v1-
+
+      - name: Desktop Rust check
+        run: cargo check -p nexa-desktop
