@@ -25,7 +25,10 @@ impl AgentExecutor {
             assistant_msg,
             assistant_reasoning_content,
             iteration_thinking,
-            Some("Applied user steering after an assistant draft and continued the turn."),
+            Some((
+                "Applied user steering after an assistant draft and continued the turn.",
+                true,
+            )),
             "steered assistant draft",
         );
     }
@@ -59,9 +62,10 @@ impl AgentExecutor {
             assistant_msg,
             assistant_reasoning_content,
             iteration_thinking,
-            Some(
+            Some((
                 "Loop guard requested a strategy change after an assistant draft and continued the turn.",
-            ),
+                false,
+            )),
             "loop-guard assistant draft",
         );
     }
@@ -72,7 +76,7 @@ impl AgentExecutor {
         assistant_msg: &Message,
         assistant_reasoning_content: Option<String>,
         iteration_thinking: &str,
-        status_message: Option<&str>,
+        status_message: Option<(&str, bool)>,
         warning_label: &str,
     ) {
         let AssistantTurnPersistenceContext {
@@ -86,8 +90,16 @@ impl AgentExecutor {
         } = ctx;
 
         append_persisted_trace_thinking(persisted_trace_items, iteration_thinking);
-        if let Some(status_message) = status_message {
-            append_persisted_trace_status(persisted_trace_items, status_message, "info");
+        if let Some((status_message, internal_status)) = status_message {
+            if internal_status {
+                append_internal_persisted_trace_status(
+                    persisted_trace_items,
+                    status_message,
+                    "info",
+                );
+            } else {
+                append_persisted_trace_status(persisted_trace_items, status_message, "info");
+            }
         }
         if let Some(cid) = conversation_id {
             let conv_msg = ConversationMessage {

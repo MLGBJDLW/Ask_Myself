@@ -909,6 +909,10 @@ mod tests {
                 event_seq: 2,
                 kind: AgentRunEventKind::ApprovalRequested,
                 phase: AgentRunPhase::Approval,
+                visibility: crate::agent_run::AgentRunEventVisibility::User,
+                persistence: crate::agent_run::AgentRunEventPersistence::Durable,
+                display_kind: crate::agent_run::AgentRunDisplayKind::Approval,
+                importance: crate::agent_run::AgentRunEventImportance::High,
                 label: "retrieve_evidence".to_string(),
                 status: Some("pending".to_string()),
                 payload: serde_json::json!({
@@ -926,6 +930,10 @@ mod tests {
                 event_seq: 3,
                 kind: AgentRunEventKind::ToolCompleted,
                 phase: AgentRunPhase::Tooling,
+                visibility: crate::agent_run::AgentRunEventVisibility::User,
+                persistence: crate::agent_run::AgentRunEventPersistence::Durable,
+                display_kind: crate::agent_run::AgentRunDisplayKind::Tool,
+                importance: crate::agent_run::AgentRunEventImportance::Normal,
                 label: "retrieve_evidence".to_string(),
                 status: Some("completed".to_string()),
                 payload: serde_json::json!({
@@ -943,6 +951,10 @@ mod tests {
                 event_seq: 4,
                 kind: AgentRunEventKind::Done,
                 phase: AgentRunPhase::Done,
+                visibility: crate::agent_run::AgentRunEventVisibility::User,
+                persistence: crate::agent_run::AgentRunEventPersistence::Durable,
+                display_kind: crate::agent_run::AgentRunDisplayKind::Completion,
+                importance: crate::agent_run::AgentRunEventImportance::High,
                 label: "Final answer produced".to_string(),
                 status: Some("completed".to_string()),
                 payload: serde_json::json!({

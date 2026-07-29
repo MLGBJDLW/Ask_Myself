@@ -73,7 +73,13 @@ export function applyStatusEvent(
   const tone = event.tone === 'success' || event.tone === 'error'
     ? event.tone
     : (raw.tone === 'success' || raw.tone === 'error' ? raw.tone : 'muted');
-  appendStatusTraceEvent(state, text, tone);
+  appendStatusTraceEvent(
+    state,
+    text,
+    tone,
+    event.runEvent?.visibility ?? 'user',
+    event.runEvent?.displayKind ?? 'status',
+  );
 }
 
 export function applyDoneEvent(

@@ -16,6 +16,20 @@ pub struct Database {
     path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDocumentChunk {
+    pub content: String,
+    pub start_offset: i64,
+    pub end_offset: i64,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDocumentMetadata {
+    pub mime_type: String,
+    pub metadata_json: String,
+}
+
 impl Database {
     /// Open a file-backed database with WAL mode, PRAGMAs, and auto-migration.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, CoreError> {
@@ -40,7 +54,7 @@ impl Database {
     }
 
     /// Get a reference to the connection (locked).
-    pub fn conn(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
         match self.conn.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -55,6 +69,71 @@ impl Database {
     /// Return the file path of the database, if file-backed.
     pub fn db_path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn list_document_chunks_by_path(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<StoredDocumentChunk>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.content, c.start_offset, c.end_offset, c.metadata_json
+             FROM chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE d.path = ?1
+             ORDER BY c.chunk_index",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![file_path], |row| {
+            Ok(StoredDocumentChunk {
+                content: row.get(0)?,
+                start_offset: row.get(1)?,
+                end_offset: row.get(2)?,
+                metadata_json: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(CoreError::Database)
+    }
+
+    pub fn get_document_storage_metadata_by_path(
+        &self,
+        file_path: &str,
+    ) -> Result<StoredDocumentMetadata, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT mime_type, metadata FROM documents WHERE path = ?1",
+            rusqlite::params![file_path],
+            |row| {
+                Ok(StoredDocumentMetadata {
+                    mime_type: row.get(0)?,
+                    metadata_json: row.get(1)?,
+                })
+            },
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Document for path {file_path}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
+    pub fn update_workflow_scheduler_event_created_at(
+        &self,
+        event_id: &str,
+        created_at: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let updated = conn.execute(
+            "UPDATE workflow_automation_scheduler_events SET created_at = ?2 WHERE id = ?1",
+            rusqlite::params![event_id, created_at],
+        )?;
+        if updated == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Workflow scheduler event {event_id}"
+            )));
+        }
+        Ok(())
     }
 
     fn configure_connection(conn: &Connection) -> Result<(), CoreError> {
@@ -287,8 +366,9 @@ impl Database {
         let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO agent_run_events
-             (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (run_id, turn_id, event_seq, version, kind, phase, visibility, persistence,
+              display_kind, importance, label, status, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 event.run_id,
                 event.turn_id,
@@ -296,6 +376,10 @@ impl Database {
                 event.version as i64,
                 event.kind.as_str(),
                 event.phase.as_str(),
+                event.visibility.as_str(),
+                event.persistence.as_str(),
+                event.display_kind.as_str(),
+                event.importance.as_str(),
                 event.label,
                 event.status,
                 payload_json,
@@ -330,8 +414,9 @@ impl Database {
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO agent_run_events
-                 (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (run_id, turn_id, event_seq, version, kind, phase, visibility, persistence,
+                  display_kind, importance, label, status, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?;
             for (event, event_seq, payload_json) in prepared_events {
                 stmt.execute(rusqlite::params![
@@ -341,6 +426,10 @@ impl Database {
                     event.version as i64,
                     event.kind.as_str(),
                     event.phase.as_str(),
+                    event.visibility.as_str(),
+                    event.persistence.as_str(),
+                    event.display_kind.as_str(),
+                    event.importance.as_str(),
                     event.label,
                     event.status,
                     payload_json,
@@ -358,7 +447,8 @@ impl Database {
     ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT version, run_id, turn_id, event_seq, kind, phase, label, status, payload_json, created_at
+            "SELECT version, run_id, turn_id, event_seq, kind, phase, visibility, persistence,
+                    display_kind, importance, label, status, payload_json, created_at
              FROM agent_run_events
              WHERE run_id = ?1
              ORDER BY event_seq ASC",
@@ -372,9 +462,13 @@ impl Database {
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
-                row.get::<_, Option<String>>(7)?,
+                row.get::<_, String>(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
             ))
         })?;
 
@@ -387,6 +481,10 @@ impl Database {
                 event_seq,
                 kind,
                 phase,
+                visibility,
+                persistence,
+                display_kind,
+                importance,
                 label,
                 status,
                 payload_json,
@@ -413,6 +511,30 @@ impl Database {
                         "stored agent run event has unknown phase '{phase}'"
                     ))
                 })?,
+                visibility: crate::agent_run::AgentRunEventVisibility::from_wire(&visibility)
+                    .ok_or_else(|| {
+                        CoreError::Internal(format!(
+                            "stored agent run event has unknown visibility '{visibility}'"
+                        ))
+                    })?,
+                persistence: crate::agent_run::AgentRunEventPersistence::from_wire(&persistence)
+                    .ok_or_else(|| {
+                        CoreError::Internal(format!(
+                            "stored agent run event has unknown persistence '{persistence}'"
+                        ))
+                    })?,
+                display_kind: crate::agent_run::AgentRunDisplayKind::from_wire(&display_kind)
+                    .ok_or_else(|| {
+                        CoreError::Internal(format!(
+                            "stored agent run event has unknown display kind '{display_kind}'"
+                        ))
+                    })?,
+                importance: crate::agent_run::AgentRunEventImportance::from_wire(&importance)
+                    .ok_or_else(|| {
+                        CoreError::Internal(format!(
+                            "stored agent run event has unknown importance '{importance}'"
+                        ))
+                    })?,
                 label,
                 status,
                 payload: serde_json::from_str(&payload_json)?,
@@ -1157,6 +1279,11 @@ mod tests {
             "Route selected: Direct",
             Some("running"),
             None,
+        )
+        .with_presentation(
+            crate::agent_run::AgentRunEventVisibility::Internal,
+            crate::agent_run::AgentRunDisplayKind::Status,
+            crate::agent_run::AgentRunEventImportance::Low,
         );
 
         db.save_agent_run_events(&[finished, routed])
@@ -1170,6 +1297,14 @@ mod tests {
         assert_eq!(events[0].event_seq, 1);
         assert_eq!(events[0].kind, crate::agent_run::AgentRunEventKind::Status);
         assert_eq!(events[0].payload["content"], "Route selected: Direct");
+        assert_eq!(
+            events[0].visibility,
+            crate::agent_run::AgentRunEventVisibility::Internal
+        );
+        assert_eq!(
+            events[0].importance,
+            crate::agent_run::AgentRunEventImportance::Low
+        );
         assert_eq!(events[1].event_seq, 2);
         assert_eq!(events[1].kind, crate::agent_run::AgentRunEventKind::Error);
         assert_eq!(events[1].status.as_deref(), Some("timed_out"));

@@ -28,12 +28,12 @@ fn steering_status_text(text: &str, has_parts: bool) -> String {
     let preview = steering_status_preview(text);
     if preview.is_empty() {
         if has_parts {
-            "User steering: attached context received.".to_string()
+            "Attached context received.".to_string()
         } else {
-            "User steering received.".to_string()
+            "Steering received.".to_string()
         }
     } else {
-        format!("User steering: {preview}")
+        preview
     }
 }
 
@@ -124,9 +124,8 @@ impl AgentExecutor {
 
             let _ = ctx
                 .tx
-                .send(AgentEvent::Status {
+                .send(AgentEvent::Steering {
                     content: steering_status_text(&text, !steering.parts.is_empty()),
-                    tone: Some("success".to_string()),
                 })
                 .await;
 
@@ -243,9 +242,6 @@ mod tests {
 
     #[test]
     fn steering_status_text_mentions_attached_context() {
-        assert_eq!(
-            steering_status_text("", true),
-            "User steering: attached context received."
-        );
+        assert_eq!(steering_status_text("", true), "Attached context received.");
     }
 }

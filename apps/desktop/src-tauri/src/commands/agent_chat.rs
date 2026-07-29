@@ -3,19 +3,17 @@ use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
     build_desktop_agent_turn_config, build_desktop_agent_user_content_parts,
-    build_desktop_running_agent_task, build_desktop_summarization_provider,
-    finalize_desktop_agent_turn, replace_desktop_running_agent_task,
+    build_desktop_summarization_provider, finalize_desktop_agent_turn,
     request_desktop_running_agent_stop, run_desktop_agent_post_success_learning,
-    run_desktop_agent_turn, steer_desktop_running_agent_task, DesktopAgentApprovalRuntime,
-    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
-    DesktopAgentSessionDependencyRequest, DesktopAgentTurnConfigRequest,
-    DesktopAgentTurnFinalization, DesktopAgentTurnRequest, DesktopAgentTurnRuntime,
-    DesktopAgentTurnStream, DesktopAgentUserContentRequest, DesktopRunningAgentStopRequest,
-    DesktopRunningAgentTaskRequest,
+    run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
+    DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
+    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
+    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentUserContentRequest,
+    DesktopRunningAgentStopRequest,
 };
 use nexa_core::runtime::{
-    AgentTurnHandle, AgentTurnState, RuntimeTerminalStatus, StartTurnRequest,
-    RUNTIME_PROTOCOL_VERSION,
+    ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
+    RuntimeTerminalStatus, StartTurnRequest, RUNTIME_PROTOCOL_VERSION,
 };
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
@@ -250,10 +248,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             .start_workflow_automation_run(run_id, &task_run.id, None)
             .map_err(|err| err.to_string())?;
     }
-    let stream_event_seq = Arc::new(AtomicU64::new(0));
+    let stream_event_seq = Arc::new(AgentRunEventSequencer::default());
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    record_agent_run_status_task_event(
+    record_internal_agent_run_status_task_event(
         &state.db,
         &app_handle,
         &conversation_id,
@@ -282,6 +280,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     });
     let source_scope_ids = desktop_turn_config.source_scope_ids;
     let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
+    let context_pack = desktop_turn_config.context_pack;
     let executor_config = desktop_turn_config.executor_config;
 
     let summarization_provider = build_desktop_summarization_provider(&db_config);
@@ -325,6 +324,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let initial_task_artifacts = build_desktop_agent_initial_task_artifacts(
         &session_dependencies.selected_skills,
         &runtime_session_config,
+        &context_pack,
         execution_mode,
         &executor_config,
     );
@@ -373,7 +373,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .mark_agent_task_run_started(&task_run.id, "initializing")
         .map_err(|e| e.to_string())?;
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    record_agent_run_status_task_event(
+    record_internal_agent_run_status_task_event(
         &state.db,
         &app_handle,
         &conversation_id,
@@ -480,7 +480,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_run_id: &task_run_id,
             task_orchestrator_run_id: task_orchestrator_run_id_for_task.as_deref(),
             turn_id: &turn_id,
-            event_seq: stream_event_seq_for_task.as_ref(),
             outcome: &outcome,
         });
 
@@ -505,19 +504,17 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             turn.id.clone(),
         ),
     };
-    {
-        let mut running = agent_state.running.lock().await;
-        let running_task = build_desktop_running_agent_task(DesktopRunningAgentTaskRequest {
+    agent_state
+        .sessions
+        .register(ActiveAgentTurn {
+            handle: launch.handle.clone(),
             cancel_token,
             task,
             steering_tx,
-            task_run_id: task_run_id_for_command,
-            task_orchestrator_run_id,
-            turn_id: turn.id.clone(),
-            stream_event_seq: Arc::clone(&stream_event_seq),
-        });
-        replace_desktop_running_agent_task(&mut running, conversation_id, running_task);
-    }
+            event_sequencer: Arc::clone(&stream_event_seq),
+            orchestrator_run_id: task_orchestrator_run_id,
+        })
+        .await;
 
     Ok(launch)
 }
@@ -623,8 +620,11 @@ pub async fn agent_steer_cmd(
         return Err("Steering message cannot be empty.".to_string());
     }
 
-    let mut running = agent_state.running.lock().await;
-    steer_desktop_running_agent_task(&mut running, &conversation_id, trimmed)
+    agent_state
+        .sessions
+        .steer(&conversation_id, trimmed.to_string())
+        .await
+        .map_err(|error| error.to_string())
 }
 
 // ── Agent Stop Command ──────────────────────────────────────────────────
@@ -636,14 +636,15 @@ pub async fn agent_stop_cmd(
     app_handle: AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
-    let mut running = agent_state.running.lock().await;
-    request_desktop_running_agent_stop(
-        &mut running,
-        DesktopRunningAgentStopRequest {
-            db: state.db.clone(),
-            app_handle,
-            conversation_id,
-        },
-    );
+    if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
+        request_desktop_running_agent_stop(
+            turn,
+            DesktopRunningAgentStopRequest {
+                db: state.db.clone(),
+                app_handle,
+                conversation_id,
+            },
+        );
+    }
     Ok(())
 }

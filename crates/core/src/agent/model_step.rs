@@ -557,7 +557,7 @@ impl AgentExecutor {
                     .await;
                 accumulated_content.truncate(accumulated_len_before_iteration);
                 self.expand_tool_defs_for_steering(tool_defs, &steering_texts, has_sources);
-                append_persisted_trace_status(
+                append_internal_persisted_trace_status(
                     persisted_trace_items,
                     "Applied user steering during streaming and restarted the model response.",
                     "info",

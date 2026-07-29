@@ -340,7 +340,12 @@ class StreamStoreImpl {
     const ordering = applyStreamEventOrdering(s, event.eventSeq ?? raw.eventSeq);
     if (!ordering.accepted) return;
     if (ordering.gapDetected) {
-      appendStatusTraceEvent(s, 'Stream event gap detected; replay may be required.', 'muted');
+      appendStatusTraceEvent(
+        s,
+        'Stream event gap detected; replay may be required.',
+        'muted',
+        'internal',
+      );
     }
 
     // Reset inactivity timeout on every event, including empty keepalive

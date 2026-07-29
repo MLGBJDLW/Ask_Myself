@@ -46,20 +46,6 @@ const INTERNAL_TRACE_TOOLS = new Set([
   'tool_search',
 ]);
 
-const INTERNAL_TRACE_STATUSES = new Set([
-  'applied user steering after an assistant draft and continued the turn.',
-  'applied user steering before the next model step.',
-  'applied user steering during streaming and restarted the model response.',
-  'auto pre-graph: injected compact knowledge graph index.',
-  'auto pre-search: injected graph-guided knowledge base results.',
-  'pause checkpoint saved',
-  'pre-fetched graph-guided search results for grounding.',
-  'pre-fetched knowledge graph index.',
-  'saved a resume checkpoint after reaching max iterations.',
-  'stream event gap detected; replay may be required.',
-  'stream recovery update.',
-]);
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -281,40 +267,6 @@ export function shouldHideRouteKind(routeKind: string | null | undefined): boole
   return normalized === 'directresponse' || normalized === 'fileoperation';
 }
 
-export function shouldHideTraceStatus(text: string | null | undefined): boolean {
-  const compact = (text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const normalized = compact.replace(/\s+/g, '');
-  return (
-    INTERNAL_TRACE_STATUSES.has(compact) ||
-    /^resume checkpoint saved after tool round \d+\.$/.test(compact) ||
-    /^activated \d+ deferred tool\(s\):/.test(compact) ||
-    normalized === 'routeselected:directresponse' ||
-    normalized === 'route:directresponse' ||
-    normalized === 'routeselected:fileoperation' ||
-    normalized === 'route:fileoperation' ||
-    compact === 'loading tools and mcp servers' ||
-    compact === 'task queued' ||
-    compact === 'queued' ||
-    compact === '排队' ||
-    compact === '排隊' ||
-    compact === '排队中' ||
-    compact === '排隊中' ||
-    compact === '任务已排队' ||
-    compact === '任務已排隊' ||
-    compact === '已使用上下文' ||
-    /^subagent (judge )?queued:/.test(compact) ||
-    /^status:\s*(success|cached|running)(\s*.+)?$/.test(compact)
-  );
-}
-
-export function steeringTextFromTraceStatus(text: string | null | undefined): string | null {
-  const raw = (text ?? '').trim();
-  const match = raw.match(/^User steering:\s*(.+)$/i);
-  if (!match) return null;
-  const steeringText = match[1].trim();
-  return steeringText.length > 0 ? steeringText : null;
-}
-
 function normalizeToolName(toolName: string | null | undefined): string {
   return (toolName ?? '').trim().toLowerCase();
 }
@@ -475,15 +427,14 @@ export function persistedTraceItemToTimelineSections(input: {
   switch (item.kind) {
     case 'status':
       {
-        const steeringText = steeringTextFromTraceStatus(item.text);
-        if (steeringText) {
+        if (item.displayKind === 'steering') {
           // Steering is useful only while the turn is live. Persisted trace
           // replays otherwise make the same control message reappear after the
           // turn has completed.
           return [];
         }
       }
-      if (shouldHideTraceStatus(item.text)) return [];
+      if (item.visibility === 'developer' || item.visibility === 'internal') return [];
       return [{
         kind: 'status',
         id,
@@ -525,13 +476,10 @@ export function persistedTraceItemsToTimelineSections(input: {
 }
 
 export function visibleTraceEventsForTimeline(traceEvents: TraceEvent[]): TraceEvent[] {
-  return traceEvents.filter(
-    (event) => !(
-      event.kind === 'status' &&
-      !steeringTextFromTraceStatus(event.text) &&
-      shouldHideTraceStatus(event.text)
-    ),
-  );
+  return traceEvents.filter(event => (
+    event.kind !== 'status'
+    || (event.visibility !== 'developer' && event.visibility !== 'internal')
+  ));
 }
 
 export function traceEventToTimelineSections(event: TraceEvent): TimelineSection[] {
@@ -549,8 +497,9 @@ export function traceEventToTimelineSections(event: TraceEvent): TimelineSection
     });
   }
   {
-    const steeringText = steeringTextFromTraceStatus(event.text);
-    if (steeringText) return [{ kind: 'steering', id: event.id, text: steeringText }];
+    if (event.displayKind === 'steering') {
+      return [{ kind: 'steering', id: event.id, text: event.text }];
+    }
   }
   return [{
     kind: 'status',
@@ -760,6 +709,62 @@ export function buildLiveTraceTimeline(input: {
   }
 
   return items;
+}
+
+export interface LiveConversationTimelineProjection {
+  visibleTraceEvents: TraceEvent[];
+  currentTimelineSections: TimelineSection[];
+  liveTraceTimeline: LiveTraceTimelineItem[];
+  currentTraceActive: boolean;
+  collapsedLiveTrace: CollapsedLiveTrace | null;
+}
+
+/** The sole live timeline projection entry point consumed by chat UI. */
+export function projectLiveConversationTimeline(input: {
+  traceEvents: TraceEvent[];
+  streamRounds: StreamRoundEvent[];
+  isStreaming: boolean;
+  isThinking: boolean;
+  thinkingText: string;
+  toolCalls: ToolCallEvent[];
+  streamText: string;
+  displayedText: string;
+}): LiveConversationTimelineProjection {
+  const visibleTraceEvents = visibleTraceEventsForTimeline(input.traceEvents);
+  const currentTimelineSections = buildCurrentTimelineSections({
+    visibleTraceEvents,
+    streamRounds: input.streamRounds,
+  });
+  const liveTimelineTraceEvents = input.isStreaming
+    ? traceEventsAfterStreamRounds(visibleTraceEvents, input.streamRounds)
+    : visibleTraceEvents;
+  const currentTraceActive = isCurrentTraceActive({
+    isStreaming: input.isStreaming,
+    isThinking: input.isThinking,
+    thinkingText: input.thinkingText,
+    toolCalls: input.toolCalls,
+    visibleTraceEvents,
+  });
+  const liveTraceTimeline = buildLiveTraceTimeline({
+    visibleTraceEvents: liveTimelineTraceEvents,
+    isStreaming: input.isStreaming,
+    currentTraceActive,
+    streamText: input.streamText,
+    displayedText: input.displayedText,
+  });
+  const collapsedLiveTrace = buildCollapsedLiveTrace({
+    timeline: liveTraceTimeline,
+    isStreaming: input.isStreaming,
+    currentTraceActive,
+  });
+
+  return {
+    visibleTraceEvents,
+    currentTimelineSections,
+    liveTraceTimeline,
+    currentTraceActive,
+    collapsedLiveTrace,
+  };
 }
 
 export interface CollapsedLiveTrace {

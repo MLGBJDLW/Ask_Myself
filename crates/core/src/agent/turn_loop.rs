@@ -473,7 +473,7 @@ impl AgentExecutor {
             };
             if !steering_texts.is_empty() {
                 self.expand_tool_defs_for_steering(&mut tool_defs, &steering_texts, has_sources);
-                append_persisted_trace_status(
+                append_internal_persisted_trace_status(
                     &mut persisted_trace_items,
                     "Applied user steering before the next model step.",
                     "info",

@@ -916,20 +916,22 @@ pub async fn pause_agent_task_run_cmd(
         .pause_task_run_with_checkpoint(&run_id, "user_pause")
         .map_err(|err| err.to_string())?;
 
-    let mut running = agent_state.running.lock().await;
-    if let Some(task_state) = running.remove(&run.conversation_id) {
-        if task_state.task_run_id == run_id {
-            let stream_event_seq = Arc::clone(&task_state.stream_event_seq);
-            let run_event = emit_agent_frontend_event(
+    if let Some(task_state) = agent_state.sessions.take(&run.conversation_id).await {
+        if task_state.handle.run_id == run_id {
+            let stream_event_seq = Arc::clone(&task_state.event_sequencer);
+            let run_event = emit_agent_frontend_event_with_presentation(
                 &app_handle,
                 stream_event_seq.as_ref(),
                 &run.conversation_id,
                 &run_id,
-                Some(&task_state.turn_id),
+                Some(&task_state.handle.turn_id),
                 AgentEvent::Status {
                     content: "Pause checkpoint saved".to_string(),
                     tone: Some("muted".to_string()),
                 },
+                AgentRunEventVisibility::Internal,
+                AgentRunDisplayKind::Status,
+                AgentRunEventImportance::Low,
             );
             record_agent_run_task_event(
                 &state.db,
@@ -951,7 +953,7 @@ pub async fn pause_agent_task_run_cmd(
             let db = state.db.clone();
             let handle = app_handle.clone();
             let conv_id = run.conversation_id.clone();
-            let turn_id = task_state.turn_id.clone();
+            let turn_id = task_state.handle.turn_id.clone();
             let checkpoint_id = checkpoint.id.clone();
             let resume_prompt = checkpoint.resume_prompt.clone();
             tokio::spawn(async move {
@@ -970,14 +972,21 @@ pub async fn pause_agent_task_run_cmd(
                         None,
                         Some(&artifacts),
                     );
-                    record_agent_run_status_task_event(
+                    let run_event = AgentRunEvent::terminal_status(
+                        &run_id,
+                        Some(&turn_id),
+                        stream_event_seq.next(),
+                        "Paused with a resumable checkpoint",
+                        "paused",
+                        Some(&artifacts),
+                    );
+                    record_agent_run_task_event(
                         &db,
                         &handle,
                         &conv_id,
                         &run_id,
-                        Some(&turn_id),
-                        stream_event_seq.as_ref(),
-                        AgentRunPhase::Done,
+                        &run_event,
+                        run_event.task_event_type(),
                         "Paused with a resumable checkpoint",
                         Some("paused"),
                         Some(&artifacts),
@@ -986,7 +995,7 @@ pub async fn pause_agent_task_run_cmd(
                 }
             });
         } else {
-            running.insert(run.conversation_id.clone(), task_state);
+            agent_state.sessions.register(task_state).await;
         }
     }
 

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::agent_run::{AgentRunDisplayKind, AgentRunEventVisibility};
 use crate::evidence_verifier::{EvidenceSignals, RuntimeVerificationSignals};
 use crate::skills::Skill;
 use crate::tool_visibility_policy::ToolVisibilityDecision;
@@ -67,13 +68,31 @@ impl From<&Skill> for PersistedTraceSkillRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(super) enum PersistedTraceItem {
-    Thinking { text: String },
-    Tool { tool_call: PersistedTraceToolCall },
-    SkillSelection { skills: Vec<PersistedTraceSkillRef> },
-    Status { text: String, tone: String },
-    Loop { event: TurnLoopEvent },
-    ToolVisibility { decision: ToolVisibilityDecision },
-    PromptCache { observation: serde_json::Value },
+    Thinking {
+        text: String,
+    },
+    Tool {
+        tool_call: PersistedTraceToolCall,
+    },
+    SkillSelection {
+        skills: Vec<PersistedTraceSkillRef>,
+    },
+    Status {
+        text: String,
+        tone: String,
+        visibility: AgentRunEventVisibility,
+        #[serde(rename = "displayKind")]
+        display_kind: AgentRunDisplayKind,
+    },
+    Loop {
+        event: TurnLoopEvent,
+    },
+    ToolVisibility {
+        decision: ToolVisibilityDecision,
+    },
+    PromptCache {
+        observation: serde_json::Value,
+    },
 }
 
 pub(super) fn append_persisted_trace_thinking(items: &mut Vec<PersistedTraceItem>, text: &str) {
@@ -162,6 +181,26 @@ pub(super) fn append_persisted_trace_status(
     items.push(PersistedTraceItem::Status {
         text: trimmed.to_string(),
         tone: tone.to_string(),
+        visibility: AgentRunEventVisibility::User,
+        display_kind: AgentRunDisplayKind::Status,
+    });
+}
+
+pub(super) fn append_internal_persisted_trace_status(
+    items: &mut Vec<PersistedTraceItem>,
+    text: &str,
+    tone: &str,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Status {
+        text: trimmed.to_string(),
+        tone: tone.to_string(),
+        visibility: AgentRunEventVisibility::Internal,
+        display_kind: AgentRunDisplayKind::Status,
     });
 }
 
@@ -463,6 +502,20 @@ mod tests {
             "builtin-fiction-writing"
         );
         assert_eq!(artifacts["items"][0]["skills"][0]["activated"], true);
+    }
+
+    #[test]
+    fn persisted_statuses_carry_semantic_presentation() {
+        let mut items = Vec::new();
+        append_persisted_trace_status(&mut items, "Visible status", "info");
+        append_internal_persisted_trace_status(&mut items, "Internal status", "muted");
+
+        let artifacts = build_trace_artifacts(&items).expect("trace artifacts");
+
+        assert_eq!(artifacts["items"][0]["visibility"], "user");
+        assert_eq!(artifacts["items"][0]["displayKind"], "status");
+        assert_eq!(artifacts["items"][1]["visibility"], "internal");
+        assert_eq!(artifacts["items"][1]["displayKind"], "status");
     }
 
     #[test]

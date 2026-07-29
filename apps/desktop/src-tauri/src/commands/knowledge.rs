@@ -589,10 +589,7 @@ fn app_is_idle(app_handle: &AppHandle) -> bool {
     let Some(agent_state) = app_handle.try_state::<AgentState>() else {
         return true;
     };
-    let is_idle = match agent_state.running.try_lock() {
-        Ok(running) => running.is_empty(),
-        Err(_) => false,
-    };
+    let is_idle = agent_state.sessions.try_is_empty().unwrap_or(false);
     is_idle
 }
 

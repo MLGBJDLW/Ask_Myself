@@ -8,6 +8,7 @@ import type {
   ToolRenderKind,
   ToolRunCapabilities,
 } from '../../types/conversation';
+import type { AgentRunDisplayKind } from '../../types/conversation';
 
 export interface ToolCallEvent {
   callId: string;
@@ -70,6 +71,8 @@ export interface TraceStatusEvent {
   kind: 'status';
   text: string;
   tone?: 'muted' | 'success' | 'error';
+  visibility?: 'user' | 'developer' | 'internal';
+  displayKind?: AgentRunDisplayKind;
 }
 
 export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;

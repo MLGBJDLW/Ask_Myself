@@ -54,20 +54,15 @@ import {
   extractTurnTrace,
 } from "../../lib/streaming/persistedTrace";
 import {
-  buildCollapsedLiveTrace,
-  buildCurrentTimelineSections,
-  buildLiveTraceTimeline,
   buildRoundTimelineSections,
   hasRenderableTimelineSections,
-  isCurrentTraceActive,
   normalizeThinking,
   persistedTraceItemsToTimelineSections,
   persistedTraceItemToTimelineSections,
   skillRefsFromTraceItems,
   toolCallToTimelineSection,
-  traceEventsAfterStreamRounds,
+  projectLiveConversationTimeline,
   turnLifecycleTimelineSections,
-  visibleTraceEventsForTimeline,
   type TimelineSkillRef,
   type TimelineSection,
 } from "../../lib/streaming/timelineViewModel";
@@ -1401,62 +1396,33 @@ export function ChatMessages(props: ChatMessagesProps) {
     turns,
   ]);
 
-  const visibleTraceEvents = useMemo(
-    () => visibleTraceEventsForTimeline(traceEvents),
-    [traceEvents],
-  );
-
-  const currentTimelineSections = useMemo(
-    () => buildCurrentTimelineSections({ visibleTraceEvents, streamRounds }),
-    [visibleTraceEvents, streamRounds],
-  );
-
-  const liveTimelineTraceEvents = useMemo(
-    () =>
-      isStreaming
-        ? traceEventsAfterStreamRounds(visibleTraceEvents, streamRounds)
-        : visibleTraceEvents,
-    [isStreaming, streamRounds, visibleTraceEvents],
-  );
-
-  const currentTraceActive = useMemo(
-    () =>
-      isCurrentTraceActive({
-        isStreaming,
-        isThinking,
-        thinkingText,
-        toolCalls,
-        visibleTraceEvents,
-      }),
-    [isStreaming, isThinking, thinkingText, toolCalls, visibleTraceEvents],
-  );
-
-  const liveTraceTimeline = useMemo(
-    () =>
-      buildLiveTraceTimeline({
-        visibleTraceEvents: liveTimelineTraceEvents,
-        isStreaming,
-        currentTraceActive,
-        streamText,
-        displayedText,
-      }),
+  const {
+    visibleTraceEvents,
+    currentTimelineSections,
+    liveTraceTimeline,
+    currentTraceActive,
+    collapsedLiveTrace,
+  } = useMemo(
+    () => projectLiveConversationTimeline({
+      traceEvents,
+      streamRounds,
+      isStreaming,
+      isThinking,
+      thinkingText,
+      toolCalls,
+      streamText,
+      displayedText,
+    }),
     [
-      currentTraceActive,
       displayedText,
       isStreaming,
-      liveTimelineTraceEvents,
+      isThinking,
+      streamRounds,
       streamText,
+      thinkingText,
+      toolCalls,
+      traceEvents,
     ],
-  );
-
-  const collapsedLiveTrace = useMemo(
-    () =>
-      buildCollapsedLiveTrace({
-        timeline: liveTraceTimeline,
-        isStreaming,
-        currentTraceActive,
-      }),
-    [currentTraceActive, isStreaming, liveTraceTimeline],
   );
 
 

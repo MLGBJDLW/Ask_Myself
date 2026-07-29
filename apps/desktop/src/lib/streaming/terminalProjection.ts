@@ -61,6 +61,8 @@ export function appendStatusTraceEvent(
   state: StreamTerminalProjectionState,
   text: string,
   tone: TraceStatusEvent['tone'] = 'muted',
+  visibility: TraceStatusEvent['visibility'] = 'user',
+  displayKind: TraceStatusEvent['displayKind'] = 'status',
 ): void {
   if (!text.trim()) return;
   state.traceEvents = [...state.traceEvents, {
@@ -68,6 +70,8 @@ export function appendStatusTraceEvent(
     kind: 'status',
     text,
     tone,
+    visibility,
+    displayKind,
   }];
 }
 

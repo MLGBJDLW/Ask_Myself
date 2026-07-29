@@ -115,6 +115,23 @@ export type AgentRunEventKind =
   | 'done'
   | 'error';
 
+export type AgentRunEventVisibility = 'user' | 'developer' | 'internal';
+export type AgentRunEventPersistence = 'durable' | 'ephemeral';
+export type AgentRunDisplayKind =
+  | 'output'
+  | 'reasoning'
+  | 'status'
+  | 'plan'
+  | 'tool'
+  | 'approval'
+  | 'recovery'
+  | 'steering'
+  | 'usage'
+  | 'compaction'
+  | 'completion'
+  | 'error';
+export type AgentRunEventImportance = 'low' | 'normal' | 'high';
+
 export interface AgentRunEvent {
   version: number;
   runId: string;
@@ -122,13 +139,18 @@ export interface AgentRunEvent {
   eventSeq: number;
   kind: AgentRunEventKind;
   phase: AgentRunPhase;
+  /** Missing only on events persisted before protocol v2 metadata shipped. */
+  visibility?: AgentRunEventVisibility;
+  persistence?: AgentRunEventPersistence;
+  displayKind?: AgentRunDisplayKind;
+  importance?: AgentRunEventImportance;
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;
   createdAt?: string | null;
 }
 
-export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out';
+export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'paused';
 
 export type AgentTurnState =
   | 'starting'
@@ -562,6 +584,7 @@ export interface AgentEvent {
     | 'toolRunCompleted'
     | 'thinking'
     | 'status'
+    | 'steering'
     | 'done'
     | 'error'
     | 'autoCompacted'

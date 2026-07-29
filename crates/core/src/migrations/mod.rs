@@ -1185,6 +1185,46 @@ Every answer that uses knowledge base search results.
             ON agent_task_runs(conversation_id, idempotency_key)
             WHERE idempotency_key IS NOT NULL;",
     ),
+    (
+        "v076_agent_run_event_presentation",
+        "ALTER TABLE agent_run_events ADD COLUMN visibility TEXT NOT NULL DEFAULT 'user';
+        ALTER TABLE agent_run_events ADD COLUMN persistence TEXT NOT NULL DEFAULT 'durable';
+        ALTER TABLE agent_run_events ADD COLUMN display_kind TEXT NOT NULL DEFAULT 'status';
+        ALTER TABLE agent_run_events ADD COLUMN importance TEXT NOT NULL DEFAULT 'normal';
+        UPDATE agent_run_events
+        SET visibility = CASE kind
+                WHEN 'usageUpdated' THEN 'developer'
+                ELSE 'user'
+            END,
+            display_kind = CASE kind
+                WHEN 'outputDelta' THEN 'output'
+                WHEN 'thinking' THEN 'reasoning'
+                WHEN 'planUpdated' THEN 'plan'
+                WHEN 'toolPreparing' THEN 'tool'
+                WHEN 'toolStarted' THEN 'tool'
+                WHEN 'toolProgress' THEN 'tool'
+                WHEN 'toolCompleted' THEN 'tool'
+                WHEN 'approvalRequested' THEN 'approval'
+                WHEN 'approvalResolved' THEN 'approval'
+                WHEN 'streamReset' THEN 'recovery'
+                WHEN 'recoveryAttempt' THEN 'recovery'
+                WHEN 'usageUpdated' THEN 'usage'
+                WHEN 'autoCompacted' THEN 'compaction'
+                WHEN 'done' THEN 'completion'
+                WHEN 'error' THEN 'error'
+                ELSE 'status'
+            END,
+            importance = CASE kind
+                WHEN 'approvalRequested' THEN 'high'
+                WHEN 'approvalResolved' THEN 'high'
+                WHEN 'streamReset' THEN 'high'
+                WHEN 'recoveryAttempt' THEN 'high'
+                WHEN 'done' THEN 'high'
+                WHEN 'error' THEN 'high'
+                WHEN 'usageUpdated' THEN 'low'
+                ELSE 'normal'
+            END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
