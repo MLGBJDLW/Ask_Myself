@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.25](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.24...nexa-monorepo-v0.10.25) (2026-07-29)
+
+
+### Features
+
+* Add OpenAI Live transcription and Qwen3.7 Flash ([1a46afb](https://github.com/MLGBJDLW/Nexa/commit/1a46afbb9555440239ef71812f01ea45966963e1))
+* **models:** add QwenCloud Qwen3.7 Flash ([0bbb695](https://github.com/MLGBJDLW/Nexa/commit/0bbb695ea15b5f2757db05866d91c42b14e9dcbf))
+* **voice:** stream OpenAI Live transcription ([3c5feef](https://github.com/MLGBJDLW/Nexa/commit/3c5feefacfa46d55adfdca0f9ba6f6a011ea0e53))
+
 ## [0.10.24](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.23...nexa-monorepo-v0.10.24) (2026-07-29)
 
 
