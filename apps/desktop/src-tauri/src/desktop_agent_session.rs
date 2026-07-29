@@ -17,7 +17,7 @@ use nexa_core::agent::power_mode::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
-    AgentRequestKind, AgentSteeringMessage, CancellationToken, ConfirmationCallback,
+    AgentRequestKind, AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
@@ -49,7 +49,6 @@ use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
 use tauri::AppHandle;
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -1418,41 +1417,6 @@ pub async fn build_desktop_agent_session_dependencies(
     }
 }
 
-fn build_desktop_confirmation_callback(
-    app_handle: &AppHandle,
-    executor_config: &AgentConfig,
-) -> Option<ConfirmationCallback> {
-    if !executor_config.require_tool_confirmation
-        && !executor_config.shell_access_mode.requires_confirmation()
-    {
-        return None;
-    }
-
-    let dialog_handle = app_handle.clone();
-    Some(Arc::new(move |message: String| {
-        let handle = dialog_handle.clone();
-        Box::pin(async move {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            handle
-                .dialog()
-                .message(&message)
-                .title("Confirm Tool Execution")
-                .kind(MessageDialogKind::Warning)
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "Allow".into(),
-                    "Deny".into(),
-                ))
-                .show(move |confirmed| {
-                    let _ = tx.send(confirmed);
-                });
-            match tokio::time::timeout(Duration::from_secs(30), rx).await {
-                Ok(Ok(confirmed)) => confirmed,
-                _ => !message.starts_with("Run:"),
-            }
-        })
-    }))
-}
-
 fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> ApprovalCallback {
     let DesktopApprovalCallbackInput {
         db,
@@ -1561,7 +1525,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         stream,
     } = request;
 
-    let confirmation_cb = build_desktop_confirmation_callback(&stream.app_handle, &executor_config);
     let approval_cb = build_desktop_approval_callback(DesktopApprovalCallbackInput {
         db: Arc::clone(&db),
         app_handle: stream.app_handle.clone(),
@@ -1576,9 +1539,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
     let mut executor = AgentExecutor::new(provider, dependencies.tools, executor_config)
         .with_cancel_token(executor_cancel_token)
         .with_steering_receiver(steering_rx);
-    if let Some(cb) = confirmation_cb {
-        executor = executor.with_confirmation_callback(cb);
-    }
     executor = executor.with_approval_callback(approval_cb);
     if let Some(provider) = summarization_provider {
         executor = executor.with_summarization_provider(provider);

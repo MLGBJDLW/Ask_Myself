@@ -1053,13 +1053,7 @@ export const agentChat = (
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };
-  return invoke<AgentTurnHandle>('agent_chat_cmd', {
-    request,
-    // Temporary test-host compatibility mirror. The Rust command consumes
-    // only `request`; remove these flat fields in 0.12.0 after downstream
-    // mock hosts have migrated to the versioned request envelope.
-    ...request,
-  });
+  return invoke<AgentTurnHandle>('agent_chat_cmd', { request });
 };
 
 export const agentSteer = (conversationId: string, message: string) =>
@@ -1182,14 +1176,8 @@ export const getManagedModelPaths = (root?: string, localModel?: string) =>
 export const getAppConfig = () =>
   invoke<AppConfig>('get_app_config_cmd');
 
-export const saveAppConfig = (config: AppConfig) => {
-  const configToSave = { ...config } as Record<string, unknown>;
-  delete configToSave.toolTimeoutSecs;
-  delete configToSave.agentTimeoutSecs;
-  delete configToSave.llmTimeoutSecs;
-  delete configToSave.mcpCallTimeoutSecs;
-  return invoke<void>('save_app_config_cmd', { config: configToSave });
-};
+export const saveAppConfig = (config: AppConfig) =>
+  invoke<void>('save_app_config_cmd', { config });
 
 export interface SpeechPreview {
   path: string;
@@ -1306,9 +1294,6 @@ export const toggleSkill = (id: string, enabled: boolean) =>
 export const listBuiltinSkills = () =>
   invoke<Skill[]>('list_builtin_skills_cmd');
 
-const isLegacyBuiltinSkillRow = (skill: Skill) =>
-  skill.builtin === true || skill.id.startsWith('builtin-');
-
 const normalizeSkillList = (skills: Skill[] | null | undefined): Skill[] =>
   Array.isArray(skills) ? skills : [];
 
@@ -1321,7 +1306,7 @@ export const listAllSkills = async () => {
   const userSkills = normalizeSkillList(userResult);
   const builtinIds = new Set(builtins.map((skill) => skill.id));
   const filteredUserSkills = userSkills.filter(
-    (skill) => !isLegacyBuiltinSkillRow(skill) && !builtinIds.has(skill.id),
+    (skill) => !builtinIds.has(skill.id),
   );
   return [...builtins, ...filteredUserSkills];
 };

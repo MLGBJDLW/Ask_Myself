@@ -4,12 +4,7 @@ import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
 import type { AgentExecutionMode, AgentPowerMode } from './api';
-import {
-  useAgentStream,
-  useRunningConversationIds,
-  type ContextUsageBreakdown,
-  type UsageTotal,
-} from './useAgentStream';
+import { useAgentStream, useRunningConversationIds } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
 import type {
@@ -19,7 +14,9 @@ import type {
   ConversationMessage,
   ConversationTurn,
   ArtifactPayload,
+  ContextUsageBreakdown,
   ImageAttachment,
+  UsageTotal,
 } from '../types/conversation';
 import { appTimeMs } from './dateTime';
 import { formatUserError } from './userError';

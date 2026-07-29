@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_builtin_skill_rows_are_hidden() {
+    fn test_user_skill_ids_are_not_classified_by_builtin_prefix() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
         db.conn()
@@ -135,8 +135,10 @@ mod tests {
             )
             .unwrap();
 
-        assert!(db.list_skills().unwrap().is_empty());
-        assert!(db.get_enabled_skills().unwrap().is_empty());
+        let listed = db.list_skills().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "builtin-legacy");
+        assert_eq!(db.get_enabled_skills().unwrap().len(), 1);
     }
 
     #[test]

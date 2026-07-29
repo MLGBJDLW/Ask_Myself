@@ -381,7 +381,6 @@ export interface SaveAgentConfigInput {
 }
 
 export interface AppConfig {
-  timeoutDefaultsVersion: number;
   cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;

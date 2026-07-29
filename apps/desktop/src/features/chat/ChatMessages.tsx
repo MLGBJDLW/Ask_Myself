@@ -48,7 +48,7 @@ import type {
   StreamRoundEvent,
   ToolCallEvent,
   TraceEvent,
-} from "../../lib/useAgentStream";
+} from "../../lib/streaming/protocol";
 import {
   extractPersistedTraceItems,
   extractTurnTrace,

@@ -4,7 +4,7 @@ import type {
   AgentTaskRunEvent,
   ConversationMessage,
 } from '../../types/conversation';
-import type { ToolCallEvent } from '../../lib/useAgentStream';
+import type { ToolCallEvent } from '../../lib/streaming/protocol';
 import type { ActiveGoalContext } from '../../lib/goalContext';
 import {
   extractPlanArtifact,

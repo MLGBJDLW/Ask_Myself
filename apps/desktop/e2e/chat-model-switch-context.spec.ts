@@ -96,6 +96,7 @@ test.beforeEach(async ({ page }) => {
     (window as unknown as { __lastAgentChatArgs?: Record<string, unknown> | null }).__lastAgentChatArgs = null;
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      if (cmd === 'agent_chat_cmd') args = (args.request as Record<string, unknown>) ?? {};
       switch (cmd) {
         case 'get_wizard_state_cmd':
           return { completed: true };

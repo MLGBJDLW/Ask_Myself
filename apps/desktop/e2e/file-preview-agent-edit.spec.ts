@@ -112,6 +112,7 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      if (cmd === 'agent_chat_cmd') args = (args.request as Record<string, unknown>) ?? {};
       switch (cmd) {
         case 'plugin:event|listen': {
           const listenerId = listenerSeq++;

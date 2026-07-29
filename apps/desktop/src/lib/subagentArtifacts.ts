@@ -1,5 +1,5 @@
 import type { ArtifactPayload, ConversationMessage } from '../types/conversation';
-import type { ToolCallEvent } from './useAgentStream';
+import type { ToolCallEvent } from './streaming/protocol';
 
 export interface SubagentUsage {
   promptTokens?: number;

@@ -26,18 +26,6 @@ pub enum WhisperModel {
 }
 
 impl WhisperModel {
-    /// Legacy GGML filename (kept for backward compatibility).
-    pub fn filename(&self) -> &'static str {
-        match self {
-            Self::Tiny => "ggml-tiny.bin",
-            Self::Base => "ggml-base.bin",
-            Self::Small => "ggml-small.bin",
-            Self::Medium => "ggml-medium.bin",
-            Self::Large => "ggml-large-v3.bin",
-            Self::LargeTurbo => "ggml-large-v3-turbo.bin",
-        }
-    }
-
     /// HuggingFace repo ID for downloading model files.
     pub fn repo_id(&self) -> &'static str {
         match self {

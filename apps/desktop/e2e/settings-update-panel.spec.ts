@@ -89,16 +89,12 @@ test.beforeEach(async ({ page }) => {
           return { persisted: [], session: [] };
         case "get_app_config_cmd":
           return {
-            toolTimeoutSecs: 30,
-            agentTimeoutSecs: 180,
             cacheTtlHours: 24,
             defaultSearchLimit: 20,
             minSearchSimilarity: 0.2,
             maxTextFileSize: 104857600,
             maxVideoFileSize: 2147483648,
             maxAudioFileSize: 536870912,
-            llmTimeoutSecs: 300,
-            mcpCallTimeoutSecs: 60,
             confirmDestructive: false,
             shellAccessMode: "open",
             toolApprovalMode: "allow_all",
