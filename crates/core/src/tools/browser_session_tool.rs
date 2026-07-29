@@ -382,19 +382,6 @@ fn validated_element(
     if browser_tab.tab.get_url() != observation.url {
         return Err("stale observation: page navigated".to_string());
     }
-    let current_hash = blake3::hash(
-        format!(
-            "{}\n{}",
-            browser_tab.tab.get_url(),
-            browser_tab.tab.get_content().unwrap_or_default()
-        )
-        .as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    if current_hash != observation.content_hash {
-        return Err("stale observation: page content changed".to_string());
-    }
     let expected = observation
         .elements
         .iter()

@@ -143,8 +143,8 @@ impl ActivityRuntime {
                 )));
             }
             entries.insert(record.activity_id.clone(), entry);
+            self.persist(&record, &event)?;
         }
-        self.persist(&record, &event)?;
         let _ = self.inner.events.send(event);
         self.inner.notify.notify_waiters();
         tracing::info!(
@@ -184,9 +184,10 @@ impl ActivityRuntime {
                 payload,
             };
             entry.push(event.clone(), self.inner.max_events_per_activity);
-            (entry.record.clone(), event)
+            let record = entry.record.clone();
+            self.persist(&record, &event)?;
+            (record, event)
         };
-        self.persist(&record, &event)?;
         let _ = self.inner.events.send(event.clone());
         self.inner.notify.notify_waiters();
         tracing::debug!(
@@ -237,9 +238,10 @@ impl ActivityRuntime {
                 }),
             };
             entry.push(event.clone(), self.inner.max_events_per_activity);
-            (entry.record.clone(), event)
+            let record = entry.record.clone();
+            self.persist(&record, &event)?;
+            (record, event)
         };
-        self.persist(&record, &event)?;
         let _ = self.inner.events.send(event.clone());
         self.inner.notify.notify_waiters();
         tracing::info!(
