@@ -639,7 +639,8 @@ fn shell_integration_bootstrap(shell: &str, program: &str) -> Option<String> {
     let program_name = std::path::Path::new(program)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(program);
+        .unwrap_or(program)
+        .trim_end_matches(".exe");
     if shell == "Zsh" || program_name == "zsh" {
         return Some(
             r#"autoload -Uz add-zsh-hook
@@ -649,9 +650,16 @@ add-zsh-hook precmd __nexa_precmd"#
                 + "\n",
         );
     }
-    if matches!(shell, "Bash" | "Git Bash" | "Default Shell" | "sh") {
+    if matches!(shell, "Bash" | "Git Bash") || program_name == "bash" {
         return Some(
-            r#"PROMPT_COMMAND='__nexa_exit=$?; printf "\033]633;D;%s\007\033]633;P;Cwd=%s\007\033]633;A\007" "$__nexa_exit" "$PWD"'"#
+            r#"function __nexa_precmd { local __nexa_exit=$?; printf '\033]633;D;%s\007\033]633;P;Cwd=%s\007\033]633;A\007' "$__nexa_exit" "$PWD"; }
+if declare -p PROMPT_COMMAND 2>/dev/null | grep -q 'declare -a'; then
+  PROMPT_COMMAND=(__nexa_precmd "${PROMPT_COMMAND[@]}")
+elif [ -n "${PROMPT_COMMAND:-}" ]; then
+  PROMPT_COMMAND="__nexa_precmd;${PROMPT_COMMAND}"
+else
+  PROMPT_COMMAND=__nexa_precmd
+fi"#
                 .to_string()
                 + "\n",
         );
@@ -868,7 +876,8 @@ mod tests {
         assert!(!zsh.contains("PROMPT_COMMAND"));
 
         let bash = shell_integration_bootstrap("Bash", "/bin/bash").unwrap();
-        assert!(bash.contains("PROMPT_COMMAND"));
+        assert!(bash.contains("PROMPT_COMMAND=(__nexa_precmd"));
+        assert!(bash.contains("${PROMPT_COMMAND[@]}"));
 
         let powershell = shell_integration_bootstrap("PowerShell", "pwsh.exe").unwrap();
         assert!(powershell.contains("$nexaSucceeded=$?"));

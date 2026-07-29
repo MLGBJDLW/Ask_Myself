@@ -206,8 +206,12 @@ export function TerminalDock({
     appendTerminalData(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
   }, [appendTerminalData]);
 
-  const attachSession = useCallback(async (info: TerminalSessionInfo) => {
+  const attachSession = useCallback(async (
+    info: TerminalSessionInfo,
+    isCancelled: () => boolean = () => false,
+  ) => {
     const snapshot = await api.snapshotTerminalSession(info.id, MAX_BUFFER_CHARS);
+    if (isCancelled()) return;
     sessionIdRef.current = info.id;
     outputBufferRef.current = clampOutputBuffer(snapshot.output);
     setSession(snapshot.session);
@@ -478,7 +482,7 @@ export function TerminalDock({
         if (!conversationId) return;
         const active = await api.activeTerminalSession(conversationId);
         if (!cancelled && active) {
-          await attachSession(active);
+          await attachSession(active, () => cancelled);
         }
       } catch (restoreError) {
         if (!cancelled) {

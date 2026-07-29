@@ -778,14 +778,26 @@ async fn manage_service(
             if service.ready_url.is_none() {
                 service.ready_url = discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr);
             }
-            let healthy = match service.ready_url.as_ref() {
+            let ready_url = service.ready_url.clone();
+            let process_id = service.process_id;
+            let program = service.program.clone();
+            let auto_promoted = service.auto_promoted;
+            let uptime_ms = service.started_at.elapsed().as_millis() as u64;
+            let cursor = service
+                .activity_runtime
+                .get(service_id)
+                .map(|record| record.last_event_seq);
+            // Reinsert before the network probe so the asynchronous lifecycle
+            // monitor never observes a transiently missing running service.
+            registry.insert(service_id.to_string(), service);
+            drop(registry);
+            let healthy = match ready_url.as_ref() {
                 Some(url) => Some(readiness_probe(url).await),
                 None => None,
             };
-            let uptime_ms = service.started_at.elapsed().as_millis() as u64;
-            let result = ToolResult {
+            ToolResult {
                 call_id: call_id.to_string(),
-                content: match (healthy, service.ready_url.as_ref()) {
+                content: match (healthy, ready_url.as_ref()) {
                     (Some(true), Some(url)) => format!(
                         "Managed service {service_id} is running and healthy at {url}."
                     ),
@@ -804,22 +816,20 @@ async fn manage_service(
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
                     "activityId": service_id,
-                    "cursor": service.activity_runtime.get(service_id).map(|record| record.last_event_seq),
+                    "cursor": cursor,
                     "serviceId": service_id,
-                    "processId": service.process_id,
+                    "processId": process_id,
                     "status": match healthy { Some(true) => "ready", Some(false) => "unhealthy", None => "running" },
-                    "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-                    "program": service.program,
-                    "autoPromoted": service.auto_promoted,
+                    "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
+                    "program": program,
+                    "autoPromoted": auto_promoted,
                     "uptimeMs": uptime_ms,
                     "stdoutTail": log_snapshot.stdout,
                     "stderrTail": log_snapshot.stderr,
                     "stdoutTruncated": log_snapshot.stdout_truncated,
                     "stderrTruncated": log_snapshot.stderr_truncated,
                 })),
-            };
-            registry.insert(service_id.to_string(), service);
-            result
+            }
         }
     }
 }

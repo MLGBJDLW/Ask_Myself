@@ -22,6 +22,10 @@ const OBSERVE_DEF_JSON: &str = include_str!("../../prompts/tools/computer_observ
 const CONTROL_DEF_JSON: &str = include_str!("../../prompts/tools/computer_control.json");
 const OBSERVATION_TTL: Duration = Duration::from_secs(120);
 const MAX_OBSERVATIONS: usize = 64;
+const SCREENSHOT_SIGNATURE_EDGE: u32 = 16;
+const SCREENSHOT_PIXEL_DIFF_THRESHOLD: u8 = 32;
+const MAX_SCREENSHOT_CHANGED_RATIO: f64 = 0.20;
+const MAX_SCREENSHOT_MEAN_DIFF: f64 = 18.0;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +49,38 @@ struct ObservedWindow {
     snapshot: WindowSnapshot,
     image_width: Option<u32>,
     image_height: Option<u32>,
-    screenshot_hash: Option<String>,
+    screenshot_signature: Option<Vec<u8>>,
+}
+
+fn screenshot_signature(png: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(png).ok()?.to_luma8();
+    Some(
+        image::imageops::resize(
+            &image,
+            SCREENSHOT_SIGNATURE_EDGE,
+            SCREENSHOT_SIGNATURE_EDGE,
+            image::imageops::FilterType::Triangle,
+        )
+        .into_raw(),
+    )
+}
+
+fn screenshot_signatures_match(expected: &[u8], current: &[u8]) -> bool {
+    if expected.len() != current.len() || expected.is_empty() {
+        return false;
+    }
+    let mut changed = 0usize;
+    let mut total_difference = 0u64;
+    for (expected, current) in expected.iter().zip(current) {
+        let difference = expected.abs_diff(*current);
+        total_difference += u64::from(difference);
+        if difference > SCREENSHOT_PIXEL_DIFF_THRESHOLD {
+            changed += 1;
+        }
+    }
+    let sample_count = expected.len() as f64;
+    changed as f64 / sample_count <= MAX_SCREENSHOT_CHANGED_RATIO
+        && total_difference as f64 / sample_count <= MAX_SCREENSHOT_MEAN_DIFF
 }
 
 #[derive(Debug)]
@@ -325,7 +360,7 @@ impl Tool for ComputerObserveTool {
                             snapshot,
                             image_width: None,
                             image_height: None,
-                            screenshot_hash: None,
+                            screenshot_signature: None,
                         })
                         .collect(),
                 )?;
@@ -373,7 +408,7 @@ impl Tool for ComputerObserveTool {
                         snapshot: capture.snapshot.clone(),
                         image_width: Some(capture.image_width),
                         image_height: Some(capture.image_height),
-                        screenshot_hash: Some(blake3::hash(&capture.png).to_hex().to_string()),
+                        screenshot_signature: screenshot_signature(&capture.png),
                     }],
                 )?;
                 let data = capture_data(&fresh_observation_id, &capture);
@@ -535,7 +570,7 @@ impl Tool for ComputerControlTool {
                         snapshot: capture.snapshot.clone(),
                         image_width: Some(capture.image_width),
                         image_height: Some(capture.image_height),
-                        screenshot_hash: Some(blake3::hash(&capture.png).to_hex().to_string()),
+                        screenshot_signature: screenshot_signature(&capture.png),
                     }],
                 )?;
                 (
@@ -625,8 +660,8 @@ mod platform {
     use windows_capture::window::Window;
 
     use super::{
-        CapturedWindow, ControlAction, ControlArgs, ControlOutcome, CoreError, ObservedWindow,
-        WindowSnapshot,
+        screenshot_signature, screenshot_signatures_match, CapturedWindow, ControlAction,
+        ControlArgs, ControlOutcome, CoreError, ObservedWindow, WindowSnapshot,
     };
 
     const MAX_CAPTURE_EDGE: u32 = 1_600;
@@ -1037,15 +1072,23 @@ mod platform {
         observed: &ObservedWindow,
     ) -> Result<ControlOutcome, CoreError> {
         let (_, current) = current_window(&observed.snapshot)?;
+        if current.width != observed.snapshot.width || current.height != observed.snapshot.height {
+            return Err(invalid(
+                "Desktop observation is stale because the target window was resized. Observe it again before acting.",
+            ));
+        }
         let pre_action_capture = capture_window(&current)?;
         let pre_action_hash = blake3::hash(&pre_action_capture.png).to_hex().to_string();
-        if observed
-            .screenshot_hash
+        let screenshot_changed = observed
+            .screenshot_signature
             .as_ref()
-            .is_some_and(|expected| expected != &pre_action_hash)
-        {
+            .is_some_and(|expected| {
+                screenshot_signature(&pre_action_capture.png)
+                    .is_none_or(|current| !screenshot_signatures_match(expected, &current))
+            });
+        if screenshot_changed {
             return Err(invalid(
-                "Desktop observation is stale because the captured window changed. Observe it again before acting.",
+                "Desktop observation is stale because the target window changed materially. Observe it again before acting.",
             ));
         }
         focus_window(&current)?;
@@ -1250,7 +1293,7 @@ mod tests {
                 snapshot: snapshot.clone(),
                 image_width: Some(800),
                 image_height: Some(600),
-                screenshot_hash: None,
+                screenshot_signature: None,
             }],
         )
         .unwrap();
@@ -1283,6 +1326,17 @@ mod tests {
                 "window_id": 1
             })));
         }
+    }
+
+    #[test]
+    fn perceptual_screenshot_validation_tolerates_incidental_pixels() {
+        let expected = vec![100; (SCREENSHOT_SIGNATURE_EDGE * SCREENSHOT_SIGNATURE_EDGE) as usize];
+        let mut cursor_moved = expected.clone();
+        cursor_moved[42] = 255;
+        assert!(screenshot_signatures_match(&expected, &cursor_moved));
+
+        let materially_changed = vec![220; expected.len()];
+        assert!(!screenshot_signatures_match(&expected, &materially_changed));
     }
 
     #[test]
