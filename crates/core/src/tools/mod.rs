@@ -1618,21 +1618,21 @@ mod tests {
             );
         }
 
-        let mut allowed = vec![
+        let allowed = [
             "read_file",
             "grep_files",
             "search_files",
             "web_search",
             "tool_search",
         ];
-        #[cfg(target_os = "windows")]
-        allowed.push("computer_observe");
         for allowed in allowed {
             assert!(
                 names.iter().any(|name| name == allowed),
                 "{allowed} should remain available"
             );
         }
+        #[cfg(target_os = "windows")]
+        assert!(names.iter().any(|name| name == "computer_observe"));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1708,6 +1708,7 @@ mod tests {
         assert!(names.iter().any(|name| name == "desktop_automation"));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn select_tools_includes_native_computer_use_for_desktop_tasks() {
         let registry = default_tool_registry();
