@@ -1436,7 +1436,11 @@ Every answer that uses knowledge base search results.
             COALESCE(json_extract(e.payload_json, '$.usageTotal'), '{}')
         FROM agent_task_runs r
         JOIN agent_run_events e ON e.run_id = r.id
-        WHERE e.event_seq = (
+        WHERE NOT EXISTS (
+            SELECT 1 FROM _migrations
+            WHERE name = 'v080_canonical_ai_usage_accounting'
+        )
+          AND e.event_seq = (
             SELECT MAX(latest.event_seq)
             FROM agent_run_events latest
             WHERE latest.run_id = r.id
@@ -1512,7 +1516,11 @@ Every answer that uses knowledge base search results.
             )
         FROM agent_subtask_runs s
         JOIN agent_task_runs r ON r.id = s.parent_run_id
-        WHERE json_valid(s.output_json)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM _migrations
+            WHERE name = 'v080_canonical_ai_usage_accounting'
+        )
+          AND json_valid(s.output_json)
           AND (
             json_type(s.output_json, '$.run.usageTotal') = 'object'
             OR json_type(s.output_json, '$.usageTotal') = 'object'
@@ -1681,7 +1689,7 @@ mod tests {
     }
 
     #[test]
-    fn backfills_legacy_subagent_usage_artifacts() {
+    fn backfills_legacy_subagent_usage_artifacts_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("baseline migrations should succeed");
         conn.execute_batch(
@@ -1717,6 +1725,28 @@ mod tests {
             [output.to_string()],
         )
         .expect("insert legacy subagent artifact");
+        let run_usage = serde_json::json!({
+            "usageTotal": {
+                "promptTokens": 200,
+                "completionTokens": 50,
+                "totalTokens": 250
+            }
+        });
+        conn.execute(
+            "INSERT INTO agent_run_events
+                (run_id, turn_id, event_seq, version, kind, phase, payload_json)
+             VALUES ('run-usage-backfill', 'turn-usage-backfill', 1, 1,
+                     'done', 'done', ?1)",
+            [run_usage.to_string()],
+        )
+        .expect("insert legacy cumulative run usage");
+
+        conn.execute(
+            "DELETE FROM _migrations
+             WHERE name = 'v080_canonical_ai_usage_accounting'",
+            [],
+        )
+        .expect("simulate a database that has not applied the usage migration");
 
         run_migrations(&conn).expect("usage migration should backfill subagent artifact");
         run_migrations(&conn).expect("subagent usage backfill should be idempotent");
@@ -1746,6 +1776,28 @@ mod tests {
         assert_eq!(stored.3, 30);
         assert_eq!(stored.4, 150);
         assert_eq!(stored.5, "legacy_migrated");
+        let main_total: i64 = conn
+            .query_row(
+                "SELECT total_tokens FROM ai_usage_records
+                 WHERE invocation_id = 'legacy-run:run-usage-backfill'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backfilled main run usage record");
+        assert_eq!(main_total, 250);
+
+        conn.execute("DELETE FROM ai_usage_records", [])
+            .expect("simulate resetting usage statistics");
+        run_migrations(&conn).expect("applied migrations should remain safely replayable");
+        let recreated: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ai_usage_records", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            recreated, 0,
+            "a completed one-time backfill must not recreate reset usage records"
+        );
     }
 
     #[test]
