@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.24](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.23...nexa-monorepo-v0.10.24) (2026-07-29)
+
+
+### Features
+
+* **runtime:** Add transactional turn launch handshake ([c70064d](https://github.com/MLGBJDLW/Nexa/commit/c70064df561401a26bdee0f12a15e960ebe517c6))
+* **runtime:** Establish authoritative agent lifecycle ([b62621e](https://github.com/MLGBJDLW/Nexa/commit/b62621ef091943dfe6b529093896f5a52cb41876))
+* **runtime:** Establish authoritative run lifecycle ([e285af1](https://github.com/MLGBJDLW/Nexa/commit/e285af1d4b593a7f138154e167d3346a0f917a70))
+
 ## [0.10.23](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.10.22...nexa-monorepo-v0.10.23) (2026-07-28)
 
 
