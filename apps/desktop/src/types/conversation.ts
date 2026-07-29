@@ -128,6 +128,22 @@ export interface AgentRunEvent {
   createdAt?: string | null;
 }
 
+export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out';
+
+export type AgentTurnState =
+  | 'starting'
+  | 'running'
+  | 'waitingApproval'
+  | { terminal: RuntimeTerminalStatus };
+
+/** Immediate runtime acknowledgement returned by `agent_chat_cmd`. */
+export interface AgentTurnHandle {
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  state: AgentTurnState;
+}
+
 export type TaskTimelineEventKind = 'subtask' | 'verification';
 
 export interface TaskTimelineEvent {

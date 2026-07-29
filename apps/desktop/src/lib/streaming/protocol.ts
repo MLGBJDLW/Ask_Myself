@@ -1,6 +1,7 @@
 import type {
   AgentTaskRun,
   AgentTaskRunEvent,
+  AgentTurnHandle,
   ApprovalRequest,
   ArtifactPayload,
   ToolPluginInfo,
@@ -101,6 +102,8 @@ export interface UsageTotal {
 }
 
 export interface StreamState {
+  /** Runtime-assigned identity available as soon as launch is acknowledged. */
+  turnHandle: AgentTurnHandle | null;
   isStreaming: boolean;
   streamText: string;
   streamRounds: StreamRoundEvent[];

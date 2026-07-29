@@ -20,6 +20,7 @@ export interface InternalStreamState extends StreamState {
 
 export function createDefaultState(): InternalStreamState {
   return {
+    turnHandle: null,
     isStreaming: false,
     streamText: '',
     streamRounds: [],

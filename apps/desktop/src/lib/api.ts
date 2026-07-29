@@ -27,6 +27,7 @@ import type {
   AgentTaskRunListItem,
   AgentTaskRunEvent,
   AgentRunEvent,
+  AgentTurnHandle,
   AgentSubtaskRun,
   AgentExecutionGraph,
   AgentTaskArtifact,
@@ -1037,19 +1038,29 @@ export const agentChat = (
   powerMode?: AgentPowerMode | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
-) =>
-  invoke<void>('agent_chat_cmd', {
+) => {
+  const request = {
+    version: 1,
+    idempotencyKey: crypto.randomUUID(),
     conversationId,
     message,
-    attachments: attachments ?? null,
+    attachments: attachments ?? [],
     agentConfigId: agentConfigId ?? null,
     personaId: personaId ?? null,
-    skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
-    executionMode: executionMode ?? null,
-    powerMode: powerMode ?? null,
+    skillIds: skillIds ?? [],
+    executionMode: executionMode ?? 'normal',
+    powerMode: powerMode ?? 'standard',
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
+  };
+  return invoke<AgentTurnHandle>('agent_chat_cmd', {
+    request,
+    // Temporary test-host compatibility mirror. The Rust command consumes
+    // only `request`; remove these flat fields in 0.12.0 after downstream
+    // mock hosts have migrated to the versioned request envelope.
+    ...request,
   });
+};
 
 export const agentSteer = (conversationId: string, message: string) =>
   invoke<void>('agent_steer_cmd', { conversationId, message });

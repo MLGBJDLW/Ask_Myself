@@ -52,6 +52,7 @@ interface UseAgentStreamReturn {
   pendingApprovals: ApprovalRequest[];
   taskRun: StreamState['taskRun'];
   taskEvents: StreamState['taskEvents'];
+  turnHandle: StreamState['turnHandle'];
   clearPreview: () => void;
   reset: () => void;
 }
@@ -95,6 +96,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         if (prev === null || next === null) return next;
         if (
           prev.isStreaming === next.isStreaming &&
+          prev.turnHandle === next.turnHandle &&
           prev.streamText === next.streamText &&
           prev.thinkingText === next.thinkingText &&
           prev.isThinking === next.isThinking &&
@@ -133,7 +135,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     streamStore.startStream(conversationId);
 
     try {
-      await api.agentChat(
+      const handle = await api.agentChat(
         conversationId,
         message,
         attachments,
@@ -145,6 +147,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         userArtifacts,
         taskOrchestratorRunId,
       );
+      streamStore.bindTurnHandle(conversationId, handle);
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
     }
@@ -178,6 +181,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
   return {
     send,
     stop,
+    turnHandle: resolvedState?.turnHandle ?? null,
     isStreaming: resolvedState?.isStreaming ?? false,
     streamText: resolvedState?.streamText ?? '',
     streamRounds: resolvedState?.streamRounds ?? EMPTY_ROUNDS,

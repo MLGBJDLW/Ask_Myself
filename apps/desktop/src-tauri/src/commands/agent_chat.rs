@@ -13,6 +13,10 @@ use crate::desktop_agent_session::{
     DesktopAgentTurnStream, DesktopAgentUserContentRequest, DesktopRunningAgentStopRequest,
     DesktopRunningAgentTaskRequest,
 };
+use nexa_core::runtime::{
+    AgentTurnHandle, AgentTurnState, RuntimeTerminalStatus, StartTurnRequest,
+    RUNTIME_PROTOCOL_VERSION,
+};
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
 
@@ -22,6 +26,7 @@ pub struct DesktopAgentChatLaunch {
     pub conversation_id: String,
     pub task_run_id: String,
     pub task_orchestrator_run_id: Option<String>,
+    pub handle: AgentTurnHandle,
 }
 
 pub(super) struct DesktopAgentChatLaunchRequest<'a> {
@@ -41,10 +46,10 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub power_mode: Option<String>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
+    pub idempotency_key: String,
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn agent_chat_cmd(
     state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
@@ -52,17 +57,16 @@ pub async fn agent_chat_cmd(
     approval_state: tauri::State<'_, ApprovalState>,
     terminal_state: tauri::State<'_, TerminalState>,
     app_handle: AppHandle,
-    conversation_id: String,
-    message: String,
-    attachments: Option<Vec<ImageAttachment>>,
-    agent_config_id: Option<String>,
-    persona_id: Option<String>,
-    skill_ids: Option<Vec<String>>,
-    execution_mode: Option<String>,
-    power_mode: Option<String>,
-    user_artifacts: Option<serde_json::Value>,
-    task_orchestrator_run_id: Option<String>,
-) -> Result<(), String> {
+    mut request: StartTurnRequest,
+) -> Result<AgentTurnHandle, String> {
+    request.apply_protocol_defaults();
+    if request.version != RUNTIME_PROTOCOL_VERSION {
+        return Err(format!(
+            "Unsupported runtime protocol version {}; expected {}.",
+            request.version, RUNTIME_PROTOCOL_VERSION
+        ));
+    }
+
     launch_desktop_agent_chat_turn(DesktopAgentChatLaunchRequest {
         state: state.inner(),
         agent_state: agent_state.inner(),
@@ -70,19 +74,20 @@ pub async fn agent_chat_cmd(
         approval_state: approval_state.inner(),
         terminal_state: Some(terminal_state.inner().clone()),
         app_handle,
-        conversation_id,
-        message,
-        attachments,
-        agent_config_id,
-        persona_id,
-        skill_ids,
-        execution_mode,
-        power_mode,
-        user_artifacts,
-        task_orchestrator_run_id,
+        conversation_id: request.conversation_id,
+        message: request.message,
+        attachments: Some(request.attachments),
+        agent_config_id: request.agent_config_id,
+        persona_id: request.persona_id,
+        skill_ids: Some(request.skill_ids),
+        execution_mode: Some(request.execution_mode.as_str().to_string()),
+        power_mode: Some(request.power_mode.as_str().to_string()),
+        user_artifacts: request.user_artifacts,
+        task_orchestrator_run_id: request.task_orchestrator_run_id,
+        idempotency_key: request.idempotency_key,
     })
     .await
-    .map(|_| ())
+    .map(|launch| launch.handle)
 }
 
 pub(super) async fn launch_desktop_agent_chat_turn(
@@ -105,6 +110,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         power_mode,
         user_artifacts,
         task_orchestrator_run_id,
+        idempotency_key,
     } = request;
     let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
     let power_mode = AgentPowerMode::from_wire(power_mode.as_deref())?;
@@ -167,7 +173,13 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         let projected_status =
             nexa_core::task_orchestrator::project_task_status(&workflow_run.status)
                 .map_err(|err| err.to_string())?;
-        if projected_status.state != nexa_core::task_orchestrator::TaskOrchestratorState::Queued {
+        let existing_launch = state
+            .db
+            .find_agent_turn_by_idempotency_key(&conversation_id, &idempotency_key)
+            .map_err(|err| err.to_string())?;
+        if projected_status.state != nexa_core::task_orchestrator::TaskOrchestratorState::Queued
+            && existing_launch.is_none()
+        {
             return Err(format!(
                 "Task Orchestrator run {run_id} must be queued to start; got {}.",
                 projected_status.raw_status
@@ -207,21 +219,29 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         }),
     };
     let user_llm_content = conversation_message_llm_context_content(&user_msg).to_string();
-    state.db.add_message(&user_msg).map_err(|e| e.to_string())?;
-    let turn = state
+    let launch_record = state
         .db
-        .create_conversation_turn(&conversation_id, &user_msg.id, None)
-        .map_err(|e| e.to_string())?;
-    let task_run = state
-        .db
-        .create_agent_task_run(
-            &conversation_id,
-            &turn.id,
-            &user_msg.id,
+        .create_agent_turn_and_run(
+            &user_msg,
             &task_title_from_message(&message),
             Some(&db_config.provider),
             Some(&db_config.model),
+            &idempotency_key,
         )
+        .map_err(|e| e.to_string())?;
+    if launch_record.reused {
+        return Ok(desktop_agent_chat_launch(
+            &launch_record,
+            task_orchestrator_run_id,
+        ));
+    }
+    let turn = state
+        .db
+        .get_conversation_turn(&launch_record.turn_id)
+        .map_err(|e| e.to_string())?;
+    let task_run = state
+        .db
+        .get_agent_task_run(&launch_record.run_id)
         .map_err(|e| e.to_string())?;
     let task_run_id_for_command = task_run.id.clone();
     if let Some(run_id) = task_orchestrator_run_id.as_deref() {
@@ -479,6 +499,11 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         conversation_id: conversation_id.clone(),
         task_run_id: task_run_id_for_command.clone(),
         task_orchestrator_run_id: task_orchestrator_run_id.clone(),
+        handle: AgentTurnHandle::running(
+            conversation_id.clone(),
+            task_run_id_for_command.clone(),
+            turn.id.clone(),
+        ),
     };
     {
         let mut running = agent_state.running.lock().await;
@@ -495,6 +520,34 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     }
 
     Ok(launch)
+}
+
+fn desktop_agent_chat_launch(
+    record: &nexa_core::conversation::AgentTurnLaunchRecord,
+    task_orchestrator_run_id: Option<String>,
+) -> DesktopAgentChatLaunch {
+    let state = match record.status.as_str() {
+        "queued" => AgentTurnState::Starting,
+        "running" | "cancelling" => AgentTurnState::Running,
+        "waiting_approval" => AgentTurnState::WaitingApproval,
+        "completed" | "success" | "cached" => {
+            AgentTurnState::Terminal(RuntimeTerminalStatus::Completed)
+        }
+        "cancelled" => AgentTurnState::Terminal(RuntimeTerminalStatus::Cancelled),
+        "timed_out" => AgentTurnState::Terminal(RuntimeTerminalStatus::TimedOut),
+        _ => AgentTurnState::Terminal(RuntimeTerminalStatus::Failed),
+    };
+    DesktopAgentChatLaunch {
+        conversation_id: record.conversation_id.clone(),
+        task_run_id: record.run_id.clone(),
+        task_orchestrator_run_id,
+        handle: AgentTurnHandle {
+            session_id: record.conversation_id.clone(),
+            run_id: record.run_id.clone(),
+            turn_id: record.turn_id.clone(),
+            state,
+        },
+    }
 }
 
 fn sync_conversation_goal_from_user_artifacts(

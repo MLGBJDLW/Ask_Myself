@@ -1178,6 +1178,13 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_conversation_goals_status
             ON conversation_goals(status, updated_at);",
     ),
+    (
+        "v075_agent_turn_idempotency",
+        "ALTER TABLE agent_task_runs ADD COLUMN idempotency_key TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_task_runs_idempotency
+            ON agent_task_runs(conversation_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

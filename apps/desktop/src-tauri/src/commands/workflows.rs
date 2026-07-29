@@ -299,6 +299,7 @@ async fn launch_task_orchestrator_execution_ticket(
             "workflowRunId": workflow_run_id,
         })),
         task_orchestrator_run_id: Some(workflow_run_id.clone()),
+        idempotency_key: format!("workflow:{queue_id}"),
     })
     .await;
 

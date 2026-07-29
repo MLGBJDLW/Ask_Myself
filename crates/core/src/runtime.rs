@@ -6,13 +6,59 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::power_mode::AgentPowerMode;
 use crate::agent::AgentExecutionMode;
 use crate::agent_run::{AgentRunEvent, AGENT_RUN_EVENT_VERSION};
 use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
+use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
+
+/// Canonical host request for starting one agent turn.
+///
+/// Hosts may add transport-specific metadata before handing this request to a
+/// runtime adapter, but the identifiers and execution policy enter through one
+/// versioned boundary. `idempotency_key` is supplied by the caller so retrying
+/// an uncertain launch cannot create a second user message or run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartTurnRequest {
+    #[serde(default = "runtime_protocol_version")]
+    pub version: u16,
+    #[serde(default = "new_runtime_id")]
+    pub idempotency_key: String,
+    pub conversation_id: String,
+    pub message: String,
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub agent_config_id: Option<String>,
+    #[serde(default)]
+    pub persona_id: Option<String>,
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub execution_mode: AgentExecutionMode,
+    #[serde(default)]
+    pub power_mode: AgentPowerMode,
+    #[serde(default)]
+    pub user_artifacts: Option<serde_json::Value>,
+    #[serde(default)]
+    pub task_orchestrator_run_id: Option<String>,
+}
+
+impl StartTurnRequest {
+    pub fn apply_protocol_defaults(&mut self) {
+        if self.version == 0 {
+            self.version = RUNTIME_PROTOCOL_VERSION;
+        }
+        if self.idempotency_key.trim().is_empty() {
+            self.idempotency_key = new_runtime_id();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -250,6 +296,21 @@ pub struct AgentTurnHandle {
     pub run_id: String,
     pub turn_id: String,
     pub state: AgentTurnState,
+}
+
+impl AgentTurnHandle {
+    pub fn running(
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+        turn_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            run_id: run_id.into(),
+            turn_id: turn_id.into(),
+            state: AgentTurnState::Running,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
