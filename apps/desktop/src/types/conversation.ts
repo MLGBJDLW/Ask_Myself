@@ -817,6 +817,7 @@ export interface AgentFrontendEvent {
   argumentsDelta?: string;
   index?: number;
   note?: string;
+  activity?: ActivityEvent;
   run?: ToolRunItem;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
@@ -830,6 +831,32 @@ export interface AgentFrontendEvent {
   decision?: ApprovalDecisionValue;
   taskRun?: AgentTaskRun;
   taskEvent?: AgentTaskRunEvent;
+}
+
+export type ActivityEventKind =
+  | 'started'
+  | 'stdout_chunk'
+  | 'stderr_chunk'
+  | 'progress'
+  | 'ready_url'
+  | 'cwd_changed'
+  | 'command_started'
+  | 'command_finished'
+  | 'prompt_detected'
+  | 'input_requested'
+  | 'browser_observation'
+  | 'desktop_observation'
+  | 'state_changed'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface ActivityEvent {
+  activityId: string;
+  seq: number;
+  timestamp: string;
+  kind: ActivityEventKind;
+  payload: Record<string, unknown>;
 }
 
 export type ToolRunStatus =

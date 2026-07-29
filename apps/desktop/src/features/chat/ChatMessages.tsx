@@ -1037,6 +1037,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 renderKind={section.toolCall.renderKind}
                 capabilities={section.toolCall.capabilities}
                 durationMs={section.toolCall.durationMs}
+                progressNote={section.toolCall.progressNote}
                 content={section.toolCall.content}
                 isError={section.toolCall.isError}
                 artifacts={section.toolCall.artifacts}

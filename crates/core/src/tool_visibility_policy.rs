@@ -47,6 +47,10 @@ pub enum ToolVisibilitySignalKind {
     ConversationRecall,
     KnowledgeWork,
     Automation,
+    Process,
+    Terminal,
+    Browser,
+    Desktop,
     DocumentAnalysis,
     LinkedSources,
 }
@@ -193,6 +197,42 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
     );
     push_term_signal(
         &query,
+        PROCESS_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.process",
+        ToolVisibilitySignalKind::Process,
+        "query mentions command execution, builds, tests, or local services",
+    );
+    push_term_signal(
+        &query,
+        TERMINAL_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.terminal",
+        ToolVisibilitySignalKind::Terminal,
+        "query refers to the user-visible terminal or an interactive shell",
+    );
+    push_term_signal(
+        &query,
+        BROWSER_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.browser",
+        ToolVisibilitySignalKind::Browser,
+        "query refers to browser inspection, interaction, or a local web app",
+    );
+    push_term_signal(
+        &query,
+        DESKTOP_TERMS,
+        &mut signals,
+        &mut log,
+        "signal.desktop",
+        ToolVisibilitySignalKind::Desktop,
+        "query refers to a native desktop window or input action",
+    );
+    push_term_signal(
+        &query,
         DOCUMENT_ANALYSIS_TERMS,
         &mut signals,
         &mut log,
@@ -281,6 +321,56 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
             "automation signal matched",
         );
     }
+    if has_signal(&signals, ToolVisibilitySignalKind::Process) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.process",
+            ToolCategory::Process,
+            "process signal matched",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::Terminal) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.terminal",
+            ToolCategory::Terminal,
+            "terminal signal matched",
+        );
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.terminal_process",
+            ToolCategory::Process,
+            "terminal work may require starting or inspecting a process",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::Browser) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.browser_read",
+            ToolCategory::BrowserRead,
+            "browser signal needs rendered-page observation",
+        );
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.browser_interact",
+            ToolCategory::BrowserInteract,
+            "browser signal may require stateful page interaction",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::Desktop) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.desktop_interact",
+            ToolCategory::DesktopInteract,
+            "desktop signal matched",
+        );
+    }
     if has_signal(&signals, ToolVisibilitySignalKind::DocumentAnalysis)
         || (input.has_sources && has_signal(&signals, ToolVisibilitySignalKind::Question))
     {
@@ -335,7 +425,10 @@ fn select_route(has_sources: bool, signals: &[ToolVisibilitySignal]) -> ToolVisi
     if has_signal(signals, ToolVisibilitySignalKind::SourceManagement) {
         return ToolVisibilityRouteKind::SourceManagement;
     }
-    if has_signal(signals, ToolVisibilitySignalKind::CodeOrToolOperation) {
+    if has_signal(signals, ToolVisibilitySignalKind::CodeOrToolOperation)
+        || has_signal(signals, ToolVisibilitySignalKind::Process)
+        || has_signal(signals, ToolVisibilitySignalKind::Terminal)
+    {
         return ToolVisibilityRouteKind::CodebaseOperation;
     }
     if has_signal(signals, ToolVisibilitySignalKind::FileOperation) {
@@ -343,6 +436,9 @@ fn select_route(has_sources: bool, signals: &[ToolVisibilitySignal]) -> ToolVisi
     }
     if has_signal(signals, ToolVisibilitySignalKind::ConversationRecall) {
         return ToolVisibilityRouteKind::ConversationRecall;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::Browser) {
+        return ToolVisibilityRouteKind::WebLookup;
     }
     if has_signal(signals, ToolVisibilitySignalKind::WebLookup) {
         return ToolVisibilityRouteKind::WebLookup;
@@ -362,7 +458,11 @@ fn route_categories(route: ToolVisibilityRouteKind) -> Vec<ToolCategory> {
         }
         ToolVisibilityRouteKind::SourceManagement => vec![ToolCategory::SourceManagement],
         ToolVisibilityRouteKind::CodebaseOperation | ToolVisibilityRouteKind::FileOperation => {
-            vec![ToolCategory::FileSystem, ToolCategory::DocumentAnalysis]
+            vec![
+                ToolCategory::FileSystem,
+                ToolCategory::Process,
+                ToolCategory::DocumentAnalysis,
+            ]
         }
         ToolVisibilityRouteKind::WebLookup => vec![ToolCategory::Web],
         ToolVisibilityRouteKind::DirectResponse => Vec::new(),
@@ -824,6 +924,71 @@ const AUTOMATION_TERMS: &[&str] = &[
     "定位文件",
 ];
 
+const PROCESS_TERMS: &[&str] = &[
+    "run_shell",
+    "run shell",
+    "shell",
+    "command",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "cargo",
+    "npm",
+    "pnpm",
+    "yarn",
+    "bun",
+    "python",
+    "build",
+    "compile",
+    "test",
+    "dev server",
+    "local server",
+    "运行",
+    "命令",
+    "构建",
+    "编译",
+    "测试",
+    "本地服务",
+];
+
+const TERMINAL_TERMS: &[&str] = &[
+    "terminal",
+    "powershell",
+    "pwsh",
+    "command prompt",
+    "cmd",
+    "interactive shell",
+    "终端",
+    "命令行",
+];
+
+const BROWSER_TERMS: &[&str] = &[
+    "browser",
+    "browser session",
+    "localhost",
+    "local app",
+    "local page",
+    "dev server",
+    "浏览器",
+    "本地页面",
+    "本地网页",
+];
+
+const DESKTOP_TERMS: &[&str] = &[
+    "desktop",
+    "computer use",
+    "window",
+    "screenshot",
+    "mouse",
+    "keyboard",
+    "桌面",
+    "电脑操作",
+    "窗口",
+    "截图",
+    "鼠标",
+    "键盘",
+];
+
 const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
     "compare",
     "document",
@@ -886,6 +1051,51 @@ mod tests {
                 route: ToolVisibilityRouteKind::CodebaseOperation
             }
         )));
+    }
+
+    #[test]
+    fn terminal_inspection_activates_terminal_and_process_capabilities() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "看看 terminal 里面刚才的报错",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision.active_categories.contains(&ToolCategory::Terminal));
+        assert!(decision.active_categories.contains(&ToolCategory::Process));
+        assert_eq!(decision.route, ToolVisibilityRouteKind::CodebaseOperation);
+    }
+
+    #[test]
+    fn browser_inspection_activates_read_and_interactive_browser_capabilities() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "用 browser 检查一下这个页面",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::BrowserRead));
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::BrowserInteract));
+        assert_eq!(decision.route, ToolVisibilityRouteKind::WebLookup);
+    }
+
+    #[test]
+    fn local_dev_server_activates_process_and_interactive_browser_capabilities() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "启动 dev server 并检查 localhost 页面",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision.active_categories.contains(&ToolCategory::Process));
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::BrowserInteract));
+        assert_eq!(decision.route, ToolVisibilityRouteKind::CodebaseOperation);
     }
 
     #[test]

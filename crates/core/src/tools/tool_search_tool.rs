@@ -242,6 +242,7 @@ mod tests {
                 arguments: &args.to_string(),
                 db: &db,
                 source_scope: &[],
+                activity_runtime: None,
                 conversation_id: None,
                 tool_registry: Some(&registry),
                 cancel_token: None,

@@ -510,9 +510,11 @@ impl AgentExecutor {
                                     conversation_id,
                                     tool_registry: Some(&self.tools),
                                     cancel_token: Some(&self.cancel_token),
+                                    activity_runtime: Some(&self.activity_runtime),
                                 },
                             );
                             tokio::pin!(exec_fut);
+                            let mut activity_events = self.activity_runtime.subscribe();
                             let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
                             heartbeat
                                 .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -521,6 +523,23 @@ impl AgentExecutor {
                                 tokio::select! {
                                     biased;
                                     r = &mut exec_fut => break r,
+                                    event = activity_events.recv() => {
+                                        let Ok(event) = event else { continue; };
+                                        if event.activity_id != progress_call_id {
+                                            continue;
+                                        }
+                                        let note = format!(
+                                            "{} activity {:?} (event #{})",
+                                            progress_tool_name, event.kind, event.seq,
+                                        );
+                                        let _ = progress_tx
+                                            .send(AgentEvent::ToolCallProgress {
+                                                call_id: progress_call_id.clone(),
+                                                note,
+                                                activity: Some(event),
+                                            })
+                                            .await;
+                                    }
                                     _ = heartbeat.tick() => {
                                         let note = format!("running {}...", progress_tool_name);
                                         debug!(
@@ -531,6 +550,7 @@ impl AgentExecutor {
                                             .send(AgentEvent::ToolCallProgress {
                                                 call_id: progress_call_id.clone(),
                                                 note: note.clone(),
+                                                activity: None,
                                             })
                                             .await;
                                         let _ = progress_tx

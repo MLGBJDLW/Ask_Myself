@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::activity::ActivityRuntime;
 use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalRisk, ToolApprovalMode};
 use crate::db::Database;
@@ -87,9 +88,11 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
     parameters
 }
 
+pub mod activity_tool;
 pub mod agent_memory_tool;
 pub mod archive_output_tool;
 pub mod browser_evidence_tool;
+pub mod browser_session_tool;
 pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
 pub mod compare_tool;
@@ -320,6 +323,7 @@ pub struct ToolExecutionContext<'a> {
     pub conversation_id: Option<&'a str>,
     pub tool_registry: Option<&'a ToolRegistry>,
     pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
+    pub activity_runtime: Option<&'a ActivityRuntime>,
 }
 
 impl<'a> ToolExecutionContext<'a> {
@@ -338,11 +342,17 @@ impl<'a> ToolExecutionContext<'a> {
             conversation_id: None,
             tool_registry: None,
             cancel_token: None,
+            activity_runtime: None,
         }
     }
 
     pub fn with_conversation_id(mut self, conversation_id: Option<&'a str>) -> Self {
         self.conversation_id = conversation_id;
+        self
+    }
+
+    pub fn with_activity_runtime(mut self, activity_runtime: &'a ActivityRuntime) -> Self {
+        self.activity_runtime = Some(activity_runtime);
         self
     }
 }
@@ -846,7 +856,35 @@ impl ToolRegistry {
             }
         }
 
-        stable_tool_definitions(definitions)
+        let definitions = stable_tool_definitions(definitions);
+        if tracing::enabled!(target: "nexa::tool_visibility", tracing::Level::DEBUG) {
+            let offered_tools: Vec<&str> = definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect();
+            let hidden_tools: Vec<serde_json::Value> = self
+                .tools
+                .iter()
+                .filter(|tool| !selected_names.contains(tool.name()))
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name(),
+                        "categories": tool.categories(),
+                        "reason": "none of the tool categories are active for this visibility decision",
+                    })
+                })
+                .collect();
+            tracing::debug!(
+                target: "nexa::tool_visibility",
+                route = decision.route.as_str(),
+                active_categories = ?decision.active_categories,
+                offered_tools = ?offered_tools,
+                hidden_tools = ?hidden_tools,
+                decision_log = ?decision.log,
+                "resolved dynamic tool visibility"
+            );
+        }
+        definitions
     }
 
     /// Execute a tool by name through the single context-based runtime entry point.
@@ -869,6 +907,7 @@ impl ToolRegistry {
                 conversation_id: ctx.conversation_id,
                 tool_registry: ctx.tool_registry,
                 cancel_token: ctx.cancel_token,
+                activity_runtime: ctx.activity_runtime,
             })
             .await;
         Ok(normalize_tool_execution_result(
@@ -1343,6 +1382,7 @@ fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
 pub fn default_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(search_tool::SearchTool));
+    registry.register(Box::new(activity_tool::ActivityObserveTool));
     registry.register(Box::new(tool_search_tool::ToolSearchTool));
     registry.register(Box::new(glob_files_tool::GlobFilesTool));
     registry.register(Box::new(search_files_tool::SearchFilesTool));
@@ -1364,6 +1404,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(web_search_tool::WebSearchTool));
     registry.register(Box::new(web_research_context_tool::WebResearchContextTool));
     registry.register(Box::new(browser_evidence_tool::BrowserEvidenceCaptureTool));
+    registry.register(Box::new(browser_session_tool::BrowserSessionTool));
     registry.register(Box::new(download_asset_tool::DownloadAssetTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
@@ -1377,8 +1418,11 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(manage_source_tool::ManageSourceTool));
     registry.register(Box::new(statistics_tool::GetStatisticsTool));
     registry.register(Box::new(date_search_tool::DateSearchTool));
-    registry.register(Box::new(computer_use_tool::ComputerObserveTool));
-    registry.register(Box::new(computer_use_tool::ComputerControlTool));
+    #[cfg(target_os = "windows")]
+    {
+        registry.register(Box::new(computer_use_tool::ComputerObserveTool));
+        registry.register(Box::new(computer_use_tool::ComputerControlTool));
+    }
     registry.register(Box::new(desktop_automation_tool::DesktopAutomationTool));
     registry.register(Box::new(summarize_tool::SummarizeDocumentTool));
     registry.register(Box::new(update_plan_tool::UpdatePlanTool));
@@ -1574,19 +1618,30 @@ mod tests {
             );
         }
 
-        for allowed in [
+        let allowed = [
             "read_file",
             "grep_files",
             "search_files",
             "web_search",
             "tool_search",
-            "computer_observe",
-        ] {
+        ];
+        for allowed in allowed {
             assert!(
                 names.iter().any(|name| name == allowed),
                 "{allowed} should remain available"
             );
         }
+        #[cfg(target_os = "windows")]
+        assert!(names.iter().any(|name| name == "computer_observe"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn native_computer_tools_are_hidden_on_unsupported_platforms() {
+        let names = default_tool_registry().tool_names();
+
+        assert!(!names.iter().any(|name| name == "computer_observe"));
+        assert!(!names.iter().any(|name| name == "computer_control"));
     }
 
     #[cfg(feature = "ocr")]
@@ -1653,6 +1708,7 @@ mod tests {
         assert!(names.iter().any(|name| name == "desktop_automation"));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn select_tools_includes_native_computer_use_for_desktop_tasks() {
         let registry = default_tool_registry();

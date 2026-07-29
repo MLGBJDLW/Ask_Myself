@@ -434,6 +434,7 @@ fn main() {
             commands::terminal_bind_session_cmd,
             commands::terminal_snapshot_session_cmd,
             commands::terminal_list_sessions_cmd,
+            commands::terminal_active_session_cmd,
             // Model info
             commands::get_model_context_window,
             // Image attachment

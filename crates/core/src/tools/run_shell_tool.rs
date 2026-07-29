@@ -29,13 +29,8 @@ pub(crate) fn uses_managed_background(parsed_args: &serde_json::Value) -> bool {
     {
         return false;
     }
-    if parsed.background
-        || parsed
-            .ready_url
-            .as_deref()
-            .is_some_and(|url| !url.trim().is_empty())
-    {
-        return true;
+    if parsed.stdin.is_some() {
+        return false;
     }
 
     let invocation = if let Some(program) = parsed.program.as_deref() {
@@ -48,11 +43,13 @@ pub(crate) fn uses_managed_background(parsed_args: &serde_json::Value) -> bool {
                 Some((program.clone(), args.to_vec()))
             })
     } else {
-        None
+        // A command containing shell syntax could not be split as exact argv,
+        // but it still launches an external process and therefore belongs to
+        // the managed runtime.
+        return parsed.command.is_some();
     };
 
-    invocation
-        .is_some_and(|(program, args)| tool_impl::looks_like_persistent_service(&program, &args))
+    invocation.is_some_and(|(program, _)| !native_fs::is_native_filesystem_program(&program))
 }
 
 #[cfg(test)]
@@ -92,7 +89,7 @@ use shell_adapter::{
     resolve_program, RunShellOutput,
 };
 #[cfg(test)]
-use tool_impl::looks_like_persistent_service;
+use tool_impl::{belongs_to_conversation, looks_like_persistent_service, managed_wait_budget_secs};
 
 #[cfg(test)]
 mod tests;

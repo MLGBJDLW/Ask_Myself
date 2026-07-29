@@ -543,6 +543,7 @@ pub struct AgentExecutor {
     usage_scope_id: String,
     usage_run_id: Option<String>,
     usage_subtask_run_id: Option<String>,
+    activity_runtime: crate::activity::ActivityRuntime,
 }
 
 impl AgentExecutor {
@@ -563,6 +564,7 @@ impl AgentExecutor {
             usage_scope_id: Uuid::new_v4().to_string(),
             usage_run_id: None,
             usage_subtask_run_id: None,
+            activity_runtime: crate::activity::ActivityRuntime::new(),
         }
     }
 
@@ -572,6 +574,14 @@ impl AgentExecutor {
     /// checkpoint, save any partial conversation, and return gracefully.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    pub fn with_activity_runtime(
+        mut self,
+        activity_runtime: crate::activity::ActivityRuntime,
+    ) -> Self {
+        self.activity_runtime = activity_runtime;
         self
     }
 

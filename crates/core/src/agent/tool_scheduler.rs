@@ -151,15 +151,13 @@ pub(crate) fn tool_timeout_for_call(
             .and_then(|v| v.as_u64())
             .unwrap_or(30);
         if crate::tools::run_shell_tool::uses_managed_background(parsed_args) {
-            let ready_timeout = parsed_args
-                .get("ready_timeout_secs")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(20);
-            timeout_secs = timeout_secs.max(ready_timeout.saturating_add(5));
-        } else if requested == 0 {
-            return None;
-        }
-        if requested > 0 {
+            // External processes return within the short automatic-detach grace
+            // window. Deprecated readiness fields must not enlarge the outer
+            // tool-call timeout and block the agent loop.
+        } else {
+            if requested == 0 {
+                return None;
+            }
             timeout_secs = timeout_secs.max(requested.saturating_add(5));
         }
     }
@@ -374,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn timeout_extends_for_auto_promoted_shell_readiness() {
+    fn auto_detached_shell_ignores_deprecated_readiness_timeout() {
         let timeout = tool_timeout_for_call(
             Some(30),
             "run_shell",
@@ -384,7 +382,7 @@ mod tests {
                 "ready_timeout_secs": 120
             }),
         );
-        assert_eq!(timeout, Some(Duration::from_secs(125)));
+        assert_eq!(timeout, Some(Duration::from_secs(30)));
     }
 
     #[test]
@@ -414,7 +412,7 @@ mod tests {
 
         assert_eq!(decision.parsed_args["timeout_secs"], 0);
         assert_eq!(decision.parsed_args["ready_timeout_secs"], 120);
-        assert_eq!(decision.timeout, Some(Duration::from_secs(125)));
+        assert_eq!(decision.timeout, Some(Duration::from_secs(30)));
     }
 
     #[test]

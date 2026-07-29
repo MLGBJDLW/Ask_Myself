@@ -328,15 +328,95 @@ fn test_managed_background_budget_uses_the_execution_promotion_rules() {
         "args": ["check.py"],
         "ready_url": "http://127.0.0.1:4173"
     })));
-    assert!(!uses_managed_background(&serde_json::json!({
+    assert!(uses_managed_background(&serde_json::json!({
         "program": "python",
         "args": ["test_server.py"]
+    })));
+    assert!(uses_managed_background(&serde_json::json!({
+        "program": "node",
+        "args": ["scripts/check.js"]
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "program": "cp",
+        "args": ["source.txt", "copy.txt"]
+    })));
+    assert!(!uses_managed_background(&serde_json::json!({
+        "program": "python",
+        "args": ["-"],
+        "stdin": "print('finite foreground input')"
     })));
     assert!(!uses_managed_background(&serde_json::json!({
         "service_action": "status",
         "service_id": "service-1",
         "ready_url": "http://127.0.0.1:4173"
     })));
+}
+
+#[test]
+fn test_managed_wait_budget_is_a_short_observation_quantum() {
+    assert_eq!(managed_wait_budget_secs(None), 3);
+    assert_eq!(managed_wait_budget_secs(Some(0)), 3);
+    assert_eq!(managed_wait_budget_secs(Some(1)), 1);
+    assert_eq!(managed_wait_budget_secs(Some(30)), 3);
+    assert_eq!(managed_wait_budget_secs(Some(900)), 3);
+}
+
+#[test]
+fn managed_process_ownership_is_conversation_scoped() {
+    let owner = Some("conversation-1".to_string());
+    assert!(belongs_to_conversation(&owner, Some("conversation-1")));
+    assert!(!belongs_to_conversation(&owner, Some("conversation-2")));
+    assert!(!belongs_to_conversation(&owner, None));
+    assert!(belongs_to_conversation(&None, None));
+}
+
+#[tokio::test]
+async fn test_external_command_emits_a_completed_process_activity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let runtime = crate::activity::ActivityRuntime::new();
+    let tool = RunShellTool;
+    let args = json!({
+        "program": "node",
+        "args": ["--version"],
+        "cwd": tmp.path().to_string_lossy(),
+    });
+
+    let result = tool
+        .execute(
+            crate::tools::ToolExecutionContext::new(
+                "node-version-activity",
+                &args.to_string(),
+                &db,
+                &[],
+            )
+            .with_activity_runtime(&runtime),
+        )
+        .await
+        .expect("run_shell result");
+
+    assert!(!result.is_error, "unexpected result: {}", result.content);
+    let activity_id = result.artifacts.as_ref().unwrap()["activityId"]
+        .as_str()
+        .expect("process activity id");
+    assert!(activity_id.starts_with("process_"));
+    assert_ne!(activity_id, "node-version-activity");
+    let observation = runtime
+        .observe(activity_id, 0, Duration::from_millis(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        observation.record.state,
+        crate::activity::ActivityState::Completed
+    );
+    assert!(observation
+        .events
+        .iter()
+        .any(|event| event.kind == crate::activity::ActivityEventKind::StdoutChunk));
+    assert!(observation
+        .events
+        .iter()
+        .any(|event| { event.kind == crate::activity::ActivityEventKind::CommandFinished }));
 }
 
 #[tokio::test]

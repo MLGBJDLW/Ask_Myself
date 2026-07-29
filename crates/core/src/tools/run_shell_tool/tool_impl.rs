@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::activity::{
+    ActivityEventKind, ActivityRuntime, ActivitySpec, ActivityState, ActivitySurface,
+};
 use crate::error::CoreError;
 use crate::execution_environment::{ExecutionEnvironment, ExecutionRequest};
 use async_trait::async_trait;
@@ -17,48 +20,222 @@ use super::super::run_shell_contract::{
 };
 use super::super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
 use super::environment::LocalRunShellExecutionEnvironment;
-use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot};
+use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot, FileSnapshot};
+use super::native_fs::is_native_filesystem_program;
 use super::parser::parse_run_shell_args;
 use super::policy::{
     normalize_run_shell_invocation, validate_args, validate_scoped_args, validate_stdin,
 };
 use super::shell_adapter::{
     clamp_timeout, format_confirmation, format_output, format_shell_confirmation,
-    parse_shell_selector, spawn_background_process, RunShellOutput,
+    parse_shell_selector, spawn_background_process, ProcessTreeGuard, RunShellOutput,
 };
 
 pub struct RunShellTool;
 
-const DEFAULT_READY_TIMEOUT_SECS: u64 = 20;
-const MAX_READY_TIMEOUT_SECS: u64 = 120;
 const AUTO_SERVICE_SETTLE_MS: u64 = 1_500;
 const MAX_SERVICE_LOG_BYTES: usize = 32 * 1024;
 const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 30;
-const MAX_WAIT_TIMEOUT_SECS: u64 = 900;
+const SERVICE_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 3;
+const MAX_WAIT_TIMEOUT_SECS: u64 = 3;
 
-#[derive(Default)]
+pub(super) fn managed_wait_budget_secs(requested: Option<u64>) -> u64 {
+    match requested {
+        None | Some(0) => DEFAULT_WAIT_TIMEOUT_SECS,
+        Some(seconds) => seconds.clamp(1, MAX_WAIT_TIMEOUT_SECS),
+    }
+}
+
+#[derive(Clone, Default)]
 struct ManagedServiceLogs {
     stdout: String,
     stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
 }
 
 struct ManagedService {
     child: tokio::process::Child,
+    process_tree: ProcessTreeGuard,
+    activity_id: String,
     process_id: Option<u32>,
     program: String,
     ready_url: Option<reqwest::Url>,
     logs: Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
     auto_promoted: bool,
     started_at: Instant,
+    activity_runtime: ActivityRuntime,
+    cwd: PathBuf,
+    before_snapshot: FileSnapshot,
+    conversation_id: Option<String>,
+    stdout_task: Option<tokio::task::JoinHandle<()>>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn new_process_activity_id() -> String {
+    format!("process_{}", uuid::Uuid::new_v4())
+}
+
+#[derive(Clone)]
+struct CompletedService {
+    result: ToolResult,
+    conversation_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct FinalizingService {
+    conversation_id: Option<String>,
 }
 
 static MANAGED_SERVICES: OnceLock<tokio::sync::Mutex<HashMap<String, ManagedService>>> =
+    OnceLock::new();
+static COMPLETED_SERVICES: OnceLock<tokio::sync::Mutex<HashMap<String, CompletedService>>> =
+    OnceLock::new();
+static FINALIZING_SERVICES: OnceLock<tokio::sync::Mutex<HashMap<String, FinalizingService>>> =
     OnceLock::new();
 static READINESS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn managed_services() -> &'static tokio::sync::Mutex<HashMap<String, ManagedService>> {
     MANAGED_SERVICES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn completed_services() -> &'static tokio::sync::Mutex<HashMap<String, CompletedService>> {
+    COMPLETED_SERVICES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn finalizing_services() -> &'static tokio::sync::Mutex<HashMap<String, FinalizingService>> {
+    FINALIZING_SERVICES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+pub(super) fn belongs_to_conversation(
+    owner: &Option<String>,
+    conversation_id: Option<&str>,
+) -> bool {
+    owner.as_deref() == conversation_id
+}
+
+async fn mark_service_finalizing(service_id: &str, service: &ManagedService) {
+    finalizing_services().lock().await.insert(
+        service_id.to_string(),
+        FinalizingService {
+            conversation_id: service.conversation_id.clone(),
+        },
+    );
+}
+
+async fn cache_completed_service(
+    service_id: &str,
+    result: ToolResult,
+    conversation_id: Option<String>,
+) {
+    let mut completed = completed_services().lock().await;
+    if completed.len() >= 128 {
+        if let Some(evicted) = completed.keys().next().cloned() {
+            completed.remove(&evicted);
+        }
+    }
+    completed.insert(
+        service_id.to_string(),
+        CompletedService {
+            result,
+            conversation_id,
+        },
+    );
+    drop(completed);
+    finalizing_services().lock().await.remove(service_id);
+}
+
+async fn inactive_service_result(
+    call_id: &str,
+    service_id: &str,
+    conversation_id: Option<&str>,
+) -> Option<ToolResult> {
+    if let Some(completed) = completed_services().lock().await.get(service_id).cloned() {
+        if !belongs_to_conversation(&completed.conversation_id, conversation_id) {
+            return Some(error_result(
+                call_id,
+                "managed service belongs to a different conversation",
+            ));
+        }
+        let mut result = completed.result;
+        result.call_id = call_id.to_string();
+        return Some(result);
+    }
+    let finalizing = finalizing_services()
+        .lock()
+        .await
+        .get(service_id)
+        .cloned()?;
+    if !belongs_to_conversation(&finalizing.conversation_id, conversation_id) {
+        return Some(error_result(
+            call_id,
+            "managed service belongs to a different conversation",
+        ));
+    }
+    Some(ToolResult {
+        call_id: call_id.to_string(),
+        content: format!(
+            "Managed service {service_id} has exited and is finalizing logs and file changes. Observe it again shortly for the completed result."
+        ),
+        is_error: false,
+        artifacts: Some(serde_json::json!({
+            "kind": "managedService",
+            "serviceId": service_id,
+            "status": "finalizing",
+        })),
+    })
+}
+
+fn spawn_service_monitor(service_id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let mut services = managed_services().lock().await;
+            let status = {
+                let Some(service) = services.get_mut(&service_id) else {
+                    return;
+                };
+                service.child.try_wait()
+            };
+            match status {
+                Ok(Some(status)) => {
+                    let service = services
+                        .remove(&service_id)
+                        .expect("managed service disappeared while locked");
+                    mark_service_finalizing(&service_id, &service).await;
+                    drop(services);
+                    let _ =
+                        finalize_exited_service(&service_id, &service_id, service, status).await;
+                    return;
+                }
+                Ok(None) => drop(services),
+                Err(error) => {
+                    let service = services
+                        .remove(&service_id)
+                        .expect("managed service disappeared while locked");
+                    mark_service_finalizing(&service_id, &service).await;
+                    drop(services);
+                    service.process_tree.terminate();
+                    let _ = service.activity_runtime.transition(
+                        &service.activity_id,
+                        ActivityState::Failed,
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                    cache_completed_service(
+                        &service_id,
+                        error_result(
+                            &service_id,
+                            format!("failed to inspect managed process: {error}"),
+                        ),
+                        service.conversation_id.clone(),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    });
 }
 
 fn readiness_client() -> &'static reqwest::Client {
@@ -93,23 +270,27 @@ fn validate_ready_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-fn append_bounded_log(target: &mut String, bytes: &[u8]) {
+fn append_bounded_log(target: &mut String, bytes: &[u8]) -> bool {
     target.push_str(&String::from_utf8_lossy(bytes));
     if target.len() <= MAX_SERVICE_LOG_BYTES {
-        return;
+        return false;
     }
     let mut start = target.len() - MAX_SERVICE_LOG_BYTES;
     while start < target.len() && !target.is_char_boundary(start) {
         start += 1;
     }
     target.drain(..start);
+    true
 }
 
 fn collect_service_output<R>(
     mut reader: R,
     logs: Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
     stdout: bool,
-) where
+    activity_runtime: ActivityRuntime,
+    activity_id: String,
+) -> tokio::task::JoinHandle<()>
+where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -118,17 +299,30 @@ fn collect_service_output<R>(
             match reader.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
+                    let data = String::from_utf8_lossy(&buffer[..read]).into_owned();
                     let mut logs = logs.lock().await;
-                    let target = if stdout {
-                        &mut logs.stdout
+                    if stdout {
+                        if append_bounded_log(&mut logs.stdout, &buffer[..read]) {
+                            logs.stdout_truncated = true;
+                        }
+                    } else if append_bounded_log(&mut logs.stderr, &buffer[..read]) {
+                        logs.stderr_truncated = true;
+                    }
+                    drop(logs);
+                    let kind = if stdout {
+                        ActivityEventKind::StdoutChunk
                     } else {
-                        &mut logs.stderr
+                        ActivityEventKind::StderrChunk
                     };
-                    append_bounded_log(target, &buffer[..read]);
+                    let _ = activity_runtime.append(
+                        &activity_id,
+                        kind,
+                        serde_json::json!({ "data": data }),
+                    );
                 }
             }
         }
-    });
+    })
 }
 
 fn local_url_regex() -> &'static Regex {
@@ -157,15 +351,37 @@ fn discover_ready_url(stdout: &str, stderr: &str) -> Option<reqwest::Url> {
 
 async fn service_log_snapshot(
     logs: &Arc<tokio::sync::Mutex<ManagedServiceLogs>>,
-) -> (String, String) {
+) -> ManagedServiceLogs {
     let logs = logs.lock().await;
-    (logs.stdout.clone(), logs.stderr.clone())
+    logs.clone()
+}
+
+async fn await_service_output_task(task: Option<tokio::task::JoinHandle<()>>, timeout: Duration) {
+    let Some(mut task) = task else {
+        return;
+    };
+    if tokio::time::timeout(timeout, &mut task).await.is_err() {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn drain_service_output_tasks(
+    stdout_task: Option<tokio::task::JoinHandle<()>>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
+    timeout: Duration,
+) {
+    tokio::join!(
+        await_service_output_task(stdout_task, timeout),
+        await_service_output_task(stderr_task, timeout),
+    );
 }
 
 async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
+#[cfg(test)]
 fn launches_python_server_script(program: &str, args: &[String]) -> bool {
     let is_python_launcher = matches!(program, "python" | "python3" | "py")
         || program
@@ -198,6 +414,7 @@ fn launches_python_server_script(program: &str, args: &[String]) -> bool {
     false
 }
 
+#[cfg(test)]
 pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let program = Path::new(program)
         .file_stem()
@@ -230,15 +447,30 @@ pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> b
                 .is_some_and(|arg| matches!(arg.as_str(), "vite" | "webpack" | "next")))
 }
 
-async fn start_managed_service(
-    call_id: &str,
-    program: &str,
-    args: &[String],
-    cwd: &Path,
+struct ManagedServiceRequest<'a> {
+    call_id: &'a str,
+    program: &'a str,
+    args: &'a [String],
+    cwd: &'a Path,
     requested_ready_url: Option<reqwest::Url>,
-    ready_timeout_secs: u64,
     auto_promoted: bool,
-) -> ToolResult {
+    activity_runtime: ActivityRuntime,
+    conversation_id: Option<&'a str>,
+    before_snapshot: FileSnapshot,
+}
+
+async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult {
+    let ManagedServiceRequest {
+        call_id,
+        program,
+        args,
+        cwd,
+        requested_ready_url,
+        auto_promoted,
+        activity_runtime,
+        conversation_id,
+        before_snapshot,
+    } = request;
     if let Some(ready_url) = requested_ready_url.as_ref() {
         if readiness_probe(ready_url).await {
             return error_result(
@@ -250,34 +482,100 @@ async fn start_managed_service(
         }
     }
 
-    let mut child = match spawn_background_process(program, args, cwd) {
-        Ok(child) => child,
-        Err(error) => return error_result(call_id, error),
+    let activity_id = new_process_activity_id();
+    let mut activity_spec = ActivitySpec::new(ActivitySurface::Process, TOOL_NAME)
+        .with_activity_id(&activity_id)
+        .with_cwd(cwd.display().to_string());
+    if let Some(conversation_id) = conversation_id {
+        activity_spec = activity_spec.with_conversation_id(conversation_id);
+    }
+    if let Err(error) = activity_runtime.start(activity_spec) {
+        return error_result(
+            call_id,
+            format!("failed to start process activity: {error}"),
+        );
+    }
+
+    let (mut child, process_tree) = match spawn_background_process(program, args, cwd) {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            let _ = activity_runtime.transition(
+                &activity_id,
+                ActivityState::Failed,
+                serde_json::json!({ "error": error }),
+            );
+            return error_result(call_id, error);
+        }
     };
     let logs = Arc::new(tokio::sync::Mutex::new(ManagedServiceLogs::default()));
-    if let Some(stdout) = child.stdout.take() {
-        collect_service_output(stdout, Arc::clone(&logs), true);
-    }
-    if let Some(stderr) = child.stderr.take() {
-        collect_service_output(stderr, Arc::clone(&logs), false);
-    }
     let process_id = child.id();
+    let _ = activity_runtime.append(
+        &activity_id,
+        ActivityEventKind::CommandStarted,
+        serde_json::json!({
+            "program": program,
+            "args": args,
+            "processId": process_id,
+        }),
+    );
+    let stdout_task = child.stdout.take().map(|stdout| {
+        collect_service_output(
+            stdout,
+            Arc::clone(&logs),
+            true,
+            activity_runtime.clone(),
+            activity_id.clone(),
+        )
+    });
+    let stderr_task = child.stderr.take().map(|stderr| {
+        collect_service_output(
+            stderr,
+            Arc::clone(&logs),
+            false,
+            activity_runtime.clone(),
+            activity_id.clone(),
+        )
+    });
     let started_at = Instant::now();
-    let deadline = started_at + Duration::from_secs(ready_timeout_secs);
 
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return error_result(call_id, {
-                    let (stdout, stderr) = service_log_snapshot(&logs).await;
-                    format!(
-                            "background service exited during startup (status: {status}).\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
-                        )
-                });
+                // The leader may have exited while descendants still hold its pipes.
+                // Terminate the whole tree before draining so finalization cannot hang.
+                process_tree.terminate();
+                drain_service_output_tasks(stdout_task, stderr_task, SERVICE_LOG_DRAIN_TIMEOUT)
+                    .await;
+                let log_snapshot = service_log_snapshot(&logs).await;
+                let service = ManagedService {
+                    child,
+                    process_tree,
+                    activity_id,
+                    process_id,
+                    program: program.to_string(),
+                    ready_url: requested_ready_url,
+                    logs,
+                    auto_promoted,
+                    started_at,
+                    activity_runtime,
+                    cwd: cwd.to_path_buf(),
+                    before_snapshot,
+                    conversation_id: conversation_id.map(str::to_string),
+                    stdout_task: None,
+                    stderr_task: None,
+                };
+                return exited_service_result(call_id, call_id, &service, status, &log_snapshot)
+                    .await;
             }
             Ok(None) => {}
             Err(error) => {
+                process_tree.terminate();
                 let _ = child.kill().await;
+                let _ = activity_runtime.transition(
+                    &activity_id,
+                    ActivityState::Failed,
+                    serde_json::json!({ "error": error.to_string() }),
+                );
                 return error_result(
                     call_id,
                     format!("failed to inspect background service: {error}"),
@@ -285,24 +583,43 @@ async fn start_managed_service(
             }
         }
 
-        let (stdout, stderr) = service_log_snapshot(&logs).await;
+        let log_snapshot = service_log_snapshot(&logs).await;
         let ready_url = requested_ready_url
             .clone()
-            .or_else(|| discover_ready_url(&stdout, &stderr));
+            .or_else(|| discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr));
         if let Some(ready_url) = ready_url.as_ref() {
             if readiness_probe(ready_url).await {
+                let _ = activity_runtime.append(
+                    &activity_id,
+                    ActivityEventKind::ReadyUrl,
+                    serde_json::json!({ "url": ready_url.as_str() }),
+                );
+                let _ = activity_runtime.transition(
+                    &activity_id,
+                    ActivityState::Ready,
+                    serde_json::json!({ "url": ready_url.as_str() }),
+                );
                 managed_services().lock().await.insert(
                     call_id.to_string(),
                     ManagedService {
                         child,
+                        process_tree,
+                        activity_id: activity_id.clone(),
                         process_id,
                         program: program.to_string(),
                         ready_url: Some(ready_url.clone()),
                         logs,
                         auto_promoted,
                         started_at,
+                        activity_runtime: activity_runtime.clone(),
+                        cwd: cwd.to_path_buf(),
+                        before_snapshot,
+                        conversation_id: conversation_id.map(str::to_string),
+                        stdout_task,
+                        stderr_task,
                     },
                 );
+                spawn_service_monitor(call_id.to_string());
                 return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
@@ -312,34 +629,45 @@ async fn start_managed_service(
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "activityId": activity_id,
+                    "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "ready",
                     "readyUrl": ready_url.as_str(),
                     "program": program,
                     "autoPromoted": auto_promoted,
-                    "stdoutTail": stdout,
-                    "stderrTail": stderr,
+                    "stdoutTail": log_snapshot.stdout,
+                    "stderrTail": log_snapshot.stderr,
+                    "stdoutTruncated": log_snapshot.stdout_truncated,
+                    "stderrTruncated": log_snapshot.stderr_truncated,
                 })),
                 };
             }
         }
 
-        if requested_ready_url.is_none()
-            && started_at.elapsed() >= Duration::from_millis(AUTO_SERVICE_SETTLE_MS)
-        {
+        if started_at.elapsed() >= Duration::from_millis(AUTO_SERVICE_SETTLE_MS) {
             managed_services().lock().await.insert(
                 call_id.to_string(),
                 ManagedService {
                     child,
+                    process_tree,
+                    activity_id: activity_id.clone(),
                     process_id,
                     program: program.to_string(),
                     ready_url: ready_url.clone(),
                     logs,
                     auto_promoted,
                     started_at,
+                    activity_runtime: activity_runtime.clone(),
+                    cwd: cwd.to_path_buf(),
+                    before_snapshot,
+                    conversation_id: conversation_id.map(str::to_string),
+                    stdout_task,
+                    stderr_task,
                 },
             );
+            spawn_service_monitor(call_id.to_string());
             return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
@@ -353,148 +681,313 @@ async fn start_managed_service(
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "activityId": activity_id,
+                    "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "running",
                     "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
                     "program": program,
                     "autoPromoted": auto_promoted,
-                    "stdoutTail": stdout,
-                    "stderrTail": stderr,
+                    "stdoutTail": log_snapshot.stdout,
+                    "stderrTail": log_snapshot.stderr,
+                    "stdoutTruncated": log_snapshot.stdout_truncated,
+                    "stderrTruncated": log_snapshot.stderr_truncated,
                 })),
             };
         }
 
-        if Instant::now() >= deadline {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return error_result(
-                call_id,
-                format!(
-                    "background service did not become ready at {} within {ready_timeout_secs}s and was stopped",
-                    requested_ready_url.as_ref().map_or("the requested URL", reqwest::Url::as_str)
-                ),
-            );
-        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-async fn manage_service(call_id: &str, action: &str, service_id: &str) -> ToolResult {
+async fn status_service(
+    call_id: &str,
+    service_id: &str,
+    conversation_id: Option<&str>,
+) -> ToolResult {
     let mut registry = managed_services().lock().await;
-    let Some(mut service) = registry.remove(service_id) else {
+    let Some(service) = registry.get_mut(service_id) else {
+        drop(registry);
+        if let Some(result) = inactive_service_result(call_id, service_id, conversation_id).await {
+            return result;
+        }
         return error_result(
             call_id,
             format!("managed service '{service_id}' was not found or has already stopped"),
         );
     };
-
-    if action == "stop" {
-        let (stdout, stderr) = service_log_snapshot(&service.logs).await;
-        let kill_error = service.child.kill().await.err();
-        let _ = service.child.wait().await;
-        return ToolResult {
-            call_id: call_id.to_string(),
-            content: kill_error.map_or_else(
-                || format!("Stopped managed service {service_id}."),
-                |error| format!("Managed service {service_id} had already exited: {error}"),
-            ),
-            is_error: false,
-            artifacts: Some(serde_json::json!({
-                "kind": "managedService",
-                "serviceId": service_id,
-                "processId": service.process_id,
-                "status": "stopped",
-                "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-                "program": service.program,
-                "autoPromoted": service.auto_promoted,
-                "stdoutTail": stdout,
-                "stderrTail": stderr,
-            })),
-        };
+    if !belongs_to_conversation(&service.conversation_id, conversation_id) {
+        return error_result(
+            call_id,
+            "managed service belongs to a different conversation",
+        );
     }
-
-    match service.child.try_wait() {
+    let process_status = service.child.try_wait();
+    match process_status {
         Ok(Some(status)) => {
-            let (stdout, stderr) = service_log_snapshot(&service.logs).await;
-            exited_service_result(call_id, service_id, &service, status, &stdout, &stderr)
+            let service = registry
+                .remove(service_id)
+                .expect("managed service disappeared while locked");
+            mark_service_finalizing(service_id, &service).await;
+            drop(registry);
+            finalize_exited_service(call_id, service_id, service, status).await
         }
         Err(error) => error_result(
             call_id,
             format!("failed to inspect service {service_id}: {error}"),
         ),
         Ok(None) => {
-            let (stdout, stderr) = service_log_snapshot(&service.logs).await;
+            let log_snapshot = service_log_snapshot(&service.logs).await;
             if service.ready_url.is_none() {
-                service.ready_url = discover_ready_url(&stdout, &stderr);
+                service.ready_url = discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr);
             }
-            let healthy = match service.ready_url.as_ref() {
+            let ready_url = service.ready_url.clone();
+            let process_id = service.process_id;
+            let program = service.program.clone();
+            let auto_promoted = service.auto_promoted;
+            let uptime_ms = service.started_at.elapsed().as_millis() as u64;
+            let activity_id = service.activity_id.clone();
+            let cursor = service
+                .activity_runtime
+                .get(&activity_id)
+                .map(|record| record.last_event_seq);
+            drop(registry);
+            let healthy = match ready_url.as_ref() {
                 Some(url) => Some(readiness_probe(url).await),
                 None => None,
             };
-            let uptime_ms = service.started_at.elapsed().as_millis() as u64;
-            let result = ToolResult {
+            ToolResult {
                 call_id: call_id.to_string(),
-                content: match (healthy, service.ready_url.as_ref()) {
+                content: match (healthy, ready_url.as_ref()) {
                     (Some(true), Some(url)) => format!(
                         "Managed service {service_id} is running and healthy at {url}."
                     ),
                     (Some(false), Some(url)) => format!(
-                        "Managed service {service_id} is still running, but {url} is not responding.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+                        "Managed service {service_id} is still running, but {url} is not responding.\nstdout tail:\n{}\nstderr tail:\n{}",
+                        log_snapshot.stdout,
+                        log_snapshot.stderr,
                     ),
                     _ => format!(
-                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
+                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet.\nstdout tail:\n{}\nstderr tail:\n{}",
+                        log_snapshot.stdout,
+                        log_snapshot.stderr,
                     ),
                 },
                 is_error: healthy == Some(false),
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "activityId": activity_id,
+                    "cursor": cursor,
                     "serviceId": service_id,
-                    "processId": service.process_id,
+                    "processId": process_id,
                     "status": match healthy { Some(true) => "ready", Some(false) => "unhealthy", None => "running" },
-                    "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-                    "program": service.program,
-                    "autoPromoted": service.auto_promoted,
+                    "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
+                    "program": program,
+                    "autoPromoted": auto_promoted,
                     "uptimeMs": uptime_ms,
-                    "stdoutTail": stdout,
-                    "stderrTail": stderr,
+                    "stdoutTail": log_snapshot.stdout,
+                    "stderrTail": log_snapshot.stderr,
+                    "stdoutTruncated": log_snapshot.stdout_truncated,
+                    "stderrTruncated": log_snapshot.stderr_truncated,
                 })),
-            };
-            registry.insert(service_id.to_string(), service);
-            result
+            }
         }
     }
 }
 
-fn exited_service_result(
+async fn manage_service(
+    call_id: &str,
+    action: &str,
+    service_id: &str,
+    conversation_id: Option<&str>,
+) -> ToolResult {
+    if action == "status" {
+        return status_service(call_id, service_id, conversation_id).await;
+    }
+    if action != "stop" {
+        return error_result(call_id, format!("unsupported service action '{action}'"));
+    }
+
+    let mut registry = managed_services().lock().await;
+    let Some(mut service) = registry.remove(service_id) else {
+        drop(registry);
+        if let Some(result) = inactive_service_result(call_id, service_id, conversation_id).await {
+            return result;
+        }
+        return error_result(
+            call_id,
+            format!("managed service '{service_id}' was not found or has already stopped"),
+        );
+    };
+    if !belongs_to_conversation(&service.conversation_id, conversation_id) {
+        registry.insert(service_id.to_string(), service);
+        return error_result(
+            call_id,
+            "managed service belongs to a different conversation",
+        );
+    }
+    mark_service_finalizing(service_id, &service).await;
+    drop(registry);
+
+    service.process_tree.terminate();
+    let kill_error = service.child.kill().await.err();
+    let _ = service.child.wait().await;
+    drain_service_output_tasks(
+        service.stdout_task.take(),
+        service.stderr_task.take(),
+        SERVICE_LOG_DRAIN_TIMEOUT,
+    )
+    .await;
+    let log_snapshot = service_log_snapshot(&service.logs).await;
+    let _ = service.activity_runtime.transition(
+        &service.activity_id,
+        ActivityState::Cancelled,
+        serde_json::json!({ "reason": "stopped_by_tool" }),
+    );
+    let result = ToolResult {
+        call_id: call_id.to_string(),
+        content: kill_error.map_or_else(
+            || format!("Stopped managed service {service_id}."),
+            |error| format!("Managed service {service_id} had already exited: {error}"),
+        ),
+        is_error: false,
+        artifacts: Some(serde_json::json!({
+            "kind": "managedService",
+            "activityId": service.activity_id,
+            "cursor": service.activity_runtime.get(&service.activity_id).map(|record| record.last_event_seq),
+            "serviceId": service_id,
+            "processId": service.process_id,
+            "status": "stopped",
+            "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
+            "program": service.program,
+            "autoPromoted": service.auto_promoted,
+            "stdoutTail": log_snapshot.stdout,
+            "stderrTail": log_snapshot.stderr,
+            "stdoutTruncated": log_snapshot.stdout_truncated,
+            "stderrTruncated": log_snapshot.stderr_truncated,
+        })),
+    };
+    cache_completed_service(service_id, result.clone(), service.conversation_id.clone()).await;
+    result
+}
+
+async fn exited_service_result(
     call_id: &str,
     service_id: &str,
     service: &ManagedService,
     status: std::process::ExitStatus,
-    stdout: &str,
-    stderr: &str,
+    logs: &ManagedServiceLogs,
 ) -> ToolResult {
     let exit_code = status.code();
+    let state = if status.success() {
+        ActivityState::Completed
+    } else {
+        ActivityState::Failed
+    };
+    let _ = service.activity_runtime.append(
+        &service.activity_id,
+        ActivityEventKind::CommandFinished,
+        serde_json::json!({ "exitCode": exit_code }),
+    );
+    let _ = service.activity_runtime.transition(
+        &service.activity_id,
+        state,
+        serde_json::json!({ "exitCode": exit_code }),
+    );
+
+    let after_root = service.cwd.clone();
+    let after_snapshot = tokio::task::spawn_blocking(move || capture_file_snapshot(&after_root))
+        .await
+        .ok();
+    let file_changes = after_snapshot.as_ref().and_then(|after_snapshot| {
+        build_run_shell_file_changes(&service.cwd, &service.before_snapshot, after_snapshot)
+    });
+    let output = RunShellOutput {
+        exit_code,
+        stdout: logs.stdout.clone(),
+        stderr: logs.stderr.clone(),
+        duration_ms: service.started_at.elapsed().as_millis(),
+        truncated_stdout: logs.stdout_truncated,
+        truncated_stderr: logs.stderr_truncated,
+        killed_by_timeout: false,
+    };
+    let mut content = format_output(&output);
+    if let Some(changes) = &file_changes {
+        content.push_str("\n── file changes ──\n");
+        content.push_str(&changes.summary);
+        content.push('\n');
+    }
+    let mut artifacts = file_changes
+        .map(|changes| changes.artifact)
+        .unwrap_or_else(|| serde_json::json!({ "kind": "managedService" }));
+    if let Some(object) = artifacts.as_object_mut() {
+        object.insert(
+            "activityId".to_string(),
+            serde_json::json!(service.activity_id),
+        );
+        object.insert(
+            "cursor".to_string(),
+            serde_json::json!(service
+                .activity_runtime
+                .get(&service.activity_id)
+                .map(|record| record.last_event_seq)),
+        );
+        object.insert(
+            "execution".to_string(),
+            serde_json::json!({
+                "exitCode": exit_code,
+                "durationMs": output.duration_ms as u64,
+                "timedOut": false,
+            }),
+        );
+        object.insert("serviceId".to_string(), serde_json::json!(service_id));
+        object.insert(
+            "processId".to_string(),
+            serde_json::json!(service.process_id),
+        );
+        object.insert("status".to_string(), serde_json::json!("exited"));
+        object.insert("program".to_string(), serde_json::json!(service.program));
+        object.insert(
+            "autoPromoted".to_string(),
+            serde_json::json!(service.auto_promoted),
+        );
+    }
     ToolResult {
         call_id: call_id.to_string(),
-        content: format!(
-            "Managed service {service_id} exited with status {status}.\nstdout tail:\n{stdout}\nstderr tail:\n{stderr}"
-        ),
+        content,
         is_error: !status.success(),
-        artifacts: Some(serde_json::json!({
-            "kind": "managedService",
-            "serviceId": service_id,
-            "processId": service.process_id,
-            "status": "exited",
-            "exitCode": exit_code,
-            "readyUrl": service.ready_url.as_ref().map(reqwest::Url::as_str),
-            "program": service.program,
-            "autoPromoted": service.auto_promoted,
-            "uptimeMs": service.started_at.elapsed().as_millis() as u64,
-            "stdoutTail": stdout,
-            "stderrTail": stderr,
-        })),
+        artifacts: Some(artifacts),
     }
+}
+
+async fn finalize_exited_service(
+    call_id: &str,
+    service_id: &str,
+    mut service: ManagedService,
+    status: std::process::ExitStatus,
+) -> ToolResult {
+    // A descendant can outlive the leader while retaining inherited stdout or
+    // stderr. Kill the process tree first, then bound the pipe-drain wait.
+    service.process_tree.terminate();
+    drain_service_output_tasks(
+        service.stdout_task.take(),
+        service.stderr_task.take(),
+        SERVICE_LOG_DRAIN_TIMEOUT,
+    )
+    .await;
+    let log_snapshot = service_log_snapshot(&service.logs).await;
+    let stored_result =
+        exited_service_result(service_id, service_id, &service, status, &log_snapshot).await;
+    cache_completed_service(
+        service_id,
+        stored_result.clone(),
+        service.conversation_id.clone(),
+    )
+    .await;
+    let mut result = stored_result;
+    result.call_id = call_id.to_string();
+    result
 }
 
 /// Poll a managed service until it exits or the wait budget runs out.
@@ -503,39 +996,77 @@ fn exited_service_result(
 /// status and logs as soon as the process finishes instead of guessing how long
 /// to block, and gets a still-running snapshot when the budget elapses so it can
 /// keep working and poll again later.
-async fn wait_for_service(call_id: &str, service_id: &str, wait_timeout_secs: u64) -> ToolResult {
+async fn wait_for_service(
+    call_id: &str,
+    service_id: &str,
+    wait_timeout_secs: u64,
+    conversation_id: Option<&str>,
+) -> ToolResult {
     let deadline = Instant::now() + Duration::from_secs(wait_timeout_secs);
     loop {
+        let mut finalizing_result = None;
         {
             let mut registry = managed_services().lock().await;
-            let Some(mut service) = registry.remove(service_id) else {
-                return error_result(
-                    call_id,
-                    format!("managed service '{service_id}' was not found or has already stopped"),
-                );
-            };
-            match service.child.try_wait() {
-                Ok(Some(status)) => {
-                    let (stdout, stderr) = service_log_snapshot(&service.logs).await;
-                    return exited_service_result(
-                        call_id, service_id, &service, status, &stdout, &stderr,
-                    );
+            match registry.remove(service_id) {
+                None => {
+                    drop(registry);
+                    let Some(result) =
+                        inactive_service_result(call_id, service_id, conversation_id).await
+                    else {
+                        return error_result(
+                            call_id,
+                            format!(
+                                "managed service '{service_id}' was not found or has already stopped"
+                            ),
+                        );
+                    };
+                    let is_finalizing = result
+                        .artifacts
+                        .as_ref()
+                        .and_then(|artifacts| artifacts.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("finalizing");
+                    if is_finalizing {
+                        finalizing_result = Some(result);
+                    } else {
+                        return result;
+                    }
                 }
-                Err(error) => {
-                    registry.insert(service_id.to_string(), service);
-                    return error_result(
-                        call_id,
-                        format!("failed to inspect service {service_id}: {error}"),
-                    );
-                }
-                Ok(None) => {
-                    registry.insert(service_id.to_string(), service);
+                Some(mut service) => {
+                    if !belongs_to_conversation(&service.conversation_id, conversation_id) {
+                        registry.insert(service_id.to_string(), service);
+                        return error_result(
+                            call_id,
+                            "managed service belongs to a different conversation",
+                        );
+                    }
+                    match service.child.try_wait() {
+                        Ok(Some(status)) => {
+                            mark_service_finalizing(service_id, &service).await;
+                            drop(registry);
+                            return finalize_exited_service(call_id, service_id, service, status)
+                                .await;
+                        }
+                        Err(error) => {
+                            registry.insert(service_id.to_string(), service);
+                            return error_result(
+                                call_id,
+                                format!("failed to inspect service {service_id}: {error}"),
+                            );
+                        }
+                        Ok(None) => {
+                            registry.insert(service_id.to_string(), service);
+                        }
+                    }
                 }
             }
         }
 
         if Instant::now() >= deadline {
-            let mut result = manage_service(call_id, "status", service_id).await;
+            let mut result = match finalizing_result {
+                Some(result) => result,
+                None => manage_service(call_id, "status", service_id, conversation_id).await,
+            };
             result.content = format!(
                 "Still running after waiting {wait_timeout_secs}s. Continue with other work and poll again with service_action=\"wait\" or service_action=\"status\"; use service_action=\"stop\" to end it.\n{}",
                 result.content
@@ -552,6 +1083,79 @@ fn error_result(call_id: &str, msg: impl Into<String>) -> ToolResult {
         content: msg.into(),
         is_error: true,
         artifacts: None,
+    }
+}
+
+#[cfg(test)]
+mod review_regression_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_service_logs_report_when_the_head_is_discarded() {
+        let mut output = String::new();
+        assert!(!append_bounded_log(&mut output, b"short output"));
+        assert!(append_bounded_log(
+            &mut output,
+            &vec![b'x'; MAX_SERVICE_LOG_BYTES + 128]
+        ));
+        assert!(output.len() <= MAX_SERVICE_LOG_BYTES);
+    }
+
+    #[test]
+    fn process_activity_ids_are_independent_of_provider_call_ids() {
+        let first = new_process_activity_id();
+        let second = new_process_activity_id();
+
+        assert!(first.starts_with("process_"));
+        assert_ne!(first, second);
+        assert_ne!(first, "call_0");
+    }
+
+    #[tokio::test]
+    async fn finalizing_services_remain_discoverable_until_completion_is_cached() {
+        let service_id = format!("finalizing-test-{}", uuid::Uuid::new_v4());
+        let conversation_id = Some("conversation-1".to_string());
+        finalizing_services().lock().await.insert(
+            service_id.clone(),
+            FinalizingService {
+                conversation_id: conversation_id.clone(),
+            },
+        );
+
+        let finalizing =
+            inactive_service_result("status-call", &service_id, Some("conversation-1"))
+                .await
+                .expect("finalizing service should remain discoverable");
+        assert!(!finalizing.is_error);
+        assert_eq!(
+            finalizing.artifacts.as_ref().unwrap()["status"],
+            "finalizing"
+        );
+
+        let completed_result = ToolResult {
+            call_id: service_id.clone(),
+            content: "completed".to_string(),
+            is_error: false,
+            artifacts: Some(serde_json::json!({ "status": "exited" })),
+        };
+        cache_completed_service(&service_id, completed_result, conversation_id).await;
+
+        assert!(!finalizing_services().lock().await.contains_key(&service_id));
+        let completed =
+            inactive_service_result("later-status-call", &service_id, Some("conversation-1"))
+                .await
+                .expect("completed service should remain discoverable");
+        assert_eq!(completed.call_id, "later-status-call");
+        assert_eq!(completed.content, "completed");
+        completed_services().lock().await.remove(&service_id);
+    }
+
+    #[tokio::test]
+    async fn log_drain_aborts_pipe_collectors_that_never_reach_eof() {
+        let blocked = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        drain_service_output_tasks(Some(blocked), None, Duration::from_millis(10)).await;
     }
 }
 
@@ -577,7 +1181,7 @@ impl Tool for RunShellTool {
         // No dedicated Shell category exists; group with FileSystem since the
         // operation is scoped to source directories. If a Shell category is
         // added later, include it here.
-        &[ToolCategory::FileSystem]
+        &[ToolCategory::Process]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -646,6 +1250,8 @@ impl Tool for RunShellTool {
             arguments,
             db,
             source_scope,
+            conversation_id,
+            activity_runtime,
             ..
         } = context;
         let parsed = match parse_run_shell_args(arguments) {
@@ -659,6 +1265,12 @@ impl Tool for RunShellTool {
                 ));
             }
         };
+        if let Some(ready_timeout_secs) = parsed.ready_timeout_secs {
+            tracing::debug!(
+                ready_timeout_secs,
+                "run_shell ignored deprecated ready_timeout_secs; readiness is activity-driven"
+            );
+        }
         let service_action = parsed
             .service_action
             .as_deref()
@@ -684,14 +1296,16 @@ impl Tool for RunShellTool {
                 ));
             };
             if service_action == "wait" {
-                let wait_timeout_secs = match parsed.timeout_secs {
-                    None => DEFAULT_WAIT_TIMEOUT_SECS,
-                    Some(0) => MAX_WAIT_TIMEOUT_SECS,
-                    Some(requested) => requested.clamp(1, MAX_WAIT_TIMEOUT_SECS),
-                };
-                return Ok(wait_for_service(call_id, service_id, wait_timeout_secs).await);
+                let wait_timeout_secs = managed_wait_budget_secs(parsed.timeout_secs);
+                return Ok(wait_for_service(
+                    call_id,
+                    service_id,
+                    wait_timeout_secs,
+                    conversation_id,
+                )
+                .await);
             }
-            return Ok(manage_service(call_id, &service_action, service_id).await);
+            return Ok(manage_service(call_id, &service_action, service_id, conversation_id).await);
         }
         if parsed.service_id.is_some() {
             return Ok(error_result(
@@ -718,10 +1332,9 @@ impl Tool for RunShellTool {
         }
 
         let timeout = clamp_timeout(parsed.timeout_secs);
-        let persistent_service =
-            looks_like_persistent_service(&canonical_program, &normalized_args);
-        let auto_promoted =
-            !parsed.background && (persistent_service || parsed.ready_url.is_some());
+        let auto_promoted = !parsed.background
+            && parsed.stdin.is_none()
+            && !is_native_filesystem_program(&canonical_program);
         let managed_background = parsed.background || auto_promoted;
         if managed_background && parsed.stdin.is_some() {
             return Ok(error_result(
@@ -797,28 +1410,26 @@ impl Tool for RunShellTool {
             Err(msg) => return Ok(error_result(call_id, msg)),
         };
 
-        if managed_background {
-            let ready_timeout_secs = parsed
-                .ready_timeout_secs
-                .unwrap_or(DEFAULT_READY_TIMEOUT_SECS)
-                .clamp(1, MAX_READY_TIMEOUT_SECS);
-            return Ok(start_managed_service(
-                call_id,
-                &canonical_program,
-                &normalized_args,
-                &cwd_path,
-                ready_url,
-                ready_timeout_secs,
-                auto_promoted,
-            )
-            .await);
-        }
-
         let before_root = cwd_path.clone();
         let before_snapshot =
             tokio::task::spawn_blocking(move || capture_file_snapshot(&before_root))
                 .await
                 .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
+
+        if managed_background {
+            return Ok(start_managed_service(ManagedServiceRequest {
+                call_id,
+                program: &canonical_program,
+                args: &normalized_args,
+                cwd: &cwd_path,
+                requested_ready_url: ready_url,
+                auto_promoted,
+                activity_runtime: activity_runtime.cloned().unwrap_or_default(),
+                conversation_id,
+                before_snapshot,
+            })
+            .await);
+        }
 
         let environment = LocalRunShellExecutionEnvironment;
         let mut execution_request = ExecutionRequest::for_run_shell(

@@ -4,6 +4,7 @@ import type {
   AgentTurnHandle,
   ApprovalRequest,
   ArtifactPayload,
+  ActivityEvent,
   CapabilityOwner,
   ToolRenderKind,
   ToolRunCapabilities,
@@ -35,6 +36,9 @@ export interface ToolCallEvent {
   isError?: boolean;
   artifacts?: ArtifactPayload;
   durationMs?: number;
+  progressNote?: string;
+  activityCursor?: number;
+  activityEvents?: ActivityEvent[];
 }
 
 export interface StreamRoundEvent {

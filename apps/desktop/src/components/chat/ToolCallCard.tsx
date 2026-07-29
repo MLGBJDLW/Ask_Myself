@@ -264,6 +264,7 @@ interface ToolCallCardProps {
   renderKind?: ToolRenderKind;
   capabilities?: ToolRunCapabilities;
   durationMs?: number;
+  progressNote?: string;
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
@@ -1472,6 +1473,7 @@ export function ToolCallCard({
   renderKind,
   capabilities,
   durationMs,
+  progressNote,
   content,
   isError,
   artifacts,
@@ -1671,6 +1673,8 @@ export function ToolCallCard({
           ? isPending
             ? null
             : `${headerDiffStats.operation === 'create' ? t('chat.fileDiffCreated') : t('chat.fileDiffModified')}`
+        : isPending && progressNote
+          ? progressNote
         : failedStatus
           ? failedResultSummary ?? briefResult
           : null;

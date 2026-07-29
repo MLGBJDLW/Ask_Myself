@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::Url;
@@ -36,8 +35,6 @@ struct DesktopAutomationArgs {
     engine: Option<String>,
     #[serde(default)]
     path: Option<String>,
-    #[serde(default)]
-    wait_ms: Option<u64>,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -235,14 +232,11 @@ impl Tool for DesktopAutomationTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Automation]
+        &[ToolCategory::Automation, ToolCategory::DesktopInteract]
     }
 
-    fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
-        args.get("action")
-            .and_then(|value| value.as_str())
-            .map(|action| action != "wait")
-            .unwrap_or(true)
+    fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
+        true
     }
 
     fn confirmation_message(&self, args: &serde_json::Value) -> Option<String> {
@@ -339,16 +333,6 @@ impl Tool for DesktopAutomationTool {
                     content: format!("Revealed local path: {}", canonical.display()),
                     is_error: false,
                     artifacts: Some(artifact(&args, Some(target), true, true)),
-                })
-            }
-            "wait" => {
-                let wait_ms = args.wait_ms.unwrap_or(1000).clamp(100, 10_000);
-                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-                Ok(ToolResult {
-                    call_id: call_id.to_string(),
-                    content: format!("Waited {wait_ms}ms."),
-                    is_error: false,
-                    artifacts: Some(artifact(&args, Some(format!("{wait_ms}ms")), false, false)),
                 })
             }
             other => Err(CoreError::InvalidInput(format!(
@@ -461,23 +445,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn wait_action_does_not_require_confirmation() {
+    #[test]
+    fn fixed_wait_action_is_not_advertised() {
         let tool = DesktopAutomationTool;
-        let args = serde_json::json!({ "action": "wait", "wait_ms": 100 });
-        assert!(!tool.requires_confirmation(&args));
-        let db = Database::open_memory().unwrap();
-        let result = tool
-            .execute(crate::tools::ToolExecutionContext::new(
-                "call-wait",
-                &args.to_string(),
-                &db,
-                &[],
-            ))
-            .await
-            .unwrap();
-        assert!(!result.is_error);
-        assert!(result.content.contains("Waited"));
+        let actions = tool.parameters_schema()["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(!actions.iter().any(|action| action == "wait"));
+        assert!(tool.requires_confirmation(&serde_json::json!({
+            "action": "open_url"
+        })));
     }
 
     #[test]

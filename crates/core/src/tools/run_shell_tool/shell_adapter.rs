@@ -384,16 +384,103 @@ fn apply_os_options(cmd: &mut tokio::process::Command) {
 }
 
 #[cfg(not(windows))]
-fn apply_os_options(_cmd: &mut tokio::process::Command) {
-    // kill_on_drop(true) + tokio child handling is sufficient on Unix for our
-    // threat model. A dedicated process group could be added later if needed.
+fn apply_os_options(cmd: &mut tokio::process::Command) {
+    // Give every launched command its own process group. The runtime can then
+    // terminate descendants as a unit instead of orphaning grandchildren.
+    cmd.process_group(0);
+}
+
+pub(super) struct ProcessTreeGuard {
+    #[cfg(windows)]
+    job: isize,
+    #[cfg(unix)]
+    process_group: i32,
+}
+
+impl ProcessTreeGuard {
+    pub(super) fn terminate(&self) {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::JobObjects::TerminateJobObject;
+
+            let _ = TerminateJobObject(HANDLE(self.job as *mut std::ffi::c_void), 1);
+        }
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::kill(-self.process_group, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            use windows::Win32::Foundation::{CloseHandle, HANDLE};
+
+            let _ = CloseHandle(HANDLE(self.job as *mut std::ffi::c_void));
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(windows)]
+fn attach_process_tree(child: &mut tokio::process::Child) -> Result<ProcessTreeGuard, String> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let raw_process = child
+        .raw_handle()
+        .ok_or_else(|| "spawned process has no Windows handle".to_string())?;
+    unsafe {
+        let job = CreateJobObjectW(None, None)
+            .map_err(|error| format!("failed to create process Job Object: {error}"))?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if let Err(error) = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) {
+            let _ = CloseHandle(job);
+            return Err(format!("failed to configure process Job Object: {error}"));
+        }
+        if let Err(error) = AssignProcessToJobObject(job, HANDLE(raw_process as *mut _)) {
+            let _ = CloseHandle(job);
+            return Err(format!("failed to assign process to Job Object: {error}"));
+        }
+        Ok(ProcessTreeGuard {
+            job: job.0 as isize,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn attach_process_tree(child: &mut tokio::process::Child) -> Result<ProcessTreeGuard, String> {
+    let process_group = child
+        .id()
+        .ok_or_else(|| "spawned process has no process id".to_string())?
+        as i32;
+    Ok(ProcessTreeGuard { process_group })
 }
 
 pub(super) fn spawn_background_process(
     program: &str,
     args: &[String],
     cwd: &Path,
-) -> Result<tokio::process::Child, String> {
+) -> Result<(tokio::process::Child, ProcessTreeGuard), String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
@@ -411,8 +498,16 @@ pub(super) fn spawn_background_process(
         cmd.env(key, value);
     }
     apply_os_options(&mut cmd);
-    cmd.spawn()
-        .map_err(|error| format!("failed to start background service '{program}': {error}"))
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| format!("failed to start background service '{program}': {error}"))?;
+    match attach_process_tree(&mut child) {
+        Ok(process_tree) => Ok((child, process_tree)),
+        Err(error) => {
+            let _ = child.start_kill();
+            Err(error)
+        }
+    }
 }
 
 pub(super) async fn execute_inner(
@@ -443,6 +538,9 @@ pub(super) async fn execute_inner(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn '{program}': {e}"))?;
+    let process_tree = attach_process_tree(&mut child).inspect_err(|_| {
+        let _ = child.start_kill();
+    })?;
 
     let stdin_task = if let Some(input) = stdin {
         let mut child_stdin = child
@@ -486,6 +584,7 @@ pub(super) async fn execute_inner(
         }
         // The child owns the pipes; killing it lets the drain tasks reach EOF
         // so the partial output collected so far can still be reported.
+        process_tree.terminate();
         let _ = child.kill().await;
     }
     join_pipe_task(stdout_task, killed_by_timeout).await;

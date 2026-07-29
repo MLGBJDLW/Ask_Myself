@@ -2,10 +2,8 @@
   "expectedFormat": {
     "examples": {
       "backgroundService": {
-        "background": true,
         "command": "python -m http.server 8080",
         "cwd": "D:/workspace",
-        "ready_timeout_secs": 20,
         "ready_url": "http://127.0.0.1:8080"
       },
       "exactArgv": {
@@ -48,7 +46,7 @@
       "args must be an array of argv strings.",
       "For generated HTML/PPTX specs or large scripts, pass the payload in stdin and use --spec - or a stdin-reading program.",
       "Do not put raw HTML, JSON specs, or multiline scripts inside args or python -c.",
-      "Long-running web/API servers are automatically promoted to managed background services. Prefer background=true and provide a loopback ready_url when known; otherwise run_shell discovers a URL from startup logs or returns a running service after a stability check. Check it with service_action=status before or after browser inspection, and stop it with service_action=stop when finished."
+      "Every external command without stdin is observed briefly and automatically detached if it is still running. Never predict duration and never wait by sleeping. Continue with the returned activityId/cursor via activity_observe; service_action=status/wait/stop remains available for compatibility."
     ]
   },
   "message": "Invalid run_shell arguments: expected value at line 1 column 1. Use command or program/args JSON. For HTML/PPTX generation, pass large specs through stdin with --spec - instead of putting HTML or JSON inside args."

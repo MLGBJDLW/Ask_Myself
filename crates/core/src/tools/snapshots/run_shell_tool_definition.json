@@ -1,5 +1,5 @@
 {
-  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it. Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. Default timeout 30s; a timed-out command is killed but still returns the output it produced. Never sit on a long blocking timeout: for anything that may outlast the default, pass background=true and poll the returned service_id with service_action=wait (returns as soon as the process exits) or service_action=status. Local web/API servers are automatically promoted to managed background services; provide a loopback ready_url when known, or let the tool discover it from startup logs. Set timeout_secs to 0 only for a finite foreground install/download/build that must not be interrupted. The broader agent turn timeout can still stop foreground runs unless Settings disables or raises it. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
+  "description": "Execute a command with platform-aware safety controls. You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control. Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it. Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open. In the default restricted mode, only whitelisted commands are allowed: python/python3/pip/pip3/node/npm/npx, read-only git, and scoped filesystem commands like pwd/ls/cat/mkdir/cp/mv. Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets. For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries. For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv. For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`. Output is capped at 64 KB per stream. External commands without stdin are observed briefly, then automatically detached if still running; callers do not predict duration. Follow the returned activityId/cursor with activity_observe, whose wait is capped at 2.5 seconds. Native filesystem operations and stdin-driven commands remain finite foreground runs with default timeout 30s. For Windows paths in JSON strings, escape backslashes (for example \"E:\\\\Starting\\\\script.py\") or use forward slashes.",
   "name": "run_shell",
   "parameters": {
     "properties": {
@@ -13,7 +13,8 @@
       },
       "background": {
         "default": false,
-        "description": "Start a long-running command without waiting for it to exit. Use it for local web/API services and for any build, install, test, or migration run that can outlast the default timeout: the call returns a service_id immediately so you can keep working and poll with service_action=wait or status. ready_url is recommended but optional for services: when omitted, the tool discovers loopback URLs from bounded startup logs and otherwise returns after a stability check. Recognized server commands are automatically promoted to this managed mode even if background is omitted.",
+        "deprecated": true,
+        "description": "Deprecated compatibility hint. External commands without stdin are observed briefly and automatically detached when still running; callers never need to predict whether a command will be long-lived.",
         "type": "boolean"
       },
       "command": {
@@ -30,7 +31,8 @@
       },
       "ready_timeout_secs": {
         "default": 20,
-        "description": "How long to poll ready_url while starting a background service.",
+        "deprecated": true,
+        "description": "Deprecated compatibility field. Startup observation is bounded to about 1.5 seconds; use activity_observe or service_action=wait for incremental readiness events.",
         "maximum": 120,
         "minimum": 1,
         "type": "integer"
@@ -41,7 +43,7 @@
       },
       "service_action": {
         "default": "run",
-        "description": "Use status, wait, or stop with a service_id returned by an earlier background run. status takes one snapshot of health and log tails. wait polls until the process exits or timeout_secs elapses and then returns the exit status with log tails, so prefer it over guessing a sleep. Omit for ordinary commands.",
+        "description": "Use status, wait, or stop with a service_id returned by a detached run. status takes one snapshot. wait returns on the next completion/state change and is capped at a 3-second observation quantum. Prefer activity_observe with a cursor for incremental events. Omit for ordinary commands.",
         "enum": [
           "run",
           "status",
@@ -81,7 +83,7 @@
       },
       "timeout_secs": {
         "default": 30,
-        "description": "Timeout in seconds for a foreground run. Default 30. A timed-out command is killed and still reports the output it produced. Set 0 only for a finite long install/download/build, never for a web/API server; use managed background mode plus service_action=wait for anything long-running. With service_action=wait this is the polling budget instead (default 30, max 900, 0 means the 900s cap). The broader agent turn timeout can still stop the run if it is not raised or disabled.",
+        "description": "Timeout in seconds for a finite foreground run (native filesystem operations or commands using stdin). Default 30. External commands without stdin automatically detach if still running. With service_action=wait this is only a short observation budget and is capped at 3 seconds.",
         "minimum": 0,
         "type": "integer"
       }

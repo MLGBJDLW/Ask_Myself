@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::context::ContextUsageBreakdown;
+use crate::activity::ActivityEvent;
 use crate::approval::{ApprovalDecision, ApprovalRequest};
 use crate::llm::{Message, Usage};
 use crate::plugins::CapabilityOwner;
@@ -73,6 +74,8 @@ pub enum AgentEvent {
         #[serde(rename = "callId")]
         call_id: String,
         note: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activity: Option<ActivityEvent>,
     },
     /// Result of a tool execution.
     ToolCallResult {

@@ -31,7 +31,7 @@ const MAX_REDIRECTS: usize = 5;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ASSETS: usize = 25;
-const JS_RENDER_SETTLE_MS: u64 = 1500;
+const JS_RENDER_STABILITY_BUDGET_MS: u64 = 1500;
 const JS_RENDER_TIMEOUT_SECS: u64 = 10;
 static FETCH_BODY_CACHE: OnceLock<Mutex<HashMap<String, CachedFetchBody>>> = OnceLock::new();
 
@@ -329,7 +329,7 @@ fn validate_url_for_fetch_blocking(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
-fn is_loopback_url(url: &reqwest::Url) -> bool {
+pub(crate) fn is_loopback_url(url: &reqwest::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
@@ -353,7 +353,7 @@ fn normalize_browser_capture_url(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
-async fn validate_url_for_browser_capture(url: &str) -> Result<reqwest::Url, String> {
+pub(crate) async fn validate_url_for_browser_capture(url: &str) -> Result<reqwest::Url, String> {
     let parsed = normalize_browser_capture_url(url)?;
     if is_loopback_url(&parsed) {
         return Ok(parsed);
@@ -1304,7 +1304,7 @@ fn browser_internal_url(url: &str) -> bool {
         || lower.starts_with("chrome-error://")
 }
 
-fn browser_request_allowed(
+pub(crate) fn browser_request_allowed(
     url: &str,
     cache: &Mutex<HashMap<String, bool>>,
     allow_loopback: bool,
@@ -1312,15 +1312,16 @@ fn browser_request_allowed(
     if browser_internal_url(url) {
         return true;
     }
+    let cache_key = format!("{}:{url}", u8::from(allow_loopback));
     if let Ok(cache) = cache.lock() {
-        if let Some(allowed) = cache.get(url) {
+        if let Some(allowed) = cache.get(&cache_key) {
             return *allowed;
         }
     }
 
     let allowed = validate_url_for_browser_capture_blocking(url, allow_loopback).is_ok();
     if let Ok(mut cache) = cache.lock() {
-        cache.insert(url.to_string(), allowed);
+        cache.insert(cache_key, allowed);
     }
     allowed
 }
@@ -1417,7 +1418,7 @@ fn browser_executable_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn launch_browser_for_capture() -> Result<headless_chrome::Browser, String> {
+pub(crate) fn launch_browser_for_capture() -> Result<headless_chrome::Browser, String> {
     use headless_chrome::{Browser, LaunchOptionsBuilder};
 
     let mut launch_errors = Vec::new();
@@ -1566,8 +1567,9 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
     .map_err(|e| format!("failed to install browser request validator: {e}"))?;
 
     tab.navigate_to(url.as_str())
+        .and_then(|tab| tab.wait_until_navigated())
         .map_err(|e| format!("browser navigation failed: {e}"))?;
-    std::thread::sleep(Duration::from_millis(JS_RENDER_SETTLE_MS));
+    wait_for_dom_stability(&tab);
 
     let final_url = validate_url_for_browser_capture_blocking(&tab.get_url(), allow_loopback)?;
     let mut html = tab
@@ -1601,6 +1603,28 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
         blocked_requests: blocked_requests.load(Ordering::Relaxed),
         screenshot_png,
     })
+}
+
+fn wait_for_dom_stability(tab: &headless_chrome::browser::Tab) {
+    let deadline = std::time::Instant::now() + Duration::from_millis(JS_RENDER_STABILITY_BUDGET_MS);
+    let mut previous_hash = None;
+    let mut stable_samples = 0_u8;
+    while std::time::Instant::now() < deadline {
+        let hash = tab
+            .get_content()
+            .ok()
+            .map(|html| blake3::hash(html.as_bytes()));
+        if hash.is_some() && hash == previous_hash {
+            stable_samples = stable_samples.saturating_add(1);
+            if stable_samples >= 2 {
+                return;
+            }
+        } else {
+            stable_samples = 0;
+            previous_hash = hash;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn truncate_text_for_output(text: &mut String, max_chars: usize) -> bool {
@@ -2092,6 +2116,11 @@ mod tests {
             "http://192.168.1.10/private.js",
             &local_debug_cache,
             true
+        ));
+        assert!(!browser_request_allowed(
+            "http://localhost/app.js",
+            &local_debug_cache,
+            false
         ));
     }
 

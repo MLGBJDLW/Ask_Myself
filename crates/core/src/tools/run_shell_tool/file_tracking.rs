@@ -97,6 +97,10 @@ fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String>
 }
 
 pub(super) fn capture_file_snapshot(root: &Path) -> FileSnapshot {
+    if let Some(paths) = git_snapshot_paths(root) {
+        return capture_known_paths(paths);
+    }
+
     let mut files = BTreeMap::new();
     let mut truncated = false;
     let mut unreadable_count = 0usize;
@@ -132,6 +136,53 @@ pub(super) fn capture_file_snapshot(root: &Path) -> FileSnapshot {
         }
     }
 
+    FileSnapshot {
+        files,
+        truncated,
+        unreadable_count,
+    }
+}
+
+fn git_snapshot_paths(root: &Path) -> Option<Vec<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .take(MAX_FILE_TRACK_FILES + 1)
+            .map(|path| root.join(String::from_utf8_lossy(path).as_ref()))
+            .collect(),
+    )
+}
+
+fn capture_known_paths(paths: Vec<PathBuf>) -> FileSnapshot {
+    let mut files = BTreeMap::new();
+    let truncated = paths.len() > MAX_FILE_TRACK_FILES;
+    let mut unreadable_count = 0;
+    for path in paths.into_iter().take(MAX_FILE_TRACK_FILES) {
+        match read_snapshot_entry(&path) {
+            Ok(Some(snapshot)) => {
+                files.insert(path, snapshot);
+            }
+            Ok(None) => {}
+            Err(_) => unreadable_count += 1,
+        }
+    }
     FileSnapshot {
         files,
         truncated,
