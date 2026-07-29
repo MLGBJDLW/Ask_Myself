@@ -238,7 +238,7 @@ impl SpeechToTextConfig {
                             .is_some_and(|value| !value.trim().is_empty())
                 }
             }
-            "openai_transcription" | "dashscope_asr" => {
+            "openai_transcription" | "openai_realtime_transcription" | "dashscope_asr" => {
                 !self.api_key.trim().is_empty()
                     && !self.model.trim().is_empty()
                     && self
@@ -981,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn speech_to_text_configuration_covers_local_cloud_and_sherpa() {
+    fn speech_to_text_configuration_covers_local_cloud_realtime_and_sherpa() {
         let local = SpeechToTextConfig::default();
         assert_eq!(local.api_style, "local_whisper");
         assert!(local.is_configured());
@@ -994,6 +994,15 @@ mod tests {
         cloud.api_key = "secret".to_string();
         cloud.base_url = Some("https://api.openai.com/v1".to_string());
         assert!(cloud.is_configured());
+
+        let realtime = SpeechToTextConfig {
+            api_style: "openai_realtime_transcription".to_string(),
+            api_key: "secret".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            model: "gpt-live-transcribe".to_string(),
+            ..SpeechToTextConfig::default()
+        };
+        assert!(realtime.is_configured());
 
         let mut sherpa = SpeechToTextConfig {
             api_style: "sherpa_onnx".to_string(),

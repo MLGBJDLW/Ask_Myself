@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use commands::{
     AgentState, AppState, ApprovalState, DownloadCancelFlag, DreamingSchedulerState,
-    McpManagerState, TaskOrchestratorSchedulerState,
+    McpManagerState, RealtimeTranscriptionState, TaskOrchestratorSchedulerState,
 };
 use nexa_core::app_settings::WindowCloseBehavior;
 use nexa_core::db::Database;
@@ -228,6 +228,7 @@ fn main() {
                 manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
             });
             app.manage(ApprovalState::default());
+            app.manage(RealtimeTranscriptionState::default());
             app.manage(commands::TerminalState::default());
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
             install_tray(app)?;
@@ -466,6 +467,10 @@ fn main() {
             commands::delete_whisper_model_cmd,
             #[cfg(feature = "video")]
             commands::transcribe_audio_buffer_cmd,
+            commands::start_realtime_transcription_cmd,
+            commands::append_realtime_transcription_audio_cmd,
+            commands::finish_realtime_transcription_cmd,
+            commands::cancel_realtime_transcription_cmd,
             #[cfg(feature = "video")]
             commands::check_ffmpeg_cmd,
             #[cfg(feature = "video")]

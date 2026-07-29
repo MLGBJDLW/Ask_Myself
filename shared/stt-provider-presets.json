@@ -27,6 +27,18 @@
     ]
   },
   {
+    "id": "openai-live",
+    "name": "OpenAI Live Transcription",
+    "provider": "open_ai",
+    "apiStyle": "openai_realtime_transcription",
+    "requiresApiKey": true,
+    "baseUrl": "https://api.openai.com/v1",
+    "description": "Streams 24 kHz PCM microphone audio over a Realtime session and returns transcript deltas while you speak.",
+    "models": [
+      { "id": "gpt-live-transcribe", "name": "GPT Live Transcribe", "recommended": true }
+    ]
+  },
+  {
     "id": "groq",
     "name": "Groq Transcription",
     "provider": "groq",
