@@ -183,7 +183,6 @@ export interface AgentTaskRunEvent {
   label: string;
   status?: string | null;
   payload?: (Record<string, unknown> & {
-    agentRun?: AgentRunEvent;
     taskTimeline?: TaskTimelineEvent;
   }) | unknown[] | null;
   createdAt: string;

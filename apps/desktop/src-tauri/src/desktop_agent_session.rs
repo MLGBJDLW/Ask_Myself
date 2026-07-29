@@ -52,9 +52,12 @@ use tauri::AppHandle;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::agent_stream::{emit_agent_frontend_event, emit_agent_frontend_event_with_presentation};
+use crate::agent_stream::{
+    emit_agent_frontend_event, emit_agent_frontend_event_with_presentation,
+    emit_agent_run_frontend_event,
+};
 use crate::agent_stream_bridge::AgentStreamForwarder;
-use crate::agent_task_events::{emit_agent_task_run_update, record_agent_run_task_event};
+use crate::agent_task_events::{emit_agent_task_run_update, persist_durable_run_event};
 use crate::app_events::emit_app_event;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
@@ -277,17 +280,7 @@ pub fn request_desktop_running_agent_stop(
             tone: Some("muted".to_string()),
         },
     );
-    record_agent_run_task_event(
-        &db,
-        &app_handle,
-        &conversation_id,
-        &task_run_id,
-        &run_event,
-        run_event.task_event_type(),
-        "Stop requested",
-        Some("cancelling"),
-        None,
-    );
+    persist_durable_run_event(&db, &run_event);
     emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
 
     task_state.cancel_token.cancel();
@@ -1746,17 +1739,8 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
         "cancelled",
         Some(&artifacts),
     );
-    record_agent_run_task_event(
-        db,
-        app_handle,
-        conversation_id,
-        task_run_id,
-        &run_event,
-        run_event.task_event_type(),
-        summary,
-        Some("cancelled"),
-        Some(&artifacts),
-    );
+    emit_agent_run_frontend_event(app_handle, conversation_id, &run_event);
+    persist_durable_run_event(db, &run_event);
     emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
 }
 

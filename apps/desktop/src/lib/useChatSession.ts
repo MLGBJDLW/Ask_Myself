@@ -935,7 +935,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           ])
             .then(([taskEvents, runEvents]) => {
               if (cancelled) return;
-              streamStore.restoreFromHistoricalEvents(activeId, resumableRun, taskEvents, runEvents);
+              streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
               const restoredStream = streamStore.getStream(activeId);
               if (restoredStream?.isStreaming) {
                 knownStreamConversationsRef.current.add(activeId);

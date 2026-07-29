@@ -1,6 +1,5 @@
 import type { AgentRunEvent, AgentTaskRunEvent } from '../../types/conversation';
 import type { WorkflowAutomationSchedulerEvent } from '../../types/workflows';
-import { isDurableStreamEvent } from './legacyAdapter';
 import { isTaskTimelineEvent } from './taskTimeline';
 
 export interface TaskCenterHistoryItem {
@@ -102,11 +101,7 @@ export function taskCenterHistoryFromEvents(
   runEvents: AgentRunEvent[],
   schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
 ): TaskCenterHistoryItem[] {
-  if (runEvents.length > 0) {
-    return taskCenterHistoryFromRunEvents(runEvents, taskEvents, schedulerEvents);
-  }
-
-  return legacyTaskCenterHistoryFromTaskEvents(taskEvents, schedulerEvents);
+  return taskCenterHistoryFromRunEvents(runEvents, taskEvents, schedulerEvents);
 }
 
 export function taskCenterHistoryFromRunEvents(
@@ -122,15 +117,4 @@ export function taskCenterHistoryFromRunEvents(
     .map(itemFromTaskEvent);
   const schedulerItems = schedulerEvents.map(itemFromSchedulerEvent);
   return [...canonicalItems, ...timelineItems, ...schedulerItems].sort(compareHistory).slice(-50);
-}
-
-export function legacyTaskCenterHistoryFromTaskEvents(
-  taskEvents: AgentTaskRunEvent[],
-  schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
-): TaskCenterHistoryItem[] {
-  const taskItems = taskEvents
-    .filter(event => isTaskTimelineEvent(event) || !isDurableStreamEvent(event))
-    .map(itemFromTaskEvent);
-  const schedulerItems = schedulerEvents.map(itemFromSchedulerEvent);
-  return [...taskItems, ...schedulerItems].sort(compareHistory).slice(-50);
 }

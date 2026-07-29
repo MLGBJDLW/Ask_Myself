@@ -251,7 +251,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let stream_event_seq = Arc::new(AgentRunEventSequencer::default());
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    record_internal_agent_run_status_task_event(
+    record_internal_agent_run_status_event(
         &state.db,
         &app_handle,
         &conversation_id,
@@ -373,7 +373,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .mark_agent_task_run_started(&task_run.id, "initializing")
         .map_err(|e| e.to_string())?;
     emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    record_internal_agent_run_status_task_event(
+    record_internal_agent_run_status_event(
         &state.db,
         &app_handle,
         &conversation_id,

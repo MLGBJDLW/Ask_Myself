@@ -10,19 +10,15 @@ import type {
   AgentTaskRunEvent,
   AgentTurnHandle,
 } from '../types/conversation';
-import {
-  projectHistoricalEventsToStreamState,
-  projectRunEventsToStreamState,
-  projectTaskEventsToStreamState,
-} from './streaming/durableReplay';
+import { projectRunEventsToStreamState } from './streaming/durableReplay';
 import {
   isTaskLifecycleEventType,
   isTerminalEventType,
   normalizeAgentEventType,
 } from './streaming/eventTypes';
-import { adaptFrontendRunEvent } from './streaming/legacyAdapter';
 import { applyLiveStreamEvent } from './streaming/liveEventReducer';
 import { applyStreamEventOrdering } from './streaming/ordering';
+import { applyAgentRunEvent } from './streaming/runEventReducer';
 import {
   clearToolPreparingTimers,
   createDefaultState,
@@ -151,17 +147,6 @@ class StreamStoreImpl {
     this.notify(conversationId);
   }
 
-  /** Rebuild the visible stream preview from durable typed stream events. */
-  restoreFromTaskEvents(
-    conversationId: string,
-    taskRun: AgentTaskRun,
-    taskEvents: AgentTaskRunEvent[],
-  ): void {
-    this.restoreProjectedState(conversationId, () =>
-      projectTaskEventsToStreamState(taskRun, taskEvents),
-    );
-  }
-
   /** Rebuild the visible stream preview directly from canonical durable Run Events. */
   restoreFromRunEvents(
     conversationId: string,
@@ -170,19 +155,7 @@ class StreamStoreImpl {
     taskEvents: AgentTaskRunEvent[] = [],
   ): void {
     this.restoreProjectedState(conversationId, () =>
-      projectRunEventsToStreamState(taskRun, runEvents, taskEvents),
-    );
-  }
-
-  /** Rebuild historical stream preview, preferring canonical Run Events over legacy task events. */
-  restoreFromHistoricalEvents(
-    conversationId: string,
-    taskRun: AgentTaskRun,
-    taskEvents: AgentTaskRunEvent[],
-    runEvents: AgentRunEvent[],
-  ): void {
-    this.restoreProjectedState(conversationId, () =>
-      projectHistoricalEventsToStreamState(taskRun, taskEvents, runEvents),
+      projectRunEventsToStreamState(taskRun, runEvents, taskEvents, { interruptActive: true }),
     );
   }
 
@@ -319,7 +292,43 @@ class StreamStoreImpl {
 
   /** Process an incoming agent event. */
   dispatch(conversationId: string, event: AgentFrontendEvent): void {
-    event = adaptFrontendRunEvent(event);
+    if (event.runEvent) {
+      const runEvent = event.runEvent;
+      const isTerminalEvent = runEvent.kind === 'done' || runEvent.kind === 'error';
+      let state = this._streams[conversationId];
+      if (!state) {
+        state = createDefaultState();
+        state.isStreaming = !isTerminalEvent;
+        this._streams[conversationId] = state;
+      }
+      if (!state.isStreaming && !isTerminalEvent) return;
+
+      const ordering = applyStreamEventOrdering(state, runEvent.eventSeq);
+      if (!ordering.accepted) return;
+      if (ordering.gapDetected) {
+        appendStatusTraceEvent(
+          state,
+          'Stream event gap detected; replay may be required.',
+          'muted',
+          'internal',
+        );
+      }
+      if (state.isStreaming) this.resetTimeout(conversationId);
+
+      applyAgentRunEvent(state, runEvent, {
+        scheduleToolPreparing: payload => {
+          this.scheduleToolPreparing(
+            conversationId,
+            payload.callId,
+            payload.toolName,
+            payload.argsBytes,
+          );
+        },
+      });
+      this.scheduleNotify(conversationId);
+      return;
+    }
+
     const raw = event as AgentFrontendEvent & Record<string, unknown>;
     const eventType = normalizeAgentEventType(raw.type);
     if (!eventType) return;

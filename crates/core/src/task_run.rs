@@ -163,16 +163,9 @@ impl<'a> AgentTaskRuntime<'a> {
         &self,
         run_id: &str,
         event: &AgentRunEvent,
-    ) -> Result<AgentTaskRunEvent, CoreError> {
+    ) -> Result<AgentTaskRun, CoreError> {
         self.update_progress_from_event(run_id, event)?;
-        let payload = event.task_event_payload(None);
-        self.db.record_agent_task_run_event(
-            run_id,
-            event.task_event_type(),
-            &event.label,
-            event.status.as_deref(),
-            Some(&payload),
-        )
+        self.db.get_agent_task_run(run_id)
     }
 
     pub fn record_timeline_event(
@@ -425,8 +418,9 @@ mod tests {
             tone: None,
         })
         .with_context(Some(&run.id), Some(&turn.id), Some(1));
-        let stored_event = runtime.apply_run_event(&run.id, &route_event).unwrap();
-        assert_eq!(stored_event.event_type, "status");
+        let updated_run = runtime.apply_run_event(&run.id, &route_event).unwrap();
+        assert_eq!(updated_run.phase, "routing");
+        assert!(db.get_agent_task_run_events(&run.id).unwrap().is_empty());
 
         let subtask = runtime
             .enqueue_subtask(CreateSubtaskRunInput {
@@ -483,11 +477,9 @@ mod tests {
             .with_context(Some(&run_id), Some(&turn_id), Some(seq));
             run_event.status = Some(status.to_string());
 
-            let stored_event = runtime.apply_run_event(&run_id, &run_event).unwrap();
-            let run = db.get_agent_task_run(&run_id).unwrap();
-
-            assert_eq!(stored_event.status.as_deref(), Some(status));
+            let run = runtime.apply_run_event(&run_id, &run_event).unwrap();
             assert_eq!(run.status, status);
+            assert!(db.get_agent_task_run_events(&run_id).unwrap().is_empty());
         }
 
         let (run_id, turn_id) = create_started_run(&db, "done-cancelled");
@@ -501,10 +493,8 @@ mod tests {
         })
         .with_context(Some(&run_id), Some(&turn_id), Some(4));
 
-        let stored_event = runtime.apply_run_event(&run_id, &done_event).unwrap();
-        let run = db.get_agent_task_run(&run_id).unwrap();
-
-        assert_eq!(stored_event.status.as_deref(), Some("cancelled"));
+        let run = runtime.apply_run_event(&run_id, &done_event).unwrap();
         assert_eq!(run.status, "cancelled");
+        assert!(db.get_agent_task_run_events(&run_id).unwrap().is_empty());
     }
 }

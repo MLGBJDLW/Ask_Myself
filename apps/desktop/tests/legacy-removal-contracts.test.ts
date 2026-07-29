@@ -1,7 +1,8 @@
 declare const require: (id: string) => unknown;
 declare const process: { cwd(): string };
 
-const { readFileSync } = require('fs') as {
+const { existsSync, readFileSync } = require('fs') as {
+  existsSync(path: string): boolean;
   readFileSync(path: string, encoding: string): string;
 };
 const { join } = require('path') as {
@@ -63,6 +64,44 @@ test('skill catalog deduplicates exact IDs without hiding user prefixes', () => 
   assert(
     !api.includes('isLegacyBuiltinSkillRow'),
     'skill catalog must not classify user rows by builtin flag or ID prefix',
+  );
+});
+
+test('canonical Run Events have no task-event compatibility bridge', () => {
+  const adapterPath = join(process.cwd(), 'src/lib/streaming/legacyAdapter.ts');
+  assert(!existsSync(adapterPath), 'legacyAdapter.ts must stay deleted');
+
+  const store = source('src/lib/streamStore.ts');
+  for (const symbol of [
+    'adaptFrontendRunEvent',
+    'restoreFromTaskEvents',
+    'restoreFromHistoricalEvents',
+  ]) {
+    assert(!store.includes(symbol), `streamStore must not expose ${symbol}`);
+  }
+
+  const taskCenter = source('src/lib/streaming/taskCenterHistory.ts');
+  assert(
+    !taskCenter.includes('legacyTaskCenterHistoryFromTaskEvents'),
+    'Task Center must not replay AgentRunEvent wrappers from task events',
+  );
+
+  const agentRun = source('../../crates/core/src/agent_run.rs');
+  assert(
+    !agentRun.includes('task_event_payload'),
+    'AgentRunEvent must not know how to wrap itself as an AgentTaskRunEvent',
+  );
+
+  const taskEvents = source('src-tauri/src/agent_task_events.rs');
+  assert(
+    !taskEvents.includes('record_agent_run_task_event'),
+    'desktop runtime must not dual-write Run Events as task events',
+  );
+
+  const directDispatch = source('../../crates/core/src/agent/direct_dispatch_runner.rs');
+  assert(
+    !directDispatch.includes('AgentEvent::ToolCallStart'),
+    'direct dispatch must expose one canonical tool lifecycle',
   );
 });
 

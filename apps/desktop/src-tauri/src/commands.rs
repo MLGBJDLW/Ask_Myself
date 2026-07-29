@@ -15,8 +15,7 @@ use crate::agent_stream::{
     emit_agent_frontend_event_with_presentation, emit_agent_run_frontend_event,
 };
 use crate::agent_task_events::{
-    emit_agent_task_run_update, record_agent_run_task_event,
-    record_internal_agent_run_status_task_event,
+    emit_agent_task_run_update, persist_durable_run_event, record_internal_agent_run_status_event,
 };
 use crate::app_events::emit_app_event;
 use nexa_core::agent::power_mode::AgentPowerMode;
@@ -159,17 +158,7 @@ fn emit_terminal_agent_error_once(
         error.payload,
     );
     emit_agent_run_frontend_event(app_handle, error.conversation_id, &run_event);
-    record_agent_run_task_event(
-        db,
-        app_handle,
-        error.conversation_id,
-        error.task_run_id,
-        &run_event,
-        "error",
-        error.message,
-        Some(error.status),
-        error.payload,
-    );
+    persist_durable_run_event(db, &run_event);
 }
 
 /// State for the MCP server manager.
