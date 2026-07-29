@@ -849,6 +849,79 @@ export const getRunUsageSnapshot = (runId: string) =>
 export const getConversationUsageSnapshot = (conversationId: string) =>
   invoke<UsageSnapshot | null>('get_conversation_usage_snapshot_cmd', { conversationId });
 
+export interface UsageAnalyticsFilter {
+  startAt?: string | null;
+  endAt?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  operationKind?: string | null;
+  timeBucket?: 'day' | 'week' | 'month' | null;
+}
+
+export interface UsageTotals {
+  requestCount: number;
+  agentRunCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  thinkingTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  cacheCreationTokens: number;
+  cacheHitRate?: number | null;
+  estimatedCostMicros?: number | null;
+  currency?: string | null;
+  providerReportedPercent: number;
+  normalizedPercent: number;
+  estimatedPercent: number;
+  unknownPercent: number;
+}
+
+export interface UsageBreakdownRow {
+  key: string;
+  providerId?: string | null;
+  modelId?: string | null;
+  requestCount: number;
+  agentRunCount: number;
+  turnCount: number;
+  successCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  thinkingTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  estimatedCostMicros?: number | null;
+}
+
+export interface UsageTimeSeriesPoint {
+  date: string;
+  requestCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  thinkingTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  cacheCreationTokens: number;
+  estimatedCostMicros?: number | null;
+}
+
+export interface UsageAnalytics {
+  totals: UsageTotals;
+  byModel: UsageBreakdownRow[];
+  byOperation: UsageBreakdownRow[];
+  timeSeries: UsageTimeSeriesPoint[];
+}
+
+export const getAiUsageAnalytics = (filter: UsageAnalyticsFilter) =>
+  invoke<UsageAnalytics>('get_ai_usage_analytics_cmd', { filter });
+
+export const deleteAiUsageRecords = (filter: UsageAnalyticsFilter) =>
+  invoke<number>('delete_ai_usage_records_cmd', { filter });
+
+export const exportAiUsage = (filter: UsageAnalyticsFilter, format: 'csv' | 'json', path: string) =>
+  invoke<void>('export_ai_usage_cmd', { filter, format, path });
+
 export const getAgentSubtaskRuns = (runId: string) =>
   invoke<AgentSubtaskRun[]>('get_agent_subtask_runs_cmd', { runId });
 
@@ -1187,12 +1260,38 @@ export const saveAppConfig = (config: AppConfig) =>
   invoke<void>('save_app_config_cmd', { config });
 
 export interface SpeechPreview {
+  assetId: string;
   path: string;
   mediaType: string;
+  bytes: number;
 }
 
 export const synthesizeSpeechPreview = (text: string) =>
   invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text });
+
+export interface ClearSpeechCacheResult {
+  removedFiles: number;
+  removedBytes: number;
+}
+
+export const clearSpeechCache = () =>
+  invoke<ClearSpeechCacheResult>('clear_speech_cache_cmd');
+
+export interface ThemeBackgroundAsset {
+  assetId: string;
+  path: string;
+  mediaType: string;
+  bytes: number;
+}
+
+export const importThemeBackground = (sourcePath: string) =>
+  invoke<ThemeBackgroundAsset>('import_theme_background_cmd', { sourcePath });
+
+export const resolveThemeBackground = (assetId: string) =>
+  invoke<ThemeBackgroundAsset>('resolve_theme_background_cmd', { assetId });
+
+export const garbageCollectThemeAssets = (retainedAssetIds: string[]) =>
+  invoke<ClearSpeechCacheResult>('garbage_collect_theme_assets_cmd', { retainedAssetIds });
 
 export const getWebSearchStatus = (webSearch?: WebSearchConfig) =>
   invoke<WebSearchProviderStatus[]>('get_web_search_status_cmd', { webSearch });

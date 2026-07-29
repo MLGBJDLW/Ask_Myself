@@ -21,7 +21,7 @@ interface ThemeSwitcherProps {
 }
 
 export function ThemeSwitcher({ showLabels = true }: ThemeSwitcherProps) {
-  const { theme, setTheme } = useTheme();
+  const { activeThemeId, setTheme } = useTheme();
   const { t } = useTranslation();
 
   const themeLabel = (id: ThemeId) => t(`settings.appearance.theme.${id}` as keyof TranslationKeys);
@@ -30,7 +30,7 @@ export function ThemeSwitcher({ showLabels = true }: ThemeSwitcherProps) {
     <div className="flex flex-wrap gap-1 rounded-lg bg-surface-2 p-1">
       {THEMES.map((themeOption) => {
         const Icon = ICON_MAP[themeOption.id];
-        const isActive = theme === themeOption.id;
+        const isActive = activeThemeId === themeOption.id;
         const label = themeLabel(themeOption.id);
         return (
           <button

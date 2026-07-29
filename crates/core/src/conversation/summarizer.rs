@@ -6,7 +6,7 @@
 //! solely on the extractive (truncation-based) recap.
 
 use crate::error::CoreError;
-use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role};
+use crate::llm::{CompletionRequest, LlmProvider, Message, ProviderType, Role, Usage};
 use tracing::warn;
 
 use super::memory::estimate_tokens;
@@ -122,22 +122,30 @@ fn fit_entries_to_budget(entries: &[String], max_len: usize) -> String {
     output.trim_end().to_string()
 }
 
-/// Summarise evicted messages using an LLM.
-///
-/// Falls back to `extractive_fallback` if the LLM call fails or the evicted
-/// content is too short to justify a round-trip.
-pub async fn summarize_evicted_messages(
+#[derive(Debug, Clone)]
+pub struct SummarizationResult {
+    pub summary: String,
+    /// Present only when an LLM request completed. Extractive fallbacks do not
+    /// pretend to have consumed provider tokens.
+    pub usage: Option<Usage>,
+}
+
+/// Summarise evicted messages and retain the invocation-level provider usage.
+pub async fn summarize_evicted_messages_with_usage(
     provider: &dyn LlmProvider,
     model: &str,
     provider_type: Option<ProviderType>,
     evicted_messages: &[Message],
     extractive_fallback: &str,
-) -> String {
+) -> SummarizationResult {
     let entries = build_conversation_entries(evicted_messages);
     let conversation_text = entries.join("\n");
 
     if conversation_text.is_empty() || estimate_tokens(&conversation_text) < MIN_TOKENS_FOR_LLM {
-        return extractive_fallback.to_string();
+        return SummarizationResult {
+            summary: extractive_fallback.to_string(),
+            usage: None,
+        };
     }
 
     let input = fit_entries_to_budget(&entries, MAX_INPUT_FOR_SUMMARY);
@@ -169,10 +177,14 @@ pub async fn summarize_evicted_messages(
         match provider.complete(&request).await {
             Ok(response) => {
                 let text = response.content.trim();
-                return if text.is_empty() {
+                let summary = if text.is_empty() {
                     extractive_fallback.to_string()
                 } else {
                     text.to_string()
+                };
+                return SummarizationResult {
+                    summary,
+                    usage: Some(response.usage),
                 };
             }
             Err(CoreError::RateLimited { retry_after_secs }) => {
@@ -182,7 +194,10 @@ pub async fn summarize_evicted_messages(
                         "Summarizer: rate limited after {} retries, falling back to extractive recap",
                         MAX_SUMMARY_RETRIES
                     );
-                    return extractive_fallback.to_string();
+                    return SummarizationResult {
+                        summary: extractive_fallback.to_string(),
+                        usage: None,
+                    };
                 }
                 let wait = if retry_after_secs > 0 {
                     retry_after_secs
@@ -202,7 +217,10 @@ pub async fn summarize_evicted_messages(
                         "Summarizer: transient error after {} retries: {}, falling back to extractive recap",
                         MAX_SUMMARY_RETRIES, msg
                     );
-                    return extractive_fallback.to_string();
+                    return SummarizationResult {
+                        summary: extractive_fallback.to_string(),
+                        usage: None,
+                    };
                 }
                 let wait = 2u64.pow(retry_count - 1); // 1s, 2s
                 warn!(
@@ -214,10 +232,32 @@ pub async fn summarize_evicted_messages(
             Err(e) => {
                 // Non-retryable error (auth, bad request, etc.)
                 warn!("Summarizer: non-retryable error: {e}, falling back to extractive recap");
-                return extractive_fallback.to_string();
+                return SummarizationResult {
+                    summary: extractive_fallback.to_string(),
+                    usage: None,
+                };
             }
         }
     }
+}
+
+/// Compatibility helper for callers that only need the summary text.
+pub async fn summarize_evicted_messages(
+    provider: &dyn LlmProvider,
+    model: &str,
+    provider_type: Option<ProviderType>,
+    evicted_messages: &[Message],
+    extractive_fallback: &str,
+) -> String {
+    summarize_evicted_messages_with_usage(
+        provider,
+        model,
+        provider_type,
+        evicted_messages,
+        extractive_fallback,
+    )
+    .await
+    .summary
 }
 
 /// Flatten a slice of [`Message`]s into a plain-text conversation transcript

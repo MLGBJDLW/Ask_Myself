@@ -9,6 +9,7 @@ import type { Project } from '../../types/project';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { ThemeSwitcher } from '../ui/ThemeSwitcher';
+import { ThemeStudio } from './ThemeStudio';
 import { CollapsiblePanel, Section } from './SettingsSection';
 import { ToolApprovalControl, type ToolApprovalMode } from './ToolApprovalControl';
 import { UpdateSettingsPanel } from './UpdateSettingsPanel';
@@ -114,6 +115,7 @@ export function AppearanceSettingsTab({
           <p className="mb-2 text-sm font-medium text-text-primary">{t('settings.appearance.theme')}</p>
           <p className="mb-3 text-xs text-text-tertiary">{t('settings.appearance.theme.description')}</p>
           <ThemeSwitcher />
+          <ThemeStudio />
         </div>
 
         {/* Separator */}

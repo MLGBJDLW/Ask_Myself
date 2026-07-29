@@ -100,6 +100,38 @@ fn chat_ui_consumes_the_canonical_live_timeline_projection() {
 }
 
 #[test]
+fn context_hud_uses_theme_tokens_instead_of_tailwind_palette_colors() {
+    let hud = repository_root().join("apps/desktop/src/components/chat/ChatRunOverview.tsx");
+    let source = fs::read_to_string(hud).expect("read context HUD");
+    for forbidden in [
+        "bg-sky-",
+        "bg-indigo-",
+        "bg-amber-",
+        "bg-orange-",
+        "bg-purple-",
+        "bg-pink-",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "Context HUD colors must use semantic theme variables, not {forbidden}"
+        );
+    }
+    for required in [
+        "--context-prompts",
+        "--context-conversation",
+        "--context-tool-results",
+        "--context-tools",
+        "--context-mcp",
+        "--context-overhead",
+    ] {
+        assert!(
+            source.contains(required),
+            "Context HUD must consume semantic variable {required}"
+        );
+    }
+}
+
+#[test]
 fn readme_frontend_versions_match_the_manifest() {
     let root = repository_root();
     let package: serde_json::Value = serde_json::from_str(

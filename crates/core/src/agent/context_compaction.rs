@@ -1,11 +1,20 @@
 //! Conversation summarization and turn context-compaction helpers.
 
 use super::*;
+use crate::usage_analytics::{provider_type_id, usage_cost_metadata, AiUsageRecordInput};
 
 /// After compaction, leave enough headroom for several tool calls and the next
 /// user turn instead of compacting just barely below the trigger threshold.
 const COMPACTION_TARGET_USAGE: f32 = 0.55;
 const MIN_RECENT_TURNS: usize = 2;
+
+struct SummarizationUsageContext<'a> {
+    db: &'a Database,
+    conversation_id: Option<&'a str>,
+    turn_id: Option<&'a str>,
+    model: &'a str,
+    provider_type: Option<ProviderType>,
+}
 
 fn system_prefix_end(messages: &[Message]) -> usize {
     messages
@@ -89,6 +98,76 @@ fn conversation_message_to_compaction_llm_message(m: &ConversationMessage) -> Me
 }
 
 impl AgentExecutor {
+    fn record_summarization_usage(
+        &self,
+        ctx: SummarizationUsageContext<'_>,
+        evicted: &[Message],
+        usage: &Usage,
+    ) {
+        let SummarizationUsageContext {
+            db,
+            conversation_id,
+            turn_id,
+            model,
+            provider_type,
+        } = ctx;
+        let mut fingerprint = blake3::Hasher::new();
+        for message in evicted {
+            let role = match message.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+            fingerprint.update(role.as_bytes());
+            fingerprint.update(message.text_content().as_bytes());
+        }
+        let invocation_id = format!(
+            "{}:summarization:{}:{}",
+            turn_id.or(conversation_id).unwrap_or(&self.usage_scope_id),
+            fingerprint.finalize().to_hex(),
+            model
+        );
+        let provider_id = provider_type_id(provider_type);
+        let raw = serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}));
+        let (estimated_cost_micros, currency, pricing_version) = usage_cost_metadata(provider_type);
+        if let Err(error) = db.record_ai_usage(&AiUsageRecordInput {
+            invocation_id: &invocation_id,
+            occurred_at: None,
+            provider_id,
+            provider_type: provider_id,
+            model_id: model,
+            raw_model_id: Some(model),
+            modality: "language_model",
+            operation_kind: "compaction",
+            conversation_id,
+            turn_id,
+            run_id: None,
+            subtask_run_id: None,
+            project_id: None,
+            prompt_tokens: u64::from(usage.prompt_tokens),
+            completion_tokens: u64::from(usage.completion_tokens),
+            thinking_tokens: u64::from(usage.thinking_tokens.unwrap_or(0)),
+            total_tokens: u64::from(
+                usage
+                    .total_tokens
+                    .max(usage.prompt_tokens.saturating_add(usage.completion_tokens)),
+            ),
+            cache_read_tokens: u64::from(usage.cache_read_tokens.unwrap_or(0)),
+            cache_miss_tokens: u64::from(usage.cache_miss_tokens.unwrap_or(0)),
+            cache_creation_tokens: u64::from(usage.cache_creation_tokens.unwrap_or(0)),
+            usage_source: "provider",
+            request_status: "success",
+            latency_ms: None,
+            estimated_cost_micros,
+            currency,
+            pricing_version,
+            provider_raw: &raw,
+        }) {
+            warn!("Failed to persist summarization usage: {error}");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Pre-summarization helper
     // -----------------------------------------------------------------------
@@ -106,6 +185,9 @@ impl AgentExecutor {
         history: Vec<Message>,
         model: &str,
         max_response_tokens: u32,
+        db: &Database,
+        conversation_id: Option<&str>,
+        turn_id: Option<&str>,
     ) -> Vec<Message> {
         if history.is_empty() {
             return history;
@@ -155,7 +237,7 @@ impl AgentExecutor {
         } else {
             self.config.provider_type
         };
-        let summary = summarizer::summarize_evicted_messages(
+        let result = summarizer::summarize_evicted_messages_with_usage(
             summ_provider,
             summ_model,
             summ_provider_type,
@@ -163,11 +245,24 @@ impl AgentExecutor {
             &extractive_fallback,
         )
         .await;
+        if let Some(usage) = result.usage.as_ref() {
+            self.record_summarization_usage(
+                SummarizationUsageContext {
+                    db,
+                    conversation_id,
+                    turn_id,
+                    model: summ_model,
+                    provider_type: summ_provider_type,
+                },
+                evicted,
+                usage,
+            );
+        }
 
         let mut new_history = Vec::with_capacity(prefix_end + 1 + history.len() - evict_end);
         new_history.extend_from_slice(&history[..prefix_end]);
         new_history.push(reference_summary_message(
-            &summary,
+            &result.summary,
             evict_end - prefix_end,
             "automatic headroom compaction",
         ));
@@ -180,6 +275,9 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         model: &str,
         tx: &mpsc::Sender<AgentEvent>,
+        db: &Database,
+        conversation_id: Option<&str>,
+        turn_id: Option<&str>,
     ) -> Result<bool, CoreError> {
         let before_tokens: u32 = messages
             .iter()
@@ -187,7 +285,8 @@ impl AgentExecutor {
             .sum();
         let before_len = messages.len();
 
-        self.aggressive_compact(messages, model, tx).await?;
+        self.aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+            .await?;
 
         let pipeline = ContextPipeline::new(
             model,
@@ -214,6 +313,9 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         model: &str,
         tx: &mpsc::Sender<AgentEvent>,
+        db: &Database,
+        conversation_id: Option<&str>,
+        turn_id: Option<&str>,
     ) -> Result<(), CoreError> {
         let non_system_start = system_prefix_end(messages);
         let pipeline = ContextPipeline::new(
@@ -240,7 +342,7 @@ impl AgentExecutor {
         } else {
             self.config.provider_type
         };
-        let summary = summarizer::summarize_evicted_messages(
+        let result = summarizer::summarize_evicted_messages_with_usage(
             summ_provider,
             summ_model,
             summ_provider_type,
@@ -248,11 +350,25 @@ impl AgentExecutor {
             &extractive_fallback,
         )
         .await;
+        if let Some(usage) = result.usage.as_ref() {
+            self.record_summarization_usage(
+                SummarizationUsageContext {
+                    db,
+                    conversation_id,
+                    turn_id,
+                    model: summ_model,
+                    provider_type: summ_provider_type,
+                },
+                evicted,
+                usage,
+            );
+        }
 
         let evicted_count = evict_end - non_system_start;
 
         // Build replacement: keep system prefix + summary + kept tail.
-        let summary_msg = reference_summary_message(&summary, evicted_count, "near-limit recovery");
+        let summary_msg =
+            reference_summary_message(&result.summary, evicted_count, "near-limit recovery");
 
         let mut new_messages =
             Vec::with_capacity(non_system_start + 1 + messages.len() - evict_end);
@@ -322,7 +438,7 @@ impl AgentExecutor {
         } else {
             self.config.provider_type
         };
-        let summary = summarizer::summarize_evicted_messages(
+        let result = summarizer::summarize_evicted_messages_with_usage(
             summ_provider,
             summ_model,
             summ_provider_type,
@@ -330,6 +446,19 @@ impl AgentExecutor {
             &extractive_fallback,
         )
         .await;
+        if let (Some(db), Some(usage)) = (db, result.usage.as_ref()) {
+            self.record_summarization_usage(
+                SummarizationUsageContext {
+                    db,
+                    conversation_id: Some(conversation_id),
+                    turn_id: None,
+                    model: summ_model,
+                    provider_type: summ_provider_type,
+                },
+                evicted,
+                usage,
+            );
+        }
 
         // Archive evicted messages as a checkpoint before replacing.
         if let Some(db) = db {
@@ -360,7 +489,7 @@ impl AgentExecutor {
 
         // Build compacted ConversationMessages to persist.
         let summary_content =
-            reference_summary_message(&summary, evict_end - prefix_end, "manual compaction")
+            reference_summary_message(&result.summary, evict_end - prefix_end, "manual compaction")
                 .text_content();
 
         let summary_msg = ConversationMessage {

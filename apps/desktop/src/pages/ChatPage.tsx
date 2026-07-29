@@ -1,6 +1,5 @@
 import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { Archive, ArchiveRestore, Check, ChevronDown, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -24,7 +23,7 @@ import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
-import { finalAnswerToSpeechText } from '../lib/autoSpeech';
+import { useSpeechPlayback } from '../features/voice/SpeechPlaybackProvider';
 import { isGoalMessage, isSteeringMessage } from '../lib/chatMessageGuards';
 import { getActiveGoalContext } from '../lib/goalContext';
 import {
@@ -456,7 +455,7 @@ export function ChatPage() {
   });
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [autoSpeechSaving, setAutoSpeechSaving] = useState(false);
-  const activeSpeechRef = useRef<HTMLAudioElement | null>(null);
+  const { speakMessage, stop: stopSpeech } = useSpeechPlayback();
   const finalSpeechCandidateRef = useRef<{ conversationId: string; text: string } | null>(null);
   const autoSpeechEnabled = appConfig?.textToSpeech?.autoSpeakFinalAnswers === true;
 
@@ -469,10 +468,9 @@ export function ChatPage() {
       .catch(() => undefined);
     return () => {
       cancelled = true;
-      activeSpeechRef.current?.pause();
-      activeSpeechRef.current = null;
+      stopSpeech();
     };
-  }, []);
+  }, [stopSpeech]);
 
   useEffect(() => {
     if (!autoSpeechEnabled || !chat.activeId || !chat.isStreaming || !chat.streamText.trim()) return;
@@ -488,20 +486,8 @@ export function ChatPage() {
     if (!candidate || candidate.conversationId !== chat.activeId) return;
     finalSpeechCandidateRef.current = null;
     if (!autoSpeechEnabled || chat.activeConversation?.archivedAt) return;
-    const speechText = finalAnswerToSpeechText(candidate.text);
-    if (!speechText) return;
-    void api.synthesizeSpeechPreview(speechText)
-      .then((preview) => {
-        activeSpeechRef.current?.pause();
-        const audio = new Audio(convertFileSrc(preview.path));
-        activeSpeechRef.current = audio;
-        audio.addEventListener('ended', () => {
-          if (activeSpeechRef.current === audio) activeSpeechRef.current = null;
-        }, { once: true });
-        return audio.play();
-      })
-      .catch((error) => toast.error(formatUserError(t('chat.autoTtsFailed'), error)));
-  }, [autoSpeechEnabled, chat.activeConversation, chat.activeId, chat.isStreaming, t]);
+    void speakMessage(`auto:${candidate.conversationId}`, candidate.text);
+  }, [autoSpeechEnabled, chat.activeConversation, chat.activeId, chat.isStreaming, speakMessage]);
 
   const toggleAutoSpeech = useCallback(async () => {
     if (!appConfig?.textToSpeech || autoSpeechSaving) return;
@@ -516,8 +502,7 @@ export function ChatPage() {
         return;
       }
     } else {
-      activeSpeechRef.current?.pause();
-      activeSpeechRef.current = null;
+      stopSpeech();
       finalSpeechCandidateRef.current = null;
     }
     const nextConfig: AppConfig = {
@@ -537,7 +522,7 @@ export function ChatPage() {
     } finally {
       setAutoSpeechSaving(false);
     }
-  }, [appConfig, autoSpeechSaving, t]);
+  }, [appConfig, autoSpeechSaving, stopSpeech, t]);
   const chatInputHistory = useMemo(
     () => chat.messages
       .filter((message) => (

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Save, Volume2 } from 'lucide-react';
+import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Save, Trash2, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import { clearSpeechCache } from '../../lib/api';
 import { ProviderIcon } from '../../lib/providerIcons';
 import {
   findSharedProviderCredential,
@@ -56,6 +57,8 @@ export function TextToSpeechSettingsPanel({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showKey, setShowKey] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState<string | null>(null);
   const config = appConfig.textToSpeech ?? DEFAULT_TTS_CONFIG;
   const scopedPresets = useMemo(
     () => TTS_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
@@ -107,6 +110,19 @@ export function TextToSpeechSettingsPanel({
       outputFormat: preset.outputFormats[0] ?? 'mp3',
       executablePath: preset.local ? (config.executablePath || 'sherpa-onnx-offline-tts') : config.executablePath,
     });
+  };
+
+  const clearCache = async () => {
+    setClearingCache(true);
+    setCacheStatus(null);
+    try {
+      const result = await clearSpeechCache();
+      setCacheStatus(`Removed ${result.removedFiles} cached audio file${result.removedFiles === 1 ? '' : 's'}.`);
+    } catch (error) {
+      setCacheStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setClearingCache(false);
+    }
   };
 
   return (
@@ -333,7 +349,20 @@ export function TextToSpeechSettingsPanel({
               </>
             )}
           </div>
-          <div className="mt-4 flex justify-end border-t border-border pt-3">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                icon={<Trash2 size={14} />}
+                loading={clearingCache}
+                onClick={() => void clearCache()}
+              >
+                Clear speech cache
+              </Button>
+              {cacheStatus && <span className="text-[11px] text-text-tertiary">{cacheStatus}</span>}
+            </div>
             <Button
               type="button"
               variant="primary"

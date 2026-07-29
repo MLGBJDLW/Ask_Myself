@@ -74,15 +74,15 @@ const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
 };
 
 const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
-  prompts: 'bg-sky-400/80',
-  conversation: 'bg-indigo-400/80',
-  tools: 'bg-amber-400/80',
-  toolResults: 'bg-orange-400/80',
-  mcp: 'bg-fuchsia-400/80',
-  memory: 'bg-emerald-400/80',
-  sources: 'bg-teal-400/80',
-  skills: 'bg-purple-400/80',
-  thinking: 'bg-pink-400/80',
+  prompts: 'bg-[var(--context-prompts)]',
+  conversation: 'bg-[var(--context-conversation)]',
+  tools: 'bg-[var(--context-tools)]',
+  toolResults: 'bg-[var(--context-tool-results)]',
+  mcp: 'bg-[var(--context-mcp)]',
+  memory: 'bg-[var(--context-conversation)]',
+  sources: 'bg-[var(--context-prompts)]',
+  skills: 'bg-[var(--context-tools)]',
+  thinking: 'bg-[var(--context-overhead)]',
   estimated: 'bg-text-tertiary/65',
   other: 'bg-text-tertiary/55',
 };

@@ -458,6 +458,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             onEdit={isUser && !goalMessage && onEditAndResend ? handleStartEdit : undefined}
             onDelete={onDeleteMessage}
             align={isUser ? 'end' : 'start'}
+            showSpeech={msg.role === 'assistant' && msg.toolCalls.length === 0 && actionText.trim().length > 0}
           />
         )}
         {/* Timestamp */}

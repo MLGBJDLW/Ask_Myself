@@ -18,12 +18,44 @@ pub fn save_app_config_cmd(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechPreview {
+    pub asset_id: String,
     pub path: String,
     pub media_type: String,
+    pub bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearSpeechCacheResult {
+    pub removed_files: u64,
+    pub removed_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn clear_speech_cache_cmd(
+    app_handle: AppHandle,
+) -> Result<ClearSpeechCacheResult, String> {
+    let cache_root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve app cache directory: {error}"))?;
+    let data_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let store = nexa_core::managed_assets::ManagedLocalAssetStore::new(cache_root, data_root);
+    let (removed_files, removed_bytes) = store
+        .clear_audio_cache()
+        .map_err(|error| error.to_string())?;
+    Ok(ClearSpeechCacheResult {
+        removed_files,
+        removed_bytes,
+    })
 }
 
 #[tauri::command]
 pub async fn synthesize_speech_preview_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     text: String,
 ) -> Result<SpeechPreview, String> {
@@ -33,6 +65,40 @@ pub async fn synthesize_speech_preview_cmd(
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("Speech text cannot be empty".into());
+    }
+    let config = state
+        .db
+        .load_app_config()
+        .map_err(|error| error.to_string())?;
+    let tts = &config.text_to_speech;
+    let cache_key_material = format!(
+        "{}\0{}\0{}\0{}\0{}\0{}",
+        tts.provider,
+        tts.model,
+        tts.voice,
+        tts.speed,
+        tts.output_format,
+        trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
+    let cache_root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve app cache directory: {error}"))?;
+    let data_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let store = nexa_core::managed_assets::ManagedLocalAssetStore::new(cache_root, data_root);
+    if let Some(managed) = store
+        .cached_audio(&cache_key_material)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(SpeechPreview {
+            asset_id: managed.asset_id,
+            path: managed.path.to_string_lossy().into_owned(),
+            media_type: managed.media_type,
+            bytes: managed.bytes,
+        });
     }
     let arguments = serde_json::json!({ "text": trimmed }).to_string();
     let result = SynthesizeSpeechTool
@@ -59,9 +125,101 @@ pub async fn synthesize_speech_preview_cmd(
         .get("mediaType")
         .and_then(|value| value.as_str())
         .unwrap_or("audio/wav");
+    let source_path = PathBuf::from(path);
+    let managed = store
+        .cache_audio(&source_path, &cache_key_material, media_type)
+        .map_err(|error| error.to_string())?;
+    if source_path != managed.path {
+        let _ = std::fs::remove_file(source_path);
+    }
+    let _ = store.prune_audio_cache(512 * 1024 * 1024, Duration::from_secs(30 * 24 * 60 * 60));
     Ok(SpeechPreview {
-        path: path.to_string(),
-        media_type: media_type.to_string(),
+        asset_id: managed.asset_id,
+        path: managed.path.to_string_lossy().into_owned(),
+        media_type: managed.media_type,
+        bytes: managed.bytes,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeBackgroundAsset {
+    pub asset_id: String,
+    pub path: String,
+    pub media_type: String,
+    pub bytes: u64,
+}
+
+#[tauri::command]
+pub async fn import_theme_background_cmd(
+    app_handle: AppHandle,
+    source_path: String,
+) -> Result<ThemeBackgroundAsset, String> {
+    let cache_root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve app cache directory: {error}"))?;
+    let data_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let store = nexa_core::managed_assets::ManagedLocalAssetStore::new(cache_root, data_root);
+    let asset = store
+        .import_theme_background(Path::new(source_path.trim()))
+        .map_err(|error| error.to_string())?;
+    Ok(ThemeBackgroundAsset {
+        asset_id: asset.asset_id,
+        path: asset.path.to_string_lossy().into_owned(),
+        media_type: asset.media_type,
+        bytes: asset.bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn resolve_theme_background_cmd(
+    app_handle: AppHandle,
+    asset_id: String,
+) -> Result<ThemeBackgroundAsset, String> {
+    let cache_root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve app cache directory: {error}"))?;
+    let data_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let store = nexa_core::managed_assets::ManagedLocalAssetStore::new(cache_root, data_root);
+    let asset = store
+        .resolve_theme_background(asset_id.trim())
+        .map_err(|error| error.to_string())?;
+    Ok(ThemeBackgroundAsset {
+        asset_id: asset.asset_id,
+        path: asset.path.to_string_lossy().into_owned(),
+        media_type: asset.media_type,
+        bytes: asset.bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn garbage_collect_theme_assets_cmd(
+    app_handle: AppHandle,
+    retained_asset_ids: Vec<String>,
+) -> Result<ClearSpeechCacheResult, String> {
+    let cache_root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Failed to resolve app cache directory: {error}"))?;
+    let data_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let store = nexa_core::managed_assets::ManagedLocalAssetStore::new(cache_root, data_root);
+    let (removed_files, removed_bytes) = store
+        .garbage_collect_theme_assets(&retained_asset_ids)
+        .map_err(|error| error.to_string())?;
+    Ok(ClearSpeechCacheResult {
+        removed_files,
+        removed_bytes,
     })
 }
 

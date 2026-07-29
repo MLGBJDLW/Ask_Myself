@@ -5,6 +5,9 @@ use super::turn_state::{TurnPhase, TurnStateMachine};
 use super::*;
 
 pub(super) struct UsageAccountingContext<'a> {
+    pub(super) db: &'a Database,
+    pub(super) conversation_id: Option<&'a str>,
+    pub(super) turn_id: Option<&'a str>,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
     pub(super) model: &'a str,
     pub(super) messages: &'a mut Vec<Message>,
@@ -28,6 +31,67 @@ pub(super) struct ModelStepUsageReport {
 }
 
 impl AgentExecutor {
+    pub(super) fn record_model_step_failure(
+        &self,
+        db: &Database,
+        conversation_id: Option<&str>,
+        turn_id: Option<&str>,
+        model: &str,
+        iteration: u32,
+        error: &CoreError,
+    ) {
+        let operation_kind = match self.config.request_kind {
+            AgentRequestKind::MainAgentStep => "agent_main",
+            AgentRequestKind::SubagentWorker => "subagent",
+        };
+        let invocation_id = format!(
+            "{}:{}:{}:{}",
+            self.usage_subtask_run_id
+                .as_deref()
+                .or(self.usage_run_id.as_deref())
+                .or(turn_id)
+                .unwrap_or(&self.usage_scope_id),
+            operation_kind,
+            iteration,
+            model
+        );
+        let provider_id = crate::usage_analytics::provider_type_id(self.config.provider_type);
+        let raw = serde_json::json!({ "error": error.to_string() });
+        let (estimated_cost_micros, currency, pricing_version) =
+            crate::usage_analytics::usage_cost_metadata(self.config.provider_type);
+        if let Err(record_error) = db.record_ai_usage(&crate::usage_analytics::AiUsageRecordInput {
+            invocation_id: &invocation_id,
+            occurred_at: None,
+            provider_id,
+            provider_type: provider_id,
+            model_id: model,
+            raw_model_id: Some(model),
+            modality: "language_model",
+            operation_kind,
+            conversation_id,
+            turn_id,
+            run_id: self.usage_run_id.as_deref(),
+            subtask_run_id: self.usage_subtask_run_id.as_deref(),
+            project_id: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            thinking_tokens: 0,
+            total_tokens: 0,
+            cache_read_tokens: 0,
+            cache_miss_tokens: 0,
+            cache_creation_tokens: 0,
+            usage_source: "unknown",
+            request_status: "error",
+            latency_ms: None,
+            estimated_cost_micros,
+            currency,
+            pricing_version,
+            provider_raw: &raw,
+        }) {
+            warn!("Failed to persist failed AI invocation: {record_error}");
+        }
+    }
+
     pub(super) async fn record_model_step_usage(
         &self,
         ctx: UsageAccountingContext<'_>,
@@ -37,6 +101,9 @@ impl AgentExecutor {
         chunk_usage: Option<Usage>,
     ) -> ModelStepUsageReport {
         let UsageAccountingContext {
+            db,
+            conversation_id,
+            turn_id,
             tx,
             model,
             messages,
@@ -63,6 +130,26 @@ impl AgentExecutor {
         );
         let (prompt_tokens, completion_tokens, _has_actual_usage) =
             model_step_accounting_tokens(chunk_usage.as_ref(), context_breakdown.total_tokens);
+        let operation_kind = match self.config.request_kind {
+            AgentRequestKind::MainAgentStep => "agent_main",
+            AgentRequestKind::SubagentWorker => "subagent",
+        };
+        if let Err(error) = db.record_model_step_usage(
+            conversation_id,
+            turn_id,
+            Some(&self.usage_scope_id),
+            self.usage_run_id.as_deref(),
+            self.usage_subtask_run_id.as_deref(),
+            iteration,
+            self.config.provider_type,
+            model,
+            operation_kind,
+            chunk_usage.as_ref(),
+            context_breakdown.total_tokens,
+            normalized_cache_miss_tokens,
+        ) {
+            warn!("Failed to persist canonical AI usage: {error}");
+        }
         *last_prompt_tokens = prompt_tokens;
         *last_context_breakdown = Some(context_breakdown.clone());
         if let Some(u) = chunk_usage.as_ref() {
@@ -105,7 +192,10 @@ impl AgentExecutor {
             loop_recorder.record(started.clone());
             append_persisted_trace_loop_event(persisted_trace_items, started);
             turn_state.transition_to(TurnPhase::Compacting);
-            if let Err(e) = self.aggressive_compact(messages, model, tx).await {
+            if let Err(e) = self
+                .aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+                .await
+            {
                 warn!("Auto-compact failed: {e}");
             } else {
                 let after_messages = prompt_cache::message_sequence_fingerprint(messages);

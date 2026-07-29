@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
+  ChartNoAxesCombined,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../../lib/api';
@@ -31,6 +32,7 @@ import { useTranslation } from '../../i18n';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AgentQualitySettingsTab } from '../../components/settings/AgentQualitySettingsTab';
 import { AppearanceSettingsTab } from '../../components/settings/AppearanceSettingsTab';
+import { UsageAnalyticsSettingsTab } from '../../components/settings/UsageAnalyticsSettingsTab';
 import { DataPrivacySettingsTab } from '../../components/settings/DataPrivacySettingsTab';
 import { EmbeddingConfigSection } from '../../components/settings/EmbeddingConfigSection';
 import { ExtensionsSettingsTab, type SkillFilter } from '../../components/settings/ExtensionsSettingsTab';
@@ -43,7 +45,7 @@ import { useUpdater } from '../../lib/useUpdater';
 import { useVoiceInputRuntime, withWhisperModel } from '../voice';
 
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
+type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'usage' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
 type SettingsTabItem = { id: SettingsTab; label: string; icon: ReactNode; developerOnly?: boolean };
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
@@ -1544,6 +1546,7 @@ export function SettingsPage() {
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
     { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
+    { id: 'usage', label: 'AI Usage', icon: <ChartNoAxesCombined size={16} /> },
     { id: 'agent_quality', label: t('settings.tabAgentQuality'), icon: <ClipboardCheck size={16} />, developerOnly: true },
     { id: 'media', label: t('settings.tabMedia'), icon: <Film size={16} /> },
     { id: 'data_privacy', label: t('settings.tabDataPrivacy'), icon: <Database size={16} /> },
@@ -1641,6 +1644,8 @@ export function SettingsPage() {
           onRerunWizard={() => { void handleRerunWizard(); }}
         />
       )}
+
+      {activeTab === 'usage' && <UsageAnalyticsSettingsTab />}
 
       {/* ── Tab: Models & Embedding ──────────────────────────────── */}
       {activeTab === 'models_embedding' && (

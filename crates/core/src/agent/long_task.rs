@@ -13,6 +13,9 @@ pub(super) struct LongTaskState {
 }
 
 pub(super) struct LongTaskCompactionContext<'a> {
+    pub(super) db: &'a Database,
+    pub(super) conversation_id: Option<&'a str>,
+    pub(super) turn_id: Option<&'a str>,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
     pub(super) model: &'a str,
     pub(super) messages: &'a mut Vec<Message>,
@@ -147,6 +150,9 @@ impl AgentExecutor {
         ctx: LongTaskCompactionContext<'_>,
     ) -> bool {
         let LongTaskCompactionContext {
+            db,
+            conversation_id,
+            turn_id,
             tx,
             model,
             messages,
@@ -179,7 +185,10 @@ impl AgentExecutor {
         );
         turn_state.transition_to(TurnPhase::Compacting);
 
-        let compacted = match self.aggressive_compact(messages, model, tx).await {
+        let compacted = match self
+            .aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+            .await
+        {
             Ok(()) => {
                 let after_messages = prompt_cache::message_sequence_fingerprint(messages);
                 let compacted = before_messages != after_messages;

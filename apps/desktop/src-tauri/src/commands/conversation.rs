@@ -271,6 +271,85 @@ pub async fn get_conversation_usage_snapshot_cmd(
 }
 
 #[tauri::command]
+pub async fn get_ai_usage_analytics_cmd(
+    state: tauri::State<'_, AppState>,
+    filter: nexa_core::usage_analytics::UsageAnalyticsFilter,
+) -> Result<nexa_core::usage_analytics::UsageAnalytics, String> {
+    state
+        .db
+        .get_usage_analytics(&filter)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_ai_usage_records_cmd(
+    state: tauri::State<'_, AppState>,
+    filter: nexa_core::usage_analytics::UsageAnalyticsFilter,
+) -> Result<u64, String> {
+    state
+        .db
+        .delete_usage_records(&filter)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn export_ai_usage_cmd(
+    state: tauri::State<'_, AppState>,
+    filter: nexa_core::usage_analytics::UsageAnalyticsFilter,
+    format: String,
+    path: String,
+) -> Result<(), String> {
+    let analytics = state
+        .db
+        .get_usage_analytics(&filter)
+        .map_err(|error| error.to_string())?;
+    let content = match format.trim().to_ascii_lowercase().as_str() {
+        "json" => serde_json::to_string_pretty(&analytics).map_err(|error| error.to_string())?,
+        "csv" => usage_analytics_csv(&analytics),
+        other => return Err(format!("Unsupported AI usage export format: {other}")),
+    };
+    std::fs::write(Path::new(path.trim()), content).map_err(|error| error.to_string())
+}
+
+fn usage_analytics_csv(analytics: &nexa_core::usage_analytics::UsageAnalytics) -> String {
+    let mut lines = vec![
+        "dimension,key,provider,model,requests,agent_runs,turns,successes,prompt_tokens,completion_tokens,thinking_tokens,total_tokens,cache_read_tokens,cache_miss_tokens,estimated_cost_micros".to_string(),
+    ];
+    for (dimension, rows) in [
+        ("model", &analytics.by_model),
+        ("operation", &analytics.by_operation),
+    ] {
+        for row in rows {
+            lines.push(format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                dimension,
+                csv_cell(&row.key),
+                csv_cell(row.provider_id.as_deref().unwrap_or("")),
+                csv_cell(row.model_id.as_deref().unwrap_or("")),
+                row.request_count,
+                row.agent_run_count,
+                row.turn_count,
+                row.success_count,
+                row.prompt_tokens,
+                row.completion_tokens,
+                row.thinking_tokens,
+                row.total_tokens,
+                row.cache_read_tokens,
+                row.cache_miss_tokens,
+                row.estimated_cost_micros
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn csv_cell(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[tauri::command]
 pub async fn get_agent_subtask_runs_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
@@ -727,13 +806,62 @@ pub async fn generate_title_cmd(
 
         match provider_bundle {
             Ok((provider, title_model, title_provider_type)) => {
-                nexa_core::conversation::generate_title(
+                let generated = nexa_core::conversation::generate_title_with_usage(
                     provider.as_ref(),
                     &title_model,
                     Some(title_provider_type),
                     &title_context,
                 )
-                .await
+                .await;
+                if let Some(usage) = generated.usage.as_ref() {
+                    let provider_id =
+                        nexa_core::usage_analytics::provider_type_id(Some(title_provider_type));
+                    let (estimated_cost_micros, currency, pricing_version) =
+                        nexa_core::usage_analytics::usage_cost_metadata(Some(title_provider_type));
+                    let raw = serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}));
+                    let invocation_id = format!(
+                        "title:{}:{}",
+                        conversation_id,
+                        blake3::hash(title_context.excerpt.as_bytes()).to_hex()
+                    );
+                    let _ =
+                        state
+                            .db
+                            .record_ai_usage(&nexa_core::usage_analytics::AiUsageRecordInput {
+                                invocation_id: &invocation_id,
+                                occurred_at: None,
+                                provider_id,
+                                provider_type: provider_id,
+                                model_id: &title_model,
+                                raw_model_id: Some(&title_model),
+                                modality: "language_model",
+                                operation_kind: "conversation_title",
+                                conversation_id: Some(&conversation_id),
+                                turn_id: None,
+                                run_id: None,
+                                subtask_run_id: None,
+                                project_id: None,
+                                prompt_tokens: u64::from(usage.prompt_tokens),
+                                completion_tokens: u64::from(usage.completion_tokens),
+                                thinking_tokens: u64::from(usage.thinking_tokens.unwrap_or(0)),
+                                total_tokens: u64::from(usage.total_tokens.max(
+                                    usage.prompt_tokens.saturating_add(usage.completion_tokens),
+                                )),
+                                cache_read_tokens: u64::from(usage.cache_read_tokens.unwrap_or(0)),
+                                cache_miss_tokens: u64::from(usage.cache_miss_tokens.unwrap_or(0)),
+                                cache_creation_tokens: u64::from(
+                                    usage.cache_creation_tokens.unwrap_or(0),
+                                ),
+                                usage_source: "provider",
+                                request_status: "success",
+                                latency_ms: None,
+                                estimated_cost_micros,
+                                currency,
+                                pricing_version,
+                                provider_raw: &raw,
+                            });
+                }
+                generated.title
             }
             Err(error) => {
                 warn!("title provider unavailable ({error}); using fallback title");
