@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 
 import * as api from '../../lib/api';
 import { getModelStatus, invalidate as invalidateModelStatus } from '../../lib/modelStatusCache';
@@ -42,9 +43,19 @@ export function normalizeTranscript(text: string): string {
   return text.trim();
 }
 
+export function isRealtimeTranscriptionConfig(
+  config?: SpeechToTextConfig | null,
+): boolean {
+  return config?.apiStyle === 'openai_realtime_transcription';
+}
+
 export function isSpeechToTextConfigured(config?: SpeechToTextConfig | null): boolean {
   if (!config || config.apiStyle === 'local_whisper') return true;
-  if (config.apiStyle === 'openai_transcription' || config.apiStyle === 'dashscope_asr') {
+  if (
+    config.apiStyle === 'openai_transcription'
+    || config.apiStyle === 'openai_realtime_transcription'
+    || config.apiStyle === 'dashscope_asr'
+  ) {
     return Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim());
   }
   if (config.apiStyle === 'sherpa_onnx') {
@@ -79,6 +90,42 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const [whisperChecking, setWhisperChecking] = useState(false);
   const [whisperDownloading, setWhisperDownloading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [partialTranscript, setPartialTranscript] = useState('');
+  const realtimeSessionIdRef = useRef<string | null>(null);
+  const realtimeUploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const realtimeUploadErrorRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{
+      sessionId: string;
+      kind: 'delta' | 'completed' | 'error' | 'closed';
+      text?: string;
+      itemId?: string;
+    }>('speech-to-text:realtime', (event) => {
+      if (event.payload.sessionId !== realtimeSessionIdRef.current) return;
+      if (event.payload.kind === 'delta' && event.payload.text) {
+        setPartialTranscript((current) => current + event.payload.text);
+      } else if (event.payload.kind === 'completed') {
+        setPartialTranscript(event.payload.text ?? '');
+      } else if (event.payload.kind === 'error') {
+        realtimeUploadErrorRef.current = event.payload.text ?? 'Realtime transcription failed';
+      }
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch(() => {
+      // The listener is unavailable outside the Tauri runtime (for example in
+      // isolated component tests); command failures still surface to callers.
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      const sessionId = realtimeSessionIdRef.current;
+      if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+    };
+  }, []);
 
   const resolveVideoConfig = useCallback(
     async (configOverride?: VideoConfig | null): Promise<VideoConfig> =>
@@ -182,12 +229,55 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     }
   }, []);
 
+  const queueRealtimeAudio = useCallback((sessionId: string, chunk: Uint8Array) => {
+    realtimeUploadChainRef.current = realtimeUploadChainRef.current
+      .then(async () => {
+        if (realtimeUploadErrorRef.current) return;
+        await api.appendRealtimeTranscriptionAudio(sessionId, Array.from(chunk));
+      })
+      .catch((error) => {
+        realtimeUploadErrorRef.current = String(error);
+      });
+  }, []);
+
+  const finishRealtimeRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    const sessionId = realtimeSessionIdRef.current;
+    await recorder.stopRecording();
+    if (!sessionId) return { status: 'empty' };
+
+    setTranscribing(true);
+    try {
+      await realtimeUploadChainRef.current;
+      if (realtimeUploadErrorRef.current) {
+        throw new Error(realtimeUploadErrorRef.current);
+      }
+      const transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
+      setPartialTranscript('');
+      return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
+    } catch (error) {
+      void api.cancelRealtimeTranscription(sessionId);
+      return {
+        status: 'error',
+        code: 'transcription_failed',
+        message: String(error),
+      };
+    } finally {
+      realtimeSessionIdRef.current = null;
+      realtimeUploadChainRef.current = Promise.resolve();
+      realtimeUploadErrorRef.current = null;
+      setTranscribing(false);
+    }
+  }, [recorder]);
+
   const toggleRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
     if (transcribing || recorder.isProcessing || whisperChecking) {
       return { status: 'error', code: 'busy' };
     }
 
     if (recorder.isRecording) {
+      if (realtimeSessionIdRef.current) {
+        return finishRealtimeRecording();
+      }
       const wav = await recorder.stopRecording();
       return wav ? transcribeWav(wav) : { status: 'empty' };
     }
@@ -196,7 +286,27 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     if (readinessError) return readinessError;
 
     try {
-      await recorder.startRecording();
+      const appConfig = await api.getAppConfig();
+      if (isRealtimeTranscriptionConfig(appConfig.speechToText)) {
+        const sessionId = await api.startRealtimeTranscription();
+        realtimeSessionIdRef.current = sessionId;
+        realtimeUploadChainRef.current = Promise.resolve();
+        realtimeUploadErrorRef.current = null;
+        setPartialTranscript('');
+        try {
+          await recorder.startRecording({
+            captureWav: false,
+            targetSampleRate: 24_000,
+            onPcmChunk: (chunk) => queueRealtimeAudio(sessionId, chunk),
+          });
+        } catch (error) {
+          realtimeSessionIdRef.current = null;
+          void api.cancelRealtimeTranscription(sessionId);
+          throw error;
+        }
+      } else {
+        await recorder.startRecording();
+      }
       return { status: 'started' };
     } catch (error) {
       return {
@@ -208,12 +318,24 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   }, [
     recorder,
     ensureSpeechProviderReadyForRecording,
+    finishRealtimeRecording,
+    queueRealtimeAudio,
     transcribeWav,
     transcribing,
     whisperChecking,
   ]);
 
   const busy = recorder.isProcessing || transcribing || whisperChecking;
+
+  const cancelRecording = useCallback(() => {
+    recorder.cancelRecording();
+    const sessionId = realtimeSessionIdRef.current;
+    realtimeSessionIdRef.current = null;
+    realtimeUploadChainRef.current = Promise.resolve();
+    realtimeUploadErrorRef.current = null;
+    setPartialTranscript('');
+    if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+  }, [recorder]);
 
   return useMemo(
     () => ({
@@ -233,17 +355,20 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       isTranscribing: transcribing,
       busy,
       recordingDuration: recorder.recordingDuration,
+      partialTranscript,
       analyser: recorder.analyser,
       toggleRecording,
-      cancelRecording: recorder.cancelRecording,
+      cancelRecording,
       transcribeWav,
       formatDuration: formatRecordingDuration,
     }),
     [
       busy,
+      cancelRecording,
       deleteWhisperModel,
       downloadWhisperModel,
       microphones,
+      partialTranscript,
       recorder,
       refreshWhisperReadiness,
       resetWhisperReadiness,

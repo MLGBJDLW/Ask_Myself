@@ -1281,6 +1281,18 @@ export const downloadFfmpeg = () =>
 export const transcribeAudioBuffer = (audioData: number[]) =>
   invoke<string>('transcribe_audio_buffer_cmd', { audioData });
 
+export const startRealtimeTranscription = () =>
+  invoke<string>('start_realtime_transcription_cmd');
+
+export const appendRealtimeTranscriptionAudio = (sessionId: string, audioData: number[]) =>
+  invoke<void>('append_realtime_transcription_audio_cmd', { sessionId, audioData });
+
+export const finishRealtimeTranscription = (sessionId: string) =>
+  invoke<string>('finish_realtime_transcription_cmd', { sessionId });
+
+export const cancelRealtimeTranscription = (sessionId: string) =>
+  invoke<void>('cancel_realtime_transcription_cmd', { sessionId });
+
 export const clearAnswerCache = () =>
   invoke<number>('clear_answer_cache');
 

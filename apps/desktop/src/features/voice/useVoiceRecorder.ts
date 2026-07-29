@@ -1,9 +1,19 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { StreamingPcm16Encoder } from './realtimePcm';
+
+export interface VoiceRecordingOptions {
+  /** Keep captured samples and return a WAV from stopRecording. Defaults to true. */
+  captureWav?: boolean;
+  /** PCM sample rate supplied to onPcmChunk. OpenAI Live requires 24 kHz. */
+  targetSampleRate?: number;
+  /** Receives ordered, mono, little-endian PCM16 chunks while recording. */
+  onPcmChunk?: (chunk: Uint8Array) => void;
+}
 
 export interface UseVoiceRecorderReturn {
   isRecording: boolean;
   isProcessing: boolean;
-  startRecording: () => Promise<void>;
+  startRecording: (options?: VoiceRecordingOptions) => Promise<void>;
   stopRecording: () => Promise<Uint8Array | null>;
   cancelRecording: () => void;
   recordingDuration: number;
@@ -32,6 +42,8 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   const buffersRef = useRef<Float32Array[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef(false);
+  const recordingOptionsRef = useRef<VoiceRecordingOptions>({ captureWav: true });
+  const pcmEncoderRef = useRef<StreamingPcm16Encoder | null>(null);
 
   const cleanup = useCallback(() => {
     if (timerRef.current) {
@@ -47,6 +59,8 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     audioCtxRef.current = null;
     streamRef.current = null;
     buffersRef.current = [];
+    pcmEncoderRef.current = null;
+    recordingOptionsRef.current = { captureWav: true };
     setAnalyser(null);
     setRecordingDuration(0);
   }, []);
@@ -54,8 +68,9 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   // Cleanup on unmount
   useEffect(() => cleanup, [cleanup]);
 
-  const startRecording = useCallback(async () => {
+  const startRecording = useCallback(async (options: VoiceRecordingOptions = {}) => {
     cancelledRef.current = false;
+    recordingOptionsRef.current = { captureWav: true, targetSampleRate: 24_000, ...options };
     let stream: MediaStream;
     if (deviceId) {
       try {
@@ -74,6 +89,12 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
 
     const audioCtx = new AudioContext();
     audioCtxRef.current = audioCtx;
+    pcmEncoderRef.current = recordingOptionsRef.current.onPcmChunk
+      ? new StreamingPcm16Encoder(
+          audioCtx.sampleRate,
+          recordingOptionsRef.current.targetSampleRate ?? 24_000,
+        )
+      : null;
 
     const source = audioCtx.createMediaStreamSource(stream);
     sourceRef.current = source;
@@ -85,7 +106,14 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
 
     processor.onaudioprocess = (e) => {
       if (!cancelledRef.current) {
-        buffersRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        const samples = new Float32Array(e.inputBuffer.getChannelData(0));
+        if (recordingOptionsRef.current.captureWav !== false) {
+          buffersRef.current.push(samples);
+        }
+        const pcmChunk = pcmEncoderRef.current?.encode(samples);
+        if (pcmChunk && pcmChunk.length > 0) {
+          recordingOptionsRef.current.onPcmChunk?.(pcmChunk);
+        }
       }
     };
 
@@ -117,11 +145,13 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
 
     const sourceSampleRate = audioCtxRef.current.sampleRate;
     const buffers = buffersRef.current.slice();
+    const captureWav = recordingOptionsRef.current.captureWav !== false;
 
     // Stop capturing
     setIsRecording(false);
     cleanup();
 
+    if (!captureWav) return null;
     if (buffers.length === 0) return null;
 
     setIsProcessing(true);

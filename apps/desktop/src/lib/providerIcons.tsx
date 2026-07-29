@@ -206,6 +206,7 @@ const PRESET_ID_TO_ICON: Record<string, string> = {
   zhipu: 'zhipu',
   moonshot: 'moonshot',
   qwen: 'qwen',
+  qwencloudintl: 'qwen',
   'alibaba-model-studio': 'alibabacloud',
   siliconflow: 'siliconflow',
   doubao: 'doubao',

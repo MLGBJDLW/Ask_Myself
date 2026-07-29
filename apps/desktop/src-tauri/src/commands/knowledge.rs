@@ -589,8 +589,7 @@ fn app_is_idle(app_handle: &AppHandle) -> bool {
     let Some(agent_state) = app_handle.try_state::<AgentState>() else {
         return true;
     };
-    let is_idle = agent_state.sessions.try_is_empty().unwrap_or(false);
-    is_idle
+    agent_state.sessions.try_is_empty().unwrap_or(false)
 }
 
 fn interval_due(last_run_secs: &AtomicU64, now_secs: u64, interval_minutes: usize) -> bool {

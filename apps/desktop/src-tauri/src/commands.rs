@@ -89,6 +89,7 @@ mod knowledge;
 mod media;
 mod personas;
 mod preview;
+mod realtime_transcription;
 mod skills_mcp;
 mod sources;
 mod terminal;
@@ -104,6 +105,7 @@ pub use knowledge::*;
 pub use media::*;
 pub use personas::*;
 pub use preview::*;
+pub use realtime_transcription::*;
 pub use skills_mcp::*;
 pub use sources::*;
 pub use terminal::*;
@@ -620,7 +622,7 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
     // Final pass: fix any assistant messages with neither content nor tool_calls
     for msg in &mut messages {
         if msg.role == Role::Assistant
-            && msg.tool_calls.as_ref().map_or(true, |tc| tc.is_empty())
+            && msg.tool_calls.as_ref().is_none_or(|tc| tc.is_empty())
             && msg.text_content().trim().is_empty()
         {
             msg.parts = vec![ContentPart::Text {

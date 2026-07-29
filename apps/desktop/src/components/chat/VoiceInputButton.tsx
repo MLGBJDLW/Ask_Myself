@@ -13,7 +13,16 @@ interface VoiceInputButtonProps {
 export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonProps) {
   const { t } = useTranslation();
   const voiceRuntime = useVoiceInputRuntime();
-  const { isRecording, busy, cancelRecording, recordingDuration, toggleRecording, formatDuration, analyser } =
+  const {
+    isRecording,
+    busy,
+    cancelRecording,
+    partialTranscript,
+    recordingDuration,
+    toggleRecording,
+    formatDuration,
+    analyser,
+  } =
     voiceRuntime;
 
   // Cancel on Escape
@@ -82,6 +91,11 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
             className="h-4"
             label={t('voice.waveformLabel')}
           />
+          {partialTranscript && (
+            <span className="max-w-36 truncate text-[11px] text-text-secondary">
+              {partialTranscript}
+            </span>
+          )}
           <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
         </>
       ) : (

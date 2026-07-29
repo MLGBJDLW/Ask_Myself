@@ -330,6 +330,7 @@ fn qwen_model_context_window(m: &str) -> Option<u32> {
         _ if m.starts_with("qwen3.8-max")
             || m.starts_with("qwen3.5-plus")
             || m.starts_with("qwen3.7-max")
+            || m.starts_with("qwen3.7-flash")
             || m.starts_with("qwen3.6-plus")
             || m.starts_with("qwen3.6-flash")
             || m.starts_with("qwen3.5-flash")
@@ -716,6 +717,7 @@ mod tests {
         assert_eq!(model_context_window("qwen3.7-max-2026-06-08"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-plus"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-plus-2026-05-26"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.7-flash"), 1_000_000);
         assert_eq!(model_context_window("qwen3-max-2026-01-23"), 262_144);
         assert_eq!(model_context_window("qwen3.6-max-preview"), 262_144);
         assert_eq!(model_context_window("qwen3-max-preview"), 81_920);
