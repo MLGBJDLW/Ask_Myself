@@ -97,3 +97,6 @@ pub mod wiki;
 pub mod work_plan;
 pub mod workflow_automation;
 pub mod workflow_catalog;
+
+#[cfg(test)]
+mod architecture_fitness;
