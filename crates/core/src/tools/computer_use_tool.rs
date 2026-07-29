@@ -23,8 +23,11 @@ const CONTROL_DEF_JSON: &str = include_str!("../../prompts/tools/computer_contro
 const OBSERVATION_TTL: Duration = Duration::from_secs(120);
 const MAX_OBSERVATIONS: usize = 64;
 const SCREENSHOT_SIGNATURE_EDGE: u32 = 16;
+#[cfg(any(target_os = "windows", test))]
 const SCREENSHOT_PIXEL_DIFF_THRESHOLD: u8 = 32;
+#[cfg(any(target_os = "windows", test))]
 const MAX_SCREENSHOT_CHANGED_RATIO: f64 = 0.20;
+#[cfg(any(target_os = "windows", test))]
 const MAX_SCREENSHOT_MEAN_DIFF: f64 = 18.0;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -65,6 +68,7 @@ fn screenshot_signature(png: &[u8]) -> Option<Vec<u8>> {
     )
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn screenshot_signatures_match(expected: &[u8], current: &[u8]) -> bool {
     if expected.len() != current.len() || expected.is_empty() {
         return false;
