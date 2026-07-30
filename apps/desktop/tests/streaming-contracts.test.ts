@@ -1316,6 +1316,12 @@ test('timeline view model uses event visibility instead of localized status labe
   assertEqual(visible.length, 2, 'only user and legacy user-visible statuses should remain');
   assertEqual(visible[0]?.id, 'user', 'labels must not override explicit user visibility');
   assertEqual(visible[1]?.id, 'legacy', 'legacy events default to user visibility');
+  const developerVisible = visibleTraceEventsForTimeline([
+    { id: 'internal', kind: 'status', text: 'internal', visibility: 'internal' },
+    { id: 'developer', kind: 'status', text: 'route', visibility: 'developer' },
+  ], true);
+  assertEqual(developerVisible.length, 1, 'developer mode reveals developer telemetry only');
+  assertEqual(developerVisible[0]?.id, 'developer', 'internal telemetry remains hidden');
   assert(!shouldRenderTraceToolCall('tool_search', undefined, 'done', false), 'successful tool_search should hide');
   assert(shouldRenderTraceToolCall('tool_search', undefined, 'error', true), 'failed tool_search should remain visible');
   assert(!shouldRenderTraceToolCall('update_plan', 'plan', 'done', false), 'board-only plan tool should hide from trace');

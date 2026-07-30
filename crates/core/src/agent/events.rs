@@ -102,6 +102,14 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         tone: Option<String>,
     },
+    /// Controller/runtime telemetry. This is developer-visible and uses a
+    /// semantic code so phase projection never depends on localized text.
+    ControllerStatus {
+        code: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tone: Option<String>,
+    },
     /// A user-authored steering message accepted by the active turn.
     ///
     /// This is distinct from `Status` so presentation never depends on a

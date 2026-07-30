@@ -347,11 +347,12 @@ export function turnLifecycleTimelineSections(input: {
   routeKind?: string | null;
   traceItems?: PersistedTraceItem[] | null;
   formatSkillsSummary?: (names: string[]) => string;
+  includeDeveloper?: boolean;
 }): TimelineSection[] {
   const sections: TimelineSection[] = [];
-  const { turn, routeKind, traceItems, formatSkillsSummary } = input;
+  const { turn, routeKind, traceItems, formatSkillsSummary, includeDeveloper = false } = input;
 
-  if (routeKind && !shouldHideRouteKind(routeKind)) {
+  if (includeDeveloper && routeKind && !shouldHideRouteKind(routeKind)) {
     sections.push({
       kind: 'status',
       id: `turn-route-${turn.id}`,
@@ -422,8 +423,9 @@ export function persistedTraceItemToTimelineSections(input: {
   item: PersistedTraceItem;
   id: string;
   trace: boolean;
+  includeDeveloper?: boolean;
 }): TimelineSection[] {
-  const { item, id, trace } = input;
+  const { item, id, trace, includeDeveloper = false } = input;
   switch (item.kind) {
     case 'status':
       {
@@ -434,7 +436,8 @@ export function persistedTraceItemToTimelineSections(input: {
           return [];
         }
       }
-      if (item.visibility === 'developer' || item.visibility === 'internal') return [];
+      if (item.visibility === 'internal') return [];
+      if (item.visibility === 'developer' && !includeDeveloper) return [];
       return [{
         kind: 'status',
         id,
@@ -464,21 +467,27 @@ export function persistedTraceItemsToTimelineSections(input: {
   items: PersistedTraceItem[] | null | undefined;
   idPrefix: string;
   trace: boolean;
+  includeDeveloper?: boolean;
 }): TimelineSection[] {
-  const { items, idPrefix, trace } = input;
+  const { items, idPrefix, trace, includeDeveloper = false } = input;
   return (items ?? []).flatMap((item, index) =>
     persistedTraceItemToTimelineSections({
       item,
       id: `${idPrefix}-${item.kind}-${index}`,
       trace,
+      includeDeveloper,
     }),
   );
 }
 
-export function visibleTraceEventsForTimeline(traceEvents: TraceEvent[]): TraceEvent[] {
+export function visibleTraceEventsForTimeline(
+  traceEvents: TraceEvent[],
+  includeDeveloper = false,
+): TraceEvent[] {
   return traceEvents.filter(event => (
     event.kind !== 'status'
-    || (event.visibility !== 'developer' && event.visibility !== 'internal')
+    || (event.visibility !== 'internal'
+      && (includeDeveloper || event.visibility !== 'developer'))
   ));
 }
 
@@ -729,8 +738,12 @@ export function projectLiveConversationTimeline(input: {
   toolCalls: ToolCallEvent[];
   streamText: string;
   displayedText: string;
+  includeDeveloper?: boolean;
 }): LiveConversationTimelineProjection {
-  const visibleTraceEvents = visibleTraceEventsForTimeline(input.traceEvents);
+  const visibleTraceEvents = visibleTraceEventsForTimeline(
+    input.traceEvents,
+    input.includeDeveloper,
+  );
   const currentTimelineSections = buildCurrentTimelineSections({
     visibleTraceEvents,
     streamRounds: input.streamRounds,

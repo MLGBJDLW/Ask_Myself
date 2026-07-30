@@ -33,6 +33,7 @@ import {
 } from "../../components/chat/markdownComponents";
 import { useTranslation } from "../../i18n";
 import { useTypewriter } from "../../lib/useTypewriter";
+import { useDeveloperMode } from "../../lib/developerMode";
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
   preprocessChunkCitations,
@@ -671,6 +672,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     isCompacting = false,
     compactCompleteVisible = false,
   } = props;
+  const [developerMode] = useDeveloperMode();
   const streamingVisibility = useMemo(
     () => projectChatStreamingVisibility({
       isStreaming,
@@ -1197,6 +1199,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           names.length > 0
             ? t('chat.skillsActivated', { names: names.join(', ') })
             : t('chat.skillsActivatedNone'),
+        includeDeveloper: developerMode,
       });
       const fallbackSections: TimelineSection[] = [];
 
@@ -1205,6 +1208,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           item,
           id: `turn-${turn.id}-${item.kind}-${itemIdx}`,
           trace: Boolean(trace),
+          includeDeveloper: developerMode,
         });
         if (item.kind === "status") {
           sections.push(...itemSections);
@@ -1252,6 +1256,7 @@ export function ChatMessages(props: ChatMessagesProps) {
               items: persistedTraceItems,
               idPrefix: `persisted-${persistedTraceCarrier?.id ?? "trace"}`,
               trace: true,
+              includeDeveloper: developerMode,
             });
       const persistedSkills = skillRefsFromTraceItems(persistedTraceItems).map(
         turnSkillFromTimeline,
@@ -1386,6 +1391,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
     return map;
   }, [
+    developerMode,
     messageCitationLookups,
     messageIndexById,
     messageThinkingText,
@@ -1413,9 +1419,11 @@ export function ChatMessages(props: ChatMessagesProps) {
       toolCalls,
       streamText,
       displayedText,
+      includeDeveloper: developerMode,
     }),
     [
       displayedText,
+      developerMode,
       isStreaming,
       isThinking,
       streamRounds,

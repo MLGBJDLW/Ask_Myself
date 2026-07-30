@@ -244,7 +244,8 @@ test.beforeEach(async ({ page }) => {
             });
             emitEvent("agent:event", {
               conversationId,
-              type: "status",
+              type: "controllerStatus",
+              code: "route_selected",
               content: routeStatusText,
               tone: "muted",
             });
@@ -379,14 +380,12 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("renders live route status inside the active trace timeline", async ({
+test("keeps live route status out of the user-facing trace timeline", async ({
   page,
 }) => {
   await page.goto("/chat");
 
-  await expect(
-    page.getByText("Route selected: KnowledgeRetrieval"),
-  ).toBeVisible();
+  await expect(page.getByText("Route selected: KnowledgeRetrieval")).toHaveCount(0);
   await expect(page.getByText("Loading tools and MCP servers")).toHaveCount(0);
   await expect(page.getByText("排队中")).toHaveCount(0);
   await expect(page.getByText("已使用上下文")).toHaveCount(0);

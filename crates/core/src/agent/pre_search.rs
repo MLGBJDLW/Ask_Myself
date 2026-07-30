@@ -67,12 +67,13 @@ impl AgentExecutor {
                     );
                     prefetched_contexts.push(ctx_msg);
                     let _ = tx
-                        .send(AgentEvent::Status {
+                        .send(AgentEvent::ControllerStatus {
+                            code: "prefetch_completed".to_string(),
                             content: "Pre-fetched knowledge graph index.".to_string(),
                             tone: Some("muted".to_string()),
                         })
                         .await;
-                    append_persisted_trace_status(
+                    append_internal_persisted_trace_status(
                         persisted_trace_items,
                         "Auto pre-graph: injected compact knowledge graph index.",
                         "info",
@@ -117,13 +118,14 @@ impl AgentExecutor {
                 );
                 prefetched_contexts.push(ctx_msg);
                 let _ = tx
-                    .send(AgentEvent::Status {
+                    .send(AgentEvent::ControllerStatus {
+                        code: "prefetch_completed".to_string(),
                         content: "Pre-fetched graph-guided search results for grounding."
                             .to_string(),
                         tone: Some("muted".to_string()),
                     })
                     .await;
-                append_persisted_trace_status(
+                append_internal_persisted_trace_status(
                     persisted_trace_items,
                     "Auto pre-search: injected graph-guided knowledge base results.",
                     "info",

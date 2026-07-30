@@ -413,7 +413,8 @@ mod tests {
             .unwrap();
         runtime.start_run(&run.id, "routing").unwrap();
 
-        let route_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+        let route_event = AgentRunEvent::from_agent_event(&AgentEvent::ControllerStatus {
+            code: "route_selected".to_string(),
             content: "Route selected: KnowledgeRetrieval".to_string(),
             tone: None,
         })
