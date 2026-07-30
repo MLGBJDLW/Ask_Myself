@@ -763,6 +763,35 @@ mod tests {
     }
 
     #[test]
+    fn test_materialize_unchanged_user_skill_preserves_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Stable custom skill".into(),
+                description: "Use for stable materialization tests".into(),
+                content: "Keep this file unchanged.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+
+        let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        let modified = fs::metadata(&skill_file).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+
+        assert_eq!(
+            fs::metadata(skill_file).unwrap().modified().unwrap(),
+            modified
+        );
+    }
+
+    #[test]
     fn test_materialize_user_skills_removes_disabled_skill_dir() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();

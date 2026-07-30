@@ -1620,18 +1620,17 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
             |row| row.get(0),
         )?;
 
-        // Always execute — uses IF NOT EXISTS, safe to re-run.
-        // Self-heals databases where name was recorded without SQL running.
+        if already_applied {
+            continue;
+        }
+
+        tracing::info!("Applying migration '{name}'…");
         if let Err(err) = conn.execute_batch(sql) {
             if !is_idempotent_schema_error(&err) {
                 return Err(err.into());
             }
         }
-
-        if !already_applied {
-            tracing::info!("Applying migration '{name}'…");
-            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
-        }
+        conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
     }
 
     Ok(())
@@ -1712,6 +1711,21 @@ mod tests {
             total_migration_count() as i64,
             "should have exactly {} migration records",
             total_migration_count()
+        );
+    }
+
+    #[test]
+    fn test_applied_future_migrations_are_not_replayed() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("first run should succeed");
+        let changes_after_first_run = conn.total_changes();
+
+        run_migrations(&conn).expect("second run should succeed");
+
+        assert_eq!(
+            conn.total_changes(),
+            changes_after_first_run,
+            "a fully migrated database must not be rewritten during startup"
         );
     }
 

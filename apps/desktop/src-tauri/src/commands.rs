@@ -283,10 +283,10 @@ fn task_title_from_message(message: &str) -> String {
     out
 }
 
-/// Initialise the file watcher, start watching all sources with
-/// `watch_enabled = true`, and spawn a background thread that processes
-/// file-change events (debounced, auto-scan, emit to frontend).
-pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
+/// Initialise the file watcher and spawn a background thread that registers
+/// sources and processes file-change events. Recursive registration can be
+/// expensive on large trees, so it must never block Tauri's setup callback.
+pub fn init_watcher(app_handle: tauri::AppHandle) {
     let (file_watcher, rx) = match FileWatcher::new() {
         Ok(pair) => pair,
         Err(e) => {
@@ -295,31 +295,9 @@ pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
         }
     };
 
-    let mut watcher_guard = file_watcher;
-    let mut watched_map: HashMap<String, String> = HashMap::new();
-
-    // Watch all sources where watch_enabled = true.
-    if let Ok(sources) = db.list_sources() {
-        for source in &sources {
-            if source.watch_enabled {
-                let path = Path::new(&source.root_path);
-                if path.exists() {
-                    if let Err(e) = watcher_guard.watch(path) {
-                        warn!("Failed to watch {}: {e}", source.root_path);
-                    } else {
-                        watched_map.insert(source.id.clone(), source.root_path.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Split watcher_guard back into WatcherState so we can share it.
-    // We need a temporary trick: FileWatcher doesn't derive Clone, but
-    // we can wrap it in Mutex after setup.
     let watcher_state = WatcherState {
-        watcher: Mutex::new(watcher_guard),
-        watched: Mutex::new(watched_map),
+        watcher: Mutex::new(file_watcher),
+        watched: Mutex::new(HashMap::new()),
     };
     app_handle.manage(watcher_state);
 
@@ -327,6 +305,31 @@ pub fn init_watcher(app_handle: tauri::AppHandle, db: &Database) {
     let handle = app_handle.clone();
 
     thread::spawn(move || {
+        if let Some(app_state) = handle.try_state::<AppState>() {
+            match app_state.db.list_sources() {
+                Ok(sources) => {
+                    if let Some(state) = handle.try_state::<WatcherState>() {
+                        for source in sources.into_iter().filter(|source| source.watch_enabled) {
+                            let path = Path::new(&source.root_path);
+                            if !path.exists() {
+                                continue;
+                            }
+                            if let Err(e) = state.watcher.lock().unwrap().watch(path) {
+                                warn!("Failed to watch {}: {e}", source.root_path);
+                            } else {
+                                state
+                                    .watched
+                                    .lock()
+                                    .unwrap()
+                                    .insert(source.id, source.root_path);
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("Failed to list watched sources: {e}"),
+            }
+        }
+
         // Debounce: collect events for 2 seconds before acting.
         let debounce = Duration::from_secs(2);
         // source_id → (last_event_time, changed_paths, removed_paths)

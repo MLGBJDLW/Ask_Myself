@@ -23,13 +23,14 @@ export interface KnowledgeInsights {
  *
  * Non-blocking: errors are silently swallowed.
  */
-export function useKnowledgeInsights(): KnowledgeInsights {
+export function useKnowledgeInsights(enabled = true): KnowledgeInsights {
   const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
   const [explorations, setExplorations] = useState<string[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const runningRef = useRef(false);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     const fetchInsights = async () => {
@@ -53,16 +54,18 @@ export function useKnowledgeInsights(): KnowledgeInsights {
       }
     };
 
-    void fetchInsights();
+    // Avoid taking the shared database connection during the first paint.
+    const initialTimer = setTimeout(() => void fetchInsights(), 2_500);
 
     // Re-check hourly whether 12 h have elapsed
     const timer = setInterval(() => void fetchInsights(), 60 * 60 * 1000);
 
     return () => {
       cancelled = true;
+      clearTimeout(initialTimer);
       clearInterval(timer);
     };
-  }, []);
+  }, [enabled]);
 
   return { gaps, explorations, lastUpdated };
 }
