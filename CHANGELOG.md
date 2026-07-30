@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.2...nexa-monorepo-v0.11.3) (2026-07-30)
+
+
+### Features
+
+* **browser:** Add shared Browser Workspace ([eb9afb7](https://github.com/MLGBJDLW/Nexa/commit/eb9afb705b1f2b0e6b4fd17a05750290a31d4fc5))
+* **core:** define shared browser runtime ([989b953](https://github.com/MLGBJDLW/Nexa/commit/989b9539c07c376bc0a2834bc37de10ee66aa7e0))
+* **desktop:** host shared native browser sessions ([494f4ee](https://github.com/MLGBJDLW/Nexa/commit/494f4ee1baebad4734ad91cdd7513f3a80992f69))
+* **ui:** add Browser Workspace to chat ([60c9ef7](https://github.com/MLGBJDLW/Nexa/commit/60c9ef7721d3859ca3115d02db73111ade02f45e))
+
+
+### Bug Fixes
+
+* **browser:** close observation and action races ([44c3197](https://github.com/MLGBJDLW/Nexa/commit/44c3197404f0d14ab6f93092649c05a3d6f5e920))
+* **browser:** confirm destructive workspace actions ([759f6bf](https://github.com/MLGBJDLW/Nexa/commit/759f6bf40765478422fe03ec896a002457d73140))
+* **browser:** enforce remote navigation boundaries ([92e76da](https://github.com/MLGBJDLW/Nexa/commit/92e76daabe318ca46cc0e0399168d1f91991fdc1))
+* **browser:** enforce request-level control boundaries ([95ebd01](https://github.com/MLGBJDLW/Nexa/commit/95ebd01ad0148df851aec510a242d22476d3241c))
+* **browser:** harden control and observation policy ([d640c20](https://github.com/MLGBJDLW/Nexa/commit/d640c205c398f8d20e3de7fd269946a2cd300730))
+* **browser:** isolate profiles and session startup ([bbf35f2](https://github.com/MLGBJDLW/Nexa/commit/bbf35f2d68d62229068d442a69142964d190030d))
+* **browser:** make lease-bound operations atomic ([bf4f87b](https://github.com/MLGBJDLW/Nexa/commit/bf4f87b3451037cf0ea5c6af3b764e364d44c3e7))
+* **browser:** preserve search and preview intent ([c264ec1](https://github.com/MLGBJDLW/Nexa/commit/c264ec1214d8273348b61a0142e99fd2ad632d40))
+* **browser:** secure takeover and session boundaries ([cbeb1d7](https://github.com/MLGBJDLW/Nexa/commit/cbeb1d73fd17dc5c4cca57b23b714a45e1bdbf0a))
+* **browser:** stabilize session reuse and frame picking ([2b97fdb](https://github.com/MLGBJDLW/Nexa/commit/2b97fdbe2c5f3ba4d50cdc83a2891c4f4efbcb9a))
+
 ## [0.11.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.1...nexa-monorepo-v0.11.2) (2026-07-30)
 
 
