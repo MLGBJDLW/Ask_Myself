@@ -69,6 +69,11 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('close_session_as_agent'), 'Agent session closure must validate its exact owner');
   assert(browser.includes('conversation_creation_lock'), 'session creation must serialize per conversation');
   assert(browser.includes('initializing'), 'partially initialized browser sessions must stay undiscoverable');
+  const existingSessionReuse = browser.slice(
+    browser.indexOf('if let Some(conversation_id) = conversation_id.as_deref()'),
+    browser.indexOf('let session_id = format!'),
+  );
+  assert(!existingSessionReuse.includes('open_tab'), 'reusing a conversation session must not open a fallback tab or revoke Agent control');
   assert(agentTool.includes('tokio::time::timeout(remaining'), 'wait_for must enforce its deadline around observation');
   const activateCommand = commands.slice(
     commands.indexOf('pub fn browser_activate_tab_cmd'),

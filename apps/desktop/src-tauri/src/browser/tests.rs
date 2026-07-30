@@ -4,7 +4,7 @@ use super::policy::{
     classify_agent_action, form_navigation_approval_key, navigation_preapproved,
     normalize_browser_url, BrowserActionRisk, NavigationActor,
 };
-use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
+use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_SCRIPT};
 use super::state::{BrowserControlOwner, ControlLease};
 
 #[test]
@@ -96,6 +96,21 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(BROWSER_INIT_SCRIPT.contains("invalidateForUserTakeover"));
     assert!(BROWSER_INIT_SCRIPT.contains("requestSubmit"));
     assert!(BROWSER_INIT_SCRIPT.contains("Unsupported browser key"));
+    assert!(BROWSER_INIT_SCRIPT.contains("el.ownerDocument || document"));
+    assert!(BROWSER_INIT_SCRIPT.contains("__NEXA_BROWSER_PICK_BRIDGE__"));
+    assert!(BROWSER_INIT_SCRIPT.contains("event.source === window.parent"));
+    assert!(BROWSER_INIT_SCRIPT.contains("target === event.source"));
+    assert!(BROWSER_INIT_SCRIPT.contains("event.isTrusted"));
+}
+
+#[test]
+fn picker_bridge_uses_a_per_webview_token_and_native_message_primitives() {
+    let script = browser_init_script("picker-secret");
+
+    assert!(script.contains("const pickMessageToken = \"picker-secret\""));
+    assert!(!script.contains("__NEXA_PICK_TOKEN__"));
+    assert!(script.contains("Window.prototype.postMessage"));
+    assert!(script.contains("stopImmediatePropagation"));
 }
 
 #[test]

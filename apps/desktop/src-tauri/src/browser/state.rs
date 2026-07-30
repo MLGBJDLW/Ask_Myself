@@ -237,10 +237,6 @@ impl BrowserState {
         };
         if let Some(conversation_id) = conversation_id.as_deref() {
             if let Some(existing) = self.active_session(conversation_id)? {
-                if let Some(initial_url) = initial_url {
-                    self.open_tab(&existing.id, initial_url, actor, bounds)
-                        .await?;
-                }
                 return self.session_info(&existing.id);
             }
         }

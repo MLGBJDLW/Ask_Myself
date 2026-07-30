@@ -357,7 +357,11 @@ export function BrowserDock({
             pickTimerRef.current = null;
             setPickMode(null);
           }
-        }).catch(() => setPickMode(null));
+        }).catch(() => {
+          if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
+          pickTimerRef.current = null;
+          setPickMode(null);
+        });
       }, 250);
     } catch (error) {
       setPickMode(null);

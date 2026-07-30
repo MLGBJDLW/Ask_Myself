@@ -40,6 +40,12 @@ pub fn browser_takeover_script(token: &str) -> String {
     .replace("__NEXA_TAKEOVER_URL__", &encoded_url)
 }
 
+pub fn browser_init_script(pick_token: &str) -> String {
+    let encoded_token =
+        serde_json::to_string(pick_token).expect("browser picker token must be JSON serializable");
+    BROWSER_INIT_SCRIPT.replace("__NEXA_PICK_TOKEN__", &encoded_token)
+}
+
 pub const BROWSER_INIT_SCRIPT: &str = r#"
 (() => {
   if (window.__NEXA_BROWSER_RUNTIME__) return;
@@ -115,7 +121,9 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const implicitSubmitInput = tag === 'INPUT' && !['button', 'reset', 'file', 'checkbox', 'radio'].includes(type);
     if ((!submitter && !implicitSubmitInput) || !el.form) return null;
     try {
-      return new URL(el.getAttribute?.('formaction') || el.form.getAttribute?.('action') || location.href, document.baseURI).href;
+      const ownerDocument = el.ownerDocument || document;
+      const fallbackUrl = ownerDocument.location?.href || location.href;
+      return new URL(el.getAttribute?.('formaction') || el.form.getAttribute?.('action') || fallbackUrl, ownerDocument.baseURI).href;
     } catch (_) { return null; }
   };
   const describe = (el, ref) => {
@@ -256,10 +264,81 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     document.documentElement.appendChild(overlay);
     runtime.overlay = overlay;
   };
-  runtime.beginPick = (mode) => { runtime.pickMode = mode; runtime.pendingArtifact = null; runtime.regionStart = null; clearOverlay(); };
-  runtime.cancelPick = () => { runtime.pickMode = null; runtime.regionStart = null; clearOverlay(); };
+  const pickMessageMarker = '__NEXA_BROWSER_PICK_BRIDGE__';
+  const pickMessageToken = __NEXA_PICK_TOKEN__;
+  const apply = Reflect.apply;
+  const nativePostMessage = Window.prototype.postMessage;
+  const nativeStopImmediatePropagation = Event.prototype.stopImmediatePropagation;
+  const postPickMessage = (target, message) => {
+    apply(nativePostMessage, target, [{ marker: pickMessageMarker, token: pickMessageToken, ...message }, '*']);
+  };
+  const applyPickMode = (mode) => {
+    runtime.pickMode = mode;
+    runtime.pendingArtifact = null;
+    runtime.regionStart = null;
+    clearOverlay();
+  };
+  const childFrames = () => Array.from(document.querySelectorAll('iframe'))
+    .map((frame) => ({ frame, target: frame.contentWindow }))
+    .filter(({ target }) => Boolean(target));
+  const broadcastPick = (message) => {
+    for (const { target } of childFrames()) {
+      try { postPickMessage(target, message); } catch (_) {}
+    }
+  };
+  const publishArtifact = (artifact) => {
+    applyPickMode(null);
+    if (window === window.top) {
+      runtime.pendingArtifact = artifact;
+      broadcastPick({ kind: 'cancel' });
+    } else {
+      postPickMessage(window.parent, { kind: 'artifact', artifact });
+    }
+  };
+  runtime.beginPick = (mode) => { applyPickMode(mode); broadcastPick({ kind: 'begin', mode }); };
+  runtime.cancelPick = () => { applyPickMode(null); broadcastPick({ kind: 'cancel' }); };
   runtime.takeArtifact = () => { const artifact = runtime.pendingArtifact; runtime.pendingArtifact = null; return artifact; };
   runtime.selectedText = () => String(window.getSelection?.() || '').trim().slice(0, 10000);
+
+  addEventListener('message', (event) => {
+    const message = event.data;
+    if (!message || message.marker !== pickMessageMarker || message.token !== pickMessageToken) return;
+    apply(nativeStopImmediatePropagation, event, []);
+    if (event.source === window.parent && window !== window.top) {
+      if (message.kind === 'begin') {
+        applyPickMode(message.mode);
+        broadcastPick({ kind: 'begin', mode: message.mode });
+      } else if (message.kind === 'cancel') {
+        applyPickMode(null);
+        broadcastPick({ kind: 'cancel' });
+      }
+      return;
+    }
+    if (message.kind !== 'artifact') return;
+    const child = childFrames().find(({ target }) => target === event.source);
+    if (!child || !message.artifact) return;
+    const artifact = { ...message.artifact };
+    if (artifact.bounds) {
+      const frameBounds = child.frame.getBoundingClientRect();
+      artifact.bounds = {
+        ...artifact.bounds,
+        x: Number(artifact.bounds.x || 0) + frameBounds.x,
+        y: Number(artifact.bounds.y || 0) + frameBounds.y,
+      };
+    }
+    if (window === window.top) {
+      applyPickMode(null);
+      runtime.pendingArtifact = artifact;
+      broadcastPick({ kind: 'cancel' });
+    } else {
+      postPickMessage(window.parent, { kind: 'artifact', artifact });
+    }
+  }, true);
+  addEventListener('load', (event) => {
+    const frame = event.target;
+    if (!runtime.pickMode || String(frame?.tagName || '').toUpperCase() !== 'IFRAME') return;
+    try { if (frame.contentWindow) postPickMessage(frame.contentWindow, { kind: 'begin', mode: runtime.pickMode }); } catch (_) {}
+  }, true);
 
   addEventListener('pointermove', (event) => {
     if (runtime.pickMode !== 'element') return;
@@ -271,6 +350,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       runtime.userEpoch += 1;
     }
     if (runtime.pickMode === 'region') {
+      if (!event.isTrusted) return;
       runtime.regionStart = { x: event.clientX, y: event.clientY };
       event.preventDefault(); event.stopImmediatePropagation();
     }
@@ -284,20 +364,21 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   }, true);
   addEventListener('pointerup', (event) => {
     if (runtime.pickMode !== 'region' || !runtime.regionStart) return;
+    if (!event.isTrusted) return;
     const bounds = { x: Math.min(runtime.regionStart.x, event.clientX), y: Math.min(runtime.regionStart.y, event.clientY), width: Math.abs(event.clientX - runtime.regionStart.x), height: Math.abs(event.clientY - runtime.regionStart.y) };
-    runtime.pendingArtifact = { kind: 'region', capture: 'coordinatesOnly', url: location.href, title: document.title, bounds, userEpoch: runtime.userEpoch };
-    runtime.cancelPick();
+    publishArtifact({ kind: 'region', capture: 'coordinatesOnly', url: location.href, title: document.title, bounds, userEpoch: runtime.userEpoch });
     event.preventDefault(); event.stopImmediatePropagation();
   }, true);
   addEventListener('click', (event) => {
     if (runtime.pickMode !== 'element') return;
+    if (!event.isTrusted) return;
     const target = event.composedPath?.().find((item) => item instanceof Element);
     if (target) {
       const ref = `picked_${Date.now()}`;
       runtime.refs.set(ref, target);
-      runtime.pendingArtifact = { kind: 'element', url: location.href, title: document.title, userEpoch: runtime.userEpoch, ...describe(target, ref) };
+      publishArtifact({ kind: 'element', url: location.href, title: document.title, userEpoch: runtime.userEpoch, ...describe(target, ref) });
     }
-    runtime.cancelPick();
+    if (!target) runtime.cancelPick();
     event.preventDefault(); event.stopImmediatePropagation();
   }, true);
   addEventListener('keydown', (event) => {

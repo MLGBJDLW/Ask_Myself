@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use super::policy::navigation_preapproved;
-use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
+use super::scripts::{browser_init_script, browser_takeover_script};
 use super::state::{BrowserBounds, BrowserState};
 
 pub struct BrowserChildWebview {
@@ -36,6 +36,7 @@ pub fn create_child_webview(
     let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
     let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
     let takeover_token = uuid::Uuid::new_v4().simple().to_string();
+    let pick_token = uuid::Uuid::new_v4().simple().to_string();
     let takeover_url = Url::parse(&format!("nexa-user-input://{takeover_token}"))
         .map_err(|error| format!("Could not create browser takeover signal: {error}"))?;
 
@@ -63,7 +64,7 @@ pub fn create_child_webview(
         .data_store_identifier(profile_data_store_identifier(profile_id))
         .disable_drag_drop_handler()
         .proxy_url(network_proxy_url.clone())
-        .initialization_script(BROWSER_INIT_SCRIPT)
+        .initialization_script_for_all_frames(browser_init_script(&pick_token))
         .initialization_script_for_all_frames(browser_takeover_script(&takeover_token))
         .on_navigation(move |target| {
             if target == &takeover_for_navigation {
