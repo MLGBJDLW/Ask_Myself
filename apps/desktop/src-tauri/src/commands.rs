@@ -222,6 +222,9 @@ pub struct WatcherState {
     pub watcher: Mutex<FileWatcher>,
     /// Map of source_id → root_path for actively watched sources.
     pub watched: Mutex<HashMap<String, String>>,
+    /// Incremented before every foreground watcher mutation so background
+    /// startup registration cannot apply a stale database snapshot.
+    pub revision: AtomicU64,
 }
 
 /// Info about a watched source, returned to the frontend.
@@ -298,6 +301,7 @@ pub fn init_watcher(app_handle: tauri::AppHandle) {
     let watcher_state = WatcherState {
         watcher: Mutex::new(file_watcher),
         watched: Mutex::new(HashMap::new()),
+        revision: AtomicU64::new(0),
     };
     app_handle.manage(watcher_state);
 
@@ -309,19 +313,39 @@ pub fn init_watcher(app_handle: tauri::AppHandle) {
             match app_state.db.list_sources() {
                 Ok(sources) => {
                     if let Some(state) = handle.try_state::<WatcherState>() {
-                        for source in sources.into_iter().filter(|source| source.watch_enabled) {
-                            let path = Path::new(&source.root_path);
-                            if !path.exists() {
-                                continue;
-                            }
-                            if let Err(e) = state.watcher.lock().unwrap().watch(path) {
-                                warn!("Failed to watch {}: {e}", source.root_path);
-                            } else {
-                                state
-                                    .watched
-                                    .lock()
-                                    .unwrap()
-                                    .insert(source.id, source.root_path);
+                        for snapshot in sources.into_iter().filter(|source| source.watch_enabled) {
+                            loop {
+                                let revision = state.revision.load(Ordering::Acquire);
+                                let current = match app_state.db.get_source(&snapshot.id) {
+                                    Ok(source) => source,
+                                    Err(error) => {
+                                        warn!(
+                                            "Failed to refresh watched source {}: {error}",
+                                            snapshot.id
+                                        );
+                                        break;
+                                    }
+                                };
+                                if !current.watch_enabled || !Path::new(&current.root_path).exists()
+                                {
+                                    break;
+                                }
+                                let mut watcher = state.watcher.lock().unwrap();
+                                let mut watched = state.watched.lock().unwrap();
+                                if state.revision.load(Ordering::Acquire) != revision {
+                                    drop(watched);
+                                    drop(watcher);
+                                    continue;
+                                }
+                                if watched.get(&current.id) == Some(&current.root_path) {
+                                    break;
+                                }
+                                if let Err(e) = watcher.watch(Path::new(&current.root_path)) {
+                                    warn!("Failed to watch {}: {e}", current.root_path);
+                                } else {
+                                    watched.insert(current.id, current.root_path);
+                                }
+                                break;
                             }
                         }
                     }
@@ -645,7 +669,8 @@ mod tests {
     };
     use super::preview::{
         append_preview_warning, build_file_preview, default_app_launch_command,
-        file_explorer_launch_command, resolve_source_file,
+        file_explorer_launch_command, is_public_web_preview_ip, resolve_source_file,
+        web_preview_block_reason,
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
@@ -1519,6 +1544,42 @@ mod tests {
             assert_eq!(command.program, "xdg-open");
             assert_eq!(command.args, vec![path.to_string_lossy().to_string()]);
         }
+    }
+
+    #[test]
+    fn web_preview_preflight_rejects_frame_blocking_headers() {
+        assert_eq!(
+            web_preview_block_reason(Some("DENY"), None),
+            Some("x-frame-options")
+        );
+        assert_eq!(
+            web_preview_block_reason(None, Some("default-src 'self'; frame-ancestors 'self'")),
+            Some("frame-ancestors")
+        );
+        assert_eq!(
+            web_preview_block_reason(None, Some("frame-ancestors *")),
+            None
+        );
+        assert_eq!(web_preview_block_reason(None, None), None);
+    }
+
+    #[test]
+    fn web_preview_preflight_rejects_non_public_network_targets() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "192.168.1.1",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+        ] {
+            assert!(!is_public_web_preview_ip(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(is_public_web_preview_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_web_preview_ip(
+            "2606:4700:4700::1111".parse().unwrap()
+        ));
     }
 
     #[test]

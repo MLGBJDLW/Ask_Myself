@@ -8,6 +8,7 @@ pub fn start_watching(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
     let source = app_state
         .db
         .get_source(&source_id)
@@ -42,8 +43,13 @@ pub fn stop_watching(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
-    let mut watched = watcher_state.watched.lock().map_err(|e| e.to_string())?;
-    if let Some(root_path) = watched.remove(&source_id) {
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
+    let root_path = watcher_state
+        .watched
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&source_id);
+    if let Some(root_path) = root_path {
         let path = std::path::Path::new(&root_path);
         let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
         let _ = watcher.unwatch(path); // best-effort

@@ -2,6 +2,10 @@ use super::*;
 use nexa_core::execution_environment::{
     ExecutionEnvironment, ExecutionRequest, LocalDetachedProcessExecutionEnvironment,
 };
+use reqwest::header::{CONTENT_SECURITY_POLICY, LOCATION, X_FRAME_OPTIONS};
+use serde::Serialize;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::time::Duration;
 
 /// An image attachment prepared for LLM submission.
 ///
@@ -38,6 +42,182 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
 }
 
 // ── File Commands ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebPreviewProbe {
+    embeddable: bool,
+    reason: Option<String>,
+}
+
+pub(super) fn web_preview_block_reason(
+    x_frame_options: Option<&str>,
+    content_security_policy: Option<&str>,
+) -> Option<&'static str> {
+    if x_frame_options.is_some_and(|value| !value.trim().is_empty()) {
+        return Some("x-frame-options");
+    }
+
+    let policy = content_security_policy?;
+    let frame_ancestors = policy.split(';').find_map(|directive| {
+        let mut tokens = directive.split_ascii_whitespace();
+        tokens
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
+            .then(|| tokens.collect::<Vec<_>>())
+    })?;
+    let allows_tauri_parent = frame_ancestors.iter().any(|source| {
+        *source == "*"
+            || source.eq_ignore_ascii_case("tauri:")
+            || source.contains("tauri.localhost")
+    });
+    (!allows_tauri_parent).then_some("frame-ancestors")
+}
+
+pub(super) fn is_public_web_preview_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+                || octets[0] >= 240)
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            if let Some(ipv4) = ip.to_ipv4_mapped() {
+                return is_public_web_preview_ip(IpAddr::V4(ipv4));
+            }
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
+}
+
+async fn resolve_public_web_preview_addrs(url: &reqwest::Url) -> Result<Vec<SocketAddr>, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Web preview URL has no host".to_string())?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "Web preview URL has no supported port".to_string())?;
+    let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
+        vec![SocketAddr::new(ip, port)]
+    } else {
+        let host = host.to_string();
+        tokio::task::spawn_blocking(move || {
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|addresses| addresses.collect::<Vec<_>>())
+        })
+        .await
+        .map_err(|error| format!("Web preview DNS lookup failed: {error}"))?
+        .map_err(|error| format!("Web preview DNS lookup failed: {error}"))?
+    };
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| !is_public_web_preview_ip(address.ip()))
+    {
+        return Err("Web preview URL resolves to a non-public address".to_string());
+    }
+    Ok(addresses)
+}
+
+async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String> {
+    let mut current = url;
+    for _ in 0..=5 {
+        let addresses = resolve_public_web_preview_addrs(&current).await?;
+        let host = current
+            .host_str()
+            .ok_or_else(|| "Web preview URL has no host".to_string())?;
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(4))
+            .timeout(Duration::from_secs(6))
+            .redirect(reqwest::redirect::Policy::none());
+        if host.parse::<IpAddr>().is_err() {
+            builder = builder.resolve_to_addrs(host, &addresses);
+        }
+        let client = builder
+            .build()
+            .map_err(|error| format!("Failed to create web preview probe: {error}"))?;
+        let response = client
+            .head(current.clone())
+            .send()
+            .await
+            .map_err(|error| format!("Web preview preflight failed: {error}"))?;
+
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "Web preview redirect has no valid location".to_string())?;
+            current = current
+                .join(location)
+                .map_err(|_| "Web preview redirect has an invalid location".to_string())?;
+            if !matches!(current.scheme(), "http" | "https") {
+                return Err("Web preview redirect uses an unsupported scheme".to_string());
+            }
+            continue;
+        }
+
+        if response.status().is_client_error() || response.status().is_server_error() {
+            return Ok(WebPreviewProbe {
+                embeddable: false,
+                reason: Some(format!("http-{}", response.status().as_u16())),
+            });
+        }
+        let x_frame_options = response
+            .headers()
+            .get(X_FRAME_OPTIONS)
+            .and_then(|value| value.to_str().ok());
+        let content_security_policy = response
+            .headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok());
+        let reason = web_preview_block_reason(x_frame_options, content_security_policy);
+        return Ok(WebPreviewProbe {
+            embeddable: reason.is_none(),
+            reason: reason.map(str::to_string),
+        });
+    }
+    Ok(WebPreviewProbe {
+        embeddable: false,
+        reason: Some("too-many-redirects".to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn probe_web_preview_cmd(url: String) -> Result<WebPreviewProbe, String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "Invalid web preview URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Web preview probe only supports HTTP(S) URLs".to_string());
+    }
+
+    match probe_web_preview(parsed).await {
+        Ok(probe) => Ok(probe),
+        Err(error) => {
+            warn!("Web preview preflight failed: {error}");
+            Ok(WebPreviewProbe {
+                embeddable: false,
+                reason: Some("network".to_string()),
+            })
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PreviewLaunchCommand {

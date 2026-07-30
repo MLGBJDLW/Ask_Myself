@@ -910,11 +910,25 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!webPreview) return;
+    let active = true;
     setWebPreviewStatus('loading');
+    void api.probeWebPreview(webPreview.url)
+      .then((probe) => {
+        if (active && !probe.embeddable) {
+          setWebPreviewStatus('timedOut');
+        }
+      })
+      .catch((reason) => {
+        console.error('[web-preview] preflight failed', reason);
+        if (active) setWebPreviewStatus('timedOut');
+      });
     const timer = setTimeout(() => {
       setWebPreviewStatus((status) => status === 'loading' ? 'timedOut' : status);
     }, 12_000);
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [webPreview]);
 
   const loadFile = useCallback(
@@ -1680,9 +1694,9 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   key={webPreview.url}
                   title={webPreview.title || webPreview.url}
                   src={webPreview.url}
-                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts allow-top-navigation-by-user-activation"
+                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
                   referrerPolicy="strict-origin-when-cross-origin"
-                  onLoad={() => setWebPreviewStatus('loaded')}
+                  onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
                   onError={() => setWebPreviewStatus('timedOut')}
                   className="h-full w-full border-0 bg-white"
                 />

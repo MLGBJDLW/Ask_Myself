@@ -65,6 +65,7 @@ pub fn update_source(
     exclude_globs: Option<Vec<String>>,
     watch_enabled: Option<bool>,
 ) -> Result<Source, String> {
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
     let previous = state.db.get_source(&source_id).map_err(|e| e.to_string())?;
     let input = UpdateSourceInput {
         root_path,

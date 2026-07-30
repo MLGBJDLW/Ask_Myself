@@ -576,6 +576,14 @@ export const previewFile = (path: string) =>
     path,
   });
 
+export interface WebPreviewProbe {
+  embeddable: boolean;
+  reason?: string | null;
+}
+
+export const probeWebPreview = (url: string) =>
+  invoke<WebPreviewProbe>('probe_web_preview_cmd', { url });
+
 export const saveTextFile = (
   path: string,
   content: string,

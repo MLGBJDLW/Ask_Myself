@@ -1553,6 +1553,13 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_activity_events_timestamp
             ON activity_events(timestamp);",
     ),
+    (
+        "v082_controller_event_visibility",
+        "UPDATE agent_run_events
+         SET visibility = 'developer', importance = 'low'
+         WHERE kind = 'planUpdated'
+            OR (kind = 'status' AND phase IN ('routing', 'planning'));",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1937,6 +1944,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn reclassifies_historical_controller_events_as_developer_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute(
+            "INSERT INTO agent_run_events
+                (run_id, turn_id, event_seq, version, kind, phase, label, payload_json,
+                 visibility, persistence, display_kind, importance)
+             VALUES ('legacy-controller', 'turn-1', 1, 2, 'status', 'routing',
+                     'legacy route', '{}', 'user', 'durable', 'status', 'normal')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM _migrations WHERE name = 'v082_controller_event_visibility'",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("controller visibility migration should succeed");
+
+        let presentation: (String, String) = conn
+            .query_row(
+                "SELECT visibility, importance FROM agent_run_events
+                 WHERE run_id = 'legacy-controller'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(presentation, ("developer".to_string(), "low".to_string()));
     }
 
     #[test]

@@ -295,7 +295,7 @@ fn event_presentation(
             AgentRunEventImportance::Normal,
         ),
         AgentRunEventKind::PlanUpdated => (
-            AgentRunEventVisibility::User,
+            AgentRunEventVisibility::Developer,
             AgentRunDisplayKind::Plan,
             AgentRunEventImportance::Normal,
         ),

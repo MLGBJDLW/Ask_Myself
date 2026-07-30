@@ -25,6 +25,7 @@ use crate::error::CoreError;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
+const SYNTHETIC_CALL_ID_PREFIX: &str = "__nexa_gemini_missing_call_id_";
 
 // ---------------------------------------------------------------------------
 // Gemini API wire types
@@ -73,6 +74,9 @@ enum GeminiPartV2 {
         #[serde(rename = "inlineData")]
         inline_data: GeminiBlob,
     },
+    /// Preserve forward-compatible response parts so a newly introduced
+    /// Google part does not make the entire candidate fail deserialization.
+    Unknown(serde_json::Value),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -672,8 +676,6 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
     let mut text_parts = Vec::new();
     let mut thinking_parts = Vec::new();
     let mut tool_calls = Vec::new();
-    let mut pending_thought_signature = None;
-
     if let Some(candidate) = candidate {
         if let Some(ref content) = candidate.content {
             if let Some(ref parts) = content.parts {
@@ -685,9 +687,7 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                             thought_signature,
                         } if *thought => {
                             thinking_parts.push(text.clone());
-                            if thought_signature.is_some() {
-                                pending_thought_signature = thought_signature.clone();
-                            }
+                            let _ = thought_signature;
                         }
                         GeminiPartV2::Thought {
                             text,
@@ -699,9 +699,7 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                             thought_signature,
                         } => {
                             text_parts.push(text.clone());
-                            if thought_signature.is_some() {
-                                pending_thought_signature = thought_signature.clone();
-                            }
+                            let _ = thought_signature;
                         }
                         GeminiPartV2::FunctionCall {
                             function_call,
@@ -711,16 +709,17 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                                 id: function_call
                                     .id
                                     .clone()
-                                    .unwrap_or_else(|| format!("call_{idx}")),
+                                    .unwrap_or_else(|| format!("{SYNTHETIC_CALL_ID_PREFIX}{idx}")),
                                 name: function_call.name.clone(),
                                 arguments: serde_json::to_string(&function_call.args)
                                     .unwrap_or_default(),
-                                thought_signature: thought_signature
-                                    .clone()
-                                    .or_else(|| pending_thought_signature.take()),
+                                thought_signature: thought_signature.clone(),
                             });
                         }
                         GeminiPartV2::FunctionResponse { .. } | GeminiPartV2::InlineData { .. } => {
+                        }
+                        GeminiPartV2::Unknown(value) => {
+                            tracing::debug!(part = %value, "Ignoring unsupported Gemini response part");
                         }
                     }
                 }
@@ -728,8 +727,21 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
         }
     }
 
-    if text_parts.is_empty() && tool_calls.is_empty() {
-        if let Some(candidate) = candidate {
+    if let Some(candidate) = candidate {
+        if let (Some(reason), Some(message)) = (
+            candidate.finish_reason.as_deref(),
+            candidate
+                .finish_message
+                .as_deref()
+                .filter(|message| !message.trim().is_empty()),
+        ) {
+            if !matches!(reason, "STOP" | "MAX_TOKENS") {
+                return Err(CoreError::Llm(format!(
+                    "Gemini stopped generation ({reason}): {message}"
+                )));
+            }
+        }
+        if text_parts.is_empty() && tool_calls.is_empty() {
             if let Some(reason) = candidate.finish_reason.as_deref() {
                 if !matches!(reason, "STOP" | "MAX_TOKENS") {
                     let detail = candidate
@@ -758,15 +770,27 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
     let usage = resp
         .usage_metadata
         .as_ref()
-        .map(|u| Usage {
-            prompt_tokens: u.prompt_token_count.unwrap_or(0),
-            completion_tokens: u.candidates_token_count.unwrap_or(0),
-            total_tokens: u.total_token_count.unwrap_or(0),
-            thinking_tokens: u.thoughts_token_count.map(|t| t.max(0) as u32),
-            tool_prompt_tokens: u.tool_use_prompt_token_count,
-            cache_read_tokens: u.cached_content_token_count,
-            cache_miss_tokens: None,
-            cache_creation_tokens: None,
+        .map(|u| {
+            let tool_prompt_tokens = u.tool_use_prompt_token_count.unwrap_or(0);
+            let prompt_tokens = u
+                .prompt_token_count
+                .unwrap_or(0)
+                .saturating_add(tool_prompt_tokens);
+            let completion_tokens = u.candidates_token_count.unwrap_or(0);
+            let thinking_tokens = u.thoughts_token_count.map(|tokens| tokens.max(0) as u32);
+            let accounted_total = prompt_tokens
+                .saturating_add(completion_tokens)
+                .saturating_add(thinking_tokens.unwrap_or(0));
+            Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: u.total_token_count.unwrap_or(0).max(accounted_total),
+                thinking_tokens,
+                tool_prompt_tokens: u.tool_use_prompt_token_count,
+                cache_read_tokens: u.cached_content_token_count,
+                cache_miss_tokens: None,
+                cache_creation_tokens: None,
+            }
         })
         .unwrap_or_default();
 
@@ -862,10 +886,75 @@ async fn send_gemini_content_chunks(
     true
 }
 
+#[derive(Default)]
+struct GeminiToolCallStreamState {
+    pending: Vec<ToolCallRequest>,
+    provider_indices: HashMap<String, usize>,
+    synthetic_snapshots: HashSet<(String, String)>,
+    next_synthetic_id: u64,
+}
+
+impl GeminiToolCallStreamState {
+    fn record_snapshot(&mut self, mut tool_call: ToolCallRequest) {
+        if tool_call.id.starts_with(SYNTHETIC_CALL_ID_PREFIX) {
+            if !self
+                .synthetic_snapshots
+                .insert((tool_call.name.clone(), tool_call.arguments.clone()))
+            {
+                return;
+            }
+            tool_call.id = format!("call_{}", self.next_synthetic_id);
+            self.next_synthetic_id += 1;
+            self.pending.push(tool_call);
+            return;
+        }
+
+        if let Some(index) = self.provider_indices.get(&tool_call.id).copied() {
+            if tool_call.thought_signature.is_none() {
+                tool_call.thought_signature = self.pending[index].thought_signature.clone();
+            }
+            self.pending[index] = tool_call;
+        } else {
+            self.provider_indices
+                .insert(tool_call.id.clone(), self.pending.len());
+            self.pending.push(tool_call);
+        }
+    }
+
+    fn take_pending(&mut self) -> Vec<ToolCallRequest> {
+        self.provider_indices.clear();
+        self.synthetic_snapshots.clear();
+        std::mem::take(&mut self.pending)
+    }
+}
+
+async fn send_gemini_tool_call(
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    tool_call: ToolCallRequest,
+) -> bool {
+    let chunk = StreamChunk {
+        delta: String::new(),
+        tool_call_delta: Some(ToolCallDelta {
+            id: tool_call.id.clone(),
+            name: Some(tool_call.name),
+            arguments_delta: tool_call.arguments,
+            index: tool_call
+                .id
+                .strip_prefix("call_")
+                .and_then(|value| value.parse::<u32>().ok()),
+            thought_signature: tool_call.thought_signature,
+        }),
+        finish_reason: None,
+        usage: None,
+        thinking_delta: None,
+    };
+    tx.send(Ok(chunk)).await.is_ok()
+}
+
 async fn emit_gemini_response_chunk(
     resp: GeminiResponse,
     tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
-    emitted_tool_calls: &mut HashSet<String>,
+    tool_call_state: &mut GeminiToolCallStreamState,
     saw_finish_reason: &mut bool,
 ) -> Result<bool, CoreError> {
     let has_finish = resp
@@ -879,57 +968,51 @@ async fn emit_gemini_response_chunk(
         *saw_finish_reason = true;
     }
 
-    if !text_delta.is_empty() || has_finish || usage.total_tokens > 0 || thinking_delta.is_some() {
-        let finish_reason = if has_finish {
-            Some(finish_reason)
-        } else {
-            None
-        };
-        let usage = if usage.total_tokens > 0 {
-            Some(usage)
-        } else {
-            None
-        };
-        if !send_gemini_content_chunks(tx, text_delta, thinking_delta, finish_reason, usage).await {
+    for tool_call in tool_calls {
+        tool_call_state.record_snapshot(tool_call);
+    }
+
+    if has_finish && tool_call_state.pending.is_empty() {
+        let usage = (usage.total_tokens > 0).then_some(usage);
+        return Ok(send_gemini_content_chunks(
+            tx,
+            text_delta,
+            thinking_delta,
+            Some(finish_reason),
+            usage,
+        )
+        .await);
+    }
+
+    if (!text_delta.is_empty() || thinking_delta.is_some())
+        && !send_gemini_content_chunks(tx, text_delta, thinking_delta, None, None).await
+    {
+        return Ok(false);
+    }
+
+    if !has_finish {
+        if usage.total_tokens > 0
+            && !send_gemini_content_chunks(tx, String::new(), None, None, Some(usage)).await
+        {
+            return Ok(false);
+        }
+        return Ok(true);
+    }
+
+    for tool_call in tool_call_state.take_pending() {
+        if !send_gemini_tool_call(tx, tool_call).await {
             return Ok(false);
         }
     }
 
-    for tc in &tool_calls {
-        // Gemini functionCall parts are complete snapshots, not argument
-        // fragments. Emit each provider call id once so repeated snapshots do
-        // not get concatenated by the provider-neutral stream accumulator.
-        if !emitted_tool_calls.insert(tc.id.clone()) {
-            continue;
-        }
-        let delta_chunk = StreamChunk {
-            delta: String::new(),
-            tool_call_delta: Some(ToolCallDelta {
-                id: tc.id.clone(),
-                name: Some(tc.name.clone()),
-                arguments_delta: tc.arguments.clone(),
-                index: tc
-                    .id
-                    .strip_prefix("call_")
-                    .and_then(|s| s.parse::<u32>().ok()),
-                thought_signature: tc.thought_signature.clone(),
-            }),
-            finish_reason: None,
-            usage: None,
-            thinking_delta: None,
-        };
-        if tx.send(Ok(delta_chunk)).await.is_err() {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
+    let usage = (usage.total_tokens > 0).then_some(usage);
+    Ok(send_gemini_content_chunks(tx, String::new(), None, Some(finish_reason), usage).await)
 }
 
 async fn process_gemini_sse_event(
     data: &str,
     tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
-    emitted_tool_calls: &mut HashSet<String>,
+    tool_call_state: &mut GeminiToolCallStreamState,
     saw_finish_reason: &mut bool,
 ) -> Result<bool, CoreError> {
     let data = data.trim();
@@ -943,7 +1026,7 @@ async fn process_gemini_sse_event(
     let resp: GeminiResponse = serde_json::from_str(data)
         .map_err(|e| CoreError::Llm(format!("Malformed Gemini SSE event: {e}")))?;
 
-    emit_gemini_response_chunk(resp, tx, emitted_tool_calls, saw_finish_reason).await
+    emit_gemini_response_chunk(resp, tx, tool_call_state, saw_finish_reason).await
 }
 
 /// Parse Gemini's SSE streaming response.
@@ -957,10 +1040,10 @@ async fn parse_gemini_stream(
     let mut buffer = String::new();
     let mut pending_utf8: Vec<u8> = Vec::new();
     let mut event_data_lines: Vec<String> = Vec::new();
-    let mut emitted_tool_calls = HashSet::new();
+    let mut tool_call_state = GeminiToolCallStreamState::default();
     let mut saw_finish_reason = false;
 
-    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
+    'stream: while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
         DEFAULT_STREAM_IDLE_TIMEOUT,
         "Gemini SSE stream",
@@ -986,12 +1069,12 @@ async fn parse_gemini_stream(
                 if !process_gemini_sse_event(
                     &data,
                     &tx,
-                    &mut emitted_tool_calls,
+                    &mut tool_call_state,
                     &mut saw_finish_reason,
                 )
                 .await?
                 {
-                    return Ok(());
+                    break 'stream;
                 }
                 continue;
             }
@@ -1015,9 +1098,8 @@ async fn parse_gemini_stream(
     // Flush a trailing event if the stream ended without a blank line.
     if !event_data_lines.is_empty() {
         let data = event_data_lines.join("\n");
-        let _ =
-            process_gemini_sse_event(&data, &tx, &mut emitted_tool_calls, &mut saw_finish_reason)
-                .await?;
+        let _ = process_gemini_sse_event(&data, &tx, &mut tool_call_state, &mut saw_finish_reason)
+            .await?;
     }
 
     if saw_finish_reason {
@@ -1119,6 +1201,7 @@ impl LlmProvider for GeminiProvider {
         let url = format!("{}/models", self.base_url());
         let mut page_token: Option<String> = None;
         let mut models = Vec::new();
+        let mut seen_page_tokens = HashSet::new();
 
         loop {
             let mut request = self.client.get(&url).query(&[("key", api_key)]);
@@ -1140,16 +1223,22 @@ impl LlmProvider for GeminiProvider {
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|model| {
-                        model.supported_generation_methods.is_empty()
-                            || model
-                                .supported_generation_methods
-                                .iter()
-                                .any(|method| method == "generateContent")
+                        model
+                            .supported_generation_methods
+                            .iter()
+                            .any(|method| method == "generateContent")
                     })
                     .map(|model| normalized_model_name(&model.name).to_string()),
             );
 
             page_token = resp.next_page_token.filter(|token| !token.is_empty());
+            if let Some(token) = page_token.as_ref() {
+                if !seen_page_tokens.insert(token.clone()) {
+                    return Err(CoreError::Llm(
+                        "Gemini model listing repeated a pagination token".to_string(),
+                    ));
+                }
+            }
             if page_token.is_none() {
                 break;
             }
@@ -1433,6 +1522,23 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_response_part_does_not_discard_supported_parts() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [
+                    {"fileData": {"mimeType": "application/pdf", "fileUri": "gs://example"}},
+                    {"text": "usable text"}
+                ]},
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("response");
+
+        let (text, _, _, _, _) = extract_response(&response).expect("extract response");
+        assert_eq!(text, "usable text");
+    }
+
+    #[test]
     fn test_latest_models_use_thinking_level_and_omit_temperature() {
         let request = CompletionRequest {
             model: "gemini-3.6-flash".to_string(),
@@ -1502,6 +1608,7 @@ mod tests {
 
         assert_eq!(encoded[0]["role"], "user");
         assert_eq!(encoded[1]["parts"][0]["functionCall"]["id"], "fc_123");
+        assert_eq!(encoded[1]["parts"][0]["thoughtSignature"], "signature");
         assert_eq!(encoded[2]["parts"][0]["functionResponse"]["id"], "fc_123");
         assert_eq!(
             encoded[2]["parts"][0]["functionResponse"]["name"],
@@ -1623,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_response_carries_part_signature_to_function_call() {
+    fn test_extract_response_does_not_move_text_signature_to_function_call() {
         let response: GeminiResponse = serde_json::from_value(serde_json::json!({
             "candidates": [{
                 "content": {"parts": [
@@ -1637,10 +1744,7 @@ mod tests {
 
         let (_, tool_calls, _, _, _) = extract_response(&response).expect("extract response");
 
-        assert_eq!(
-            tool_calls[0].thought_signature.as_deref(),
-            Some("signed-context")
-        );
+        assert_eq!(tool_calls[0].thought_signature, None);
     }
 
     #[test]
@@ -1675,16 +1779,33 @@ mod tests {
         assert!(error.to_string().contains("response policy rejected"));
     }
 
+    #[test]
+    fn test_extract_response_surfaces_finish_message_after_partial_text() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"text": "partial"}]},
+                "finishReason": "MALFORMED_FUNCTION_CALL",
+                "finishMessage": "arguments were invalid"
+            }]
+        }))
+        .expect("response");
+
+        let error = extract_response(&response).expect_err("protocol failure must be an error");
+
+        assert!(error.to_string().contains("MALFORMED_FUNCTION_CALL"));
+        assert!(error.to_string().contains("arguments were invalid"));
+    }
+
     #[tokio::test]
     async fn test_malformed_sse_event_is_not_silently_skipped() {
         let (tx, _rx) = mpsc::channel(1);
-        let mut emitted_tool_calls = HashSet::new();
+        let mut tool_call_state = GeminiToolCallStreamState::default();
         let mut saw_finish_reason = false;
 
         let error = process_gemini_sse_event(
             "{not valid json}",
             &tx,
-            &mut emitted_tool_calls,
+            &mut tool_call_state,
             &mut saw_finish_reason,
         )
         .await
@@ -1696,7 +1817,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_finish_reason_is_still_terminal() {
         let (tx, mut rx) = mpsc::channel(2);
-        let mut emitted_tool_calls = HashSet::new();
+        let mut tool_call_state = GeminiToolCallStreamState::default();
         let mut saw_finish_reason = false;
         let response: GeminiResponse = serde_json::from_value(serde_json::json!({
             "candidates": [{
@@ -1709,7 +1830,7 @@ mod tests {
         assert!(emit_gemini_response_chunk(
             response,
             &tx,
-            &mut emitted_tool_calls,
+            &mut tool_call_state,
             &mut saw_finish_reason,
         )
         .await
@@ -1723,26 +1844,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_repeated_tool_call_snapshots_are_emitted_once() {
+    async fn test_repeated_tool_call_snapshots_emit_the_final_arguments() {
         let (tx, mut rx) = mpsc::channel(4);
-        let mut emitted_tool_calls = HashSet::new();
+        let mut tool_call_state = GeminiToolCallStreamState::default();
         let mut saw_finish_reason = false;
-        for args in [
+        for (index, args) in [
             serde_json::json!({"path": "a"}),
             serde_json::json!({"path": "ab"}),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let response: GeminiResponse = serde_json::from_value(serde_json::json!({
                 "candidates": [{
                     "content": {"parts": [{
                         "functionCall": {"id": "fc_1", "name": "read_file", "args": args}
-                    }]}
+                    }]},
+                    "finishReason": (index == 1).then_some("STOP")
                 }]
             }))
             .expect("response");
             assert!(emit_gemini_response_chunk(
                 response,
                 &tx,
-                &mut emitted_tool_calls,
+                &mut tool_call_state,
                 &mut saw_finish_reason,
             )
             .await
@@ -1752,9 +1877,45 @@ mod tests {
         let first = rx.recv().await.unwrap().unwrap();
         assert_eq!(
             first.tool_call_delta.unwrap().arguments_delta,
-            r#"{"path":"a"}"#
+            r#"{"path":"ab"}"#
+        );
+        assert_eq!(
+            rx.recv().await.unwrap().unwrap().finish_reason,
+            Some(FinishReason::Stop)
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_missing_tool_call_ids_are_unique_across_sse_events() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut tool_call_state = GeminiToolCallStreamState::default();
+        let mut saw_finish_reason = false;
+        for (index, name) in ["read_file", "list_files"].into_iter().enumerate() {
+            let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {"name": name, "args": {}}
+                    }]},
+                    "finishReason": (index == 1).then_some("STOP")
+                }]
+            }))
+            .expect("response");
+            assert!(emit_gemini_response_chunk(
+                response,
+                &tx,
+                &mut tool_call_state,
+                &mut saw_finish_reason,
+            )
+            .await
+            .expect("emit response"));
+        }
+
+        let first = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        let second = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        assert_eq!(first.id, "call_0");
+        assert_eq!(second.id, "call_1");
+        assert_ne!(first.name, second.name);
     }
 
     #[test]
@@ -1807,7 +1968,8 @@ mod tests {
         let (_content, _tool_calls, _finish_reason, usage, _thinking) =
             extract_response(&resp).expect("extract response");
 
-        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.prompt_tokens, 118);
+        assert_eq!(usage.total_tokens, 130);
         assert_eq!(usage.tool_prompt_tokens, Some(18));
         assert_eq!(usage.cache_read_tokens, Some(40));
         assert_eq!(usage.cache_miss_tokens, None);

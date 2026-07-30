@@ -15,10 +15,10 @@ export function setDeveloperMode(enabled: boolean): void {
   try {
     if (enabled) localStorage.setItem(STORAGE_KEY, 'true');
     else localStorage.removeItem(STORAGE_KEY);
-    window.dispatchEvent(new CustomEvent<boolean>(CHANGE_EVENT, { detail: enabled }));
   } catch {
     // Storage can be unavailable in hardened webviews.
   }
+  window.dispatchEvent(new CustomEvent<boolean>(CHANGE_EVENT, { detail: enabled }));
 }
 
 export function useDeveloperMode(): [boolean, (enabled: boolean) => void] {
