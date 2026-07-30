@@ -12,7 +12,7 @@ pub enum NavigationActor {
     Agent,
 }
 
-fn private_or_special_ip(ip: IpAddr) -> bool {
+pub(super) fn private_or_special_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [first, second, third, _] = ip.octets();

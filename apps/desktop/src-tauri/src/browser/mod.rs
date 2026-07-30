@@ -1,5 +1,6 @@
 pub mod agent_tool;
 pub mod commands;
+mod network_proxy;
 pub mod policy;
 mod runtime_adapter;
 mod scripts;

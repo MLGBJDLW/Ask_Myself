@@ -93,6 +93,9 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(!BROWSER_INIT_SCRIPT.contains("el.value ||"));
     assert!(BROWSER_INIT_SCRIPT.contains("input:not([type=\"hidden\" i])"));
     assert!(BROWSER_INIT_SCRIPT.contains("isObservable(element)"));
+    assert!(BROWSER_INIT_SCRIPT.contains("invalidateForUserTakeover"));
+    assert!(BROWSER_INIT_SCRIPT.contains("requestSubmit"));
+    assert!(BROWSER_INIT_SCRIPT.contains("Unsupported browser key"));
 }
 
 #[test]

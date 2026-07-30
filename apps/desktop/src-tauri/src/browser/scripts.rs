@@ -112,7 +112,8 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const tag = String(el.tagName || '').toUpperCase();
     const type = String(el.type || (tag === 'BUTTON' ? 'submit' : '')).toLowerCase();
     const submitter = (tag === 'BUTTON' && type === 'submit') || (tag === 'INPUT' && (type === 'submit' || type === 'image'));
-    if (!submitter || !el.form) return null;
+    const implicitSubmitInput = tag === 'INPUT' && !['button', 'reset', 'file', 'checkbox', 'radio'].includes(type);
+    if ((!submitter && !implicitSubmitInput) || !el.form) return null;
     try {
       return new URL(el.getAttribute?.('formaction') || el.form.getAttribute?.('action') || location.href, document.baseURI).href;
     } catch (_) { return null; }
@@ -161,6 +162,10 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       elements,
     };
   };
+  runtime.invalidateForUserTakeover = () => {
+    runtime.userEpoch += 1;
+    runtime.refs = new Map();
+  };
   runtime.act = (input) => {
     if (input.userEpoch !== runtime.userEpoch) throw new Error('stale observation: user interacted with the page');
     const domFingerprint = `${location.href}|${document.documentElement?.outerHTML.length || 0}|${document.body?.innerText.slice(0, 20000) || ''}`;
@@ -198,8 +203,41 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (input.action === 'press') {
-        (el || document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: input.key, bubbles: true }));
-        (el || document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keyup', { key: input.key, bubbles: true }));
+        const target = el || document.activeElement || document.body;
+        const realm = target.ownerDocument?.defaultView || window;
+        const key = String(input.key || '');
+        if (key === 'Enter') {
+          if (target instanceof realm.HTMLAnchorElement || target instanceof realm.HTMLButtonElement || ['submit', 'image'].includes(String(target.type || '').toLowerCase())) {
+            target.click();
+          } else if (target instanceof realm.HTMLInputElement && target.form) {
+            target.form.requestSubmit();
+          } else {
+            throw new Error('Unsupported browser key for this element: Enter');
+          }
+        } else if (key === 'Tab') {
+          const focusable = interactiveElements();
+          const index = Math.max(-1, focusable.indexOf(target));
+          focusable[(index + 1) % focusable.length]?.focus();
+        } else if (key === ' ' || key === 'Space' || key === 'Spacebar') {
+          const tag = String(target.tagName || '').toUpperCase();
+          const type = String(target.type || '').toLowerCase();
+          if (['A', 'BUTTON'].includes(tag) || ['checkbox', 'radio'].includes(type)) target.click();
+          else throw new Error('Unsupported browser key for this element: Space');
+        } else if (key === 'Escape' || key === 'Esc') {
+          target.blur?.();
+        } else if ((key === 'ArrowDown' || key === 'ArrowUp') && target instanceof realm.HTMLSelectElement) {
+          const delta = key === 'ArrowDown' ? 1 : -1;
+          target.selectedIndex = Math.max(0, Math.min(target.options.length - 1, target.selectedIndex + delta));
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          target.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (['Home', 'End', 'PageUp', 'PageDown'].includes(key)) {
+          const amount = key === 'Home' ? -document.documentElement.scrollHeight
+            : key === 'End' ? document.documentElement.scrollHeight
+            : key === 'PageUp' ? -innerHeight : innerHeight;
+          window.scrollBy(0, amount);
+        } else {
+          throw new Error(`Unsupported browser key: ${key}`);
+        }
       } else if (input.action === 'scroll') {
         window.scrollBy(Number(input.scrollX || 0), Number(input.scrollY || 0));
       }

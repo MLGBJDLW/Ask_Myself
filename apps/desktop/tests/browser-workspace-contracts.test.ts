@@ -36,6 +36,8 @@ test('Browser Workspace uses a native top-level child webview instead of an ifra
   assert(host.includes('.data_directory('), 'browser profiles need an isolated data directory');
   assert(!host.includes('.enable_clipboard_access()'), 'remote pages must not receive unconditional JavaScript clipboard access');
   assert(host.includes('.initialization_script_for_all_frames('), 'trusted-input takeover must cover embedded frames');
+  assert(host.includes('.proxy_url('), 'all browser subresources must pass through the network policy proxy');
+  assert(host.includes('--proxy-bypass-list=<-loopback>'), 'Windows must not bypass the policy proxy for loopback targets');
   assert(!host.includes('USER_TAKEOVER_TITLE_SIGNAL'), 'page-controlled titles must never authenticate user takeover');
   assert(!dock.includes('<iframe'), 'BrowserDock must not regress to iframe embedding');
 });
@@ -54,6 +56,8 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('openBrowserPopup'), 'popup events must use the policy-preserving host command');
   assert(browser.includes('record_user_takeover'), 'trusted direct page input must revoke the Agent control lease');
   assert(browser.includes('approved_agent_urls'), 'Agent redirects must fail closed unless their resolved URL was preapproved');
+  assert(browser.includes('revalidate_agent_action'), 'Agent actions must recheck the lease after asynchronous validation');
+  assert(agentTool.includes('tokio::time::timeout(remaining'), 'wait_for must enforce its deadline around observation');
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');

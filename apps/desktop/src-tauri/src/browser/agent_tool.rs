@@ -318,6 +318,16 @@ impl Tool for NativeBrowserSessionTool {
             }
             "click" | "type" | "select" | "press" | "scroll" => {
                 let observation_id = required(args.observation_id.as_deref(), "observationId")?;
+                let target_ref = if action == "press" {
+                    Some(required(args.target_ref.as_deref(), "targetRef")?)
+                } else {
+                    args.target_ref.as_deref()
+                };
+                let key = if action == "press" {
+                    Some(required(args.key.as_deref(), "key")?)
+                } else {
+                    args.key.as_deref()
+                };
                 let observation = self
                     .state
                     .act(BrowserActRequest {
@@ -326,10 +336,10 @@ impl Tool for NativeBrowserSessionTool {
                         tab_id,
                         observation_id,
                         action: &action,
-                        target_ref: args.target_ref.as_deref(),
+                        target_ref,
                         text: args.text.as_deref(),
                         value: args.value.as_deref(),
-                        key: args.key.as_deref(),
+                        key,
                         scroll_x: args.scroll_x.unwrap_or(0),
                         scroll_y: args.scroll_y.unwrap_or(0),
                     })
@@ -347,19 +357,23 @@ impl Tool for NativeBrowserSessionTool {
                 );
                 let started = std::time::Instant::now();
                 loop {
-                    let observation = self
-                        .state
-                        .observe(session_id, tab_id, context.call_id)
+                    let remaining = timeout
+                        .checked_sub(started.elapsed())
+                        .ok_or_else(|| Self::invalid("Browser condition timed out"))?;
+                    let observation_future =
+                        self.state.observe(session_id, tab_id, context.call_id);
+                    let observation = tokio::time::timeout(remaining, observation_future)
                         .await
+                        .map_err(|_| Self::invalid("Browser condition timed out"))?
                         .map_err(Self::invalid)?;
                     let value = serde_json::to_value(&observation)?;
                     if condition_matches(&value, condition) {
                         break observation_result(context.call_id, observation);
                     }
-                    if started.elapsed() >= timeout {
-                        return Err(Self::invalid("Browser condition timed out"));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let remaining = timeout
+                        .checked_sub(started.elapsed())
+                        .ok_or_else(|| Self::invalid("Browser condition timed out"))?;
+                    tokio::time::sleep(remaining.min(std::time::Duration::from_millis(100))).await;
                 }
             }
             "close_tab" => {

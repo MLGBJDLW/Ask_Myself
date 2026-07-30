@@ -9,9 +9,17 @@ use tauri::{Manager, Webview, WebviewUrl};
 use tokio::sync::oneshot;
 use url::Url;
 
+use super::network_proxy::BrowserNetworkProxy;
 use super::policy::navigation_preapproved;
 use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
 use super::state::{BrowserBounds, BrowserState};
+
+pub struct BrowserChildWebview {
+    pub webview: Webview,
+    pub agent_restricted: Arc<AtomicBool>,
+    pub approved_agent_urls: Arc<Mutex<HashSet<String>>>,
+    pub network_proxy: BrowserNetworkProxy,
+}
 
 pub fn create_child_webview(
     state: &BrowserState,
@@ -21,13 +29,14 @@ pub fn create_child_webview(
     profile_dir: PathBuf,
     agent_restricted_initially: bool,
     bounds: Option<BrowserBounds>,
-) -> Result<(Webview, Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>), String> {
+) -> Result<BrowserChildWebview, String> {
     let window = state
         .app()
         .get_window("main")
         .ok_or_else(|| "Main application window is unavailable".to_string())?;
     let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
     let agent_restricted = Arc::new(AtomicBool::new(agent_restricted_initially));
+    let network_proxy = BrowserNetworkProxy::start(Arc::clone(&agent_restricted))?;
     let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
     let takeover_token = uuid::Uuid::new_v4().simple().to_string();
     let takeover_url = Url::parse(&format!("nexa-user-input://{takeover_token}"))
@@ -55,6 +64,7 @@ pub fn create_child_webview(
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .data_directory(profile_dir)
         .disable_drag_drop_handler()
+        .proxy_url(network_proxy.url().clone())
         .initialization_script(BROWSER_INIT_SCRIPT)
         .initialization_script_for_all_frames(browser_takeover_script(&takeover_token))
         .on_navigation(move |target| {
@@ -104,6 +114,11 @@ pub fn create_child_webview(
             }
             false
         });
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(&format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-quic --proxy-server={} --proxy-bypass-list=<-loopback>",
+        network_proxy.url()
+    ));
     let initial = bounds.unwrap_or(BrowserBounds {
         x: 0.0,
         y: 0.0,
@@ -121,7 +136,12 @@ pub fn create_child_webview(
     if !visible {
         let _ = webview.hide();
     }
-    Ok((webview, agent_restricted, approved_agent_urls))
+    Ok(BrowserChildWebview {
+        webview,
+        agent_restricted,
+        approved_agent_urls,
+        network_proxy,
+    })
 }
 
 #[derive(Deserialize)]

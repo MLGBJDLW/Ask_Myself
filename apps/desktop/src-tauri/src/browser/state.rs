@@ -15,12 +15,13 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Webview};
 use url::Url;
 
+use super::network_proxy::BrowserNetworkProxy;
 use super::policy::{
     classify_agent_action, form_navigation_approval_key, normalize_browser_url,
     validate_agent_network_url, BrowserActionRisk, NavigationActor,
 };
 use super::scripts::OBSERVE_EXPRESSION;
-use super::webview_host::{create_child_webview, eval_json};
+use super::webview_host::{create_child_webview, eval_json, BrowserChildWebview};
 
 pub const BROWSER_EVENT: &str = "browser:event";
 const MAX_OBSERVATIONS: usize = 64;
@@ -63,6 +64,7 @@ struct BrowserTab {
     status: String,
     agent_restricted: Arc<AtomicBool>,
     approved_agent_urls: Arc<Mutex<HashSet<String>>>,
+    network_proxy: BrowserNetworkProxy,
 }
 
 struct BrowserSession {
@@ -144,7 +146,7 @@ impl BrowserState {
     }
 
     pub(super) fn record_user_takeover(&self, session_id: &str, tab_id: &str) {
-        let owner = if let Ok(mut runtime) = self.inner.lock() {
+        let (owner, webviews) = if let Ok(mut runtime) = self.inner.lock() {
             let Some(session) = runtime.sessions.get_mut(session_id) else {
                 return;
             };
@@ -154,12 +156,23 @@ impl BrowserState {
             session.control_lease.acquire(BrowserControlOwner::User);
             session.observations.clear();
             for tab in session.tabs.values() {
-                tab.agent_restricted.store(false, Ordering::Relaxed);
+                tab.network_proxy.set_agent_restricted(false);
+                if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                    approved.clear();
+                }
             }
-            session.control_lease.owner().clone()
+            (
+                session.control_lease.owner().clone(),
+                session
+                    .tabs
+                    .values()
+                    .map(|tab| tab.webview.clone())
+                    .collect::<Vec<_>>(),
+            )
         } else {
             return;
         };
+        invalidate_for_user_takeover(&webviews);
         self.emit(
             "controlChanged",
             serde_json::json!({ "sessionId": session_id, "tabId": tab_id, "owner": owner, "reason": "directUserInput" }),
@@ -263,6 +276,8 @@ impl BrowserState {
         let url = normalize_browser_url(input, actor)?;
         if actor == NavigationActor::Agent {
             validate_agent_network_url(&url).await?;
+        } else {
+            self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
         let (profile_id, tab_id) = {
             let runtime = self
@@ -288,7 +303,12 @@ impl BrowserState {
         let profile_dir = self.profile_root.join(profile_id);
         std::fs::create_dir_all(&profile_dir)
             .map_err(|error| format!("Could not create browser profile: {error}"))?;
-        let (webview, agent_restricted, approved_agent_urls) = create_child_webview(
+        let BrowserChildWebview {
+            webview,
+            agent_restricted,
+            approved_agent_urls,
+            network_proxy,
+        } = create_child_webview(
             self,
             session_id,
             &tab_id,
@@ -321,9 +341,6 @@ impl BrowserState {
                 let _ = tab.webview.hide();
             }
             session.active_tab_id = Some(tab_id.clone());
-            if actor == NavigationActor::User {
-                session.control_lease.acquire(BrowserControlOwner::User);
-            }
             session.tabs.insert(
                 tab_id.clone(),
                 BrowserTab {
@@ -335,6 +352,7 @@ impl BrowserState {
                     status: "loading".to_string(),
                     agent_restricted,
                     approved_agent_urls,
+                    network_proxy,
                 },
             );
             session_info(session)
@@ -360,6 +378,8 @@ impl BrowserState {
         let url = normalize_browser_url(input, actor)?;
         if actor == NavigationActor::Agent {
             validate_agent_network_url(&url).await?;
+        } else {
+            self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
         let webview = {
             let mut runtime = self
@@ -370,26 +390,22 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            if actor == NavigationActor::Agent {
-                if !session
+            if actor == NavigationActor::Agent
+                && !session
                     .control_lease
                     .try_acquire_agent("navigate".to_string())
-                {
-                    return Err(
-                        "Browser control belongs to the user; wait until they hand it back"
-                            .to_string(),
-                    );
-                }
-            } else {
-                session.control_lease.acquire(BrowserControlOwner::User);
+            {
+                return Err(
+                    "Browser control belongs to the user; wait until they hand it back".to_string(),
+                );
             }
             session.observations.clear();
             let tab = session
                 .tabs
                 .get_mut(tab_id)
                 .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
-            tab.agent_restricted
-                .store(actor == NavigationActor::Agent, Ordering::Relaxed);
+            tab.network_proxy
+                .set_agent_restricted(actor == NavigationActor::Agent);
             if actor == NavigationActor::Agent {
                 tab.approved_agent_urls
                     .lock()
@@ -564,16 +580,28 @@ impl BrowserState {
         session.control_lease.acquire(owner);
         session.observations.clear();
         for tab in session.tabs.values() {
-            tab.agent_restricted.store(
-                matches!(
-                    session.control_lease.owner(),
-                    BrowserControlOwner::Agent { .. }
-                ),
-                Ordering::Relaxed,
-            );
+            tab.network_proxy.set_agent_restricted(matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { .. }
+            ));
+            if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
+                if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                    approved.clear();
+                }
+            }
         }
+        let webviews = matches!(session.control_lease.owner(), BrowserControlOwner::User)
+            .then(|| {
+                session
+                    .tabs
+                    .values()
+                    .map(|tab| tab.webview.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let info = session_info(session);
         drop(runtime);
+        invalidate_for_user_takeover(&webviews);
         self.emit(
             "controlChanged",
             serde_json::json!({ "sessionId": session_id, "owner": info.control_owner }),
@@ -601,7 +629,7 @@ impl BrowserState {
         }
         session.observations.clear();
         for tab in session.tabs.values() {
-            tab.agent_restricted.store(true, Ordering::Relaxed);
+            tab.network_proxy.set_agent_restricted(true);
         }
         let info = session_info(session);
         drop(runtime);
@@ -769,7 +797,31 @@ impl BrowserState {
             }
             (observation, expected)
         };
-        if request.action == "click" {
+        let is_form_submitter = expected.as_ref().is_some_and(|element| {
+            element.tag == "button"
+                || (element.tag == "input"
+                    && element
+                        .input_type
+                        .as_deref()
+                        .is_some_and(|kind| matches!(kind, "submit" | "image")))
+        });
+        let presses_activation_key = request.action == "press"
+            && request
+                .key
+                .is_some_and(|key| matches!(key, "Enter" | " " | "Space" | "Spacebar"));
+        let implicit_form_submit = request.action == "press"
+            && request.key == Some("Enter")
+            && expected.as_ref().is_some_and(|element| {
+                element.tag == "input"
+                    && !element.input_type.as_deref().is_some_and(|kind| {
+                        matches!(kind, "button" | "reset" | "file" | "checkbox" | "radio")
+                    })
+            });
+        let click_may_navigate = request.action == "click"
+            && expected
+                .as_ref()
+                .is_some_and(|element| element.tag == "a" || is_form_submitter);
+        if click_may_navigate || presses_activation_key {
             if let Some(href) = expected
                 .as_ref()
                 .and_then(|element| element.href.as_deref())
@@ -777,19 +829,13 @@ impl BrowserState {
                 let target =
                     Url::parse(href).map_err(|_| "Browser link target is invalid".to_string())?;
                 validate_agent_network_url(&target).await?;
-                let form_submitter = expected.as_ref().is_some_and(|element| {
-                    element.tag == "button"
-                        || (element.tag == "input"
-                            && element
-                                .input_type
-                                .as_deref()
-                                .is_some_and(|kind| matches!(kind, "submit" | "image")))
-                });
-                if form_submitter {
-                    self.approve_agent_form_url(request.session_id, request.tab_id, &target)?;
-                } else {
-                    self.approve_agent_url(request.session_id, request.tab_id, &target)?;
-                }
+                self.approve_agent_action_url(
+                    request.session_id,
+                    request.tab_id,
+                    request.observation_id,
+                    &target,
+                    is_form_submitter || implicit_form_submit,
+                )?;
             }
         }
         let expression = format!(
@@ -808,6 +854,7 @@ impl BrowserState {
             }))
             .map_err(|error| error.to_string())?
         );
+        self.revalidate_agent_action(request.session_id, request.tab_id, request.observation_id)?;
         self.eval_action(request.session_id, request.tab_id, &expression)
             .await?;
         self.observe(request.session_id, request.tab_id, request.call_id)
@@ -877,6 +924,7 @@ impl BrowserState {
             .tabs
             .remove(tab_id)
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        tab.network_proxy.shutdown();
         let _ = tab.webview.close();
         if session.active_tab_id.as_deref() == Some(tab_id) {
             session.active_tab_id = session.tabs.keys().next().cloned();
@@ -909,6 +957,7 @@ impl BrowserState {
             .remove(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
         for tab in session.tabs.into_values() {
+            tab.network_proxy.shutdown();
             let _ = tab.webview.close();
         }
         if session.temporary_profile {
@@ -952,25 +1001,82 @@ impl BrowserState {
         Ok(())
     }
 
-    fn approve_agent_form_url(
+    fn revalidate_agent_action(
         &self,
         session_id: &str,
         tab_id: &str,
-        url: &Url,
+        observation_id: &str,
     ) -> Result<(), String> {
         let runtime = self
             .inner
             .lock()
             .map_err(|_| "Browser runtime is unavailable".to_string())?;
-        let tab = runtime
+        let session = runtime
             .sessions
             .get(session_id)
-            .and_then(|session| session.tabs.get(tab_id))
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if !matches!(
+            session.control_lease.owner(),
+            BrowserControlOwner::Agent { .. }
+        ) {
+            return Err("stale observation: browser control owner changed".to_string());
+        }
+        let observation = session
+            .observations
+            .get(observation_id)
+            .ok_or_else(|| "stale observation: observe the tab again".to_string())?;
+        if observation.tab_id != tab_id
+            || observation.lease_generation != session.control_lease.generation()
+        {
+            return Err("stale observation: browser state or control owner changed".to_string());
+        }
+        Ok(())
+    }
+
+    fn approve_agent_action_url(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        observation_id: &str,
+        url: &Url,
+        form_navigation: bool,
+    ) -> Result<(), String> {
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if !matches!(
+            session.control_lease.owner(),
+            BrowserControlOwner::Agent { .. }
+        ) {
+            return Err("stale observation: browser control owner changed".to_string());
+        }
+        let observation = session
+            .observations
+            .get(observation_id)
+            .ok_or_else(|| "stale observation: observe the tab again".to_string())?;
+        if observation.tab_id != tab_id
+            || observation.lease_generation != session.control_lease.generation()
+        {
+            return Err("stale observation: browser state or control owner changed".to_string());
+        }
+        let tab = session
+            .tabs
+            .get(tab_id)
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        let approval = if form_navigation {
+            form_navigation_approval_key(url)
+        } else {
+            url.to_string()
+        };
         tab.approved_agent_urls
             .lock()
             .map_err(|_| "Browser navigation policy is unavailable".to_string())?
-            .insert(form_navigation_approval_key(url));
+            .insert(approval);
         Ok(())
     }
 
@@ -987,6 +1093,12 @@ impl BrowserState {
 
     pub fn app(&self) -> &AppHandle {
         &self.app
+    }
+}
+
+fn invalidate_for_user_takeover(webviews: &[Webview]) {
+    for webview in webviews {
+        let _ = webview.eval("window.__NEXA_BROWSER_RUNTIME__?.invalidateForUserTakeover()");
     }
 }
 
