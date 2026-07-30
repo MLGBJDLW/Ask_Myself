@@ -297,6 +297,7 @@ fn usage_from_oai_usage(u: OaiUsage) -> Usage {
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
         thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+        tool_prompt_tokens: None,
         cache_read_tokens,
         cache_miss_tokens: u.prompt_cache_miss_tokens,
         cache_creation_tokens: prompt_details
@@ -2187,6 +2188,7 @@ data: [DONE]
                 completion_tokens: 4,
                 total_tokens: 7,
                 thinking_tokens: None,
+                tool_prompt_tokens: None,
                 cache_read_tokens: None,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,

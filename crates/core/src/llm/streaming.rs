@@ -563,6 +563,7 @@ async fn process_sse_line(
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
                     thinking_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
+                    tool_prompt_tokens: None,
                     cache_read_tokens,
                     cache_miss_tokens: u.prompt_cache_miss_tokens,
                     cache_creation_tokens: prompt_details

@@ -159,6 +159,9 @@ impl AgentExecutor {
             if let Some(t) = u.thinking_tokens {
                 *total_usage.thinking_tokens.get_or_insert(0) += t;
             }
+            if let Some(t) = u.tool_prompt_tokens {
+                *total_usage.tool_prompt_tokens.get_or_insert(0) += t;
+            }
             if let Some(t) = u.cache_read_tokens {
                 *total_usage.cache_read_tokens.get_or_insert(0) += t;
             }
