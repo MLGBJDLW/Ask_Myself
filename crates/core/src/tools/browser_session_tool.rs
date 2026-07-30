@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -125,11 +125,7 @@ fn oldest_observation_id(observations: &HashMap<String, BrowserObservation>) -> 
 }
 
 type SharedSession = Arc<Mutex<BrowserSession>>;
-
-fn browser_sessions() -> &'static Mutex<HashMap<String, SharedSession>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<String, SharedSession>>> = OnceLock::new();
-    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
+type BrowserSessionRegistry = Arc<Mutex<HashMap<String, SharedSession>>>;
 
 fn belongs_to_conversation(owner: &Option<String>, conversation_id: Option<&str>) -> bool {
     owner.as_deref() == conversation_id
@@ -147,10 +143,11 @@ fn required<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str, CoreErro
 }
 
 fn session_by_id(
+    sessions: &BrowserSessionRegistry,
     session_id: &str,
     conversation_id: Option<&str>,
 ) -> Result<SharedSession, CoreError> {
-    let session = browser_sessions()
+    let session = sessions
         .lock()
         .map_err(|_| CoreError::Internal("browser session registry is unavailable".to_string()))?
         .get(session_id)
@@ -517,7 +514,10 @@ async fn blocking<T: Send + 'static>(
         .map_err(invalid)
 }
 
-pub struct BrowserSessionTool;
+#[derive(Clone, Default)]
+pub struct BrowserSessionTool {
+    sessions: BrowserSessionRegistry,
+}
 
 #[async_trait]
 impl Tool for BrowserSessionTool {
@@ -585,6 +585,7 @@ impl Tool for BrowserSessionTool {
             let session_id_for_worker = session_id.clone();
             let tab_id_for_worker = tab_id.clone();
             let conversation_id_for_worker = conversation_id.map(str::to_string);
+            let sessions_for_worker = Arc::clone(&self.sessions);
             blocking(move || {
                 let browser = launch_browser_for_capture()?;
                 let tab = configure_tab(browser.new_tab().map_err(|error| error.to_string())?)?;
@@ -595,7 +596,7 @@ impl Tool for BrowserSessionTool {
                     active_tab_id: tab_id_for_worker,
                     observations: HashMap::new(),
                 };
-                browser_sessions()
+                sessions_for_worker
                     .lock()
                     .map_err(|_| "browser session registry is unavailable".to_string())?
                     .insert(session_id_for_worker, Arc::new(Mutex::new(session)));
@@ -614,8 +615,9 @@ impl Tool for BrowserSessionTool {
 
         let session_id = required(args.session_id.as_deref(), "sessionId")?.to_string();
         if action == "close_session" {
-            session_by_id(&session_id, conversation_id)?;
-            let removed = browser_sessions()
+            session_by_id(&self.sessions, &session_id, conversation_id)?;
+            let removed = self
+                .sessions
                 .lock()
                 .map_err(|_| {
                     CoreError::Internal("browser session registry is unavailable".to_string())
@@ -634,7 +636,7 @@ impl Tool for BrowserSessionTool {
                 ),
             });
         }
-        let session = session_by_id(&session_id, conversation_id)?;
+        let session = session_by_id(&self.sessions, &session_id, conversation_id)?;
 
         if action == "list_tabs" {
             let session_for_worker = Arc::clone(&session);
@@ -954,7 +956,7 @@ mod tests {
 
     #[test]
     fn schema_keeps_one_stable_browser_surface() {
-        let schema = BrowserSessionTool.parameters_schema();
+        let schema = BrowserSessionTool::default().parameters_schema();
         let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
         for action in [
             "create_session",

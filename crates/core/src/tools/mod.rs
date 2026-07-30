@@ -1404,7 +1404,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(web_search_tool::WebSearchTool));
     registry.register(Box::new(web_research_context_tool::WebResearchContextTool));
     registry.register(Box::new(browser_evidence_tool::BrowserEvidenceCaptureTool));
-    registry.register(Box::new(browser_session_tool::BrowserSessionTool));
+    registry.register(Box::new(browser_session_tool::BrowserSessionTool::default()));
     registry.register(Box::new(download_asset_tool::DownloadAssetTool));
     registry.register(Box::new(write_note_tool::WriteNoteTool));
     registry.register(Box::new(search_playbooks_tool::SearchPlaybooksTool));
