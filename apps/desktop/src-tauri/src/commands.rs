@@ -222,7 +222,7 @@ pub struct WatcherState {
     pub watcher: Mutex<FileWatcher>,
     /// Map of source_id → root_path for actively watched sources.
     pub watched: Mutex<HashMap<String, String>>,
-    /// Incremented before every foreground watcher mutation so background
+    /// Incremented after every foreground database mutation so background
     /// startup registration cannot apply a stale database snapshot.
     pub revision: AtomicU64,
 }

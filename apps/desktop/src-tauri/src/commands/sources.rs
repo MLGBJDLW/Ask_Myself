@@ -65,7 +65,6 @@ pub fn update_source(
     exclude_globs: Option<Vec<String>>,
     watch_enabled: Option<bool>,
 ) -> Result<Source, String> {
-    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
     let previous = state.db.get_source(&source_id).map_err(|e| e.to_string())?;
     let input = UpdateSourceInput {
         root_path,
@@ -77,6 +76,7 @@ pub fn update_source(
         .db
         .update_source(&source_id, input)
         .map_err(|e| e.to_string())?;
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
 
     let root_changed = previous.root_path != updated.root_path;
     let watch_changed = previous.watch_enabled != updated.watch_enabled;
@@ -110,12 +110,12 @@ pub fn delete_source(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
-    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
     let previous = state.db.get_source(&source_id).map_err(|e| e.to_string())?;
     state
         .db
         .delete_source(&source_id)
         .map_err(|e| e.to_string())?;
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
 
     let was_watched = {
         let mut watched = watcher_state.watched.lock().map_err(|e| e.to_string())?;

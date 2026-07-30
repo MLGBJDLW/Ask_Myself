@@ -8,7 +8,6 @@ pub fn start_watching(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
-    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
     let source = app_state
         .db
         .get_source(&source_id)
@@ -33,6 +32,7 @@ pub fn start_watching(
         .db
         .update_source(&source_id, input)
         .map_err(|e| e.to_string())?;
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
 
     Ok(())
 }
@@ -43,19 +43,9 @@ pub fn stop_watching(
     watcher_state: tauri::State<'_, WatcherState>,
     source_id: String,
 ) -> Result<(), String> {
-    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
-    let root_path = watcher_state
-        .watched
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&source_id);
-    if let Some(root_path) = root_path {
-        let path = std::path::Path::new(&root_path);
-        let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
-        let _ = watcher.unwatch(path); // best-effort
-    }
-
-    // Persist watch_enabled = false in the database.
+    // Persist first, then advance the revision. A startup registration that
+    // sampled the old database value must observe the revision change before
+    // it can install that stale watch.
     let input = UpdateSourceInput {
         root_path: None,
         include_globs: None,
@@ -66,6 +56,18 @@ pub fn stop_watching(
         .db
         .update_source(&source_id, input)
         .map_err(|e| e.to_string())?;
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
+
+    let root_path = watcher_state
+        .watched
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&source_id);
+    if let Some(root_path) = root_path {
+        let path = std::path::Path::new(&root_path);
+        let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
+        let _ = watcher.unwatch(path); // best-effort
+    }
 
     Ok(())
 }
