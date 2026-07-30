@@ -2,7 +2,7 @@ use super::*;
 use nexa_core::execution_environment::{
     ExecutionEnvironment, ExecutionRequest, LocalDetachedProcessExecutionEnvironment,
 };
-use reqwest::header::{CONTENT_SECURITY_POLICY, LOCATION, X_FRAME_OPTIONS};
+use reqwest::header::{CONTENT_SECURITY_POLICY, LOCATION, RANGE, X_FRAME_OPTIONS};
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -66,12 +66,41 @@ pub(super) fn web_preview_block_reason(
             .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
             .then(|| tokens.collect::<Vec<_>>())
     })?;
-    let allows_tauri_parent = frame_ancestors.iter().any(|source| {
-        *source == "*"
-            || source.eq_ignore_ascii_case("tauri:")
-            || source.contains("tauri.localhost")
-    });
+    let allows_tauri_parent = frame_ancestors
+        .iter()
+        .any(|source| is_tauri_frame_ancestor_source(source));
     (!allows_tauri_parent).then_some("frame-ancestors")
+}
+
+fn is_tauri_frame_ancestor_source(source: &str) -> bool {
+    if source == "*" || source.eq_ignore_ascii_case("tauri:") {
+        return true;
+    }
+
+    reqwest::Url::parse(source).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https" | "tauri")
+            && url.host_str().is_some_and(|host| {
+                host.eq_ignore_ascii_case("tauri.localhost")
+                    || (url.scheme() == "tauri" && host.eq_ignore_ascii_case("localhost"))
+            })
+    })
+}
+
+fn web_preview_headers_block_reason(headers: &reqwest::header::HeaderMap) -> Option<&'static str> {
+    if headers
+        .get_all(X_FRAME_OPTIONS)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| !value.trim().is_empty())
+    {
+        return Some("x-frame-options");
+    }
+
+    headers
+        .get_all(CONTENT_SECURITY_POLICY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(|policy| web_preview_block_reason(None, Some(policy)))
 }
 
 pub(super) fn is_public_web_preview_ip(ip: IpAddr) -> bool {
@@ -146,6 +175,7 @@ async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String>
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(4))
             .timeout(Duration::from_secs(6))
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none());
         if host.parse::<IpAddr>().is_err() {
             builder = builder.resolve_to_addrs(host, &addresses);
@@ -154,7 +184,8 @@ async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String>
             .build()
             .map_err(|error| format!("Failed to create web preview probe: {error}"))?;
         let response = client
-            .head(current.clone())
+            .get(current.clone())
+            .header(RANGE, "bytes=0-0")
             .send()
             .await
             .map_err(|error| format!("Web preview preflight failed: {error}"))?;
@@ -180,15 +211,7 @@ async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String>
                 reason: Some(format!("http-{}", response.status().as_u16())),
             });
         }
-        let x_frame_options = response
-            .headers()
-            .get(X_FRAME_OPTIONS)
-            .and_then(|value| value.to_str().ok());
-        let content_security_policy = response
-            .headers()
-            .get(CONTENT_SECURITY_POLICY)
-            .and_then(|value| value.to_str().ok());
-        let reason = web_preview_block_reason(x_frame_options, content_security_policy);
+        let reason = web_preview_headers_block_reason(response.headers());
         return Ok(WebPreviewProbe {
             embeddable: reason.is_none(),
             reason: reason.map(str::to_string),

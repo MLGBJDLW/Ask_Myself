@@ -876,7 +876,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
-  const [webPreviewStatus, setWebPreviewStatus] = useState<'loading' | 'loaded' | 'timedOut'>('loading');
+  const [webPreviewStatus, setWebPreviewStatus] = useState<'probing' | 'loading' | 'loaded' | 'timedOut'>('probing');
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -911,11 +911,11 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!webPreview) return;
     let active = true;
-    setWebPreviewStatus('loading');
+    setWebPreviewStatus('probing');
     void api.probeWebPreview(webPreview.url)
       .then((probe) => {
-        if (active && !probe.embeddable) {
-          setWebPreviewStatus('timedOut');
+        if (active) {
+          setWebPreviewStatus(probe.embeddable ? 'loading' : 'timedOut');
         }
       })
       .catch((reason) => {
@@ -923,7 +923,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
         if (active) setWebPreviewStatus('timedOut');
       });
     const timer = setTimeout(() => {
-      setWebPreviewStatus((status) => status === 'loading' ? 'timedOut' : status);
+      setWebPreviewStatus((status) => status === 'probing' || status === 'loading' ? 'timedOut' : status);
     }, 12_000);
     return () => {
       active = false;
@@ -985,7 +985,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       return;
     }
     setOpen(false);
-    setWebPreviewStatus('loading');
+    setWebPreviewStatus('probing');
     setWebPreview({ url: trimmed, title });
     setCopiedUrl(false);
   }, [labels.discardPrompt, labels.openExternalFailed]);
@@ -1690,19 +1690,21 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
               </header>
               <div className="relative min-h-0 flex-1 bg-white">
-                <iframe
-                  key={webPreview.url}
-                  title={webPreview.title || webPreview.url}
-                  src={webPreview.url}
-                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
-                  referrerPolicy="strict-origin-when-cross-origin"
-                  onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
-                  onError={() => setWebPreviewStatus('timedOut')}
-                  className="h-full w-full border-0 bg-white"
-                />
+                {(webPreviewStatus === 'loading' || webPreviewStatus === 'loaded') && (
+                  <iframe
+                    key={webPreview.url}
+                    title={webPreview.title || webPreview.url}
+                    src={webPreview.url}
+                    sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                    onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
+                    onError={() => setWebPreviewStatus('timedOut')}
+                    className="h-full w-full border-0 bg-white"
+                  />
+                )}
                 {webPreviewStatus !== 'loaded' && (
                   <div className="absolute inset-0 flex items-center justify-center bg-surface-1/95 p-8 text-center">
-                    {webPreviewStatus === 'loading' ? (
+                    {webPreviewStatus === 'probing' || webPreviewStatus === 'loading' ? (
                       <div className="flex items-center gap-2 text-sm text-text-secondary"><Loader2 size={17} className="animate-spin" /> {labels.webLoading}</div>
                     ) : (
                       <div className="max-w-sm">

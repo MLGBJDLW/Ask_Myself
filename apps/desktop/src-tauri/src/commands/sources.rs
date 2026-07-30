@@ -105,11 +105,27 @@ pub fn update_source(
 }
 
 #[tauri::command]
-pub fn delete_source(state: tauri::State<'_, AppState>, source_id: String) -> Result<(), String> {
+pub fn delete_source(
+    state: tauri::State<'_, AppState>,
+    watcher_state: tauri::State<'_, WatcherState>,
+    source_id: String,
+) -> Result<(), String> {
+    watcher_state.revision.fetch_add(1, Ordering::AcqRel);
+    let previous = state.db.get_source(&source_id).map_err(|e| e.to_string())?;
     state
         .db
         .delete_source(&source_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let was_watched = {
+        let mut watched = watcher_state.watched.lock().map_err(|e| e.to_string())?;
+        watched.remove(&source_id).is_some()
+    };
+    if was_watched {
+        let mut watcher = watcher_state.watcher.lock().map_err(|e| e.to_string())?;
+        let _ = watcher.unwatch(std::path::Path::new(&previous.root_path));
+    }
+    Ok(())
 }
 
 // ── Ingest Commands ─────────────────────────────────────────────────────

@@ -1561,6 +1561,17 @@ mod tests {
             None
         );
         assert_eq!(web_preview_block_reason(None, None), None);
+        assert_eq!(
+            web_preview_block_reason(
+                None,
+                Some("frame-ancestors https://tauri.localhost.attacker.example")
+            ),
+            Some("frame-ancestors")
+        );
+        assert_eq!(
+            web_preview_block_reason(None, Some("frame-ancestors http://tauri.localhost")),
+            None
+        );
     }
 
     #[test]

@@ -890,21 +890,29 @@ async fn send_gemini_content_chunks(
 struct GeminiToolCallStreamState {
     pending: Vec<ToolCallRequest>,
     provider_indices: HashMap<String, usize>,
-    synthetic_snapshots: HashSet<(String, String)>,
+    synthetic_indices: HashMap<String, usize>,
     next_synthetic_id: u64,
 }
 
 impl GeminiToolCallStreamState {
     fn record_snapshot(&mut self, mut tool_call: ToolCallRequest) {
         if tool_call.id.starts_with(SYNTHETIC_CALL_ID_PREFIX) {
-            if !self
-                .synthetic_snapshots
-                .insert((tool_call.name.clone(), tool_call.arguments.clone()))
-            {
-                return;
+            if let Some(index) = self.synthetic_indices.get(&tool_call.id).copied() {
+                if self.pending[index].name == tool_call.name {
+                    if tool_call.thought_signature.is_none() {
+                        tool_call.thought_signature = self.pending[index].thought_signature.clone();
+                    }
+                    tool_call.id = self.pending[index].id.clone();
+                    self.pending[index] = tool_call;
+                    return;
+                }
             }
+
+            let provider_position = tool_call.id.clone();
             tool_call.id = format!("call_{}", self.next_synthetic_id);
             self.next_synthetic_id += 1;
+            self.synthetic_indices
+                .insert(provider_position, self.pending.len());
             self.pending.push(tool_call);
             return;
         }
@@ -923,7 +931,7 @@ impl GeminiToolCallStreamState {
 
     fn take_pending(&mut self) -> Vec<ToolCallRequest> {
         self.provider_indices.clear();
-        self.synthetic_snapshots.clear();
+        self.synthetic_indices.clear();
         std::mem::take(&mut self.pending)
     }
 }
@@ -1916,6 +1924,80 @@ mod tests {
         assert_eq!(first.id, "call_0");
         assert_eq!(second.id, "call_1");
         assert_ne!(first.name, second.name);
+    }
+
+    #[tokio::test]
+    async fn test_missing_tool_call_id_snapshots_replace_arguments_by_position() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut tool_call_state = GeminiToolCallStreamState::default();
+        let mut saw_finish_reason = false;
+        for (index, args) in [
+            serde_json::json!({"path": "a"}),
+            serde_json::json!({"path": "ab"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {"name": "read_file", "args": args}
+                    }]},
+                    "finishReason": (index == 1).then_some("STOP")
+                }]
+            }))
+            .expect("response");
+            assert!(emit_gemini_response_chunk(
+                response,
+                &tx,
+                &mut tool_call_state,
+                &mut saw_finish_reason,
+            )
+            .await
+            .expect("emit response"));
+        }
+
+        let call = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        assert_eq!(call.id, "call_0");
+        assert_eq!(call.arguments_delta, r#"{"path":"ab"}"#);
+        assert_eq!(
+            rx.recv().await.unwrap().unwrap().finish_reason,
+            Some(FinishReason::Stop)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_identical_missing_id_calls_in_one_candidate_remain_distinct() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut tool_call_state = GeminiToolCallStreamState::default();
+        let mut saw_finish_reason = false;
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [
+                    {"functionCall": {"name": "read_file", "args": {"path": "same"}}},
+                    {"functionCall": {"name": "read_file", "args": {"path": "same"}}}
+                ]},
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("response");
+
+        assert!(emit_gemini_response_chunk(
+            response,
+            &tx,
+            &mut tool_call_state,
+            &mut saw_finish_reason,
+        )
+        .await
+        .expect("emit response"));
+
+        let first = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        let second = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        assert_eq!(first.id, "call_0");
+        assert_eq!(second.id, "call_1");
+        assert_eq!(first.name, second.name);
+        assert_eq!(first.arguments_delta, second.arguments_delta);
     }
 
     #[test]
