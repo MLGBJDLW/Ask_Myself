@@ -2111,6 +2111,13 @@ mod tests {
             .expect("before count");
         assert_eq!(before, 0);
 
+        conn.execute(
+            "DELETE FROM _migrations
+             WHERE name = 'v064_backfill_document_entities_from_first_seen_doc'",
+            [],
+        )
+        .expect("simulate a database that has not applied v064");
+
         run_migrations(&conn).expect("migrations should backfill");
         run_migrations(&conn).expect("migrations remain idempotent");
 
