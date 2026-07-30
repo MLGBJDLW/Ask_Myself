@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.1...nexa-monorepo-v0.11.2) (2026-07-30)
+
+
+### Bug Fixes
+
+* **gemini:** harden protocol adaptation ([cad7ec1](https://github.com/MLGBJDLW/Nexa/commit/cad7ec15483bc7369c899d3ed5c67f5136eb780b))
+* **gemini:** preserve zero thinking budgets ([e3e67ad](https://github.com/MLGBJDLW/Nexa/commit/e3e67ad56d38e1963a8599cc66a6dd207a25aa37))
+* **preview:** add resilient external page fallback ([72e56e6](https://github.com/MLGBJDLW/Nexa/commit/72e56e6bed0673c92b0dc5e27fd0a7bacf920d03))
+* **runtime:** close reviewed reliability gaps ([a220081](https://github.com/MLGBJDLW/Nexa/commit/a2200813dd11ae2d4f9383f0adfa444c8c973b48))
+* **runtime:** close second-round P1 gaps ([a144dcd](https://github.com/MLGBJDLW/Nexa/commit/a144dcdb4149f35752817a5a53fe85dc24da0cb9))
+* **runtime:** eliminate reviewed boundary races ([132a4cf](https://github.com/MLGBJDLW/Nexa/commit/132a4cfe86ea941be040682788d811a71a0e4357))
+* **runtime:** harden product boundary reliability ([8643da4](https://github.com/MLGBJDLW/Nexa/commit/8643da4f14a8399435b500d8a0a2fd366970498f))
+* **startup:** avoid repeated blocking initialization ([d6fd47f](https://github.com/MLGBJDLW/Nexa/commit/d6fd47f99dee9b62b546a5d7d0b2d06f634405d7))
+* **startup:** serialize watcher state changes ([808fcca](https://github.com/MLGBJDLW/Nexa/commit/808fcca5d6a699a55d1bcff1eb257a0397974901))
+* **ui:** enforce localized presentation boundaries ([bceacb1](https://github.com/MLGBJDLW/Nexa/commit/bceacb1889eb992913a408323fc9181537c3f5de))
+
 ## [0.11.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.0...nexa-monorepo-v0.11.1) (2026-07-29)
 
 
