@@ -160,6 +160,9 @@ function normalizeThinkingBudget(
 
   const fallback = defaultThinkingBudget(capability) ?? 10000;
   let next = Number.isFinite(value) && value !== null ? value : fallback;
+  if (budget.allowZero && next === 0) {
+    return 0;
+  }
   if (budget.minTokens != null) {
     next = Math.max(next, budget.minTokens);
   }
@@ -1068,12 +1071,17 @@ export function AgentConfigForm({
                   value={thinkingBudget ?? ""}
                   onChange={(e) => {
                     const val = e.target.value.trim();
-                    setThinkingBudget(val ? parseInt(val) || null : null);
+                    if (!val) {
+                      setThinkingBudget(null);
+                      return;
+                    }
+                    const parsed = Number.parseInt(val, 10);
+                    setThinkingBudget(Number.isNaN(parsed) ? null : parsed);
                   }}
                   placeholder={String(
                     defaultThinkingBudget(reasoningCapability) ?? 10000,
                   )}
-                  min={thinkingBudgetCapability?.minTokens ?? 1}
+                  min={thinkingBudgetCapability?.allowZero ? 0 : thinkingBudgetCapability?.minTokens ?? 1}
                   max={thinkingBudgetCapability?.maxTokens}
                   step={thinkingBudgetCapability?.step ?? 1}
                 />

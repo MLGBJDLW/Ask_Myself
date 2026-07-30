@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import {
@@ -60,6 +61,25 @@ const FILE_PREVIEW_WIDTH_KEY = 'file-preview-panel-width';
 const FILE_PREVIEW_MIN_WIDTH = 560;
 const FILE_PREVIEW_MAX_WIDTH = 1180;
 const MAX_AGENT_SELECTION_CHARS = 24_000;
+
+function safeWebPreviewDocument(document: string): string {
+  const sanitized = String(DOMPurify.sanitize(document, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'input', 'link', 'meta', 'object', 'script'],
+    FORBID_ATTR: [
+      'action',
+      'background',
+      'formaction',
+      'href',
+      'ping',
+      'poster',
+      'src',
+      'srcset',
+      'xlink:href',
+    ],
+  }));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; media-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><style>html{color-scheme:light}body{box-sizing:border-box;max-width:960px;margin:0 auto;padding:24px;font:15px/1.6 system-ui,sans-serif;color:#18181b;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>${sanitized}</body></html>`;
+}
 
 type TextSelectionState = {
   start: number;
@@ -234,6 +254,10 @@ function createPreviewLabels(t: TranslateFn) {
     resizePanel: t('preview.resizePanel'),
     loading: t('preview.loading'),
     webPreviewNotice: t('preview.webPreviewNotice'),
+    webLoading: t('preview.webLoading'),
+    webTimedOut: t('preview.webTimedOut'),
+    webTimedOutHint: t('preview.webTimedOutHint'),
+    openExternalFailed: t('preview.openExternalFailed'),
     empty: t('preview.empty'),
     unsupported: t('preview.unsupported'),
     sheets: t('preview.sheets'),
@@ -872,6 +896,8 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
+  const [webPreviewStatus, setWebPreviewStatus] = useState<'probing' | 'loading' | 'loaded' | 'timedOut'>('probing');
+  const [webPreviewDocument, setWebPreviewDocument] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -902,6 +928,35 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  useEffect(() => {
+    if (!webPreview) return;
+    let active = true;
+    setWebPreviewDocument(null);
+    setWebPreviewStatus('probing');
+    void api.probeWebPreview(webPreview.url)
+      .then((probe) => {
+        if (active) {
+          if (probe.embeddable && probe.document) {
+            setWebPreviewDocument(safeWebPreviewDocument(probe.document));
+            setWebPreviewStatus('loading');
+          } else {
+            setWebPreviewStatus('timedOut');
+          }
+        }
+      })
+      .catch((reason) => {
+        console.error('[web-preview] preflight failed', reason);
+        if (active) setWebPreviewStatus('timedOut');
+      });
+    const timer = setTimeout(() => {
+      setWebPreviewStatus((status) => status === 'probing' || status === 'loading' ? 'timedOut' : status);
+    }, 12_000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [webPreview]);
 
   const loadFile = useCallback(
     async (
@@ -947,16 +1002,31 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const openWebPreview = useCallback((url: string, title?: string) => {
     const trimmed = url.trim();
     if (!isWebUrl(trimmed)) {
-      void openExternal(trimmed);
+      void openExternal(trimmed).catch((reason) => {
+        console.error('[web-preview] external open failed', reason);
+        toast.error(labels.openExternalFailed);
+      });
       return;
     }
     if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
       return;
     }
     setOpen(false);
+    setWebPreviewDocument(null);
+    setWebPreviewStatus('probing');
     setWebPreview({ url: trimmed, title });
     setCopiedUrl(false);
-  }, [labels.discardPrompt]);
+  }, [labels.discardPrompt, labels.openExternalFailed]);
+
+  const openWebPreviewExternally = useCallback(async () => {
+    if (!webPreview) return;
+    try {
+      await openExternal(webPreview.url);
+    } catch (reason) {
+      console.error('[web-preview] external open failed', reason);
+      toast.error(labels.openExternalFailed);
+    }
+  }, [labels.openExternalFailed, webPreview]);
 
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {
@@ -1626,7 +1696,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => { void openExternal(webPreview.url); }}
+                    onClick={() => { void openWebPreviewExternally(); }}
                     className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                   >
                     <ExternalLink size={14} />
@@ -1647,15 +1717,35 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </button>
                 </div>
               </header>
-              <div className="min-h-0 flex-1 bg-white">
-                <iframe
-                  key={webPreview.url}
-                  title={webPreview.title || webPreview.url}
-                  src={webPreview.url}
-                  sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full border-0 bg-white"
-                />
+              <div className="relative min-h-0 flex-1 bg-white">
+                {webPreviewDocument && (webPreviewStatus === 'loading' || webPreviewStatus === 'loaded') && (
+                  <iframe
+                    key={webPreview.url}
+                    title={webPreview.title || webPreview.url}
+                    srcDoc={webPreviewDocument}
+                    sandbox=""
+                    referrerPolicy="no-referrer"
+                    onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
+                    onError={() => setWebPreviewStatus('timedOut')}
+                    className="h-full w-full border-0 bg-white"
+                  />
+                )}
+                {webPreviewStatus !== 'loaded' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-surface-1/95 p-8 text-center">
+                    {webPreviewStatus === 'probing' || webPreviewStatus === 'loading' ? (
+                      <div className="flex items-center gap-2 text-sm text-text-secondary"><Loader2 size={17} className="animate-spin" /> {labels.webLoading}</div>
+                    ) : (
+                      <div className="max-w-sm">
+                        <TriangleAlert size={24} className="mx-auto text-warning" />
+                        <h3 className="mt-3 text-sm font-semibold text-text-primary">{labels.webTimedOut}</h3>
+                        <p className="mt-1 text-xs text-text-tertiary">{labels.webTimedOutHint}</p>
+                        <button type="button" onClick={() => { void openWebPreviewExternally(); }} className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white">
+                          <ExternalLink size={14} /> {labels.openExternal}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.aside>
           </>

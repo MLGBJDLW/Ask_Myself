@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::db::Database;
@@ -163,39 +163,32 @@ pub fn materialize_user_skill_to_disk(
         ));
     }
 
+    let skills_dir = app_data_dir.join("skills");
+    let user_dir = skills_dir.join("user");
     let skill_dir = user_skill_dir(app_data_dir, &skill.id);
-    if skill_dir.exists() {
-        fs::remove_dir_all(&skill_dir).map_err(|e| {
-            CoreError::Internal(format!(
-                "Failed to replace user skill dir {}: {e}",
-                skill_dir.display()
-            ))
-        })?;
+    fs::create_dir_all(app_data_dir).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to create app data dir {}: {e}",
+            app_data_dir.display()
+        ))
+    })?;
+    for directory in [&skills_dir, &user_dir, &skill_dir] {
+        ensure_real_user_skill_directory(directory, &skill.id)?;
     }
-    fs::create_dir_all(&skill_dir).map_err(|e| {
-        CoreError::Internal(format!(
-            "Failed to create user skill dir {}: {e}",
-            skill_dir.display()
-        ))
-    })?;
 
-    fs::write(skill_dir.join("SKILL.md"), export_skill_to_md(skill)).map_err(|e| {
-        CoreError::Internal(format!(
-            "Failed to write user skill SKILL.md for {}: {e}",
-            skill.id
-        ))
-    })?;
+    let mut expected_files = BTreeSet::from([PathBuf::from("SKILL.md")]);
+    write_user_file_if_changed(
+        &skill_dir.join("SKILL.md"),
+        export_skill_to_md(skill).as_bytes(),
+        &skill.id,
+    )?;
 
     let resources = normalize_resource_bundle(&skill.resource_bundle)?;
     for resource in resources {
+        expected_files.insert(PathBuf::from(&resource.path));
         let target = skill_dir.join(&resource.path);
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                CoreError::Internal(format!(
-                    "Failed to create user skill resource dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
+            ensure_user_skill_resource_parent(&skill_dir, parent, &skill.id)?;
         }
         let bytes = match resource.encoding {
             SkillResourceEncoding::Utf8 => resource.content.into_bytes(),
@@ -211,15 +204,168 @@ pub fn materialize_user_skill_to_disk(
                     })?
             }
         };
-        fs::write(&target, bytes).map_err(|e| {
-            CoreError::Internal(format!(
-                "Failed to write user skill resource {}: {e}",
-                target.display()
-            ))
-        })?;
+        write_user_file_if_changed(&target, &bytes, &skill.id)?;
     }
 
+    prune_stale_user_skill_files(&skill_dir, &skill_dir, &expected_files, &skill.id)?;
+
     Ok(skill_dir)
+}
+
+fn ensure_real_user_skill_directory(path: &Path, skill_id: &str) -> Result<(), CoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            fs::remove_file(path)
+                .or_else(|_| fs::remove_dir(path))
+                .map_err(|e| {
+                    CoreError::Internal(format!(
+                        "Failed to remove user skill directory symlink {} for {skill_id}: {e}",
+                        path.display()
+                    ))
+                })?;
+            fs::create_dir(path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to replace user skill directory {} for {skill_id}: {e}",
+                    path.display()
+                ))
+            })
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => {
+            fs::remove_file(path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to replace user skill directory path {} for {skill_id}: {e}",
+                    path.display()
+                ))
+            })?;
+            fs::create_dir(path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to create user skill directory {} for {skill_id}: {e}",
+                    path.display()
+                ))
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to create user skill directory {} for {skill_id}: {e}",
+                    path.display()
+                ))
+            })
+        }
+        Err(error) => Err(CoreError::Internal(format!(
+            "Failed to inspect user skill directory {} for {skill_id}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn ensure_user_skill_resource_parent(
+    skill_dir: &Path,
+    parent: &Path,
+    skill_id: &str,
+) -> Result<(), CoreError> {
+    let relative = parent.strip_prefix(skill_dir).map_err(|error| {
+        CoreError::InvalidInput(format!(
+            "User skill resource escaped its materialization root: {error}"
+        ))
+    })?;
+    let mut current = skill_dir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(CoreError::InvalidInput(
+                "User skill resource contains an invalid path component".to_string(),
+            ));
+        };
+        current.push(component);
+        ensure_real_user_skill_directory(&current, skill_id)?;
+    }
+    Ok(())
+}
+
+fn write_user_file_if_changed(path: &Path, bytes: &[u8], skill_id: &str) -> Result<(), CoreError> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            fs::remove_file(path)
+                .or_else(|_| fs::remove_dir(path))
+                .map_err(|e| {
+                    CoreError::Internal(format!(
+                        "Failed to replace user skill symlink {} for {skill_id}: {e}",
+                        path.display()
+                    ))
+                })?;
+        } else if metadata.is_dir() {
+            fs::remove_dir_all(path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to replace user skill resource directory {} for {skill_id}: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+    }
+    if fs::read(path).is_ok_and(|existing| existing == bytes) {
+        return Ok(());
+    }
+    fs::write(path, bytes).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to write user skill file {} for {skill_id}: {e}",
+            path.display()
+        ))
+    })
+}
+
+fn prune_stale_user_skill_files(
+    root: &Path,
+    dir: &Path,
+    expected_files: &BTreeSet<PathBuf>,
+    skill_id: &str,
+) -> Result<(), CoreError> {
+    for entry in fs::read_dir(dir).map_err(|e| {
+        CoreError::Internal(format!(
+            "Failed to inspect user skill dir {} for {skill_id}: {e}",
+            dir.display()
+        ))
+    })? {
+        let entry = entry.map_err(|e| {
+            CoreError::Internal(format!("Failed to inspect user skill {skill_id}: {e}"))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            CoreError::Internal(format!(
+                "Failed to inspect user skill path {}: {e}",
+                path.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            prune_stale_user_skill_files(root, &path, expected_files, skill_id)?;
+            if fs::read_dir(&path)
+                .map_err(|e| CoreError::Internal(e.to_string()))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&path).map_err(|e| {
+                    CoreError::Internal(format!(
+                        "Failed to remove stale user skill dir {}: {e}",
+                        path.display()
+                    ))
+                })?;
+            }
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| CoreError::Internal(format!("Failed to resolve user skill path: {e}")))?;
+        if !expected_files.contains(relative) {
+            fs::remove_file(&path).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to remove stale user skill file {}: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 pub fn materialize_user_skills_to_disk(

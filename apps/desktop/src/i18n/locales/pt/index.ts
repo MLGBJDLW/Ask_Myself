@@ -22,8 +22,10 @@ import shortcuts from './shortcuts.json';
 import sidebar from './sidebar.json';
 import sources from './sources.json';
 import taskCenter from './taskCenter.json';
+import themeStudio from './themeStudio.json';
 import time from './time.json';
 import update from './update.json';
+import usage from './usage.json';
 import voice from './voice.json';
 import welcome from './welcome.json';
 import wizard from './wizard.json';
@@ -51,8 +53,10 @@ export const pt: TranslationKeys = flattenTranslationNamespaces({
   sidebar,
   sources,
   taskCenter,
+  themeStudio,
   time,
   update,
+  usage,
   voice,
   welcome,
   wizard,

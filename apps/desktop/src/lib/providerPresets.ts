@@ -15,6 +15,7 @@ export interface ThinkingBudgetCapability {
   minTokens?: number;
   maxTokens?: number;
   step?: number;
+  allowZero?: boolean;
 }
 
 export interface ReasoningCapability {

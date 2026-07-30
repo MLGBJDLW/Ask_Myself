@@ -90,8 +90,8 @@ function AppShell() {
   const location = useLocation();
 
   useAutoCompile();
-  useAutoHealthCheck();
-  useKnowledgeInsights();
+  useAutoHealthCheck(wizardCompleted === true);
+  useKnowledgeInsights(wizardCompleted === true);
 
   useEffect(() => {
     api.getWizardState()
@@ -121,7 +121,9 @@ function AppShell() {
             {wizardCompleted === false && location.pathname !== '/wizard' && (
               <Navigate to="/wizard" replace />
             )}
-            {wizardCompleted !== null && (
+            {wizardCompleted === null ? (
+              <PageLoader />
+            ) : (
               <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
             )}
           </FilePreviewProvider>

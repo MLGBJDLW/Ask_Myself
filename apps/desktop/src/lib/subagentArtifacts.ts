@@ -6,6 +6,7 @@ export interface SubagentUsage {
   completionTokens?: number;
   totalTokens?: number;
   thinkingTokens?: number;
+  toolPromptTokens?: number;
 }
 
 export interface SubagentToolEvent {
@@ -317,6 +318,7 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
           completionTokens: typeof usageRecord.completionTokens === 'number' ? usageRecord.completionTokens : undefined,
           totalTokens: typeof usageRecord.totalTokens === 'number' ? usageRecord.totalTokens : undefined,
           thinkingTokens: typeof usageRecord.thinkingTokens === 'number' ? usageRecord.thinkingTokens : undefined,
+          toolPromptTokens: typeof usageRecord.toolPromptTokens === 'number' ? usageRecord.toolPromptTokens : undefined,
         }
       : null,
     toolEvents,
@@ -438,6 +440,7 @@ export function extractSubagentJudgementArtifact(value: unknown): SubagentJudgem
           completionTokens: typeof (record.usageTotal as Record<string, unknown>).completionTokens === 'number' ? (record.usageTotal as Record<string, unknown>).completionTokens as number : undefined,
           totalTokens: typeof (record.usageTotal as Record<string, unknown>).totalTokens === 'number' ? (record.usageTotal as Record<string, unknown>).totalTokens as number : undefined,
           thinkingTokens: typeof (record.usageTotal as Record<string, unknown>).thinkingTokens === 'number' ? (record.usageTotal as Record<string, unknown>).thinkingTokens as number : undefined,
+          toolPromptTokens: typeof (record.usageTotal as Record<string, unknown>).toolPromptTokens === 'number' ? (record.usageTotal as Record<string, unknown>).toolPromptTokens as number : undefined,
         }
       : null,
     budget: parseBudgetSnapshot(record.budget),

@@ -19,12 +19,14 @@ function isCheckDue(): boolean {
  *
  * Non-blocking: errors are silently swallowed.
  */
-export function useAutoHealthCheck(): void {
+export function useAutoHealthCheck(enabled = true): void {
   const runningRef = useRef(false);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | null = null;
+    let initialTimer: ReturnType<typeof setTimeout> | null = null;
 
     const maybeRun = async () => {
       if (cancelled || runningRef.current || !isCheckDue()) return;
@@ -42,15 +44,16 @@ export function useAutoHealthCheck(): void {
       }
     };
 
-    // Run immediately on mount if due
-    void maybeRun();
+    // Let first paint and wizard routing finish before competing for the DB.
+    initialTimer = setTimeout(() => void maybeRun(), 2_000);
 
     // Poll every hour to see if 24 h have elapsed
     timer = setInterval(() => void maybeRun(), POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
+      if (initialTimer !== null) clearTimeout(initialTimer);
       if (timer !== null) clearInterval(timer);
     };
-  }, []);
+  }, [enabled]);
 }

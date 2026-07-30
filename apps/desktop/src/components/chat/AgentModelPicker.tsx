@@ -138,6 +138,7 @@ function clampThinkingBudget(
   if (!budget?.enabled) return null;
   const fallback = defaultThinkingBudget(capability) ?? 10000;
   let next = Number.isFinite(value) && value !== null ? value : fallback;
+  if (budget.allowZero && next === 0) return 0;
   if (budget.minTokens != null) next = Math.max(next, budget.minTokens);
   if (budget.maxTokens != null) next = Math.min(next, budget.maxTokens);
   return Math.round(next);
@@ -148,6 +149,7 @@ function thinkingBudgetOptions(capability: ReasoningCapability | null): number[]
   if (!budget?.enabled) return [];
   const fallback = defaultThinkingBudget(capability) ?? 10000;
   const candidates = [
+    budget.allowZero ? 0 : undefined,
     budget.minTokens,
     Math.round(fallback / 2),
     fallback,
@@ -876,7 +878,7 @@ export function AgentModelPicker({
                               <input
                                 type="number"
                                 value={budgetDraft}
-                                min={activeModelRow.reasoning.thinkingBudget.minTokens ?? 1}
+                                min={activeModelRow.reasoning.thinkingBudget.allowZero ? 0 : activeModelRow.reasoning.thinkingBudget.minTokens ?? 1}
                                 max={activeModelRow.reasoning.thinkingBudget.maxTokens}
                                 step={activeModelRow.reasoning.thinkingBudget.step ?? 1}
                                 onChange={(event) => setBudgetDraft(event.target.value)}

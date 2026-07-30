@@ -249,6 +249,9 @@ pub struct Usage {
     /// Tokens consumed by model thinking/reasoning (if supported).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<u32>,
+    /// Tokens attributed to function/tool declarations by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_prompt_tokens: Option<u32>,
     /// Provider-side prompt-cache tokens read for this request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,

@@ -172,7 +172,8 @@ impl AgentExecutor {
         let task_plan_value = serde_json::to_value(&task_plan)
             .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }));
         let _ = tx
-            .send(AgentEvent::Status {
+            .send(AgentEvent::ControllerStatus {
+                code: "route_selected".to_string(),
                 content: format!("Route selected: {:?}", route_plan.kind),
                 tone: Some("muted".to_string()),
             })

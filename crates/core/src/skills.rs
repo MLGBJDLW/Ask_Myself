@@ -763,6 +763,126 @@ mod tests {
     }
 
     #[test]
+    fn test_materialize_unchanged_user_skill_preserves_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Stable custom skill".into(),
+                description: "Use for stable materialization tests".into(),
+                content: "Keep this file unchanged.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+
+        let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        let modified = fs::metadata(&skill_file).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+
+        assert_eq!(
+            fs::metadata(skill_file).unwrap().modified().unwrap(),
+            modified
+        );
+    }
+
+    #[test]
+    fn test_materialize_user_skill_handles_file_directory_type_changes() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Changing resource layout".into(),
+                description: "Use for resource layout tests".into(),
+                content: "Exercise resource materialization.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/run.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('nested')\n".into(),
+                }],
+            })
+            .unwrap();
+        let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+
+        let flat = db
+            .save_skill(&SaveSkillInput {
+                id: Some(saved.id.clone()),
+                name: saved.name.clone(),
+                description: saved.description.clone(),
+                content: saved.content.clone(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts".into(),
+                    kind: SkillResourceKind::Reference,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "flat\n".into(),
+                }],
+            })
+            .unwrap();
+        materialize_user_skill_to_disk(dir.path(), &flat).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts")).unwrap(),
+            "flat\n"
+        );
+
+        materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts/run.py")).unwrap(),
+            "print('nested')\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_materialize_user_skill_replaces_resource_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Symlink boundary skill".into(),
+                description: "Use for materialization boundary tests".into(),
+                content: "Run the bundled helper.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/run.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('inside')\n".into(),
+                }],
+            })
+            .unwrap();
+        let skill_dir = user_skill_dir(dir.path(), &saved.id);
+        fs::create_dir_all(&skill_dir).unwrap();
+        symlink(outside.path(), skill_dir.join("scripts")).unwrap();
+
+        materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
+
+        assert!(!fs::symlink_metadata(skill_dir.join("scripts"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts/run.py")).unwrap(),
+            "print('inside')\n"
+        );
+        assert!(!outside.path().join("run.py").exists());
+    }
+
+    #[test]
     fn test_materialize_user_skills_removes_disabled_skill_dir() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();

@@ -235,8 +235,7 @@ fn main() {
 
             // Initialise the file watcher for auto-indexing.
             let handle = app.handle().clone();
-            let app_state: tauri::State<'_, AppState> = app.state();
-            commands::init_watcher(handle, &app_state.db);
+            commands::init_watcher(handle);
             commands::init_task_orchestrator_scheduler(app.handle().clone());
             commands::init_dreaming_scheduler(app.handle().clone());
 
@@ -306,6 +305,7 @@ fn main() {
             commands::open_file_in_default_app,
             commands::show_in_file_explorer,
             commands::preview_file_cmd,
+            commands::probe_web_preview_cmd,
             commands::save_text_file_cmd,
             commands::read_generated_image_data_url_cmd,
             commands::save_generated_image_cmd,

@@ -1553,6 +1553,13 @@ Every answer that uses knowledge base search results.
         CREATE INDEX IF NOT EXISTS idx_activity_events_timestamp
             ON activity_events(timestamp);",
     ),
+    (
+        "v082_controller_event_visibility",
+        "UPDATE agent_run_events
+         SET visibility = 'developer', importance = 'low'
+         WHERE kind = 'planUpdated'
+            OR (kind = 'status' AND phase IN ('routing', 'planning'));",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1620,18 +1627,17 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
             |row| row.get(0),
         )?;
 
-        // Always execute — uses IF NOT EXISTS, safe to re-run.
-        // Self-heals databases where name was recorded without SQL running.
+        if already_applied {
+            continue;
+        }
+
+        tracing::info!("Applying migration '{name}'…");
         if let Err(err) = conn.execute_batch(sql) {
             if !is_idempotent_schema_error(&err) {
                 return Err(err.into());
             }
         }
-
-        if !already_applied {
-            tracing::info!("Applying migration '{name}'…");
-            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
-        }
+        conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
     }
 
     Ok(())
@@ -1712,6 +1718,21 @@ mod tests {
             total_migration_count() as i64,
             "should have exactly {} migration records",
             total_migration_count()
+        );
+    }
+
+    #[test]
+    fn test_applied_future_migrations_are_not_replayed() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("first run should succeed");
+        let changes_after_first_run = conn.total_changes();
+
+        run_migrations(&conn).expect("second run should succeed");
+
+        assert_eq!(
+            conn.total_changes(),
+            changes_after_first_run,
+            "a fully migrated database must not be rewritten during startup"
         );
     }
 
@@ -1926,6 +1947,38 @@ mod tests {
     }
 
     #[test]
+    fn reclassifies_historical_controller_events_as_developer_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute(
+            "INSERT INTO agent_run_events
+                (run_id, turn_id, event_seq, version, kind, phase, label, payload_json,
+                 visibility, persistence, display_kind, importance)
+             VALUES ('legacy-controller', 'turn-1', 1, 2, 'status', 'routing',
+                     'legacy route', '{}', 'user', 'durable', 'status', 'normal')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM _migrations WHERE name = 'v082_controller_event_visibility'",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("controller visibility migration should succeed");
+
+        let presentation: (String, String) = conn
+            .query_row(
+                "SELECT visibility, importance FROM agent_run_events
+                 WHERE run_id = 'legacy-controller'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(presentation, ("developer".to_string(), "low".to_string()));
+    }
+
+    #[test]
     fn migrates_tool_name_approval_policies_to_structured_wildcards() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("baseline migrations should succeed");
@@ -2057,6 +2110,13 @@ mod tests {
             })
             .expect("before count");
         assert_eq!(before, 0);
+
+        conn.execute(
+            "DELETE FROM _migrations
+             WHERE name = 'v064_backfill_document_entities_from_first_seen_doc'",
+            [],
+        )
+        .expect("simulate a database that has not applied v064");
 
         run_migrations(&conn).expect("migrations should backfill");
         run_migrations(&conn).expect("migrations remain idempotent");

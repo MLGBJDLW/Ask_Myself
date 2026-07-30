@@ -128,13 +128,8 @@ export function applyAgentRunEvent(
     }
 
     case 'planUpdated':
-      appendStatusTraceEvent(
-        state,
-        stringValue(payload.summary) ?? runEvent.label,
-        'muted',
-        runEvent.visibility ?? 'user',
-        runEvent.displayKind ?? 'plan',
-      );
+      // The plan has a dedicated capsule/panel. Do not duplicate controller
+      // summaries inside the user-facing Thinking timeline.
       return;
 
     case 'recoveryAttempt':

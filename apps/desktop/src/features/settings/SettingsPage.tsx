@@ -42,6 +42,7 @@ import { ProvidersSettingsTab, type ProviderView } from '../../components/settin
 import { VideoSettingsSection } from '../../components/settings/VideoSettingsSection';
 import type { ProviderPreset } from '../../lib/providerPresets';
 import { useUpdater } from '../../lib/useUpdater';
+import { useDeveloperMode } from '../../lib/developerMode';
 import { useVoiceInputRuntime, withWhisperModel } from '../voice';
 
 /* ── Settings page ────────────────────────────────────────────────── */
@@ -49,28 +50,6 @@ type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'usage' | '
 type SettingsTabItem = { id: SettingsTab; label: string; icon: ReactNode; developerOnly?: boolean };
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
-const DEVELOPER_MODE_STORAGE_KEY = 'nexa-developer-mode';
-
-function getStoredDeveloperMode(): boolean {
-  try {
-    return localStorage.getItem(DEVELOPER_MODE_STORAGE_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-function setStoredDeveloperMode(enabled: boolean): void {
-  try {
-    if (enabled) {
-      localStorage.setItem(DEVELOPER_MODE_STORAGE_KEY, 'true');
-    } else {
-      localStorage.removeItem(DEVELOPER_MODE_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore unavailable storage.
-  }
-}
-
 export function SettingsPage() {
   const { t, locale, setLocale, availableLocales } = useTranslation();
   const navigate = useNavigate();
@@ -78,7 +57,7 @@ export function SettingsPage() {
   const [appVersion, setAppVersion] = useState('');
   const tabStripRef = useRef<HTMLDivElement | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('appearance');
-  const [developerMode, setDeveloperModeState] = useState(getStoredDeveloperMode);
+  const [developerMode, updateDeveloperMode] = useDeveloperMode();
   const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
   const [discardingTabChanges, setDiscardingTabChanges] = useState(false);
@@ -93,12 +72,11 @@ export function SettingsPage() {
   const hasDirtyTabs = dirtyTabs.size > 0;
 
   const setDeveloperMode = useCallback((enabled: boolean) => {
-    setDeveloperModeState(enabled);
-    setStoredDeveloperMode(enabled);
+    updateDeveloperMode(enabled);
     if (!enabled && activeTab === 'agent_quality') {
       setActiveTab('appearance');
     }
-  }, [activeTab]);
+  }, [activeTab, updateDeveloperMode]);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(''));
@@ -1546,7 +1524,7 @@ export function SettingsPage() {
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
     { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
-    { id: 'usage', label: 'AI Usage', icon: <ChartNoAxesCombined size={16} /> },
+    { id: 'usage', label: t('usage.title'), icon: <ChartNoAxesCombined size={16} /> },
     { id: 'agent_quality', label: t('settings.tabAgentQuality'), icon: <ClipboardCheck size={16} />, developerOnly: true },
     { id: 'media', label: t('settings.tabMedia'), icon: <Film size={16} /> },
     { id: 'data_privacy', label: t('settings.tabDataPrivacy'), icon: <Database size={16} /> },

@@ -295,7 +295,7 @@ fn event_presentation(
             AgentRunEventImportance::Normal,
         ),
         AgentRunEventKind::PlanUpdated => (
-            AgentRunEventVisibility::User,
+            AgentRunEventVisibility::Developer,
             AgentRunDisplayKind::Plan,
             AgentRunEventImportance::Normal,
         ),
@@ -556,7 +556,17 @@ impl AgentRunEvent {
             ),
             AgentEvent::Status { content, tone } => (
                 AgentRunEventKind::Status,
-                status_phase(content),
+                AgentRunPhase::Responding,
+                content.clone(),
+                tone.clone().or_else(|| Some("running".to_string())),
+            ),
+            AgentEvent::ControllerStatus {
+                code,
+                content,
+                tone,
+            } => (
+                AgentRunEventKind::Status,
+                controller_status_phase(code),
                 content.clone(),
                 tone.clone().or_else(|| Some("running".to_string())),
             ),
@@ -631,7 +641,14 @@ impl AgentRunEvent {
             ),
         };
 
-        let (visibility, mut display_kind, importance) = event_presentation(kind);
+        let (mut visibility, mut display_kind, mut importance) = event_presentation(kind);
+        if matches!(event, AgentEvent::ControllerStatus { .. }) {
+            visibility = AgentRunEventVisibility::Developer;
+            importance = AgentRunEventImportance::Low;
+        }
+        if matches!(event, AgentEvent::PlanUpdated { .. }) {
+            visibility = AgentRunEventVisibility::Developer;
+        }
         if matches!(event, AgentEvent::Steering { .. }) {
             display_kind = AgentRunDisplayKind::Steering;
         }
@@ -1055,11 +1072,11 @@ fn recovery_metadata(reason: &str) -> (AgentRunEventKind, AgentRunPhase, String,
     }
 }
 
-fn status_phase(content: &str) -> AgentRunPhase {
-    if content.starts_with("Route selected: ") {
-        AgentRunPhase::Routing
-    } else {
-        AgentRunPhase::Responding
+fn controller_status_phase(code: &str) -> AgentRunPhase {
+    match code {
+        "route_selected" => AgentRunPhase::Routing,
+        "prefetch_started" | "prefetch_completed" => AgentRunPhase::Planning,
+        _ => AgentRunPhase::Responding,
     }
 }
 
@@ -1086,7 +1103,8 @@ mod tests {
 
     #[test]
     fn projects_agent_event_to_stable_run_event() {
-        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::Status {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ControllerStatus {
+            code: "route_selected".to_string(),
             content: "Route selected: KnowledgeRetrieval".to_string(),
             tone: None,
         })
@@ -1095,10 +1113,10 @@ mod tests {
         assert_eq!(run_event.version, AGENT_RUN_EVENT_VERSION);
         assert_eq!(run_event.kind, AgentRunEventKind::Status);
         assert_eq!(run_event.phase, AgentRunPhase::Routing);
-        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::Developer);
         assert_eq!(run_event.persistence, AgentRunEventPersistence::Durable);
         assert_eq!(run_event.display_kind, AgentRunDisplayKind::Status);
-        assert_eq!(run_event.importance, AgentRunEventImportance::Normal);
+        assert_eq!(run_event.importance, AgentRunEventImportance::Low);
         assert_eq!(run_event.version, 2);
         assert_eq!(run_event.run_id, "run-1");
         assert_eq!(run_event.event_seq, 7);

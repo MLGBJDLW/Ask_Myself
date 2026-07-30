@@ -96,6 +96,7 @@ export interface UsageTotal {
   completionTokens: number;
   totalTokens: number;
   thinkingTokens?: number;
+  toolPromptTokens?: number;
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;

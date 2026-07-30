@@ -6643,8 +6643,8 @@
             "thinkingBudget": {
               "enabled": true,
               "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
+              "minTokens": 0,
+              "maxTokens": 24576,
               "step": 128
             }
           }
@@ -6659,8 +6659,9 @@
             "thinkingBudget": {
               "enabled": true,
               "defaultTokens": 10000,
-              "minTokens": 128,
-              "maxTokens": 32768,
+              "minTokens": 512,
+              "maxTokens": 24576,
+              "allowZero": true,
               "step": 128
             }
           }

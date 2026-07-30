@@ -1821,6 +1821,7 @@ async fn run_subagent_once(
                 | AgentEvent::ToolCallProgress { .. }
                 | AgentEvent::ApprovalRequested { .. }
                 | AgentEvent::ApprovalResolved { .. }
+                | AgentEvent::ControllerStatus { .. }
                 | AgentEvent::PlanUpdated { .. } => {}
             }
         }

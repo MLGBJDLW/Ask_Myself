@@ -20,8 +20,10 @@ import type shortcuts from './locales/en/shortcuts.json';
 import type sidebar from './locales/en/sidebar.json';
 import type sources from './locales/en/sources.json';
 import type taskCenter from './locales/en/taskCenter.json';
+import type themeStudio from './locales/en/themeStudio.json';
 import type time from './locales/en/time.json';
 import type update from './locales/en/update.json';
+import type usage from './locales/en/usage.json';
 import type voice from './locales/en/voice.json';
 import type welcome from './locales/en/welcome.json';
 import type wizard from './locales/en/wizard.json';
@@ -64,8 +66,10 @@ export const translationNamespaces = [
   'sidebar',
   'sources',
   'taskCenter',
+  'themeStudio',
   'time',
   'update',
+  'usage',
   'voice',
   'welcome',
   'wizard',
@@ -96,8 +100,10 @@ type NamespaceKeyMap = {
   sidebar: typeof sidebar;
   sources: typeof sources;
   taskCenter: typeof taskCenter;
+  themeStudio: typeof themeStudio;
   time: typeof time;
   update: typeof update;
+  usage: typeof usage;
   voice: typeof voice;
   welcome: typeof welcome;
   wizard: typeof wizard;
