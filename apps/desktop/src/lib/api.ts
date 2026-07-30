@@ -434,6 +434,7 @@ export interface BrowserElementArtifact {
 
 export interface BrowserRegionArtifact {
   kind: 'region';
+  capture: 'coordinatesOnly';
   url: string;
   title: string;
   bounds: BrowserBounds;
@@ -453,6 +454,18 @@ export const activeBrowserSession = (conversationId: string) =>
 
 export const openBrowserTab = (sessionId: string, url: string, bounds?: BrowserBounds | null) =>
   invoke<BrowserTabInfo>('browser_open_tab_cmd', { sessionId, url, bounds: bounds ?? null });
+
+export const openBrowserPopup = (
+  sessionId: string,
+  sourceTabId: string,
+  url: string,
+  bounds?: BrowserBounds | null,
+) => invoke<BrowserTabInfo>('browser_open_popup_cmd', {
+  sessionId,
+  sourceTabId,
+  url,
+  bounds: bounds ?? null,
+});
 
 export const navigateBrowserTab = (sessionId: string, tabId: string, url: string) =>
   invoke<BrowserTabInfo>('browser_navigate_cmd', { sessionId, tabId, url });

@@ -238,8 +238,9 @@ export function BrowserDock({
       if (event.payload.kind === 'newWindowRequested') {
         const url = String(event.payload.payload.url ?? '');
         const sessionId = String(event.payload.payload.sessionId ?? '');
-        if (url && sessionId && session?.id === sessionId) {
-          void api.openBrowserTab(sessionId, url, open ? bounds() : null)
+        const sourceTabId = String(event.payload.payload.tabId ?? '');
+        if (url && sessionId && sourceTabId && session?.id === sessionId) {
+          void api.openBrowserPopup(sessionId, sourceTabId, url, open ? bounds() : null)
             .then(() => refresh())
             .catch((error) => reportError(t('browser.popupBlocked'), error));
           return;

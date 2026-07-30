@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use super::policy::{
-    classify_agent_action, normalize_browser_url, BrowserActionRisk, NavigationActor,
+    classify_agent_action, navigation_preapproved, normalize_browser_url, BrowserActionRisk,
+    NavigationActor,
 };
 use super::state::{BrowserControlOwner, ControlLease};
 
@@ -38,6 +41,17 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
             "{url}"
         );
     }
+}
+
+#[test]
+fn agent_navigation_fails_closed_for_unvalidated_redirect_targets() {
+    let initial = url::Url::parse("https://public.example/start").unwrap();
+    let redirect = url::Url::parse("https://redirect.example/next").unwrap();
+    let mut approved = HashSet::from([initial.to_string()]);
+    assert!(navigation_preapproved(&initial, true, &mut approved));
+    assert!(!navigation_preapproved(&initial, true, &mut approved));
+    assert!(!navigation_preapproved(&redirect, true, &mut approved));
+    assert!(navigation_preapproved(&redirect, false, &mut approved));
 }
 
 #[test]

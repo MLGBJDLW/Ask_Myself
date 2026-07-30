@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 pub use nexa_core::browser_runtime::{
@@ -110,4 +111,13 @@ pub fn navigation_allowed(url: &Url, agent_restricted: bool) -> bool {
         return false;
     }
     !agent_restricted || agent_host_allowed(url)
+}
+
+pub fn navigation_preapproved(
+    url: &Url,
+    agent_restricted: bool,
+    approved_agent_urls: &mut HashSet<String>,
+) -> bool {
+    navigation_allowed(url, agent_restricted)
+        && (!agent_restricted || approved_agent_urls.remove(url.as_str()))
 }

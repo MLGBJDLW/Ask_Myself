@@ -445,6 +445,7 @@ fn main() {
             browser::browser_list_sessions_cmd,
             browser::browser_active_session_cmd,
             browser::browser_open_tab_cmd,
+            browser::browser_open_popup_cmd,
             browser::browser_navigate_cmd,
             browser::browser_activate_tab_cmd,
             browser::browser_set_bounds_cmd,

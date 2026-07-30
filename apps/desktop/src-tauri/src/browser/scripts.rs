@@ -10,6 +10,18 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     pendingArtifact: null,
     overlay: null,
     regionStart: null,
+    takeoverSignalPending: false,
+  };
+
+  const signalDirectUserInput = () => {
+    if (runtime.takeoverSignalPending) return;
+    runtime.takeoverSignalPending = true;
+    const previousTitle = document.title;
+    document.title = '__NEXA_USER_TAKEOVER__';
+    setTimeout(() => {
+      if (document.title === '__NEXA_USER_TAKEOVER__') document.title = previousTitle;
+      runtime.takeoverSignalPending = false;
+    }, 50);
   };
 
   const textOf = (el) => String(
@@ -170,7 +182,10 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     if (target) showOverlay(target.getBoundingClientRect(), `${roleOf(target)} ${textOf(target)}`);
   }, true);
   addEventListener('pointerdown', (event) => {
-    if (!runtime.synthetic) runtime.userEpoch += 1;
+    if (!runtime.synthetic && event.isTrusted) {
+      runtime.userEpoch += 1;
+      signalDirectUserInput();
+    }
     if (runtime.pickMode === 'region') {
       runtime.regionStart = { x: event.clientX, y: event.clientY };
       event.preventDefault(); event.stopImmediatePropagation();
@@ -186,7 +201,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   addEventListener('pointerup', (event) => {
     if (runtime.pickMode !== 'region' || !runtime.regionStart) return;
     const bounds = { x: Math.min(runtime.regionStart.x, event.clientX), y: Math.min(runtime.regionStart.y, event.clientY), width: Math.abs(event.clientX - runtime.regionStart.x), height: Math.abs(event.clientY - runtime.regionStart.y) };
-    runtime.pendingArtifact = { kind: 'region', url: location.href, title: document.title, bounds, userEpoch: runtime.userEpoch };
+    runtime.pendingArtifact = { kind: 'region', capture: 'coordinatesOnly', url: location.href, title: document.title, bounds, userEpoch: runtime.userEpoch };
     runtime.cancelPick();
     event.preventDefault(); event.stopImmediatePropagation();
   }, true);
@@ -202,10 +217,18 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     event.preventDefault(); event.stopImmediatePropagation();
   }, true);
   addEventListener('keydown', (event) => {
-    if (!runtime.synthetic) runtime.userEpoch += 1;
+    if (!runtime.synthetic && event.isTrusted) {
+      runtime.userEpoch += 1;
+      signalDirectUserInput();
+    }
     if (event.key === 'Escape' && runtime.pickMode) { runtime.cancelPick(); event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
-  addEventListener('input', () => { if (!runtime.synthetic) runtime.userEpoch += 1; }, true);
+  addEventListener('input', (event) => {
+    if (!runtime.synthetic && event.isTrusted) {
+      runtime.userEpoch += 1;
+      signalDirectUserInput();
+    }
+  }, true);
   const bridge = Object.freeze({
     observe: () => runtime.observe(),
     act: (input) => runtime.act(input),

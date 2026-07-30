@@ -34,6 +34,7 @@ test('Browser Workspace uses a native top-level child webview instead of an ifra
   assert(host.includes('WebviewBuilder::new'), 'desktop host must create a native child WebView');
   assert(host.includes('WebviewUrl::External'), 'remote pages must load as top-level WebView documents');
   assert(host.includes('.data_directory('), 'browser profiles need an isolated data directory');
+  assert(!host.includes('.enable_clipboard_access()'), 'remote pages must not receive unconditional JavaScript clipboard access');
   assert(!dock.includes('<iframe'), 'BrowserDock must not regress to iframe embedding');
 });
 
@@ -47,6 +48,10 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('observations'), 'runtime must retain observation identity for stale checks');
   assert(agentTool.includes('observe'), 'Agent adapter must observe the same native runtime');
   assert(agentTool.includes('requires_confirmation'), 'Agent adapter must implement risk-tiered approval');
+  assert(browser.includes('open_popup'), 'popup tabs must preserve the initiating native tab policy');
+  assert(dock.includes('openBrowserPopup'), 'popup events must use the policy-preserving host command');
+  assert(browser.includes('record_user_takeover'), 'trusted direct page input must revoke the Agent control lease');
+  assert(browser.includes('approved_agent_urls'), 'Agent redirects must fail closed unless their resolved URL was preapproved');
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');

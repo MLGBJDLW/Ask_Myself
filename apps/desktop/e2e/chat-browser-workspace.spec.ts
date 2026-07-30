@@ -65,11 +65,23 @@ test.beforeEach(async ({ page }) => {
       navigations: [] as Array<Record<string, unknown>>,
       bounds: [] as Array<Record<string, unknown>>,
       picks: [] as string[],
+      popups: [] as Array<Record<string, unknown>>,
     };
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
     let callbackSeq = 1;
     let listenerSeq = 1;
+
+    const emitBrowserEvent = (payload: Record<string, unknown>) => {
+      for (const [listenerId, listener] of listeners.entries()) {
+        if (listener.event !== 'browser:event') continue;
+        callbackMap.get(listener.handlerId)?.({
+          event: 'browser:event',
+          id: listenerId,
+          payload,
+        });
+      }
+    };
 
     const normalizeTabs = () => {
       if (!session) return;
@@ -161,6 +173,15 @@ test.beforeEach(async ({ page }) => {
           normalizeTabs();
           return clone(tab);
         }
+        case 'browser_open_popup_cmd': {
+          if (!session) return null;
+          browserDiagnostics.popups.push(clone(args));
+          const tab = newTab(String(args.url ?? 'https://www.google.com'));
+          session.activeTabId = tab.id;
+          session.tabs.push(tab);
+          normalizeTabs();
+          return clone(tab);
+        }
         case 'browser_activate_tab_cmd':
           if (!session) return null;
           session.activeTabId = String(args.tabId ?? '');
@@ -206,6 +227,7 @@ test.beforeEach(async ({ page }) => {
     };
 
     (window as unknown as { __browserDiagnostics__: unknown }).__browserDiagnostics__ = browserDiagnostics;
+    (window as unknown as { __emitBrowserEvent__: unknown }).__emitBrowserEvent__ = emitBrowserEvent;
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
       invoke,
       transformCallback: (callback: (event: unknown) => void) => {
@@ -236,6 +258,20 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
   await address.press('Enter');
   await expect(address).toHaveValue('https://example.com');
 
+  await page.evaluate(() => {
+    (window as unknown as {
+      __emitBrowserEvent__: (payload: Record<string, unknown>) => void;
+    }).__emitBrowserEvent__({
+      kind: 'newWindowRequested',
+      payload: {
+        sessionId: 'browser-session-1',
+        tabId: 'tab-1',
+        url: 'https://example.com/popup',
+      },
+    });
+  });
+  await expect(page.getByText('Example Domain', { exact: true })).toHaveCount(2);
+
   await page.getByRole('button', { name: 'Point out' }).click();
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue(/<browser_artifact>/);
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue(/More information/);
@@ -251,6 +287,7 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
       navigations: Array<Record<string, unknown>>;
       bounds: Array<Record<string, unknown>>;
       picks: string[];
+      popups: Array<Record<string, unknown>>;
     };
   }).__browserDiagnostics__);
   expect(diagnostics.creates).toHaveLength(1);
@@ -261,4 +298,10 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
   });
   expect(diagnostics.bounds.some((entry) => entry.visible === true)).toBe(true);
   expect(diagnostics.picks).toEqual(['element']);
+  expect(diagnostics.popups).toContainEqual({
+    sessionId: 'browser-session-1',
+    sourceTabId: 'tab-1',
+    url: 'https://example.com/popup',
+    bounds: expect.any(Object),
+  });
 });

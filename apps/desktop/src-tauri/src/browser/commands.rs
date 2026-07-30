@@ -59,6 +59,19 @@ pub async fn browser_open_tab_cmd(
 }
 
 #[tauri::command]
+pub async fn browser_open_popup_cmd(
+    state: State<'_, BrowserState>,
+    session_id: String,
+    source_tab_id: String,
+    url: String,
+    bounds: Option<BrowserBounds>,
+) -> Result<BrowserTabInfo, String> {
+    state
+        .open_popup(&session_id, &source_tab_id, &url, bounds)
+        .await
+}
+
+#[tauri::command]
 pub async fn browser_navigate_cmd(
     state: State<'_, BrowserState>,
     session_id: String,

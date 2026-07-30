@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -8,7 +9,7 @@ use tauri::{Manager, Webview, WebviewUrl};
 use tokio::sync::oneshot;
 use url::Url;
 
-use super::policy::navigation_allowed;
+use super::policy::navigation_preapproved;
 use super::scripts::BROWSER_INIT_SCRIPT;
 use super::state::{BrowserBounds, BrowserState};
 
@@ -20,15 +21,17 @@ pub fn create_child_webview(
     profile_dir: PathBuf,
     agent_restricted_initially: bool,
     bounds: Option<BrowserBounds>,
-) -> Result<(Webview, Arc<AtomicBool>), String> {
+) -> Result<(Webview, Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>), String> {
     let window = state
         .app()
         .get_window("main")
         .ok_or_else(|| "Main application window is unavailable".to_string())?;
     let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
     let agent_restricted = Arc::new(AtomicBool::new(agent_restricted_initially));
+    let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
 
     let navigation_restriction = Arc::clone(&agent_restricted);
+    let approved_for_navigation = Arc::clone(&approved_agent_urls);
     let state_for_load = state.clone();
     let session_for_load = session_id.to_string();
     let tab_for_load = tab_id.to_string();
@@ -44,14 +47,14 @@ pub fn create_child_webview(
 
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .data_directory(profile_dir)
-        .enable_clipboard_access()
         .disable_drag_drop_handler()
         .initialization_script(BROWSER_INIT_SCRIPT)
         .on_navigation(move |target| {
-            navigation_allowed(
-                target,
-                navigation_restriction.load(std::sync::atomic::Ordering::Relaxed),
-            )
+            let agent_restricted =
+                navigation_restriction.load(std::sync::atomic::Ordering::Relaxed);
+            approved_for_navigation.lock().is_ok_and(|mut approved| {
+                navigation_preapproved(target, agent_restricted, &mut approved)
+            })
         })
         .on_page_load(move |_webview, payload| {
             state_for_load.update_page_load(
@@ -62,7 +65,7 @@ pub fn create_child_webview(
             );
         })
         .on_document_title_changed(move |_webview, title| {
-            state_for_title.update_title(&session_for_title, &tab_for_title, title);
+            state_for_title.handle_document_title(&session_for_title, &tab_for_title, title);
         })
         .on_new_window(move |url, _features| {
             state_for_popup.emit(
@@ -106,7 +109,7 @@ pub fn create_child_webview(
     if !visible {
         let _ = webview.hide();
     }
-    Ok((webview, agent_restricted))
+    Ok((webview, agent_restricted, approved_agent_urls))
 }
 
 #[derive(Deserialize)]

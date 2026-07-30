@@ -24,10 +24,10 @@
   "closeTab": "关闭标签页",
   "newTab": "新建标签页",
   "pointOut": "指出元素",
-  "selectRegion": "选择区域",
+  "selectRegion": "坐标区域",
   "sendText": "发送文字",
   "sharedSession": "实时共享会话",
   "empty": "打开网页，开始与 Agent 共享浏览。",
   "pickElementHint": "移动到网页元素并点击以指出它，按 Escape 取消。",
-  "pickRegionHint": "在网页上拖动以选择视觉区域，按 Escape 取消。"
+  "pickRegionHint": "拖动以附加页面坐标（当前不捕获像素），按 Escape 取消。"
 }

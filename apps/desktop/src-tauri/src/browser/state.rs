@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,7 @@ use super::scripts::OBSERVE_EXPRESSION;
 use super::webview_host::{create_child_webview, eval_json};
 
 pub const BROWSER_EVENT: &str = "browser:event";
+pub const USER_TAKEOVER_TITLE_SIGNAL: &str = "__NEXA_USER_TAKEOVER__";
 const MAX_OBSERVATIONS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,6 +63,7 @@ struct BrowserTab {
     loading: bool,
     status: String,
     agent_restricted: Arc<AtomicBool>,
+    approved_agent_urls: Arc<Mutex<HashSet<String>>>,
 }
 
 struct BrowserSession {
@@ -126,7 +128,11 @@ impl BrowserState {
         );
     }
 
-    pub fn update_title(&self, session_id: &str, tab_id: &str, title: String) {
+    pub fn handle_document_title(&self, session_id: &str, tab_id: &str, title: String) {
+        if title == USER_TAKEOVER_TITLE_SIGNAL {
+            self.record_user_takeover(session_id, tab_id);
+            return;
+        }
         if let Ok(mut runtime) = self.inner.lock() {
             if let Some(tab) = runtime
                 .sessions
@@ -139,6 +145,32 @@ impl BrowserState {
         self.emit(
             "titleChanged",
             serde_json::json!({ "sessionId": session_id, "tabId": tab_id, "title": title }),
+        );
+    }
+
+    fn record_user_takeover(&self, session_id: &str, tab_id: &str) {
+        let owner = if let Ok(mut runtime) = self.inner.lock() {
+            let Some(session) = runtime.sessions.get_mut(session_id) else {
+                return;
+            };
+            if !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { .. }
+            ) {
+                return;
+            }
+            session.control_lease.acquire(BrowserControlOwner::User);
+            session.observations.clear();
+            for tab in session.tabs.values() {
+                tab.agent_restricted.store(false, Ordering::Relaxed);
+            }
+            session.control_lease.owner().clone()
+        } else {
+            return;
+        };
+        self.emit(
+            "controlChanged",
+            serde_json::json!({ "sessionId": session_id, "tabId": tab_id, "owner": owner, "reason": "directUserInput" }),
         );
     }
 
@@ -257,7 +289,7 @@ impl BrowserState {
         let profile_dir = self.profile_root.join(profile_id);
         std::fs::create_dir_all(&profile_dir)
             .map_err(|error| format!("Could not create browser profile: {error}"))?;
-        let (webview, agent_restricted) = create_child_webview(
+        let (webview, agent_restricted, approved_agent_urls) = create_child_webview(
             self,
             session_id,
             &tab_id,
@@ -295,6 +327,7 @@ impl BrowserState {
                     loading: true,
                     status: "loading".to_string(),
                     agent_restricted,
+                    approved_agent_urls,
                 },
             );
             session_info(session)
@@ -343,6 +376,12 @@ impl BrowserState {
                 .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
             tab.agent_restricted
                 .store(actor == NavigationActor::Agent, Ordering::Relaxed);
+            if actor == NavigationActor::Agent {
+                tab.approved_agent_urls
+                    .lock()
+                    .map_err(|_| "Browser navigation policy is unavailable".to_string())?
+                    .insert(url.to_string());
+            }
             tab.url = url.to_string();
             tab.loading = true;
             tab.status = "loading".to_string();
@@ -352,6 +391,40 @@ impl BrowserState {
             .navigate(url)
             .map_err(|error| format!("Browser navigation failed: {error}"))?;
         self.tab_info(session_id, tab_id)
+    }
+
+    pub async fn open_popup(
+        &self,
+        session_id: &str,
+        source_tab_id: &str,
+        input: &str,
+        bounds: Option<BrowserBounds>,
+    ) -> Result<BrowserTabInfo, String> {
+        let (actor, owner) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            let source_tab = session
+                .tabs
+                .get(source_tab_id)
+                .ok_or_else(|| format!("Unknown browser tab '{source_tab_id}'"))?;
+            let actor = if source_tab.agent_restricted.load(Ordering::Relaxed) {
+                NavigationActor::Agent
+            } else {
+                NavigationActor::User
+            };
+            (actor, session.control_lease.owner().clone())
+        };
+        let tab = self.open_tab(session_id, input, actor, bounds).await?;
+        if actor == NavigationActor::Agent {
+            self.acquire_control(session_id, owner)?;
+        }
+        Ok(tab)
     }
 
     pub fn tab_info(&self, session_id: &str, tab_id: &str) -> Result<BrowserTabInfo, String> {
@@ -656,6 +729,17 @@ impl BrowserState {
             }
             (observation, expected)
         };
+        if request.action == "click" {
+            if let Some(href) = expected
+                .as_ref()
+                .and_then(|element| element.href.as_deref())
+            {
+                let target =
+                    Url::parse(href).map_err(|_| "Browser link target is invalid".to_string())?;
+                validate_agent_network_url(&target).await?;
+                self.approve_agent_url(request.session_id, request.tab_id, &target)?;
+            }
+        }
         let expression = format!(
             "window.__NEXA_BROWSER_RUNTIME__?.act({})",
             serde_json::to_string(&serde_json::json!({
@@ -717,6 +801,15 @@ impl BrowserState {
                 .as_ref()
                 .and_then(|element| element.input_type.as_deref()),
         )
+    }
+
+    pub async fn prepare_agent_reload(&self, session_id: &str, tab_id: &str) -> Result<(), String> {
+        let current_url = self
+            .webview(session_id, tab_id)?
+            .url()
+            .map_err(|error| format!("Could not read browser address: {error}"))?;
+        validate_agent_network_url(&current_url).await?;
+        self.approve_agent_url(session_id, tab_id, &current_url)
     }
 
     pub fn close_tab(&self, session_id: &str, tab_id: &str) -> Result<BrowserSessionInfo, String> {
@@ -788,6 +881,23 @@ impl BrowserState {
         for session_id in session_ids {
             let _ = self.close_session(&session_id);
         }
+    }
+
+    fn approve_agent_url(&self, session_id: &str, tab_id: &str, url: &Url) -> Result<(), String> {
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let tab = runtime
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.tabs.get(tab_id))
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        tab.approved_agent_urls
+            .lock()
+            .map_err(|_| "Browser navigation policy is unavailable".to_string())?
+            .insert(url.to_string());
+        Ok(())
     }
 
     fn webview(&self, session_id: &str, tab_id: &str) -> Result<Webview, String> {

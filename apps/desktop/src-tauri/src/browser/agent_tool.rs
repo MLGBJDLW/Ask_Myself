@@ -304,6 +304,12 @@ impl Tool for NativeBrowserSessionTool {
                         },
                     )
                     .map_err(Self::invalid)?;
+                if action == "reload" {
+                    self.state
+                        .prepare_agent_reload(session_id, tab_id)
+                        .await
+                        .map_err(Self::invalid)?;
+                }
                 match action.as_str() {
                     "go_back" => self.state.go_back(session_id, tab_id),
                     "go_forward" => self.state.go_forward(session_id, tab_id),

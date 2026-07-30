@@ -156,7 +156,7 @@ function buildBrowserArtifactPrompt(artifact: BrowserAgentArtifact): string {
   const summary = artifact.kind === 'element'
     ? `${artifact.role || artifact.tag} “${artifact.name || artifact.ref}”`
     : artifact.kind === 'region'
-      ? `visual region ${Math.round(artifact.bounds.width)}×${Math.round(artifact.bounds.height)}`
+      ? `coordinate region ${Math.round(artifact.bounds.width)}×${Math.round(artifact.bounds.height)} (no pixel capture)`
       : `selected text (${artifact.text.length} characters)`;
   return [
     'Please use the Browser Workspace linked to this chat to work with the page context I selected.',
