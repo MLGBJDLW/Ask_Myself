@@ -1071,7 +1071,12 @@ export function AgentConfigForm({
                   value={thinkingBudget ?? ""}
                   onChange={(e) => {
                     const val = e.target.value.trim();
-                    setThinkingBudget(val ? parseInt(val) || null : null);
+                    if (!val) {
+                      setThinkingBudget(null);
+                      return;
+                    }
+                    const parsed = Number.parseInt(val, 10);
+                    setThinkingBudget(Number.isNaN(parsed) ? null : parsed);
                   }}
                   placeholder={String(
                     defaultThinkingBudget(reasoningCapability) ?? 10000,
