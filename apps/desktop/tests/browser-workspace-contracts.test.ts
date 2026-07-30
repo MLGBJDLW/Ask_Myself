@@ -85,6 +85,7 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');
   assert(dock.includes('openInitialUrlOnReuse: Boolean(url)'), 'only explicit Open in Browser URLs may open a tab when creation reuses a session');
+  assert(dock.includes('event.preventDefault()'), 'the mounted dock must acknowledge Open in Browser delivery');
   assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
 });
 
@@ -92,6 +93,8 @@ test('Reader Preview remains a distinct safe reading mode with Browser as the pr
   const preview = source('src/features/preview/FilePreviewProvider.tsx');
   assert(preview.includes('OPEN_BROWSER_WORKSPACE_EVENT'), 'remote previews must offer the first-class Browser Workspace');
   assert(preview.includes("t('preview.safeReadingMode')"), 'the sanitized srcDoc surface must be named Safe Reading Mode');
+  assert(preview.includes('cancelable: true'), 'Open in Browser delivery must be observable by the preview');
+  assert(preview.includes('if (handled) setWebPreview(null)'), 'the safe preview must remain open when no BrowserDock handles the URL');
 });
 
 for (const { name, fn } of tests) {

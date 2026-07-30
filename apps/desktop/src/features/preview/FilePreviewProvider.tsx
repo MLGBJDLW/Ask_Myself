@@ -1033,10 +1033,11 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
 
   const openWebPreviewInBrowser = useCallback(() => {
     if (!webPreview) return;
-    window.dispatchEvent(new CustomEvent(OPEN_BROWSER_WORKSPACE_EVENT, {
+    const handled = !window.dispatchEvent(new CustomEvent(OPEN_BROWSER_WORKSPACE_EVENT, {
       detail: { url: webPreview.url },
+      cancelable: true,
     }));
-    setWebPreview(null);
+    if (handled) setWebPreview(null);
   }, [webPreview]);
 
   const close = useCallback(() => {

@@ -73,14 +73,15 @@ pub fn normalize_browser_url(input: &str, actor: NavigationActor) -> Result<Url,
         return Err("Enter a URL or search query".to_string());
     }
 
-    let candidate = if input.split_whitespace().count() > 1 {
+    let lowercase_input = input.to_ascii_lowercase();
+    let explicit_scheme = input.contains("://")
+        || lowercase_input.starts_with("javascript:")
+        || lowercase_input.starts_with("data:")
+        || lowercase_input.starts_with("file:");
+    let candidate = if !explicit_scheme && !looks_like_browser_host(input) {
         let encoded: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
         format!("https://www.google.com/search?q={encoded}")
-    } else if input.contains("://")
-        || input.starts_with("javascript:")
-        || input.starts_with("data:")
-        || input.starts_with("file:")
-    {
+    } else if explicit_scheme {
         input.to_string()
     } else {
         format!("https://{input}")
@@ -97,6 +98,25 @@ pub fn normalize_browser_url(input: &str, actor: NavigationActor) -> Result<Url,
         );
     }
     Ok(url)
+}
+
+fn looks_like_browser_host(input: &str) -> bool {
+    if input.chars().any(char::is_whitespace) || input.contains('@') {
+        return false;
+    }
+    let authority = input
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.');
+    authority.eq_ignore_ascii_case("localhost")
+        || authority.to_ascii_lowercase().ends_with(".localhost")
+        || authority.contains('.')
+        || (authority.starts_with('[') && authority.contains(']'))
+        || authority.parse::<IpAddr>().is_ok()
+        || authority
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
 }
 
 pub async fn validate_agent_network_url(url: &Url) -> Result<(), String> {

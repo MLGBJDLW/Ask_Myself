@@ -225,7 +225,9 @@ export function BrowserDock({
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (!conversationId) return;
       const detail = (event as CustomEvent<{ url?: string }>).detail;
+      event.preventDefault();
       onOpenChange(true);
       if (detail?.url) {
         void ensureSession(detail.url).catch((error) => reportError(t('browser.openFailed'), error));
@@ -233,7 +235,7 @@ export function BrowserDock({
     };
     window.addEventListener(OPEN_BROWSER_WORKSPACE_EVENT, handler);
     return () => window.removeEventListener(OPEN_BROWSER_WORKSPACE_EVENT, handler);
-  }, [ensureSession, onOpenChange, reportError, t]);
+  }, [conversationId, ensureSession, onOpenChange, reportError, t]);
 
   useEffect(() => {
     let disposed = false;

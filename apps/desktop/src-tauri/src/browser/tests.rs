@@ -14,9 +14,36 @@ fn browser_url_policy_accepts_top_level_http_navigation() {
 }
 
 #[test]
+fn browser_url_policy_searches_words_and_preserves_plausible_hosts() {
+    let search = normalize_browser_url("weather", NavigationActor::User).unwrap();
+    assert_eq!(search.as_str(), "https://www.google.com/search?q=weather");
+
+    let phrase = normalize_browser_url("weather tomorrow", NavigationActor::User).unwrap();
+    assert_eq!(
+        phrase.as_str(),
+        "https://www.google.com/search?q=weather+tomorrow"
+    );
+
+    for (input, expected) in [
+        ("example.com/docs", "https://example.com/docs"),
+        ("localhost:3000", "https://localhost:3000/"),
+        ("127.0.0.1:8080", "https://127.0.0.1:8080/"),
+        ("[::1]:8443", "https://[::1]:8443/"),
+    ] {
+        assert_eq!(
+            normalize_browser_url(input, NavigationActor::User)
+                .unwrap()
+                .as_str(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn browser_url_policy_rejects_script_and_file_schemes() {
     for url in [
         "javascript:alert(1)",
+        "JAVASCRIPT:alert(1)",
         "data:text/html,pwned",
         "file:///etc/passwd",
     ] {
