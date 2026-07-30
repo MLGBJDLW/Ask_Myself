@@ -1,6 +1,7 @@
 {
   "commandPalette": "Abrir paleta de comandos",
   "toggleSidebar": "Alternar barra lateral",
+  "toggleBrowser": "Alternar Browser Workspace",
   "toggleTerminal": "Alternar terminal",
   "askAi": "Perguntar à IA"
 }

@@ -1,6 +1,7 @@
 {
   "commandPalette": "Открыть палитру команд",
   "toggleSidebar": "Переключить боковую панель",
+  "toggleBrowser": "Переключить Browser Workspace",
   "toggleTerminal": "Переключить терминал",
   "askAi": "Спросить ИИ"
 }

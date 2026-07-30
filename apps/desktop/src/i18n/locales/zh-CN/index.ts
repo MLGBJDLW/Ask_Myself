@@ -3,6 +3,7 @@ import { flattenTranslationNamespaces } from '../../namespace';
 import type { TranslationKeys } from '../../types';
 import analytics from './analytics.json';
 import app from './app.json';
+import browser from './browser.json';
 import card from './card.json';
 import chat from './chat.json';
 import citation from './citation.json';
@@ -34,6 +35,7 @@ import workflows from './workflows.json';
 export const zhCN: TranslationKeys = flattenTranslationNamespaces({
   analytics,
   app,
+  browser,
   card,
   chat,
   citation,

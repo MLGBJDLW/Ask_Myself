@@ -1,6 +1,7 @@
 {
   "commandPalette": "Befehlspalette öffnen",
   "toggleSidebar": "Seitenleiste umschalten",
+  "toggleBrowser": "Browser Workspace umschalten",
   "toggleTerminal": "Terminal umschalten",
   "askAi": "KI fragen"
 }

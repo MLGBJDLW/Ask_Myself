@@ -20,6 +20,8 @@
   "close": "關閉",
   "resizePanel": "调整预览面板宽度",
   "loading": "正在讀取檔案...",
+  "safeReadingMode": "安全閱讀模式",
+  "openInBrowser": "在 Nexa 瀏覽器中開啟",
   "webPreviewNotice": "如果网站禁止嵌入，请使用外部打开。",
   "webLoading": "正在載入網頁預覽…",
   "webTimedOut": "此網站可能不允許嵌入式預覽",

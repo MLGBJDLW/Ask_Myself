@@ -1,7 +1,7 @@
 import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
-import { Archive, ArchiveRestore, Check, ChevronDown, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Check, ChevronDown, Globe2, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
@@ -13,6 +13,7 @@ import {
   type TerminalAgentSelection,
 } from '../components/chat/TerminalDock';
 import { ChatMessages } from '../features/chat';
+import { BrowserDock, type BrowserAgentArtifact, type BrowserDockStatus } from '../features/browser';
 import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -148,6 +149,25 @@ function buildTerminalSelectionPrompt(selection: TerminalAgentSelection): string
     '<terminal_selection>',
     selection.text.trim(),
     '</terminal_selection>',
+  ].join('\n');
+}
+
+function buildBrowserArtifactPrompt(artifact: BrowserAgentArtifact): string {
+  const summary = artifact.kind === 'element'
+    ? `${artifact.role || artifact.tag} “${artifact.name || artifact.ref}”`
+    : artifact.kind === 'region'
+      ? `visual region ${Math.round(artifact.bounds.width)}×${Math.round(artifact.bounds.height)}`
+      : `selected text (${artifact.text.length} characters)`;
+  return [
+    'Please use the Browser Workspace linked to this chat to work with the page context I selected.',
+    `Page: ${artifact.title || artifact.url}`,
+    `URL: ${artifact.url}`,
+    `Selection: ${summary}`,
+    'The artifact is observation-scoped. Re-observe the shared browser tab before acting if the page or control owner changed.',
+    '',
+    '<browser_artifact>',
+    JSON.stringify(artifact, null, 2),
+    '</browser_artifact>',
   ].join('\n');
 }
 
@@ -658,6 +678,19 @@ export function ChatPage() {
   const handleToggleTerminal = useCallback(() => {
     window.dispatchEvent(new Event(TERMINAL_TOGGLE_EVENT));
   }, []);
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserStatus, setBrowserStatus] = useState<BrowserDockStatus>({ tabCount: 0, state: 'empty' });
+  const handleToggleBrowser = useCallback(() => setBrowserOpen((value) => !value), []);
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        handleToggleBrowser();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handleToggleBrowser]);
 
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
   useEffect(() => {
@@ -844,7 +877,7 @@ export function ChatPage() {
   // Ctrl+B to toggle sidebar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         toggleSidebar();
       }
@@ -1106,6 +1139,9 @@ export function ChatPage() {
   const handleTerminalSelection = useCallback((selection: TerminalAgentSelection) => {
     handleSuggestionClick(buildTerminalSelectionPrompt(selection));
   }, [handleSuggestionClick]);
+  const handleBrowserArtifact = useCallback((artifact: BrowserAgentArtifact) => {
+    handleSuggestionClick(buildBrowserArtifactPrompt(artifact));
+  }, [handleSuggestionClick]);
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactCompleteVisible, setCompactCompleteVisible] = useState(false);
@@ -1328,6 +1364,38 @@ export function ChatPage() {
                       </button>
                       <button
                         type="button"
+                        data-testid="browser-workspace-toggle"
+                        onClick={handleToggleBrowser}
+                        className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors cursor-pointer ${
+                          browserOpen
+                            ? 'border-cyan-400/35 bg-cyan-400/10 text-cyan-300'
+                            : 'border-border/50 bg-surface-2/70 text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
+                        }`}
+                        title={`${t('browser.title')} (Ctrl+Shift+B / Cmd+Shift+B)`}
+                        aria-label={t('browser.title')}
+                        aria-keyshortcuts="Control+Shift+B Meta+Shift+B"
+                        aria-pressed={browserOpen}
+                      >
+                        <Globe2 size={16} />
+                        {browserStatus.state !== 'empty' && (
+                          <span className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${
+                            browserStatus.state === 'agent' || browserStatus.state === 'loading'
+                              ? 'animate-pulse bg-cyan-300'
+                              : browserStatus.state === 'error'
+                                ? 'bg-danger'
+                                : browserStatus.state === 'user'
+                                  ? 'bg-emerald-400'
+                                  : 'bg-blue-400'
+                          }`} />
+                        )}
+                        {browserStatus.tabCount > 1 && (
+                          <span className="absolute -right-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full border border-surface-1 bg-cyan-500 px-1 text-[8px] font-semibold text-slate-950">
+                            {browserStatus.tabCount}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        type="button"
                         onClick={handleToggleTerminal}
                         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-surface-2/70
                           text-text-tertiary hover:text-text-primary hover:bg-surface-3
@@ -1475,6 +1543,16 @@ export function ChatPage() {
           </>
         )}
       </div>
+      {!isArchivedConversation && (
+        <BrowserDock
+          open={browserOpen}
+          conversationId={chat.activeId ?? undefined}
+          agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
+          onOpenChange={setBrowserOpen}
+          onStatusChange={setBrowserStatus}
+          onSendArtifactToAgent={handleBrowserArtifact}
+        />
+      )}
     </div>
   );
 }
