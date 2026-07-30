@@ -19,6 +19,7 @@ pub mod agent_session;
 pub mod app_settings;
 pub mod approval;
 pub mod behavioral_eval;
+pub mod browser_runtime;
 pub mod cache;
 pub mod capability_package;
 pub mod compile;

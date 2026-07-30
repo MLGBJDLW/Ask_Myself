@@ -282,6 +282,10 @@ async fn launch_task_orchestrator_execution_ticket(
         mcp_state,
         approval_state,
         terminal_state: None,
+        browser_state: app_handle
+            .state::<crate::browser::BrowserState>()
+            .inner()
+            .clone(),
         app_handle,
         conversation_id,
         message: ticket.delivery.prompt.clone(),

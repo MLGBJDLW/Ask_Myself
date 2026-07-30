@@ -1,6 +1,7 @@
 {
   "commandPalette": "開啟命令面板",
   "toggleSidebar": "切換側邊欄",
+  "toggleBrowser": "切換瀏覽器工作區",
   "toggleTerminal": "切換終端",
   "askAi": "詢問 AI"
 }

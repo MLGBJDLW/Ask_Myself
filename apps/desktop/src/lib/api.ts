@@ -372,6 +372,144 @@ export const listTerminalSessions = () =>
 export const activeTerminalSession = (conversationId: string) =>
   invoke<TerminalSessionInfo | null>('terminal_active_session_cmd', { conversationId });
 
+// ── Browser Workspace ─────────────────────────────────────────────────
+
+export type BrowserControlOwner =
+  | { type: 'none' }
+  | { type: 'user' }
+  | { type: 'agent'; callId: string };
+
+export interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserTabInfo {
+  id: string;
+  sessionId: string;
+  url: string;
+  title: string;
+  active: boolean;
+  loading: boolean;
+  status: string;
+}
+
+export interface BrowserSessionInfo {
+  id: string;
+  conversationId?: string | null;
+  profileId: string;
+  activeTabId?: string | null;
+  tabs: BrowserTabInfo[];
+  controlOwner: BrowserControlOwner;
+}
+
+export interface BrowserCreateInput {
+  conversationId?: string | null;
+  profileId?: string | null;
+  url?: string | null;
+  openInitialUrlOnReuse?: boolean;
+  bounds?: BrowserBounds | null;
+}
+
+export interface BrowserEvent {
+  kind: string;
+  payload: Record<string, unknown>;
+}
+
+export interface BrowserElementArtifact {
+  kind: 'element';
+  url: string;
+  title: string;
+  ref: string;
+  tag: string;
+  role: string;
+  name: string;
+  href?: string | null;
+  inputType?: string | null;
+  bounds: BrowserBounds;
+  locatorFingerprint: Record<string, string | null | undefined>;
+  userEpoch: number;
+}
+
+export interface BrowserRegionArtifact {
+  kind: 'region';
+  capture: 'coordinatesOnly';
+  url: string;
+  title: string;
+  bounds: BrowserBounds;
+  userEpoch: number;
+}
+
+export type BrowserPickArtifact = BrowserElementArtifact | BrowserRegionArtifact;
+
+export const createBrowserSession = (input: BrowserCreateInput) =>
+  invoke<BrowserSessionInfo>('browser_create_session_cmd', { input });
+
+export const listBrowserSessions = () =>
+  invoke<BrowserSessionInfo[]>('browser_list_sessions_cmd');
+
+export const activeBrowserSession = (conversationId: string) =>
+  invoke<BrowserSessionInfo | null>('browser_active_session_cmd', { conversationId });
+
+export const openBrowserTab = (sessionId: string, url: string, bounds?: BrowserBounds | null) =>
+  invoke<BrowserTabInfo>('browser_open_tab_cmd', { sessionId, url, bounds: bounds ?? null });
+
+export const openBrowserPopup = (
+  sessionId: string,
+  sourceTabId: string,
+  url: string,
+  bounds?: BrowserBounds | null,
+) => invoke<BrowserTabInfo>('browser_open_popup_cmd', {
+  sessionId,
+  sourceTabId,
+  url,
+  bounds: bounds ?? null,
+});
+
+export const navigateBrowserTab = (sessionId: string, tabId: string, url: string) =>
+  invoke<BrowserTabInfo>('browser_navigate_cmd', { sessionId, tabId, url });
+
+export const activateBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<BrowserSessionInfo>('browser_activate_tab_cmd', { sessionId, tabId });
+
+export const setBrowserBounds = (sessionId: string, bounds: BrowserBounds, visible: boolean) =>
+  invoke<void>('browser_set_bounds_cmd', { sessionId, bounds, visible });
+
+export const goBackBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_go_back_cmd', { sessionId, tabId });
+
+export const goForwardBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_go_forward_cmd', { sessionId, tabId });
+
+export const reloadBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_reload_cmd', { sessionId, tabId });
+
+export const stopBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_stop_cmd', { sessionId, tabId });
+
+export const beginBrowserElementPick = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_begin_element_pick_cmd', { sessionId, tabId });
+
+export const beginBrowserRegionPick = (sessionId: string, tabId: string) =>
+  invoke<void>('browser_begin_region_pick_cmd', { sessionId, tabId });
+
+export const takeBrowserPick = (sessionId: string, tabId: string) =>
+  invoke<BrowserPickArtifact | null>('browser_take_pick_cmd', { sessionId, tabId });
+
+export const selectedBrowserText = (sessionId: string, tabId: string) =>
+  invoke<string>('browser_selected_text_cmd', { sessionId, tabId });
+
+export const acquireBrowserControl = (sessionId: string, owner: 'user' | 'none') =>
+  invoke<BrowserSessionInfo>('browser_acquire_control_cmd', { sessionId, owner });
+
+export const closeBrowserTab = (sessionId: string, tabId: string) =>
+  invoke<BrowserSessionInfo>('browser_close_tab_cmd', { sessionId, tabId });
+
+export const closeBrowserSession = (sessionId: string) =>
+  invoke<void>('browser_close_session_cmd', { sessionId });
+
 export interface FilePreview {
   path: string;
   displayName: string;

@@ -20,6 +20,8 @@
   "close": "Close",
   "resizePanel": "Resize preview panel",
   "loading": "Reading file...",
+  "safeReadingMode": "Safe Reading Mode",
+  "openInBrowser": "Open in Nexa Browser",
   "webPreviewNotice": "If the site blocks embedding, open it externally.",
   "webLoading": "Загрузка веб-предпросмотра…",
   "webTimedOut": "Возможно, этот сайт запрещает встроенный просмотр",

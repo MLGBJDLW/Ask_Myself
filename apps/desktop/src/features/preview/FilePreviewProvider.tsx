@@ -52,6 +52,7 @@ import {
   markdownRemarkPlugins,
   rehypePlugins,
 } from '../../components/chat/markdownComponents';
+import { OPEN_BROWSER_WORKSPACE_EVENT } from '../browser';
 import { FilePreviewContext } from './filePreviewContext';
 
 type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
@@ -253,6 +254,8 @@ function createPreviewLabels(t: TranslateFn) {
     close: t('preview.close'),
     resizePanel: t('preview.resizePanel'),
     loading: t('preview.loading'),
+    safeReadingMode: t('preview.safeReadingMode'),
+    openInBrowser: t('preview.openInBrowser'),
     webPreviewNotice: t('preview.webPreviewNotice'),
     webLoading: t('preview.webLoading'),
     webTimedOut: t('preview.webTimedOut'),
@@ -1028,6 +1031,15 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     }
   }, [labels.openExternalFailed, webPreview]);
 
+  const openWebPreviewInBrowser = useCallback(() => {
+    if (!webPreview) return;
+    const handled = !window.dispatchEvent(new CustomEvent(OPEN_BROWSER_WORKSPACE_EVENT, {
+      detail: { url: webPreview.url },
+      cancelable: true,
+    }));
+    if (handled) setWebPreview(null);
+  }, [webPreview]);
+
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {
       return;
@@ -1692,8 +1704,16 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
                 <div className="mt-3 flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface-0 px-2.5 py-1.5 text-[11px] text-text-secondary">
-                    {labels.webPreviewNotice}
+                    {labels.safeReadingMode} · {labels.webPreviewNotice}
                   </span>
+                  <button
+                    type="button"
+                    onClick={openWebPreviewInBrowser}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-2.5 text-xs font-medium text-white transition-colors hover:bg-accent/90"
+                  >
+                    <Globe2 size={14} />
+                    {labels.openInBrowser}
+                  </button>
                   <button
                     type="button"
                     onClick={() => { void openWebPreviewExternally(); }}
@@ -1739,8 +1759,8 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                         <TriangleAlert size={24} className="mx-auto text-warning" />
                         <h3 className="mt-3 text-sm font-semibold text-text-primary">{labels.webTimedOut}</h3>
                         <p className="mt-1 text-xs text-text-tertiary">{labels.webTimedOutHint}</p>
-                        <button type="button" onClick={() => { void openWebPreviewExternally(); }} className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white">
-                          <ExternalLink size={14} /> {labels.openExternal}
+                        <button type="button" onClick={openWebPreviewInBrowser} className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white">
+                          <Globe2 size={14} /> {labels.openInBrowser}
                         </button>
                       </div>
                     )}

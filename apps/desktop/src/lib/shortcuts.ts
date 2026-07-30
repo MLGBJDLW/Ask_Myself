@@ -14,6 +14,7 @@ const isMac =
 export const SHORTCUTS: Shortcut[] = [
   { keys: 'Ctrl+K', macKeys: '⌘K', description: 'shortcuts.commandPalette', scope: 'global' },
   { keys: 'Ctrl+B', macKeys: '⌘B', description: 'shortcuts.toggleSidebar', scope: 'chat' },
+  { keys: 'Ctrl+Shift+B', macKeys: '⌘⇧B', description: 'shortcuts.toggleBrowser', scope: 'chat' },
   { keys: 'Ctrl+J', macKeys: '⌘J', description: 'shortcuts.toggleTerminal', scope: 'chat' },
   { keys: 'Ctrl+Shift+A', macKeys: '⌘⇧A', description: 'shortcuts.askAi', scope: 'search' },
 ];

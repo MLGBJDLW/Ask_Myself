@@ -1131,3 +1131,47 @@ body {
   background: var(--color-surface-3);
   color: var(--color-text-primary);
 }
+
+.browser-tool-button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.375rem;
+  color: var(--color-text-tertiary);
+  transition: color 150ms, background-color 150ms, opacity 150ms;
+}
+
+.browser-tool-button:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-surface-3);
+}
+
+.browser-tool-button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.browser-action-chip {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  padding: 0 0.5rem;
+  color: var(--color-text-tertiary);
+  background: color-mix(in srgb, var(--color-surface-2) 72%, transparent);
+  font-size: 0.625rem;
+  transition: color 150ms, background-color 150ms, border-color 150ms;
+}
+
+.browser-action-chip:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-surface-3);
+}
+
+.browser-action-chip:disabled {
+  opacity: 0.4;
+}

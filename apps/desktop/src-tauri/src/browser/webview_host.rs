@@ -1,0 +1,212 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+use serde::Deserialize;
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::{Manager, Webview, WebviewUrl};
+use tokio::sync::oneshot;
+use url::Url;
+
+use super::policy::navigation_preapproved;
+use super::scripts::{browser_init_script, browser_takeover_script};
+use super::state::{BrowserBounds, BrowserState};
+
+pub struct BrowserChildWebview {
+    pub webview: Webview,
+    pub approved_agent_urls: Arc<Mutex<HashSet<String>>>,
+}
+
+pub fn create_child_webview(
+    state: &BrowserState,
+    session_id: &str,
+    tab_id: &str,
+    url: Url,
+    profile_dir: PathBuf,
+    profile_id: &str,
+    agent_restricted: Arc<AtomicBool>,
+    network_proxy_url: Url,
+    bounds: Option<BrowserBounds>,
+) -> Result<BrowserChildWebview, String> {
+    let window = state
+        .app()
+        .get_window("main")
+        .ok_or_else(|| "Main application window is unavailable".to_string())?;
+    let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
+    let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
+    let takeover_token = uuid::Uuid::new_v4().simple().to_string();
+    let pick_token = uuid::Uuid::new_v4().simple().to_string();
+    let takeover_url = Url::parse(&format!("nexa-user-input://{takeover_token}"))
+        .map_err(|error| format!("Could not create browser takeover signal: {error}"))?;
+
+    let navigation_restriction = Arc::clone(&agent_restricted);
+    let approved_for_navigation = Arc::clone(&approved_agent_urls);
+    let takeover_for_navigation = takeover_url.clone();
+    let state_for_takeover = state.clone();
+    let session_for_takeover = session_id.to_string();
+    let tab_for_takeover = tab_id.to_string();
+    let state_for_load = state.clone();
+    let session_for_load = session_id.to_string();
+    let tab_for_load = tab_id.to_string();
+    let state_for_title = state.clone();
+    let session_for_title = session_id.to_string();
+    let tab_for_title = tab_id.to_string();
+    let state_for_popup = state.clone();
+    let session_for_popup = session_id.to_string();
+    let tab_for_popup = tab_id.to_string();
+    let state_for_download = state.clone();
+    let session_for_download = session_id.to_string();
+    let tab_for_download = tab_id.to_string();
+
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        .data_directory(profile_dir)
+        .data_store_identifier(profile_data_store_identifier(profile_id))
+        .disable_drag_drop_handler()
+        .proxy_url(network_proxy_url.clone())
+        .initialization_script_for_all_frames(browser_init_script(&pick_token))
+        .initialization_script_for_all_frames(browser_takeover_script(&takeover_token))
+        .on_navigation(move |target| {
+            if target == &takeover_for_navigation {
+                state_for_takeover.record_user_takeover(&session_for_takeover, &tab_for_takeover);
+                return false;
+            }
+            let agent_restricted =
+                navigation_restriction.load(std::sync::atomic::Ordering::Relaxed);
+            approved_for_navigation.lock().is_ok_and(|mut approved| {
+                navigation_preapproved(target, agent_restricted, &mut approved)
+            })
+        })
+        .on_page_load(move |_webview, payload| {
+            state_for_load.update_page_load(
+                &session_for_load,
+                &tab_for_load,
+                payload.url(),
+                payload.event() == PageLoadEvent::Started,
+            );
+        })
+        .on_document_title_changed(move |_webview, title| {
+            state_for_title.handle_document_title(&session_for_title, &tab_for_title, title);
+        })
+        .on_new_window(move |url, _features| {
+            state_for_popup.emit(
+                "newWindowRequested",
+                serde_json::json!({
+                    "sessionId": session_for_popup,
+                    "tabId": tab_for_popup,
+                    "url": url,
+                }),
+            );
+            NewWindowResponse::Deny
+        })
+        .on_download(move |_webview, event| {
+            if let DownloadEvent::Requested { url, .. } = event {
+                state_for_download.emit(
+                    "downloadRequested",
+                    serde_json::json!({
+                        "sessionId": session_for_download,
+                        "tabId": tab_for_download,
+                        "url": url,
+                        "blocked": true,
+                    }),
+                );
+            }
+            false
+        });
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(&format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-quic --proxy-server={} --proxy-bypass-list=<-loopback>",
+        network_proxy_url
+    ));
+    let initial = bounds.unwrap_or(BrowserBounds {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+    });
+    let visible = bounds.is_some();
+    let webview = window
+        .add_child(
+            builder,
+            tauri::LogicalPosition::new(initial.x, initial.y),
+            tauri::LogicalSize::new(initial.width, initial.height),
+        )
+        .map_err(|error| format!("Could not create browser WebView: {error}"))?;
+    if !visible {
+        let _ = webview.hide();
+    }
+    Ok(BrowserChildWebview {
+        webview,
+        approved_agent_urls,
+    })
+}
+
+fn profile_data_store_identifier(profile_id: &str) -> [u8; 16] {
+    let hash = blake3::hash(format!("nexa-browser-profile:{profile_id}").as_bytes());
+    let mut identifier = [0_u8; 16];
+    identifier.copy_from_slice(&hash.as_bytes()[..16]);
+    identifier
+}
+
+#[derive(Deserialize)]
+struct EvalEnvelope {
+    ok: bool,
+    value: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+pub struct PendingEvalJson {
+    receiver: oneshot::Receiver<String>,
+}
+
+impl PendingEvalJson {
+    pub async fn resolve(self) -> Result<serde_json::Value, String> {
+        let raw = tokio::time::timeout(std::time::Duration::from_secs(10), self.receiver)
+            .await
+            .map_err(|_| "Browser script timed out".to_string())?
+            .map_err(|_| "Browser script response was dropped".to_string())?;
+        decode_eval_json(&raw)
+    }
+}
+
+pub fn dispatch_eval_json(webview: &Webview, expression: &str) -> Result<PendingEvalJson, String> {
+    let script = format!(
+        "(() => {{ try {{ return {{ ok: true, value: ({expression}) }}; }} catch (error) {{ return {{ ok: false, error: String(error && error.message || error) }}; }} }})()"
+    );
+    let (sender, receiver) = oneshot::channel();
+    let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
+    let sender_for_callback = Arc::clone(&sender);
+    webview
+        .eval_with_callback(script, move |result| {
+            if let Ok(mut sender) = sender_for_callback.lock() {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(result);
+                }
+            }
+        })
+        .map_err(|error| format!("Could not evaluate browser script: {error}"))?;
+    Ok(PendingEvalJson { receiver })
+}
+
+pub async fn eval_json(webview: &Webview, expression: &str) -> Result<serde_json::Value, String> {
+    dispatch_eval_json(webview, expression)?.resolve().await
+}
+
+fn decode_eval_json(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| format!("Could not decode browser script result: {error}"))?;
+    let value = if let Some(encoded) = value.as_str() {
+        serde_json::from_str(encoded).unwrap_or(value)
+    } else {
+        value
+    };
+    let envelope: EvalEnvelope = serde_json::from_value(value)
+        .map_err(|error| format!("Could not decode browser script envelope: {error}"))?;
+    if envelope.ok {
+        Ok(envelope.value.unwrap_or(serde_json::Value::Null))
+    } else {
+        Err(envelope
+            .error
+            .unwrap_or_else(|| "Browser script failed".to_string()))
+    }
+}
