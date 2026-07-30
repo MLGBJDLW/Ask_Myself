@@ -155,7 +155,21 @@ struct EvalEnvelope {
     error: Option<String>,
 }
 
-pub async fn eval_json(webview: &Webview, expression: &str) -> Result<serde_json::Value, String> {
+pub struct PendingEvalJson {
+    receiver: oneshot::Receiver<String>,
+}
+
+impl PendingEvalJson {
+    pub async fn resolve(self) -> Result<serde_json::Value, String> {
+        let raw = tokio::time::timeout(std::time::Duration::from_secs(10), self.receiver)
+            .await
+            .map_err(|_| "Browser script timed out".to_string())?
+            .map_err(|_| "Browser script response was dropped".to_string())?;
+        decode_eval_json(&raw)
+    }
+}
+
+pub fn dispatch_eval_json(webview: &Webview, expression: &str) -> Result<PendingEvalJson, String> {
     let script = format!(
         "(() => {{ try {{ return {{ ok: true, value: ({expression}) }}; }} catch (error) {{ return {{ ok: false, error: String(error && error.message || error) }}; }} }})()"
     );
@@ -171,11 +185,15 @@ pub async fn eval_json(webview: &Webview, expression: &str) -> Result<serde_json
             }
         })
         .map_err(|error| format!("Could not evaluate browser script: {error}"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_secs(10), receiver)
-        .await
-        .map_err(|_| "Browser script timed out".to_string())?
-        .map_err(|_| "Browser script response was dropped".to_string())?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
+    Ok(PendingEvalJson { receiver })
+}
+
+pub async fn eval_json(webview: &Webview, expression: &str) -> Result<serde_json::Value, String> {
+    dispatch_eval_json(webview, expression)?.resolve().await
+}
+
+fn decode_eval_json(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| format!("Could not decode browser script result: {error}"))?;
     let value = if let Some(encoded) = value.as_str() {
         serde_json::from_str(encoded).unwrap_or(value)

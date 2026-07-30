@@ -61,8 +61,10 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('record_user_takeover'), 'trusted direct page input must revoke the Agent control lease');
   assert(browser.includes('approved_agent_urls'), 'Agent redirects must fail closed unless their resolved URL was preapproved');
   assert(browser.includes('network_proxy: Arc<BrowserNetworkProxy>'), 'all tabs in a session must share one stable policy proxy');
-  assert(browser.includes('revalidate_agent_action'), 'Agent actions must recheck the lease after asynchronous validation');
+  assert(browser.includes('dispatch_agent_action'), 'Agent action validation and WebView dispatch must share one runtime lock');
   assert(browser.includes('revalidate_agent_lease'), 'Agent observations must not cross a user takeover');
+  assert(browser.includes('validate_agent_network_url(&snapshot_url)'), 'observations must validate the URL captured after Agent control is acquired');
+  assert(browser.includes('dispatched_url != snapshot_url'), 'observations must reject navigation during snapshot validation');
   assert(browser.includes('tab.webview.navigate(url.clone())'), 'navigation dispatch must remain atomic with its checked lease');
   assert(browser.includes('reload_as_agent'), 'Agent reload must validate and dispatch under one control lease');
   assert(browser.includes('activate_tab_as_agent'), 'Agent tab activation must validate its exact owner');

@@ -22,7 +22,9 @@ use super::policy::{
     validate_agent_network_url, BrowserActionRisk, NavigationActor,
 };
 use super::scripts::OBSERVE_EXPRESSION;
-use super::webview_host::{create_child_webview, eval_json, BrowserChildWebview};
+use super::webview_host::{
+    create_child_webview, dispatch_eval_json, eval_json, BrowserChildWebview, PendingEvalJson,
+};
 
 pub const BROWSER_EVENT: &str = "browser:event";
 const MAX_OBSERVATIONS: usize = 64;
@@ -748,13 +750,14 @@ impl BrowserState {
         tab_id: &str,
         call_id: &str,
     ) -> Result<BrowserObservationPayload, String> {
+        self.acquire_agent_control(session_id, call_id)?;
+        let lease_generation = self.agent_lease_generation(session_id, call_id)?;
         let webview = self.webview(session_id, tab_id)?;
         let current_url = webview
             .url()
             .map_err(|error| format!("Could not read browser address: {error}"))?;
         validate_agent_network_url(&current_url).await?;
-        self.acquire_agent_control(session_id, call_id)?;
-        let lease_generation = self.agent_lease_generation(session_id, call_id)?;
+        self.revalidate_agent_lease(session_id, call_id, lease_generation)?;
         let deadline = Instant::now() + Duration::from_secs(20);
         let value = loop {
             self.revalidate_agent_lease(session_id, call_id, lease_generation)?;
@@ -773,6 +776,10 @@ impl BrowserState {
         };
         let snapshot: BrowserPageSnapshot = serde_json::from_value(value)
             .map_err(|error| format!("Could not decode browser observation: {error}"))?;
+        let snapshot_url = Url::parse(&snapshot.url)
+            .map_err(|_| "Browser observation returned an invalid URL".to_string())?;
+        validate_agent_network_url(&snapshot_url).await?;
+        self.revalidate_agent_lease(session_id, call_id, lease_generation)?;
         let content_hash = blake3::hash(snapshot.dom_fingerprint.as_bytes())
             .to_hex()
             .to_string();
@@ -794,10 +801,19 @@ impl BrowserState {
             {
                 return Err("stale observation: browser control owner changed".to_string());
             }
-            if let Some(tab) = session.tabs.get_mut(tab_id) {
-                tab.url = snapshot.url.clone();
-                tab.title = snapshot.title.clone();
+            let tab = session
+                .tabs
+                .get_mut(tab_id)
+                .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+            let dispatched_url = tab
+                .webview
+                .url()
+                .map_err(|error| format!("Could not read browser address: {error}"))?;
+            if dispatched_url != snapshot_url {
+                return Err("stale observation: page navigated during observation".to_string());
             }
+            tab.url = snapshot.url.clone();
+            tab.title = snapshot.title.clone();
             let stored = StoredObservation {
                 created_at: Instant::now(),
                 tab_id: tab_id.to_string(),
@@ -947,14 +963,14 @@ impl BrowserState {
             }))
             .map_err(|error| error.to_string())?
         );
-        self.revalidate_agent_action(
+        let pending = self.dispatch_agent_action(
             request.session_id,
             request.tab_id,
             request.observation_id,
             request.call_id,
+            &expression,
         )?;
-        self.eval_action(request.session_id, request.tab_id, &expression)
-            .await?;
+        pending.resolve().await?;
         self.observe(request.session_id, request.tab_id, request.call_id)
             .await
     }
@@ -1195,13 +1211,14 @@ impl BrowserState {
         }
     }
 
-    fn revalidate_agent_action(
+    fn dispatch_agent_action(
         &self,
         session_id: &str,
         tab_id: &str,
         observation_id: &str,
         call_id: &str,
-    ) -> Result<(), String> {
+        expression: &str,
+    ) -> Result<PendingEvalJson, String> {
         let runtime = self
             .inner
             .lock()
@@ -1225,7 +1242,11 @@ impl BrowserState {
         {
             return Err("stale observation: browser state or control owner changed".to_string());
         }
-        Ok(())
+        let tab = session
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        dispatch_eval_json(&tab.webview, expression)
     }
 
     fn agent_lease_generation(&self, session_id: &str, call_id: &str) -> Result<u64, String> {
