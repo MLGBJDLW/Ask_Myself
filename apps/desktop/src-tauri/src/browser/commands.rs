@@ -89,6 +89,7 @@ pub fn browser_activate_tab_cmd(
     session_id: String,
     tab_id: String,
 ) -> Result<BrowserSessionInfo, String> {
+    state.acquire_control(&session_id, BrowserControlOwner::User)?;
     state.activate_tab(&session_id, &tab_id)
 }
 
@@ -229,6 +230,7 @@ pub fn browser_close_tab_cmd(
     session_id: String,
     tab_id: String,
 ) -> Result<BrowserSessionInfo, String> {
+    state.acquire_control(&session_id, BrowserControlOwner::User)?;
     state.close_tab(&session_id, &tab_id)
 }
 
@@ -237,5 +239,6 @@ pub fn browser_close_session_cmd(
     state: State<'_, BrowserState>,
     session_id: String,
 ) -> Result<(), String> {
+    state.acquire_control(&session_id, BrowserControlOwner::User)?;
     state.close_session(&session_id)
 }

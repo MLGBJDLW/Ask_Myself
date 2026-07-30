@@ -209,7 +209,7 @@ impl Tool for NativeBrowserSessionTool {
                 .acquire_agent_control(session_id, context.call_id)
                 .map_err(Self::invalid)?;
             self.state
-                .close_session(session_id)
+                .close_session_as_agent(session_id, context.call_id)
                 .map_err(Self::invalid)?;
             return success(
                 context.call_id,
@@ -258,7 +258,7 @@ impl Tool for NativeBrowserSessionTool {
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
                 self.state
-                    .activate_tab(session_id, tab_id)
+                    .activate_tab_as_agent(session_id, tab_id, context.call_id)
                     .map_err(Self::invalid)?;
                 success(
                     context.call_id,
@@ -378,7 +378,7 @@ impl Tool for NativeBrowserSessionTool {
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
                 self.state
-                    .close_tab(session_id, tab_id)
+                    .close_tab_as_agent(session_id, tab_id, context.call_id)
                     .map_err(Self::invalid)?;
                 success(
                     context.call_id,

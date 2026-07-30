@@ -374,16 +374,20 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            if actor == NavigationActor::Agent
-                && !session
-                    .control_lease
-                    .try_acquire_agent("open_tab".to_string())
-            {
-                drop(runtime);
-                let _ = webview.close();
-                return Err(
-                    "Browser control belongs to the user; wait until they hand it back".to_string(),
-                );
+            if actor == NavigationActor::Agent {
+                if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
+                    drop(runtime);
+                    let _ = webview.close();
+                    return Err(
+                        "Browser control belongs to the user; wait until they hand it back"
+                            .to_string(),
+                    );
+                }
+                if matches!(session.control_lease.owner(), BrowserControlOwner::None) {
+                    session.control_lease.acquire(BrowserControlOwner::Agent {
+                        call_id: "open_tab".to_string(),
+                    });
+                }
             }
             for tab in session.tabs.values() {
                 let _ = tab.webview.hide();
@@ -427,7 +431,7 @@ impl BrowserState {
         } else {
             self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
-        let webview = {
+        {
             let mut runtime = self
                 .inner
                 .lock()
@@ -436,14 +440,18 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            if actor == NavigationActor::Agent
-                && !session
-                    .control_lease
-                    .try_acquire_agent("navigate".to_string())
-            {
-                return Err(
-                    "Browser control belongs to the user; wait until they hand it back".to_string(),
-                );
+            if actor == NavigationActor::Agent {
+                if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
+                    return Err(
+                        "Browser control belongs to the user; wait until they hand it back"
+                            .to_string(),
+                    );
+                }
+                if matches!(session.control_lease.owner(), BrowserControlOwner::None) {
+                    session.control_lease.acquire(BrowserControlOwner::Agent {
+                        call_id: "navigate".to_string(),
+                    });
+                }
             }
             session.observations.clear();
             session
@@ -459,14 +467,18 @@ impl BrowserState {
                     .map_err(|_| "Browser navigation policy is unavailable".to_string())?
                     .insert(url.to_string());
             }
+            if let Err(error) = tab.webview.navigate(url.clone()) {
+                if actor == NavigationActor::Agent {
+                    if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                        approved.remove(url.as_str());
+                    }
+                }
+                return Err(format!("Browser navigation failed: {error}"));
+            }
             tab.url = url.to_string();
             tab.loading = true;
             tab.status = "loading".to_string();
-            tab.webview.clone()
-        };
-        webview
-            .navigate(url)
-            .map_err(|error| format!("Browser navigation failed: {error}"))?;
+        }
         self.tab_info(session_id, tab_id)
     }
 
@@ -477,7 +489,7 @@ impl BrowserState {
         input: &str,
         bounds: Option<BrowserBounds>,
     ) -> Result<BrowserTabInfo, String> {
-        let (actor, owner) = {
+        let actor = {
             let runtime = self
                 .inner
                 .lock()
@@ -489,18 +501,13 @@ impl BrowserState {
             if !session.tabs.contains_key(source_tab_id) {
                 return Err(format!("Unknown browser tab '{source_tab_id}'"));
             }
-            let actor = if session.agent_restricted.load(Ordering::Relaxed) {
+            if session.agent_restricted.load(Ordering::Relaxed) {
                 NavigationActor::Agent
             } else {
                 NavigationActor::User
-            };
-            (actor, session.control_lease.owner().clone())
+            }
         };
-        let tab = self.open_tab(session_id, input, actor, bounds).await?;
-        if actor == NavigationActor::Agent {
-            self.acquire_control(session_id, owner)?;
-        }
-        Ok(tab)
+        self.open_tab(session_id, input, actor, bounds).await
     }
 
     pub fn tab_info(&self, session_id: &str, tab_id: &str) -> Result<BrowserTabInfo, String> {
@@ -516,6 +523,24 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
     ) -> Result<BrowserSessionInfo, String> {
+        self.activate_tab_checked(session_id, tab_id, None)
+    }
+
+    pub fn activate_tab_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+    ) -> Result<BrowserSessionInfo, String> {
+        self.activate_tab_checked(session_id, tab_id, Some(call_id))
+    }
+
+    fn activate_tab_checked(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        agent_call_id: Option<&str>,
+    ) -> Result<BrowserSessionInfo, String> {
         let mut runtime = self
             .inner
             .lock()
@@ -524,6 +549,16 @@ impl BrowserState {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if agent_call_id.is_some_and(|call_id| {
+            !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        }) {
+            return Err(
+                "Browser control changed before the Agent could activate the tab".to_string(),
+            );
+        }
         if !session.tabs.contains_key(tab_id) {
             return Err(format!("Unknown browser tab '{tab_id}'"));
         }
@@ -716,8 +751,10 @@ impl BrowserState {
             .map_err(|error| format!("Could not read browser address: {error}"))?;
         validate_agent_network_url(&current_url).await?;
         self.acquire_agent_control(session_id, call_id)?;
+        let lease_generation = self.agent_lease_generation(session_id, call_id)?;
         let deadline = Instant::now() + Duration::from_secs(20);
         let value = loop {
+            self.revalidate_agent_lease(session_id, call_id, lease_generation)?;
             let loading = self.tab_info(session_id, tab_id)?.loading;
             if !loading {
                 if let Ok(value) = eval_json(&webview, OBSERVE_EXPRESSION).await {
@@ -746,6 +783,14 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if session.control_lease.generation() != lease_generation
+                || !matches!(
+                    session.control_lease.owner(),
+                    BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+                )
+            {
+                return Err("stale observation: browser control owner changed".to_string());
+            }
             if let Some(tab) = session.tabs.get_mut(tab_id) {
                 tab.url = snapshot.url.clone();
                 tab.title = snapshot.title.clone();
@@ -756,7 +801,7 @@ impl BrowserState {
                 url: snapshot.url.clone(),
                 dom_fingerprint: snapshot.dom_fingerprint.clone(),
                 user_epoch: snapshot.user_epoch,
-                lease_generation: session.control_lease.generation(),
+                lease_generation,
                 elements: snapshot.elements.clone(),
             };
             session.observations.insert(observation_id.clone(), stored);
@@ -877,6 +922,7 @@ impl BrowserState {
                     request.session_id,
                     request.tab_id,
                     request.observation_id,
+                    request.call_id,
                     &target,
                     is_form_submitter || implicit_form_submit,
                 )?;
@@ -898,7 +944,12 @@ impl BrowserState {
             }))
             .map_err(|error| error.to_string())?
         );
-        self.revalidate_agent_action(request.session_id, request.tab_id, request.observation_id)?;
+        self.revalidate_agent_action(
+            request.session_id,
+            request.tab_id,
+            request.observation_id,
+            request.call_id,
+        )?;
         self.eval_action(request.session_id, request.tab_id, &expression)
             .await?;
         self.observe(request.session_id, request.tab_id, request.call_id)
@@ -1012,6 +1063,24 @@ impl BrowserState {
     }
 
     pub fn close_tab(&self, session_id: &str, tab_id: &str) -> Result<BrowserSessionInfo, String> {
+        self.close_tab_checked(session_id, tab_id, None)
+    }
+
+    pub fn close_tab_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+    ) -> Result<BrowserSessionInfo, String> {
+        self.close_tab_checked(session_id, tab_id, Some(call_id))
+    }
+
+    fn close_tab_checked(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        agent_call_id: Option<&str>,
+    ) -> Result<BrowserSessionInfo, String> {
         let mut runtime = self
             .inner
             .lock()
@@ -1020,6 +1089,14 @@ impl BrowserState {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if agent_call_id.is_some_and(|call_id| {
+            !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        }) {
+            return Err("Browser control changed before the Agent could close the tab".to_string());
+        }
         let tab = session
             .tabs
             .remove(tab_id)
@@ -1048,13 +1125,42 @@ impl BrowserState {
     }
 
     pub fn close_session(&self, session_id: &str) -> Result<(), String> {
-        let session = self
-            .inner
-            .lock()
-            .map_err(|_| "Browser runtime is unavailable".to_string())?
-            .sessions
-            .remove(session_id)
-            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        self.close_session_checked(session_id, None)
+    }
+
+    pub fn close_session_as_agent(&self, session_id: &str, call_id: &str) -> Result<(), String> {
+        self.close_session_checked(session_id, Some(call_id))
+    }
+
+    fn close_session_checked(
+        &self,
+        session_id: &str,
+        agent_call_id: Option<&str>,
+    ) -> Result<(), String> {
+        let session = {
+            let mut runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if agent_call_id.is_some_and(|call_id| {
+                !matches!(
+                    session.control_lease.owner(),
+                    BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+                )
+            }) {
+                return Err(
+                    "Browser control changed before the Agent could close the session".to_string(),
+                );
+            }
+            runtime
+                .sessions
+                .remove(session_id)
+                .expect("validated browser session must still exist")
+        };
         session.network_proxy.shutdown();
         for tab in session.tabs.into_values() {
             if session.temporary_profile {
@@ -1091,6 +1197,7 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         observation_id: &str,
+        call_id: &str,
     ) -> Result<(), String> {
         let runtime = self
             .inner
@@ -1102,7 +1209,7 @@ impl BrowserState {
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
         if !matches!(
             session.control_lease.owner(),
-            BrowserControlOwner::Agent { .. }
+            BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
         ) {
             return Err("stale observation: browser control owner changed".to_string());
         }
@@ -1118,11 +1225,43 @@ impl BrowserState {
         Ok(())
     }
 
+    fn agent_lease_generation(&self, session_id: &str, call_id: &str) -> Result<u64, String> {
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if !matches!(
+            session.control_lease.owner(),
+            BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+        ) {
+            return Err("Browser control changed before the Agent operation began".to_string());
+        }
+        Ok(session.control_lease.generation())
+    }
+
+    fn revalidate_agent_lease(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        lease_generation: u64,
+    ) -> Result<(), String> {
+        let current_generation = self.agent_lease_generation(session_id, call_id)?;
+        if current_generation != lease_generation {
+            return Err("Browser control changed during the Agent operation".to_string());
+        }
+        Ok(())
+    }
+
     fn approve_agent_action_url(
         &self,
         session_id: &str,
         tab_id: &str,
         observation_id: &str,
+        call_id: &str,
         url: &Url,
         form_navigation: bool,
     ) -> Result<(), String> {
@@ -1136,7 +1275,7 @@ impl BrowserState {
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
         if !matches!(
             session.control_lease.owner(),
-            BrowserControlOwner::Agent { .. }
+            BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
         ) {
             return Err("stale observation: browser control owner changed".to_string());
         }

@@ -49,6 +49,7 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   const runtime = source('../../crates/core/src/browser_runtime/runtime.rs');
   const browser = source('src-tauri/src/browser/state.rs');
   const agentTool = source('src-tauri/src/browser/agent_tool.rs');
+  const commands = source('src-tauri/src/browser/commands.rs');
   const dock = source('src/features/browser/BrowserDock.tsx');
   assert(runtime.includes('trait BrowserRuntime'), 'core must expose an engine-neutral BrowserRuntime contract');
   assert(browser.includes('BrowserControlOwner'), 'runtime must model Agent/User control ownership');
@@ -61,10 +62,19 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('approved_agent_urls'), 'Agent redirects must fail closed unless their resolved URL was preapproved');
   assert(browser.includes('network_proxy: Arc<BrowserNetworkProxy>'), 'all tabs in a session must share one stable policy proxy');
   assert(browser.includes('revalidate_agent_action'), 'Agent actions must recheck the lease after asynchronous validation');
+  assert(browser.includes('revalidate_agent_lease'), 'Agent observations must not cross a user takeover');
+  assert(browser.includes('tab.webview.navigate(url.clone())'), 'navigation dispatch must remain atomic with its checked lease');
   assert(browser.includes('reload_as_agent'), 'Agent reload must validate and dispatch under one control lease');
+  assert(browser.includes('activate_tab_as_agent'), 'Agent tab activation must validate its exact owner');
+  assert(browser.includes('close_session_as_agent'), 'Agent session closure must validate its exact owner');
   assert(browser.includes('conversation_creation_lock'), 'session creation must serialize per conversation');
   assert(browser.includes('initializing'), 'partially initialized browser sessions must stay undiscoverable');
   assert(agentTool.includes('tokio::time::timeout(remaining'), 'wait_for must enforce its deadline around observation');
+  const activateCommand = commands.slice(
+    commands.indexOf('pub fn browser_activate_tab_cmd'),
+    commands.indexOf('pub fn browser_set_bounds_cmd'),
+  );
+  assert(activateCommand.includes('BrowserControlOwner::User'), 'user tab activation must revoke Agent control');
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');
