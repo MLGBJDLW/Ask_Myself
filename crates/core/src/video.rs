@@ -2212,10 +2212,7 @@ mod tests {
 
     #[test]
     fn test_whisper_model_filename() {
-        // Legacy filenames preserved for backward compat
-        assert_eq!(WhisperModel::Tiny.filename(), "ggml-tiny.bin");
-        assert_eq!(WhisperModel::Base.filename(), "ggml-base.bin");
-        // New dir names for safetensors
+        // Whisper now uses the safetensors directory layout exclusively.
         assert_eq!(WhisperModel::Tiny.dir_name(), "whisper-tiny");
         assert_eq!(WhisperModel::Base.dir_name(), "whisper-base");
         assert_eq!(WhisperModel::Large.dir_name(), "whisper-large-v3");
