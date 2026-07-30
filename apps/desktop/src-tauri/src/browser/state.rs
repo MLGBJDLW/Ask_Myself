@@ -23,7 +23,6 @@ use super::scripts::OBSERVE_EXPRESSION;
 use super::webview_host::{create_child_webview, eval_json};
 
 pub const BROWSER_EVENT: &str = "browser:event";
-pub const USER_TAKEOVER_TITLE_SIGNAL: &str = "__NEXA_USER_TAKEOVER__";
 const MAX_OBSERVATIONS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,10 +128,6 @@ impl BrowserState {
     }
 
     pub fn handle_document_title(&self, session_id: &str, tab_id: &str, title: String) {
-        if title == USER_TAKEOVER_TITLE_SIGNAL {
-            self.record_user_takeover(session_id, tab_id);
-            return;
-        }
         if let Ok(mut runtime) = self.inner.lock() {
             if let Some(tab) = runtime
                 .sessions
@@ -148,15 +143,12 @@ impl BrowserState {
         );
     }
 
-    fn record_user_takeover(&self, session_id: &str, tab_id: &str) {
+    pub(super) fn record_user_takeover(&self, session_id: &str, tab_id: &str) {
         let owner = if let Ok(mut runtime) = self.inner.lock() {
             let Some(session) = runtime.sessions.get_mut(session_id) else {
                 return;
             };
-            if !matches!(
-                session.control_lease.owner(),
-                BrowserControlOwner::Agent { .. }
-            ) {
+            if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
                 return;
             }
             session.control_lease.acquire(BrowserControlOwner::User);
@@ -281,6 +273,13 @@ impl BrowserState {
                 .sessions
                 .get(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if actor == NavigationActor::Agent
+                && matches!(session.control_lease.owner(), BrowserControlOwner::User)
+            {
+                return Err(
+                    "Browser control belongs to the user; wait until they hand it back".to_string(),
+                );
+            }
             (
                 session.profile_id.clone(),
                 format!("tab_{}", uuid::Uuid::new_v4().simple()),
@@ -307,16 +306,24 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if actor == NavigationActor::Agent
+                && !session
+                    .control_lease
+                    .try_acquire_agent("open_tab".to_string())
+            {
+                drop(runtime);
+                let _ = webview.close();
+                return Err(
+                    "Browser control belongs to the user; wait until they hand it back".to_string(),
+                );
+            }
             for tab in session.tabs.values() {
                 let _ = tab.webview.hide();
             }
             session.active_tab_id = Some(tab_id.clone());
-            session.control_lease.acquire(match actor {
-                NavigationActor::User => BrowserControlOwner::User,
-                NavigationActor::Agent => BrowserControlOwner::Agent {
-                    call_id: "open_tab".to_string(),
-                },
-            });
+            if actor == NavigationActor::User {
+                session.control_lease.acquire(BrowserControlOwner::User);
+            }
             session.tabs.insert(
                 tab_id.clone(),
                 BrowserTab {
@@ -363,12 +370,19 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            session.control_lease.acquire(match actor {
-                NavigationActor::User => BrowserControlOwner::User,
-                NavigationActor::Agent => BrowserControlOwner::Agent {
-                    call_id: "navigate".to_string(),
-                },
-            });
+            if actor == NavigationActor::Agent {
+                if !session
+                    .control_lease
+                    .try_acquire_agent("navigate".to_string())
+                {
+                    return Err(
+                        "Browser control belongs to the user; wait until they hand it back"
+                            .to_string(),
+                    );
+                }
+            } else {
+                session.control_lease.acquire(BrowserControlOwner::User);
+            }
             session.observations.clear();
             let tab = session
                 .tabs

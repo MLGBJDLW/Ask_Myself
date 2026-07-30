@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use super::policy::navigation_preapproved;
-use super::scripts::BROWSER_INIT_SCRIPT;
+use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
 use super::state::{BrowserBounds, BrowserState};
 
 pub fn create_child_webview(
@@ -29,9 +29,16 @@ pub fn create_child_webview(
     let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
     let agent_restricted = Arc::new(AtomicBool::new(agent_restricted_initially));
     let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
+    let takeover_token = uuid::Uuid::new_v4().simple().to_string();
+    let takeover_url = Url::parse(&format!("nexa-user-input://{takeover_token}"))
+        .map_err(|error| format!("Could not create browser takeover signal: {error}"))?;
 
     let navigation_restriction = Arc::clone(&agent_restricted);
     let approved_for_navigation = Arc::clone(&approved_agent_urls);
+    let takeover_for_navigation = takeover_url.clone();
+    let state_for_takeover = state.clone();
+    let session_for_takeover = session_id.to_string();
+    let tab_for_takeover = tab_id.to_string();
     let state_for_load = state.clone();
     let session_for_load = session_id.to_string();
     let tab_for_load = tab_id.to_string();
@@ -49,7 +56,12 @@ pub fn create_child_webview(
         .data_directory(profile_dir)
         .disable_drag_drop_handler()
         .initialization_script(BROWSER_INIT_SCRIPT)
+        .initialization_script_for_all_frames(browser_takeover_script(&takeover_token))
         .on_navigation(move |target| {
+            if target == &takeover_for_navigation {
+                state_for_takeover.record_user_takeover(&session_for_takeover, &tab_for_takeover);
+                return false;
+            }
             let agent_restricted =
                 navigation_restriction.load(std::sync::atomic::Ordering::Relaxed);
             approved_for_navigation.lock().is_ok_and(|mut approved| {

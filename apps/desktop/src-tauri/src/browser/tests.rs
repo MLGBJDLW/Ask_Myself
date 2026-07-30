@@ -4,7 +4,7 @@ use super::policy::{
     classify_agent_action, form_navigation_approval_key, navigation_preapproved,
     normalize_browser_url, BrowserActionRisk, NavigationActor,
 };
-use super::scripts::BROWSER_INIT_SCRIPT;
+use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
 use super::state::{BrowserControlOwner, ControlLease};
 
 #[test]
@@ -32,6 +32,13 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
         "http://10.0.0.8",
         "http://169.254.169.254/latest/meta-data",
         "http://192.168.1.1",
+        "http://100.64.0.1",
+        "http://100.127.255.254",
+        "http://198.18.0.1",
+        "http://[fc00::1]",
+        "http://[fe80::1]",
+        "http://[2001:db8::1]",
+        "http://[2002:7f00:1::1]",
         "http://[::ffff:127.0.0.1]",
         "http://[::ffff:10.0.0.8]",
     ] {
@@ -44,6 +51,29 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
             "{url}"
         );
     }
+
+    for url in [
+        "https://1.1.1.1",
+        "https://[2606:4700:4700::1111]",
+        "http://[::ffff:8.8.8.8]",
+    ] {
+        assert!(
+            normalize_browser_url(url, NavigationActor::Agent).is_ok(),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn takeover_script_uses_an_unforgeable_all_frame_navigation_signal() {
+    let script = browser_takeover_script("takeover-secret");
+
+    assert!(script.contains("event.isTrusted"));
+    assert!(script.contains("window.top"));
+    assert!(script.contains("stopImmediatePropagation"));
+    assert!(script.contains("nexa-user-input://takeover-secret"));
+    assert!(!script.contains("document.title"));
+    assert!(!BROWSER_INIT_SCRIPT.contains("__NEXA_USER_TAKEOVER__"));
 }
 
 #[test]

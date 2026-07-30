@@ -93,7 +93,7 @@ export function BrowserDock({
   onSendArtifactToAgent,
 }: BrowserDockProps) {
   const { t } = useTranslation();
-  const [session, setSession] = useState<api.BrowserSessionInfo | null>(null);
+  const [storedSession, setSession] = useState<api.BrowserSessionInfo | null>(null);
   const [address, setAddress] = useState('');
   const [busy, setBusy] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
@@ -105,6 +105,9 @@ export function BrowserDock({
   const latestBoundsRef = useRef<api.BrowserBounds | null>(null);
   const pickTimerRef = useRef<number | null>(null);
   const sessionPromiseRef = useRef<Promise<api.BrowserSessionInfo | null> | null>(null);
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+  const session = storedSession?.conversationId === conversationId ? storedSession : null;
   const currentTab = useMemo(() => activeTab(session), [session]);
   const effectiveFullScreen = fullScreen || narrowViewport;
 
@@ -122,7 +125,7 @@ export function BrowserDock({
       return null;
     }
     const next = await api.activeBrowserSession(conversationId);
-    setSession(next);
+    if (conversationIdRef.current === conversationId) setSession(next);
     return next;
   }, [conversationId]);
 
@@ -150,16 +153,20 @@ export function BrowserDock({
     if (!conversationId) return null;
     if (sessionPromiseRef.current) {
       const current = await sessionPromiseRef.current;
-      if (current && url) {
+      if (current?.conversationId === conversationId && url) {
         await api.openBrowserTab(current.id, url, open ? bounds() : null);
         const refreshed = await api.activeBrowserSession(conversationId);
-        setSession(refreshed);
+        if (conversationIdRef.current === conversationId) setSession(refreshed);
         return refreshed;
       }
-      return current;
+      if (current?.conversationId === conversationId) return current;
+      sessionPromiseRef.current = null;
     }
     const pending = (async () => {
-    let current = session ?? await api.activeBrowserSession(conversationId);
+    let current = session?.conversationId === conversationId
+      ? session
+      : await api.activeBrowserSession(conversationId);
+    if (current?.conversationId !== conversationId) current = null;
     const nextBounds = bounds();
     if (!current) {
       current = await api.createBrowserSession({
@@ -171,7 +178,7 @@ export function BrowserDock({
       await api.openBrowserTab(current.id, url, open ? nextBounds : null);
       current = await api.activeBrowserSession(conversationId);
     }
-    setSession(current);
+    if (conversationIdRef.current === conversationId) setSession(current);
     return current;
     })();
     sessionPromiseRef.current = pending;

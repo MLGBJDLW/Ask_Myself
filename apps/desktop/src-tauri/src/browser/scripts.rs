@@ -1,3 +1,45 @@
+pub fn browser_takeover_script(token: &str) -> String {
+    let takeover_url = format!("nexa-user-input://{token}");
+    let encoded_url = serde_json::to_string(&takeover_url)
+        .expect("browser takeover URL must be JSON serializable");
+    r#"
+(() => {
+  const marker = '__NEXA_AUTHENTICATED_TAKEOVER__';
+  const takeoverUrl = __NEXA_TAKEOVER_URL__;
+  const apply = Reflect.apply;
+  const nativePostMessage = Window.prototype.postMessage;
+  const nativeStopImmediatePropagation = Event.prototype.stopImmediatePropagation;
+  let pending = false;
+
+  const navigateSignal = () => {
+    if (pending) return;
+    pending = true;
+    if (window === window.top) {
+      window.location.href = takeoverUrl;
+    } else {
+      apply(nativePostMessage, window.top, [{ marker, takeoverUrl }, '*']);
+    }
+    setTimeout(() => { pending = false; }, 100);
+  };
+
+  if (window === window.top) {
+    addEventListener('message', (event) => {
+      if (!event.data || event.data.marker !== marker) return;
+      apply(nativeStopImmediatePropagation, event, []);
+      if (event.data.takeoverUrl === takeoverUrl) window.location.href = takeoverUrl;
+    }, true);
+  }
+
+  for (const type of ['pointerdown', 'keydown', 'input']) {
+    addEventListener(type, (event) => {
+      if (event.isTrusted) navigateSignal();
+    }, true);
+  }
+})();
+"#
+    .replace("__NEXA_TAKEOVER_URL__", &encoded_url)
+}
+
 pub const BROWSER_INIT_SCRIPT: &str = r#"
 (() => {
   if (window.__NEXA_BROWSER_RUNTIME__) return;
@@ -10,18 +52,6 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     pendingArtifact: null,
     overlay: null,
     regionStart: null,
-    takeoverSignalPending: false,
-  };
-
-  const signalDirectUserInput = () => {
-    if (runtime.takeoverSignalPending) return;
-    runtime.takeoverSignalPending = true;
-    const previousTitle = document.title;
-    document.title = '__NEXA_USER_TAKEOVER__';
-    setTimeout(() => {
-      if (document.title === '__NEXA_USER_TAKEOVER__') document.title = previousTitle;
-      runtime.takeoverSignalPending = false;
-    }, 50);
   };
 
   const textOf = (el) => String(
@@ -201,7 +231,6 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   addEventListener('pointerdown', (event) => {
     if (!runtime.synthetic && event.isTrusted) {
       runtime.userEpoch += 1;
-      signalDirectUserInput();
     }
     if (runtime.pickMode === 'region') {
       runtime.regionStart = { x: event.clientX, y: event.clientY };
@@ -236,14 +265,12 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   addEventListener('keydown', (event) => {
     if (!runtime.synthetic && event.isTrusted) {
       runtime.userEpoch += 1;
-      signalDirectUserInput();
     }
     if (event.key === 'Escape' && runtime.pickMode) { runtime.cancelPick(); event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   addEventListener('input', (event) => {
     if (!runtime.synthetic && event.isTrusted) {
       runtime.userEpoch += 1;
-      signalDirectUserInput();
     }
   }, true);
   const bridge = Object.freeze({

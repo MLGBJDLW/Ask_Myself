@@ -35,6 +35,8 @@ test('Browser Workspace uses a native top-level child webview instead of an ifra
   assert(host.includes('WebviewUrl::External'), 'remote pages must load as top-level WebView documents');
   assert(host.includes('.data_directory('), 'browser profiles need an isolated data directory');
   assert(!host.includes('.enable_clipboard_access()'), 'remote pages must not receive unconditional JavaScript clipboard access');
+  assert(host.includes('.initialization_script_for_all_frames('), 'trusted-input takeover must cover embedded frames');
+  assert(!host.includes('USER_TAKEOVER_TITLE_SIGNAL'), 'page-controlled titles must never authenticate user takeover');
   assert(!dock.includes('<iframe'), 'BrowserDock must not regress to iframe embedding');
 });
 
@@ -55,6 +57,7 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');
+  assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
 });
 
 test('Reader Preview remains a distinct safe reading mode with Browser as the primary remote action', () => {

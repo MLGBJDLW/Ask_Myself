@@ -15,21 +15,32 @@ pub enum NavigationActor {
 fn private_or_special_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
+            let [first, second, third, _] = ip.octets();
             ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
                 || ip.is_multicast()
                 || ip.is_unspecified()
                 || ip.is_broadcast()
+                || ip.is_documentation()
+                || first == 0
+                || (first == 100 && second & 0xc0 == 0x40)
+                || (first == 192 && second == 0 && third == 0)
+                || (first == 192 && second == 88 && third == 99)
+                || (first == 198 && second & 0xfe == 18)
+                || first >= 240
         }
         IpAddr::V6(ip) => {
-            ip.to_ipv4_mapped()
-                .is_some_and(|mapped| private_or_special_ip(IpAddr::V4(mapped)))
-                || ip.is_loopback()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return private_or_special_ip(IpAddr::V4(mapped));
+            }
+            let segments = ip.segments();
+            let globally_routable_unicast = (segments[0] & 0xe000) == 0x2000;
+            !globally_routable_unicast
+                || (segments[0] == 0x2001 && segments[1] < 0x0200)
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || segments[0] == 0x2002
+                || segments[0] == 0x3fff
         }
     }
 }
@@ -102,12 +113,17 @@ pub async fn validate_agent_network_url(url: &Url) -> Result<(), String> {
     let resolved = tokio::net::lookup_host((host, port))
         .await
         .map_err(|_| "Could not resolve the browser address".to_string())?;
+    let mut resolved_any = false;
     for address in resolved {
+        resolved_any = true;
         if private_or_special_ip(address.ip()) {
             return Err(
                 "Agent browser navigation resolved to a local or private network".to_string(),
             );
         }
+    }
+    if !resolved_any {
+        return Err("Browser address did not resolve to a public network".to_string());
     }
     Ok(())
 }
