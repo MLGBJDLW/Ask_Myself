@@ -234,6 +234,10 @@ function createPreviewLabels(t: TranslateFn) {
     resizePanel: t('preview.resizePanel'),
     loading: t('preview.loading'),
     webPreviewNotice: t('preview.webPreviewNotice'),
+    webLoading: t('preview.webLoading'),
+    webTimedOut: t('preview.webTimedOut'),
+    webTimedOutHint: t('preview.webTimedOutHint'),
+    openExternalFailed: t('preview.openExternalFailed'),
     empty: t('preview.empty'),
     unsupported: t('preview.unsupported'),
     sheets: t('preview.sheets'),
@@ -872,6 +876,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
+  const [webPreviewStatus, setWebPreviewStatus] = useState<'loading' | 'loaded' | 'timedOut'>('loading');
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -902,6 +907,15 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  useEffect(() => {
+    if (!webPreview) return;
+    setWebPreviewStatus('loading');
+    const timer = setTimeout(() => {
+      setWebPreviewStatus((status) => status === 'loading' ? 'timedOut' : status);
+    }, 12_000);
+    return () => clearTimeout(timer);
+  }, [webPreview]);
 
   const loadFile = useCallback(
     async (
@@ -947,16 +961,30 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const openWebPreview = useCallback((url: string, title?: string) => {
     const trimmed = url.trim();
     if (!isWebUrl(trimmed)) {
-      void openExternal(trimmed);
+      void openExternal(trimmed).catch((reason) => {
+        console.error('[web-preview] external open failed', reason);
+        toast.error(labels.openExternalFailed);
+      });
       return;
     }
     if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
       return;
     }
     setOpen(false);
+    setWebPreviewStatus('loading');
     setWebPreview({ url: trimmed, title });
     setCopiedUrl(false);
-  }, [labels.discardPrompt]);
+  }, [labels.discardPrompt, labels.openExternalFailed]);
+
+  const openWebPreviewExternally = useCallback(async () => {
+    if (!webPreview) return;
+    try {
+      await openExternal(webPreview.url);
+    } catch (reason) {
+      console.error('[web-preview] external open failed', reason);
+      toast.error(labels.openExternalFailed);
+    }
+  }, [labels.openExternalFailed, webPreview]);
 
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {
@@ -1626,7 +1654,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => { void openExternal(webPreview.url); }}
+                    onClick={() => { void openWebPreviewExternally(); }}
                     className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                   >
                     <ExternalLink size={14} />
@@ -1647,15 +1675,33 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   </button>
                 </div>
               </header>
-              <div className="min-h-0 flex-1 bg-white">
+              <div className="relative min-h-0 flex-1 bg-white">
                 <iframe
                   key={webPreview.url}
                   title={webPreview.title || webPreview.url}
                   src={webPreview.url}
-                  sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
-                  referrerPolicy="no-referrer"
+                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts allow-top-navigation-by-user-activation"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  onLoad={() => setWebPreviewStatus('loaded')}
+                  onError={() => setWebPreviewStatus('timedOut')}
                   className="h-full w-full border-0 bg-white"
                 />
+                {webPreviewStatus !== 'loaded' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-surface-1/95 p-8 text-center">
+                    {webPreviewStatus === 'loading' ? (
+                      <div className="flex items-center gap-2 text-sm text-text-secondary"><Loader2 size={17} className="animate-spin" /> {labels.webLoading}</div>
+                    ) : (
+                      <div className="max-w-sm">
+                        <TriangleAlert size={24} className="mx-auto text-warning" />
+                        <h3 className="mt-3 text-sm font-semibold text-text-primary">{labels.webTimedOut}</h3>
+                        <p className="mt-1 text-xs text-text-tertiary">{labels.webTimedOutHint}</p>
+                        <button type="button" onClick={() => { void openWebPreviewExternally(); }} className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white">
+                          <ExternalLink size={14} /> {labels.openExternal}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.aside>
           </>
