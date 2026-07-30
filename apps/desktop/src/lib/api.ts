@@ -409,6 +409,7 @@ export interface BrowserCreateInput {
   conversationId?: string | null;
   profileId?: string | null;
   url?: string | null;
+  openInitialUrlOnReuse?: boolean;
   bounds?: BrowserBounds | null;
 }
 

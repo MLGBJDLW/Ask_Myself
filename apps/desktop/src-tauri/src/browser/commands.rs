@@ -12,6 +12,8 @@ pub struct BrowserCreateInput {
     pub conversation_id: Option<String>,
     pub profile_id: Option<String>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub open_initial_url_on_reuse: bool,
     pub bounds: Option<BrowserBounds>,
 }
 
@@ -25,6 +27,7 @@ pub async fn browser_create_session_cmd(
             input.conversation_id,
             input.profile_id,
             input.url.as_deref(),
+            input.open_initial_url_on_reuse,
             NavigationActor::User,
             input.bounds,
         )

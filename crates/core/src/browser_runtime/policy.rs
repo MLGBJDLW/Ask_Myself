@@ -37,6 +37,9 @@ pub fn classify_action_risk(
     {
         return BrowserActionRisk::SensitiveInput;
     }
+    if matches!(action.as_str(), "close_tab" | "close_session") {
+        return BrowserActionRisk::Consequential;
+    }
     if matches!(
         action.as_str(),
         "create_session"
@@ -51,8 +54,6 @@ pub fn classify_action_risk(
             | "go_back"
             | "go_forward"
             | "reload"
-            | "close_tab"
-            | "close_session"
     ) {
         return BrowserActionRisk::Low;
     }
@@ -131,6 +132,14 @@ mod tests {
                 Some("password")
             ),
             BrowserActionRisk::SensitiveInput
+        );
+        assert_eq!(
+            classify_action_risk("close_tab", None, None, None, None),
+            BrowserActionRisk::Consequential
+        );
+        assert_eq!(
+            classify_action_risk("close_session", None, None, None, None),
+            BrowserActionRisk::Consequential
         );
     }
 }

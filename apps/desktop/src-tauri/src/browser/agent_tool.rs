@@ -139,6 +139,11 @@ impl Tool for NativeBrowserSessionTool {
             .get("action")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("interact");
+        if matches!(action, "close_tab" | "close_session") {
+            return Some(format!(
+                "Agent wants to {action} in the shared Browser Workspace. This discards open page state and may delete temporary browsing data."
+            ));
+        }
         let target = args
             .get("targetRef")
             .and_then(serde_json::Value::as_str)
@@ -172,6 +177,7 @@ impl Tool for NativeBrowserSessionTool {
                     conversation_id.map(str::to_string),
                     None,
                     args.url.as_deref(),
+                    args.url.is_some(),
                     NavigationActor::Agent,
                     None,
                 )

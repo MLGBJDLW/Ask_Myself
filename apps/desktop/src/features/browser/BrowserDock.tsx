@@ -172,6 +172,7 @@ export function BrowserDock({
       current = await api.createBrowserSession({
         conversationId,
         url: url || 'https://www.google.com',
+        openInitialUrlOnReuse: Boolean(url),
         bounds: open ? nextBounds : null,
       });
     } else if (url) {

@@ -21,11 +21,13 @@ impl BrowserRuntime for BrowserState {
         &self,
         request: CreateBrowserSession,
     ) -> BrowserRuntimeResult<BrowserSession> {
+        let open_initial_url_on_reuse = request.initial_url.is_some();
         Ok(BrowserState::create_session(
             self,
             request.conversation_id,
             request.profile_id,
             request.initial_url.as_deref(),
+            open_initial_url_on_reuse,
             actor(request.actor),
             request.bounds,
         )

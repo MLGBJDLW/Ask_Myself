@@ -223,6 +223,7 @@ impl BrowserState {
         conversation_id: Option<String>,
         profile_id: Option<String>,
         initial_url: Option<&str>,
+        open_initial_url_on_reuse: bool,
         actor: NavigationActor,
         bounds: Option<BrowserBounds>,
     ) -> Result<BrowserSessionInfo, String> {
@@ -237,6 +238,12 @@ impl BrowserState {
         };
         if let Some(conversation_id) = conversation_id.as_deref() {
             if let Some(existing) = self.active_session(conversation_id)? {
+                if open_initial_url_on_reuse {
+                    if let Some(initial_url) = initial_url {
+                        self.open_tab(&existing.id, initial_url, actor, bounds)
+                            .await?;
+                    }
+                }
                 return self.session_info(&existing.id);
             }
         }

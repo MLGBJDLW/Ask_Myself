@@ -560,7 +560,12 @@ impl Tool for BrowserSessionTool {
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
         args.get("action")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|action| matches!(action, "click" | "type" | "select" | "press"))
+            .is_some_and(|action| {
+                matches!(
+                    action,
+                    "click" | "type" | "select" | "press" | "close_tab" | "close_session"
+                )
+            })
     }
 
     fn is_read_only(&self, args: &serde_json::Value) -> bool {
@@ -968,6 +973,15 @@ mod tests {
             assert!(actions.iter().any(|value| value == action));
         }
         assert_eq!(schema["properties"]["timeoutMs"]["maximum"], MAX_WAIT_MS);
+    }
+
+    #[test]
+    fn destructive_close_actions_require_confirmation() {
+        let tool = BrowserSessionTool::default();
+
+        assert!(tool.requires_confirmation(&serde_json::json!({ "action": "close_tab" })));
+        assert!(tool.requires_confirmation(&serde_json::json!({ "action": "close_session" })));
+        assert!(!tool.requires_confirmation(&serde_json::json!({ "action": "navigate" })));
     }
 
     #[test]

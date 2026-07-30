@@ -73,7 +73,8 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
     browser.indexOf('if let Some(conversation_id) = conversation_id.as_deref()'),
     browser.indexOf('let session_id = format!'),
   );
-  assert(!existingSessionReuse.includes('open_tab'), 'reusing a conversation session must not open a fallback tab or revoke Agent control');
+  assert(existingSessionReuse.includes('if open_initial_url_on_reuse'), 'session reuse must distinguish explicit URLs from fallback initialization');
+  assert(existingSessionReuse.includes('self.open_tab'), 'an explicit URL must still open after a concurrent session wins creation');
   assert(agentTool.includes('tokio::time::timeout(remaining'), 'wait_for must enforce its deadline around observation');
   const activateCommand = commands.slice(
     commands.indexOf('pub fn browser_activate_tab_cmd'),
@@ -83,6 +84,7 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');
+  assert(dock.includes('openInitialUrlOnReuse: Boolean(url)'), 'only explicit Open in Browser URLs may open a tab when creation reuses a session');
   assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
 });
 

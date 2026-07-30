@@ -300,6 +300,9 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
     };
   }).__browserDiagnostics__);
   expect(diagnostics.creates).toHaveLength(1);
+  expect(diagnostics.creates[0]).toMatchObject({
+    input: { openInitialUrlOnReuse: false },
+  });
   expect(diagnostics.navigations).toContainEqual({
     sessionId: 'browser-session-1',
     tabId: 'tab-1',
