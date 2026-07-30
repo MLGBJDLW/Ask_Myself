@@ -895,16 +895,22 @@ struct GeminiToolCallStreamState {
 }
 
 impl GeminiToolCallStreamState {
-    fn record_snapshot(&mut self, mut tool_call: ToolCallRequest) {
+    fn record_snapshot(&mut self, mut tool_call: ToolCallRequest) -> Result<(), CoreError> {
         if tool_call.id.starts_with(SYNTHETIC_CALL_ID_PREFIX) {
             if let Some(index) = self.synthetic_indices.get(&tool_call.id).copied() {
                 if self.pending[index].name == tool_call.name {
+                    if self.pending[index].arguments != tool_call.arguments {
+                        return Err(CoreError::StreamIncomplete(
+                            "Gemini streamed ambiguous id-less function-call snapshots; retrying without streaming"
+                                .to_string(),
+                        ));
+                    }
                     if tool_call.thought_signature.is_none() {
                         tool_call.thought_signature = self.pending[index].thought_signature.clone();
                     }
                     tool_call.id = self.pending[index].id.clone();
                     self.pending[index] = tool_call;
-                    return;
+                    return Ok(());
                 }
             }
 
@@ -914,7 +920,7 @@ impl GeminiToolCallStreamState {
             self.synthetic_indices
                 .insert(provider_position, self.pending.len());
             self.pending.push(tool_call);
-            return;
+            return Ok(());
         }
 
         if let Some(index) = self.provider_indices.get(&tool_call.id).copied() {
@@ -927,6 +933,7 @@ impl GeminiToolCallStreamState {
                 .insert(tool_call.id.clone(), self.pending.len());
             self.pending.push(tool_call);
         }
+        Ok(())
     }
 
     fn take_pending(&mut self) -> Vec<ToolCallRequest> {
@@ -977,7 +984,7 @@ async fn emit_gemini_response_chunk(
     }
 
     for tool_call in tool_calls {
-        tool_call_state.record_snapshot(tool_call);
+        tool_call_state.record_snapshot(tool_call)?;
     }
 
     if has_finish && tool_call_state.pending.is_empty() {
@@ -1927,8 +1934,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_tool_call_id_snapshots_replace_arguments_by_position() {
-        let (tx, mut rx) = mpsc::channel(4);
+    async fn test_ambiguous_missing_id_snapshots_trigger_non_streaming_retry() {
+        let (tx, _rx) = mpsc::channel(4);
         let mut tool_call_state = GeminiToolCallStreamState::default();
         let mut saw_finish_reason = false;
         for (index, args) in [
@@ -1947,24 +1954,21 @@ mod tests {
                 }]
             }))
             .expect("response");
-            assert!(emit_gemini_response_chunk(
+            let result = emit_gemini_response_chunk(
                 response,
                 &tx,
                 &mut tool_call_state,
                 &mut saw_finish_reason,
             )
-            .await
-            .expect("emit response"));
+            .await;
+            if index == 0 {
+                assert!(result.expect("first snapshot"));
+            } else {
+                let error = result.expect_err("changed id-less snapshot must be ambiguous");
+                assert!(matches!(error, CoreError::StreamIncomplete(_)));
+                assert!(error.to_string().contains("ambiguous id-less"));
+            }
         }
-
-        let call = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
-        assert_eq!(call.id, "call_0");
-        assert_eq!(call.arguments_delta, r#"{"path":"ab"}"#);
-        assert_eq!(
-            rx.recv().await.unwrap().unwrap().finish_reason,
-            Some(FinishReason::Stop)
-        );
-        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

@@ -1572,6 +1572,18 @@ mod tests {
             web_preview_block_reason(None, Some("frame-ancestors http://tauri.localhost")),
             None
         );
+        assert_eq!(
+            web_preview_block_reason(None, Some("default-src *, frame-ancestors 'none'")),
+            Some("frame-ancestors")
+        );
+        assert_eq!(
+            web_preview_block_reason(None, Some("frame-ancestors https://tauri.localhost")),
+            Some("frame-ancestors")
+        );
+        assert_eq!(
+            web_preview_block_reason(None, Some("frame-ancestors http://tauri.localhost:9999")),
+            Some("frame-ancestors")
+        );
     }
 
     #[test]

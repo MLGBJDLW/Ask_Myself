@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import {
@@ -60,6 +61,25 @@ const FILE_PREVIEW_WIDTH_KEY = 'file-preview-panel-width';
 const FILE_PREVIEW_MIN_WIDTH = 560;
 const FILE_PREVIEW_MAX_WIDTH = 1180;
 const MAX_AGENT_SELECTION_CHARS = 24_000;
+
+function safeWebPreviewDocument(document: string): string {
+  const sanitized = String(DOMPurify.sanitize(document, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'input', 'link', 'meta', 'object', 'script'],
+    FORBID_ATTR: [
+      'action',
+      'background',
+      'formaction',
+      'href',
+      'ping',
+      'poster',
+      'src',
+      'srcset',
+      'xlink:href',
+    ],
+  }));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; media-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><style>html{color-scheme:light}body{box-sizing:border-box;max-width:960px;margin:0 auto;padding:24px;font:15px/1.6 system-ui,sans-serif;color:#18181b;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>${sanitized}</body></html>`;
+}
 
 type TextSelectionState = {
   start: number;
@@ -877,6 +897,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
   const [webPreviewStatus, setWebPreviewStatus] = useState<'probing' | 'loading' | 'loaded' | 'timedOut'>('probing');
+  const [webPreviewDocument, setWebPreviewDocument] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -911,11 +932,17 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!webPreview) return;
     let active = true;
+    setWebPreviewDocument(null);
     setWebPreviewStatus('probing');
     void api.probeWebPreview(webPreview.url)
       .then((probe) => {
         if (active) {
-          setWebPreviewStatus(probe.embeddable ? 'loading' : 'timedOut');
+          if (probe.embeddable && probe.document) {
+            setWebPreviewDocument(safeWebPreviewDocument(probe.document));
+            setWebPreviewStatus('loading');
+          } else {
+            setWebPreviewStatus('timedOut');
+          }
         }
       })
       .catch((reason) => {
@@ -985,6 +1012,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       return;
     }
     setOpen(false);
+    setWebPreviewDocument(null);
     setWebPreviewStatus('probing');
     setWebPreview({ url: trimmed, title });
     setCopiedUrl(false);
@@ -1690,13 +1718,13 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </div>
               </header>
               <div className="relative min-h-0 flex-1 bg-white">
-                {(webPreviewStatus === 'loading' || webPreviewStatus === 'loaded') && (
+                {webPreviewDocument && (webPreviewStatus === 'loading' || webPreviewStatus === 'loaded') && (
                   <iframe
                     key={webPreview.url}
                     title={webPreview.title || webPreview.url}
-                    src={webPreview.url}
-                    sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
-                    referrerPolicy="strict-origin-when-cross-origin"
+                    srcDoc={webPreviewDocument}
+                    sandbox=""
+                    referrerPolicy="no-referrer"
                     onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
                     onError={() => setWebPreviewStatus('timedOut')}
                     className="h-full w-full border-0 bg-white"

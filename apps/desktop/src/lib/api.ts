@@ -579,6 +579,7 @@ export const previewFile = (path: string) =>
 export interface WebPreviewProbe {
   embeddable: boolean;
   reason?: string | null;
+  document?: string | null;
 }
 
 export const probeWebPreview = (url: string) =>

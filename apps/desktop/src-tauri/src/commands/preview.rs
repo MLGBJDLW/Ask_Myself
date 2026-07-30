@@ -1,8 +1,9 @@
 use super::*;
+use futures::StreamExt;
 use nexa_core::execution_environment::{
     ExecutionEnvironment, ExecutionRequest, LocalDetachedProcessExecutionEnvironment,
 };
-use reqwest::header::{CONTENT_SECURITY_POLICY, LOCATION, RANGE, X_FRAME_OPTIONS};
+use reqwest::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION, X_FRAME_OPTIONS};
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -48,7 +49,10 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
 pub struct WebPreviewProbe {
     embeddable: bool,
     reason: Option<String>,
+    document: Option<String>,
 }
+
+const WEB_PREVIEW_DOCUMENT_LIMIT: usize = 2 * 1024 * 1024;
 
 pub(super) fn web_preview_block_reason(
     x_frame_options: Option<&str>,
@@ -58,18 +62,24 @@ pub(super) fn web_preview_block_reason(
         return Some("x-frame-options");
     }
 
-    let policy = content_security_policy?;
-    let frame_ancestors = policy.split(';').find_map(|directive| {
-        let mut tokens = directive.split_ascii_whitespace();
-        tokens
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
-            .then(|| tokens.collect::<Vec<_>>())
-    })?;
-    let allows_tauri_parent = frame_ancestors
-        .iter()
-        .any(|source| is_tauri_frame_ancestor_source(source));
-    (!allows_tauri_parent).then_some("frame-ancestors")
+    for policy in content_security_policy?.split(',') {
+        let Some(frame_ancestors) = policy.split(';').find_map(|directive| {
+            let mut tokens = directive.split_ascii_whitespace();
+            tokens
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
+                .then(|| tokens.collect::<Vec<_>>())
+        }) else {
+            continue;
+        };
+        if !frame_ancestors
+            .iter()
+            .any(|source| is_tauri_frame_ancestor_source(source))
+        {
+            return Some("frame-ancestors");
+        }
+    }
+    None
 }
 
 fn is_tauri_frame_ancestor_source(source: &str) -> bool {
@@ -77,12 +87,18 @@ fn is_tauri_frame_ancestor_source(source: &str) -> bool {
         return true;
     }
 
+    if source.eq_ignore_ascii_case("tauri://localhost") {
+        return true;
+    }
+
     reqwest::Url::parse(source).is_ok_and(|url| {
-        matches!(url.scheme(), "http" | "https" | "tauri")
-            && url.host_str().is_some_and(|host| {
-                host.eq_ignore_ascii_case("tauri.localhost")
-                    || (url.scheme() == "tauri" && host.eq_ignore_ascii_case("localhost"))
-            })
+        let origin = url.origin().ascii_serialization();
+        matches!(
+            origin.as_str(),
+            "http://tauri.localhost" | "http://localhost:5173"
+        ) && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
     })
 }
 
@@ -185,7 +201,6 @@ async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String>
             .map_err(|error| format!("Failed to create web preview probe: {error}"))?;
         let response = client
             .get(current.clone())
-            .header(RANGE, "bytes=0-0")
             .send()
             .await
             .map_err(|error| format!("Web preview preflight failed: {error}"))?;
@@ -209,17 +224,61 @@ async fn probe_web_preview(url: reqwest::Url) -> Result<WebPreviewProbe, String>
             return Ok(WebPreviewProbe {
                 embeddable: false,
                 reason: Some(format!("http-{}", response.status().as_u16())),
+                document: None,
             });
         }
         let reason = web_preview_headers_block_reason(response.headers());
+        if let Some(reason) = reason {
+            return Ok(WebPreviewProbe {
+                embeddable: false,
+                reason: Some(reason.to_string()),
+                document: None,
+            });
+        }
+
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !content_type.is_empty()
+            && !content_type.starts_with("text/html")
+            && !content_type.starts_with("application/xhtml+xml")
+        {
+            return Ok(WebPreviewProbe {
+                embeddable: false,
+                reason: Some("unsupported-content-type".to_string()),
+                document: None,
+            });
+        }
+
+        let mut document_bytes = Vec::new();
+        let mut body = response.bytes_stream();
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|error| format!("Web preview body failed: {error}"))?;
+            if document_bytes.len().saturating_add(chunk.len()) > WEB_PREVIEW_DOCUMENT_LIMIT {
+                return Ok(WebPreviewProbe {
+                    embeddable: false,
+                    reason: Some("document-too-large".to_string()),
+                    document: None,
+                });
+            }
+            document_bytes.extend_from_slice(&chunk);
+        }
+        let document = String::from_utf8(document_bytes).map_err(|_| {
+            "Web preview document is not valid UTF-8 and cannot be rendered safely".to_string()
+        })?;
         return Ok(WebPreviewProbe {
-            embeddable: reason.is_none(),
-            reason: reason.map(str::to_string),
+            embeddable: true,
+            reason: None,
+            document: Some(document),
         });
     }
     Ok(WebPreviewProbe {
         embeddable: false,
         reason: Some("too-many-redirects".to_string()),
+        document: None,
     })
 }
 
@@ -237,6 +296,7 @@ pub async fn probe_web_preview_cmd(url: String) -> Result<WebPreviewProbe, Strin
             Ok(WebPreviewProbe {
                 embeddable: false,
                 reason: Some("network".to_string()),
+                document: None,
             })
         }
     }
