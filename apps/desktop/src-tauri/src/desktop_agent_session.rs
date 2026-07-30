@@ -59,6 +59,8 @@ use crate::agent_stream::{
 use crate::agent_stream_bridge::AgentStreamForwarder;
 use crate::agent_task_events::{emit_agent_task_run_update, persist_durable_run_event};
 use crate::app_events::emit_app_event;
+use crate::browser::agent_tool::NativeBrowserSessionTool;
+use crate::browser::BrowserState;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
@@ -179,6 +181,7 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub plan_mode: bool,
     pub mcp_call_timeout_secs: u64,
     pub terminal_state: Option<TerminalState>,
+    pub browser_state: BrowserState,
 }
 
 pub struct DesktopAgentTurnOutcome {
@@ -1298,6 +1301,7 @@ pub async fn build_desktop_agent_session_dependencies(
         plan_mode,
         mcp_call_timeout_secs,
         terminal_state,
+        browser_state,
     } = request;
 
     let selected_skills = if pinned_skill_ids.is_empty() {
@@ -1383,6 +1387,8 @@ pub async fn build_desktop_agent_session_dependencies(
     if let Some(terminal_state) = terminal_state {
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
     }
+    tools = tools.without_names(&["browser_session"]);
+    tools.register(Box::new(NativeBrowserSessionTool::new(browser_state)));
     let before_package_filter_count = tools.tool_names().len();
     let last_known_good_tools = tools.clone();
     tools = match package_assembler.and_then(|assembler| assembler.assemble_tool_registry(tools)) {

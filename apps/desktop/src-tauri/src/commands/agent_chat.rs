@@ -1,4 +1,5 @@
 use super::*;
+use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
@@ -33,6 +34,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub mcp_state: &'a McpManagerState,
     pub approval_state: &'a ApprovalState,
     pub terminal_state: Option<TerminalState>,
+    pub browser_state: BrowserState,
     pub app_handle: AppHandle,
     pub conversation_id: String,
     pub message: String,
@@ -54,6 +56,7 @@ pub async fn agent_chat_cmd(
     mcp_state: tauri::State<'_, McpManagerState>,
     approval_state: tauri::State<'_, ApprovalState>,
     terminal_state: tauri::State<'_, TerminalState>,
+    browser_state: tauri::State<'_, BrowserState>,
     app_handle: AppHandle,
     mut request: StartTurnRequest,
 ) -> Result<AgentTurnHandle, String> {
@@ -71,6 +74,7 @@ pub async fn agent_chat_cmd(
         mcp_state: mcp_state.inner(),
         approval_state: approval_state.inner(),
         terminal_state: Some(terminal_state.inner().clone()),
+        browser_state: browser_state.inner().clone(),
         app_handle,
         conversation_id: request.conversation_id,
         message: request.message,
@@ -97,6 +101,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         mcp_state,
         approval_state,
         terminal_state,
+        browser_state,
         app_handle,
         conversation_id,
         message,
@@ -307,6 +312,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             plan_mode,
             mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
             terminal_state,
+            browser_state,
         })
         .await;
     let runtime_session_config =

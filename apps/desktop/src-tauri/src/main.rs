@@ -4,6 +4,7 @@ mod agent_stream;
 mod agent_stream_bridge;
 mod agent_task_events;
 mod app_events;
+mod browser;
 mod commands;
 mod desktop_agent_session;
 mod subagent_tool;
@@ -230,6 +231,10 @@ fn main() {
             app.manage(ApprovalState::default());
             app.manage(RealtimeTranscriptionState::default());
             app.manage(commands::TerminalState::default());
+            app.manage(browser::BrowserState::new(
+                app.handle().clone(),
+                data_dir.join("browser-profiles"),
+            ));
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
             install_tray(app)?;
 
@@ -435,6 +440,25 @@ fn main() {
             commands::terminal_snapshot_session_cmd,
             commands::terminal_list_sessions_cmd,
             commands::terminal_active_session_cmd,
+            // Browser Workspace
+            browser::browser_create_session_cmd,
+            browser::browser_list_sessions_cmd,
+            browser::browser_active_session_cmd,
+            browser::browser_open_tab_cmd,
+            browser::browser_navigate_cmd,
+            browser::browser_activate_tab_cmd,
+            browser::browser_set_bounds_cmd,
+            browser::browser_go_back_cmd,
+            browser::browser_go_forward_cmd,
+            browser::browser_reload_cmd,
+            browser::browser_stop_cmd,
+            browser::browser_begin_element_pick_cmd,
+            browser::browser_begin_region_pick_cmd,
+            browser::browser_take_pick_cmd,
+            browser::browser_selected_text_cmd,
+            browser::browser_acquire_control_cmd,
+            browser::browser_close_tab_cmd,
+            browser::browser_close_session_cmd,
             // Model info
             commands::get_model_context_window,
             // Image attachment
@@ -582,6 +606,9 @@ fn main() {
             }
         }
         tauri::RunEvent::Exit => {
+            if let Some(browser_state) = app_handle.try_state::<browser::BrowserState>() {
+                browser_state.close_all_sessions();
+            }
             if let Some(scheduler_state) = app_handle.try_state::<TaskOrchestratorSchedulerState>()
             {
                 commands::shutdown_task_orchestrator_scheduler(&scheduler_state);
