@@ -294,11 +294,8 @@ impl Tool for NativeBrowserSessionTool {
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
                 self.state
-                    .prepare_agent_reload(session_id, tab_id)
+                    .reload_as_agent(session_id, tab_id, context.call_id)
                     .await
-                    .map_err(Self::invalid)?;
-                self.state
-                    .reload(session_id, tab_id)
                     .map_err(Self::invalid)?;
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 let observation = self

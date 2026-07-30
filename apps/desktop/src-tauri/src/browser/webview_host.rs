@@ -9,16 +9,13 @@ use tauri::{Manager, Webview, WebviewUrl};
 use tokio::sync::oneshot;
 use url::Url;
 
-use super::network_proxy::BrowserNetworkProxy;
 use super::policy::navigation_preapproved;
 use super::scripts::{browser_takeover_script, BROWSER_INIT_SCRIPT};
 use super::state::{BrowserBounds, BrowserState};
 
 pub struct BrowserChildWebview {
     pub webview: Webview,
-    pub agent_restricted: Arc<AtomicBool>,
     pub approved_agent_urls: Arc<Mutex<HashSet<String>>>,
-    pub network_proxy: BrowserNetworkProxy,
 }
 
 pub fn create_child_webview(
@@ -27,7 +24,9 @@ pub fn create_child_webview(
     tab_id: &str,
     url: Url,
     profile_dir: PathBuf,
-    agent_restricted_initially: bool,
+    profile_id: &str,
+    agent_restricted: Arc<AtomicBool>,
+    network_proxy_url: Url,
     bounds: Option<BrowserBounds>,
 ) -> Result<BrowserChildWebview, String> {
     let window = state
@@ -35,8 +34,6 @@ pub fn create_child_webview(
         .get_window("main")
         .ok_or_else(|| "Main application window is unavailable".to_string())?;
     let label = format!("browser-{}", tab_id.trim_start_matches("tab_"));
-    let agent_restricted = Arc::new(AtomicBool::new(agent_restricted_initially));
-    let network_proxy = BrowserNetworkProxy::start(Arc::clone(&agent_restricted))?;
     let approved_agent_urls = Arc::new(Mutex::new(HashSet::from([url.to_string()])));
     let takeover_token = uuid::Uuid::new_v4().simple().to_string();
     let takeover_url = Url::parse(&format!("nexa-user-input://{takeover_token}"))
@@ -63,8 +60,9 @@ pub fn create_child_webview(
 
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .data_directory(profile_dir)
+        .data_store_identifier(profile_data_store_identifier(profile_id))
         .disable_drag_drop_handler()
-        .proxy_url(network_proxy.url().clone())
+        .proxy_url(network_proxy_url.clone())
         .initialization_script(BROWSER_INIT_SCRIPT)
         .initialization_script_for_all_frames(browser_takeover_script(&takeover_token))
         .on_navigation(move |target| {
@@ -117,7 +115,7 @@ pub fn create_child_webview(
     #[cfg(windows)]
     let builder = builder.additional_browser_args(&format!(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-quic --proxy-server={} --proxy-bypass-list=<-loopback>",
-        network_proxy.url()
+        network_proxy_url
     ));
     let initial = bounds.unwrap_or(BrowserBounds {
         x: 0.0,
@@ -138,10 +136,15 @@ pub fn create_child_webview(
     }
     Ok(BrowserChildWebview {
         webview,
-        agent_restricted,
         approved_agent_urls,
-        network_proxy,
     })
+}
+
+fn profile_data_store_identifier(profile_id: &str) -> [u8; 16] {
+    let hash = blake3::hash(format!("nexa-browser-profile:{profile_id}").as_bytes());
+    let mut identifier = [0_u8; 16];
+    identifier.copy_from_slice(&hash.as_bytes()[..16]);
+    identifier
 }
 
 #[derive(Deserialize)]

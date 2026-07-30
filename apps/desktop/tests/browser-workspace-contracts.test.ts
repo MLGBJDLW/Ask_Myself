@@ -31,9 +31,12 @@ test('remote browser webviews do not inherit the main application capability', (
 test('Browser Workspace uses a native top-level child webview instead of an iframe', () => {
   const host = source('src-tauri/src/browser/webview_host.rs');
   const dock = source('src/features/browser/BrowserDock.tsx');
+  const tauriConfig = source('src-tauri/tauri.conf.json');
   assert(host.includes('WebviewBuilder::new'), 'desktop host must create a native child WebView');
   assert(host.includes('WebviewUrl::External'), 'remote pages must load as top-level WebView documents');
   assert(host.includes('.data_directory('), 'browser profiles need an isolated data directory');
+  assert(host.includes('.data_store_identifier('), 'macOS browser profiles need an isolated website data store');
+  assert(tauriConfig.includes('"minimumSystemVersion": "14.0"'), 'macOS must support isolated data stores and policy proxies');
   assert(!host.includes('.enable_clipboard_access()'), 'remote pages must not receive unconditional JavaScript clipboard access');
   assert(host.includes('.initialization_script_for_all_frames('), 'trusted-input takeover must cover embedded frames');
   assert(host.includes('.proxy_url('), 'all browser subresources must pass through the network policy proxy');
@@ -56,7 +59,11 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('openBrowserPopup'), 'popup events must use the policy-preserving host command');
   assert(browser.includes('record_user_takeover'), 'trusted direct page input must revoke the Agent control lease');
   assert(browser.includes('approved_agent_urls'), 'Agent redirects must fail closed unless their resolved URL was preapproved');
+  assert(browser.includes('network_proxy: Arc<BrowserNetworkProxy>'), 'all tabs in a session must share one stable policy proxy');
   assert(browser.includes('revalidate_agent_action'), 'Agent actions must recheck the lease after asynchronous validation');
+  assert(browser.includes('reload_as_agent'), 'Agent reload must validate and dispatch under one control lease');
+  assert(browser.includes('conversation_creation_lock'), 'session creation must serialize per conversation');
+  assert(browser.includes('initializing'), 'partially initialized browser sessions must stay undiscoverable');
   assert(agentTool.includes('tokio::time::timeout(remaining'), 'wait_for must enforce its deadline around observation');
   assert(dock.includes('ResizeObserver'), 'native child WebView must follow the dock content bounds');
   assert(dock.includes('beginBrowserElementPick'), 'dock must support point-out element mode');

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub use nexa_core::browser_runtime::{
@@ -13,6 +13,7 @@ use nexa_core::browser_runtime::{
 };
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Webview};
+use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
 use super::network_proxy::BrowserNetworkProxy;
@@ -62,9 +63,7 @@ struct BrowserTab {
     title: String,
     loading: bool,
     status: String,
-    agent_restricted: Arc<AtomicBool>,
     approved_agent_urls: Arc<Mutex<HashSet<String>>>,
-    network_proxy: BrowserNetworkProxy,
 }
 
 struct BrowserSession {
@@ -76,6 +75,9 @@ struct BrowserSession {
     tabs: HashMap<String, BrowserTab>,
     control_lease: ControlLease,
     observations: HashMap<String, StoredObservation>,
+    initializing: bool,
+    agent_restricted: Arc<AtomicBool>,
+    network_proxy: Arc<BrowserNetworkProxy>,
 }
 
 struct BrowserRuntimeState {
@@ -87,6 +89,7 @@ pub struct BrowserState {
     app: AppHandle,
     profile_root: Arc<PathBuf>,
     inner: Arc<Mutex<BrowserRuntimeState>>,
+    creation_locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
 }
 
 impl BrowserState {
@@ -97,6 +100,7 @@ impl BrowserState {
             inner: Arc::new(Mutex::new(BrowserRuntimeState {
                 sessions: HashMap::new(),
             })),
+            creation_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -155,8 +159,8 @@ impl BrowserState {
             }
             session.control_lease.acquire(BrowserControlOwner::User);
             session.observations.clear();
+            session.network_proxy.set_agent_restricted(false);
             for tab in session.tabs.values() {
-                tab.network_proxy.set_agent_restricted(false);
                 if let Ok(mut approved) = tab.approved_agent_urls.lock() {
                     approved.clear();
                 }
@@ -196,7 +200,12 @@ impl BrowserState {
             .inner
             .lock()
             .map_err(|_| "Browser runtime is unavailable".to_string())?;
-        Ok(runtime.sessions.values().map(session_info).collect())
+        Ok(runtime
+            .sessions
+            .values()
+            .filter(|session| !session.initializing)
+            .map(session_info)
+            .collect())
     }
 
     pub fn active_session(
@@ -217,6 +226,15 @@ impl BrowserState {
         actor: NavigationActor,
         bounds: Option<BrowserBounds>,
     ) -> Result<BrowserSessionInfo, String> {
+        let creation_lock = conversation_id
+            .as_deref()
+            .map(|conversation_id| self.conversation_creation_lock(conversation_id))
+            .transpose()?;
+        let _creation_guard = if let Some(lock) = creation_lock.as_ref() {
+            Some(lock.lock().await)
+        } else {
+            None
+        };
         if let Some(conversation_id) = conversation_id.as_deref() {
             if let Some(existing) = self.active_session(conversation_id)? {
                 if let Some(initial_url) = initial_url {
@@ -233,11 +251,22 @@ impl BrowserState {
             .map(safe_identifier)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("temporary-{session_id}"));
+        let agent_restricted = Arc::new(AtomicBool::new(actor == NavigationActor::Agent));
+        let network_proxy = Arc::new(BrowserNetworkProxy::start(Arc::clone(&agent_restricted))?);
         {
             let mut runtime = self
                 .inner
                 .lock()
                 .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            if runtime
+                .sessions
+                .values()
+                .any(|session| session.profile_id == profile_id)
+            {
+                return Err(format!(
+                    "Browser profile '{profile_id}' is already active in another workspace"
+                ));
+            }
             runtime.sessions.insert(
                 session_id.clone(),
                 BrowserSession {
@@ -249,6 +278,9 @@ impl BrowserState {
                     tabs: HashMap::new(),
                     control_lease: ControlLease::default(),
                     observations: HashMap::new(),
+                    initializing: true,
+                    agent_restricted,
+                    network_proxy,
                 },
             );
         }
@@ -258,6 +290,17 @@ impl BrowserState {
                 runtime.sessions.remove(&session_id);
             }
             return Err(error);
+        }
+        {
+            let mut runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            session.initializing = false;
         }
         self.emit(
             "sessionCreated",
@@ -279,7 +322,7 @@ impl BrowserState {
         } else {
             self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
-        let (profile_id, tab_id) = {
+        let (profile_id, tab_id, agent_restricted, network_proxy_url) = {
             let runtime = self
                 .inner
                 .lock()
@@ -295,26 +338,31 @@ impl BrowserState {
                     "Browser control belongs to the user; wait until they hand it back".to_string(),
                 );
             }
+            if actor == NavigationActor::Agent {
+                session.network_proxy.set_agent_restricted(true);
+            }
             (
                 session.profile_id.clone(),
                 format!("tab_{}", uuid::Uuid::new_v4().simple()),
+                Arc::clone(&session.agent_restricted),
+                session.network_proxy.url().clone(),
             )
         };
-        let profile_dir = self.profile_root.join(profile_id);
+        let profile_dir = self.profile_root.join(&profile_id);
         std::fs::create_dir_all(&profile_dir)
             .map_err(|error| format!("Could not create browser profile: {error}"))?;
         let BrowserChildWebview {
             webview,
-            agent_restricted,
             approved_agent_urls,
-            network_proxy,
         } = create_child_webview(
             self,
             session_id,
             &tab_id,
             url.clone(),
             profile_dir,
-            actor == NavigationActor::Agent,
+            &profile_id,
+            agent_restricted,
+            network_proxy_url,
             bounds,
         )?;
         let info = {
@@ -350,9 +398,7 @@ impl BrowserState {
                     title: url.host_str().unwrap_or("New tab").to_string(),
                     loading: true,
                     status: "loading".to_string(),
-                    agent_restricted,
                     approved_agent_urls,
-                    network_proxy,
                 },
             );
             session_info(session)
@@ -400,12 +446,13 @@ impl BrowserState {
                 );
             }
             session.observations.clear();
+            session
+                .network_proxy
+                .set_agent_restricted(actor == NavigationActor::Agent);
             let tab = session
                 .tabs
                 .get_mut(tab_id)
                 .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
-            tab.network_proxy
-                .set_agent_restricted(actor == NavigationActor::Agent);
             if actor == NavigationActor::Agent {
                 tab.approved_agent_urls
                     .lock()
@@ -439,11 +486,10 @@ impl BrowserState {
                 .sessions
                 .get(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            let source_tab = session
-                .tabs
-                .get(source_tab_id)
-                .ok_or_else(|| format!("Unknown browser tab '{source_tab_id}'"))?;
-            let actor = if source_tab.agent_restricted.load(Ordering::Relaxed) {
+            if !session.tabs.contains_key(source_tab_id) {
+                return Err(format!("Unknown browser tab '{source_tab_id}'"));
+            }
+            let actor = if session.agent_restricted.load(Ordering::Relaxed) {
                 NavigationActor::Agent
             } else {
                 NavigationActor::User
@@ -579,11 +625,11 @@ impl BrowserState {
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
         session.control_lease.acquire(owner);
         session.observations.clear();
+        session.network_proxy.set_agent_restricted(matches!(
+            session.control_lease.owner(),
+            BrowserControlOwner::Agent { .. }
+        ));
         for tab in session.tabs.values() {
-            tab.network_proxy.set_agent_restricted(matches!(
-                session.control_lease.owner(),
-                BrowserControlOwner::Agent { .. }
-            ));
             if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
                 if let Ok(mut approved) = tab.approved_agent_urls.lock() {
                     approved.clear();
@@ -628,9 +674,7 @@ impl BrowserState {
             );
         }
         session.observations.clear();
-        for tab in session.tabs.values() {
-            tab.network_proxy.set_agent_restricted(true);
-        }
+        session.network_proxy.set_agent_restricted(true);
         let info = session_info(session);
         drop(runtime);
         self.emit(
@@ -902,13 +946,69 @@ impl BrowserState {
         )
     }
 
-    pub async fn prepare_agent_reload(&self, session_id: &str, tab_id: &str) -> Result<(), String> {
-        let current_url = self
-            .webview(session_id, tab_id)?
-            .url()
-            .map_err(|error| format!("Could not read browser address: {error}"))?;
+    pub async fn reload_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        let (current_url, lease_generation) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            ) {
+                return Err("Browser control changed before the Agent could reload".to_string());
+            }
+            let current_url = session
+                .tabs
+                .get(tab_id)
+                .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?
+                .webview
+                .url()
+                .map_err(|error| format!("Could not read browser address: {error}"))?;
+            (current_url, session.control_lease.generation())
+        };
         validate_agent_network_url(&current_url).await?;
-        self.approve_agent_url(session_id, tab_id, &current_url)
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if session.control_lease.generation() != lease_generation
+            || !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        {
+            return Err("Browser control changed before the Agent could reload".to_string());
+        }
+        let tab = session
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        let approval = current_url.to_string();
+        tab.approved_agent_urls
+            .lock()
+            .map_err(|_| "Browser navigation policy is unavailable".to_string())?
+            .insert(approval.clone());
+        if let Err(error) = tab.webview.reload() {
+            if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                approved.remove(&approval);
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 
     pub fn close_tab(&self, session_id: &str, tab_id: &str) -> Result<BrowserSessionInfo, String> {
@@ -924,7 +1024,6 @@ impl BrowserState {
             .tabs
             .remove(tab_id)
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
-        tab.network_proxy.shutdown();
         let _ = tab.webview.close();
         if session.active_tab_id.as_deref() == Some(tab_id) {
             session.active_tab_id = session.tabs.keys().next().cloned();
@@ -956,8 +1055,11 @@ impl BrowserState {
             .sessions
             .remove(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        session.network_proxy.shutdown();
         for tab in session.tabs.into_values() {
-            tab.network_proxy.shutdown();
+            if session.temporary_profile {
+                let _ = tab.webview.clear_all_browsing_data();
+            }
             let _ = tab.webview.close();
         }
         if session.temporary_profile {
@@ -982,23 +1084,6 @@ impl BrowserState {
         for session_id in session_ids {
             let _ = self.close_session(&session_id);
         }
-    }
-
-    fn approve_agent_url(&self, session_id: &str, tab_id: &str, url: &Url) -> Result<(), String> {
-        let runtime = self
-            .inner
-            .lock()
-            .map_err(|_| "Browser runtime is unavailable".to_string())?;
-        let tab = runtime
-            .sessions
-            .get(session_id)
-            .and_then(|session| session.tabs.get(tab_id))
-            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
-        tab.approved_agent_urls
-            .lock()
-            .map_err(|_| "Browser navigation policy is unavailable".to_string())?
-            .insert(url.to_string());
-        Ok(())
     }
 
     fn revalidate_agent_action(
@@ -1093,6 +1178,23 @@ impl BrowserState {
 
     pub fn app(&self) -> &AppHandle {
         &self.app
+    }
+
+    fn conversation_creation_lock(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Arc<AsyncMutex<()>>, String> {
+        let mut locks = self
+            .creation_locks
+            .lock()
+            .map_err(|_| "Browser session creation coordinator is unavailable".to_string())?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(conversation_id).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(conversation_id.to_string(), Arc::downgrade(&lock));
+        Ok(lock)
     }
 }
 
