@@ -11,6 +11,7 @@
   "userControlling": "You are controlling this page",
   "sessionIdle": "Shared session ready",
   "takeControl": "Take control",
+  "handBackControl": "Hand back",
   "fullScreen": "Open Browser full screen",
   "exitFullScreen": "Exit Browser full screen",
   "close": "Close Browser Workspace",

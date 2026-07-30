@@ -31,6 +31,17 @@ impl ControlLease {
         self.owner = owner;
     }
 
+    /// Acquires the lease for an Agent only when the user has explicitly
+    /// released control. Agent calls may refresh an existing Agent lease, but
+    /// they must never use a read operation to take control back from a user.
+    pub fn try_acquire_agent(&mut self, call_id: String) -> bool {
+        if matches!(self.owner, BrowserControlOwner::User) {
+            return false;
+        }
+        self.acquire(BrowserControlOwner::Agent { call_id });
+        true
+    }
+
     pub fn release(&mut self) {
         self.acquire(BrowserControlOwner::None);
     }
@@ -53,5 +64,14 @@ mod tests {
         assert_eq!(lease.generation(), agent_generation);
         lease.acquire(BrowserControlOwner::User);
         assert!(lease.generation() > agent_generation);
+    }
+
+    #[test]
+    fn agent_cannot_take_control_back_from_the_user() {
+        let mut lease = ControlLease::default();
+        lease.acquire(BrowserControlOwner::User);
+
+        assert!(!lease.try_acquire_agent("agent-call".into()));
+        assert!(matches!(lease.owner(), BrowserControlOwner::User));
     }
 }

@@ -5,7 +5,7 @@ use nexa_core::error::CoreError;
 use nexa_core::tools::{Tool, ToolCategory, ToolExecutionContext, ToolOutput, ToolResult};
 
 use super::policy::{BrowserActionRisk, NavigationActor};
-use super::state::{BrowserActRequest, BrowserControlOwner, BrowserState};
+use super::state::{BrowserActRequest, BrowserState};
 
 #[derive(Clone)]
 pub struct NativeBrowserSessionTool {
@@ -179,12 +179,7 @@ impl Tool for NativeBrowserSessionTool {
                 .map_err(Self::invalid)?;
             let session = self
                 .state
-                .acquire_control(
-                    &session.id,
-                    BrowserControlOwner::Agent {
-                        call_id: context.call_id.to_string(),
-                    },
-                )
+                .acquire_agent_control(&session.id, context.call_id)
                 .map_err(Self::invalid)?;
             return success(
                 context.call_id,
@@ -211,6 +206,9 @@ impl Tool for NativeBrowserSessionTool {
         self.owned_session(session_id, conversation_id)?;
         if action == "close_session" {
             self.state
+                .acquire_agent_control(session_id, context.call_id)
+                .map_err(Self::invalid)?;
+            self.state
                 .close_session(session_id)
                 .map_err(Self::invalid)?;
             return success(
@@ -228,6 +226,9 @@ impl Tool for NativeBrowserSessionTool {
             );
         }
         if action == "open_tab" {
+            self.state
+                .acquire_agent_control(session_id, context.call_id)
+                .map_err(Self::invalid)?;
             let tab = self
                 .state
                 .open_tab(
@@ -237,14 +238,6 @@ impl Tool for NativeBrowserSessionTool {
                     None,
                 )
                 .await
-                .map_err(Self::invalid)?;
-            self.state
-                .acquire_control(
-                    session_id,
-                    BrowserControlOwner::Agent {
-                        call_id: context.call_id.to_string(),
-                    },
-                )
                 .map_err(Self::invalid)?;
             return success(
                 context.call_id,
@@ -262,6 +255,9 @@ impl Tool for NativeBrowserSessionTool {
         match action.as_str() {
             "activate_tab" => {
                 self.state
+                    .acquire_agent_control(session_id, context.call_id)
+                    .map_err(Self::invalid)?;
+                self.state
                     .activate_tab(session_id, tab_id)
                     .map_err(Self::invalid)?;
                 success(
@@ -272,6 +268,9 @@ impl Tool for NativeBrowserSessionTool {
             }
             "navigate" => {
                 self.state
+                    .acquire_agent_control(session_id, context.call_id)
+                    .map_err(Self::invalid)?;
+                self.state
                     .navigate(
                         session_id,
                         tab_id,
@@ -280,14 +279,6 @@ impl Tool for NativeBrowserSessionTool {
                     )
                     .await
                     .map_err(Self::invalid)?;
-                self.state
-                    .acquire_control(
-                        session_id,
-                        BrowserControlOwner::Agent {
-                            call_id: context.call_id.to_string(),
-                        },
-                    )
-                    .map_err(Self::invalid)?;
                 let observation = self
                     .state
                     .observe(session_id, tab_id, context.call_id)
@@ -295,27 +286,20 @@ impl Tool for NativeBrowserSessionTool {
                     .map_err(Self::invalid)?;
                 observation_result(context.call_id, observation)
             }
-            "go_back" | "go_forward" | "reload" => {
+            "go_back" | "go_forward" => Err(Self::invalid(
+                "Agent history traversal is unavailable under fail-closed network policy; navigate to an explicit validated URL instead",
+            )),
+            "reload" => {
                 self.state
-                    .acquire_control(
-                        session_id,
-                        BrowserControlOwner::Agent {
-                            call_id: context.call_id.to_string(),
-                        },
-                    )
+                    .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
-                if action == "reload" {
-                    self.state
-                        .prepare_agent_reload(session_id, tab_id)
-                        .await
-                        .map_err(Self::invalid)?;
-                }
-                match action.as_str() {
-                    "go_back" => self.state.go_back(session_id, tab_id),
-                    "go_forward" => self.state.go_forward(session_id, tab_id),
-                    _ => self.state.reload(session_id, tab_id),
-                }
-                .map_err(Self::invalid)?;
+                self.state
+                    .prepare_agent_reload(session_id, tab_id)
+                    .await
+                    .map_err(Self::invalid)?;
+                self.state
+                    .reload(session_id, tab_id)
+                    .map_err(Self::invalid)?;
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 let observation = self
                     .state
@@ -379,6 +363,9 @@ impl Tool for NativeBrowserSessionTool {
                 }
             }
             "close_tab" => {
+                self.state
+                    .acquire_agent_control(session_id, context.call_id)
+                    .map_err(Self::invalid)?;
                 self.state
                     .close_tab(session_id, tab_id)
                     .map_err(Self::invalid)?;

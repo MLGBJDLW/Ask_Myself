@@ -382,6 +382,15 @@ export function BrowserDock({
     }
   }, [reportError, session, t]);
 
+  const handBackControl = useCallback(async () => {
+    if (!session) return;
+    try {
+      setSession(await api.acquireBrowserControl(session.id, 'none'));
+    } catch (error) {
+      reportError(t('browser.actionFailed'), error);
+    }
+  }, [reportError, session, t]);
+
   const resize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (effectiveFullScreen) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -442,6 +451,11 @@ export function BrowserDock({
           {control === 'agent' && (
             <button type="button" onClick={() => void takeControl()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2 text-[11px] font-medium text-amber-300 hover:bg-amber-400/15">
               <Hand size={13} /> {t('browser.takeControl')}
+            </button>
+          )}
+          {control === 'user' && (
+            <button type="button" onClick={() => void handBackControl()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 text-[11px] font-medium text-emerald-300 hover:bg-emerald-400/15">
+              <Hand size={13} /> {t('browser.handBackControl')}
             </button>
           )}
           {!narrowViewport && (

@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
 use super::policy::{
-    classify_agent_action, navigation_preapproved, normalize_browser_url, BrowserActionRisk,
-    NavigationActor,
+    classify_agent_action, form_navigation_approval_key, navigation_preapproved,
+    normalize_browser_url, BrowserActionRisk, NavigationActor,
 };
+use super::scripts::BROWSER_INIT_SCRIPT;
 use super::state::{BrowserControlOwner, ControlLease};
 
 #[test]
@@ -31,6 +32,8 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
         "http://10.0.0.8",
         "http://169.254.169.254/latest/meta-data",
         "http://192.168.1.1",
+        "http://[::ffff:127.0.0.1]",
+        "http://[::ffff:10.0.0.8]",
     ] {
         assert!(
             normalize_browser_url(url, NavigationActor::Agent).is_err(),
@@ -41,6 +44,25 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
             "{url}"
         );
     }
+}
+
+#[test]
+fn validated_form_navigation_allows_one_query_variant_only() {
+    let form_action = url::Url::parse("https://public.example/search").unwrap();
+    let submitted = url::Url::parse("https://public.example/search?q=nexa").unwrap();
+    let other_path = url::Url::parse("https://public.example/admin?q=nexa").unwrap();
+    let mut approved = HashSet::from([form_navigation_approval_key(&form_action)]);
+
+    assert!(navigation_preapproved(&submitted, true, &mut approved));
+    assert!(!navigation_preapproved(&submitted, true, &mut approved));
+    assert!(!navigation_preapproved(&other_path, true, &mut approved));
+}
+
+#[test]
+fn observation_script_never_serializes_form_values_or_hidden_inputs() {
+    assert!(!BROWSER_INIT_SCRIPT.contains("el.value ||"));
+    assert!(BROWSER_INIT_SCRIPT.contains("input:not([type=\"hidden\" i])"));
+    assert!(BROWSER_INIT_SCRIPT.contains("isObservable(element)"));
 }
 
 #[test]
@@ -86,6 +108,16 @@ fn approval_policy_distinguishes_navigation_from_consequential_actions() {
             Some("button"),
             Some("Merge pull request"),
             None,
+            None
+        ),
+        BrowserActionRisk::Consequential,
+    );
+    assert_eq!(
+        classify_agent_action(
+            "click",
+            Some("link"),
+            Some("Delete account"),
+            Some("https://example.com/account/delete"),
             None
         ),
         BrowserActionRisk::Consequential,

@@ -25,7 +25,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   };
 
   const textOf = (el) => String(
-    el.getAttribute?.('aria-label') || el.innerText || el.value || el.getAttribute?.('name') || ''
+    el.getAttribute?.('aria-label') || el.innerText || el.getAttribute?.('placeholder') || el.getAttribute?.('name') || ''
   ).trim().slice(0, 240);
   const roleOf = (el) => el.getAttribute?.('role') || ({
     A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox'
@@ -59,27 +59,44 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     visit(document);
     return result;
   };
+  const isObservable = (element) => {
+    if (String(element.tagName || '').toUpperCase() === 'INPUT' && String(element.type || '').toLowerCase() === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
   const interactiveElements = () => {
-    const selector = 'a[href],button,input,textarea,select,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[tabindex]';
+    const selector = 'a[href],button,input:not([type="hidden" i]),textarea,select,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[tabindex]';
     const seen = new Set();
     const elements = [];
     for (const root of roots()) {
       for (const element of root.querySelectorAll?.(selector) || []) {
-        if (!seen.has(element)) { seen.add(element); elements.push(element); }
+        if (!seen.has(element) && isObservable(element)) { seen.add(element); elements.push(element); }
         if (elements.length >= 300) return elements;
       }
     }
     return elements;
   };
+  const navigationTargetOf = (el) => {
+    if (el.href) return el.href;
+    const tag = String(el.tagName || '').toUpperCase();
+    const type = String(el.type || (tag === 'BUTTON' ? 'submit' : '')).toLowerCase();
+    const submitter = (tag === 'BUTTON' && type === 'submit') || (tag === 'INPUT' && (type === 'submit' || type === 'image'));
+    if (!submitter || !el.form) return null;
+    try {
+      return new URL(el.getAttribute?.('formaction') || el.form.getAttribute?.('action') || location.href, document.baseURI).href;
+    } catch (_) { return null; }
+  };
   const describe = (el, ref) => {
     const rect = el.getBoundingClientRect();
     const name = textOf(el);
+    const navigationTarget = navigationTargetOf(el);
     return {
       ref,
       tag: String(el.tagName || '').toLowerCase(),
       role: roleOf(el),
       name,
-      href: el.href || null,
+      href: navigationTarget,
       inputType: el.type || null,
       enabled: !el.disabled,
       visible: rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden',
@@ -89,7 +106,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
         id: el.id || null,
         testId: el.getAttribute?.('data-testid') || null,
         name: el.getAttribute?.('name') || null,
-        href: el.getAttribute?.('href') || null,
+        href: navigationTarget,
         cssPath: cssPath(el),
         textHash: name,
       },

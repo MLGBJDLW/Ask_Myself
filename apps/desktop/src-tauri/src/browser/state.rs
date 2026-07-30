@@ -16,8 +16,8 @@ use tauri::{AppHandle, Emitter, Webview};
 use url::Url;
 
 use super::policy::{
-    classify_agent_action, normalize_browser_url, validate_agent_network_url, BrowserActionRisk,
-    NavigationActor,
+    classify_agent_action, form_navigation_approval_key, normalize_browser_url,
+    validate_agent_network_url, BrowserActionRisk, NavigationActor,
 };
 use super::scripts::OBSERVE_EXPRESSION;
 use super::webview_host::{create_child_webview, eval_json};
@@ -567,6 +567,37 @@ impl BrowserState {
         Ok(info)
     }
 
+    pub fn acquire_agent_control(
+        &self,
+        session_id: &str,
+        call_id: &str,
+    ) -> Result<BrowserSessionInfo, String> {
+        let mut runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if !session.control_lease.try_acquire_agent(call_id.to_string()) {
+            return Err(
+                "Browser control belongs to the user; wait until they hand it back".to_string(),
+            );
+        }
+        session.observations.clear();
+        for tab in session.tabs.values() {
+            tab.agent_restricted.store(true, Ordering::Relaxed);
+        }
+        let info = session_info(session);
+        drop(runtime);
+        self.emit(
+            "controlChanged",
+            serde_json::json!({ "sessionId": session_id, "owner": info.control_owner }),
+        );
+        Ok(info)
+    }
+
     pub fn release_control(&self, session_id: &str) -> Result<BrowserSessionInfo, String> {
         let mut runtime = self
             .inner
@@ -598,12 +629,7 @@ impl BrowserState {
             .url()
             .map_err(|error| format!("Could not read browser address: {error}"))?;
         validate_agent_network_url(&current_url).await?;
-        self.acquire_control(
-            session_id,
-            BrowserControlOwner::Agent {
-                call_id: call_id.to_string(),
-            },
-        )?;
+        self.acquire_agent_control(session_id, call_id)?;
         let deadline = Instant::now() + Duration::from_secs(20);
         let value = loop {
             let loading = self.tab_info(session_id, tab_id)?.loading;
@@ -737,7 +763,19 @@ impl BrowserState {
                 let target =
                     Url::parse(href).map_err(|_| "Browser link target is invalid".to_string())?;
                 validate_agent_network_url(&target).await?;
-                self.approve_agent_url(request.session_id, request.tab_id, &target)?;
+                let form_submitter = expected.as_ref().is_some_and(|element| {
+                    element.tag == "button"
+                        || (element.tag == "input"
+                            && element
+                                .input_type
+                                .as_deref()
+                                .is_some_and(|kind| matches!(kind, "submit" | "image")))
+                });
+                if form_submitter {
+                    self.approve_agent_form_url(request.session_id, request.tab_id, &target)?;
+                } else {
+                    self.approve_agent_url(request.session_id, request.tab_id, &target)?;
+                }
             }
         }
         let expression = format!(
@@ -897,6 +935,28 @@ impl BrowserState {
             .lock()
             .map_err(|_| "Browser navigation policy is unavailable".to_string())?
             .insert(url.to_string());
+        Ok(())
+    }
+
+    fn approve_agent_form_url(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        url: &Url,
+    ) -> Result<(), String> {
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let tab = runtime
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.tabs.get(tab_id))
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        tab.approved_agent_urls
+            .lock()
+            .map_err(|_| "Browser navigation policy is unavailable".to_string())?
+            .insert(form_navigation_approval_key(url));
         Ok(())
     }
 

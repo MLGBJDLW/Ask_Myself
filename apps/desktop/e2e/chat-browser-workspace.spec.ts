@@ -54,7 +54,7 @@ test.beforeEach(async ({ page }) => {
       profileId: string;
       activeTabId: string;
       tabs: BrowserTab[];
-      controlOwner: { type: 'user' };
+      controlOwner: { type: 'user' | 'none' };
     };
 
     let session: BrowserSession | null = null;
@@ -66,6 +66,7 @@ test.beforeEach(async ({ page }) => {
       bounds: [] as Array<Record<string, unknown>>,
       picks: [] as string[],
       popups: [] as Array<Record<string, unknown>>,
+      controls: [] as string[],
     };
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -215,6 +216,11 @@ test.beforeEach(async ({ page }) => {
         case 'browser_selected_text_cmd':
           return 'This domain is for use in illustrative examples.';
         case 'browser_acquire_control_cmd':
+          if (session) {
+            const owner = String(args.owner ?? 'none') as 'user' | 'none';
+            browserDiagnostics.controls.push(owner);
+            session.controlOwner = { type: owner };
+          }
           return clone(session);
         case 'browser_go_back_cmd':
         case 'browser_go_forward_cmd':
@@ -280,6 +286,8 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
   await expect(page.getByTestId('browser-dock')).toHaveCount(0);
   await page.keyboard.press('Control+Shift+B');
   await expect(page.getByTestId('browser-dock')).toBeVisible();
+  await page.getByRole('button', { name: 'Hand back' }).click();
+  await expect(page.getByText('Shared session ready')).toBeVisible();
 
   const diagnostics = await page.evaluate(() => (window as unknown as {
     __browserDiagnostics__: {
@@ -288,6 +296,7 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
       bounds: Array<Record<string, unknown>>;
       picks: string[];
       popups: Array<Record<string, unknown>>;
+      controls: string[];
     };
   }).__browserDiagnostics__);
   expect(diagnostics.creates).toHaveLength(1);
@@ -304,4 +313,5 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
     url: 'https://example.com/popup',
     bounds: expect.any(Object),
   });
+  expect(diagnostics.controls).toContain('none');
 });

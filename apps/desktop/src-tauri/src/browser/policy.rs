@@ -23,13 +23,22 @@ fn private_or_special_ip(ip: IpAddr) -> bool {
                 || ip.is_broadcast()
         }
         IpAddr::V6(ip) => {
-            ip.is_loopback()
+            ip.to_ipv4_mapped()
+                .is_some_and(|mapped| private_or_special_ip(IpAddr::V4(mapped)))
+                || ip.is_loopback()
                 || ip.is_multicast()
                 || ip.is_unspecified()
                 || (ip.segments()[0] & 0xfe00) == 0xfc00
                 || (ip.segments()[0] & 0xffc0) == 0xfe80
         }
     }
+}
+
+pub fn form_navigation_approval_key(url: &Url) -> String {
+    let mut target = url.clone();
+    target.set_query(None);
+    target.set_fragment(None);
+    format!("form:{}", target.as_str())
 }
 
 fn agent_host_allowed(url: &Url) -> bool {
@@ -119,5 +128,7 @@ pub fn navigation_preapproved(
     approved_agent_urls: &mut HashSet<String>,
 ) -> bool {
     navigation_allowed(url, agent_restricted)
-        && (!agent_restricted || approved_agent_urls.remove(url.as_str()))
+        && (!agent_restricted
+            || approved_agent_urls.remove(url.as_str())
+            || approved_agent_urls.remove(&form_navigation_approval_key(url)))
 }

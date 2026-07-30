@@ -56,9 +56,6 @@ pub fn classify_action_risk(
     ) {
         return BrowserActionRisk::Low;
     }
-    if action == "click" && role == "link" && href.is_some_and(|value| value.starts_with("http")) {
-        return BrowserActionRisk::Low;
-    }
     let consequential_words = [
         "submit",
         "send",
@@ -87,6 +84,9 @@ pub fn classify_action_risk(
     if consequential_words.iter().any(|word| name.contains(word)) || action == "press" {
         return BrowserActionRisk::Consequential;
     }
+    if action == "click" && role == "link" && href.is_some_and(|value| value.starts_with("http")) {
+        return BrowserActionRisk::Low;
+    }
     if action == "type"
         && matches!(
             input_type.as_str(),
@@ -110,6 +110,16 @@ mod tests {
         );
         assert_eq!(
             classify_action_risk("click", Some("button"), Some("Pay now"), None, None),
+            BrowserActionRisk::Consequential
+        );
+        assert_eq!(
+            classify_action_risk(
+                "click",
+                Some("link"),
+                Some("Delete account"),
+                Some("https://example.com/account/delete"),
+                None
+            ),
             BrowserActionRisk::Consequential
         );
         assert_eq!(
