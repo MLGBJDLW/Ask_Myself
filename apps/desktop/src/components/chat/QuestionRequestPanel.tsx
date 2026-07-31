@@ -217,15 +217,17 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
 
       <footer className="flex items-center justify-between gap-3 border-t border-border/60 bg-surface-2/55 px-4 py-3">
         <p className="text-[11px] text-text-tertiary">{t('chat.questionResponseHint')}</p>
-        <Button
-          size="sm"
-          variant="primary"
-          icon={<Send size={13} />}
-          disabled={!complete || isAnswered || !onSubmit}
-          onClick={submit}
-        >
-          {isAnswered ? t('chat.questionAnswered') : t('chat.questionSubmit')}
-        </Button>
+        {!autoSubmitChoices && (
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<Send size={13} />}
+            disabled={!complete || isAnswered || !onSubmit}
+            onClick={submit}
+          >
+            {isAnswered ? t('chat.questionAnswered') : t('chat.questionSubmit')}
+          </Button>
+        )}
       </footer>
     </motion.section>
   );
