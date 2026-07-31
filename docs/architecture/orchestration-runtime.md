@@ -96,8 +96,11 @@ worktree and ephemeral temp storage are writable. If that backend is unavailable
 Code Ultra refuses to start. Free-form shell commands, shell interpreters, inline
 interpreter code, and `project_tool run` remain withheld as defense in depth.
 Test, lint, typecheck, and build gates are derived from successful command
-execution artifacts, never model-authored labels. Only after every other required
-gate passes does the controller generate a binary Git patch,
+execution artifacts, never model-authored labels. Before execution, the
+controller inspects project manifests and configuration to require only
+supported gate categories; missing categories are recorded as controller-owned
+not-applicable gates. Only after every other required gate passes does the
+controller generate a binary Git patch,
 verify it with `git apply --check`,
 promote it to the original clean worktree, and remove the temporary source. The
 write-isolation gate is set only by this runtime transition; a model-authored

@@ -1,6 +1,7 @@
 //! Versioned workflow intermediate representation for deterministic orchestration.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +127,14 @@ pub struct WorkflowCompletionContract {
     pub require_all_nodes_succeeded: bool,
     pub require_verification_gates: bool,
     pub require_evidence_ledger: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectVerificationSupport {
+    pub tests: bool,
+    pub lint: bool,
+    pub typecheck: bool,
+    pub build: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -607,7 +616,6 @@ impl WorkflowIr {
             matches!(
                 argument.as_str(),
                 "-h" | "--help"
-                    | "-v"
                     | "--version"
                     | "--no-run"
                     | "--list"
@@ -620,6 +628,7 @@ impl WorkflowIr {
         }
         let first = args.first().map(String::as_str);
         let second = args.get(1).map(String::as_str);
+        let third = args.get(2).map(String::as_str);
         let package_script = if matches!(program_name.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
             if first == Some("run") {
                 second
@@ -657,6 +666,7 @@ impl WorkflowIr {
             || script_is("lint")
             || npx_tool == Some("eslint")
             || (npx_tool == Some("ruff") && second == Some("check"))
+            || (python_module == Some("ruff") && third == Some("check"))
         {
             gate_ids.push("lint");
         }
@@ -665,6 +675,7 @@ impl WorkflowIr {
             || script_is("typecheck")
             || script_is("type-check")
             || matches!(npx_tool, Some("tsc" | "mypy" | "pyright"))
+            || matches!(python_module, Some("mypy" | "pyright"))
         {
             gate_ids.push("typecheck");
         }
@@ -673,6 +684,7 @@ impl WorkflowIr {
             || script_is("build")
             || script_is("compile")
             || script_is("package")
+            || python_module == Some("build")
             || (program_name == "cmake" && first == Some("--build"))
             || (program_name == "make" && (first.is_none() || first == Some("all")))
         {
@@ -842,6 +854,34 @@ impl WorkflowIr {
         self.refresh_checkpoint();
     }
 
+    /// Bind execution gates to tooling detected by the controller before the
+    /// model can mutate the project. Unsupported categories remain visible as
+    /// controller-validated not-applicable gates and cannot deadlock a run.
+    pub fn configure_project_verification_support(&mut self, support: ProjectVerificationSupport) {
+        for gate in &mut self.verification_gates {
+            let supported = match gate.kind {
+                VerificationGateKind::Tests => Some(support.tests),
+                VerificationGateKind::Lint => Some(support.lint),
+                VerificationGateKind::Typecheck => Some(support.typecheck),
+                VerificationGateKind::Build => Some(support.build),
+                _ => None,
+            };
+            let Some(supported) = supported else {
+                continue;
+            };
+            gate.required = supported;
+            gate.passed = (!supported).then_some(true);
+            gate.detail = Some(if supported {
+                "Controller detected applicable project tooling; a successful runtime command is required."
+                    .to_string()
+            } else {
+                "Controller marked this gate not applicable because no matching project tooling was detected before execution."
+                    .to_string()
+            });
+        }
+        self.refresh_checkpoint();
+    }
+
     pub fn ready_to_promote_isolated_writes(&self) -> bool {
         let nodes_pass = !self.completion_contract.require_all_nodes_succeeded
             || self
@@ -899,6 +939,82 @@ impl WorkflowIr {
             .map(|node| node.id.clone())
             .collect();
     }
+}
+
+pub fn detect_project_verification_support(roots: &[PathBuf]) -> ProjectVerificationSupport {
+    let mut support = ProjectVerificationSupport::default();
+    for root in roots.iter().filter(|root| root.is_dir()) {
+        if root.join("Cargo.toml").is_file() {
+            support.tests = true;
+            support.lint = true;
+            support.typecheck = true;
+            support.build = true;
+        }
+
+        if let Ok(raw) = std::fs::read_to_string(root.join("package.json")) {
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let scripts = manifest
+                    .get("scripts")
+                    .and_then(serde_json::Value::as_object);
+                let has_script = |name: &str| {
+                    scripts.is_some_and(|scripts| {
+                        scripts.iter().any(|(script_name, command)| {
+                            (script_name == name || script_name.starts_with(&format!("{name}:")))
+                                && command.as_str().is_some_and(|command| {
+                                    !command.trim().is_empty()
+                                        && !(name == "test"
+                                            && command
+                                                .to_ascii_lowercase()
+                                                .contains("no test specified"))
+                                })
+                        })
+                    })
+                };
+                support.tests |= has_script("test");
+                support.lint |= has_script("lint");
+                support.typecheck |= has_script("typecheck") || has_script("type-check");
+                support.build |=
+                    has_script("build") || has_script("compile") || has_script("package");
+            }
+        }
+        support.typecheck |= root.join("tsconfig.json").is_file();
+        support.lint |= has_any(
+            root,
+            &[
+                "eslint.config.js",
+                "eslint.config.mjs",
+                "eslint.config.cjs",
+                ".eslintrc",
+                ".eslintrc.json",
+                ".eslintrc.js",
+                ".eslintrc.cjs",
+            ],
+        );
+
+        if root.join("go.mod").is_file() {
+            support.tests = true;
+            support.build = true;
+        }
+        support.build |= has_any(root, &["Makefile", "makefile", "CMakeLists.txt"]);
+
+        let pyproject = std::fs::read_to_string(root.join("pyproject.toml"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        support.tests |= root.join("tests").is_dir()
+            || has_any(root, &["pytest.ini", "tox.ini"])
+            || pyproject.contains("[tool.pytest");
+        support.lint |=
+            has_any(root, &["ruff.toml", ".ruff.toml"]) || pyproject.contains("[tool.ruff");
+        support.typecheck |=
+            has_any(root, &["mypy.ini", "pyrightconfig.json"]) || pyproject.contains("[tool.mypy");
+    }
+    support
+}
+
+fn has_any(root: &Path, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| root.join(candidate).is_file())
 }
 
 pub fn compile_workflow_ir(
@@ -1390,7 +1506,7 @@ mod tests {
             "kind": "commandExecution",
             "execution": {
                 "program": "python",
-                "args": ["-m", "pytest"],
+                "args": ["-m", "pytest", "-v"],
                 "exitCode": 0,
                 "timedOut": false
             }
@@ -1409,7 +1525,7 @@ mod tests {
                 .find(|gate| gate.kind == VerificationGateKind::Tests)
                 .and_then(|gate| gate.passed),
             Some(true),
-            "python -m pytest must satisfy the executed tests gate"
+            "python -m pytest -v must satisfy the executed tests gate"
         );
         for (call_id, program, args) in [
             ("test-1", "cargo", vec!["test"]),
@@ -1503,6 +1619,67 @@ mod tests {
                     .iter()
                     .all(|tool| !tool_may_mutate_workspace(tool))
         }));
+    }
+
+    #[test]
+    fn controller_requires_only_project_supported_verification_gates() {
+        let python = tempfile::tempdir().unwrap();
+        std::fs::create_dir(python.path().join("tests")).unwrap();
+        std::fs::write(
+            python.path().join("pyproject.toml"),
+            "[project]\nname = \"small-python-package\"\n",
+        )
+        .unwrap();
+        let support = detect_project_verification_support(&[python.path().to_path_buf()]);
+        assert_eq!(
+            support,
+            ProjectVerificationSupport {
+                tests: true,
+                lint: false,
+                typecheck: false,
+                build: false,
+            }
+        );
+
+        let mut workflow = compile_workflow_ir(&plan(), &profile(), true).unwrap();
+        workflow.configure_project_verification_support(support);
+        for gate in workflow.verification_gates.iter().filter(|gate| {
+            matches!(
+                gate.kind,
+                VerificationGateKind::Tests
+                    | VerificationGateKind::Lint
+                    | VerificationGateKind::Typecheck
+                    | VerificationGateKind::Build
+            )
+        }) {
+            if gate.kind == VerificationGateKind::Tests {
+                assert!(gate.required);
+                assert_eq!(gate.passed, None);
+            } else {
+                assert!(!gate.required);
+                assert_eq!(gate.passed, Some(true));
+                assert!(gate
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("not applicable")));
+            }
+        }
+
+        let rust = tempfile::tempdir().unwrap();
+        std::fs::write(
+            rust.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_project_verification_support(&[rust.path().to_path_buf()]),
+            ProjectVerificationSupport {
+                tests: true,
+                lint: true,
+                typecheck: true,
+                build: true,
+            }
+        );
     }
 
     #[test]

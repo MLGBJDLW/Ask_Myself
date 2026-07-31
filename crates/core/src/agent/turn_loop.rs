@@ -186,6 +186,29 @@ impl AgentExecutor {
         .map_err(CoreError::InvalidInput)?;
         if self.config.execution_mode.is_plan() {
             workflow_ir.configure_for_plan_mode();
+        } else {
+            let verification_roots = if source_scope.is_empty() {
+                let sources = db.list_sources()?;
+                if sources.len() == 1 {
+                    sources
+                        .into_iter()
+                        .map(|source| std::path::PathBuf::from(source.root_path))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                source_scope
+                    .iter()
+                    .map(|source_id| {
+                        db.get_source(source_id)
+                            .map(|source| std::path::PathBuf::from(source.root_path))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            workflow_ir.configure_project_verification_support(
+                crate::workflow_ir::detect_project_verification_support(&verification_roots),
+            );
         }
         let mut workspace_isolation = if !self.config.execution_mode.is_plan()
             && workflow_ir.requires_runtime_write_isolation()
