@@ -31,6 +31,7 @@ import {
   type ProviderPreset,
 } from "../../lib/providerPresets";
 import {
+  bindProviderModelCatalogCredential,
   catalogMatchesProvider,
   isProviderModelCatalogStale,
   loadProviderModelCatalog,
@@ -274,7 +275,7 @@ export function AgentConfigForm({
   const [useCustomModel, setUseCustomModel] = useState(initialUsesCustomModel);
   const [modelSearch, setModelSearch] = useState("");
   const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalogSnapshot | null>(() =>
-    loadProviderModelCatalog(initialProvider, initialBaseUrl),
+    loadProviderModelCatalog(initialProvider, initialBaseUrl, initialIsLocal ? "" : (config?.apiKey ?? "")),
   );
   const [showAdvanced, setShowAdvanced] = useState(!!config);
   const initialDraftRef = useRef<SaveAgentConfigInput>({
@@ -313,7 +314,7 @@ export function AgentConfigForm({
     findProviderPreset({ provider, baseUrl }) ??
     (preset?.provider === provider ? preset : null);
   const matchingModelCatalog = modelCatalog
-    && catalogMatchesProvider(modelCatalog, provider, baseUrl)
+    && catalogMatchesProvider(modelCatalog, provider, baseUrl, isLocal ? "" : apiKey)
     ? modelCatalog
     : null;
   const activePreset = useMemo(() => {
@@ -471,8 +472,8 @@ export function AgentConfigForm({
   }, [provider]);
 
   useEffect(() => {
-    setModelCatalog(loadProviderModelCatalog(provider, baseUrl));
-  }, [baseUrl, provider]);
+    setModelCatalog(loadProviderModelCatalog(provider, baseUrl, isLocal ? "" : apiKey));
+  }, [apiKey, baseUrl, isLocal, provider]);
 
   useEffect(() => {
     const previousProvider = previousProviderRef.current;
@@ -730,8 +731,12 @@ export function AgentConfigForm({
     setTestLoading(true);
     setTestResult(null);
     try {
-      const catalog = await api.testAgentConnection(buildInput());
-      saveProviderModelCatalog(catalog);
+      const input = buildInput();
+      const catalog = bindProviderModelCatalogCredential(
+        await api.testAgentConnection(input),
+        input.apiKey,
+      );
+      saveProviderModelCatalog(catalog, input.apiKey);
       setModelCatalog(catalog);
       setTestResult({
         ok: true,
@@ -757,8 +762,12 @@ export function AgentConfigForm({
   const handleCatalogRefresh = async () => {
     setCatalogLoading(true);
     try {
-      const catalog = await api.refreshProviderModelCatalog(buildInput());
-      saveProviderModelCatalog(catalog);
+      const input = buildInput();
+      const catalog = bindProviderModelCatalogCredential(
+        await api.refreshProviderModelCatalog(input),
+        input.apiKey,
+      );
+      saveProviderModelCatalog(catalog, input.apiKey);
       setModelCatalog(catalog);
       toast.success(
         catalog.liveDiscoverySucceeded

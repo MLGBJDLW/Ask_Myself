@@ -1,4 +1,5 @@
 import type { ProviderModelPreset, ReasoningEffortLevel } from './providerTypes';
+import { credentialFingerprint } from './credentialFingerprint';
 
 export interface ProviderModelCatalogEntry extends ProviderModelPreset {
   source: 'official' | 'discovered' | 'curated';
@@ -18,10 +19,11 @@ export interface ProviderModelCatalogSnapshot {
   models: ProviderModelCatalogEntry[];
   refreshedAt: string;
   liveDiscoverySucceeded: boolean;
+  credentialFingerprint?: string;
 }
 
 interface StoredProviderModelCatalog {
-  version: 1;
+  version: 2;
   snapshot: ProviderModelCatalogSnapshot;
 }
 
@@ -35,17 +37,27 @@ function normalizeBaseUrl(value: string | null | undefined): string {
 export function providerModelCatalogCacheKey(
   provider: string,
   baseUrl: string | null | undefined,
+  apiKey: string,
 ): string {
-  return `${CACHE_PREFIX}${encodeURIComponent(`${provider.trim().toLowerCase()}::${normalizeBaseUrl(baseUrl)}`)}`;
+  return `${CACHE_PREFIX}${encodeURIComponent(`${provider.trim().toLowerCase()}::${normalizeBaseUrl(baseUrl)}::${credentialFingerprint(apiKey)}`)}`;
+}
+
+export function bindProviderModelCatalogCredential(
+  snapshot: ProviderModelCatalogSnapshot,
+  apiKey: string,
+): ProviderModelCatalogSnapshot {
+  return { ...snapshot, credentialFingerprint: credentialFingerprint(apiKey) };
 }
 
 export function catalogMatchesProvider(
   snapshot: ProviderModelCatalogSnapshot,
   provider: string,
   baseUrl: string | null | undefined,
+  apiKey: string,
 ): boolean {
   return snapshot.provider.trim().toLowerCase() === provider.trim().toLowerCase()
-    && normalizeBaseUrl(snapshot.baseUrl) === normalizeBaseUrl(baseUrl);
+    && normalizeBaseUrl(snapshot.baseUrl) === normalizeBaseUrl(baseUrl)
+    && snapshot.credentialFingerprint === credentialFingerprint(apiKey);
 }
 
 export function isProviderModelCatalogStale(
@@ -59,14 +71,15 @@ export function isProviderModelCatalogStale(
 export function loadProviderModelCatalog(
   provider: string,
   baseUrl: string | null | undefined,
+  apiKey: string,
   storage: Pick<Storage, 'getItem'> = localStorage,
 ): ProviderModelCatalogSnapshot | null {
   try {
-    const raw = storage.getItem(providerModelCatalogCacheKey(provider, baseUrl));
+    const raw = storage.getItem(providerModelCatalogCacheKey(provider, baseUrl, apiKey));
     if (!raw) return null;
     const stored = JSON.parse(raw) as Partial<StoredProviderModelCatalog>;
-    const snapshot = stored.version === 1 ? stored.snapshot : null;
-    if (!snapshot || !Array.isArray(snapshot.models) || !catalogMatchesProvider(snapshot, provider, baseUrl)) {
+    const snapshot = stored.version === 2 ? stored.snapshot : null;
+    if (!snapshot || !Array.isArray(snapshot.models) || !catalogMatchesProvider(snapshot, provider, baseUrl, apiKey)) {
       return null;
     }
     return snapshot;
@@ -77,12 +90,14 @@ export function loadProviderModelCatalog(
 
 export function saveProviderModelCatalog(
   snapshot: ProviderModelCatalogSnapshot,
+  apiKey: string,
   storage: Pick<Storage, 'setItem'> = localStorage,
 ): void {
   try {
+    const boundSnapshot = bindProviderModelCatalogCredential(snapshot, apiKey);
     storage.setItem(
-      providerModelCatalogCacheKey(snapshot.provider, snapshot.baseUrl),
-      JSON.stringify({ version: 1, snapshot } satisfies StoredProviderModelCatalog),
+      providerModelCatalogCacheKey(snapshot.provider, snapshot.baseUrl, apiKey),
+      JSON.stringify({ version: 2, snapshot: boundSnapshot } satisfies StoredProviderModelCatalog),
     );
   } catch {
     // A fresh in-memory catalog remains usable even when browser storage is

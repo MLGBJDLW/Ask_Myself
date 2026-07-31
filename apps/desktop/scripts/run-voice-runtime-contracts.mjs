@@ -127,6 +127,20 @@ function loadProviderIcons() {
 }
 
 function loadTtsVoiceCatalog() {
+  const fingerprintPath = path.join(root, 'src', 'lib', 'credentialFingerprint.ts');
+  const fingerprintTranspiled = ts.transpileModule(fs.readFileSync(fingerprintPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const fingerprintModule = { exports: {} };
+  vm.runInNewContext(
+    fingerprintTranspiled.outputText,
+    { exports: fingerprintModule.exports, module: fingerprintModule },
+    { filename: fingerprintPath },
+  );
+
   const catalogPath = path.join(root, 'src', 'lib', 'ttsVoiceCatalog.ts');
   const transpiled = ts.transpileModule(fs.readFileSync(catalogPath, 'utf8'), {
     compilerOptions: {
@@ -135,7 +149,11 @@ function loadTtsVoiceCatalog() {
     },
   });
   const module = { exports: {} };
-  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
+  const require = (specifier) => {
+    if (specifier === './credentialFingerprint') return fingerprintModule.exports;
+    throw new Error(`Unexpected TTS catalog dependency: ${specifier}`);
+  };
+  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module, require }, {
     filename: catalogPath,
   });
   return module.exports;

@@ -1,4 +1,5 @@
 import {
+  bindProviderModelCatalogCredential,
   catalogMatchesProvider,
   isProviderModelCatalogStale,
   loadProviderModelCatalog,
@@ -50,35 +51,43 @@ function testCatalogCache(): void {
     setItem: (key: string, value: string) => { values.set(key, value); },
   };
   const value = snapshot();
+  const apiKey = 'account-one-secret';
+  const boundValue = bindProviderModelCatalogCredential(value, apiKey);
 
-  saveProviderModelCatalog(value, storage);
+  saveProviderModelCatalog(boundValue, apiKey, storage);
 
   assertEqual(
-    providerModelCatalogCacheKey(value.provider, value.baseUrl),
-    providerModelCatalogCacheKey(value.provider, value.baseUrl?.replace(/\/$/, '')),
+    providerModelCatalogCacheKey(value.provider, value.baseUrl, apiKey),
+    providerModelCatalogCacheKey(value.provider, value.baseUrl?.replace(/\/$/, ''), apiKey),
     'cache key should normalize a trailing slash',
   );
   assertDeepEqual(
-    loadProviderModelCatalog(value.provider, value.baseUrl?.replace(/\/$/, ''), storage),
-    value,
+    loadProviderModelCatalog(value.provider, value.baseUrl?.replace(/\/$/, ''), apiKey, storage),
+    boundValue,
     'catalog should restore the cached live snapshot',
   );
   assertEqual(
-    loadProviderModelCatalog('open_ai', value.baseUrl, storage),
+    loadProviderModelCatalog('open_ai', value.baseUrl, apiKey, storage),
     null,
     'catalog cache should be isolated by provider',
+  );
+  assertEqual(
+    loadProviderModelCatalog(value.provider, value.baseUrl, 'account-two-secret', storage),
+    null,
+    'catalog cache should be isolated by credential',
   );
 }
 
 function testCatalogFreshness(): void {
   const value = snapshot();
+  const boundValue = bindProviderModelCatalogCredential(value, 'account-secret');
   assertEqual(
-    catalogMatchesProvider(value, 'alibaba_model_studio', value.baseUrl),
+    catalogMatchesProvider(boundValue, 'alibaba_model_studio', value.baseUrl, 'account-secret'),
     true,
     'matching provider and endpoint should be accepted',
   );
   assertEqual(
-    catalogMatchesProvider(value, 'open_ai', value.baseUrl),
+    catalogMatchesProvider(boundValue, 'open_ai', value.baseUrl, 'account-secret'),
     false,
     'different providers should not share snapshots',
   );
