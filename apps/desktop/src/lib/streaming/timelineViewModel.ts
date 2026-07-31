@@ -804,6 +804,11 @@ export function buildCollapsedLiveTrace(input: {
   const finalItem = timeline[timeline.length - 1];
   if (finalItem?.kind !== 'reply' || finalItem.isStreaming) return null;
 
+  // Reply-channel content is user-visible answer material, never reasoning.
+  // Without explicit backend finality metadata, folding an earlier reply can
+  // hide the real answer whenever a model appends a short closing summary.
+  if (timeline.slice(0, -1).some((item) => item.kind === 'reply')) return null;
+
   const historySections = timeline
     .slice(0, -1)
     .flatMap<TimelineSection>((item) =>
