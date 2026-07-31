@@ -20,10 +20,11 @@ export interface TtsVoiceCatalogSnapshot {
   voices: TtsVoiceCatalogEntry[];
   refreshedAt: string;
   liveDiscoverySucceeded: boolean;
+  credentialFingerprint?: string;
 }
 
 interface StoredTtsVoiceCatalog {
-  version: 1;
+  version: 2;
   snapshot: TtsVoiceCatalogSnapshot;
 }
 
@@ -36,8 +37,23 @@ function normalize(value: string | null | undefined): string {
 
 type TtsVoiceCatalogIdentity = Pick<
   TextToSpeechConfig,
-  'provider' | 'apiStyle' | 'baseUrl' | 'model'
+  'provider' | 'apiStyle' | 'apiKey' | 'baseUrl' | 'model'
 >;
+
+export function ttsCredentialFingerprint(apiKey: string): string {
+  const credential = apiKey.trim();
+  if (!credential) return 'anonymous';
+  let hash = 0x811c9dc5;
+  let secondary = 0x9e3779b9;
+  for (let index = 0; index < credential.length; index += 1) {
+    const code = credential.charCodeAt(index);
+    hash ^= code;
+    hash = Math.imul(hash, 0x01000193);
+    secondary = Math.imul(secondary ^ code, 0x85ebca6b);
+    secondary ^= secondary >>> 13;
+  }
+  return `${credential.length}-${(hash >>> 0).toString(16).padStart(8, '0')}${(secondary >>> 0).toString(16).padStart(8, '0')}`;
+}
 
 export function ttsVoiceCatalogCacheKey(config: TtsVoiceCatalogIdentity): string {
   return `${CACHE_PREFIX}${encodeURIComponent([
@@ -45,7 +61,18 @@ export function ttsVoiceCatalogCacheKey(config: TtsVoiceCatalogIdentity): string
     normalize(config.apiStyle),
     normalize(config.baseUrl),
     normalize(config.model),
+    ttsCredentialFingerprint(config.apiKey),
   ].join('::'))}`;
+}
+
+export function bindTtsVoiceCatalogCredential(
+  snapshot: TtsVoiceCatalogSnapshot,
+  config: TtsVoiceCatalogIdentity,
+): TtsVoiceCatalogSnapshot {
+  return {
+    ...snapshot,
+    credentialFingerprint: ttsCredentialFingerprint(config.apiKey),
+  };
 }
 
 export function ttsVoiceCatalogMatches(
@@ -55,7 +82,8 @@ export function ttsVoiceCatalogMatches(
   return normalize(snapshot.provider) === normalize(config.provider)
     && normalize(snapshot.apiStyle) === normalize(config.apiStyle)
     && normalize(snapshot.baseUrl) === normalize(config.baseUrl)
-    && normalize(snapshot.model) === normalize(config.model);
+    && normalize(snapshot.model) === normalize(config.model)
+    && snapshot.credentialFingerprint === ttsCredentialFingerprint(config.apiKey);
 }
 
 export function isTtsVoiceCatalogStale(
@@ -74,7 +102,7 @@ export function loadTtsVoiceCatalog(
     const raw = storage.getItem(ttsVoiceCatalogCacheKey(config));
     if (!raw) return null;
     const stored = JSON.parse(raw) as Partial<StoredTtsVoiceCatalog>;
-    const snapshot = stored.version === 1 ? stored.snapshot : null;
+    const snapshot = stored.version === 2 ? stored.snapshot : null;
     return snapshot
       && Array.isArray(snapshot.voices)
       && ttsVoiceCatalogMatches(snapshot, config)
@@ -87,18 +115,14 @@ export function loadTtsVoiceCatalog(
 
 export function saveTtsVoiceCatalog(
   snapshot: TtsVoiceCatalogSnapshot,
+  config: TtsVoiceCatalogIdentity,
   storage: Pick<Storage, 'setItem'> = localStorage,
 ): void {
   try {
-    const config: TtsVoiceCatalogIdentity = {
-      provider: snapshot.provider,
-      apiStyle: snapshot.apiStyle,
-      baseUrl: snapshot.baseUrl,
-      model: snapshot.model,
-    };
+    const boundSnapshot = bindTtsVoiceCatalogCredential(snapshot, config);
     storage.setItem(
       ttsVoiceCatalogCacheKey(config),
-      JSON.stringify({ version: 1, snapshot } satisfies StoredTtsVoiceCatalog),
+      JSON.stringify({ version: 2, snapshot: boundSnapshot } satisfies StoredTtsVoiceCatalog),
     );
   } catch {
     // Keep the in-memory snapshot usable if browser storage is unavailable.

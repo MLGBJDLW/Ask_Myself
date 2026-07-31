@@ -1,4 +1,5 @@
 import {
+  bindTtsVoiceCatalogCredential,
   isTtsVoiceCatalogStale,
   loadTtsVoiceCatalog,
   saveTtsVoiceCatalog,
@@ -49,14 +50,17 @@ const storage = {
   setItem: (key: string, value: string) => { values.set(key, value); },
 };
 
-saveTtsVoiceCatalog(snapshot, storage);
+const boundSnapshot = bindTtsVoiceCatalogCredential(snapshot, config);
+
+saveTtsVoiceCatalog(boundSnapshot, config, storage);
 assert(
   ttsVoiceCatalogCacheKey(config) === ttsVoiceCatalogCacheKey({ ...config, baseUrl: config.baseUrl?.replace(/\/$/, '') ?? null }),
   'voice catalog key should normalize endpoint trailing slashes',
 );
 assert(!ttsVoiceCatalogCacheKey(config).includes(config.apiKey), 'voice catalog key must not contain credentials');
 assert(loadTtsVoiceCatalog(config, storage)?.voices[0]?.id === 'voice-1', 'cached account voice should be restored');
-assert(ttsVoiceCatalogMatches(snapshot, config), 'snapshot should match provider, endpoint, and model');
-assert(!ttsVoiceCatalogMatches(snapshot, { ...config, model: 'eleven_v3' }), 'models should use isolated caches');
+assert(loadTtsVoiceCatalog({ ...config, apiKey: 'another-account' }, storage) === null, 'credentials should use isolated caches');
+assert(ttsVoiceCatalogMatches(boundSnapshot, config), 'snapshot should match provider, endpoint, model, and credential');
+assert(!ttsVoiceCatalogMatches(boundSnapshot, { ...config, model: 'eleven_v3' }), 'models should use isolated caches');
 assert(!isTtsVoiceCatalogStale(snapshot, Date.parse('2026-08-01T08:59:59Z')), 'catalog should remain fresh for 24 hours');
 assert(isTtsVoiceCatalogStale(snapshot, Date.parse('2026-08-01T09:00:01Z')), 'catalog should expire after 24 hours');

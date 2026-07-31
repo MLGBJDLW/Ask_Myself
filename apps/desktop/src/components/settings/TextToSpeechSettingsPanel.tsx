@@ -10,6 +10,7 @@ import {
 } from '../../lib/providerCredentials';
 import { defaultTtsItem, findTtsProviderPreset, TTS_PROVIDER_PRESETS } from '../../lib/ttsProviderPresets';
 import {
+  bindTtsVoiceCatalogCredential,
   isTtsVoiceCatalogStale,
   loadTtsVoiceCatalog,
   saveTtsVoiceCatalog,
@@ -71,9 +72,6 @@ export function TextToSpeechSettingsPanel({
   const [voiceSearch, setVoiceSearch] = useState('');
   const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
   const [voiceCatalogError, setVoiceCatalogError] = useState<string | null>(null);
-  const [voiceCatalog, setVoiceCatalog] = useState<TtsVoiceCatalogSnapshot | null>(() =>
-    loadTtsVoiceCatalog(config),
-  );
   const [previewText, setPreviewText] = useState('Hello from Nexa.');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
@@ -99,6 +97,9 @@ export function TextToSpeechSettingsPanel({
     : null;
   const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
   const materializedConfig = { ...config, apiKey: resolvedApiKey };
+  const [voiceCatalog, setVoiceCatalog] = useState<TtsVoiceCatalogSnapshot | null>(() =>
+    loadTtsVoiceCatalog(materializedConfig),
+  );
   const configured = scopeActive && (localProvider
     ? Boolean(
         config.executablePath?.trim()
@@ -107,7 +108,7 @@ export function TextToSpeechSettingsPanel({
         && (!localFamilyNeedsVoices || config.voicesPath?.trim()),
       )
     : Boolean(resolvedApiKey && config.model.trim() && config.voice.trim()));
-  const matchingVoiceCatalog = voiceCatalog && ttsVoiceCatalogMatches(voiceCatalog, config)
+  const matchingVoiceCatalog = voiceCatalog && ttsVoiceCatalogMatches(voiceCatalog, materializedConfig)
     ? voiceCatalog
     : null;
   const catalogVoices = matchingVoiceCatalog?.voices ?? activePreset.voices;
@@ -125,12 +126,12 @@ export function TextToSpeechSettingsPanel({
   }, [catalogVoices, config.model, voiceSearch]);
 
   useEffect(() => {
-    setVoiceCatalog(loadTtsVoiceCatalog(config));
+    setVoiceCatalog(loadTtsVoiceCatalog(materializedConfig));
     setVoiceSearch('');
     setVoiceCatalogError(null);
     setPreviewPath(null);
     setPreviewError(null);
-  }, [config.apiStyle, config.baseUrl, config.model, config.provider]);
+  }, [config.apiStyle, config.baseUrl, config.model, config.provider, resolvedApiKey]);
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -171,8 +172,11 @@ export function TextToSpeechSettingsPanel({
     setVoiceCatalogLoading(true);
     setVoiceCatalogError(null);
     try {
-      const snapshot = await refreshTtsVoiceCatalog(materializedConfig);
-      saveTtsVoiceCatalog(snapshot);
+      const snapshot = bindTtsVoiceCatalogCredential(
+        await refreshTtsVoiceCatalog(materializedConfig),
+        materializedConfig,
+      );
+      saveTtsVoiceCatalog(snapshot, materializedConfig);
       setVoiceCatalog(snapshot);
     } catch (error) {
       setVoiceCatalogError(error instanceof Error ? error.message : String(error));
