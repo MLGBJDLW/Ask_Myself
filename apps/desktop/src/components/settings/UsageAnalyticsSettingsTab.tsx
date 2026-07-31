@@ -1,25 +1,59 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { CalendarDays, Download, RefreshCw, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 import * as api from '../../lib/api';
 import { useUsageAnalytics } from '../../features/usage/useUsageAnalytics';
 import { useTranslation } from '../../i18n';
+import { UsageContributionHeatmap } from './UsageContributionHeatmap';
 
 type RangePreset = 'today' | '7d' | '30d' | '90d' | 'year' | 'all' | 'custom';
 
 export function UsageAnalyticsSettingsTab() {
   const { t, locale } = useTranslation();
   const { filter, setFilter, data, loading, error, reload } = useUsageAnalytics(rangeFilter('30d'));
+  const {
+    filter: activityFilter,
+    setFilter: setActivityFilter,
+    data: activityData,
+    loading: activityLoading,
+    error: activityError,
+    reload: reloadActivity,
+  } = useUsageAnalytics({ ...rangeFilter('year'), timeBucket: 'day' });
   const [range, setRange] = useState<RangePreset>('30d');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [chartMode, setChartMode] = useState<'tokens' | 'requests'>('tokens');
-  const providers = useMemo(() => Array.from(new Set(data?.byModel.map((row) => row.providerId).filter(Boolean) as string[])), [data]);
-  const models = useMemo(() => Array.from(new Set(data?.byModel.map((row) => row.modelId).filter(Boolean) as string[])), [data]);
-  const operations = useMemo(() => data?.byOperation.map((row) => row.key) ?? [], [data]);
+  const providers = useMemo(() => Array.from(new Set(
+    [...(data?.byModel ?? []), ...(activityData?.byModel ?? [])]
+      .map((row) => row.providerId)
+      .filter(Boolean) as string[],
+  )), [activityData, data]);
+  const models = useMemo(() => Array.from(new Set(
+    [...(data?.byModel ?? []), ...(activityData?.byModel ?? [])]
+      .map((row) => row.modelId)
+      .filter(Boolean) as string[],
+  )), [activityData, data]);
+  const operations = useMemo(() => Array.from(new Set(
+    [...(data?.byOperation ?? []), ...(activityData?.byOperation ?? [])]
+      .map((row) => row.key),
+  )), [activityData, data]);
 
+  useEffect(() => {
+    setActivityFilter({
+      ...rangeFilter('year'),
+      providerId: filter.providerId ?? null,
+      modelId: filter.modelId ?? null,
+      operationKind: filter.operationKind ?? null,
+      timeBucket: 'day',
+    });
+  }, [filter.modelId, filter.operationKind, filter.providerId, setActivityFilter]);
+
+  const reloadAll = () => {
+    reload();
+    reloadActivity();
+  };
   const chooseRange = (preset: RangePreset) => {
     setRange(preset);
     if (preset !== 'custom') setFilter({
@@ -47,7 +81,7 @@ export function UsageAnalyticsSettingsTab() {
     try {
       const count = await api.deleteAiUsageRecords(targetFilter);
       toast.success(t('usage.deleted', { count }));
-      reload();
+      reloadAll();
     } catch (reason) { console.error('[usage] delete failed', reason); toast.error(t('usage.deleteFailed')); }
   };
 
@@ -66,7 +100,7 @@ export function UsageAnalyticsSettingsTab() {
           <h2 className="text-base font-semibold text-text-primary">{t('usage.title')}</h2>
           <p className="mt-1 max-w-2xl text-xs text-text-tertiary">{t('usage.description')}</p>
         </div>
-        <button type="button" onClick={reload} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><RefreshCw size={13} /> {t('usage.refresh')}</button>
+        <button type="button" onClick={reloadAll} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><RefreshCw size={13} /> {t('usage.refresh')}</button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-1 p-2">
@@ -105,10 +139,14 @@ export function UsageAnalyticsSettingsTab() {
       </section>
 
       <section className="rounded-xl border border-border bg-surface-1 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-text-primary">{t('usage.trend')}</h3><div className="flex gap-2"><select value={filter.timeBucket ?? 'day'} onChange={(event) => setFilter({ ...filter, timeBucket: event.target.value as 'day' | 'week' | 'month' })} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="day">{t('usage.daily')}</option><option value="week">{t('usage.weekly')}</option><option value="month">{t('usage.monthly')}</option></select><select value={chartMode} onChange={(event) => setChartMode(event.target.value as 'tokens' | 'requests')} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="tokens">{t('usage.tokens')}</option><option value="requests">{t('usage.requests')}</option></select></div></div>
-        {data.timeSeries.length === 0 ? <Empty t={t} /> : <div className="mt-4 space-y-2">{data.timeSeries.map((point) => (
-          <div key={point.date} className="grid grid-cols-[5.5rem_1fr_5rem] items-center gap-2 text-[11px]"><span className="text-text-tertiary">{point.date}</span><div className="flex h-3 overflow-hidden rounded-full bg-surface-3">{chartMode === 'tokens' ? <><span className="bg-accent" style={{ width: `${point.promptTokens / maxTrendValue * 100}%` }} /><span className="bg-info" style={{ width: `${point.completionTokens / maxTrendValue * 100}%` }} /><span className="bg-[var(--context-overhead)]" style={{ width: `${point.thinkingTokens / maxTrendValue * 100}%` }} /></> : <span className="bg-accent" style={{ width: `${point.requestCount / maxTrendValue * 100}%` }} />}</div><span className="text-right tabular-nums text-text-secondary">{formatNumber(chartMode === 'tokens' ? point.promptTokens + point.completionTokens + point.thinkingTokens : point.requestCount, locale)}</span></div>
-        ))}</div>}
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-semibold text-text-primary">{t('usage.trend')}</h3><span className="text-[11px] text-text-tertiary">{t('usage.range.year')} · {chartMode === 'tokens' ? t('usage.tokens') : t('usage.requests')}</span></div><div className="flex gap-2"><select value={filter.timeBucket ?? 'day'} onChange={(event) => setFilter({ ...filter, timeBucket: event.target.value as 'day' | 'week' | 'month' })} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="day">{t('usage.daily')}</option><option value="week">{t('usage.weekly')}</option><option value="month">{t('usage.monthly')}</option></select><select value={chartMode} onChange={(event) => setChartMode(event.target.value as 'tokens' | 'requests')} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="tokens">{t('usage.tokens')}</option><option value="requests">{t('usage.requests')}</option></select></div></div>
+        {activityLoading && !activityData ? <div className="mt-4 h-28 animate-pulse rounded-lg bg-surface-2" /> : activityError && !activityData ? <div className="mt-4 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">{t('usage.loadFailed')}</div> : <UsageContributionHeatmap points={activityData?.timeSeries ?? []} mode={chartMode} locale={locale} valueLabel={chartMode === 'tokens' ? t('usage.tokens') : t('usage.requests')} startAt={activityFilter.startAt} endAt={activityFilter.endAt} />}
+        <div className="mt-4 border-t border-border/70 pt-4">
+          <div className="mb-3 flex items-center justify-between gap-2 text-[11px] text-text-tertiary"><span>{rangeLabel(range, t)}</span><span>{filter.timeBucket === 'week' ? t('usage.weekly') : filter.timeBucket === 'month' ? t('usage.monthly') : t('usage.daily')}</span></div>
+          {data.timeSeries.length === 0 ? <Empty t={t} /> : <div className="space-y-2">{data.timeSeries.map((point) => (
+            <div key={point.date} className="grid grid-cols-[5.5rem_1fr_5rem] items-center gap-2 text-[11px]"><span className="text-text-tertiary">{point.date}</span><div className="flex h-3 overflow-hidden rounded-full bg-surface-3">{chartMode === 'tokens' ? <><span className="bg-accent" style={{ width: `${point.promptTokens / maxTrendValue * 100}%` }} /><span className="bg-info" style={{ width: `${point.completionTokens / maxTrendValue * 100}%` }} /><span className="bg-[var(--context-overhead)]" style={{ width: `${point.thinkingTokens / maxTrendValue * 100}%` }} /></> : <span className="bg-accent" style={{ width: `${point.requestCount / maxTrendValue * 100}%` }} />}</div><span className="text-right tabular-nums text-text-secondary">{formatNumber(chartMode === 'tokens' ? point.promptTokens + point.completionTokens + point.thinkingTokens : point.requestCount, locale)}</span></div>
+          ))}</div>}
+        </div>
       </section>
 
       <div className="grid gap-5 xl:grid-cols-2">
