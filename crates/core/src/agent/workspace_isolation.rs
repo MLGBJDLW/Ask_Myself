@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::llm::ToolCallRequest;
+use crate::llm::{ToolCallRequest, ToolDefinition};
 use crate::sources::CreateSourceInput;
 
 const FILESYSTEM_TOOLS: &[&str] = &[
@@ -26,6 +26,10 @@ const FILESYSTEM_TOOLS: &[&str] = &[
 ];
 
 const MUTATION_TOOLS: &[&str] = &["create_file", "edit_file", "multi_edit", "run_shell"];
+
+fn is_unscoped_isolation_tool(name: &str) -> bool {
+    name == "project_tool" || name == "mcp_tool" || name.starts_with("mcp__")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IsolationPromotion {
@@ -136,9 +140,13 @@ impl WorkspaceIsolationRuntime {
 
     pub(super) fn prompt_section(&self) -> String {
         format!(
-            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path, shell cwd, and repository path argument is controller-routed into this worktree. Process execution is placed in an OS filesystem sandbox where the host is read-only and only this worktree plus an ephemeral temp directory are writable. `run_shell` requires exact `program` + `args`; free-form `command`, shell interpreters, and inline interpreter code are blocked as defense in depth. Use repository scripts from the isolated source instead of `project_tool`. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
+            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path, shell cwd, and repository path argument is controller-routed into this worktree. Process execution is placed in an OS filesystem sandbox where the host is read-only and only this worktree plus an ephemeral temp directory are writable. `run_shell` requires exact `program` + `args`; free-form `command`, shell interpreters, and inline interpreter code are blocked as defense in depth. Use repository scripts from the isolated source instead of `project_tool`. MCP tools are unavailable because their external processes cannot yet inherit this filesystem sandbox. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
             self.isolated_source_root.display()
         )
+    }
+
+    pub(super) fn retain_safe_tool_definitions(tool_defs: &mut Vec<ToolDefinition>) {
+        tool_defs.retain(|definition| !is_unscoped_isolation_tool(&definition.name));
     }
 
     pub(super) fn rewrite_tool_calls(
@@ -156,15 +164,11 @@ impl WorkspaceIsolationRuntime {
             ));
         }
         for call in tool_calls {
-            if call.name == "project_tool" {
-                let arguments: Value = serde_json::from_str(&call.arguments)?;
-                if arguments.get("action").and_then(Value::as_str) == Some("run") {
-                    return Err(CoreError::InvalidInput(
-                        "Code Ultra blocks project_tool run because its manifest executes in the original source. Use run_shell in the controller-provided isolated worktree."
-                            .to_string(),
-                    ));
-                }
-                continue;
+            if is_unscoped_isolation_tool(&call.name) {
+                return Err(CoreError::InvalidInput(format!(
+                    "Code Ultra blocks `{}` because it executes outside the controller-owned filesystem sandbox. Use an isolation-safe built-in tool instead.",
+                    call.name
+                )));
             }
             if !FILESYSTEM_TOOLS.contains(&call.name.as_str()) {
                 continue;
@@ -625,6 +629,43 @@ fn remove_worktree(repo_root: &Path, worktree_root: &Path) -> Result<(), CoreErr
 mod tests {
     use super::*;
 
+    #[test]
+    fn isolated_tool_surface_blocks_unscoped_runtime_tools() {
+        let mut definitions = vec![
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "project_tool".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "mcp_tool".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "mcp__filesystem__write_file".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            },
+        ];
+
+        WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut definitions);
+
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read_file"]
+        );
+        assert!(is_unscoped_isolation_tool("mcp__shell__run"));
+    }
+
     fn git(cwd: &Path, args: &[&str]) {
         run_git(cwd, args).expect("git fixture command");
     }
@@ -664,6 +705,17 @@ mod tests {
                 .unwrap(),
             isolation.isolated_source_root.join("tracked.txt")
         );
+        let mut mcp_calls = vec![ToolCallRequest {
+            id: "mcp-1".to_string(),
+            name: "mcp__filesystem__write_file".to_string(),
+            arguments: r#"{"path":"tracked.txt"}"#.to_string(),
+            thought_signature: None,
+        }];
+        assert!(isolation
+            .rewrite_tool_calls(&mut mcp_calls)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the controller-owned filesystem sandbox"));
         let mut shell_calls = vec![ToolCallRequest {
             id: "shell-1".to_string(),
             name: "run_shell".to_string(),

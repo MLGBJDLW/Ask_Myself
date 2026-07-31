@@ -311,6 +311,9 @@ impl AgentExecutor {
             .collect();
             tool_defs = merge_tool_definitions(tool_defs, delegation_tools);
         }
+        if workspace_isolation.is_some() {
+            WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
+        }
         if let Some(ref mut t) = trace {
             t.tools_offered = tool_defs.len() as u32;
             t.route_kind = Some(route_plan.kind.as_str().to_string());
@@ -813,11 +816,11 @@ impl AgentExecutor {
                 },
             );
 
-            // project_tool manifests execute from their registered original
-            // source. Code Ultra uses run_shell with a controller-routed cwd so
-            // no mixed read/write tool can bypass the isolated worktree.
+            // Tool discovery and steering can expand the surface between model
+            // steps. Re-apply the isolation boundary so neither project
+            // manifests nor external MCP processes can bypass the worktree.
             if workspace_isolation.is_some() {
-                tool_defs.retain(|definition| definition.name != "project_tool");
+                WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
 
             let model_step_result = self
