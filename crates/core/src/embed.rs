@@ -69,7 +69,7 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
                 tracing::warn!(
                     "local embeddings are disabled at compile time; falling back to TF-IDF"
                 );
-                return Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])));
+                Ok(Box::new(TfIdfEmbedder::build_from_corpus(&[])))
             }
             #[cfg(feature = "local-embeddings")]
             {
