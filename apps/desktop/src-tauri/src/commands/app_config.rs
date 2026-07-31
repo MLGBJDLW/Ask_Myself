@@ -54,26 +54,54 @@ pub async fn clear_speech_cache_cmd(
 }
 
 #[tauri::command]
+pub async fn refresh_tts_voice_catalog_cmd(
+    config: TextToSpeechConfig,
+) -> Result<TtsVoiceCatalogSnapshot, String> {
+    let refreshed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    if !supports_dynamic_tts_voice_catalog(&config.api_style) {
+        return Ok(build_tts_voice_catalog(&config, None, refreshed_at));
+    }
+    match discover_tts_voices(&config).await {
+        Ok(voices) => Ok(build_tts_voice_catalog(&config, Some(voices), refreshed_at)),
+        Err(error) => {
+            warn!(
+                "Voice catalog refresh failed for TTS provider {}: {}",
+                config.provider, error
+            );
+            Err(error.to_string())
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn synthesize_speech_preview_cmd(
     app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     text: String,
+    config: Option<TextToSpeechConfig>,
 ) -> Result<SpeechPreview, String> {
-    use nexa_core::tools::text_to_speech_tool::SynthesizeSpeechTool;
-    use nexa_core::tools::Tool;
+    use nexa_core::tools::text_to_speech_tool::synthesize_speech_preview;
 
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("Speech text cannot be empty".into());
     }
-    let config = state
-        .db
-        .load_app_config()
-        .map_err(|error| error.to_string())?;
-    let tts = &config.text_to_speech;
+    let tts = match config {
+        Some(config) => config,
+        None => {
+            state
+                .db
+                .load_app_config()
+                .map_err(|error| error.to_string())?
+                .text_to_speech
+        }
+    };
     let cache_key_material = format!(
-        "{}\0{}\0{}\0{}\0{}\0{}",
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
         tts.provider,
+        tts.api_style,
+        tts.base_url.as_deref().unwrap_or_default().trim(),
+        tts.api_key.trim(),
         tts.model,
         tts.voice,
         tts.speed,
@@ -100,34 +128,12 @@ pub async fn synthesize_speech_preview_cmd(
             bytes: managed.bytes,
         });
     }
-    let arguments = serde_json::json!({ "text": trimmed }).to_string();
-    let result = SynthesizeSpeechTool
-        .execute(nexa_core::tools::ToolExecutionContext::new(
-            &format!("auto-speech-{}", Uuid::new_v4()),
-            &arguments,
-            state.db.as_ref(),
-            &[],
-        ))
+    let preview = synthesize_speech_preview(&tts, trimmed, None, None, None, None)
         .await
         .map_err(|error| error.to_string())?;
-    if result.is_error {
-        return Err(result.content);
-    }
-    let artifacts = result
-        .artifacts
-        .ok_or_else(|| "Speech provider returned no audio artifact".to_string())?;
-    let path = artifacts
-        .get("previewPath")
-        .or_else(|| artifacts.get("path"))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "Speech provider returned no preview path".to_string())?;
-    let media_type = artifacts
-        .get("mediaType")
-        .and_then(|value| value.as_str())
-        .unwrap_or("audio/wav");
-    let source_path = PathBuf::from(path);
+    let source_path = preview.path;
     let managed = store
-        .cache_audio(&source_path, &cache_key_material, media_type)
+        .cache_audio(&source_path, &cache_key_material, &preview.media_type)
         .map_err(|error| error.to_string())?;
     if source_path != managed.path {
         let _ = std::fs::remove_file(source_path);

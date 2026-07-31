@@ -4,6 +4,11 @@ export interface TtsCatalogItem {
   id: string;
   name: string;
   recommended?: boolean;
+  modelIds?: string[];
+  languages?: string[];
+  gender?: string | null;
+  description?: string | null;
+  previewUrl?: string | null;
 }
 
 export interface TtsProviderPreset {

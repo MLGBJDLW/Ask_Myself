@@ -249,6 +249,42 @@ test.beforeEach(async ({ page }) => {
             ],
           };
         }
+        case "refresh_tts_voice_catalog_cmd": {
+          const config = _args.config as {
+            provider?: string;
+            apiStyle?: string;
+            baseUrl?: string | null;
+            model?: string;
+          };
+          return {
+            provider: config.provider ?? "qwen",
+            apiStyle: config.apiStyle ?? "dashscope_speech",
+            baseUrl: config.baseUrl ?? null,
+            model: config.model ?? "qwen-audio-3.0-tts-flash",
+            refreshedAt: "2026-07-31T09:00:00Z",
+            liveDiscoverySucceeded: true,
+            voices: [
+              {
+                id: "account-designed-voice",
+                name: "Account Designed Voice",
+                recommended: false,
+                source: "discovered",
+                modelIds: [],
+                languages: ["zh-CN", "en-US"],
+                gender: null,
+                description: "Private account voice",
+                previewUrl: null,
+              },
+            ],
+          };
+        }
+        case "synthesize_speech_preview_cmd":
+          return {
+            assetId: "speech-preview",
+            path: "C:\\Nexa\\cache\\speech-preview.wav",
+            mediaType: "audio/wav",
+            bytes: 128,
+          };
         default:
           return null;
       }
@@ -563,6 +599,11 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
   await expect(selects.nth(2)).toHaveValue("wav");
   await expect(panel.locator('[title="Groq"]')).toContainText("GQ");
+  await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Hannah");
+  await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Fahad");
+  await selects.nth(1).selectOption("canopylabs/orpheus-arabic-saudi");
+  await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Fahad");
+  await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Hannah");
 
   await selects.nth(0).selectOption("elevenlabs");
   await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
@@ -578,6 +619,13 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
   await expect(panel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
+  await panel.getByRole("button", { name: "Refresh voices" }).click();
+  await expect(panel.getByTestId("tts-voice-catalog-status")).toContainText("Live account voice catalog");
+  await panel.getByTestId("tts-voice-search").fill("designed");
+  await panel.getByRole("button", { name: /Account Designed Voice/ }).click();
+  await expect(panel.getByTestId("tts-voice-input")).toHaveValue("account-designed-voice");
+  await panel.getByRole("button", { name: "Preview voice" }).click();
+  await expect(panel.locator("audio")).toHaveCount(1);
   await panel.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }

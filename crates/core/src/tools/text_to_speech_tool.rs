@@ -1,6 +1,6 @@
 //! Text-to-speech generation through configured cloud providers.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -42,6 +42,93 @@ struct SynthesizeSpeechArgs {
 struct GeneratedSpeech {
     bytes: Vec<u8>,
     media_type: String,
+}
+
+#[derive(Debug)]
+pub struct SpeechSynthesisPreview {
+    pub path: PathBuf,
+    pub media_type: String,
+    pub bytes: usize,
+    pub model: String,
+    pub voice: String,
+    pub suggested_filename: String,
+}
+
+pub async fn synthesize_speech_preview(
+    config: &TextToSpeechConfig,
+    text: &str,
+    model_override: Option<&str>,
+    voice_override: Option<&str>,
+    speed_override: Option<f32>,
+    filename: Option<&str>,
+) -> Result<SpeechSynthesisPreview, CoreError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "Speech text cannot be empty.".into(),
+        ));
+    }
+    if text.chars().count() > 20_000 {
+        return Err(CoreError::InvalidInput(
+            "Speech text is too long; keep a single request under 20000 characters.".into(),
+        ));
+    }
+    if !config.is_configured() {
+        return Err(CoreError::InvalidInput(
+            "Text-to-speech is not configured. Add a provider API key, model, and voice in Settings."
+                .into(),
+        ));
+    }
+
+    let model = selected(model_override, &config.model);
+    let voice = selected(voice_override, &config.voice);
+    let speed = speed_override.unwrap_or(config.speed).clamp(0.5, 2.0);
+    let client = reqwest::Client::builder()
+        .user_agent(crate::USER_AGENT)
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| {
+            CoreError::InvalidInput(format!("Failed to build HTTP client: {error}"))
+        })?;
+    let generated = match config.api_style.as_str() {
+        "elevenlabs_speech" => {
+            synthesize_elevenlabs(&client, config, text, &model, &voice, speed).await?
+        }
+        "minimax_speech" => {
+            synthesize_minimax(&client, config, text, &model, &voice, speed).await?
+        }
+        "azure_speech" => synthesize_azure(&client, config, text, &voice, speed).await?,
+        "dashscope_speech" => {
+            synthesize_dashscope(&client, config, text, &model, &voice, speed).await?
+        }
+        "sherpa_onnx" => synthesize_sherpa_onnx(config, text, &model, &voice, speed).await?,
+        _ => synthesize_openai(&client, config, text, &model, &voice, speed).await?,
+    };
+
+    let extension = extension_for_media_type(&generated.media_type);
+    let suggested_filename = safe_filename(filename, extension);
+    let path = std::env::temp_dir()
+        .join("nexa")
+        .join("generated-audio-previews")
+        .join(format!(
+            "{}-{}.{}",
+            file_stem(&suggested_filename),
+            Uuid::new_v4(),
+            extension
+        ));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &generated.bytes)?;
+
+    Ok(SpeechSynthesisPreview {
+        path,
+        media_type: generated.media_type,
+        bytes: generated.bytes.len(),
+        model,
+        voice,
+        suggested_filename,
+    })
 }
 
 #[async_trait]
@@ -100,69 +187,37 @@ impl Tool for SynthesizeSpeechTool {
                 "Text-to-speech is not configured. Add a provider API key, model, and voice in Settings.",
             ));
         }
-        let model = selected(args.model.as_deref(), &config.model);
-        let voice = selected(args.voice.as_deref(), &config.voice);
-        let speed = args.speed.unwrap_or(config.speed).clamp(0.5, 2.0);
-        let client = reqwest::Client::builder()
-            .user_agent(crate::USER_AGENT)
-            .timeout(Duration::from_secs(180))
-            .build()
-            .map_err(|error| {
-                CoreError::InvalidInput(format!("Failed to build HTTP client: {error}"))
-            })?;
-
-        let generated = match config.api_style.as_str() {
-            "elevenlabs_speech" => {
-                synthesize_elevenlabs(&client, &config, text, &model, &voice, speed).await?
-            }
-            "minimax_speech" => {
-                synthesize_minimax(&client, &config, text, &model, &voice, speed).await?
-            }
-            "azure_speech" => synthesize_azure(&client, &config, text, &voice, speed).await?,
-            "dashscope_speech" => {
-                synthesize_dashscope(&client, &config, text, &model, &voice, speed).await?
-            }
-            "sherpa_onnx" => synthesize_sherpa_onnx(&config, text, &model, &voice, speed).await?,
-            _ => synthesize_openai(&client, &config, text, &model, &voice, speed).await?,
-        };
-
-        let extension = extension_for_media_type(&generated.media_type);
-        let suggested_filename = safe_filename(args.filename.as_deref(), extension);
-        let preview_path = std::env::temp_dir()
-            .join("nexa")
-            .join("generated-audio-previews")
-            .join(format!(
-                "{}-{}.{}",
-                file_stem(&suggested_filename),
-                Uuid::new_v4(),
-                extension
-            ));
-        if let Some(parent) = preview_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&preview_path, &generated.bytes)?;
+        let preview = synthesize_speech_preview(
+            &config,
+            text,
+            args.model.as_deref(),
+            args.voice.as_deref(),
+            args.speed,
+            args.filename.as_deref(),
+        )
+        .await?;
 
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!(
                 "Speech preview ready. It has not been saved to the workspace.\nProvider: {}\nModel: {}\nVoice: {}\nSize: {} bytes\nPreview: {}",
                 config.provider,
-                model,
-                voice,
-                generated.bytes.len(),
-                preview_path.to_string_lossy(),
+                preview.model,
+                preview.voice,
+                preview.bytes,
+                preview.path.to_string_lossy(),
             ),
             is_error: false,
             artifacts: Some(json!({
                 "kind": "generatedAudio",
                 "provider": config.provider,
-                "model": model,
-                "voice": voice,
-                "path": preview_path.to_string_lossy(),
-                "previewPath": preview_path.to_string_lossy(),
-                "suggestedFilename": suggested_filename,
-                "mediaType": generated.media_type,
-                "bytes": generated.bytes.len(),
+                "model": preview.model,
+                "voice": preview.voice,
+                "path": preview.path.to_string_lossy(),
+                "previewPath": preview.path.to_string_lossy(),
+                "suggestedFilename": preview.suggested_filename,
+                "mediaType": preview.media_type,
+                "bytes": preview.bytes,
                 "saved": false,
                 "transient": true,
             })),

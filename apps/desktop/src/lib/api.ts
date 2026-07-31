@@ -52,6 +52,7 @@ import type {
   AgentProceduralMemory,
   WebSearchConfig,
   WebSearchProviderStatus,
+  TextToSpeechConfig,
 } from "../types/conversation";
 import type {
   McpServer,
@@ -1422,8 +1423,8 @@ export interface SpeechPreview {
   bytes: number;
 }
 
-export const synthesizeSpeechPreview = (text: string) =>
-  invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text });
+export const synthesizeSpeechPreview = (text: string, config?: TextToSpeechConfig) =>
+  invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text, config });
 
 export interface ClearSpeechCacheResult {
   removedFiles: number;
@@ -1432,6 +1433,12 @@ export interface ClearSpeechCacheResult {
 
 export const clearSpeechCache = () =>
   invoke<ClearSpeechCacheResult>('clear_speech_cache_cmd');
+
+export const refreshTtsVoiceCatalog = (config: TextToSpeechConfig) =>
+  invoke<import('./ttsVoiceCatalog').TtsVoiceCatalogSnapshot>(
+    'refresh_tts_voice_catalog_cmd',
+    { config },
+  );
 
 export interface ThemeBackgroundAsset {
   assetId: string;

@@ -1,13 +1,21 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Save, Trash2, Volume2 } from 'lucide-react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Play, RefreshCw, Save, Search, Trash2, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import { clearSpeechCache } from '../../lib/api';
+import { clearSpeechCache, refreshTtsVoiceCatalog, synthesizeSpeechPreview } from '../../lib/api';
 import { ProviderIcon } from '../../lib/providerIcons';
 import {
   findSharedProviderCredential,
   providerCredentialScope,
 } from '../../lib/providerCredentials';
 import { defaultTtsItem, findTtsProviderPreset, TTS_PROVIDER_PRESETS } from '../../lib/ttsProviderPresets';
+import {
+  isTtsVoiceCatalogStale,
+  loadTtsVoiceCatalog,
+  saveTtsVoiceCatalog,
+  ttsVoiceCatalogMatches,
+  type TtsVoiceCatalogSnapshot,
+} from '../../lib/ttsVoiceCatalog';
 import type { AgentConfig, AppConfig, TextToSpeechConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -55,11 +63,21 @@ export function TextToSpeechSettingsPanel({
   defaultExpanded = false,
 }: TextToSpeechSettingsPanelProps) {
   const { t } = useTranslation();
+  const config = appConfig.textToSpeech ?? DEFAULT_TTS_CONFIG;
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showKey, setShowKey] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [cacheStatus, setCacheStatus] = useState<string | null>(null);
-  const config = appConfig.textToSpeech ?? DEFAULT_TTS_CONFIG;
+  const [voiceSearch, setVoiceSearch] = useState('');
+  const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
+  const [voiceCatalogError, setVoiceCatalogError] = useState<string | null>(null);
+  const [voiceCatalog, setVoiceCatalog] = useState<TtsVoiceCatalogSnapshot | null>(() =>
+    loadTtsVoiceCatalog(config),
+  );
+  const [previewText, setPreviewText] = useState('Hello from Nexa.');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const scopedPresets = useMemo(
     () => TTS_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
       || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
@@ -89,6 +107,30 @@ export function TextToSpeechSettingsPanel({
         && (!localFamilyNeedsVoices || config.voicesPath?.trim()),
       )
     : Boolean(resolvedApiKey && config.model.trim() && config.voice.trim()));
+  const matchingVoiceCatalog = voiceCatalog && ttsVoiceCatalogMatches(voiceCatalog, config)
+    ? voiceCatalog
+    : null;
+  const catalogVoices = matchingVoiceCatalog?.voices ?? activePreset.voices;
+  const filteredVoices = useMemo(() => {
+    const query = voiceSearch.trim().toLowerCase();
+    return catalogVoices.filter((voice) => {
+      const supportsModel = !voice.modelIds?.length
+        || voice.modelIds.some((modelId) => modelId.toLowerCase() === config.model.trim().toLowerCase());
+      if (!supportsModel) return false;
+      if (!query) return true;
+      return [voice.id, voice.name, voice.description, ...(voice.languages ?? [])]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [catalogVoices, config.model, voiceSearch]);
+
+  useEffect(() => {
+    setVoiceCatalog(loadTtsVoiceCatalog(config));
+    setVoiceSearch('');
+    setVoiceCatalogError(null);
+    setPreviewPath(null);
+    setPreviewError(null);
+  }, [config.apiStyle, config.baseUrl, config.model, config.provider]);
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -122,6 +164,34 @@ export function TextToSpeechSettingsPanel({
       setCacheStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setClearingCache(false);
+    }
+  };
+
+  const refreshVoiceCatalog = async () => {
+    setVoiceCatalogLoading(true);
+    setVoiceCatalogError(null);
+    try {
+      const snapshot = await refreshTtsVoiceCatalog(materializedConfig);
+      saveTtsVoiceCatalog(snapshot);
+      setVoiceCatalog(snapshot);
+    } catch (error) {
+      setVoiceCatalogError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setVoiceCatalogLoading(false);
+    }
+  };
+
+  const previewVoice = async () => {
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setPreviewPath(null);
+    try {
+      const preview = await synthesizeSpeechPreview(previewText, materializedConfig);
+      setPreviewPath(convertFileSrc(preview.path));
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -262,19 +332,71 @@ export function TextToSpeechSettingsPanel({
               </select>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">
-                {localProvider ? t('settings.ttsSpeakerId') : t('settings.ttsVoice')}
-              </label>
+            <div className="space-y-2 md:col-span-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-sm font-medium text-text-primary">
+                  {localProvider ? t('settings.ttsSpeakerId') : t('settings.ttsVoice')}
+                </label>
+                {!localProvider && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    icon={<RefreshCw size={13} />}
+                    loading={voiceCatalogLoading}
+                    disabled={!resolvedApiKey}
+                    onClick={() => void refreshVoiceCatalog()}
+                  >
+                    {t('settings.ttsRefreshVoices')}
+                  </Button>
+                )}
+              </div>
+              <div className="relative">
+                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                <Input
+                  data-testid="tts-voice-search"
+                  value={voiceSearch}
+                  onChange={(event) => setVoiceSearch(event.target.value)}
+                  placeholder={t('settings.ttsVoiceSearchPlaceholder')}
+                  className="pl-9"
+                />
+              </div>
+              <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-surface-1 p-1" data-testid="tts-voice-catalog">
+                {filteredVoices.length === 0 ? (
+                  <p className="px-2 py-3 text-center text-xs text-text-tertiary">{t('settings.ttsVoiceNoMatches')}</p>
+                ) : filteredVoices.map((voice) => (
+                  <button
+                    key={voice.id}
+                    type="button"
+                    onClick={() => update({ voice: voice.id })}
+                    className={`flex w-full items-start justify-between gap-3 rounded px-2 py-1.5 text-left text-xs transition-colors ${config.voice === voice.id ? 'bg-accent/12 text-accent' : 'text-text-secondary hover:bg-surface-2'}`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{voice.name}</span>
+                      <span className="block truncate text-[10px] text-text-tertiary">{voice.id}{voice.languages?.length ? ` · ${voice.languages.join(', ')}` : ''}</span>
+                    </span>
+                    {'source' in voice && voice.source === 'discovered' && (
+                      <span className="shrink-0 rounded-full bg-success/10 px-1.5 py-0.5 text-[10px] text-success">{t('settings.ttsVoiceDiscovered')}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <label className="block text-[11px] text-text-tertiary">{t('settings.ttsCustomVoiceId')}</label>
               <Input
                 data-testid="tts-voice-input"
                 value={config.voice}
                 onChange={(event) => update({ voice: event.target.value })}
-                list="nexa-tts-voices"
               />
-              <datalist id="nexa-tts-voices">
-                {activePreset.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
-              </datalist>
+              {matchingVoiceCatalog && (
+                <p className="text-[11px] text-text-tertiary" data-testid="tts-voice-catalog-status">
+                  {matchingVoiceCatalog.liveDiscoverySucceeded
+                    ? t('settings.ttsVoiceCatalogLive')
+                    : t('settings.ttsVoiceCatalogCurated')}
+                  {' · '}{new Date(matchingVoiceCatalog.refreshedAt).toLocaleString()}
+                  {isTtsVoiceCatalogStale(matchingVoiceCatalog) ? ` · ${t('settings.ttsVoiceCatalogStale')}` : ''}
+                </p>
+              )}
+              {voiceCatalogError && <p className="text-[11px] text-danger">{voiceCatalogError}</p>}
             </div>
 
             <div className="space-y-2">
@@ -348,6 +470,25 @@ export function TextToSpeechSettingsPanel({
                 </div>
               </>
             )}
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-sm font-medium text-text-primary">{t('settings.ttsPreviewText')}</label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input value={previewText} onChange={(event) => setPreviewText(event.target.value)} />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  icon={<Play size={14} />}
+                  loading={previewLoading}
+                  disabled={!configured || !previewText.trim()}
+                  onClick={() => void previewVoice()}
+                >
+                  {t('settings.ttsPreview')}
+                </Button>
+              </div>
+              {previewPath && <audio controls preload="metadata" src={previewPath} className="h-9 w-full" />}
+              {previewError && <p className="text-[11px] text-danger">{previewError}</p>}
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
             <div className="flex items-center gap-3">

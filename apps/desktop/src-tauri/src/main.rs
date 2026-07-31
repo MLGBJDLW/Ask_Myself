@@ -469,6 +469,7 @@ fn main() {
             commands::get_app_config_cmd,
             commands::save_app_config_cmd,
             commands::synthesize_speech_preview_cmd,
+            commands::refresh_tts_voice_catalog_cmd,
             commands::clear_speech_cache_cmd,
             commands::import_theme_background_cmd,
             commands::resolve_theme_background_cmd,

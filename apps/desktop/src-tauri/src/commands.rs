@@ -27,7 +27,7 @@ use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
     AgentRunPhase,
 };
-use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
+use nexa_core::app_settings::{AppConfig, ShellAccessMode, TextToSpeechConfig, WizardState};
 #[cfg(test)]
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
@@ -77,6 +77,10 @@ use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
+use nexa_core::tts_provider_catalog::{
+    build_tts_voice_catalog, discover_tts_voices, supports_dynamic_tts_voice_catalog,
+    TtsVoiceCatalogSnapshot,
+};
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
