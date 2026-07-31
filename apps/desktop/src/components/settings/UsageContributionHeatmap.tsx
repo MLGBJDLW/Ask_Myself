@@ -84,14 +84,15 @@ export function UsageContributionHeatmap({
           aria-hidden="true"
         >
           {projection.weeks.map((week, index) => {
-            const currentMonth = week.days.find((day) => day.inRange)?.date.getUTCMonth();
+            const firstInRangeDay = week.days.find((day) => day.inRange);
+            const currentMonth = firstInRangeDay?.date.getUTCMonth();
             const previousMonth = index > 0
               ? projection.weeks[index - 1].days.find((day) => day.inRange)?.date.getUTCMonth()
               : undefined;
-            const showMonth = currentMonth != null && currentMonth !== previousMonth;
+            const showMonth = firstInRangeDay != null && currentMonth !== previousMonth;
             return (
               <span key={`month-${week.key}`} className="h-3 whitespace-nowrap">
-                {showMonth ? monthFormatter.format(week.days.find((day) => day.inRange)?.date) : ''}
+                {showMonth ? monthFormatter.format(firstInRangeDay.date) : ''}
               </span>
             );
           })}
