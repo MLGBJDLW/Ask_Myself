@@ -39,6 +39,7 @@ export interface TranscriptChunk {
   chunkType: string; // 'transcript' | 'frame_ocr' | 'subtitle'
 }
 
+/** Metadata projected from the persisted document record. */
 export interface VideoMetadata {
   durationSecs: number | null;
   width: number | null;
@@ -46,6 +47,17 @@ export interface VideoMetadata {
   codec: string | null;
   framerate: number | null;
   thumbnailPath: string | null;
+  creationTime: string | null;
+}
+
+/** Metadata returned directly by ffprobe during a native analysis run. */
+export interface VideoAnalysisMetadata {
+  durationSecs: number | null;
+  width: number | null;
+  height: number | null;
+  codec: string | null;
+  bitrate: number | null;
+  framerate: number | null;
   creationTime: string | null;
 }
 
@@ -64,5 +76,5 @@ export interface VideoAnalysisResult {
   frameTextsCount: number;
   frameTexts: string[];
   thumbnailPath: string | null;
-  metadata: VideoMetadata | null;
+  metadata: VideoAnalysisMetadata | null;
 }
