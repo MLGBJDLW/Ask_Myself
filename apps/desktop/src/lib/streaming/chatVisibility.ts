@@ -28,8 +28,28 @@ export interface ChatMessageVisibilityProjection {
   liveSteeringMessages: ConversationMessage[];
 }
 
+function artifactContainsKind(value: unknown, kind: string, depth = 0): boolean {
+  if (depth > 6 || value == null) return false;
+  if (Array.isArray(value)) {
+    return value.some((item) => artifactContainsKind(item, kind, depth + 1));
+  }
+  if (typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind === kind) return true;
+  return Object.values(record).some((item) => artifactContainsKind(item, kind, depth + 1));
+}
+
+export function isQuestionResponseMessage(message: ConversationMessage): boolean {
+  return message.role === 'user' && artifactContainsKind(message.artifacts, 'questionResponse');
+}
+
 function isNormalUserTurnMessage(message: ConversationMessage): boolean {
-  return message.role === 'user' && !isSteeringMessage(message) && !isGoalMessage(message);
+  return (
+    message.role === 'user' &&
+    !isSteeringMessage(message) &&
+    !isGoalMessage(message) &&
+    !isQuestionResponseMessage(message)
+  );
 }
 
 export function hasPersistedResultAfterLatestUserMessage(
@@ -84,19 +104,22 @@ export function projectChatStreamingVisibility(
 }
 
 /**
- * Steering is an in-turn control signal rather than a new conversation turn.
- * While streaming, the backend-emitted status renders it at the actual point
- * where it was applied. Once streaming stops, both optimistic and persisted
- * steering rows must stay out of history. This invariant deliberately does not
- * depend on the assistant result having reloaded yet: `done` can flip the live
- * state before persistence catches up, which previously made steering flash at
- * the end of the turn and disappear again on the next send.
+ * Steering and structured interaction continuations are control-plane events,
+ * not ordinary chat turns. Steering stays out of history entirely. A question
+ * response remains in the projected collection as a system row so card state
+ * can still discover its `questionResponse` artifact, while normal message and
+ * turn rendering naturally omit it. This preserves durable audit/replay data
+ * without adding a duplicate user bubble after a card selection.
  */
 export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
 ): ChatMessageVisibilityProjection {
   return {
-    historyMessages: input.messages.filter(message => !isSteeringMessage(message)),
+    historyMessages: input.messages
+      .filter(message => !isSteeringMessage(message))
+      .map(message => isQuestionResponseMessage(message)
+        ? { ...message, role: 'system' as const }
+        : message),
     liveSteeringMessages: input.isStreaming
       ? input.messages.filter(isOptimisticSteeringMessage)
       : [],
