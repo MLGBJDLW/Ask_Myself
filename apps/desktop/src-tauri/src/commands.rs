@@ -67,7 +67,10 @@ use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::project_memory::{
     CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
 };
-use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
+use nexa_core::provider_catalog::{
+    build_effective_model_catalog, load_provider_presets, ProviderModelCatalogSnapshot,
+    ProviderPreset,
+};
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};

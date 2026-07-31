@@ -7471,8 +7471,13 @@
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",
         "tagKey": "providers.tagMostIntelligent",
+        "source": "official",
+        "status": "active",
+        "regions": ["international"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
         "capabilities": {
-          "vision": true
+          "vision": false
         }
       }
     ]
@@ -7537,12 +7542,78 @@
         "name": "MiniMax M2.5"
       },
       {
+        "id": "MiniMax/MiniMax-M3",
+        "name": "MiniMax M3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text", "image"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "MiniMax/MiniMax-M2.7",
+        "name": "MiniMax M2.7",
+        "tagKey": "providers.tagReasoning",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
+        "supportsTools": true
+      },
+      {
+        "id": "xiaomi/mimo-v2.5-pro",
+        "name": "Xiaomi MiMo V2.5 Pro",
+        "tagKey": "providers.tagReasoning",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
+        "supportsTools": true
+      },
+      {
+        "id": "kimi/kimi-k3",
+        "name": "Kimi K3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text", "image"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true
+        }
+      },
+      {
+        "id": "glm-5.2-fast-preview",
+        "name": "GLM-5.2 Fast Preview",
+        "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "preview",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"]
+      },
+      {
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",
         "tagKey": "providers.tagLatest",
         "recommended": true,
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
+        "supportsTools": true,
         "capabilities": {
-          "vision": true
+          "vision": false
         }
       },
       {
@@ -7557,16 +7628,40 @@
         "id": "qwen3.7-max-2026-06-08",
         "name": "Qwen3.7 Max 2026-06-08",
         "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text", "image"],
+        "supportsTools": true,
         "capabilities": {
           "vision": true
+        }
+      },
+      {
+        "id": "qwen3.7-max-2026-05-20",
+        "name": "Qwen3.7 Max 2026-05-20",
+        "source": "official",
+        "status": "legacy",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": false
         }
       },
       {
         "id": "qwen3.7-max-preview",
         "name": "Qwen3.7 Max Preview",
         "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "preview",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
         "capabilities": {
-          "vision": true
+          "vision": false
         }
       },
       {
@@ -7637,6 +7732,17 @@
         "id": "qwen3-coder-plus",
         "name": "Qwen3 Coder Plus",
         "tagKey": "providers.tagCoding"
+      },
+      {
+        "id": "qwen3-coder-flash",
+        "name": "Qwen3 Coder Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-07-31",
+        "modalities": ["text"],
+        "supportsTools": true
       },
       {
         "id": "qwen3-vl-plus",

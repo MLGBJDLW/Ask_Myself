@@ -208,6 +208,47 @@ test.beforeEach(async ({ page }) => {
         case "delete_ocr_models_cmd":
           (window as unknown as { __ocrDeleted?: boolean }).__ocrDeleted = true;
           return null;
+        case "test_agent_connection_cmd":
+        case "refresh_provider_model_catalog_cmd": {
+          const config = _args.config as { provider?: string; baseUrl?: string | null };
+          return {
+            provider: config.provider ?? "alibaba_model_studio",
+            baseUrl: config.baseUrl ?? null,
+            refreshedAt: "2026-07-31T08:00:00Z",
+            liveDiscoverySucceeded: true,
+            models: [
+              {
+                id: "qwen3.7-max",
+                name: "Qwen3.7 Max",
+                tagKey: "providers.tagLatest",
+                recommended: true,
+                capabilities: { vision: false },
+                source: "official",
+                status: "active",
+                regions: ["cn-beijing"],
+                lastVerifiedAt: "2026-07-31T08:00:00Z",
+                modalities: ["text"],
+                supportsTools: true,
+                supportsStructuredOutput: null,
+                reasoningEfforts: [],
+              },
+              {
+                id: "account-only-model",
+                name: "account-only-model",
+                recommended: false,
+                capabilities: null,
+                source: "discovered",
+                status: "active",
+                regions: ["cn-beijing"],
+                lastVerifiedAt: "2026-07-31T08:00:00Z",
+                modalities: ["text"],
+                supportsTools: false,
+                supportsStructuredOutput: false,
+                reasoningEfforts: [],
+              },
+            ],
+          };
+        }
         default:
           return null;
       }
@@ -338,6 +379,29 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
   ]);
+});
+
+test("provider refresh keeps account-discovered models selectable and cached", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: /^Alibaba Cloud Model Studio/ }).click();
+
+  await page.locator('input[placeholder="sk-..."]').fill("sk-account");
+  await page.getByRole("button", { name: "Refresh models" }).click();
+
+  await expect(page.getByTestId("provider-model-catalog-status")).toContainText("Live account catalog");
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const modelSelect = modelField.getByRole("combobox");
+  await expect(modelSelect.locator('option[value="account-only-model"]')).toContainText("Discovered");
+  await modelSelect.selectOption("account-only-model");
+  await expect(modelSelect).toHaveValue("account-only-model");
+
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+    .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
 });
 
 test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({ page }) => {

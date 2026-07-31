@@ -103,6 +103,7 @@ import type {
   UpdateDreamArtifactInput,
 } from "../types/dreaming";
 import type { ProviderPreset } from "./providerPresets";
+import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
 
 export type {
   DreamArtifact,
@@ -827,7 +828,10 @@ export const setDefaultAgentConfig = (id: string) =>
   invoke<void>('set_default_agent_config_cmd', { id });
 
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
-  invoke<string[]>('test_agent_connection_cmd', { config });
+  invoke<ProviderModelCatalogSnapshot>('test_agent_connection_cmd', { config });
+
+export const refreshProviderModelCatalog = (config: SaveAgentConfigInput) =>
+  invoke<ProviderModelCatalogSnapshot>('refresh_provider_model_catalog_cmd', { config });
 
 export const listProviderPresets = () =>
   invoke<ProviderPreset[]>('list_provider_presets_cmd');

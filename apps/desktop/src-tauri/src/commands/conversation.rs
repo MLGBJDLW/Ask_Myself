@@ -1309,8 +1309,7 @@ pub async fn set_default_agent_config_cmd(
 #[tauri::command]
 pub async fn test_agent_connection_cmd(
     config: SaveAgentConfigInput,
-) -> Result<Vec<String>, String> {
-    let catalog_models = preset_model_ids(&config.provider, config.base_url.as_deref());
+) -> Result<ProviderModelCatalogSnapshot, String> {
     let provider_config = ProviderConfig {
         provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),
@@ -1325,15 +1324,61 @@ pub async fn test_agent_connection_cmd(
         .await
         .map_err(|e| e.to_string())?;
 
+    let refreshed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     match provider.list_models().await {
-        Ok(models) if !models.is_empty() => Ok(models),
-        Ok(_) => Ok(catalog_models),
+        Ok(models) => Ok(build_effective_model_catalog(
+            &config.provider,
+            config.base_url.as_deref(),
+            Some(models),
+            refreshed_at,
+        )),
         Err(error) => {
             warn!(
                 "Connection probe succeeded but model listing failed for provider {}: {}",
                 config.provider, error
             );
-            Ok(catalog_models)
+            Ok(build_effective_model_catalog(
+                &config.provider,
+                config.base_url.as_deref(),
+                None,
+                refreshed_at,
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_provider_model_catalog_cmd(
+    config: SaveAgentConfigInput,
+) -> Result<ProviderModelCatalogSnapshot, String> {
+    let provider_config = ProviderConfig {
+        provider_type: provider_type_for_input(&config),
+        api_key: Some(config.api_key.clone()),
+        base_url: normalize_optional_base_url(config.base_url.clone()),
+        org_id: None,
+        timeout_secs: None,
+    };
+    let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
+    let refreshed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    match provider.list_models().await {
+        Ok(models) => Ok(build_effective_model_catalog(
+            &config.provider,
+            config.base_url.as_deref(),
+            Some(models),
+            refreshed_at,
+        )),
+        Err(error) => {
+            warn!(
+                "Model catalog refresh failed for provider {}: {}",
+                config.provider, error
+            );
+            Ok(build_effective_model_catalog(
+                &config.provider,
+                config.base_url.as_deref(),
+                None,
+                refreshed_at,
+            ))
         }
     }
 }

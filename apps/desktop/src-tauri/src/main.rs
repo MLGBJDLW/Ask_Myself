@@ -409,6 +409,7 @@ fn main() {
             commands::delete_agent_config_cmd,
             commands::set_default_agent_config_cmd,
             commands::test_agent_connection_cmd,
+            commands::refresh_provider_model_catalog_cmd,
             commands::list_provider_presets_cmd,
             commands::list_workflow_templates_cmd,
             commands::save_workflow_automation_cmd,

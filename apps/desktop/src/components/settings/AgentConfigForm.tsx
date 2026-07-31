@@ -9,6 +9,7 @@ import {
   CheckCircle,
   BrainCircuit,
   Search,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/Button";
@@ -29,6 +30,13 @@ import {
   type ProviderModelPreset,
   type ProviderPreset,
 } from "../../lib/providerPresets";
+import {
+  catalogMatchesProvider,
+  isProviderModelCatalogStale,
+  loadProviderModelCatalog,
+  saveProviderModelCatalog,
+  type ProviderModelCatalogSnapshot,
+} from "../../lib/providerModelCatalog";
 import {
   buildMcpSubagentToolDescriptors,
   canonicalSubagentToolName,
@@ -258,12 +266,16 @@ export function AgentConfigForm({
   >([]);
   const [showKey, setShowKey] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     message: string;
   } | null>(null);
   const [useCustomModel, setUseCustomModel] = useState(initialUsesCustomModel);
   const [modelSearch, setModelSearch] = useState("");
+  const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalogSnapshot | null>(() =>
+    loadProviderModelCatalog(initialProvider, initialBaseUrl),
+  );
   const [showAdvanced, setShowAdvanced] = useState(!!config);
   const initialDraftRef = useRef<SaveAgentConfigInput>({
     id: config?.id ?? null,
@@ -297,9 +309,29 @@ export function AgentConfigForm({
   const isLocal =
     LOCAL_PROVIDERS.includes(provider) ||
     (preset ? !preset.requiresApiKey : false);
-  const activePreset =
+  const curatedPreset =
     findProviderPreset({ provider, baseUrl }) ??
     (preset?.provider === provider ? preset : null);
+  const matchingModelCatalog = modelCatalog
+    && catalogMatchesProvider(modelCatalog, provider, baseUrl)
+    ? modelCatalog
+    : null;
+  const activePreset = useMemo(() => {
+    if (!matchingModelCatalog) return curatedPreset;
+    if (curatedPreset) {
+      return { ...curatedPreset, models: matchingModelCatalog.models };
+    }
+    return {
+      id: `discovered-${provider}`,
+      name: name || provider,
+      provider,
+      baseUrl,
+      models: matchingModelCatalog.models,
+      requiresApiKey: !LOCAL_PROVIDERS.includes(provider),
+      icon: "",
+      description: "",
+    } satisfies ProviderPreset;
+  }, [baseUrl, curatedPreset, matchingModelCatalog, name, provider]);
   const activePresetDefaultModel =
     activePreset?.models.find((m) => m.recommended)?.id ||
     activePreset?.models[0]?.id ||
@@ -437,6 +469,10 @@ export function AgentConfigForm({
   useEffect(() => {
     setTestResult(null);
   }, [provider]);
+
+  useEffect(() => {
+    setModelCatalog(loadProviderModelCatalog(provider, baseUrl));
+  }, [baseUrl, provider]);
 
   useEffect(() => {
     const previousProvider = previousProviderRef.current;
@@ -694,14 +730,16 @@ export function AgentConfigForm({
     setTestLoading(true);
     setTestResult(null);
     try {
-      const models = await api.testAgentConnection(buildInput());
+      const catalog = await api.testAgentConnection(buildInput());
+      saveProviderModelCatalog(catalog);
+      setModelCatalog(catalog);
       setTestResult({
         ok: true,
         message:
-          models.length > 0
+          catalog.models.length > 0
             ? t("settings.modelsFound").replace(
                 "{count}",
-                String(models.length),
+                String(catalog.models.length),
               )
             : t("settings.connectionSuccess"),
       });
@@ -713,6 +751,24 @@ export function AgentConfigForm({
       toast.error(t("settings.connectionFailed"));
     } finally {
       setTestLoading(false);
+    }
+  };
+
+  const handleCatalogRefresh = async () => {
+    setCatalogLoading(true);
+    try {
+      const catalog = await api.refreshProviderModelCatalog(buildInput());
+      saveProviderModelCatalog(catalog);
+      setModelCatalog(catalog);
+      toast.success(
+        catalog.liveDiscoverySucceeded
+          ? t("settings.modelCatalogRefreshed", { count: catalog.models.length })
+          : t("settings.modelCatalogFallback"),
+      );
+    } catch {
+      toast.error(t("settings.modelCatalogRefreshFailed"));
+    } finally {
+      setCatalogLoading(false);
     }
   };
 
@@ -805,11 +861,22 @@ export function AgentConfigForm({
             <label className="text-sm font-medium text-text-primary">
               {t("settings.defaultModel")}
             </label>
-            {usesSearchableModelPicker && (
-              <span className="text-xs text-text-tertiary">
-                {filteredPresetModels.length}/{activePreset.models.length}
-              </span>
-            )}
+            <span className="flex items-center gap-2">
+              {usesSearchableModelPicker && (
+                <span className="text-xs text-text-tertiary">
+                  {filteredPresetModels.length}/{activePreset.models.length}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleCatalogRefresh()}
+                disabled={catalogLoading || (!isLocal && !apiKey.trim())}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCw size={12} className={catalogLoading ? "animate-spin" : ""} />
+                {t("settings.refreshModelCatalog")}
+              </button>
+            </span>
           </div>
           {usesSearchableModelPicker ? (
             <div className="space-y-2">
@@ -859,6 +926,16 @@ export function AgentConfigForm({
                               {tag}
                             </span>
                           )}
+                          {m.source === "discovered" && (
+                            <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">
+                              {t("settings.modelSourceDiscovered")}
+                            </span>
+                          )}
+                          {(m.status === "preview" || m.status === "legacy" || m.status === "deprecated") && (
+                            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
+                              {t(`settings.modelStatus.${m.status}` as TranslationKey)}
+                            </span>
+                          )}
                           {m.recommended && (
                             <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
                               ★
@@ -890,6 +967,7 @@ export function AgentConfigForm({
                   {m.tagKey
                     ? `${m.name} (${t(m.tagKey as TranslationKey)})`
                     : m.name}
+                  {m.source === "discovered" ? ` · ${t("settings.modelSourceDiscovered")}` : ""}
                   {m.recommended ? " ★" : ""}
                 </option>
               ))}
@@ -902,6 +980,22 @@ export function AgentConfigForm({
           >
             {t("settings.useCustomModel")}
           </button>
+          {matchingModelCatalog && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-text-tertiary" data-testid="provider-model-catalog-status">
+              <span>
+                {matchingModelCatalog.liveDiscoverySucceeded
+                  ? t("settings.modelCatalogLive")
+                  : t("settings.modelCatalogCurated")}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>{new Date(matchingModelCatalog.refreshedAt).toLocaleString()}</span>
+              {isProviderModelCatalogStale(matchingModelCatalog) && (
+                <span className="rounded-full bg-warning/10 px-2 py-0.5 text-warning">
+                  {t("settings.modelCatalogStale")}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-2">

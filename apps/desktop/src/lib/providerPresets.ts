@@ -1,41 +1,18 @@
 import providerPresets from "../../../../shared/provider-presets.json";
+import type {
+  ProviderCapabilities,
+  ProviderModelPreset,
+} from './providerTypes';
 
-export type ReasoningEffortLevel =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "max"
-  | "xhigh";
-
-export interface ThinkingBudgetCapability {
-  enabled: boolean;
-  defaultTokens?: number;
-  minTokens?: number;
-  maxTokens?: number;
-  step?: number;
-  allowZero?: boolean;
-}
-
-export interface ReasoningCapability {
-  effortLevels?: ReasoningEffortLevel[];
-  defaultEffort?: ReasoningEffortLevel;
-  thinkingBudget?: ThinkingBudgetCapability;
-}
-
-export interface ProviderCapabilities {
-  reasoning?: ReasoningCapability | null;
-  vision?: boolean | null;
-}
-
-export interface ProviderModelPreset {
-  id: string;
-  name: string;
-  tagKey?: string;
-  recommended?: boolean;
-  capabilities?: ProviderCapabilities;
-}
+export type {
+  ModelCatalogSource,
+  ModelLifecycleStatus,
+  ProviderCapabilities,
+  ProviderModelPreset,
+  ReasoningCapability,
+  ReasoningEffortLevel,
+  ThinkingBudgetCapability,
+} from './providerTypes';
 
 export interface ProviderPreset {
   id: string;

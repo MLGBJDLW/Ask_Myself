@@ -85,8 +85,8 @@ export function Step3Provider({
         imageGenerationModel: null,
         subagentAllowedTools: null,
       };
-      const models = await api.testAgentConnection(config);
-      if (models && models.length > 0) {
+      const catalog = await api.testAgentConnection(config);
+      if (catalog.models.length > 0) {
         await api.saveAgentConfig(config);
         onTestResult('success', true);
         toast.success(t('wizard.connectionSuccess'));
