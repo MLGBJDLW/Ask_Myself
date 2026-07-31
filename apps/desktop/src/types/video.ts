@@ -26,6 +26,12 @@ export interface FfmpegDownloadProgress {
   status: string;
 }
 
+export interface TranscriptSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
 export interface TranscriptChunk {
   text: string;
   startMs: number | null;
@@ -41,4 +47,22 @@ export interface VideoMetadata {
   framerate: number | null;
   thumbnailPath: string | null;
   creationTime: string | null;
+}
+
+/**
+ * Structured result returned by the native video-analysis command.
+ *
+ * Speaker identity, word alignment, and overlapping-speech metadata are not
+ * available yet; those belong to the meeting-analysis pipeline described in
+ * the platform capability audit.
+ */
+export interface VideoAnalysisResult {
+  transcript: string;
+  segmentCount: number;
+  transcriptSegments: TranscriptSegment[];
+  durationSecs: number | null;
+  frameTextsCount: number;
+  frameTexts: string[];
+  thumbnailPath: string | null;
+  metadata: VideoMetadata | null;
 }
