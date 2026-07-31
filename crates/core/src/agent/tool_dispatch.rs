@@ -80,6 +80,14 @@ pub(super) struct ToolDispatchContext<'a> {
     pub(super) sort_order: &'a mut i64,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ToolDispatchSummary {
+    pub(super) call_id: String,
+    pub(super) content: String,
+    pub(super) is_error: bool,
+    pub(super) artifacts: Option<serde_json::Value>,
+}
+
 impl AgentExecutor {
     pub(super) async fn dispatch_tool_calls(
         &self,
@@ -88,7 +96,7 @@ impl AgentExecutor {
         loop_guard_block_reason: Option<String>,
         started_call_ids: &mut HashSet<String>,
         tool_run_started_ids: &mut HashSet<String>,
-    ) {
+    ) -> Vec<ToolDispatchSummary> {
         let ToolDispatchContext {
             db,
             tx,
@@ -207,6 +215,7 @@ impl AgentExecutor {
             duration_ms: u64,
             artifacts: Option<serde_json::Value>,
             attachments: Vec<ToolOutputAttachment>,
+            is_error: bool,
         }
 
         let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, tool_calls);
@@ -890,16 +899,24 @@ impl AgentExecutor {
                     duration_ms: tool_elapsed.as_millis() as u64,
                     artifacts: tool_artifacts,
                     attachments: tool_attachments,
+                    is_error: tool_is_error,
                 });
             }
         }
 
+        let mut summaries = Vec::with_capacity(completed_for_context.len());
         for completed in completed_for_context.into_iter().flatten() {
             let tc = completed.call;
             let content = compact_tool_result_for_context(&tc.name, &completed.content);
             let duration_ms = completed.duration_ms;
             let tool_artifacts = completed.artifacts;
             let tool_attachments = completed.attachments;
+            summaries.push(ToolDispatchSummary {
+                call_id: tc.id.clone(),
+                content: content.clone(),
+                is_error: completed.is_error,
+                artifacts: tool_artifacts.clone(),
+            });
 
             // Save the same canonical LLM-context tool result that is pushed
             // into the current provider request so later history replay does
@@ -960,6 +977,7 @@ impl AgentExecutor {
                 messages.push(message);
             }
         }
+        summaries
     }
 }
 

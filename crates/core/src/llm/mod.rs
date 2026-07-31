@@ -495,6 +495,11 @@ pub trait LlmProvider: Send + Sync {
 
     /// Quick connectivity / auth check.
     async fn health_check(&self) -> Result<(), CoreError>;
+
+    /// Optional privacy-safe runtime metadata for durable agent traces.
+    async fn runtime_metadata(&self) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 fn normalize_base_url(base_url: Option<String>) -> Option<String> {

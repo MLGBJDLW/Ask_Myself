@@ -150,6 +150,7 @@ impl AgentExecutor {
             .await;
 
         if let Some(ref mut t) = trace {
+            t.provider_runtime = self.provider.runtime_metadata().await;
             t.finish(TraceOutcome::Cancelled, None);
             if let Err(e) = db.save_agent_trace(t) {
                 warn!("Failed to save agent trace: {e}");
@@ -346,6 +347,7 @@ impl AgentExecutor {
             .await;
 
         if let Some(ref mut t) = trace {
+            t.provider_runtime = self.provider.runtime_metadata().await;
             t.finish(TraceOutcome::Success, None);
             if let Err(e) = db.save_agent_trace(t) {
                 warn!("Failed to save agent trace: {e}");
@@ -452,6 +454,7 @@ impl AgentExecutor {
             .await;
 
         if let Some(ref mut t) = trace {
+            t.provider_runtime = self.provider.runtime_metadata().await;
             t.finish(TraceOutcome::MaxIterations, None);
             if let Err(e) = db.save_agent_trace(t) {
                 warn!("Failed to save agent trace: {e}");

@@ -169,8 +169,24 @@ impl AgentExecutor {
             source_scope_count: source_scope.len(),
             collection_context: system_prompt_has_collection_context(&self.config.system_prompt),
         });
-        let task_plan_value = serde_json::to_value(&task_plan)
-            .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }));
+        let orchestration_policy = resolve_orchestration_profile(OrchestrationProfileInput {
+            profile: self.config.orchestration_profile,
+            custom: self.config.custom_orchestration.clone(),
+            max_iterations: self.config.max_iterations,
+            max_parallel: self.config.subagent_max_parallel,
+            max_calls_per_turn: self.config.subagent_max_calls_per_turn,
+            delegated_token_budget: self.config.subagent_token_budget,
+            verification_reserve_percent: self.config.subagent_verification_reserve_percent,
+        });
+        let mut workflow_ir = compile_workflow_ir(
+            &task_plan,
+            &orchestration_policy,
+            self.config.power_mode.is_nexus(),
+        )
+        .map_err(CoreError::InvalidInput)?;
+        let task_plan_value = workflow_ir.task_plan_checkpoint(&task_plan);
+        let workflow_ir_value = serde_json::to_value(&workflow_ir)
+            .unwrap_or_else(|_| serde_json::json!({ "error": "serializeWorkflowIr" }));
         let _ = tx
             .send(AgentEvent::ControllerStatus {
                 code: "route_selected".to_string(),
@@ -179,6 +195,18 @@ impl AgentExecutor {
             })
             .await;
         emit_task_plan_update(&tx, &task_plan, "planning", "Typed task plan created").await;
+        let _ = tx
+            .send(AgentEvent::ControllerStatus {
+                code: "workflow_compiled".to_string(),
+                content: format!(
+                    "Workflow IR v{} compiled: {} nodes, {} verification gates",
+                    workflow_ir.version,
+                    workflow_ir.nodes.len(),
+                    workflow_ir.verification_gates.len()
+                ),
+                tone: Some("muted".to_string()),
+            })
+            .await;
         if let Some(tid) = turn_id {
             let route_label = format!("{:?}", route_plan.kind);
             let _ = db.update_conversation_turn_progress(tid, Some(&route_label), None);
@@ -246,6 +274,9 @@ impl AgentExecutor {
             t.tools_offered = tool_defs.len() as u32;
             t.route_kind = Some(route_plan.kind.as_str().to_string());
             t.task_plan = Some(task_plan_value.clone());
+            t.workflow_ir = Some(workflow_ir_value);
+            t.orchestration_profile = Some(self.config.orchestration_profile.as_str().to_string());
+            t.collaboration_mode = Some(self.config.collaboration_mode.as_str().to_string());
             t.tool_visibility_decision = Some(route_plan.visibility_decision.clone());
         }
         let volatile_system_sections = self
@@ -254,12 +285,16 @@ impl AgentExecutor {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let controller_state_sections_owned = prompt_layout::turn_scaffolding_sections(
+        let mut controller_state_sections_owned = prompt_layout::turn_scaffolding_sections(
             &route_plan.prompt_section,
             &task_plan,
             effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
             layout,
         );
+        controller_state_sections_owned.push(orchestration_policy.prompt_section());
+        if self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra() {
+            controller_state_sections_owned.push(workflow_ir.to_prompt_section());
+        }
         let controller_state_sections = controller_state_sections_owned
             .iter()
             .map(String::as_str)
@@ -389,6 +424,7 @@ impl AgentExecutor {
                     warn!("Agent execution cancelled by user");
                     let live_state = $long_task_state.checkpoint_live_state(
                         &$task_plan,
+                        Some(&workflow_ir),
                         $iteration,
                         self.config.max_iterations,
                         &loop_recorder,
@@ -457,6 +493,181 @@ impl AgentExecutor {
         let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
         let mut prompt_was_compacted = history_was_compacted;
+
+        // Nexus owns the first reconnaissance wave at runtime. This is a
+        // deterministic controller action compiled from Workflow IR, not a
+        // suggestion that depends on the model deciding to delegate.
+        let automatic_reconnaissance = (self.config.power_mode.is_nexus()
+            || self.config.orchestration_profile.is_ultra())
+            && !self.config.execution_mode.is_plan()
+            && self.config.request_kind == AgentRequestKind::MainAgentStep
+            && !matches!(
+                task_plan.delegation.mode,
+                crate::intelligence::DelegationMode::Disabled
+            )
+            && self.tools.contains("spawn_subagent_batch");
+        if automatic_reconnaissance {
+            if let Some(arguments) =
+                workflow_ir.reconnaissance_batch_arguments(&task_plan.objective)
+            {
+                let node_ids = workflow_ir
+                    .ready_node_ids()
+                    .into_iter()
+                    .filter(|id| {
+                        workflow_ir
+                            .nodes
+                            .iter()
+                            .any(|node| node.id == *id && node.phase == "reconnaissance")
+                    })
+                    .collect::<Vec<_>>();
+                for node_id in &node_ids {
+                    workflow_ir
+                        .start_node(node_id)
+                        .map_err(CoreError::InvalidInput)?;
+                }
+
+                let call = ToolCallRequest {
+                    id: format!("workflow-recon-{}", Uuid::new_v4()),
+                    name: "spawn_subagent_batch".to_string(),
+                    arguments: serde_json::to_string(&arguments)
+                        .map_err(|error| CoreError::Internal(error.to_string()))?,
+                    thought_signature: None,
+                };
+                let synthetic_assistant = Message {
+                    role: Role::Assistant,
+                    parts: vec![ContentPart::Text {
+                        text: "Nexus is starting the independent reconnaissance wave compiled by Workflow IR."
+                            .to_string(),
+                    }],
+                    name: None,
+                    tool_calls: Some(vec![call.clone()]),
+                    reasoning_content: None,
+                };
+                messages.push(synthetic_assistant.clone());
+                self.persist_intermediate_tool_call_assistant(
+                    assistant_turn::AssistantTurnPersistenceContext {
+                        db,
+                        conversation_id,
+                        turn_id,
+                        model,
+                        route_kind: route_plan.kind,
+                        persisted_trace_items: &mut persisted_trace_items,
+                        sort_order: &mut sort_order,
+                    },
+                    &synthetic_assistant,
+                    std::slice::from_ref(&call),
+                    None,
+                    "Nexus runtime scheduled the first Workflow IR reconnaissance wave.",
+                );
+                let status = format!(
+                    "Nexus started {} independent reconnaissance workers from Workflow IR.",
+                    node_ids.len()
+                );
+                append_internal_persisted_trace_status(&mut persisted_trace_items, &status, "info");
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "workflow_wave_started".to_string(),
+                        content: status,
+                        tone: Some("info".to_string()),
+                    })
+                    .await;
+
+                turn_state.transition_to(TurnPhase::ToolDispatch);
+                let mut started_call_ids = HashSet::new();
+                let mut tool_run_started_ids = HashSet::new();
+                let summaries = self
+                    .dispatch_tool_calls(
+                        tool_dispatch::ToolDispatchContext {
+                            db,
+                            tx: &tx,
+                            conversation_id,
+                            turn_id,
+                            source_scope: &source_scope,
+                            model,
+                            privacy_cfg: &privacy_cfg,
+                            route_kind: route_plan.kind,
+                            iteration: 0,
+                            tool_defs: &mut tool_defs,
+                            messages: &mut messages,
+                            persisted_trace_items: &mut persisted_trace_items,
+                            task_plan: &mut task_plan,
+                            loop_recorder: &mut loop_recorder,
+                            loop_guard: &mut loop_guard,
+                            trace: &mut trace,
+                            sort_order: &mut sort_order,
+                        },
+                        std::slice::from_ref(&call),
+                        None,
+                        &mut started_call_ids,
+                        &mut tool_run_started_ids,
+                    )
+                    .await;
+                let summary = summaries.iter().find(|summary| summary.call_id == call.id);
+                workflow_ir.apply_reconnaissance_batch_result(
+                    &node_ids,
+                    summary.and_then(|summary| summary.artifacts.as_ref()),
+                    summary.is_none_or(|summary| summary.is_error),
+                    summary
+                        .map(|summary| summary.content.as_str())
+                        .unwrap_or("Nexus reconnaissance returned no result."),
+                );
+                workflow_ir.apply_checkpoint_to_task_plan(&mut task_plan);
+                emit_task_plan_update(
+                    &tx,
+                    &task_plan,
+                    "tooling",
+                    "Workflow IR reconnaissance checkpoint recorded",
+                )
+                .await;
+                if let Some(tid) = turn_id {
+                    if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
+                        let checkpoint = workflow_ir.task_plan_checkpoint(&task_plan);
+                        let _ = db.update_agent_task_run_progress(
+                            &task_run.id,
+                            Some("running"),
+                            Some("tooling"),
+                            Some(route_plan.kind.as_str()),
+                            Some("Workflow IR reconnaissance checkpoint recorded"),
+                            Some(&checkpoint),
+                            None,
+                        );
+                    }
+                }
+                if let Some(ref mut agent_trace) = trace {
+                    agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
+                }
+                let completed = node_ids
+                    .iter()
+                    .filter(|id| workflow_ir.checkpoint.completed_node_ids.contains(id))
+                    .count();
+                let status = format!(
+                    "Nexus reconnaissance wave finished: {completed}/{} workflow nodes completed.",
+                    node_ids.len()
+                );
+                append_internal_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &status,
+                    if completed == node_ids.len() {
+                        "success"
+                    } else {
+                        "warning"
+                    },
+                );
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "workflow_wave_completed".to_string(),
+                        content: status,
+                        tone: Some(if completed == node_ids.len() {
+                            "success".to_string()
+                        } else {
+                            "warning".to_string()
+                        }),
+                    })
+                    .await;
+            }
+        }
+
+        let mut workflow_gate_repair_rounds = 0u8;
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
@@ -777,6 +988,55 @@ impl AgentExecutor {
                         before_trim != prompt_cache::message_sequence_fingerprint(&messages);
                     continue;
                 }
+                if workflow_ir.completion_contract.require_verification_gates {
+                    workflow_ir.sync_from_task_plan(&task_plan);
+                    let final_audit = audit_final_answer(
+                        &task_plan,
+                        &assistant_msg.text_content(),
+                        evidence_signals_from_trace(&persisted_trace_items),
+                    )
+                    .to_artifact();
+                    workflow_ir.observe_final_answer_audit(&final_audit);
+                    if let Some(ref mut agent_trace) = trace {
+                        agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
+                    }
+                    if !workflow_ir.completion_allowed() {
+                        let blockers = workflow_ir.completion_blockers();
+                        let status =
+                            format!("Workflow completion blocked by: {}", blockers.join(", "));
+                        append_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &status,
+                            "warning",
+                        );
+                        let _ = tx
+                            .send(AgentEvent::ControllerStatus {
+                                code: "workflow_gate_blocked".to_string(),
+                                content: status,
+                                tone: Some("warning".to_string()),
+                            })
+                            .await;
+                        let repair_limit = orchestration_policy.retry_limit.max(1);
+                        if workflow_gate_repair_rounds >= repair_limit
+                            || iteration + 1 >= self.config.max_iterations
+                        {
+                            append_persisted_trace_status(
+                                &mut persisted_trace_items,
+                                "Workflow repair limit reached before all completion gates passed.",
+                                "error",
+                            );
+                            break 'react_loop;
+                        }
+                        workflow_gate_repair_rounds = workflow_gate_repair_rounds.saturating_add(1);
+                        if let Some(message) = prompt_ir::controller_state_message(format!(
+                            "Workflow IR refused finalization. Resolve these blockers with concrete tool calls before answering again: {}. Run the required checks, record their exact passed/failed outcomes with record_verification, and use an independent reviewer when that gate is listed. Do not merely claim completion.",
+                            blockers.join(", ")
+                        )) {
+                            messages.push(message);
+                        }
+                        continue;
+                    }
+                }
                 let active_goal = if self.config.execution_mode.is_plan()
                     || self.config.request_kind != AgentRequestKind::MainAgentStep
                     || iteration + 1 >= self.config.max_iterations
@@ -890,32 +1150,65 @@ impl AgentExecutor {
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             turn_state.transition_to(TurnPhase::ToolDispatch);
-            self.dispatch_tool_calls(
-                tool_dispatch::ToolDispatchContext {
-                    db,
-                    tx: &tx,
-                    conversation_id,
-                    turn_id,
-                    source_scope: &source_scope,
-                    model,
-                    privacy_cfg: &privacy_cfg,
-                    route_kind: route_plan.kind,
-                    iteration,
-                    tool_defs: &mut tool_defs,
-                    messages: &mut messages,
-                    persisted_trace_items: &mut persisted_trace_items,
-                    task_plan: &mut task_plan,
-                    loop_recorder: &mut loop_recorder,
-                    loop_guard: &mut loop_guard,
-                    trace: &mut trace,
-                    sort_order: &mut sort_order,
-                },
-                &tool_calls,
-                loop_guard_block_reason,
-                &mut started_call_ids,
-                &mut tool_run_started_ids,
-            )
-            .await;
+            let dispatch_summaries = self
+                .dispatch_tool_calls(
+                    tool_dispatch::ToolDispatchContext {
+                        db,
+                        tx: &tx,
+                        conversation_id,
+                        turn_id,
+                        source_scope: &source_scope,
+                        model,
+                        privacy_cfg: &privacy_cfg,
+                        route_kind: route_plan.kind,
+                        iteration,
+                        tool_defs: &mut tool_defs,
+                        messages: &mut messages,
+                        persisted_trace_items: &mut persisted_trace_items,
+                        task_plan: &mut task_plan,
+                        loop_recorder: &mut loop_recorder,
+                        loop_guard: &mut loop_guard,
+                        trace: &mut trace,
+                        sort_order: &mut sort_order,
+                    },
+                    &tool_calls,
+                    loop_guard_block_reason,
+                    &mut started_call_ids,
+                    &mut tool_run_started_ids,
+                )
+                .await;
+            for call in &tool_calls {
+                if let Some(summary) = dispatch_summaries
+                    .iter()
+                    .find(|summary| summary.call_id == call.id)
+                {
+                    workflow_ir.observe_tool_result(
+                        &call.id,
+                        &call.name,
+                        summary.is_error,
+                        summary.artifacts.as_ref(),
+                        &summary.content,
+                    );
+                }
+            }
+            workflow_ir.sync_from_task_plan(&task_plan);
+            if let Some(ref mut agent_trace) = trace {
+                agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
+            }
+            if let Some(tid) = turn_id {
+                if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
+                    let checkpoint = workflow_ir.task_plan_checkpoint(&task_plan);
+                    let _ = db.update_agent_task_run_progress(
+                        &task_run.id,
+                        Some("running"),
+                        Some("tooling"),
+                        Some(route_plan.kind.as_str()),
+                        Some("Workflow IR checkpoint updated after tool dispatch"),
+                        Some(&checkpoint),
+                        None,
+                    );
+                }
+            }
             last_tool_calls = None;
 
             // ── Cancellation checkpoint: after tool execution ─────────
@@ -932,6 +1225,7 @@ impl AgentExecutor {
                 let reason = format!("auto_tool_round_{}", iteration.saturating_add(1));
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
+                    Some(&workflow_ir),
                     iteration,
                     self.config.max_iterations,
                     &loop_recorder,
@@ -973,6 +1267,7 @@ impl AgentExecutor {
         let final_iteration = self.config.max_iterations.saturating_sub(1);
         let live_state = long_task_state.checkpoint_live_state(
             &task_plan,
+            Some(&workflow_ir),
             final_iteration,
             self.config.max_iterations,
             &loop_recorder,

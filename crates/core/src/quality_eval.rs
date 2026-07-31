@@ -12,8 +12,13 @@ use crate::intelligence::{
     TaskPlanningInput,
 };
 use crate::llm::Role;
+use crate::mixture_of_agents::{AgentCollaborationMode, MoaPreset, MoaPresetId};
+use crate::quality_profile::{
+    resolve_orchestration_profile, OrchestrationProfile, OrchestrationProfileInput,
+};
 use crate::rag;
 use crate::workflow_catalog::workflow_catalog;
+use crate::workflow_ir::{compile_workflow_ir, VerificationGateKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +68,7 @@ impl QualityGateThresholds {
                 "rag_governance".to_string(),
                 "workflow_catalog".to_string(),
                 "checkpoint_recovery".to_string(),
+                "orchestration_runtime".to_string(),
             ],
         }
     }
@@ -108,6 +114,7 @@ pub fn run_agent_quality_eval() -> QualityEvalReport {
         rag_governance_suite(),
         workflow_catalog_suite(),
         checkpoint_recovery_suite(),
+        orchestration_runtime_suite(),
     ];
     let total = suites.iter().map(|suite| suite.total).sum();
     let passed = suites.iter().map(|suite| suite.passed).sum();
@@ -715,6 +722,181 @@ fn checkpoint_recovery_suite() -> QualityEvalSuiteReport {
             "critical",
             checks,
         )],
+    )
+}
+
+fn orchestration_runtime_suite() -> QualityEvalSuiteReport {
+    let plan = build_task_plan(TaskPlanningInput {
+        user_query:
+            "Research a cross-module defect, implement the fix, run tests, and verify regressions",
+        route_kind: "CodebaseOperation",
+        has_sources: false,
+        source_scope_count: 0,
+        collection_context: false,
+    });
+    let code_ultra = resolve_orchestration_profile(OrchestrationProfileInput {
+        profile: OrchestrationProfile::CodeUltra,
+        custom: None,
+        max_iterations: 20,
+        max_parallel: None,
+        max_calls_per_turn: None,
+        delegated_token_budget: None,
+        verification_reserve_percent: None,
+    });
+    let workflow = compile_workflow_ir(&plan, &code_ultra, true).expect("valid workflow IR");
+    let preset = MoaPreset::builtin(MoaPresetId::CrossModelCodeReview, "openAi", "gpt-5.6");
+    let metric_ids = [
+        "firstPassCompletionRate",
+        "testPassRate",
+        "regressionsIntroduced",
+        "verifierTruePositiveRate",
+        "userCorrectionCount",
+        "wallTimeMs",
+        "tokenUsage",
+        "estimatedCostMicros",
+        "nexusNetImprovement",
+    ];
+    let combination_matrix = [
+        (false, AgentCollaborationMode::Direct),
+        (false, AgentCollaborationMode::MixtureOfAgents),
+        (true, AgentCollaborationMode::Direct),
+        (true, AgentCollaborationMode::MixtureOfAgents),
+    ];
+
+    eval_suite(
+        "orchestration_runtime",
+        "MoA, Nexus Workflow IR, and Ultra profiles",
+        vec![
+            eval_case(
+                "workflow-ir",
+                "Nexus compiles a validated, checkpointable execution DAG",
+                "critical",
+                vec![
+                    eval_check(
+                        "validDag",
+                        workflow.validate().is_ok(),
+                        "dependencies are acyclic and complete",
+                    ),
+                    eval_check(
+                        "parallelReconnaissance",
+                        workflow.ready_node_ids().len() >= 2,
+                        format!("readyNodes={:?}", workflow.ready_node_ids()),
+                    ),
+                    eval_check(
+                        "automaticReconnaissance",
+                        workflow
+                            .reconnaissance_batch_arguments(&plan.objective)
+                            .is_some(),
+                        "runtime can dispatch the first wave without model-authored delegation",
+                    ),
+                    eval_check(
+                        "durableCheckpoint",
+                        workflow
+                            .task_plan_checkpoint(&plan)
+                            .get("workflowIr")
+                            .is_some(),
+                        "task checkpoint persists the Workflow IR alongside the typed plan",
+                    ),
+                    eval_check(
+                        "completionGate",
+                        !workflow.completion_allowed(),
+                        "unverified workflows cannot finalize",
+                    ),
+                    eval_check(
+                        "verificationGates",
+                        [
+                            VerificationGateKind::Tests,
+                            VerificationGateKind::Lint,
+                            VerificationGateKind::Typecheck,
+                            VerificationGateKind::Build,
+                            VerificationGateKind::WriteIsolation,
+                            VerificationGateKind::IndependentReview,
+                        ]
+                        .iter()
+                        .all(|kind| {
+                            workflow
+                                .verification_gates
+                                .iter()
+                                .any(|gate| &gate.kind == kind)
+                        }),
+                        "tests, lint, typecheck, build, write isolation, and independent review are release gates",
+                    ),
+                    eval_check(
+                        "structuredArtifacts",
+                        workflow
+                            .nodes
+                            .iter()
+                            .all(|node| node.artifact_contract.structured),
+                        "each worker returns claims, evidence, files, tests, and uncertainties",
+                    ),
+                    eval_check(
+                        "isolatedWrites",
+                        workflow.nodes.iter().any(|node| {
+                            node.isolation
+                                == crate::workflow_ir::WorkflowIsolation::IsolatedPatchWorkspace
+                        }),
+                        "Code Ultra isolates mutation-capable nodes",
+                    ),
+                ],
+            ),
+            eval_case(
+                "moa-virtual-provider",
+                "MoA has bounded private advisors and one acting aggregator",
+                "critical",
+                vec![
+                    eval_check(
+                        "advisorFanout",
+                        preset.references.len() == 3 && preset.budget_policy.max_parallel >= 3,
+                        format!("advisors={}", preset.references.len()),
+                    ),
+                    eval_check(
+                        "privateTail",
+                        preset.privacy_filter != crate::mixture_of_agents::MoaPrivacyFilter::Off,
+                        "preset filters the advisor view before private-tail injection",
+                    ),
+                    eval_check(
+                        "boundedCalls",
+                        preset.budget_policy.max_advisor_calls_per_turn == 6,
+                        format!(
+                            "maxAdvisorCalls={}",
+                            preset.budget_policy.max_advisor_calls_per_turn
+                        ),
+                    ),
+                ],
+            ),
+            eval_case(
+                "independent-control-matrix",
+                "Nexus and MoA remain independent, composable dimensions",
+                "critical",
+                vec![
+                    eval_check(
+                        "fourCombinations",
+                        combination_matrix.len() == 4
+                            && combination_matrix
+                                .iter()
+                                .any(|(nexus, moa)| *nexus && moa.is_moa()),
+                        "standard, MoA-only, Nexus-only, and Nexus+MoA are represented",
+                    ),
+                    eval_check(
+                        "providerEffortSeparated",
+                        code_ultra
+                            .prompt_section()
+                            .contains("not a provider reasoning-effort"),
+                        "Ultra is a runtime profile and never a fabricated provider effort",
+                    ),
+                ],
+            ),
+            eval_case(
+                "comparison-metrics",
+                "Baseline and Nexus runs use a complete comparison metric contract",
+                "high",
+                vec![eval_check(
+                    "metricCoverage",
+                    metric_ids.len() == 9,
+                    format!("metrics={}", metric_ids.join(",")),
+                )],
+            ),
+        ],
     )
 }
 

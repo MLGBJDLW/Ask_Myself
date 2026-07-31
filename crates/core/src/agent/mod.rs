@@ -32,8 +32,11 @@ use crate::llm::{
     ProviderStreamEvent, ProviderType, ReasoningEffort, Role, ToolCallDelta, ToolCallRequest,
     ToolDefinition, Usage,
 };
+use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
 use crate::privacy;
+use crate::quality_profile::{resolve_orchestration_profile, OrchestrationProfileInput};
+use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 use crate::skills::Skill;
 use crate::task_run::AgentTaskRuntime;
 use crate::task_timeline::TaskTimelineEvent;
@@ -43,6 +46,7 @@ use crate::tools::{
     ToolInputStreamingMode, ToolInterruptBehavior, ToolOutputAttachment, ToolRegistry,
 };
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
+use crate::workflow_ir::compile_workflow_ir;
 
 mod answer_cache;
 mod assistant_turn;
@@ -274,6 +278,18 @@ pub struct AgentConfig {
     /// Per-turn capability policy selected by the user.
     #[serde(default)]
     pub power_mode: power_mode::AgentPowerMode,
+    /// Per-turn LLM collaboration policy. This is independent from Nexus.
+    #[serde(default)]
+    pub collaboration_mode: AgentCollaborationMode,
+    /// Selected virtual-provider preset when collaboration mode is MoA.
+    #[serde(default)]
+    pub moa_preset: MoaPresetId,
+    /// Client-side orchestration profile, separate from provider reasoning effort.
+    #[serde(default)]
+    pub orchestration_profile: OrchestrationProfile,
+    /// Optional bounded overrides for the Custom orchestration profile.
+    #[serde(default)]
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -372,6 +388,10 @@ impl Default for AgentConfig {
             tool_approval_mode: ToolApprovalMode::default(),
             execution_mode: AgentExecutionMode::Normal,
             power_mode: power_mode::AgentPowerMode::Standard,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         }
     }
 }

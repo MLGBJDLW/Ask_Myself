@@ -44,6 +44,18 @@ pub struct AgentTrace {
     /// Typed task plan injected into the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_plan: Option<serde_json::Value>,
+    /// Versioned workflow DAG compiled from the task plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ir: Option<serde_json::Value>,
+    /// Client-side orchestration profile used for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestration_profile: Option<String>,
+    /// Direct or Mixture-of-Agents LLM collaboration for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<String>,
+    /// Privacy-safe metadata exposed by a virtual/provider runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_runtime: Option<serde_json::Value>,
     /// Typed policy decision that selected the route and visible tool categories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_visibility_decision: Option<ToolVisibilityDecision>,
@@ -130,6 +142,10 @@ impl AgentTrace {
             cache_hit: false,
             route_kind: None,
             task_plan: None,
+            workflow_ir: None,
+            orchestration_profile: None,
+            collaboration_mode: None,
+            provider_runtime: None,
             tool_visibility_decision: None,
             compaction_count: 0,
             outcome: TraceOutcome::Success,

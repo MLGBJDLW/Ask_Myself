@@ -53,6 +53,7 @@ pub mod managed_assets;
 pub mod mcp;
 pub mod media;
 pub mod migrations;
+pub mod mixture_of_agents;
 pub mod models;
 #[cfg(feature = "ocr")]
 pub mod ocr;
@@ -75,6 +76,7 @@ pub mod protocol_exports;
 pub mod provider_catalog;
 pub mod provider_registry;
 pub mod quality_eval;
+pub mod quality_profile;
 pub mod rag;
 pub mod runtime;
 pub mod search;
@@ -102,6 +104,7 @@ pub mod wiki;
 pub mod work_plan;
 pub mod workflow_automation;
 pub mod workflow_catalog;
+pub mod workflow_ir;
 
 #[cfg(test)]
 mod architecture_fitness;
