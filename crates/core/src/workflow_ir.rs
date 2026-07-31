@@ -260,7 +260,7 @@ impl WorkflowIr {
             .iter()
             .filter(|node| node.phase == "reconnaissance" && ready.contains(&node.id))
             .collect::<Vec<_>>();
-        if nodes.len() < 2 {
+        if nodes.is_empty() {
             return None;
         }
 
@@ -483,7 +483,12 @@ impl WorkflowIr {
             });
         }
 
-        if tool_name == "judge_subagent_results" {
+        if tool_name == "judge_subagent_results"
+            && artifacts
+                .and_then(|value| value.get("kind"))
+                .and_then(serde_json::Value::as_str)
+                == Some("subagent_judgement")
+        {
             self.record_gate("independent-review", true, content);
         }
         if tool_name == "record_verification" {
@@ -599,11 +604,6 @@ impl WorkflowIr {
                 Some("tests")
             } else if name.contains("build") || name.contains("compile") {
                 Some("build")
-            } else if name.contains("independent")
-                || name.contains("review")
-                || name.contains("verifier")
-            {
-                Some("independent-review")
             } else {
                 None
             };
@@ -1148,6 +1148,11 @@ mod tests {
         assert_eq!(workflow.nodes[0].status, WorkflowNodeStatus::Succeeded);
         assert_eq!(workflow.nodes[1].status, WorkflowNodeStatus::Pending);
         assert_eq!(workflow.evidence_ledger[0].source_ids, vec!["chunk-1"]);
+        let retry = workflow
+            .reconnaissance_batch_arguments("Retry only the failed worker")
+            .expect("a single failed reconnaissance node remains schedulable");
+        assert_eq!(retry["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(retry["tasks"][0]["id"], ready[1]);
     }
 
     #[test]
@@ -1178,6 +1183,22 @@ mod tests {
                 .and_then(|gate| gate.passed),
             None,
             "model-authored verification must not pass a controller-owned isolation gate"
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::IndependentReview)
+                .and_then(|gate| gate.passed),
+            None,
+            "model-authored verification must not pass a runtime reviewer gate"
+        );
+        workflow.observe_tool_result(
+            "judge-1",
+            "judge_subagent_results",
+            false,
+            Some(&serde_json::json!({ "kind": "subagent_judgement" })),
+            "independent judge completed",
         );
         workflow.record_runtime_write_isolation(true, "controller promoted isolated patch");
         assert!(workflow

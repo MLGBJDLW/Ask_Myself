@@ -510,9 +510,10 @@ impl AgentExecutor {
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
         let mut prompt_was_compacted = history_was_compacted;
 
-        // Nexus owns the first reconnaissance wave at runtime. This is a
-        // deterministic controller action compiled from Workflow IR, not a
-        // suggestion that depends on the model deciding to delegate.
+        // Nexus owns reconnaissance waves at runtime. This is a deterministic
+        // controller action compiled from Workflow IR, including retries for
+        // failed workers, not a suggestion that depends on the model deciding
+        // to delegate.
         let automatic_reconnaissance = (self.config.power_mode.is_nexus()
             || self.config.orchestration_profile.is_ultra())
             && !self.config.execution_mode.is_plan()
@@ -523,7 +524,7 @@ impl AgentExecutor {
             )
             && self.tools.contains("spawn_subagent_batch");
         if automatic_reconnaissance {
-            if let Some(arguments) =
+            while let Some(arguments) =
                 workflow_ir.reconnaissance_batch_arguments(&task_plan.objective)
             {
                 let node_ids = workflow_ir

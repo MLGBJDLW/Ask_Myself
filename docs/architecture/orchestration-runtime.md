@@ -69,8 +69,9 @@ and a completion contract.
 For non-trivial Nexus turns, the runtime automatically dispatches the first two
 ready reconnaissance nodes through `spawn_subagent_batch`. This is a controller
 action, not prompt advice. The wave is read-only, each worker has a stable node
-id, and worker results update sibling nodes independently. A failed worker can
-therefore be retried without discarding successful branches.
+id, and worker results update sibling nodes independently. The controller keeps
+dispatching any retryable failed node until it succeeds or exhausts its node
+retry policy, without discarding successful branches.
 
 Each delegated node carries its model-routing class into the executor. `Fast`
 and `IndependentReviewer` use the configured auxiliary model only when that
@@ -87,13 +88,16 @@ verification requirements without forcing a code workspace.
 For a mutation-capable Code Ultra workflow, the controller requires exactly one
 clean Git-backed source, creates a detached temporary worktree, registers it as
 a non-watched source for the turn, scopes execution only to that source, and
-rewrites filesystem paths plus shell working directories into it while rejecting
-outside or traversing paths. Mixed `project_tool run` execution is withheld in
-favor of the routed shell. Only after every other required gate passes does the
-controller generate a binary Git patch, verify it with `git apply --check`,
+rewrites filesystem paths, exact shell argv repository paths, and shell working
+directories into it while rejecting outside or traversing paths. Free-form shell
+commands, shell interpreters, inline interpreter code, and `project_tool run` are
+withheld because they cannot preserve this routing contract. Only after every
+other required gate passes does the controller generate a binary Git patch,
+verify it with `git apply --check`,
 promote it to the original clean worktree, and remove the temporary source. The
 write-isolation gate is set only by this runtime transition; a model-authored
-`record_verification` label cannot satisfy it.
+`record_verification` label cannot satisfy it. Likewise, independent review is
+derived only from a successful `subagent_judgement` runtime artifact.
 
 ## Evaluation contract
 

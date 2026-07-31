@@ -134,7 +134,7 @@ impl WorkspaceIsolationRuntime {
 
     pub(super) fn prompt_section(&self) -> String {
         format!(
-            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path and shell cwd is controller-routed into this worktree. Use `run_shell` instead of `project_tool` for repository commands. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
+            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path, shell cwd, and repository path argument is controller-routed into this worktree. `run_shell` requires exact `program` + `args`; free-form `command`, shell interpreters, and interpreter eval flags are blocked. Use repository scripts from the isolated source instead of `project_tool`. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
             self.isolated_source_root.display()
         )
     }
@@ -173,6 +173,7 @@ impl WorkspaceIsolationRuntime {
                 let object = arguments.as_object_mut().ok_or_else(|| {
                     CoreError::InvalidInput("run_shell arguments must be an object".to_string())
                 })?;
+                self.rewrite_shell_invocation(object)?;
                 let cwd = object
                     .get("cwd")
                     .and_then(Value::as_str)
@@ -191,6 +192,169 @@ impl WorkspaceIsolationRuntime {
             }
         }
         Ok(())
+    }
+
+    fn rewrite_shell_invocation(
+        &self,
+        object: &mut serde_json::Map<String, Value>,
+    ) -> Result<(), CoreError> {
+        if object
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| !command.trim().is_empty())
+        {
+            return Err(CoreError::InvalidInput(
+                "Code Ultra write isolation blocks free-form run_shell.command. Use an exact program plus args invocation rooted in the isolated workspace."
+                    .to_string(),
+            ));
+        }
+
+        let program = object.get_mut("program").ok_or_else(|| {
+            CoreError::InvalidInput(
+                "Code Ultra run_shell requires a program plus args invocation.".to_string(),
+            )
+        })?;
+        let Value::String(program) = program else {
+            return Err(CoreError::InvalidInput(
+                "Code Ultra run_shell program must be a string.".to_string(),
+            ));
+        };
+        *program = self.rewrite_repository_roots(program);
+        let program_path = Path::new(program);
+        if program_path.is_absolute()
+            && (program_path.starts_with(&self.original_repo_root)
+                || program_path.starts_with(&self.original_source_root)
+                || program_path.starts_with(&self.isolated_worktree_root)
+                || program_path.starts_with(&self.isolated_source_root))
+        {
+            *program = self
+                .route_repository_path(program_path)?
+                .to_string_lossy()
+                .to_string();
+        } else if program.contains('/') || program.contains('\\') {
+            *program = self.route_path(program)?.to_string_lossy().to_string();
+        }
+
+        let program_name = Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(program)
+            .to_ascii_lowercase();
+        if matches!(
+            program_name.as_str(),
+            "bash"
+                | "bash.exe"
+                | "cmd"
+                | "cmd.exe"
+                | "powershell"
+                | "powershell.exe"
+                | "pwsh"
+                | "pwsh.exe"
+                | "sh"
+                | "sh.exe"
+        ) {
+            return Err(CoreError::InvalidInput(
+                "Code Ultra write isolation blocks shell interpreter programs; invoke the required executable directly with args."
+                    .to_string(),
+            ));
+        }
+
+        let args = object
+            .entry("args".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| {
+                CoreError::InvalidInput("Code Ultra run_shell args must be an array.".to_string())
+            })?;
+        for argument in args.iter_mut() {
+            let Value::String(value) = argument else {
+                return Err(CoreError::InvalidInput(
+                    "Code Ultra run_shell args must contain only strings.".to_string(),
+                ));
+            };
+            *value = self.rewrite_shell_argument(value)?;
+        }
+        let interpreter = matches!(
+            program_name.as_str(),
+            "node" | "node.exe" | "python" | "python.exe" | "python3" | "python3.exe"
+        );
+        let interpreter_eval = interpreter
+            && args.iter().filter_map(Value::as_str).any(|argument| {
+                matches!(
+                    argument.to_ascii_lowercase().as_str(),
+                    "-c" | "-e" | "--eval"
+                )
+            });
+        let interpreter_stdin = interpreter
+            && object
+                .get("stdin")
+                .and_then(Value::as_str)
+                .is_some_and(|stdin| !stdin.is_empty());
+        if interpreter_eval || interpreter_stdin {
+            return Err(CoreError::InvalidInput(
+                "Code Ultra write isolation blocks inline interpreter code; create a script inside the isolated source and execute that file."
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn rewrite_shell_argument(&self, argument: &str) -> Result<String, CoreError> {
+        let rewritten = self.rewrite_repository_roots(argument);
+        let candidate = rewritten
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or(rewritten.as_str());
+        let candidate_path = Path::new(candidate);
+        if candidate_path.is_absolute() {
+            let routed = self.route_repository_path(candidate_path)?;
+            return Ok(rewritten.replacen(candidate, &routed.to_string_lossy(), 1));
+        }
+        let mut depth = 0usize;
+        for component in candidate_path.components() {
+            match component {
+                Component::Normal(_) => depth = depth.saturating_add(1),
+                Component::ParentDir if depth > 0 => depth -= 1,
+                Component::ParentDir => {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Code Ultra rejected shell argument '{argument}' because it escapes the isolated working directory."
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(rewritten)
+    }
+
+    fn rewrite_repository_roots(&self, value: &str) -> String {
+        let pairs = [
+            (&self.original_source_root, &self.isolated_source_root),
+            (&self.original_repo_root, &self.isolated_worktree_root),
+        ];
+        pairs
+            .into_iter()
+            .fold(value.to_string(), |current, (from, to)| {
+                let from_native = from.to_string_lossy();
+                let to_native = to.to_string_lossy();
+                let replaced = current.replace(from_native.as_ref(), to_native.as_ref());
+                replaced.replace(
+                    &from_native.replace('\\', "/"),
+                    &to_native.replace('\\', "/"),
+                )
+            })
+    }
+
+    fn route_repository_path(&self, requested: &Path) -> Result<PathBuf, CoreError> {
+        if let Ok(relative) = requested.strip_prefix(&self.isolated_worktree_root) {
+            return self.join_without_escape(&self.isolated_worktree_root, relative, requested);
+        }
+        if let Ok(relative) = requested.strip_prefix(&self.original_repo_root) {
+            return self.join_without_escape(&self.isolated_worktree_root, relative, requested);
+        }
+        Err(CoreError::InvalidInput(format!(
+            "Code Ultra rejected repository path '{}' because it is outside the isolated worktree.",
+            requested.display()
+        )))
     }
 
     pub(super) fn promote_verified_patch(&mut self) -> Result<IsolationPromotion, CoreError> {
@@ -284,6 +448,15 @@ impl WorkspaceIsolationRuntime {
         } else {
             requested
         };
+        self.join_without_escape(&self.isolated_source_root, relative, requested)
+    }
+
+    fn join_without_escape(
+        &self,
+        base: &Path,
+        relative: &Path,
+        requested: &Path,
+    ) -> Result<PathBuf, CoreError> {
         let mut normalized = PathBuf::new();
         for component in relative.components() {
             match component {
@@ -298,7 +471,7 @@ impl WorkspaceIsolationRuntime {
                 }
             }
         }
-        Ok(self.isolated_source_root.join(normalized))
+        Ok(base.join(normalized))
     }
 
     fn cleanup(&mut self) -> Result<(), CoreError> {
@@ -427,6 +600,47 @@ mod tests {
                 .unwrap(),
             isolation.isolated_source_root.join("tracked.txt")
         );
+        let mut shell_calls = vec![ToolCallRequest {
+            id: "shell-1".to_string(),
+            name: "run_shell".to_string(),
+            arguments: serde_json::json!({
+                "program": "python",
+                "args": [repo.path().join("tracked.txt").to_string_lossy()],
+                "cwd": repo.path().to_string_lossy()
+            })
+            .to_string(),
+            thought_signature: None,
+        }];
+        isolation.rewrite_tool_calls(&mut shell_calls).unwrap();
+        let shell_args: Value = serde_json::from_str(&shell_calls[0].arguments).unwrap();
+        assert!(Path::new(shell_args["cwd"].as_str().unwrap())
+            .starts_with(&isolation.isolated_source_root));
+        assert!(Path::new(shell_args["args"][0].as_str().unwrap())
+            .starts_with(&isolation.isolated_worktree_root));
+
+        let mut free_form_shell = vec![ToolCallRequest {
+            id: "shell-2".to_string(),
+            name: "run_shell".to_string(),
+            arguments: r#"{"command":"git status"}"#.to_string(),
+            thought_signature: None,
+        }];
+        assert!(isolation
+            .rewrite_tool_calls(&mut free_form_shell)
+            .unwrap_err()
+            .to_string()
+            .contains("free-form"));
+        let mut traversing_shell = vec![ToolCallRequest {
+            id: "shell-3".to_string(),
+            name: "run_shell".to_string(),
+            arguments: r#"{"program":"cargo","args":["--manifest-path=../Cargo.toml"]}"#
+                .to_string(),
+            thought_signature: None,
+        }];
+        assert!(isolation
+            .rewrite_tool_calls(&mut traversing_shell)
+            .unwrap_err()
+            .to_string()
+            .contains("escapes"));
         let mut calls = vec![ToolCallRequest {
             id: "edit-1".to_string(),
             name: "edit_file".to_string(),
