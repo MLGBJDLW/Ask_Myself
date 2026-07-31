@@ -1012,6 +1012,10 @@ pub async fn compact_conversation_cmd(
         tool_approval_mode: app_cfg.tool_approval_mode,
         execution_mode: AgentExecutionMode::Normal,
         power_mode: AgentPowerMode::Standard,
+        collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
+        moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
+        orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
+        custom_orchestration: None,
     };
 
     let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =

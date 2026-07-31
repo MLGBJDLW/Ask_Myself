@@ -42,9 +42,14 @@ use nexa_core::llm::{
     ProviderType, ReasoningEffort, Role,
 };
 use nexa_core::mcp::McpManager;
+use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
 use nexa_core::provider_registry::provider_type_for_parts;
+use nexa_core::quality_profile::{
+    resolve_orchestration_profile, CustomOrchestrationOptions, OrchestrationProfile,
+    OrchestrationProfileInput,
+};
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
@@ -127,6 +132,10 @@ pub struct DesktopAgentTurnConfigRequest<'a> {
     pub app_cfg: &'a AppConfig,
     pub execution_mode: AgentExecutionMode,
     pub power_mode: AgentPowerMode,
+    pub collaboration_mode: AgentCollaborationMode,
+    pub moa_preset: MoaPresetId,
+    pub orchestration_profile: OrchestrationProfile,
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
 }
 
 pub struct DesktopAgentTurnConfig {
@@ -161,6 +170,10 @@ pub struct DesktopAgentSessionConfigInput<'a> {
     pub selected_skills: &'a [Skill],
     pub auto_loaded_skills: &'a [Skill],
     pub execution_mode: AgentExecutionMode,
+    pub collaboration_mode: AgentCollaborationMode,
+    pub moa_preset: MoaPresetId,
+    pub orchestration_profile: OrchestrationProfile,
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
 }
 
 pub struct DesktopAgentSessionDependencyRequest<'a> {
@@ -271,6 +284,37 @@ pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
     })
 }
 
+pub fn collaboration_mode_artifact(config: &AgentConfig) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "agentCollaborationMode",
+        "version": 1,
+        "mode": config.collaboration_mode.as_str(),
+        "preset": config.moa_preset.as_str(),
+        "contract": {
+            "advisorsReceiveTools": false,
+            "aggregatorRetainsTools": true,
+            "privateCacheSafeTail": true,
+            "independentFromNexus": true,
+        },
+    })
+}
+
+pub fn orchestration_profile_artifact(config: &AgentConfig) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "orchestrationProfile",
+        "version": 1,
+        "profile": config.orchestration_profile.as_str(),
+        "providerReasoningEffort": config.reasoning_effort.as_ref().map(ToString::to_string),
+        "policy": {
+            "maxIterations": config.max_iterations,
+            "maxParallel": config.subagent_max_parallel,
+            "maxCallsPerTurn": config.subagent_max_calls_per_turn,
+            "delegatedTokenBudget": config.subagent_token_budget,
+            "verificationReservePercent": config.subagent_verification_reserve_percent,
+        },
+    })
+}
+
 pub fn request_desktop_running_agent_stop(
     task_state: nexa_core::runtime::ActiveAgentTurn,
     request: DesktopRunningAgentStopRequest,
@@ -332,8 +376,15 @@ pub fn annotate_user_artifacts_with_execution_mode(
     artifacts: Option<serde_json::Value>,
     execution_mode: AgentExecutionMode,
     power_mode: AgentPowerMode,
+    collaboration_mode: AgentCollaborationMode,
+    moa_preset: MoaPresetId,
+    orchestration_profile: OrchestrationProfile,
 ) -> Option<serde_json::Value> {
-    if !execution_mode.is_plan() && !power_mode.is_nexus() {
+    if !execution_mode.is_plan()
+        && !power_mode.is_nexus()
+        && !collaboration_mode.is_moa()
+        && orchestration_profile == OrchestrationProfile::Balanced
+    {
         return artifacts;
     }
 
@@ -351,6 +402,27 @@ pub fn annotate_user_artifacts_with_execution_mode(
                     "kind": "agentPowerMode",
                     "version": 1,
                     "mode": power_mode.as_str(),
+                }),
+            );
+        }
+        if collaboration_mode.is_moa() {
+            map.insert(
+                "collaborationMode".to_string(),
+                serde_json::json!({
+                    "kind": "agentCollaborationMode",
+                    "version": 1,
+                    "mode": collaboration_mode.as_str(),
+                    "preset": moa_preset.as_str(),
+                }),
+            );
+        }
+        if orchestration_profile != OrchestrationProfile::Balanced {
+            map.insert(
+                "orchestrationProfile".to_string(),
+                serde_json::json!({
+                    "kind": "orchestrationProfile",
+                    "version": 1,
+                    "profile": orchestration_profile.as_str(),
                 }),
             );
         }
@@ -818,6 +890,10 @@ pub fn build_desktop_agent_turn_config(
         app_cfg,
         execution_mode,
         power_mode,
+        collaboration_mode,
+        moa_preset,
+        orchestration_profile,
+        custom_orchestration,
     } = request;
 
     let source_scope_ids = db
@@ -973,6 +1049,24 @@ pub fn build_desktop_agent_turn_config(
         subagent_token_budget: db_config.subagent_token_budget.map(|value| value as u32),
     });
     let power_mode_section = power_policy.prompt_section().to_string();
+    let orchestration_policy = resolve_orchestration_profile(OrchestrationProfileInput {
+        profile: orchestration_profile,
+        custom: custom_orchestration.clone(),
+        max_iterations: power_policy.max_iterations,
+        max_parallel: power_policy.subagent_max_parallel,
+        max_calls_per_turn: power_policy.subagent_max_calls_per_turn,
+        delegated_token_budget: power_policy.subagent_token_budget,
+        verification_reserve_percent: power_policy.verification_reserve_percent,
+    });
+    let orchestration_profile_section = orchestration_policy.prompt_section();
+    let collaboration_mode_section = if collaboration_mode.is_moa() {
+        format!(
+            "## Mixture-of-Agents Collaboration\n\nThe user explicitly selected the `{}` virtual-provider preset for this turn. Private tool-free advisors may inform model calls, but only the aggregator may answer or call tools. MoA remains independent from Nexus; do not recursively enable MoA inside delegated workers.",
+            moa_preset.as_str()
+        )
+    } else {
+        String::new()
+    };
     let base_system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
     let context_budget = db_config
         .context_window
@@ -1019,6 +1113,26 @@ pub fn build_desktop_agent_turn_config(
             110,
             ContextItemStability::VolatileSuffix,
             power_mode_section,
+        ),
+        (
+            "quality-policy",
+            ContextItemRole::Instruction,
+            "runtime.orchestration_profile",
+            "resolved orchestration quality profile",
+            ContextTrustLevel::System,
+            108,
+            ContextItemStability::VolatileSuffix,
+            orchestration_profile_section,
+        ),
+        (
+            "collaboration-policy",
+            ContextItemRole::Instruction,
+            "runtime.collaboration_mode",
+            "selected LLM collaboration policy",
+            ContextTrustLevel::System,
+            106,
+            ContextItemStability::VolatileSuffix,
+            collaboration_mode_section,
         ),
         (
             "active-goal",
@@ -1136,7 +1250,7 @@ pub fn build_desktop_agent_turn_config(
         context_pack.prompt_sections_for_stability(ContextItemStability::VolatileSuffix);
 
     let executor_config = AgentConfig {
-        max_iterations: power_policy.max_iterations,
+        max_iterations: orchestration_policy.max_iterations,
         system_prompt,
         volatile_system_sections,
         model: Some(db_config.model.clone()),
@@ -1151,10 +1265,28 @@ pub fn build_desktop_agent_turn_config(
         summarization_model: db_config.summarization_model.clone(),
         summarization_provider_type: desktop_summarization_provider_config(db_config)
             .map(|config| config.provider_type),
-        subagent_max_parallel: power_policy.subagent_max_parallel,
-        subagent_max_calls_per_turn: power_policy.subagent_max_calls_per_turn,
-        subagent_token_budget: power_policy.subagent_token_budget,
-        subagent_verification_reserve_percent: power_policy.verification_reserve_percent,
+        subagent_max_parallel: if orchestration_profile == OrchestrationProfile::Balanced {
+            power_policy.subagent_max_parallel
+        } else {
+            Some(orchestration_policy.max_parallel)
+        },
+        subagent_max_calls_per_turn: if orchestration_profile == OrchestrationProfile::Balanced {
+            power_policy.subagent_max_calls_per_turn
+        } else {
+            Some(orchestration_policy.max_calls_per_turn)
+        },
+        subagent_token_budget: if orchestration_profile == OrchestrationProfile::Balanced {
+            power_policy.subagent_token_budget
+        } else {
+            Some(orchestration_policy.delegated_token_budget)
+        },
+        subagent_verification_reserve_percent: if orchestration_profile
+            == OrchestrationProfile::Balanced
+        {
+            power_policy.verification_reserve_percent
+        } else {
+            Some(orchestration_policy.verification_reserve_percent)
+        },
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -1165,6 +1297,10 @@ pub fn build_desktop_agent_turn_config(
         tool_approval_mode: app_cfg.tool_approval_mode,
         execution_mode,
         power_mode,
+        collaboration_mode,
+        moa_preset,
+        orchestration_profile,
+        custom_orchestration,
     };
 
     DesktopAgentTurnConfig {
@@ -1196,6 +1332,10 @@ pub fn build_desktop_agent_session_config(
         approval_mode: input.app_cfg.tool_approval_mode,
         shell_access_mode: input.app_cfg.shell_access_mode,
         execution_mode: input.execution_mode,
+        collaboration_mode: input.collaboration_mode,
+        moa_preset: input.moa_preset,
+        orchestration_profile: input.orchestration_profile,
+        custom_orchestration: input.custom_orchestration.clone(),
         trace_enabled: input.app_cfg.trace_enabled,
         skill_context: nexa_core::runtime::RuntimeSkillContext {
             available_skill_ids: input
@@ -1266,6 +1406,10 @@ pub fn build_desktop_agent_initial_task_artifacts(
     if executor_config.power_mode.is_nexus() {
         artifacts["powerMode"] = power_mode_artifact(executor_config);
     }
+    if executor_config.collaboration_mode.is_moa() {
+        artifacts["collaborationMode"] = collaboration_mode_artifact(executor_config);
+    }
+    artifacts["orchestrationProfile"] = orchestration_profile_artifact(executor_config);
     artifacts
 }
 
@@ -2107,6 +2251,10 @@ mod tests {
             app_cfg: &app_cfg,
             execution_mode: AgentExecutionMode::Plan,
             power_mode: AgentPowerMode::Standard,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         });
 
         assert_eq!(turn_config.source_scope_ids, vec![source.id.clone()]);
@@ -2171,6 +2319,10 @@ mod tests {
             app_cfg: &app_cfg,
             execution_mode: AgentExecutionMode::Normal,
             power_mode: AgentPowerMode::Nexus,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         })
         .executor_config;
         assert_eq!(nexus.max_iterations, 48);

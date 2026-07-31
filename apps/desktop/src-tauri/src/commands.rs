@@ -1000,6 +1000,10 @@ mod tests {
             selected_skills: &selected_skills,
             auto_loaded_skills: &loaded_skills,
             execution_mode: AgentExecutionMode::Plan,
+            collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
+            moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
+            orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         });
 
         assert_eq!(config.version, nexa_core::runtime::RUNTIME_PROTOCOL_VERSION);
@@ -1512,6 +1516,10 @@ mod tests {
             selected_skills: &[],
             auto_loaded_skills: &[],
             execution_mode: AgentExecutionMode::Normal,
+            collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
+            moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
+            orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         });
 
         let artifact = runtime_session_config_artifact(&config);

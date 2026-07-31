@@ -24,6 +24,7 @@ use nexa_core::tools::{Tool, ToolCategory, ToolRegistry, ToolResult};
 use nexa_core::workflow_catalog::{
     workflow_template_by_id, workflow_template_id_values, WorkflowTemplateDefinition,
 };
+use nexa_core::workflow_ir::ModelRoutingClass;
 
 static SPAWN_SUBAGENT_DEF: OnceLock<DelegationToolDef> = OnceLock::new();
 static SPAWN_SUBAGENT_BATCH_DEF: OnceLock<DelegationToolDef> = OnceLock::new();
@@ -697,6 +698,8 @@ struct SpawnSubagentArgs {
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
+    model_policy: Option<ModelRoutingClass>,
+    #[serde(default)]
     context: Option<String>,
     #[serde(default)]
     expected_output: Option<String>,
@@ -731,6 +734,8 @@ struct BatchSubagentTaskArgs {
     role_id: Option<String>,
     #[serde(default)]
     role: Option<String>,
+    #[serde(default)]
+    model_policy: Option<ModelRoutingClass>,
     #[serde(default)]
     context: Option<String>,
     #[serde(default)]
@@ -848,6 +853,9 @@ struct SubagentRunArtifact {
     role_id: Option<String>,
     role_name: Option<String>,
     role: Option<String>,
+    model_policy: Option<ModelRoutingClass>,
+    effective_model: Option<String>,
+    model_route_fallback: bool,
     expected_output: Option<String>,
     acceptance_criteria: Option<Vec<String>>,
     evidence_chunk_ids: Option<Vec<String>>,
@@ -904,6 +912,7 @@ fn subtask_input_payload(
         "roleId": role_profile.map(|profile| profile.id),
         "roleName": role_profile.map(|profile| profile.label),
         "role": &args.role,
+        "modelPolicy": &args.model_policy,
         "context": &args.context,
         "expectedOutput": &args.expected_output,
         "acceptanceCriteria": &args.acceptance_criteria,
@@ -1145,6 +1154,7 @@ fn expand_workflow_template_tasks(
                 ),
                 role_id: Some(task_template.role_id.to_string()),
                 role: profile.map(|profile| profile.label.to_string()),
+                model_policy: None,
                 context: Some(shared_context.clone()),
                 expected_output: Some(task_template.expected_output.to_string()),
                 max_iterations: None,
@@ -1520,6 +1530,7 @@ fn normalize_batch_task_args(
         task_id: task.task_id,
         role_id: task.role_id,
         role: task.role,
+        model_policy: task.model_policy,
         context: task.context,
         expected_output: task.expected_output,
         max_iterations: task.max_iterations,
@@ -1552,9 +1563,6 @@ async fn run_subagent_once(
 
     let worker_cancel_token = runtime.cancel_token.child_token();
 
-    let provider = create_provider(runtime.provider_config.clone())
-        .map_err(|e| CoreError::Llm(e.to_string()))?;
-
     let role_profile = resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
     let requested_task_id = args.task_id.clone();
     let session_id = requested_task_id
@@ -1565,6 +1573,14 @@ async fn run_subagent_once(
         .and_then(|task_id| runtime.get_session_snapshot(task_id));
 
     let mut config = runtime.base_config.clone();
+    let model_route_fallback = apply_delegated_model_policy(
+        &mut config,
+        &runtime.provider_config,
+        args.model_policy.as_ref(),
+    );
+    let effective_model = config.model.clone();
+    let provider = create_provider(runtime.provider_config.clone())
+        .map_err(|e| CoreError::Llm(e.to_string()))?;
     config.max_iterations = args
         .max_iterations
         .unwrap_or_else(|| {
@@ -1660,6 +1676,9 @@ async fn run_subagent_once(
                 "callLabel": &call_label,
                 "role": role_label,
                 "task": &args.task,
+                "modelPolicy": &args.model_policy,
+                "effectiveModel": &effective_model,
+                "modelRouteFallback": model_route_fallback,
                 "reservedTokens": reserved_tokens,
             })),
         );
@@ -1915,6 +1934,9 @@ async fn run_subagent_once(
         role_id: role_profile.map(|profile| profile.id.to_string()),
         role_name: role_profile.map(|profile| profile.label.to_string()),
         role: args.role,
+        model_policy: args.model_policy,
+        effective_model,
+        model_route_fallback,
         expected_output: args.expected_output,
         acceptance_criteria: args.acceptance_criteria,
         evidence_chunk_ids: args.evidence_chunk_ids,
@@ -2150,6 +2172,42 @@ fn is_subagent_tool_name(name: &str) -> bool {
         name,
         "spawn_subagent" | "spawn_subagent_batch" | "judge_subagent_results"
     )
+}
+
+fn compatible_auxiliary_model(
+    config: &AgentConfig,
+    provider_config: &ProviderConfig,
+) -> Option<String> {
+    let provider_matches = config
+        .summarization_provider_type
+        .is_none_or(|provider_type| provider_type == provider_config.provider_type);
+    provider_matches
+        .then(|| config.summarization_model.as_deref().map(str::trim))
+        .flatten()
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+}
+
+/// Route delegated phases without ever sending a model identifier to credentials
+/// or an endpoint configured for a different provider. A missing compatible
+/// auxiliary model is an explicit fallback to the parent model.
+fn apply_delegated_model_policy(
+    config: &mut AgentConfig,
+    provider_config: &ProviderConfig,
+    policy: Option<&ModelRoutingClass>,
+) -> bool {
+    if !matches!(
+        policy,
+        Some(ModelRoutingClass::Fast | ModelRoutingClass::IndependentReviewer)
+    ) {
+        return false;
+    }
+    if let Some(model) = compatible_auxiliary_model(config, provider_config) {
+        config.model = Some(model);
+        false
+    } else {
+        true
+    }
 }
 
 fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
@@ -2487,6 +2545,9 @@ impl Tool for SubagentBatchTool {
                             .flatten()
                             .map(|profile| profile.label.to_string()),
                             role: fallback.role,
+                            model_policy: fallback.model_policy,
+                            effective_model: None,
+                            model_route_fallback: false,
                             expected_output: fallback.expected_output,
                             acceptance_criteria: fallback.acceptance_criteria,
                             evidence_chunk_ids: fallback.evidence_chunk_ids,
@@ -2603,13 +2664,10 @@ impl Tool for JudgeSubagentResultsTool {
 
         let provider = create_provider(self.runtime.provider_config.clone())
             .map_err(|e| CoreError::Llm(e.to_string()))?;
-        let model = self
-            .runtime
-            .base_config
-            .summarization_model
-            .clone()
-            .or_else(|| self.runtime.base_config.model.clone())
-            .unwrap_or_else(|| "gpt-4o-mini".to_string());
+        let model =
+            compatible_auxiliary_model(&self.runtime.base_config, &self.runtime.provider_config)
+                .or_else(|| self.runtime.base_config.model.clone())
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
         let system_prompt = build_judge_system_prompt(&self.runtime.base_config.system_prompt);
         let user_prompt = build_judge_request(&args);
         let reserved_tokens = estimate_tokens_for_model(&model, &system_prompt)
@@ -3009,6 +3067,7 @@ mod tests {
             task_id: Some("  worker-1  ".into()),
             role_id: None,
             role: None,
+            model_policy: None,
             context: None,
             expected_output: None,
             max_iterations: None,
@@ -3034,6 +3093,45 @@ mod tests {
         config.agent_timeout_secs = Some(0);
 
         assert_eq!(resolve_delegation_timeout_secs(&config, None), 120);
+    }
+
+    #[test]
+    fn test_model_policy_routes_only_to_same_provider_auxiliary_model() {
+        let mut config = AgentConfig {
+            model: Some("gpt-5".into()),
+            summarization_model: Some("gpt-5-mini".into()),
+            summarization_provider_type: Some(ProviderType::OpenAi),
+            ..AgentConfig::default()
+        };
+        let openai = ProviderConfig {
+            provider_type: ProviderType::OpenAi,
+            base_url: None,
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+        assert!(!apply_delegated_model_policy(
+            &mut config,
+            &openai,
+            Some(&ModelRoutingClass::Fast)
+        ));
+        assert_eq!(config.model.as_deref(), Some("gpt-5-mini"));
+
+        config.model = Some("claude-opus".into());
+        config.summarization_model = Some("gpt-5-mini".into());
+        let anthropic = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+        assert!(apply_delegated_model_policy(
+            &mut config,
+            &anthropic,
+            Some(&ModelRoutingClass::IndependentReviewer)
+        ));
+        assert_eq!(config.model.as_deref(), Some("claude-opus"));
     }
 
     #[tokio::test]
@@ -3063,6 +3161,7 @@ mod tests {
             task_id: None,
             role_id: Some("Verifier".into()),
             role: None,
+            model_policy: None,
             context: None,
             expected_output: None,
             max_iterations: None,
@@ -3099,6 +3198,7 @@ mod tests {
             task_id: None,
             role_id: Some("wizard".into()),
             role: None,
+            model_policy: None,
             context: None,
             expected_output: None,
             max_iterations: None,

@@ -23,6 +23,11 @@
               "description": "Structured role profile for this worker."
             },
             "role": { "type": "string", "description": "Optional free-form perspective for this worker." },
+            "model_policy": {
+              "type": "string",
+              "enum": ["fast", "strong", "independentReviewer"],
+              "description": "Optional workflow model class. Fast and independent-review phases use a compatible auxiliary model when one is configured for the same provider; otherwise they safely fall back to the parent model."
+            },
             "context": { "type": "string" },
             "expected_output": { "type": "string" },
             "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
