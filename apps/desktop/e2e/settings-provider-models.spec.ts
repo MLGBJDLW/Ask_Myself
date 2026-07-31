@@ -681,6 +681,22 @@ test("settings discard leaves speech drafts unpersisted while keeping saved Whis
   await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
+test("appearance keeps a compact theme summary and opens the dedicated Theme tab", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("nexa-active-theme-v1", "dark"));
+  await page.goto("/settings");
+
+  const summary = page.getByTestId("theme-summary-card");
+  await expect(summary).toContainText("Dark");
+  await expect(page.getByTestId("theme-studio")).toHaveCount(0);
+
+  await summary.getByRole("button", { name: "Open Theme Studio" }).click();
+  await expect(page.getByRole("button", { name: "Theme", exact: true })).toHaveClass(/bg-accent/);
+  await expect(page.getByTestId("theme-studio")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Advanced colors" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "Background & effects" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "Import & export" })).toHaveAttribute("aria-expanded", "false");
+});
+
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();

@@ -75,5 +75,9 @@
   "saved": "Custom theme saved",
   "saveFailed": "The custom theme could not be saved.",
   "imported": "Theme imported",
-  "invalidTheme": "The theme JSON is invalid."
+  "invalidTheme": "The theme JSON is invalid.",
+  "openStudio": "Open Theme Studio",
+  "advancedColors": "Advanced colors",
+  "effectsBackground": "Background & effects",
+  "importExport": "Import & export"
 }

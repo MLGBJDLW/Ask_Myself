@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChartNoAxesCombined,
+  Palette,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../../lib/api';
@@ -32,6 +33,7 @@ import { useTranslation } from '../../i18n';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AgentQualitySettingsTab } from '../../components/settings/AgentQualitySettingsTab';
 import { AppearanceSettingsTab } from '../../components/settings/AppearanceSettingsTab';
+import { ThemeSettingsTab } from '../../components/settings/ThemeSettingsTab';
 import { UsageAnalyticsSettingsTab } from '../../components/settings/UsageAnalyticsSettingsTab';
 import { DataPrivacySettingsTab } from '../../components/settings/DataPrivacySettingsTab';
 import { EmbeddingConfigSection } from '../../components/settings/EmbeddingConfigSection';
@@ -46,7 +48,7 @@ import { useDeveloperMode } from '../../lib/developerMode';
 import { useVoiceInputRuntime, withWhisperModel } from '../voice';
 
 /* ── Settings page ────────────────────────────────────────────────── */
-type SettingsTab = 'appearance' | 'models_embedding' | 'providers' | 'usage' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
+type SettingsTab = 'appearance' | 'theme' | 'models_embedding' | 'providers' | 'usage' | 'agent_quality' | 'media' | 'data_privacy' | 'extensions';
 type SettingsTabItem = { id: SettingsTab; label: string; icon: ReactNode; developerOnly?: boolean };
 const MEMORY_CHAR_LIMIT = 240;
 const TAB_STRIP_EDGE_EPSILON = 4;
@@ -1522,6 +1524,7 @@ export function SettingsPage() {
 
   const allTabs: SettingsTabItem[] = [
     { id: 'appearance', label: t('settings.appearance'), icon: <Star size={16} /> },
+    { id: 'theme', label: t('settings.appearance.theme'), icon: <Palette size={16} /> },
     { id: 'models_embedding', label: t('settings.tabModelsEmbedding'), icon: <Brain size={16} /> },
     { id: 'providers', label: t('settings.aiProviders'), icon: <Bot size={16} /> },
     { id: 'usage', label: t('usage.title'), icon: <ChartNoAxesCombined size={16} /> },
@@ -1620,8 +1623,12 @@ export function SettingsPage() {
           onAppConfigSave={(config) => { void handleAppConfigSave(config); }}
           onDeveloperModeChange={setDeveloperMode}
           onRerunWizard={() => { void handleRerunWizard(); }}
+          onOpenThemeSettings={() => handleTabChange('theme')}
         />
       )}
+
+      {/* ── Tab: Theme Studio ─────────────────────────────────── */}
+      {activeTab === 'theme' && <ThemeSettingsTab />}
 
       {activeTab === 'usage' && <UsageAnalyticsSettingsTab />}
 
