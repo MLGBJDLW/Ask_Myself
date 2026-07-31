@@ -19,7 +19,7 @@ use super::super::run_shell_contract::{
     tool_description as run_shell_tool_description, DEFAULT_TIMEOUT_SECS, TOOL_NAME,
 };
 use super::super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
-use super::environment::LocalRunShellExecutionEnvironment;
+use super::environment::{apply_isolated_process_sandbox, LocalRunShellExecutionEnvironment};
 use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot, FileSnapshot};
 use super::native_fs::is_native_filesystem_program;
 use super::parser::parse_run_shell_args;
@@ -1265,6 +1265,8 @@ impl Tool for RunShellTool {
                 ));
             }
         };
+        let isolation_sandbox = parsed.isolation_sandbox.clone();
+        let process_isolation_enabled = isolation_sandbox.is_some();
         if let Some(ready_timeout_secs) = parsed.ready_timeout_secs {
             tracing::debug!(
                 ready_timeout_secs,
@@ -1284,6 +1286,12 @@ impl Tool for RunShellTool {
             ));
         }
         if service_action != "run" {
+            if isolation_sandbox.is_some() {
+                return Ok(error_result(
+                    call_id,
+                    "Code Ultra isolation cannot manage a process created outside this sandboxed call.",
+                ));
+            }
             let Some(service_id) = parsed
                 .service_id
                 .as_deref()
@@ -1313,6 +1321,12 @@ impl Tool for RunShellTool {
                 "service_id is only valid with service_action=status, wait, or stop",
             ));
         }
+        if isolation_sandbox.is_some() && parsed.background {
+            return Ok(error_result(
+                call_id,
+                "Code Ultra isolation does not allow detached processes.",
+            ));
+        }
         let shell_access_mode = db
             .load_app_config()
             .map(|cfg| cfg.shell_access_mode)
@@ -1332,10 +1346,12 @@ impl Tool for RunShellTool {
         }
 
         let timeout = clamp_timeout(parsed.timeout_secs);
-        let auto_promoted = !parsed.background
+        let auto_promoted = isolation_sandbox.is_none()
+            && !parsed.background
             && parsed.stdin.is_none()
             && !is_native_filesystem_program(&canonical_program);
-        let managed_background = parsed.background || auto_promoted;
+        let managed_background =
+            isolation_sandbox.is_none() && (parsed.background || auto_promoted);
         if managed_background && parsed.stdin.is_some() {
             return Ok(error_result(
                 call_id,
@@ -1441,6 +1457,13 @@ impl Tool for RunShellTool {
         execution_request.cwd = Some(cwd_path.display().to_string());
         execution_request.stdin = parsed.stdin.clone();
         execution_request.sandbox.timeout_ms = Some(timeout.saturating_mul(1000));
+        if let Some(isolation) = isolation_sandbox {
+            apply_isolated_process_sandbox(
+                &mut execution_request,
+                Path::new(&isolation.worktree_root),
+                &cwd_path,
+            )?;
+        }
         let execution_artifact = match environment.execute(execution_request).await {
             Ok(artifact) => artifact,
             Err(CoreError::InvalidInput(msg)) => return Ok(error_result(call_id, msg)),
@@ -1511,6 +1534,10 @@ impl Tool for RunShellTool {
                     "stderrTruncated": output.truncated_stderr,
                     "errorCode": execution_code,
                     "retryable": is_error,
+                    "program": canonical_program,
+                    "args": normalized_args,
+                    "cwd": cwd_path,
+                    "filesystemSandboxed": process_isolation_enabled,
                     "recovery": if is_error {
                         "inspect the preserved output tail, then correct the command, cwd, timeout, or failing code before retrying"
                     } else {

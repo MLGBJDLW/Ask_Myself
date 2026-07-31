@@ -445,7 +445,11 @@ impl WorkflowIr {
         artifacts: Option<&serde_json::Value>,
         content: &str,
     ) {
+        if tool_name == "run_shell" {
+            self.record_executed_verification(is_error, artifacts);
+        }
         if is_error {
+            self.refresh_checkpoint();
             return;
         }
         if matches!(
@@ -490,9 +494,6 @@ impl WorkflowIr {
                 == Some("subagent_judgement")
         {
             self.record_gate("independent-review", true, content);
-        }
-        if tool_name == "record_verification" {
-            self.record_verification_artifact(artifacts);
         }
         self.refresh_checkpoint();
     }
@@ -570,46 +571,127 @@ impl WorkflowIr {
         blockers
     }
 
-    fn record_verification_artifact(&mut self, artifacts: Option<&serde_json::Value>) {
-        let Some(checks) = artifacts
-            .and_then(|value| value.get("checks"))
-            .and_then(serde_json::Value::as_array)
-        else {
+    fn record_executed_verification(
+        &mut self,
+        is_error: bool,
+        artifacts: Option<&serde_json::Value>,
+    ) {
+        let Some(execution) = artifacts.and_then(|value| value.get("execution")) else {
             return;
         };
-        for check in checks {
-            let Some(name) = check
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_ascii_lowercase)
-            else {
-                continue;
-            };
-            let Some(status) = check.get("status").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let passed = status == "passed";
-            let detail = check
-                .get("details")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(status);
-            let gate_id = if name.contains("typecheck")
-                || name.contains("type check")
-                || name.contains("tsc")
-            {
-                Some("typecheck")
-            } else if name.contains("lint") || name.contains("clippy") {
-                Some("lint")
-            } else if name.contains("test") {
-                Some("tests")
-            } else if name.contains("build") || name.contains("compile") {
-                Some("build")
+        let Some(program) = execution.get("program").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let args = execution
+            .get("args")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let program_name = std::path::Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(program)
+            .trim_end_matches(".exe")
+            .trim_end_matches(".cmd")
+            .to_ascii_lowercase();
+        if program.contains('/') || program.contains('\\') {
+            return;
+        }
+        let informational_only = args.iter().any(|argument| {
+            matches!(
+                argument.as_str(),
+                "-h" | "--help"
+                    | "-v"
+                    | "--version"
+                    | "--no-run"
+                    | "--list"
+                    | "--listtests"
+                    | "--collect-only"
+            )
+        });
+        if informational_only {
+            return;
+        }
+        let first = args.first().map(String::as_str);
+        let second = args.get(1).map(String::as_str);
+        let package_script = if matches!(program_name.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
+            if first == Some("run") {
+                second
             } else {
-                None
-            };
-            if let Some(gate_id) = gate_id {
-                self.record_gate(gate_id, passed, detail);
+                first
             }
+        } else {
+            None
+        };
+        let script_is = |name: &str| {
+            package_script
+                .is_some_and(|script| script == name || script.starts_with(&format!("{name}:")))
+        };
+        let npx_tool = (program_name == "npx").then_some(first).flatten();
+        let mut gate_ids = Vec::new();
+        if matches!(program_name.as_str(), "pytest" | "vitest" | "jest")
+            || (program_name == "playwright" && first == Some("test"))
+            || (program_name == "cargo" && first == Some("test"))
+            || (matches!(program_name.as_str(), "go" | "dotnet") && first == Some("test"))
+            || (program_name == "node" && first == Some("--test"))
+            || script_is("test")
+            || matches!(npx_tool, Some("pytest" | "vitest" | "jest"))
+            || (npx_tool == Some("playwright") && second == Some("test"))
+        {
+            gate_ids.push("tests");
+        }
+        if program_name == "eslint"
+            || (program_name == "ruff" && first == Some("check"))
+            || (program_name == "cargo" && first == Some("clippy"))
+            || script_is("lint")
+            || npx_tool == Some("eslint")
+            || (npx_tool == Some("ruff") && second == Some("check"))
+        {
+            gate_ids.push("lint");
+        }
+        if matches!(program_name.as_str(), "tsc" | "mypy" | "pyright")
+            || (program_name == "cargo" && first == Some("check"))
+            || script_is("typecheck")
+            || script_is("type-check")
+            || matches!(npx_tool, Some("tsc" | "mypy" | "pyright"))
+        {
+            gate_ids.push("typecheck");
+        }
+        if (program_name == "cargo" && first == Some("build"))
+            || (matches!(program_name.as_str(), "go" | "dotnet") && first == Some("build"))
+            || script_is("build")
+            || script_is("compile")
+            || script_is("package")
+            || (program_name == "cmake" && first == Some("--build"))
+            || (program_name == "make" && (first.is_none() || first == Some("all")))
+        {
+            gate_ids.push("build");
+        }
+        let exit_code = execution
+            .get("exitCode")
+            .and_then(serde_json::Value::as_i64);
+        let timed_out = execution
+            .get("timedOut")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let passed = !is_error && exit_code == Some(0) && !timed_out;
+        let command = format!("{} {}", program_name, args.join(" "));
+        for gate_id in gate_ids {
+            self.record_gate(
+                gate_id,
+                passed,
+                format!(
+                    "Runtime command `{}` exited {:?}.",
+                    command.trim(),
+                    exit_code
+                ),
+            );
         }
     }
 
@@ -1175,6 +1257,22 @@ mod tests {
             Some(&artifact),
             "passed",
         );
+        for kind in [
+            VerificationGateKind::Tests,
+            VerificationGateKind::Lint,
+            VerificationGateKind::Typecheck,
+            VerificationGateKind::Build,
+        ] {
+            assert_eq!(
+                workflow
+                    .verification_gates
+                    .iter()
+                    .find(|gate| gate.kind == kind)
+                    .and_then(|gate| gate.passed),
+                None,
+                "model-authored verification must not pass an execution gate"
+            );
+        }
         assert_eq!(
             workflow
                 .verification_gates
@@ -1200,6 +1298,84 @@ mod tests {
             Some(&serde_json::json!({ "kind": "subagent_judgement" })),
             "independent judge completed",
         );
+        let failed_test = serde_json::json!({
+            "kind": "commandExecution",
+            "execution": {
+                "program": "cargo",
+                "args": ["test"],
+                "exitCode": 1,
+                "timedOut": false
+            }
+        });
+        workflow.observe_tool_result(
+            "test-failed",
+            "run_shell",
+            true,
+            Some(&failed_test),
+            "command failed",
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::Tests)
+                .and_then(|gate| gate.passed),
+            Some(false)
+        );
+        for (call_id, program, args) in [
+            ("spoof-echo", "echo", vec!["test"]),
+            ("spoof-path", "/tmp/workspace/cargo", vec!["test"]),
+            ("spoof-help", "cargo", vec!["test", "--no-run"]),
+        ] {
+            let artifact = serde_json::json!({
+                "kind": "commandExecution",
+                "execution": {
+                    "program": program,
+                    "args": args,
+                    "exitCode": 0,
+                    "timedOut": false
+                }
+            });
+            workflow.observe_tool_result(
+                call_id,
+                "run_shell",
+                false,
+                Some(&artifact),
+                "command passed",
+            );
+        }
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::Tests)
+                .and_then(|gate| gate.passed),
+            Some(false),
+            "untrusted or non-executing lookalike commands must not pass tests"
+        );
+        for (call_id, program, args) in [
+            ("test-1", "cargo", vec!["test"]),
+            ("lint-1", "cargo", vec!["clippy"]),
+            ("typecheck-1", "cargo", vec!["check"]),
+            ("build-1", "cargo", vec!["build"]),
+        ] {
+            let artifact = serde_json::json!({
+                "kind": "commandExecution",
+                "execution": {
+                    "program": program,
+                    "args": args,
+                    "exitCode": 0,
+                    "timedOut": false
+                }
+            });
+            workflow.observe_tool_result(
+                call_id,
+                "run_shell",
+                false,
+                Some(&artifact),
+                "command passed",
+            );
+        }
         workflow.record_runtime_write_isolation(true, "controller promoted isolated patch");
         assert!(workflow
             .verification_gates

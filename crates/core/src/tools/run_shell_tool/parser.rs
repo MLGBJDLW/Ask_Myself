@@ -2,6 +2,12 @@ use serde_json::Value;
 
 use super::super::run_shell_contract::{command_shell_operator_error, command_substitution_error};
 
+#[derive(Clone, serde::Deserialize)]
+pub(super) struct RunShellIsolationSandbox {
+    #[serde(rename = "worktreeRoot")]
+    pub(super) worktree_root: String,
+}
+
 #[derive(serde::Deserialize)]
 pub(super) struct RunShellArgs {
     #[serde(default)]
@@ -28,6 +34,8 @@ pub(super) struct RunShellArgs {
     pub(super) service_id: Option<String>,
     #[serde(default)]
     pub(super) stdin: Option<String>,
+    #[serde(default, rename = "_nexaIsolationSandbox")]
+    pub(super) isolation_sandbox: Option<RunShellIsolationSandbox>,
 }
 
 fn repair_invalid_json_string_escapes(input: &str) -> String {

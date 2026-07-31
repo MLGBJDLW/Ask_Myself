@@ -419,6 +419,59 @@ async fn test_external_command_emits_a_completed_process_activity() {
         .any(|event| { event.kind == crate::activity::ActivityEventKind::CommandFinished }));
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn isolated_process_can_write_worktree_but_not_host_paths() {
+    let Ok(probe) = std::process::Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "--", "/usr/bin/true"])
+        .output()
+    else {
+        return;
+    };
+    if !probe.status.success() {
+        return;
+    }
+    let managed_base = std::env::temp_dir().join("nexa-code-ultra");
+    std::fs::create_dir_all(&managed_base).unwrap();
+    let worktree = tempfile::tempdir_in(&managed_base).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("outside.txt");
+    let script = worktree.path().join("sandbox_probe.py");
+    std::fs::write(
+        &script,
+        format!(
+            "from pathlib import Path\nPath('/tmp/workspace/inside.txt').write_text('inside')\noutside = Path({:?})\noutside.parent.mkdir(parents=True, exist_ok=True)\noutside.write_text('outside')\n",
+            outside_file.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let db = db_with_source(worktree.path());
+    let args = json!({
+        "program": "python3",
+        "args": [script.to_string_lossy()],
+        "cwd": worktree.path().to_string_lossy(),
+        "_nexaIsolationSandbox": {
+            "worktreeRoot": worktree.path().to_string_lossy()
+        }
+    });
+    let result = RunShellTool
+        .execute(crate::tools::ToolExecutionContext::new(
+            "sandbox-probe",
+            &args.to_string(),
+            &db,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error, "unexpected result: {}", result.content);
+    assert_eq!(
+        std::fs::read_to_string(worktree.path().join("inside.txt")).unwrap(),
+        "inside"
+    );
+    assert!(!outside_file.exists());
+}
+
 #[tokio::test]
 #[ignore = "requires python3 on PATH"]
 async fn test_managed_http_service_start_status_and_stop() {

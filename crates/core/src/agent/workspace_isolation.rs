@@ -71,6 +71,8 @@ impl WorkspaceIsolationRuntime {
             )));
         }
 
+        ensure_process_sandbox_available()?;
+
         let original_source_root = std::fs::canonicalize(&roots[0])?;
         let repo_output = run_git(&original_source_root, &["rev-parse", "--show-toplevel"])?;
         let original_repo_root = canonicalize_git_path(&repo_output.stdout)?;
@@ -134,7 +136,7 @@ impl WorkspaceIsolationRuntime {
 
     pub(super) fn prompt_section(&self) -> String {
         format!(
-            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path, shell cwd, and repository path argument is controller-routed into this worktree. `run_shell` requires exact `program` + `args`; free-form `command`, shell interpreters, and interpreter eval flags are blocked. Use repository scripts from the isolated source instead of `project_tool`. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
+            "## Controller-enforced write isolation\n\nCode Ultra created an isolated Git worktree at `{}`. Every filesystem path, shell cwd, and repository path argument is controller-routed into this worktree. Process execution is placed in an OS filesystem sandbox where the host is read-only and only this worktree plus an ephemeral temp directory are writable. `run_shell` requires exact `program` + `args`; free-form `command`, shell interpreters, and inline interpreter code are blocked as defense in depth. Use repository scripts from the isolated source instead of `project_tool`. Do not target the original source root. The controller will promote the verified patch only after all other required gates pass.",
             self.isolated_source_root.display()
         )
     }
@@ -205,6 +207,20 @@ impl WorkspaceIsolationRuntime {
         {
             return Err(CoreError::InvalidInput(
                 "Code Ultra write isolation blocks free-form run_shell.command. Use an exact program plus args invocation rooted in the isolated workspace."
+                    .to_string(),
+            ));
+        }
+        if object
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || object
+                .get("service_action")
+                .and_then(Value::as_str)
+                .is_some_and(|action| !action.eq_ignore_ascii_case("run"))
+        {
+            return Err(CoreError::InvalidInput(
+                "Code Ultra write isolation does not allow detached or previously managed processes."
                     .to_string(),
             ));
         }
@@ -296,6 +312,12 @@ impl WorkspaceIsolationRuntime {
                     .to_string(),
             ));
         }
+        object.insert(
+            "_nexaIsolationSandbox".to_string(),
+            serde_json::json!({
+                "worktreeRoot": self.isolated_worktree_root.to_string_lossy()
+            }),
+        );
         Ok(())
     }
 
@@ -504,6 +526,45 @@ fn canonicalize_git_path(stdout: &[u8]) -> Result<PathBuf, CoreError> {
     std::fs::canonicalize(path).map_err(CoreError::Io)
 }
 
+fn ensure_process_sandbox_available() -> Result<(), CoreError> {
+    #[cfg(target_os = "windows")]
+    let output = Command::new("wsl.exe")
+        .args([
+            "--exec",
+            "bwrap",
+            "--ro-bind",
+            "/",
+            "/",
+            "--",
+            "/usr/bin/true",
+        ])
+        .output();
+    #[cfg(target_os = "linux")]
+    let output = Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "--", "/usr/bin/true"])
+        .output();
+    #[cfg(target_os = "macos")]
+    let output = Command::new("sandbox-exec")
+        .args(["-p", "(version 1) (allow default)", "/usr/bin/true"])
+        .output();
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let output: std::io::Result<Output> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "unsupported operating system",
+    ));
+
+    match output {
+        Ok(result) if result.status.success() => Ok(()),
+        Ok(result) => Err(CoreError::InvalidInput(format!(
+            "Code Ultra requires an OS filesystem sandbox for process execution, but the sandbox probe failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ))),
+        Err(error) => Err(CoreError::InvalidInput(format!(
+            "Code Ultra requires an OS filesystem sandbox for process execution: {error}"
+        ))),
+    }
+}
+
 fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, CoreError> {
     let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
     ensure_git_success(output, args)
@@ -570,6 +631,9 @@ mod tests {
 
     #[test]
     fn isolated_patch_is_routed_verified_and_promoted() {
+        if ensure_process_sandbox_available().is_err() {
+            return;
+        }
         let repo = tempfile::tempdir().unwrap();
         git(repo.path(), &["init"]);
         git(repo.path(), &["config", "user.email", "nexa@example.test"]);

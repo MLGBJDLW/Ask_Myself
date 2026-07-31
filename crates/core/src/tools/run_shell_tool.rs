@@ -29,6 +29,9 @@ pub(crate) fn uses_managed_background(parsed_args: &serde_json::Value) -> bool {
     {
         return false;
     }
+    if parsed.isolation_sandbox.is_some() {
+        return false;
+    }
     if parsed.stdin.is_some() {
         return false;
     }

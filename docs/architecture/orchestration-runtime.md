@@ -89,10 +89,15 @@ For a mutation-capable Code Ultra workflow, the controller requires exactly one
 clean Git-backed source, creates a detached temporary worktree, registers it as
 a non-watched source for the turn, scopes execution only to that source, and
 rewrites filesystem paths, exact shell argv repository paths, and shell working
-directories into it while rejecting outside or traversing paths. Free-form shell
-commands, shell interpreters, inline interpreter code, and `project_tool run` are
-withheld because they cannot preserve this routing contract. Only after every
-other required gate passes does the controller generate a binary Git patch,
+directories into it while rejecting outside or traversing paths. External
+processes run under an OS filesystem sandbox: bubblewrap on Linux/Windows WSL,
+or the macOS sandbox profile. The host filesystem is read-only; only the isolated
+worktree and ephemeral temp storage are writable. If that backend is unavailable,
+Code Ultra refuses to start. Free-form shell commands, shell interpreters, inline
+interpreter code, and `project_tool run` remain withheld as defense in depth.
+Test, lint, typecheck, and build gates are derived from successful command
+execution artifacts, never model-authored labels. Only after every other required
+gate passes does the controller generate a binary Git patch,
 verify it with `git apply --check`,
 promote it to the original clean worktree, and remove the temporary source. The
 write-isolation gate is set only by this runtime transition; a model-authored
