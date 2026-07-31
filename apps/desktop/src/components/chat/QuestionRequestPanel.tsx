@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check, CheckCircle2, HelpCircle, Send } from 'lucide-react';
 import { useTranslation } from '../../i18n';
@@ -17,14 +17,40 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
+  const submittedRef = useRef(false);
   const complete = useMemo(
-    () => request.questions.every((question) => (answers[question.id] ?? []).some((answer) => answer.trim())),
-    [answers, request.questions],
+    () => hasCompleteAnswers(request, answers),
+    [answers, request],
+  );
+  const autoSubmitChoices = useMemo(
+    () => request.questions.every((question) => (
+      question.type === 'single_choice' || question.type === 'confirm'
+    )),
+    [request.questions],
   );
   const isAnswered = answered || submitted || request.status === 'answered';
 
-  const selectSingle = (id: string, value: string) => {
-    setAnswers((current) => ({ ...current, [id]: [value] }));
+  const submitAnswers = (nextAnswers: Record<string, string[]>) => {
+    if (
+      !hasCompleteAnswers(request, nextAnswers) ||
+      isAnswered ||
+      !onSubmit ||
+      submittedRef.current
+    ) {
+      return;
+    }
+    submittedRef.current = true;
+    setSubmitted(true);
+    const response = formatQuestionResponse(request, nextAnswers);
+    onSubmit(response.message, response.artifact);
+  };
+
+  const selectSingle = (id: string, value: string, submitWhenComplete = false) => {
+    const nextAnswers = { ...answers, [id]: [value] };
+    setAnswers(nextAnswers);
+    if (submitWhenComplete && autoSubmitChoices) {
+      submitAnswers(nextAnswers);
+    }
   };
 
   const toggleMulti = (id: string, value: string) => {
@@ -52,10 +78,7 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
   };
 
   const submit = () => {
-    if (!complete || isAnswered || !onSubmit) return;
-    const response = formatQuestionResponse(request, answers);
-    onSubmit(response.message, response.artifact);
-    setSubmitted(true);
+    submitAnswers(answers);
   };
 
   return (
@@ -122,7 +145,7 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
                         aria-checked={checked}
                         onClick={() => isMulti
                           ? toggleMulti(question.id, option.label)
-                          : selectSingle(question.id, option.label)}
+                          : selectSingle(question.id, option.label, true)}
                         className={`relative rounded-lg border p-2.5 text-left transition ${
                           checked
                             ? 'border-accent/55 bg-accent/12 shadow-[0_0_0_1px_rgba(100,120,255,0.12)]'
@@ -162,7 +185,7 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
                       <button
                         key={label}
                         type="button"
-                        onClick={() => selectSingle(question.id, label)}
+                        onClick={() => selectSingle(question.id, label, true)}
                         className={`rounded-lg border px-4 py-2 text-xs font-medium transition ${selected.includes(label) ? 'border-accent bg-accent/12 text-accent' : 'border-border bg-surface-2 text-text-secondary hover:text-text-primary'}`}
                       >
                         {label}
@@ -206,4 +229,13 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
       </footer>
     </motion.section>
   );
+}
+
+function hasCompleteAnswers(
+  request: QuestionRequest,
+  answers: Record<string, string[]>,
+): boolean {
+  return request.questions.every((question) => (
+    (answers[question.id] ?? []).some((answer) => answer.trim())
+  ));
 }
