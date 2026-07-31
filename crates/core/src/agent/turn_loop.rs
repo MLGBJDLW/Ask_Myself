@@ -184,6 +184,19 @@ impl AgentExecutor {
             self.config.power_mode.is_nexus(),
         )
         .map_err(CoreError::InvalidInput)?;
+        let mut workspace_isolation = if workflow_ir.requires_runtime_write_isolation() {
+            Some(WorkspaceIsolationRuntime::prepare(db, &source_scope)?)
+        } else {
+            None
+        };
+        let execution_source_scope = if let Some(source_id) = workspace_isolation
+            .as_ref()
+            .and_then(WorkspaceIsolationRuntime::source_id)
+        {
+            vec![source_id.to_string()]
+        } else {
+            source_scope.clone()
+        };
         let task_plan_value = workflow_ir.task_plan_checkpoint(&task_plan);
         let workflow_ir_value = serde_json::to_value(&workflow_ir)
             .unwrap_or_else(|_| serde_json::json!({ "error": "serializeWorkflowIr" }));
@@ -292,6 +305,9 @@ impl AgentExecutor {
             layout,
         );
         controller_state_sections_owned.push(orchestration_policy.prompt_section());
+        if let Some(isolation) = workspace_isolation.as_ref() {
+            controller_state_sections_owned.push(isolation.prompt_section());
+        }
         if self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra() {
             controller_state_sections_owned.push(workflow_ir.to_prompt_section());
         }
@@ -768,6 +784,13 @@ impl AgentExecutor {
                 },
             );
 
+            // project_tool manifests execute from their registered original
+            // source. Code Ultra uses run_shell with a controller-routed cwd so
+            // no mixed read/write tool can bypass the isolated worktree.
+            if workspace_isolation.is_some() {
+                tool_defs.retain(|definition| definition.name != "project_tool");
+            }
+
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -805,7 +828,7 @@ impl AgentExecutor {
             };
             let model_step::ModelStepOutput {
                 mut full_content,
-                tool_calls,
+                mut tool_calls,
                 chunk_usage,
                 iteration_thinking,
                 last_finish_reason: step_finish_reason,
@@ -821,6 +844,9 @@ impl AgentExecutor {
                     continue 'react_loop;
                 }
             };
+            if let Some(isolation) = workspace_isolation.as_mut() {
+                isolation.rewrite_tool_calls(&mut tool_calls)?;
+            }
             last_finish_reason = step_finish_reason;
             let request_was_compacted = prompt_was_compacted;
             // -- 4b. Accumulate usage ------------------------------------------
@@ -997,6 +1023,35 @@ impl AgentExecutor {
                     )
                     .to_artifact();
                     workflow_ir.observe_final_answer_audit(&final_audit);
+                    if workflow_ir.requires_runtime_write_isolation()
+                        && workflow_ir.ready_to_promote_isolated_writes()
+                    {
+                        let promotion = workspace_isolation
+                            .as_mut()
+                            .ok_or_else(|| {
+                                CoreError::Internal(
+                                    "write-isolation gate has no controller runtime".to_string(),
+                                )
+                            })?
+                            .promote_verified_patch();
+                        match promotion {
+                            Ok(report) => {
+                                workflow_ir
+                                    .record_runtime_write_isolation(true, report.detail.clone());
+                                let _ = tx
+                                    .send(AgentEvent::ControllerStatus {
+                                        code: "workspace_isolation_promoted".to_string(),
+                                        content: report.detail,
+                                        tone: Some("success".to_string()),
+                                    })
+                                    .await;
+                            }
+                            Err(error) => {
+                                workflow_ir
+                                    .record_runtime_write_isolation(false, error.to_string());
+                            }
+                        }
+                    }
                     if let Some(ref mut agent_trace) = trace {
                         agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
                     }
@@ -1157,7 +1212,7 @@ impl AgentExecutor {
                         tx: &tx,
                         conversation_id,
                         turn_id,
-                        source_scope: &source_scope,
+                        source_scope: &execution_source_scope,
                         model,
                         privacy_cfg: &privacy_cfg,
                         route_kind: route_plan.kind,

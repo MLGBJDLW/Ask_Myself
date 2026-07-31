@@ -104,7 +104,7 @@ pub struct OrchestrationProfileInput {
 pub fn resolve_orchestration_profile(
     input: OrchestrationProfileInput,
 ) -> ResolvedOrchestrationProfile {
-    let defaults = match input.profile {
+    let resolved = match input.profile {
         OrchestrationProfile::Balanced => (
             input.max_iterations,
             input.max_parallel.unwrap_or(2),
@@ -143,22 +143,15 @@ pub fn resolve_orchestration_profile(
 
     ResolvedOrchestrationProfile {
         profile: input.profile,
-        max_iterations: input.max_iterations.max(defaults.0),
-        max_parallel: input.max_parallel.unwrap_or_default().max(defaults.1),
-        max_calls_per_turn: input.max_calls_per_turn.unwrap_or_default().max(defaults.2),
-        delegated_token_budget: input
-            .delegated_token_budget
-            .unwrap_or_default()
-            .max(defaults.3),
-        verification_reserve_percent: input
-            .verification_reserve_percent
-            .unwrap_or_default()
-            .max(defaults.4)
-            .min(50),
-        retry_limit: defaults.5,
-        min_evidence_sources: defaults.6,
-        require_independent_verifier: defaults.7,
-        require_isolated_writes: defaults.8,
+        max_iterations: resolved.0,
+        max_parallel: resolved.1,
+        max_calls_per_turn: resolved.2,
+        delegated_token_budget: resolved.3,
+        verification_reserve_percent: resolved.4,
+        retry_limit: resolved.5,
+        min_evidence_sources: resolved.6,
+        require_independent_verifier: resolved.7,
+        require_isolated_writes: resolved.8,
     }
 }
 
@@ -202,5 +195,31 @@ mod tests {
         });
         assert_eq!(profile.max_parallel, 8);
         assert_eq!(profile.verification_reserve_percent, 10);
+    }
+
+    #[test]
+    fn selected_profiles_cap_an_unlimited_inherited_iteration_budget() {
+        let custom = resolve_orchestration_profile(OrchestrationProfileInput {
+            profile: OrchestrationProfile::Custom,
+            custom: Some(CustomOrchestrationOptions {
+                max_iterations: Some(48),
+                ..Default::default()
+            }),
+            max_iterations: u32::MAX,
+            ..input(OrchestrationProfile::Custom)
+        });
+        assert_eq!(custom.max_iterations, 48);
+
+        let code_ultra = resolve_orchestration_profile(OrchestrationProfileInput {
+            max_iterations: u32::MAX,
+            ..input(OrchestrationProfile::CodeUltra)
+        });
+        assert_eq!(code_ultra.max_iterations, 56);
+
+        let balanced = resolve_orchestration_profile(OrchestrationProfileInput {
+            max_iterations: u32::MAX,
+            ..input(OrchestrationProfile::Balanced)
+        });
+        assert_eq!(balanced.max_iterations, u32::MAX);
     }
 }

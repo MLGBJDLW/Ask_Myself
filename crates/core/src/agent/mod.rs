@@ -79,6 +79,7 @@ pub mod turn_events;
 mod turn_loop;
 mod turn_state;
 mod usage_accounting;
+mod workspace_isolation;
 
 use self::context_pipeline::ContextPipeline;
 use self::long_task::{
@@ -104,6 +105,7 @@ use self::trace_builder::{
     PersistedTraceItem,
 };
 use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
+use self::workspace_isolation::WorkspaceIsolationRuntime;
 
 pub use self::events::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatus};
 

@@ -2337,6 +2337,30 @@ mod tests {
             .join("\n")
             .contains("## Nexus Execution Policy"));
 
+        let mut unlimited_db_config = test_agent_config();
+        unlimited_db_config.max_iterations = None;
+        let custom = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+            db: &db,
+            conversation: &conversation,
+            turn_id: "turn-3",
+            message: "Apply a bounded custom orchestration policy",
+            persona_id: None,
+            explicit_skill_ids: &[],
+            db_config: &unlimited_db_config,
+            app_cfg: &app_cfg,
+            execution_mode: AgentExecutionMode::Normal,
+            power_mode: AgentPowerMode::Standard,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Custom,
+            custom_orchestration: Some(CustomOrchestrationOptions {
+                max_iterations: Some(48),
+                ..Default::default()
+            }),
+        })
+        .executor_config;
+        assert_eq!(custom.max_iterations, 48);
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

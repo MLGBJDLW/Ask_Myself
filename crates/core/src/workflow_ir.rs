@@ -599,11 +599,6 @@ impl WorkflowIr {
                 Some("tests")
             } else if name.contains("build") || name.contains("compile") {
                 Some("build")
-            } else if name.contains("worktree")
-                || name.contains("write isolation")
-                || name.contains("isolated workspace")
-            {
-                Some("write-isolation")
             } else if name.contains("independent")
                 || name.contains("review")
                 || name.contains("verifier")
@@ -726,6 +721,39 @@ impl WorkflowIr {
         nodes_pass && gates_pass && evidence_pass
     }
 
+    pub fn requires_runtime_write_isolation(&self) -> bool {
+        self.verification_gates
+            .iter()
+            .any(|gate| gate.required && gate.kind == VerificationGateKind::WriteIsolation)
+    }
+
+    pub fn ready_to_promote_isolated_writes(&self) -> bool {
+        let nodes_pass = !self.completion_contract.require_all_nodes_succeeded
+            || self
+                .nodes
+                .iter()
+                .all(|node| node.status == WorkflowNodeStatus::Succeeded);
+        let other_gates_pass = self
+            .verification_gates
+            .iter()
+            .filter(|gate| gate.required && gate.kind != VerificationGateKind::WriteIsolation)
+            .all(|gate| gate.passed == Some(true));
+        let evidence_pass = !self.completion_contract.require_evidence_ledger
+            || self
+                .evidence_ledger
+                .iter()
+                .filter(|entry| entry.status == "verified")
+                .flat_map(|entry| entry.source_ids.iter())
+                .collect::<HashSet<_>>()
+                .len()
+                >= usize::from(self.min_evidence_sources.max(1));
+        nodes_pass && other_gates_pass && evidence_pass
+    }
+
+    pub fn record_runtime_write_isolation(&mut self, passed: bool, detail: impl Into<String>) {
+        self.record_gate("write-isolation", passed, detail);
+    }
+
     pub fn to_prompt_section(&self) -> String {
         let workflow = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string());
         format!(
@@ -771,52 +799,96 @@ pub fn compile_workflow_ir(
         retry_affected_nodes_only: true,
     };
     let mut nodes = Vec::new();
+    if parallel_recon {
+        for (id, title) in [
+            (
+                "runtime-recon-surface",
+                "Map the relevant files, symbols, sources, and constraints without editing.",
+            ),
+            (
+                "runtime-recon-risk",
+                "Independently inspect likely failure modes, risks, and verification strategy without editing.",
+            ),
+        ] {
+            nodes.push(WorkflowNode {
+                id: id.to_string(),
+                phase: "reconnaissance".to_string(),
+                title: title.to_string(),
+                dependencies: Vec::new(),
+                parallel_group: Some("reconnaissance".to_string()),
+                model_policy: ModelRoutingClass::Fast,
+                allowed_tools: vec![
+                    "code_intelligence".to_string(),
+                    "glob_files".to_string(),
+                    "search_files".to_string(),
+                    "read_file".to_string(),
+                    "read_files".to_string(),
+                    "search_knowledge_base".to_string(),
+                    "retrieve_evidence".to_string(),
+                    "web_search".to_string(),
+                    "fetch_url".to_string(),
+                ],
+                isolation: WorkflowIsolation::SharedReadOnly,
+                write_scope: Vec::new(),
+                retry_policy: retry_policy.clone(),
+                artifact_contract: WorkflowArtifactContract {
+                    required_sections: vec![
+                        "claims".to_string(),
+                        "evidence".to_string(),
+                        "filesTouched".to_string(),
+                        "tests".to_string(),
+                        "uncertainties".to_string(),
+                    ],
+                    structured: true,
+                },
+                status: WorkflowNodeStatus::Pending,
+                attempts: 0,
+                deliverable: None,
+            });
+        }
+    }
+    let reconnaissance_dependencies = nodes
+        .iter()
+        .filter(|node| node.phase == "reconnaissance")
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let mut previous_plan_node_id: Option<String> = None;
     for (index, step) in plan.steps.iter().enumerate() {
-        let dependency = if index == 0 || (parallel_recon && index == 1) {
-            Vec::new()
-        } else if parallel_recon && index == 2 {
-            nodes
-                .iter()
-                .take(2)
-                .map(|node: &WorkflowNode| node.id.clone())
-                .collect()
+        let dependency = if index == 0 {
+            reconnaissance_dependencies.clone()
         } else {
-            nodes
-                .last()
-                .map(|node: &WorkflowNode| vec![node.id.clone()])
+            previous_plan_node_id
+                .as_ref()
+                .map(|id| vec![id.clone()])
                 .unwrap_or_default()
         };
         let is_last = index + 1 == plan.steps.len();
+        let mutation_capable = step
+            .required_tools
+            .iter()
+            .any(|tool| tool_may_mutate_workspace(tool));
         nodes.push(WorkflowNode {
             id: step.id.clone(),
-            phase: if parallel_recon && index < 2 {
-                "reconnaissance".to_string()
-            } else if is_last {
+            phase: if is_last {
                 "synthesis".to_string()
             } else {
                 "execution".to_string()
             },
             title: step.title.clone(),
             dependencies: dependency,
-            parallel_group: (parallel_recon && index < 2).then(|| "reconnaissance".to_string()),
-            model_policy: if is_last {
+            parallel_group: None,
+            model_policy: if is_last || mutation_capable {
                 ModelRoutingClass::Strong
             } else {
                 ModelRoutingClass::Fast
             },
             allowed_tools: step.required_tools.clone(),
-            isolation: if profile.require_isolated_writes
-                && step.required_tools.iter().any(|tool| {
-                    matches!(
-                        tool.as_str(),
-                        "edit_file" | "multi_edit" | "create_file" | "run_shell"
-                    )
-                }) {
+            isolation: if profile.require_isolated_writes && mutation_capable {
                 WorkflowIsolation::IsolatedPatchWorkspace
-            } else if step.required_tools.is_empty() {
-                WorkflowIsolation::SharedReadOnly
-            } else {
+            } else if mutation_capable {
                 WorkflowIsolation::ParentOwnedWrite
+            } else {
+                WorkflowIsolation::SharedReadOnly
             },
             write_scope: Vec::new(),
             retry_policy: retry_policy.clone(),
@@ -834,7 +906,12 @@ pub fn compile_workflow_ir(
             attempts: 0,
             deliverable: None,
         });
+        previous_plan_node_id = Some(step.id.clone());
     }
+
+    let has_isolated_write_nodes = nodes
+        .iter()
+        .any(|node| node.isolation == WorkflowIsolation::IsolatedPatchWorkspace);
 
     let code_route = plan.route_kind.eq_ignore_ascii_case("CodebaseOperation");
     let mut verification_gates = vec![VerificationGate {
@@ -870,7 +947,7 @@ pub fn compile_workflow_ir(
             });
         }
     }
-    if profile.require_isolated_writes {
+    if has_isolated_write_nodes {
         verification_gates.push(VerificationGate {
             id: "write-isolation".to_string(),
             kind: VerificationGateKind::WriteIsolation,
@@ -918,6 +995,13 @@ pub fn compile_workflow_ir(
     workflow.refresh_checkpoint();
     workflow.validate()?;
     Ok(workflow)
+}
+
+fn tool_may_mutate_workspace(tool: &str) -> bool {
+    matches!(
+        tool,
+        "create_file" | "edit_file" | "multi_edit" | "project_tool" | "run_shell"
+    )
 }
 
 fn plan_supports_parallel_reconnaissance(plan: &AgentTaskPlan) -> bool {
@@ -1086,6 +1170,16 @@ mod tests {
             Some(&artifact),
             "passed",
         );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::WriteIsolation)
+                .and_then(|gate| gate.passed),
+            None,
+            "model-authored verification must not pass a controller-owned isolation gate"
+        );
+        workflow.record_runtime_write_isolation(true, "controller promoted isolated patch");
         assert!(workflow
             .verification_gates
             .iter()
@@ -1156,6 +1250,52 @@ mod tests {
         assert_eq!(
             workflow.evidence_ledger[1].source_ids,
             vec!["chunk-real".to_string()]
+        );
+    }
+
+    #[test]
+    fn reconnaissance_nodes_never_replace_file_mutation_steps() {
+        let file_plan = build_task_plan(TaskPlanningInput {
+            user_query: "Investigate multiple file constraints, implement the requested edits, and verify every output across the project",
+            route_kind: "FileOperation",
+            has_sources: true,
+            source_scope_count: 1,
+            collection_context: false,
+        });
+        let mut workflow = compile_workflow_ir(&file_plan, &profile(), true).unwrap();
+        let ready = workflow.ready_node_ids();
+        assert_eq!(ready.len(), 2);
+        assert!(ready.iter().all(|id| id.starts_with("runtime-recon-")));
+        assert!(workflow
+            .nodes
+            .iter()
+            .find(|node| node.id == "act")
+            .is_some_and(|node| {
+                node.phase == "execution"
+                    && node.isolation == WorkflowIsolation::IsolatedPatchWorkspace
+            }));
+
+        for id in &ready {
+            workflow.start_node(id).unwrap();
+        }
+        let artifacts = serde_json::json!({
+            "runs": ready.iter().map(|id| serde_json::json!({
+                "id": id,
+                "isError": false,
+                "result": "read-only findings"
+            })).collect::<Vec<_>>()
+        });
+        workflow.apply_reconnaissance_batch_result(&ready, Some(&artifacts), false, "batch");
+        let mut checkpointed_plan = file_plan.clone();
+        workflow.apply_checkpoint_to_task_plan(&mut checkpointed_plan);
+        assert_ne!(
+            checkpointed_plan
+                .steps
+                .iter()
+                .find(|step| step.id == "act")
+                .unwrap()
+                .status,
+            PlanStepStatus::Completed
         );
     }
 }
