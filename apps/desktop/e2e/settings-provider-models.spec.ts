@@ -278,13 +278,22 @@ test.beforeEach(async ({ page }) => {
             ],
           };
         }
-        case "synthesize_speech_preview_cmd":
-          return {
+        case "synthesize_speech_preview_cmd": {
+          const preview = {
             assetId: "speech-preview",
             path: "C:\\Nexa\\cache\\speech-preview.wav",
             mediaType: "audio/wav",
             bytes: 128,
           };
+          if (_args.text === "Delay this preview.") {
+            return await new Promise((resolve) => {
+              (
+                window as unknown as { __resolveDelayedSpeechPreview?: () => void }
+              ).__resolveDelayedSpeechPreview = () => resolve(preview);
+            });
+          }
+          return preview;
+        }
         default:
           return null;
       }
@@ -626,6 +635,8 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("account-designed-voice");
   await panel.getByRole("button", { name: "Preview voice" }).click();
   await expect(panel.locator("audio")).toHaveCount(1);
+  await panel.getByTestId("tts-voice-input").fill("account-designed-voice-v2");
+  await expect(panel.locator("audio")).toHaveCount(0);
   await panel.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }
@@ -668,6 +679,32 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "FunAudioLLM/SenseVoiceSmall",
   );
+});
+
+test("settings discards a stale voice preview after synthesis settings change", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const panel = page.getByTestId("text-to-speech-settings-panel");
+  await panel.locator("button").first().click();
+  await panel.locator("select").first().selectOption("dashscope-cosyvoice");
+  const previewText = panel
+    .locator("label")
+    .filter({ hasText: "Preview text" })
+    .locator("xpath=..")
+    .getByRole("textbox");
+  await previewText.fill("Delay this preview.");
+  await panel.getByRole("button", { name: "Preview voice" }).click();
+
+  await panel.getByTestId("tts-voice-input").fill("longanhuan_v3.6-updated");
+  await expect(panel.getByRole("button", { name: "Preview voice" })).toBeEnabled();
+  await page.evaluate(() => {
+    (
+      window as unknown as { __resolveDelayedSpeechPreview?: () => void }
+    ).__resolveDelayedSpeechPreview?.();
+  });
+
+  await expect(panel.locator("audio")).toHaveCount(0);
 });
 
 test("settings never reuses a provider key for a user-edited endpoint", async ({ page }) => {

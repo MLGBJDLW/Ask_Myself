@@ -1,5 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Play, RefreshCw, Save, Search, Trash2, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { clearSpeechCache, refreshTtsVoiceCatalog, synthesizeSpeechPreview } from '../../lib/api';
@@ -76,6 +76,7 @@ export function TextToSpeechSettingsPanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewRequestSequence = useRef(0);
   const scopedPresets = useMemo(
     () => TTS_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
       || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
@@ -97,6 +98,9 @@ export function TextToSpeechSettingsPanel({
     : null;
   const resolvedApiKey = config.apiKey.trim() || sharedKeySource?.apiKey.trim() || '';
   const materializedConfig = { ...config, apiKey: resolvedApiKey };
+  const previewIdentity = JSON.stringify([previewText, materializedConfig]);
+  const previewIdentityRef = useRef(previewIdentity);
+  previewIdentityRef.current = previewIdentity;
   const [voiceCatalog, setVoiceCatalog] = useState<TtsVoiceCatalogSnapshot | null>(() =>
     loadTtsVoiceCatalog(materializedConfig),
   );
@@ -129,9 +133,14 @@ export function TextToSpeechSettingsPanel({
     setVoiceCatalog(loadTtsVoiceCatalog(materializedConfig));
     setVoiceSearch('');
     setVoiceCatalogError(null);
+  }, [config.apiStyle, config.baseUrl, config.model, config.provider, resolvedApiKey]);
+
+  useEffect(() => {
+    previewRequestSequence.current += 1;
+    setPreviewLoading(false);
     setPreviewPath(null);
     setPreviewError(null);
-  }, [config.apiStyle, config.baseUrl, config.model, config.provider, resolvedApiKey]);
+  }, [previewIdentity]);
 
   const update = (patch: Partial<TextToSpeechConfig>) => {
     onChange({ ...appConfig, textToSpeech: { ...config, ...patch } });
@@ -186,16 +195,25 @@ export function TextToSpeechSettingsPanel({
   };
 
   const previewVoice = async () => {
+    const requestId = ++previewRequestSequence.current;
+    const requestIdentity = previewIdentity;
     setPreviewLoading(true);
     setPreviewError(null);
     setPreviewPath(null);
     try {
       const preview = await synthesizeSpeechPreview(previewText, materializedConfig);
+      if (requestId !== previewRequestSequence.current
+        || requestIdentity !== previewIdentityRef.current) return;
       setPreviewPath(convertFileSrc(preview.path));
     } catch (error) {
+      if (requestId !== previewRequestSequence.current
+        || requestIdentity !== previewIdentityRef.current) return;
       setPreviewError(error instanceof Error ? error.message : String(error));
     } finally {
-      setPreviewLoading(false);
+      if (requestId === previewRequestSequence.current
+        && requestIdentity === previewIdentityRef.current) {
+        setPreviewLoading(false);
+      }
     }
   };
 
