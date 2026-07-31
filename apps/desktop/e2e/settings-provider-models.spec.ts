@@ -208,6 +208,92 @@ test.beforeEach(async ({ page }) => {
         case "delete_ocr_models_cmd":
           (window as unknown as { __ocrDeleted?: boolean }).__ocrDeleted = true;
           return null;
+        case "test_agent_connection_cmd":
+        case "refresh_provider_model_catalog_cmd": {
+          const config = _args.config as { provider?: string; baseUrl?: string | null };
+          return {
+            provider: config.provider ?? "alibaba_model_studio",
+            baseUrl: config.baseUrl ?? null,
+            refreshedAt: "2026-07-31T08:00:00Z",
+            liveDiscoverySucceeded: true,
+            models: [
+              {
+                id: "qwen3.7-max",
+                name: "Qwen3.7 Max",
+                tagKey: "providers.tagLatest",
+                recommended: true,
+                capabilities: { vision: false },
+                source: "official",
+                status: "active",
+                regions: ["cn-beijing"],
+                lastVerifiedAt: "2026-07-31T08:00:00Z",
+                modalities: ["text"],
+                supportsTools: true,
+                supportsStructuredOutput: null,
+                reasoningEfforts: [],
+              },
+              {
+                id: "account-only-model",
+                name: "account-only-model",
+                recommended: false,
+                capabilities: null,
+                source: "discovered",
+                status: "active",
+                regions: ["cn-beijing"],
+                lastVerifiedAt: "2026-07-31T08:00:00Z",
+                modalities: ["text"],
+                supportsTools: false,
+                supportsStructuredOutput: false,
+                reasoningEfforts: [],
+              },
+            ],
+          };
+        }
+        case "refresh_tts_voice_catalog_cmd": {
+          const config = _args.config as {
+            provider?: string;
+            apiStyle?: string;
+            baseUrl?: string | null;
+            model?: string;
+          };
+          return {
+            provider: config.provider ?? "qwen",
+            apiStyle: config.apiStyle ?? "dashscope_speech",
+            baseUrl: config.baseUrl ?? null,
+            model: config.model ?? "qwen-audio-3.0-tts-flash",
+            refreshedAt: "2026-07-31T09:00:00Z",
+            liveDiscoverySucceeded: true,
+            voices: [
+              {
+                id: "account-designed-voice",
+                name: "Account Designed Voice",
+                recommended: false,
+                source: "discovered",
+                modelIds: [],
+                languages: ["zh-CN", "en-US"],
+                gender: null,
+                description: "Private account voice",
+                previewUrl: null,
+              },
+            ],
+          };
+        }
+        case "synthesize_speech_preview_cmd": {
+          const preview = {
+            assetId: "speech-preview",
+            path: "C:\\Nexa\\cache\\speech-preview.wav",
+            mediaType: "audio/wav",
+            bytes: 128,
+          };
+          if (_args.text === "Delay this preview.") {
+            return await new Promise((resolve) => {
+              (
+                window as unknown as { __resolveDelayedSpeechPreview?: () => void }
+              ).__resolveDelayedSpeechPreview = () => resolve(preview);
+            });
+          }
+          return preview;
+        }
         default:
           return null;
       }
@@ -338,6 +424,29 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
   ]);
+});
+
+test("provider refresh keeps account-discovered models selectable and cached", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: /^Alibaba Cloud Model Studio/ }).click();
+
+  await page.locator('input[placeholder="sk-..."]').fill("sk-account");
+  await page.getByRole("button", { name: "Refresh models" }).click();
+
+  await expect(page.getByTestId("provider-model-catalog-status")).toContainText("Live account catalog");
+  const modelField = page
+    .locator("label")
+    .filter({ hasText: "Default Model" })
+    .locator("xpath=../..");
+  const modelSelect = modelField.getByRole("combobox");
+  await expect(modelSelect.locator('option[value="account-only-model"]')).toContainText("Discovered");
+  await modelSelect.selectOption("account-only-model");
+  await expect(modelSelect).toHaveValue("account-only-model");
+
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+    .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
 });
 
 test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({ page }) => {
@@ -499,6 +608,11 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
   await expect(selects.nth(2)).toHaveValue("wav");
   await expect(panel.locator('[title="Groq"]')).toContainText("GQ");
+  await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Hannah");
+  await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Fahad");
+  await selects.nth(1).selectOption("canopylabs/orpheus-arabic-saudi");
+  await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Fahad");
+  await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Hannah");
 
   await selects.nth(0).selectOption("elevenlabs");
   await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
@@ -514,6 +628,15 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
   await expect(panel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
+  await panel.getByRole("button", { name: "Refresh voices" }).click();
+  await expect(panel.getByTestId("tts-voice-catalog-status")).toContainText("Live account voice catalog");
+  await panel.getByTestId("tts-voice-search").fill("designed");
+  await panel.getByRole("button", { name: /Account Designed Voice/ }).click();
+  await expect(panel.getByTestId("tts-voice-input")).toHaveValue("account-designed-voice");
+  await panel.getByRole("button", { name: "Preview voice" }).click();
+  await expect(panel.locator("audio")).toHaveCount(1);
+  await panel.getByTestId("tts-voice-input").fill("account-designed-voice-v2");
+  await expect(panel.locator("audio")).toHaveCount(0);
   await panel.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }
@@ -556,6 +679,32 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "FunAudioLLM/SenseVoiceSmall",
   );
+});
+
+test("settings discards a stale voice preview after synthesis settings change", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const panel = page.getByTestId("text-to-speech-settings-panel");
+  await panel.locator("button").first().click();
+  await panel.locator("select").first().selectOption("dashscope-cosyvoice");
+  const previewText = panel
+    .locator("label")
+    .filter({ hasText: "Preview text" })
+    .locator("xpath=..")
+    .getByRole("textbox");
+  await previewText.fill("Delay this preview.");
+  await panel.getByRole("button", { name: "Preview voice" }).click();
+
+  await panel.getByTestId("tts-voice-input").fill("longanhuan_v3.6-updated");
+  await expect(panel.getByRole("button", { name: "Preview voice" })).toBeEnabled();
+  await page.evaluate(() => {
+    (
+      window as unknown as { __resolveDelayedSpeechPreview?: () => void }
+    ).__resolveDelayedSpeechPreview?.();
+  });
+
+  await expect(panel.locator("audio")).toHaveCount(0);
 });
 
 test("settings never reuses a provider key for a user-edited endpoint", async ({ page }) => {
@@ -681,6 +830,22 @@ test("settings discard leaves speech drafts unpersisted while keeping saved Whis
   await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
+test("appearance keeps a compact theme summary and opens the dedicated Theme tab", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("nexa-active-theme-v1", "dark"));
+  await page.goto("/settings");
+
+  const summary = page.getByTestId("theme-summary-card");
+  await expect(summary).toContainText("Dark");
+  await expect(page.getByTestId("theme-studio")).toHaveCount(0);
+
+  await summary.getByRole("button", { name: "Open Theme Studio" }).click();
+  await expect(page.getByRole("button", { name: "Theme", exact: true })).toHaveClass(/bg-accent/);
+  await expect(page.getByTestId("theme-studio")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Advanced colors" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "Background & effects" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "Import & export" })).toHaveAttribute("aria-expanded", "false");
+});
+
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
@@ -725,12 +890,12 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
   const shell = page.locator('[data-app-area]');
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'home'));
-  const homeBackdrop = shell.locator('.dream-backdrop');
+  const homeBackdrop = shell.locator('.app-theme-backdrop');
   await expect(homeBackdrop).toHaveCSS('pointer-events', 'none');
   await expect(homeBackdrop).toHaveCSS('opacity', '0.92');
   await page.screenshot({ path: 'test-results/dream-home.png', fullPage: true });
 
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'task'));
-  await expect(shell.locator('.dream-backdrop')).toHaveCSS('opacity', '0.42');
+  await expect(shell.locator('.app-theme-backdrop')).toHaveCSS('opacity', '0.42');
   await page.screenshot({ path: 'test-results/dream-settings.png', fullPage: true });
 });

@@ -15,6 +15,7 @@ import {
   serializeCustomTheme,
   type CustomThemeDefinition,
 } from '../../lib/themeProfile';
+import { CollapsiblePanel } from './SettingsSection';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -154,34 +155,39 @@ export function ThemeStudio() {
             <label className="text-xs text-text-secondary">{t('themeStudio.baseTheme')}<select value={draft.baseTheme} onChange={(event) => setDraft({ ...draft, baseTheme: event.target.value as CustomThemeDefinition['baseTheme'] })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary">{['dark', 'light', 'midnight', 'aurora', 'bloom', 'dream'].map((id) => <option key={id} value={id}>{t((`themeStudio.theme.${id}`) as Parameters<Translate>[0])}</option>)}</select></label>
             <label className="text-xs text-text-secondary">{t('themeStudio.mode')}<select value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as 'dark' | 'light' })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="dark">{t('themeStudio.dark')}</option><option value="light">{t('themeStudio.light')}</option></select></label>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {COLOR_SLOTS.map(([key, label]) => (
-              <label key={key} className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-0 px-2 py-1.5 text-xs text-text-secondary">
-                {t((`themeStudio.color.${label}`) as Parameters<Translate>[0])}<input type="color" value={draft.colors[key] ?? '#64748b'} onChange={(event) => updateColor(key, event.target.value)} className="h-7 w-10 cursor-pointer border-0 bg-transparent" />
-              </label>
-            ))}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Range label={t('themeStudio.surfaceOpacity')} value={draft.effects.surfaceOpacity ?? 1} min={0.35} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, surfaceOpacity: value } })} />
-            <Range label={t('themeStudio.glassBlur')} value={draft.effects.glassBlur ?? 0} min={0} max={48} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, glassBlur: value } })} />
-            <Range label={t('themeStudio.shadowIntensity')} value={draft.effects.shadowIntensity ?? 1} min={0} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, shadowIntensity: value } })} />
-            <Range label={t('themeStudio.radiusScale')} value={draft.effects.radiusScale ?? 1} min={0.5} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, radiusScale: value } })} />
-            <Range label={t('themeStudio.backgroundOpacity')} value={draft.background.opacity ?? 1} min={0} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, opacity: value } })} />
-            <Range label={t('themeStudio.backgroundDim')} value={draft.background.dim ?? 0} min={0} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, dim: value } })} />
-            <Range label={t('themeStudio.backgroundBlur')} value={draft.background.blur ?? 0} min={0} max={32} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, blur: value } })} />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-xs text-text-secondary">{t('themeStudio.backgroundKind')}<select value={draft.background.kind} onChange={(event) => updateBackgroundKind(event.target.value as CustomThemeDefinition['background']['kind'])} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="none">{t('themeStudio.none')}</option><option value="color">{t('themeStudio.colorKind')}</option><option value="gradient">{t('themeStudio.gradient')}</option><option value="image">{t('themeStudio.imageChoose')}</option></select></label>
-            <label className="text-xs text-text-secondary">{t('themeStudio.fit')}<select value={draft.background.fit ?? 'cover'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, fit: event.target.value as 'cover' | 'contain' | 'tile' } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="cover">{t('themeStudio.cover')}</option><option value="contain">{t('themeStudio.contain')}</option><option value="tile">{t('themeStudio.tile')}</option></select></label>
-            {(draft.background.kind === 'color' || draft.background.kind === 'gradient') && <label className="text-xs text-text-secondary sm:col-span-2">{t('themeStudio.backgroundValue')}<input value={draft.background.value ?? ''} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, value: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>}
-            <label className="text-xs text-text-secondary">{t('themeStudio.position')}<input value={draft.background.position ?? 'center'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, position: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
-            <label className="text-xs text-text-secondary">{t('themeStudio.overlayColor')}<input type="color" value={draft.background.overlayColor ?? '#000000'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, overlayColor: event.target.value } })} className="mt-1 block h-8 w-full cursor-pointer rounded-md border border-border bg-surface-0" /></label>
-          </div>
+          <CollapsiblePanel title={t('themeStudio.advancedColors')}>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {COLOR_SLOTS.map(([key, label]) => (
+                <label key={key} className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-0 px-2 py-1.5 text-xs text-text-secondary">
+                  {t((`themeStudio.color.${label}`) as Parameters<Translate>[0])}<input type="color" value={draft.colors[key] ?? '#64748b'} onChange={(event) => updateColor(key, event.target.value)} className="h-7 w-10 cursor-pointer border-0 bg-transparent" />
+                </label>
+              ))}
+            </div>
+          </CollapsiblePanel>
+          <CollapsiblePanel title={t('themeStudio.effectsBackground')}>
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Range label={t('themeStudio.surfaceOpacity')} value={draft.effects.surfaceOpacity ?? 1} min={0.35} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, surfaceOpacity: value } })} />
+                <Range label={t('themeStudio.glassBlur')} value={draft.effects.glassBlur ?? 0} min={0} max={48} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, glassBlur: value } })} />
+                <Range label={t('themeStudio.shadowIntensity')} value={draft.effects.shadowIntensity ?? 1} min={0} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, shadowIntensity: value } })} />
+                <Range label={t('themeStudio.radiusScale')} value={draft.effects.radiusScale ?? 1} min={0.5} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, radiusScale: value } })} />
+                <Range label={t('themeStudio.backgroundOpacity')} value={draft.background.opacity ?? 1} min={0} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, opacity: value } })} />
+                <Range label={t('themeStudio.backgroundDim')} value={draft.background.dim ?? 0} min={0} max={1} step={0.05} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, dim: value } })} />
+                <Range label={t('themeStudio.backgroundBlur')} value={draft.background.blur ?? 0} min={0} max={32} onChange={(value) => setDraft({ ...draft, background: { ...draft.background, blur: value } })} />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-text-secondary">{t('themeStudio.backgroundKind')}<select value={draft.background.kind} onChange={(event) => updateBackgroundKind(event.target.value as CustomThemeDefinition['background']['kind'])} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="none">{t('themeStudio.none')}</option><option value="color">{t('themeStudio.colorKind')}</option><option value="gradient">{t('themeStudio.gradient')}</option><option value="image">{t('themeStudio.imageChoose')}</option></select></label>
+                <label className="text-xs text-text-secondary">{t('themeStudio.fit')}<select value={draft.background.fit ?? 'cover'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, fit: event.target.value as 'cover' | 'contain' | 'tile' } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="cover">{t('themeStudio.cover')}</option><option value="contain">{t('themeStudio.contain')}</option><option value="tile">{t('themeStudio.tile')}</option></select></label>
+                {(draft.background.kind === 'color' || draft.background.kind === 'gradient') && <label className="text-xs text-text-secondary sm:col-span-2">{t('themeStudio.backgroundValue')}<input value={draft.background.value ?? ''} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, value: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>}
+                <label className="text-xs text-text-secondary">{t('themeStudio.position')}<input value={draft.background.position ?? 'center'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, position: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+                <label className="text-xs text-text-secondary">{t('themeStudio.overlayColor')}<input type="color" value={draft.background.overlayColor ?? '#000000'} onChange={(event) => setDraft({ ...draft, background: { ...draft.background, overlayColor: event.target.value } })} className="mt-1 block h-8 w-full cursor-pointer rounded-md border border-border bg-surface-0" /></label>
+              </div>
+              <button type="button" onClick={() => void importBackground()} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Image size={13} /> {t('themeStudio.importBackground')}</button>
+            </div>
+          </CollapsiblePanel>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => void importBackground()} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Image size={13} /> {t('themeStudio.importBackground')}</button>
             <button type="button" onClick={() => { const replacement = newTheme(t); setDraft({ ...replacement, id: draft.id, name: draft.name, baseTheme: draft.baseTheme, mode: draft.mode }); setBackgroundPreviewUrl(null); }} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><RotateCcw size={13} /> {t('themeStudio.resetDraft')}</button>
             <button type="button" onClick={save} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-text-inverse"><Save size={13} /> {t('themeStudio.saveApply')}</button>
-            <button type="button" onClick={() => void navigator.clipboard.writeText(serializeCustomTheme(draft))} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary"><Download size={13} /> {t('themeStudio.copyJson')}</button>
           </div>
         </div>
 
@@ -195,8 +201,13 @@ export function ThemeStudio() {
             </div>
           </div>
           {contrast !== null && contrast < 4.5 && <div className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning">{t('themeStudio.contrastWarning', { ratio: contrast.toFixed(2) })}</div>}
-          <textarea value={importValue} onChange={(event) => setImportValue(event.target.value)} placeholder={t('themeStudio.importPlaceholder')} className="min-h-20 w-full rounded-md border border-border bg-surface-0 p-2 text-xs text-text-primary" />
-          <button type="button" disabled={!importValue.trim()} onClick={importJson} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary disabled:opacity-50"><Upload size={13} /> {t('themeStudio.importJson')}</button>
+          <CollapsiblePanel title={t('themeStudio.importExport')}>
+            <div className="space-y-3">
+              <button type="button" onClick={() => void navigator.clipboard.writeText(serializeCustomTheme(draft))} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary"><Download size={13} /> {t('themeStudio.copyJson')}</button>
+              <textarea value={importValue} onChange={(event) => setImportValue(event.target.value)} placeholder={t('themeStudio.importPlaceholder')} className="min-h-20 w-full rounded-md border border-border bg-surface-0 p-2 text-xs text-text-primary" />
+              <button type="button" disabled={!importValue.trim()} onClick={importJson} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary disabled:opacity-50"><Upload size={13} /> {t('themeStudio.importJson')}</button>
+            </div>
+          </CollapsiblePanel>
         </div>
       </div>
     </div>

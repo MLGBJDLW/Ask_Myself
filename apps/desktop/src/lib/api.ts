@@ -52,6 +52,7 @@ import type {
   AgentProceduralMemory,
   WebSearchConfig,
   WebSearchProviderStatus,
+  TextToSpeechConfig,
 } from "../types/conversation";
 import type {
   McpServer,
@@ -103,6 +104,7 @@ import type {
   UpdateDreamArtifactInput,
 } from "../types/dreaming";
 import type { ProviderPreset } from "./providerPresets";
+import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
 
 export type {
   DreamArtifact,
@@ -827,7 +829,10 @@ export const setDefaultAgentConfig = (id: string) =>
   invoke<void>('set_default_agent_config_cmd', { id });
 
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
-  invoke<string[]>('test_agent_connection_cmd', { config });
+  invoke<ProviderModelCatalogSnapshot>('test_agent_connection_cmd', { config });
+
+export const refreshProviderModelCatalog = (config: SaveAgentConfigInput) =>
+  invoke<ProviderModelCatalogSnapshot>('refresh_provider_model_catalog_cmd', { config });
 
 export const listProviderPresets = () =>
   invoke<ProviderPreset[]>('list_provider_presets_cmd');
@@ -1258,6 +1263,18 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 export type AgentExecutionMode = 'normal' | 'plan';
 export type AgentPowerMode = 'standard' | 'nexus';
+export type AgentCollaborationMode = 'direct' | 'mixtureOfAgents';
+export type MoaPresetId = 'fastReview' | 'deepResearch' | 'crossModelCodeReview' | 'custom';
+export type OrchestrationProfile = 'balanced' | 'deep' | 'codeUltra' | 'researchUltra' | 'custom';
+export interface CustomOrchestrationOptions {
+  maxIterations?: number | null;
+  maxParallel?: number | null;
+  maxCallsPerTurn?: number | null;
+  delegatedTokenBudget?: number | null;
+  verificationReservePercent?: number | null;
+  retryLimit?: number | null;
+  minEvidenceSources?: number | null;
+}
 
 export const agentChat = (
   conversationId: string,
@@ -1268,6 +1285,10 @@ export const agentChat = (
   skillIds?: string[],
   executionMode?: AgentExecutionMode | null,
   powerMode?: AgentPowerMode | null,
+  collaborationMode?: AgentCollaborationMode | null,
+  moaPreset?: MoaPresetId | null,
+  orchestrationProfile?: OrchestrationProfile | null,
+  customOrchestration?: CustomOrchestrationOptions | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) => {
@@ -1282,6 +1303,10 @@ export const agentChat = (
     skillIds: skillIds ?? [],
     executionMode: executionMode ?? 'normal',
     powerMode: powerMode ?? 'standard',
+    collaborationMode: collaborationMode ?? 'direct',
+    moaPreset: moaPreset ?? 'fastReview',
+    orchestrationProfile: orchestrationProfile ?? 'balanced',
+    customOrchestration: customOrchestration ?? null,
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };
@@ -1418,8 +1443,8 @@ export interface SpeechPreview {
   bytes: number;
 }
 
-export const synthesizeSpeechPreview = (text: string) =>
-  invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text });
+export const synthesizeSpeechPreview = (text: string, config?: TextToSpeechConfig) =>
+  invoke<SpeechPreview>('synthesize_speech_preview_cmd', { text, config });
 
 export interface ClearSpeechCacheResult {
   removedFiles: number;
@@ -1428,6 +1453,12 @@ export interface ClearSpeechCacheResult {
 
 export const clearSpeechCache = () =>
   invoke<ClearSpeechCacheResult>('clear_speech_cache_cmd');
+
+export const refreshTtsVoiceCatalog = (config: TextToSpeechConfig) =>
+  invoke<import('./ttsVoiceCatalog').TtsVoiceCatalogSnapshot>(
+    'refresh_tts_voice_catalog_cmd',
+    { config },
+  );
 
 export interface ThemeBackgroundAsset {
   assetId: string;

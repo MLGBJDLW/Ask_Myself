@@ -42,14 +42,14 @@
       { "id": "canopylabs/orpheus-arabic-saudi", "name": "Orpheus Arabic (Saudi)" }
     ],
     "voices": [
-      { "id": "hannah", "name": "Hannah", "recommended": true },
-      { "id": "autumn", "name": "Autumn" },
-      { "id": "diana", "name": "Diana" },
-      { "id": "austin", "name": "Austin" },
-      { "id": "daniel", "name": "Daniel" },
-      { "id": "troy", "name": "Troy" },
-      { "id": "fahad", "name": "Fahad (Arabic)" },
-      { "id": "lulwa", "name": "Lulwa (Arabic)" }
+      { "id": "hannah", "name": "Hannah", "recommended": true, "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "autumn", "name": "Autumn", "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "diana", "name": "Diana", "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "austin", "name": "Austin", "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "daniel", "name": "Daniel", "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "troy", "name": "Troy", "modelIds": ["canopylabs/orpheus-v1-english"] },
+      { "id": "fahad", "name": "Fahad (Arabic)", "modelIds": ["canopylabs/orpheus-arabic-saudi"] },
+      { "id": "lulwa", "name": "Lulwa (Arabic)", "modelIds": ["canopylabs/orpheus-arabic-saudi"] }
     ],
     "outputFormats": ["wav"]
   },

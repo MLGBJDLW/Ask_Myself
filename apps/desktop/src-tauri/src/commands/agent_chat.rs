@@ -12,10 +12,68 @@ use crate::desktop_agent_session::{
     DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentUserContentRequest,
     DesktopRunningAgentStopRequest,
 };
+use nexa_core::llm::ReasoningEffort;
+use nexa_core::mixture_of_agents::{
+    AgentCollaborationMode, MoaAdvisor, MoaPreset, MoaPresetId, MoaProvider,
+};
+use nexa_core::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 use nexa_core::runtime::{
     ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
     RuntimeTerminalStatus, StartTurnRequest, RUNTIME_PROTOCOL_VERSION,
 };
+
+fn build_moa_provider(
+    db: &Database,
+    aggregator_config: &DbAgentConfig,
+    aggregator: Box<dyn nexa_core::llm::LlmProvider>,
+    preset_id: MoaPresetId,
+) -> Result<Box<dyn nexa_core::llm::LlmProvider>, String> {
+    let mut candidates = db.list_agent_configs().map_err(|error| error.to_string())?;
+    candidates.sort_by_key(|config| config.id == aggregator_config.id);
+    if candidates.is_empty() {
+        candidates.push(aggregator_config.clone());
+    }
+
+    let mut preset = MoaPreset::builtin(
+        preset_id,
+        &aggregator_config.provider,
+        &aggregator_config.model,
+    );
+    let mut advisors = Vec::new();
+    for (index, template_slot) in preset.references.iter().cloned().enumerate() {
+        let config = &candidates[index % candidates.len()];
+        let Ok(provider) = create_provider(db_config_to_provider_config(config, None)) else {
+            continue;
+        };
+        let mut slot = template_slot;
+        slot.provider = config.provider.clone();
+        slot.model = config.model.clone();
+        slot.reasoning_effort = config
+            .reasoning_effort
+            .as_deref()
+            .and_then(|effort| match effort.trim().to_ascii_lowercase().as_str() {
+                "none" => Some(ReasoningEffort::None),
+                "minimal" => Some(ReasoningEffort::Minimal),
+                "low" => Some(ReasoningEffort::Low),
+                "medium" => Some(ReasoningEffort::Medium),
+                "high" => Some(ReasoningEffort::High),
+                "max" => Some(ReasoningEffort::Max),
+                "xhigh" => Some(ReasoningEffort::XHigh),
+                _ => None,
+            });
+        advisors.push(MoaAdvisor {
+            slot,
+            provider: Arc::from(provider),
+        });
+    }
+    preset.references = advisors
+        .iter()
+        .map(|advisor| advisor.slot.clone())
+        .collect();
+    let provider = MoaProvider::new(Arc::from(aggregator), preset, advisors)
+        .map_err(|error| error.to_string())?;
+    Ok(Box::new(provider))
+}
 
 // ── Agent Chat Command (streaming) ──────────────────────────────────────
 
@@ -44,6 +102,10 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub skill_ids: Option<Vec<String>>,
     pub execution_mode: Option<String>,
     pub power_mode: Option<String>,
+    pub collaboration_mode: Option<String>,
+    pub moa_preset: Option<String>,
+    pub orchestration_profile: Option<String>,
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
     pub idempotency_key: String,
@@ -84,6 +146,10 @@ pub async fn agent_chat_cmd(
         skill_ids: Some(request.skill_ids),
         execution_mode: Some(request.execution_mode.as_str().to_string()),
         power_mode: Some(request.power_mode.as_str().to_string()),
+        collaboration_mode: Some(request.collaboration_mode.as_str().to_string()),
+        moa_preset: Some(request.moa_preset.as_str().to_string()),
+        orchestration_profile: Some(request.orchestration_profile.as_str().to_string()),
+        custom_orchestration: request.custom_orchestration,
         user_artifacts: request.user_artifacts,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
         idempotency_key: request.idempotency_key,
@@ -111,12 +177,19 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         skill_ids,
         execution_mode,
         power_mode,
+        collaboration_mode,
+        moa_preset,
+        orchestration_profile,
+        custom_orchestration,
         user_artifacts,
         task_orchestrator_run_id,
         idempotency_key,
     } = request;
     let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
     let power_mode = AgentPowerMode::from_wire(power_mode.as_deref())?;
+    let collaboration_mode = AgentCollaborationMode::from_wire(collaboration_mode.as_deref())?;
+    let moa_preset = MoaPresetId::from_wire(moa_preset.as_deref())?;
+    let orchestration_profile = OrchestrationProfile::from_wire(orchestration_profile.as_deref())?;
     let plan_mode = execution_mode.is_plan();
     let task_orchestrator_run_id = task_orchestrator_run_id
         .as_deref()
@@ -158,6 +231,11 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let app_cfg = state.db.load_app_config().unwrap_or_default();
     let provider_config = db_config_to_provider_config(&db_config, None);
     let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+    let provider = if collaboration_mode.is_moa() {
+        build_moa_provider(state.db.as_ref(), &db_config, provider, moa_preset)?
+    } else {
+        provider
+    };
 
     // 4. Load conversation history and convert to LLM messages.
     let existing_msgs = state
@@ -199,8 +277,14 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     }
 
     // 5. Save user message to DB.
-    let persisted_user_artifacts =
-        annotate_user_artifacts_with_execution_mode(user_artifacts, execution_mode, power_mode);
+    let persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
+        user_artifacts,
+        execution_mode,
+        power_mode,
+        collaboration_mode,
+        moa_preset,
+        orchestration_profile,
+    );
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -282,6 +366,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         app_cfg: &app_cfg,
         execution_mode,
         power_mode,
+        collaboration_mode,
+        moa_preset,
+        orchestration_profile,
+        custom_orchestration: custom_orchestration.clone(),
     });
     let source_scope_ids = desktop_turn_config.source_scope_ids;
     let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
@@ -326,6 +414,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             selected_skills: &session_dependencies.selected_skills,
             auto_loaded_skills: &session_dependencies.auto_loaded_skills,
             execution_mode,
+            collaboration_mode,
+            moa_preset,
+            orchestration_profile,
+            custom_orchestration,
         });
     let initial_task_artifacts = build_desktop_agent_initial_task_artifacts(
         &session_dependencies.selected_skills,

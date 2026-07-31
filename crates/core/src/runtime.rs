@@ -16,6 +16,8 @@ use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
 use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
+use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
+use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
 
@@ -191,6 +193,14 @@ pub struct StartTurnRequest {
     #[serde(default)]
     pub power_mode: AgentPowerMode,
     #[serde(default)]
+    pub collaboration_mode: AgentCollaborationMode,
+    #[serde(default)]
+    pub moa_preset: MoaPresetId,
+    #[serde(default)]
+    pub orchestration_profile: OrchestrationProfile,
+    #[serde(default)]
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
+    #[serde(default)]
     pub user_artifacts: Option<serde_json::Value>,
     #[serde(default)]
     pub task_orchestrator_run_id: Option<String>,
@@ -302,6 +312,14 @@ pub struct AgentSessionConfig {
     pub shell_access_mode: ShellAccessMode,
     #[serde(default)]
     pub execution_mode: AgentExecutionMode,
+    #[serde(default)]
+    pub collaboration_mode: AgentCollaborationMode,
+    #[serde(default)]
+    pub moa_preset: MoaPresetId,
+    #[serde(default)]
+    pub orchestration_profile: OrchestrationProfile,
+    #[serde(default)]
+    pub custom_orchestration: Option<CustomOrchestrationOptions>,
     #[serde(default = "default_trace_enabled")]
     pub trace_enabled: bool,
     #[serde(default)]
@@ -329,6 +347,10 @@ impl Default for AgentSessionConfig {
             approval_mode: ToolApprovalMode::default(),
             shell_access_mode: ShellAccessMode::Restricted,
             execution_mode: AgentExecutionMode::Normal,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
             trace_enabled: true,
             skill_context: RuntimeSkillContext::default(),
             package_context: RuntimePackageContext::default(),

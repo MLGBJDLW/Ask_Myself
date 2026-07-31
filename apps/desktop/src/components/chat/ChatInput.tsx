@@ -5,7 +5,15 @@ import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
 import type { Skill } from "../../types/extensions";
-import type { AgentExecutionMode, AgentPowerMode, WorkflowCatalogTemplate } from "../../lib/api";
+import type {
+  AgentCollaborationMode,
+  AgentExecutionMode,
+  AgentPowerMode,
+  CustomOrchestrationOptions,
+  MoaPresetId,
+  OrchestrationProfile,
+  WorkflowCatalogTemplate,
+} from "../../lib/api";
 import * as api from "../../lib/api";
 import {
   buildSlashCommandOptions,
@@ -39,6 +47,10 @@ export interface ChatInputSendOptions {
   userArtifacts?: ArtifactPayload | null;
   executionMode?: AgentExecutionMode;
   powerMode?: AgentPowerMode;
+  collaborationMode?: AgentCollaborationMode;
+  moaPreset?: MoaPresetId;
+  orchestrationProfile?: OrchestrationProfile;
+  customOrchestration?: CustomOrchestrationOptions | null;
   taskOrchestratorRunId?: string | null;
 }
 
@@ -80,6 +92,7 @@ const NEW_CONVERSATION_DRAFT_KEY = "__new__";
 const CHAT_INPUT_DRAFT_STORAGE_KEY = "chat-input-drafts-v1";
 const CHAT_POWER_MODE_STORAGE_PREFIX = "chat-agent-power-mode-v1";
 const CHAT_NEXUS_ACKNOWLEDGED_STORAGE_KEY = "chat-nexus-mode-acknowledged-v1";
+const CHAT_ORCHESTRATION_STORAGE_PREFIX = "chat-orchestration-policy-v1";
 const MAX_STORED_CHAT_INPUT_DRAFTS = 100;
 const MAX_INPUT_HISTORY_ITEMS = 100;
 const chatInputDrafts: Record<string, ChatDraftState> = {};
@@ -114,6 +127,61 @@ function acknowledgeNexusMode() {
     localStorage.setItem(CHAT_NEXUS_ACKNOWLEDGED_STORAGE_KEY, "true");
   } catch {
     // Keep activation functional when persistent storage is unavailable.
+  }
+}
+
+interface StoredOrchestrationPolicy {
+  collaborationMode: AgentCollaborationMode;
+  moaPreset: MoaPresetId;
+  orchestrationProfile: OrchestrationProfile;
+  customOrchestration: CustomOrchestrationOptions;
+}
+
+const DEFAULT_CUSTOM_ORCHESTRATION: CustomOrchestrationOptions = {
+  maxIterations: 32,
+  maxParallel: 3,
+  maxCallsPerTurn: 6,
+  delegatedTokenBudget: 48_000,
+  verificationReservePercent: 25,
+  retryLimit: 2,
+  minEvidenceSources: 2,
+};
+
+function readStoredOrchestrationPolicy(key: string): StoredOrchestrationPolicy {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(`${CHAT_ORCHESTRATION_STORAGE_PREFIX}:${key}`) ?? "null",
+    ) as Partial<StoredOrchestrationPolicy> | null;
+    const collaborationMode = parsed?.collaborationMode === "mixtureOfAgents"
+      ? "mixtureOfAgents"
+      : "direct";
+    const moaPreset = ["fastReview", "deepResearch", "crossModelCodeReview", "custom"].includes(
+      parsed?.moaPreset ?? "",
+    ) ? parsed!.moaPreset as MoaPresetId : "fastReview";
+    const orchestrationProfile = ["balanced", "deep", "codeUltra", "researchUltra", "custom"].includes(
+      parsed?.orchestrationProfile ?? "",
+    ) ? parsed!.orchestrationProfile as OrchestrationProfile : "balanced";
+    return {
+      collaborationMode,
+      moaPreset,
+      orchestrationProfile,
+      customOrchestration: { ...DEFAULT_CUSTOM_ORCHESTRATION, ...parsed?.customOrchestration },
+    };
+  } catch {
+    return {
+      collaborationMode: "direct",
+      moaPreset: "fastReview",
+      orchestrationProfile: "balanced",
+      customOrchestration: { ...DEFAULT_CUSTOM_ORCHESTRATION },
+    };
+  }
+}
+
+function persistOrchestrationPolicy(key: string, policy: StoredOrchestrationPolicy) {
+  try {
+    localStorage.setItem(`${CHAT_ORCHESTRATION_STORAGE_PREFIX}:${key}`, JSON.stringify(policy));
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
   }
 }
 
@@ -304,6 +372,18 @@ export function ChatInput({
   const [powerMode, setPowerModeState] = useState<AgentPowerMode>(
     () => readStoredPowerMode(draftKey) ?? "standard",
   );
+  const [collaborationMode, setCollaborationModeState] = useState<AgentCollaborationMode>(
+    () => readStoredOrchestrationPolicy(draftKey).collaborationMode,
+  );
+  const [moaPreset, setMoaPresetState] = useState<MoaPresetId>(
+    () => readStoredOrchestrationPolicy(draftKey).moaPreset,
+  );
+  const [orchestrationProfile, setOrchestrationProfileState] = useState<OrchestrationProfile>(
+    () => readStoredOrchestrationPolicy(draftKey).orchestrationProfile,
+  );
+  const [customOrchestration, setCustomOrchestrationState] = useState<CustomOrchestrationOptions>(
+    () => readStoredOrchestrationPolicy(draftKey).customOrchestration,
+  );
   const [nexusDialogOpen, setNexusDialogOpen] = useState(false);
   const [nexusActivationVisible, setNexusActivationVisible] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -345,6 +425,20 @@ export function ChatInput({
     persistPowerMode(draftKey, mode);
   }, [draftKey]);
 
+  const persistRuntimePolicy = useCallback((next: Partial<StoredOrchestrationPolicy>) => {
+    const policy: StoredOrchestrationPolicy = {
+      collaborationMode: next.collaborationMode ?? collaborationMode,
+      moaPreset: next.moaPreset ?? moaPreset,
+      orchestrationProfile: next.orchestrationProfile ?? orchestrationProfile,
+      customOrchestration: next.customOrchestration ?? customOrchestration,
+    };
+    setCollaborationModeState(policy.collaborationMode);
+    setMoaPresetState(policy.moaPreset);
+    setOrchestrationProfileState(policy.orchestrationProfile);
+    setCustomOrchestrationState(policy.customOrchestration);
+    persistOrchestrationPolicy(draftKey, policy);
+  }, [collaborationMode, customOrchestration, draftKey, moaPreset, orchestrationProfile]);
+
   const activateNexusMode = useCallback(() => {
     setPowerMode("nexus");
     acknowledgeNexusMode();
@@ -367,6 +461,26 @@ export function ChatInput({
       persistPowerMode(draftKey, storedMode);
     }
     setPowerModeState(storedMode ?? "standard");
+    let storedPolicy = readStoredOrchestrationPolicy(draftKey);
+    if (
+      previousKey === NEW_CONVERSATION_DRAFT_KEY
+      && draftKey !== NEW_CONVERSATION_DRAFT_KEY
+      && storedPolicy.collaborationMode === "direct"
+      && storedPolicy.orchestrationProfile === "balanced"
+      && (collaborationMode === "mixtureOfAgents" || orchestrationProfile !== "balanced")
+    ) {
+      storedPolicy = {
+        collaborationMode,
+        moaPreset,
+        orchestrationProfile,
+        customOrchestration,
+      };
+      persistOrchestrationPolicy(draftKey, storedPolicy);
+    }
+    setCollaborationModeState(storedPolicy.collaborationMode);
+    setMoaPresetState(storedPolicy.moaPreset);
+    setOrchestrationProfileState(storedPolicy.orchestrationProfile);
+    setCustomOrchestrationState(storedPolicy.customOrchestration);
     previousPowerModeKeyRef.current = draftKey;
   }, [draftKey]);
 
@@ -767,6 +881,10 @@ export function ChatInput({
       userArtifacts,
       executionMode,
       powerMode,
+      collaborationMode,
+      moaPreset,
+      orchestrationProfile,
+      customOrchestration: orchestrationProfile === "custom" ? customOrchestration : null,
     };
     if (executionMode === "plan") {
       setPlanMode(true);
@@ -777,7 +895,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, effectivePlanModeEnabled, isStreaming, onCompact, onSend, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, collaborationMode, customOrchestration, effectivePlanModeEnabled, isStreaming, moaPreset, onCompact, onSend, orchestrationProfile, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1130,6 +1248,92 @@ export function ChatInput({
       </button>
     </div>
   ) : null;
+  const moaModeEnabled = collaborationMode === "mixtureOfAgents";
+  const moaModeBanner = moaModeEnabled ? (
+    <div
+      data-testid="chat-moa-mode-banner"
+      className="flex min-w-0 items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-500/8 px-2.5 py-2 text-xs text-text-secondary"
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-cyan-400/25 bg-surface-0/70 text-cyan-300">
+        <Users className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-text-primary">
+          {t("chat.moaMode")} · {t(`chat.moaPreset.${moaPreset}` as TranslationKey)}
+        </div>
+        <div className="truncate text-[11px] text-text-tertiary">{t("chat.moaBannerSummary")}</div>
+      </div>
+      <span className="hidden shrink-0 rounded-full border border-cyan-400/20 px-2 py-0.5 text-[10px] text-cyan-300 sm:inline">
+        {nexusModeEnabled ? t("chat.moaWithNexus") : t("chat.moaIndependent")}
+      </span>
+      <button
+        type="button"
+        onClick={() => persistRuntimePolicy({ collaborationMode: "direct" })}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-0 hover:text-text-primary"
+        aria-label={t("chat.moaDisable")}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : null;
+  const qualityProfileBanner = orchestrationProfile !== "balanced" ? (
+    <div
+      data-testid="chat-quality-profile-banner"
+      className="rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-2 text-xs text-text-secondary"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-amber-400/25 bg-surface-0/70 text-amber-300">
+          <ShieldCheck className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-text-primary">
+            {t(`chat.qualityProfile.${orchestrationProfile}` as TranslationKey)}
+          </div>
+          <div className="truncate text-[11px] text-text-tertiary">{t("chat.qualityProfileSummary")}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => persistRuntimePolicy({ orchestrationProfile: "balanced" })}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-0 hover:text-text-primary"
+          aria-label={t("chat.qualityProfileReset")}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {orchestrationProfile === "custom" && (
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-amber-400/15 pt-2 sm:grid-cols-4">
+          {([
+            ["maxIterations", "chat.qualityCustomIterations", 4, 96, 1],
+            ["maxParallel", "chat.qualityCustomParallel", 1, 8, 1],
+            ["maxCallsPerTurn", "chat.qualityCustomCalls", 1, 24, 1],
+            ["delegatedTokenBudget", "chat.qualityCustomTokenBudget", 4096, 192000, 1024],
+            ["retryLimit", "chat.qualityCustomRetries", 0, 5, 1],
+            ["minEvidenceSources", "chat.qualityCustomEvidence", 0, 8, 1],
+            ["verificationReservePercent", "chat.qualityCustomReserve", 10, 50, 5],
+          ] as const).map(([field, label, min, max, step]) => (
+            <label key={field} className="min-w-0 text-[10px] text-text-tertiary">
+              <span className="mb-1 block truncate">{t(label)}</span>
+              <input
+                data-testid={`chat-quality-custom-${field}`}
+                type="number"
+                min={min}
+                max={max}
+                step={step}
+                value={customOrchestration[field] ?? min}
+                onChange={(event) => {
+                  const value = Math.min(max, Math.max(min, Number(event.target.value) || min));
+                  persistRuntimePolicy({
+                    customOrchestration: { ...customOrchestration, [field]: value },
+                  });
+                }}
+                className="h-7 w-full rounded-md border border-border/70 bg-surface-0 px-2 text-xs text-text-primary outline-none focus:border-amber-400/45"
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div
@@ -1355,6 +1559,8 @@ export function ChatInput({
         </div>
         {planModeBanner}
         {nexusModeBanner}
+        {moaModeBanner}
+        {qualityProfileBanner}
 
         <div
           className={`overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
@@ -1479,6 +1685,67 @@ export function ChatInput({
             </button>
 
             {sessionControls}
+
+            <label
+              data-testid="chat-moa-control"
+              className={`flex h-8 shrink-0 items-center gap-1 rounded-md border px-1.5 text-xs transition-colors ${
+                moaModeEnabled
+                  ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-300"
+                  : "border-transparent text-text-tertiary hover:border-border/70 hover:bg-surface-2"
+              }`}
+            >
+              <Users className="h-3.5 w-3.5" />
+              <select
+                data-testid="chat-moa-preset"
+                aria-label={t("chat.moaMode")}
+                value={moaModeEnabled ? moaPreset : "direct"}
+                disabled={attachmentLocked}
+                onChange={(event) => {
+                  if (event.target.value === "direct") {
+                    persistRuntimePolicy({ collaborationMode: "direct" });
+                  } else {
+                    persistRuntimePolicy({
+                      collaborationMode: "mixtureOfAgents",
+                      moaPreset: event.target.value as MoaPresetId,
+                    });
+                  }
+                }}
+                className="max-w-24 bg-transparent text-[11px] outline-none"
+              >
+                <option value="direct">{t("chat.moaOff")}</option>
+                <option value="fastReview">{t("chat.moaPreset.fastReview")}</option>
+                <option value="deepResearch">{t("chat.moaPreset.deepResearch")}</option>
+                <option value="crossModelCodeReview">{t("chat.moaPreset.crossModelCodeReview")}</option>
+                <option value="custom">{t("chat.moaPreset.custom")}</option>
+              </select>
+            </label>
+
+            <label
+              data-testid="chat-quality-control"
+              className={`flex h-8 shrink-0 items-center gap-1 rounded-md border px-1.5 text-xs transition-colors ${
+                orchestrationProfile !== "balanced"
+                  ? "border-amber-400/35 bg-amber-500/10 text-amber-300"
+                  : "border-transparent text-text-tertiary hover:border-border/70 hover:bg-surface-2"
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              <select
+                data-testid="chat-quality-profile"
+                aria-label={t("chat.qualityProfile")}
+                value={orchestrationProfile}
+                disabled={attachmentLocked}
+                onChange={(event) => persistRuntimePolicy({
+                  orchestrationProfile: event.target.value as OrchestrationProfile,
+                })}
+                className="max-w-24 bg-transparent text-[11px] outline-none"
+              >
+                <option value="balanced">{t("chat.qualityProfile.balanced")}</option>
+                <option value="deep">{t("chat.qualityProfile.deep")}</option>
+                <option value="codeUltra">{t("chat.qualityProfile.codeUltra")}</option>
+                <option value="researchUltra">{t("chat.qualityProfile.researchUltra")}</option>
+                <option value="custom">{t("chat.qualityProfile.custom")}</option>
+              </select>
+            </label>
 
             <button
               type="button"

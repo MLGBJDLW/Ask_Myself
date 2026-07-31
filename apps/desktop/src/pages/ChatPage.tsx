@@ -641,6 +641,10 @@ export function ChatPage() {
               userArtifacts: userArtifacts ?? null,
               executionMode: inputOptions?.executionMode,
               powerMode: inputOptions?.powerMode,
+              collaborationMode: inputOptions?.collaborationMode,
+              moaPreset: inputOptions?.moaPreset,
+              orchestrationProfile: inputOptions?.orchestrationProfile,
+              customOrchestration: inputOptions?.customOrchestration,
               taskOrchestratorRunId: inputOptions?.taskOrchestratorRunId,
             }
           : undefined,

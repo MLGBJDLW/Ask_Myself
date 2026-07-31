@@ -126,6 +126,39 @@ function loadProviderIcons() {
   return module.exports;
 }
 
+function loadTtsVoiceCatalog() {
+  const fingerprintPath = path.join(root, 'src', 'lib', 'credentialFingerprint.ts');
+  const fingerprintTranspiled = ts.transpileModule(fs.readFileSync(fingerprintPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const fingerprintModule = { exports: {} };
+  vm.runInNewContext(
+    fingerprintTranspiled.outputText,
+    { exports: fingerprintModule.exports, module: fingerprintModule },
+    { filename: fingerprintPath },
+  );
+
+  const catalogPath = path.join(root, 'src', 'lib', 'ttsVoiceCatalog.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(catalogPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  const require = (specifier) => {
+    if (specifier === './credentialFingerprint') return fingerprintModule.exports;
+    throw new Error(`Unexpected TTS catalog dependency: ${specifier}`);
+  };
+  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module, require }, {
+    filename: catalogPath,
+  });
+  return module.exports;
+}
+
 function test(name, fn) {
   try {
     fn();
@@ -167,6 +200,36 @@ test('QwenCloud international preset uses the Qwen provider identity', () => {
   });
 
   assert.equal(icon.label, 'Qwen');
+});
+
+test('TTS voice catalogs are partitioned by a non-secret credential fingerprint', () => {
+  const voiceCatalog = loadTtsVoiceCatalog();
+  const storage = new MemoryStorage();
+  const firstConfig = {
+    provider: 'elevenlabs',
+    apiStyle: 'elevenlabs_tts',
+    apiKey: 'account-one-secret',
+    baseUrl: 'https://api.elevenlabs.io/v1',
+    model: 'eleven_multilingual_v2',
+  };
+  const secondConfig = { ...firstConfig, apiKey: 'account-two-secret' };
+  const snapshot = {
+    provider: firstConfig.provider,
+    apiStyle: firstConfig.apiStyle,
+    baseUrl: firstConfig.baseUrl,
+    model: firstConfig.model,
+    voices: [{ id: 'private-voice', name: 'Private voice' }],
+    refreshedAt: new Date().toISOString(),
+    liveDiscoverySucceeded: true,
+  };
+
+  voiceCatalog.saveTtsVoiceCatalog(snapshot, firstConfig, storage);
+  const firstKey = voiceCatalog.ttsVoiceCatalogCacheKey(firstConfig);
+  const secondKey = voiceCatalog.ttsVoiceCatalogCacheKey(secondConfig);
+  assert.notEqual(firstKey, secondKey);
+  assert.equal(firstKey.includes(firstConfig.apiKey), false);
+  assert.equal(voiceCatalog.loadTtsVoiceCatalog(firstConfig, storage).voices[0].id, 'private-voice');
+  assert.equal(voiceCatalog.loadTtsVoiceCatalog(secondConfig, storage), null);
 });
 
 test('migrates the legacy microphone device key once', () => {

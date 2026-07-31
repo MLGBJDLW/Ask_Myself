@@ -1,4 +1,4 @@
-import { LogOut, Minimize2, RotateCcw, Save, Settings2, Star } from 'lucide-react';
+import { ArrowRight, LogOut, Minimize2, RotateCcw, Save, Settings2, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation, type Locale } from '../../i18n';
 import * as api from '../../lib/api';
@@ -6,10 +6,10 @@ import { useUpdater } from '../../lib/useUpdater';
 import type { Source } from '../../types';
 import type { AppConfig } from '../../types/conversation';
 import type { Project } from '../../types/project';
+import { useTheme } from '../../lib/ThemeProvider';
+import { isLightTheme } from '../../lib/theme';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { ThemeSwitcher } from '../ui/ThemeSwitcher';
-import { ThemeStudio } from './ThemeStudio';
 import { CollapsiblePanel, Section } from './SettingsSection';
 import { ToolApprovalControl, type ToolApprovalMode } from './ToolApprovalControl';
 import { UpdateSettingsPanel } from './UpdateSettingsPanel';
@@ -29,6 +29,7 @@ interface AppearanceSettingsTabProps {
   onAppConfigSave: (config?: AppConfig) => void;
   onDeveloperModeChange: (enabled: boolean) => void;
   onRerunWizard: () => void;
+  onOpenThemeSettings: () => void;
 }
 
 function toggleId(ids: string[], id: string): string[] {
@@ -52,8 +53,10 @@ export function AppearanceSettingsTab({
   onAppConfigSave,
   onDeveloperModeChange,
   onRerunWizard,
+  onOpenThemeSettings,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation();
+  const { theme, activeThemeId, customThemes } = useTheme();
   const [dreamSources, setDreamSources] = useState<Source[]>([]);
   const [dreamProjects, setDreamProjects] = useState<Project[]>([]);
   const dreamingConfig = appConfig?.dreaming ?? {
@@ -106,16 +109,45 @@ export function AppearanceSettingsTab({
       projectIds: toggleId(dreamingConfig.projectIds ?? [], projectId),
     });
   };
+  const activeCustomTheme = customThemes.find((profile) => profile.id === activeThemeId);
+  const activeThemeName = activeCustomTheme?.name
+    ?? t(`settings.appearance.theme.${theme}`);
+  const activeThemeMode = activeCustomTheme?.mode
+    ?? (isLightTheme(theme) ? 'light' : 'dark');
 
   return (
     <Section icon={<Star size={20} />} title={t('settings.appearance')} delay={0.03}>
       <div className="space-y-6">
         {/* Theme section */}
-        <div>
+        <div data-testid="theme-summary-card">
           <p className="mb-2 text-sm font-medium text-text-primary">{t('settings.appearance.theme')}</p>
           <p className="mb-3 text-xs text-text-tertiary">{t('settings.appearance.theme.description')}</p>
-          <ThemeSwitcher />
-          <ThemeStudio />
+          <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface-2 p-3 sm:flex-row sm:items-center">
+            <div
+              className="relative h-16 w-full shrink-0 overflow-hidden rounded-lg border border-border bg-surface-0 sm:w-24"
+              data-testid="theme-summary-thumbnail"
+              aria-hidden="true"
+            >
+              <div className="absolute inset-x-2 top-2 h-2 rounded-full bg-accent/80" />
+              <div className="absolute bottom-2 left-2 top-6 w-5 rounded bg-surface-3" />
+              <div className="absolute bottom-2 left-9 right-2 top-6 rounded border border-border bg-surface-1" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-text-primary">{activeThemeName}</p>
+              <p className="mt-1 text-xs text-text-tertiary">
+                {activeThemeMode === 'light' ? t('themeStudio.light') : t('themeStudio.dark')}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              icon={<ArrowRight size={14} />}
+              onClick={onOpenThemeSettings}
+            >
+              {t('themeStudio.openStudio')}
+            </Button>
+          </div>
         </div>
 
         {/* Separator */}

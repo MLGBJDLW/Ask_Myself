@@ -3,6 +3,7 @@
 use super::context;
 use super::turn_state::{TurnPhase, TurnStateMachine};
 use super::*;
+use crate::workflow_ir::WorkflowIr;
 
 const CHECKPOINT_EVERY_TOOL_ROUNDS: u32 = 3;
 const LONG_TASK_RECITATION_PREFIX: &str = "## Long Task Control State";
@@ -72,6 +73,7 @@ impl LongTaskState {
     pub(super) fn checkpoint_live_state(
         &self,
         plan: &AgentTaskPlan,
+        workflow_ir: Option<&WorkflowIr>,
         iteration: u32,
         max_iterations: u32,
         loop_recorder: &TurnLoopRecorder,
@@ -97,6 +99,7 @@ impl LongTaskState {
             "remainingIterations": max_iterations.saturating_sub(iteration.saturating_add(1)),
             "lastCheckpointIteration": self.last_checkpoint_iteration,
             "taskPlan": plan,
+            "workflowIr": workflow_ir,
             "currentStep": current_step,
             "evidenceSufficiency": &plan.ledger.sufficiency,
             "openQuestions": &plan.ledger.open_questions,
@@ -349,7 +352,7 @@ mod tests {
             remaining_iterations: 7,
         });
 
-        let live_state = state.checkpoint_live_state(&plan, 1, 8, &recorder);
+        let live_state = state.checkpoint_live_state(&plan, None, 1, 8, &recorder);
 
         assert_eq!(live_state["kind"].as_str(), Some("longTaskLiveState"));
         assert_eq!(live_state["remainingIterations"].as_u64(), Some(6));

@@ -27,7 +27,7 @@ use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
     AgentRunPhase,
 };
-use nexa_core::app_settings::{AppConfig, ShellAccessMode, WizardState};
+use nexa_core::app_settings::{AppConfig, ShellAccessMode, TextToSpeechConfig, WizardState};
 #[cfg(test)]
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
@@ -67,13 +67,20 @@ use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::project_memory::{
     CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
 };
-use nexa_core::provider_catalog::{load_provider_presets, preset_model_ids, ProviderPreset};
+use nexa_core::provider_catalog::{
+    build_effective_model_catalog, load_provider_presets, ProviderModelCatalogSnapshot,
+    ProviderPreset,
+};
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
+use nexa_core::tts_provider_catalog::{
+    build_tts_voice_catalog, discover_tts_voices, supports_dynamic_tts_voice_catalog,
+    TtsVoiceCatalogSnapshot,
+};
 use nexa_core::watcher::{FileWatcher, WatcherEventKind};
 use nexa_core::workflow_catalog::{workflow_catalog, WorkflowCatalogTemplate};
 use serde::{Deserialize, Serialize};
@@ -993,6 +1000,10 @@ mod tests {
             selected_skills: &selected_skills,
             auto_loaded_skills: &loaded_skills,
             execution_mode: AgentExecutionMode::Plan,
+            collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
+            moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
+            orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         });
 
         assert_eq!(config.version, nexa_core::runtime::RUNTIME_PROTOCOL_VERSION);
@@ -1505,6 +1516,10 @@ mod tests {
             selected_skills: &[],
             auto_loaded_skills: &[],
             execution_mode: AgentExecutionMode::Normal,
+            collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
+            moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
+            orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
+            custom_orchestration: None,
         });
 
         let artifact = runtime_session_config_artifact(&config);
