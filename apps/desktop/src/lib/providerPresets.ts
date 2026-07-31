@@ -2,6 +2,7 @@ import providerPresets from "../../../../shared/provider-presets.json";
 import type {
   ProviderCapabilities,
   ProviderModelPreset,
+  ReasoningCapability,
 } from './providerTypes';
 
 export type {
