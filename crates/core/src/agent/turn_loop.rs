@@ -184,7 +184,12 @@ impl AgentExecutor {
             self.config.power_mode.is_nexus(),
         )
         .map_err(CoreError::InvalidInput)?;
-        let mut workspace_isolation = if workflow_ir.requires_runtime_write_isolation() {
+        if self.config.execution_mode.is_plan() {
+            workflow_ir.configure_for_plan_mode();
+        }
+        let mut workspace_isolation = if !self.config.execution_mode.is_plan()
+            && workflow_ir.requires_runtime_write_isolation()
+        {
             Some(WorkspaceIsolationRuntime::prepare(db, &source_scope)?)
         } else {
             None

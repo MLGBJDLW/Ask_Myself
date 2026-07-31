@@ -104,6 +104,10 @@ write-isolation gate is set only by this runtime transition; a model-authored
 `record_verification` label cannot satisfy it. Likewise, independent review is
 derived only from a successful `subagent_judgement` runtime artifact.
 
+Plan Mode compiles a separate read-only completion contract: mutation and
+delegation tools are removed from Workflow IR nodes, execution/release gates are
+omitted, and no isolated worktree or process sandbox is created.
+
 ## Evaluation contract
 
 The `orchestration_runtime` evaluation suite must cover:

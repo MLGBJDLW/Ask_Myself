@@ -634,12 +634,17 @@ impl WorkflowIr {
                 .is_some_and(|script| script == name || script.starts_with(&format!("{name}:")))
         };
         let npx_tool = (program_name == "npx").then_some(first).flatten();
+        let python_module = matches!(program_name.as_str(), "python" | "python3" | "py")
+            .then_some((first, second))
+            .filter(|(flag, _)| *flag == Some("-m"))
+            .and_then(|(_, module)| module);
         let mut gate_ids = Vec::new();
         if matches!(program_name.as_str(), "pytest" | "vitest" | "jest")
             || (program_name == "playwright" && first == Some("test"))
             || (program_name == "cargo" && first == Some("test"))
             || (matches!(program_name.as_str(), "go" | "dotnet") && first == Some("test"))
             || (program_name == "node" && first == Some("--test"))
+            || matches!(python_module, Some("pytest" | "unittest"))
             || script_is("test")
             || matches!(npx_tool, Some("pytest" | "vitest" | "jest"))
             || (npx_tool == Some("playwright") && second == Some("test"))
@@ -807,6 +812,34 @@ impl WorkflowIr {
         self.verification_gates
             .iter()
             .any(|gate| gate.required && gate.kind == VerificationGateKind::WriteIsolation)
+    }
+
+    /// Plan Mode produces an approval handoff and never executes the compiled
+    /// mutation workflow. Keep the IR as read-only planning context without
+    /// requiring execution nodes, process isolation, or release gates.
+    pub fn configure_for_plan_mode(&mut self) {
+        for node in &mut self.nodes {
+            node.phase = "planning".to_string();
+            node.isolation = WorkflowIsolation::SharedReadOnly;
+            node.write_scope.clear();
+            node.allowed_tools.retain(|tool| {
+                !tool_may_mutate_workspace(tool)
+                    && !matches!(
+                        tool.as_str(),
+                        "spawn_subagent"
+                            | "spawn_subagent_batch"
+                            | "judge_subagent_results"
+                            | "record_verification"
+                    )
+            });
+        }
+        self.verification_gates.clear();
+        self.completion_contract = WorkflowCompletionContract {
+            require_all_nodes_succeeded: false,
+            require_verification_gates: false,
+            require_evidence_ledger: false,
+        };
+        self.refresh_checkpoint();
     }
 
     pub fn ready_to_promote_isolated_writes(&self) -> bool {
@@ -1353,6 +1386,31 @@ mod tests {
             Some(false),
             "untrusted or non-executing lookalike commands must not pass tests"
         );
+        let python_test = serde_json::json!({
+            "kind": "commandExecution",
+            "execution": {
+                "program": "python",
+                "args": ["-m", "pytest"],
+                "exitCode": 0,
+                "timedOut": false
+            }
+        });
+        workflow.observe_tool_result(
+            "test-python",
+            "run_shell",
+            false,
+            Some(&python_test),
+            "command passed",
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::Tests)
+                .and_then(|gate| gate.passed),
+            Some(true),
+            "python -m pytest must satisfy the executed tests gate"
+        );
         for (call_id, program, args) in [
             ("test-1", "cargo", vec!["test"]),
             ("lint-1", "cargo", vec!["clippy"]),
@@ -1423,6 +1481,28 @@ mod tests {
         assert!(workflow
             .reconnaissance_batch_arguments(&simple.objective)
             .is_none());
+    }
+
+    #[test]
+    fn plan_mode_removes_execution_isolation_and_release_gates() {
+        let mut workflow = compile_workflow_ir(&plan(), &profile(), true).unwrap();
+        assert!(workflow.requires_runtime_write_isolation());
+
+        workflow.configure_for_plan_mode();
+
+        assert!(!workflow.requires_runtime_write_isolation());
+        assert!(workflow.verification_gates.is_empty());
+        assert!(!workflow.completion_contract.require_all_nodes_succeeded);
+        assert!(!workflow.completion_contract.require_verification_gates);
+        assert!(!workflow.completion_contract.require_evidence_ledger);
+        assert!(workflow.nodes.iter().all(|node| {
+            node.phase == "planning"
+                && node.isolation == WorkflowIsolation::SharedReadOnly
+                && node
+                    .allowed_tools
+                    .iter()
+                    .all(|tool| !tool_may_mutate_workspace(tool))
+        }));
     }
 
     #[test]
