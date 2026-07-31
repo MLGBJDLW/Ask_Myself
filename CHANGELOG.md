@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.3...nexa-monorepo-v0.11.4) (2026-07-31)
+
+
+### Features
+
+* **agent:** wire orchestration controls and model routing ([26f1ca9](https://github.com/MLGBJDLW/Nexa/commit/26f1ca9ea109c8fe98736367c63c866602f5d2f4))
+* **chat:** expose MoA and quality profiles ([975fbff](https://github.com/MLGBJDLW/Nexa/commit/975fbffedfedad7ec6523b73cd90baa76be016c6))
+* **orchestration:** add verified MoA workflow runtime ([6711c6b](https://github.com/MLGBJDLW/Nexa/commit/6711c6bffee499583be78081789eaebdacabb314))
+* **providers:** add live model catalog cache ([203193f](https://github.com/MLGBJDLW/Nexa/commit/203193f2bc5ca8ba33fc1f007c209b4a822ddd4d))
+* **settings:** move theme studio to dedicated tab ([48ea026](https://github.com/MLGBJDLW/Nexa/commit/48ea0261e22dab472fba71194a4b8aabec054a82))
+* **speech:** discover and preview provider voices ([105a0b0](https://github.com/MLGBJDLW/Nexa/commit/105a0b09e7a542396e96255c353e76afd4d28deb))
+* upgrade provider catalogs, speech, and orchestration ([4f43967](https://github.com/MLGBJDLW/Nexa/commit/4f4396760f90c49d50fd9fcccd082b4e6db2e936))
+
+
+### Bug Fixes
+
+* **agent:** keep plan mode read only ([8bf6bb1](https://github.com/MLGBJDLW/Nexa/commit/8bf6bb1a290cd6c10135bb83986738724b9dd636))
+* **orchestration:** block unscoped tools in isolation ([3306f0f](https://github.com/MLGBJDLW/Nexa/commit/3306f0f9adb7289f5bb5cbc0d2e81a3c8fe66c98))
+* **orchestration:** detect applicable verification gates ([397f9d7](https://github.com/MLGBJDLW/Nexa/commit/397f9d7752704b08b4f2e167ad3cf9267dbf3f96))
+* **orchestration:** enforce profile bounds and write isolation ([d1ba11c](https://github.com/MLGBJDLW/Nexa/commit/d1ba11c37c526b135ddcd616e8fff7abdce7bb95))
+* **orchestration:** harden isolation and retries ([05809d6](https://github.com/MLGBJDLW/Nexa/commit/05809d620c7cf0299f309a9e4596c7b428b98fa2))
+* **orchestration:** sandbox verification processes ([b888e70](https://github.com/MLGBJDLW/Nexa/commit/b888e70aca03c01e6c40ea6c8d3cebbd9a4267c2))
+* **providers:** restore reasoning capability type ([96d35dd](https://github.com/MLGBJDLW/Nexa/commit/96d35ddb28fb40460330264efaa4900b5e2df22e))
+* **providers:** scope model catalogs to credentials ([7ab00b9](https://github.com/MLGBJDLW/Nexa/commit/7ab00b9a1edc44df2e41ff6fb1e988af5950ebf6))
+* **speech:** invalidate stale voice previews ([629d3a0](https://github.com/MLGBJDLW/Nexa/commit/629d3a0000eca048b7f4fca6d37a329c8fca93a0))
+* **speech:** scope voice catalogs to credentials ([1cc77b3](https://github.com/MLGBJDLW/Nexa/commit/1cc77b39ba57e5c56ef8071da4dbd2b0ea985100))
+
 ## [0.11.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.2...nexa-monorepo-v0.11.3) (2026-07-30)
 
 
