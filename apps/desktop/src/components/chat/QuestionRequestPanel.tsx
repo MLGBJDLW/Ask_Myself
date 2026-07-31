@@ -28,6 +28,10 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
     )),
     [request.questions],
   );
+  const hasOtherDraft = useMemo(
+    () => Object.values(otherAnswers).some((answer) => answer.trim().length > 0),
+    [otherAnswers],
+  );
   const isAnswered = answered || submitted || request.status === 'answered';
 
   const submitAnswers = (nextAnswers: Record<string, string[]>) => {
@@ -217,7 +221,7 @@ export function QuestionRequestPanel({ request, answered = false, onSubmit }: Qu
 
       <footer className="flex items-center justify-between gap-3 border-t border-border/60 bg-surface-2/55 px-4 py-3">
         <p className="text-[11px] text-text-tertiary">{t('chat.questionResponseHint')}</p>
-        {!autoSubmitChoices && (
+        {(!autoSubmitChoices || hasOtherDraft) && (
           <Button
             size="sm"
             variant="primary"
