@@ -46,6 +46,9 @@ This folder captures the durable product and engineering memory for Nexa, which 
   conversation binding, agent permissions, output limits, and stop semantics.
 - [architecture/live-file-tool-streaming.md](./architecture/live-file-tool-streaming.md)
   Documents live file-tool projection and the frontend/backend event contract.
+- [architecture/orchestration-runtime.md](./architecture/orchestration-runtime.md)
+  Defines the MoA, Nexus Workflow IR, quality-profile, checkpoint, verification,
+  privacy, cost, and evaluation contracts.
 - [computer-use-integration.md](./computer-use-integration.md)
   Describes the desktop automation boundary and supported interaction paths.
 - [security-and-architecture-audit-2026-07.md](./security-and-architecture-audit-2026-07.md)
