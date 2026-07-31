@@ -20,7 +20,7 @@ export function UsageAnalyticsSettingsTab() {
     loading: activityLoading,
     error: activityError,
     reload: reloadActivity,
-  } = useUsageAnalytics({ ...rangeFilter('year'), timeBucket: 'day' });
+  } = useUsageAnalytics(contributionActivityFilter());
   const [range, setRange] = useState<RangePreset>('30d');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -42,7 +42,7 @@ export function UsageAnalyticsSettingsTab() {
 
   useEffect(() => {
     setActivityFilter({
-      ...rangeFilter('year'),
+      ...contributionActivityFilter(),
       providerId: filter.providerId ?? null,
       modelId: filter.modelId ?? null,
       operationKind: filter.operationKind ?? null,
@@ -168,6 +168,7 @@ function Empty({ t }: { t: Translate }) { return <div className="mt-4 rounded-lg
 function Breakdown({ title, rows, totals, t, locale }: { title: string; rows: api.UsageBreakdownRow[]; totals: api.UsageTotals; t: Translate; locale: string }) { return <section className="overflow-hidden rounded-xl border border-border bg-surface-1"><h3 className="border-b border-border px-4 py-3 text-sm font-semibold text-text-primary">{title}</h3>{rows.length === 0 ? <div className="p-4"><Empty t={t} /></div> : <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-[11px]"><thead className="text-text-tertiary"><tr><th className="px-3 py-2">{t('usage.name')}</th><th>{t('usage.tokenShare')}</th><th>{t('usage.requestShare')}</th><th>{t('usage.prompt')}</th><th>{t('usage.completion')}</th><th>{t('usage.thinking')}</th><th>{t('usage.cacheHit')}</th><th>{t('usage.avgRequest')}</th><th>{t('usage.avgTurn')}</th><th>{t('usage.success')}</th><th className="pr-3">{t('usage.cost')}</th></tr></thead><tbody>{rows.map((row) => { const cacheTotal = row.cacheReadTokens + row.cacheMissTokens; return <tr key={row.key} className="border-t border-border/60 text-text-secondary"><td className="max-w-48 truncate px-3 py-2 font-medium text-text-primary" title={row.key}>{operationLabel(row.key, t)}</td><td>{percent(row.totalTokens, totals.totalTokens)}</td><td>{percent(row.requestCount, totals.requestCount)}</td><td>{formatNumber(row.promptTokens, locale)}</td><td>{formatNumber(row.completionTokens, locale)}</td><td>{formatNumber(row.thinkingTokens, locale)}</td><td>{cacheTotal ? `${row.cacheReadTokens / cacheTotal * 100 | 0}%` : '—'}</td><td>{formatNumber(row.requestCount ? row.totalTokens / row.requestCount : 0, locale)}</td><td>{row.turnCount ? formatNumber(row.totalTokens / row.turnCount, locale) : '—'}</td><td>{row.requestCount ? `${(row.successCount / row.requestCount * 100).toFixed(1)}%` : '—'}</td><td className="pr-3">{row.estimatedCostMicros == null ? t('usage.unknown') : `$${(row.estimatedCostMicros / 1_000_000).toFixed(4)}`}</td></tr>; })}</tbody></table></div>}</section>; }
 
 function rangeFilter(preset: Exclude<RangePreset, 'custom'> | RangePreset): api.UsageAnalyticsFilter { const now = new Date(); if (preset === 'all' || preset === 'custom') return {}; const start = new Date(now); if (preset === 'today') start.setHours(0, 0, 0, 0); else if (preset === 'year') { start.setMonth(0, 1); start.setHours(0, 0, 0, 0); } else start.setDate(start.getDate() - Number.parseInt(preset, 10)); return { startAt: start.toISOString() }; }
+function contributionActivityFilter(): api.UsageAnalyticsFilter { const now = new Date(); const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)); const start = new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000); return { startAt: start.toISOString(), endAt: end.toISOString(), timeBucket: 'day' }; }
 function rangeLabel(preset: RangePreset, t: Translate): string { return t((`usage.range.${preset}`) as Parameters<Translate>[0]); }
 function formatNumber(value: number, locale: string): string { return new Intl.NumberFormat(locale, { maximumFractionDigits: value < 100 ? 1 : 0, notation: value >= 1_000_000 ? 'compact' : 'standard' }).format(value); }
 function percent(value: number, total: number): string { return total ? `${(value / total * 100).toFixed(1)}%` : '—'; }
