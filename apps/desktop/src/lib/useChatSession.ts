@@ -3,7 +3,14 @@ import { toast } from 'sonner';
 import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
-import type { AgentExecutionMode, AgentPowerMode } from './api';
+import type {
+  AgentCollaborationMode,
+  AgentExecutionMode,
+  AgentPowerMode,
+  CustomOrchestrationOptions,
+  MoaPresetId,
+  OrchestrationProfile,
+} from './api';
 import { useAgentStream, useRunningConversationIds } from './useAgentStream';
 import { streamStore } from './streamStore';
 import { useTranslation } from '../i18n';
@@ -245,6 +252,10 @@ export interface ChatSendOptions {
   skillIds?: string[];
   executionMode?: AgentExecutionMode;
   powerMode?: AgentPowerMode;
+  collaborationMode?: AgentCollaborationMode;
+  moaPreset?: MoaPresetId;
+  orchestrationProfile?: OrchestrationProfile;
+  customOrchestration?: CustomOrchestrationOptions | null;
   taskOrchestratorRunId?: string | null;
 }
 
@@ -1079,6 +1090,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.skillIds,
         options?.executionMode,
         options?.powerMode,
+        options?.collaborationMode,
+        options?.moaPreset,
+        options?.orchestrationProfile,
+        options?.customOrchestration,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
       );
@@ -1183,6 +1198,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       options?.skillIds,
       options?.executionMode,
       options?.powerMode,
+      options?.collaborationMode,
+      options?.moaPreset,
+      options?.orchestrationProfile,
+      options?.customOrchestration,
       options?.userArtifacts,
       null,
     );

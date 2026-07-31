@@ -361,3 +361,70 @@ test('Nexus activation respects reduced-motion preferences', async ({ page }) =>
   await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('nexus-activation-effect')).toHaveCount(0);
 });
+
+test('MoA and orchestration profiles remain independent from Nexus and reach the backend', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+
+  await page.getByTestId('chat-moa-preset').selectOption('crossModelCodeReview');
+  await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Code Review');
+  await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Independent from Nexus');
+
+  await page.getByTestId('chat-quality-profile').selectOption('codeUltra');
+  await expect(page.getByTestId('chat-quality-profile-banner')).toContainText('Code Ultra');
+  await expect(page.getByTestId('chat-quality-profile-banner')).toContainText('provider reasoning stays separate');
+
+  await page.getByTestId('chat-nexus-mode').click();
+  await page.getByTestId('chat-nexus-confirm').click();
+  await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Nexus + MoA');
+
+  await page.getByTestId('chat-input-textarea').fill('Review and verify the implementation');
+  await page.getByTestId('chat-send').click();
+  await expect.poll(
+    () => page.evaluate(() => {
+      const request = (window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0];
+      return [
+        request?.powerMode,
+        request?.collaborationMode,
+        request?.moaPreset,
+        request?.orchestrationProfile,
+      ];
+    }),
+  ).toEqual(['nexus', 'mixtureOfAgents', 'crossModelCodeReview', 'codeUltra']);
+
+  await page.reload();
+  await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Nexus + MoA');
+  await page.getByTestId('chat-nexus-mode').click();
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('chat-moa-mode-banner')).toBeVisible();
+});
+
+test('Custom orchestration exposes bounded runtime controls', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+  await page.getByTestId('chat-quality-profile').selectOption('custom');
+  await page.getByTestId('chat-quality-custom-maxIterations').fill('48');
+  await page.getByTestId('chat-quality-custom-maxParallel').fill('8');
+  await page.getByTestId('chat-quality-custom-maxCallsPerTurn').fill('10');
+  await page.getByTestId('chat-quality-custom-delegatedTokenBudget').fill('96000');
+  await page.getByTestId('chat-quality-custom-retryLimit').fill('3');
+  await page.getByTestId('chat-quality-custom-minEvidenceSources').fill('4');
+  await page.getByTestId('chat-quality-custom-verificationReservePercent').fill('40');
+  await page.getByTestId('chat-input-textarea').fill('Run a custom verified workflow');
+  await page.getByTestId('chat-send').click();
+
+  await expect.poll(
+    () => page.evaluate(() => {
+      const request = (window as unknown as { __slashAgentChatCalls__: Array<Record<string, unknown>> })
+        .__slashAgentChatCalls__[0];
+      return request?.customOrchestration;
+    }),
+  ).toMatchObject({
+    maxIterations: 48,
+    maxParallel: 8,
+    maxCallsPerTurn: 10,
+    delegatedTokenBudget: 96000,
+    retryLimit: 3,
+    minEvidenceSources: 4,
+    verificationReservePercent: 40,
+  });
+});

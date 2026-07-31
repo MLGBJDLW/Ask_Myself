@@ -1263,6 +1263,18 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 export type AgentExecutionMode = 'normal' | 'plan';
 export type AgentPowerMode = 'standard' | 'nexus';
+export type AgentCollaborationMode = 'direct' | 'mixtureOfAgents';
+export type MoaPresetId = 'fastReview' | 'deepResearch' | 'crossModelCodeReview' | 'custom';
+export type OrchestrationProfile = 'balanced' | 'deep' | 'codeUltra' | 'researchUltra' | 'custom';
+export interface CustomOrchestrationOptions {
+  maxIterations?: number | null;
+  maxParallel?: number | null;
+  maxCallsPerTurn?: number | null;
+  delegatedTokenBudget?: number | null;
+  verificationReservePercent?: number | null;
+  retryLimit?: number | null;
+  minEvidenceSources?: number | null;
+}
 
 export const agentChat = (
   conversationId: string,
@@ -1273,6 +1285,10 @@ export const agentChat = (
   skillIds?: string[],
   executionMode?: AgentExecutionMode | null,
   powerMode?: AgentPowerMode | null,
+  collaborationMode?: AgentCollaborationMode | null,
+  moaPreset?: MoaPresetId | null,
+  orchestrationProfile?: OrchestrationProfile | null,
+  customOrchestration?: CustomOrchestrationOptions | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) => {
@@ -1287,6 +1303,10 @@ export const agentChat = (
     skillIds: skillIds ?? [],
     executionMode: executionMode ?? 'normal',
     powerMode: powerMode ?? 'standard',
+    collaborationMode: collaborationMode ?? 'direct',
+    moaPreset: moaPreset ?? 'fastReview',
+    orchestrationProfile: orchestrationProfile ?? 'balanced',
+    customOrchestration: customOrchestration ?? null,
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };

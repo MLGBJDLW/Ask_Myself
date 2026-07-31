@@ -9,7 +9,14 @@ import type {
 } from '../types/conversation';
 import type { StreamState } from './streamStore';
 import type { StreamRoundEvent, ToolCallEvent, TraceEvent } from './streaming/protocol';
-import type { AgentExecutionMode, AgentPowerMode } from './api';
+import type {
+  AgentCollaborationMode,
+  AgentExecutionMode,
+  AgentPowerMode,
+  CustomOrchestrationOptions,
+  MoaPresetId,
+  OrchestrationProfile,
+} from './api';
 
 type AutoCompactedInfo = { summary: string } | null;
 
@@ -30,6 +37,10 @@ interface UseAgentStreamReturn {
     skillIds?: string[],
     executionMode?: AgentExecutionMode | null,
     powerMode?: AgentPowerMode | null,
+    collaborationMode?: AgentCollaborationMode | null,
+    moaPreset?: MoaPresetId | null,
+    orchestrationProfile?: OrchestrationProfile | null,
+    customOrchestration?: CustomOrchestrationOptions | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
   ) => Promise<void>;
@@ -127,6 +138,10 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     skillIds?: string[],
     executionMode?: AgentExecutionMode | null,
     powerMode?: AgentPowerMode | null,
+    collaborationMode?: AgentCollaborationMode | null,
+    moaPreset?: MoaPresetId | null,
+    orchestrationProfile?: OrchestrationProfile | null,
+    customOrchestration?: CustomOrchestrationOptions | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
   ) => {
@@ -143,6 +158,10 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         skillIds,
         executionMode,
         powerMode,
+        collaborationMode,
+        moaPreset,
+        orchestrationProfile,
+        customOrchestration,
         userArtifacts,
         taskOrchestratorRunId,
       );
