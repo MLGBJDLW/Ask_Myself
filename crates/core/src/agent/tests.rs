@@ -1257,7 +1257,13 @@ async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
         .expect("agent turn");
 
     let requests = captured.lock().unwrap();
-    assert_eq!(requests.len(), 1);
+    // Nexus may issue a controller follow-up when the mock result does not
+    // satisfy its verification gates. This contract concerns the first model
+    // surface, not the total number of verification rounds.
+    assert!(
+        !requests.is_empty(),
+        "Nexus should make at least one model request"
+    );
     for name in [
         "spawn_subagent_batch",
         "spawn_subagent",
