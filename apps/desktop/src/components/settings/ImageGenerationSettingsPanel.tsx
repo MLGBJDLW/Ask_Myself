@@ -411,7 +411,7 @@ export function ImageGenerationSettingsPanel({
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-            {activePreset.models.length > 0 && hasPresetModel ? (
+            {activePreset.models.length > 0 ? (
               <select
                 value={imageConfig.model}
                 onChange={(event) =>
@@ -419,6 +419,7 @@ export function ImageGenerationSettingsPanel({
                 }
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
+                {!hasPresetModel && <option value="" disabled>—</option>}
                 {activePreset.models.map((model) => (
                   <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
                     {model.name}{model.recommended ? " *" : ""} · {modelDescriptorSummary(model.descriptor)}

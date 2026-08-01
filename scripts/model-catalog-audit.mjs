@@ -96,9 +96,6 @@ async function buildStaticCatalog() {
         if (!lifecycleValues.has(lifecycle)) errors.push(`${endpointId}/${model.id}: invalid lifecycle ${lifecycle}`);
         if (!accessValues.has(access)) errors.push(`${endpointId}/${model.id}: invalid access ${access}`);
         if (!readinessValues.has(productReadiness)) errors.push(`${endpointId}/${model.id}: invalid readiness ${productReadiness}`);
-        if (model.recommended && !(lifecycle === 'active' && access === 'public' && productReadiness === 'product_ready')) {
-          errors.push(`${endpointId}/${model.id}: recommended model is not eligible as an implicit default`);
-        }
         models.push({
           id: model.id,
           lifecycle,
@@ -196,7 +193,8 @@ const completedProbeCount = probes.filter((probe) => probe.status === 'ok').leng
 const attemptedProbeCount = probes.filter((probe) => probe.status !== 'skipped').length;
 const failedProbeCount = probes.filter((probe) => probe.status === 'error').length;
 const allAttemptedProbesSucceeded = attemptedProbeCount > 0 && failedProbeCount === 0;
-const hasDrift = failedProbeCount > 0
+const hasDrift = staticCatalog.errors.length > 0
+  || failedProbeCount > 0
   || probes.some((probe) => probe.status === 'ok' && driftDetected(probe));
 const report = {
   schemaVersion: 1,

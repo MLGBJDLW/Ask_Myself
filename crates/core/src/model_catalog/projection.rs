@@ -178,11 +178,11 @@ pub fn resolve_builtin_endpoint_id(
         .iter()
         .filter(|endpoint| endpoint.id.starts_with(&endpoint_prefix))
         .collect::<Vec<_>>();
-    let normalized_base_url = normalize_url(base_url);
+    let normalized_base_url = normalize_endpoint_url(base_url);
 
     if !normalized_base_url.is_empty() {
         if let Some(endpoint) = endpoints.iter().find(|endpoint| {
-            normalize_url(Some(&endpoint.base_url_template)) == normalized_base_url
+            normalize_endpoint_url(Some(&endpoint.base_url_template)) == normalized_base_url
         }) {
             return Some(endpoint.id.clone());
         }
@@ -229,7 +229,7 @@ pub fn resolve_or_derive_endpoint_id(
         "{}|{}|{}",
         surface,
         provider_or_alias.trim().to_ascii_lowercase(),
-        normalize_url(base_url)
+        normalize_endpoint_url(base_url)
     );
     let digest = blake3::hash(identity.as_bytes()).to_hex();
     format!("{surface}:custom-{}", &digest[..12])
@@ -501,12 +501,17 @@ fn provider_aliases(provider_id: &str) -> Vec<String> {
     }
 }
 
-fn normalize_url(value: Option<&str>) -> String {
-    value
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
+pub fn normalize_endpoint_url(value: Option<&str>) -> String {
+    let raw = value.unwrap_or_default().trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return raw.trim_end_matches('/').to_string();
+    };
+    let normalized_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&normalized_path);
+    url.to_string()
 }
 
 fn documentation_ref(provider_id: &str) -> Option<String> {

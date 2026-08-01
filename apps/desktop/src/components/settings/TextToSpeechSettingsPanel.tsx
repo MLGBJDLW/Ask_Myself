@@ -353,6 +353,7 @@ export function TextToSpeechSettingsPanel({
                 onChange={(event) => update({ model: event.target.value })}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
+                {!activePreset.models.some((model) => model.id === config.model) && <option value="" disabled>—</option>}
                 {activePreset.models.map((model) => (
                   <option key={model.id} value={model.id} disabled={model.descriptor?.availableToCredential === false}>{model.name}{model.recommended ? ' *' : ''}{model.descriptor ? ` · ${modelDescriptorSummary(model.descriptor)}` : ''}</option>
                 ))}

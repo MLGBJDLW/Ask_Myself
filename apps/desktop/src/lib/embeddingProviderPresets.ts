@@ -4,6 +4,7 @@ import {
   canonicalModelProviderId,
   inferModelCatalogRegion,
   modelEndpointId,
+  normalizeModelEndpointUrl,
   selectImplicitDefault,
   type LegacyCatalogModel,
   type ModelDescriptor,
@@ -48,8 +49,8 @@ export function defaultEmbeddingModel(preset: EmbeddingProviderPreset): Embeddin
 }
 
 export function findEmbeddingProviderPreset(baseUrl: string): EmbeddingProviderPreset | null {
-  const normalized = baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  const normalized = normalizeModelEndpointUrl(baseUrl);
   return EMBEDDING_PROVIDER_PRESETS.find(
-    (preset) => preset.baseUrl.replace(/\/+$/, "").toLowerCase() === normalized,
+    (preset) => normalizeModelEndpointUrl(preset.baseUrl) === normalized,
   ) ?? null;
 }

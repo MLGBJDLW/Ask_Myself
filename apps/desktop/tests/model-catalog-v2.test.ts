@@ -3,9 +3,12 @@ import {
   catalogEndpointIdForSelection,
   isImplicitDefaultEligible,
   modelDescriptorFacts,
+  normalizeModelEndpointUrl,
+  resolveExplicitModelSelection,
   selectImplicitDefault,
   type ModelDescriptor,
 } from '../src/lib/modelCatalog';
+import { providerModelCatalogCacheKey } from '../src/lib/providerModelCatalog';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -114,9 +117,10 @@ function testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability(): vo
     'access:application',
     'region:global',
     'io:text+image→image',
-    'tools',
-    'reasoning',
-    'async',
+    'tools:true',
+    'reasoning:true',
+    'realtime:false',
+    'async:true',
     'source:official',
     'verified:2026-08-01',
     'replacement:model-v2',
@@ -146,6 +150,26 @@ function testEndpointIdentityRequiresAnExactBaseUrlMatch(): void {
     null,
     'a custom URL must not inherit the public OpenAI endpoint identity',
   );
+  assert(
+    providerModelCatalogCacheKey('open_ai', 'https://example.test/TenantA', 'key')
+      !== providerModelCatalogCacheKey('open_ai', 'https://example.test/tenanta', 'key'),
+    'case-sensitive paths must use isolated catalog cache keys',
+  );
+  assertEqual(
+    normalizeModelEndpointUrl('HTTPS://EXAMPLE.TEST/TenantA/?workspace=A/'),
+    'https://example.test/TenantA?workspace=A/',
+    'normalization should lowercase the origin while preserving path/query case and suffixes',
+  );
+}
+
+function testWizardRequiresAnExplicitNonEmptyModel(): void {
+  const models = [{ id: 'known-model' }];
+  assertEqual(resolveExplicitModelSelection(models, ''), null, 'an empty wizard model must not resolve');
+  assertEqual(
+    resolveExplicitModelSelection(models, 'known-model')?.id,
+    'known-model',
+    'an explicit wizard choice should resolve',
+  );
 }
 
 testImplicitDefaultsRespectLifecycleAccessAndReadiness();
@@ -153,3 +177,4 @@ testLegacyImagePresetProjectsCanonicalMetadata();
 testRecommendationDoesNotFabricateProductReadiness();
 testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability();
 testEndpointIdentityRequiresAnExactBaseUrlMatch();
+testWizardRequiresAnExplicitNonEmptyModel();

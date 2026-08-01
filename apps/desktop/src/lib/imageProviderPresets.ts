@@ -4,6 +4,7 @@ import {
   canonicalModelProviderId,
   inferModelCatalogRegion,
   modelEndpointId,
+  normalizeModelEndpointUrl,
   selectImplicitDefault,
   type LegacyCatalogModel,
   type ModelDescriptor,
@@ -59,7 +60,7 @@ export const IMAGE_PROVIDER_PRESETS: ImageProviderPreset[] =
   }));
 
 function normalize(value: string | null | undefined): string {
-  return (value ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return normalizeModelEndpointUrl(value);
 }
 
 export function findImageProviderPreset(input: {

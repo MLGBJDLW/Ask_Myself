@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::projection::normalize_endpoint_url;
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
@@ -157,9 +159,7 @@ impl EndpointRegistry {
                         && (api_style.is_empty() || normalize(&endpoint.api_style) == api_style)
                 })
                 .collect::<Vec<_>>();
-            if exact.len() == 1 {
-                return Some(exact[0]);
-            }
+            return (exact.len() == 1).then_some(exact[0]);
         }
 
         let provider_index = *self.provider_aliases.get(&normalize(provider_or_alias))?;
@@ -194,9 +194,5 @@ fn normalize(value: &str) -> String {
 }
 
 fn normalize_url(value: Option<&str>) -> String {
-    value
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
+    normalize_endpoint_url(value)
 }

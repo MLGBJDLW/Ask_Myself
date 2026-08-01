@@ -543,11 +543,7 @@ fn merge_capabilities(
 }
 
 fn normalize_base_url(base_url: Option<&str>) -> String {
-    base_url
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
+    crate::model_catalog::normalize_endpoint_url(base_url)
 }
 
 fn normalize_model_id(model: &str) -> String {

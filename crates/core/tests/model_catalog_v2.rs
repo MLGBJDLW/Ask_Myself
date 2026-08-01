@@ -1,5 +1,5 @@
 use nexa_core::model_catalog::{
-    load_builtin_catalog, merge_catalog, resolve_builtin_endpoint_id,
+    load_builtin_catalog, merge_catalog, normalize_endpoint_url, resolve_builtin_endpoint_id,
     resolve_or_derive_endpoint_id, resolve_saved_selection, select_implicit_default, AuthStyle,
     CapabilityProbeResult, CatalogCacheKey, CatalogMergeInput, CredentialKind, DiscoveredModel,
     DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe, ModelAccess,
@@ -97,9 +97,11 @@ fn passing_probe_promotes_discovered_model_to_callable_without_claiming_product_
 fn verified_negative_capability_overrides_stale_curated_metadata() {
     let mut curated = descriptor("model");
     curated.capabilities.tool_calling = true;
+    curated.capabilities.reasoning = Some(Default::default());
     let mut probe = CapabilityProbeResult::passed("model", "provider-main", "2026-08-01T00:00:00Z");
     probe.capabilities = Some(VerifiedModelCapabilities {
         tool_calling: Some(false),
+        reasoning_supported: Some(false),
         ..VerifiedModelCapabilities::default()
     });
 
@@ -113,6 +115,7 @@ fn verified_negative_capability_overrides_stale_curated_metadata() {
     });
 
     assert!(!snapshot.models[0].capabilities.tool_calling);
+    assert!(snapshot.models[0].capabilities.reasoning.is_none());
 }
 
 #[test]
@@ -148,6 +151,25 @@ fn saved_selection_resolves_alias_then_removed_replacement() {
 }
 
 #[test]
+fn removed_model_does_not_cross_endpoint_for_its_replacement() {
+    let mut replacement = descriptor("replacement-model");
+    replacement.endpoint_ids = vec!["text:region-b".into()];
+    let mut removed = descriptor("retired-model");
+    removed.lifecycle = ModelLifecycle::Removed;
+    removed.endpoint_ids = vec!["text:region-a".into()];
+    removed.replacement_model_id = Some("replacement-model".into());
+
+    let resolution = resolve_saved_selection(
+        &SavedModelSelection::new("provider", Some("text:region-a".into()), "retired-model"),
+        &[replacement, removed],
+    );
+
+    assert_eq!(resolution.kind, SelectionResolutionKind::Unverified);
+    assert_eq!(resolution.model_id, "retired-model");
+    assert!(resolution.requires_user_notice);
+}
+
+#[test]
 fn endpoint_registry_resolves_provider_alias_and_normalized_base_url() {
     let endpoint = ProviderEndpoint {
         id: "alibaba-cn".into(),
@@ -161,13 +183,25 @@ fn endpoint_registry_resolves_provider_alias_and_normalized_base_url() {
         discovery_strategy: DiscoveryStrategy::OpenAiModels,
         health_probe: HealthProbe::Models,
     };
+    let case_sensitive_endpoint = ProviderEndpoint {
+        id: "tenant-a".into(),
+        provider_id: "alibaba_model_studio".into(),
+        region: "private".into(),
+        base_url_template: "https://example.test/TenantA?workspace=A/".into(),
+        api_style: "openai_chat".into(),
+        transport: EndpointTransport::Http,
+        auth_style: AuthStyle::Bearer,
+        workspace_required: false,
+        discovery_strategy: DiscoveryStrategy::OpenAiModels,
+        health_probe: HealthProbe::Models,
+    };
     let registry = EndpointRegistry::new(vec![ProviderDescriptor {
         id: "alibaba_model_studio".into(),
         display_name: "Alibaba Cloud Model Studio".into(),
         aliases: vec!["qwen".into(), "dashscope".into()],
         credential_kind: CredentialKind::ApiKey,
         documentation_ref: None,
-        endpoints: vec![endpoint],
+        endpoints: vec![endpoint, case_sensitive_endpoint],
     }])
     .expect("valid endpoint registry");
 
@@ -179,6 +213,30 @@ fn endpoint_registry_resolves_provider_alias_and_normalized_base_url() {
         )
         .expect("legacy provider alias and trailing slash should resolve");
     assert_eq!(resolved.id, "alibaba-cn");
+    assert_eq!(
+        registry
+            .resolve(
+                "qwen",
+                Some("HTTPS://EXAMPLE.TEST/TenantA/?workspace=A/"),
+                Some("openai_chat"),
+            )
+            .map(|endpoint| endpoint.id.as_str()),
+        Some("tenant-a")
+    );
+    assert!(registry
+        .resolve(
+            "qwen",
+            Some("https://example.test/tenanta?workspace=A/"),
+            Some("openai_chat"),
+        )
+        .is_none());
+    assert!(registry
+        .resolve(
+            "qwen",
+            Some("https://unregistered.example.test/v1"),
+            Some("openai_chat"),
+        )
+        .is_none());
 }
 
 #[test]
@@ -249,7 +307,11 @@ fn builtin_presets_project_every_surface_into_catalog_v2() {
         .find(|model| model.id == "text-embedding-v4")
         .expect("official embedding should be projected");
     assert!(recommended_embedding.recommended);
-    assert!(recommended_embedding.is_implicit_default_eligible());
+    assert_eq!(
+        recommended_embedding.product_readiness,
+        ProductReadiness::Known
+    );
+    assert!(!recommended_embedding.is_implicit_default_eligible());
 }
 
 #[test]
@@ -279,6 +341,21 @@ fn legacy_provider_and_base_url_resolve_to_stable_endpoint_identity() {
     );
     assert!(custom.starts_with("text:custom-"));
     assert!(!custom.contains("secret"));
+    let tenant_upper = resolve_or_derive_endpoint_id(
+        "text",
+        "open_ai",
+        Some("HTTPS://EXAMPLE.TEST/TenantA?workspace=A/"),
+    );
+    let tenant_lower = resolve_or_derive_endpoint_id(
+        "text",
+        "open_ai",
+        Some("https://example.test/tenanta?workspace=A/"),
+    );
+    assert_ne!(tenant_upper, tenant_lower);
+    assert_eq!(
+        normalize_endpoint_url(Some("HTTPS://EXAMPLE.TEST/TenantA/?workspace=A/")),
+        "https://example.test/TenantA?workspace=A/"
+    );
 }
 
 #[test]

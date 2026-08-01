@@ -11,7 +11,7 @@ import { ProviderIcon } from '../../lib/providerIcons';
 import * as api from '../../lib/api';
 import type { SaveAgentConfigInput } from '../../types/conversation';
 import type { ConnectionTestResult } from './useWizardState';
-import { selectImplicitDefault } from '../../lib/modelCatalog';
+import { modelDescriptorSummary, resolveExplicitModelSelection } from '../../lib/modelCatalog';
 
 interface Step3ProviderProps {
   onNext: () => void;
@@ -50,6 +50,7 @@ export function Step3Provider({
   const { t } = useTranslation();
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [selectedModelId, setSelectedModelId] = useState('');
 
   const presets = WIZARD_PROVIDER_IDS
     .map(id => PROVIDER_PRESETS.find(p => p.id === id))
@@ -63,17 +64,17 @@ export function Step3Provider({
     setTesting(true);
     onTestResult(null, false);
     try {
-      const recommended = selectImplicitDefault(selectedPreset.models)?.id ?? '';
-      const recommendedDescriptor = selectedPreset.models.find((model) => model.id === recommended)?.descriptor;
+      const selectedModel = resolveExplicitModelSelection(selectedPreset.models, selectedModelId);
+      if (!selectedModel) return;
       const config: SaveAgentConfigInput = {
         id: null,
         name: selectedPreset.name,
         provider: selectedPreset.provider,
         apiKey: apiKey.trim(),
         baseUrl: selectedPreset.baseUrl,
-        model: recommended,
-        providerEndpointId: recommendedDescriptor?.endpointIds[0] ?? null,
-        modelId: recommendedDescriptor?.id ?? recommended,
+        model: selectedModel.id,
+        providerEndpointId: selectedModel.descriptor.endpointIds[0] ?? null,
+        modelId: selectedModel.descriptor.id,
         temperature: null,
         maxTokens: null,
         contextWindow: null,
@@ -102,10 +103,11 @@ export function Step3Provider({
     } finally {
       setTesting(false);
     }
-  }, [selectedPreset, apiKey, onTestResult, t]);
+  }, [selectedPreset, selectedModelId, apiKey, onTestResult, t]);
 
   const needsKey = selectedPreset?.requiresApiKey ?? false;
-  const canTest = Boolean(selectedPreset) && (!needsKey || apiKey.trim().length > 0);
+  const canTest = Boolean(selectedPreset && selectedModelId)
+    && (!needsKey || apiKey.trim().length > 0);
 
   return (
     <motion.div
@@ -133,6 +135,7 @@ export function Step3Provider({
             type="button"
             onClick={() => {
               onPresetChange(p);
+              setSelectedModelId('');
               onTestResult(null, false);
             }}
             className={`rounded-lg border px-3 py-2.5 text-sm font-medium text-left transition-all ${
@@ -148,6 +151,32 @@ export function Step3Provider({
           </button>
         ))}
       </div>
+
+      {selectedPreset && (
+        <label className="mb-4 w-full space-y-2 text-left text-sm font-medium text-text-primary">
+          <span>{t('settings.defaultModel')}</span>
+          <select
+            value={selectedModelId}
+            onChange={(event) => {
+              setSelectedModelId(event.target.value);
+              onTestResult(null, false);
+            }}
+            className="h-10 w-full rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
+          >
+            <option value="" disabled>—</option>
+            {selectedPreset.models.map((model) => (
+              <option
+                key={model.id}
+                value={model.id}
+                disabled={model.descriptor.lifecycle === 'removed'
+                  || model.descriptor.availableToCredential === false}
+              >
+                {model.name} · {modelDescriptorSummary(model.descriptor)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       {selectedPreset && needsKey && (
         <div className="w-full space-y-3 mb-4">
@@ -198,6 +227,7 @@ export function Step3Provider({
             size="md"
             onClick={handleTest}
             loading={testing}
+            disabled={!canTest}
             className="w-full"
           >
             {connectionTest === 'success'

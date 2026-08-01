@@ -81,6 +81,8 @@ pub fn resolve_saved_selection(
                     .provider_id
                     .eq_ignore_ascii_case(&model.provider_id)
                     && candidate.lifecycle != ModelLifecycle::Removed
+                    && candidate.available_to_credential != Some(false)
+                    && selection_scope_matches(saved, candidate)
                     && candidate.matches_id_or_alias(replacement_id)
             }) {
                 return resolution_from_model(

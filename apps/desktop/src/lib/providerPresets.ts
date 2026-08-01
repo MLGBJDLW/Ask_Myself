@@ -9,6 +9,7 @@ import {
   canonicalModelProviderId,
   inferModelCatalogRegion,
   modelEndpointId,
+  normalizeModelEndpointUrl,
   type LegacyCatalogModel,
 } from './modelCatalog';
 
@@ -54,7 +55,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = (providerPresets as RawProvide
 }));
 
 function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
-  return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return normalizeModelEndpointUrl(baseUrl);
 }
 
 function providerKeyForPresetLookup(provider: string, normalizedBaseUrl: string): string {

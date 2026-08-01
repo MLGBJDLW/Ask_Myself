@@ -1,3 +1,5 @@
+import { normalizeModelEndpointUrl } from './modelCatalog';
+
 export interface ProviderCredentialConfig {
   provider: string;
   baseUrl?: string | null;
@@ -7,7 +9,7 @@ export interface ProviderCredentialConfig {
 }
 
 function normalizedUrl(value: string | null | undefined): string {
-  return (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
+  return normalizeModelEndpointUrl(value);
 }
 
 function endpointUrl(value: string | null | undefined): URL | null {

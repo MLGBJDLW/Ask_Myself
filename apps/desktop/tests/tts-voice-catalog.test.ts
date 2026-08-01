@@ -62,5 +62,19 @@ assert(loadTtsVoiceCatalog(config, storage)?.voices[0]?.id === 'voice-1', 'cache
 assert(loadTtsVoiceCatalog({ ...config, apiKey: 'another-account' }, storage) === null, 'credentials should use isolated caches');
 assert(ttsVoiceCatalogMatches(boundSnapshot, config), 'snapshot should match provider, endpoint, model, and credential');
 assert(!ttsVoiceCatalogMatches(boundSnapshot, { ...config, model: 'eleven_v3' }), 'models should use isolated caches');
+assert(
+  ttsVoiceCatalogCacheKey({ ...config, baseUrl: 'https://tenant.example.test/TenantA?workspace=A/' })
+    !== ttsVoiceCatalogCacheKey({ ...config, baseUrl: 'https://tenant.example.test/tenanta?workspace=A/' }),
+  'case-sensitive endpoint paths should use isolated voice catalog caches',
+);
+assert(
+  ttsVoiceCatalogCacheKey({ ...config, model: 'VoiceModelA' })
+    !== ttsVoiceCatalogCacheKey({ ...config, model: 'voicemodela' }),
+  'case-sensitive model identifiers should use isolated voice catalog caches',
+);
+assert(
+  !ttsVoiceCatalogMatches(boundSnapshot, { ...config, model: config.model.toUpperCase() }),
+  'voice catalog matching should preserve model identifier case',
+);
 assert(!isTtsVoiceCatalogStale(snapshot, Date.parse('2026-08-01T08:59:59Z')), 'catalog should remain fresh for 24 hours');
 assert(isTtsVoiceCatalogStale(snapshot, Date.parse('2026-08-01T09:00:01Z')), 'catalog should expire after 24 hours');

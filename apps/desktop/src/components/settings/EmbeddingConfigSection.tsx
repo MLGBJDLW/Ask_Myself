@@ -230,6 +230,9 @@ export function EmbeddingConfigSection({
                     onChange={(event) => applyApiModel(event.target.value)}
                     className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
                   >
+                    {!activeApiPreset.models.some((model) => model.id === embedConfig.apiModel) && (
+                      <option value="" disabled>—</option>
+                    )}
                     {activeApiPreset.models.map((model) => (
                       <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
                         {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''} · {modelDescriptorSummary(model.descriptor)}

@@ -12,7 +12,7 @@
         "dimensions": 1536,
         "supportsDimensionOverride": true,
         "source": "curated",
-        "productReadiness": "product_ready",
+        "productReadiness": "known",
         "recommended": true
       },
       {
@@ -49,7 +49,7 @@
         "status": "active",
         "regions": ["cn-beijing"],
         "lastVerifiedAt": "2026-08-01",
-        "productReadiness": "product_ready"
+        "productReadiness": "known"
       }
     ]
   },
@@ -66,7 +66,7 @@
         "dimensions": 1024,
         "supportsDimensionOverride": false,
         "source": "curated",
-        "productReadiness": "product_ready",
+        "productReadiness": "known",
         "recommended": true
       },
       {
@@ -96,7 +96,7 @@
         "dimensions": 1024,
         "supportsDimensionOverride": false,
         "source": "curated",
-        "productReadiness": "product_ready",
+        "productReadiness": "known",
         "recommended": true
       }
     ]

@@ -16,6 +16,8 @@ pub enum CapabilityProbeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct VerifiedModelCapabilities {
     #[serde(default)]
+    pub reasoning_supported: Option<bool>,
+    #[serde(default)]
     pub reasoning: Option<ReasoningCapability>,
     #[serde(default)]
     pub vision: Option<bool>,
@@ -53,7 +55,9 @@ pub struct VerifiedModelCapabilities {
 
 impl VerifiedModelCapabilities {
     pub(crate) fn apply_to(&self, target: &mut ModelCapabilities) {
-        if self.reasoning.is_some() {
+        if self.reasoning_supported == Some(false) {
+            target.reasoning = None;
+        } else if self.reasoning.is_some() {
             target.reasoning = self.reasoning.clone();
         }
         macro_rules! apply_bool {

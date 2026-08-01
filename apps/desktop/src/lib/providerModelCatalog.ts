@@ -4,13 +4,14 @@ import {
   attachModelDescriptors,
   inferModelCatalogRegion,
   modelEndpointId,
+  normalizeModelEndpointUrl,
   type ModelDescriptor,
   type ModelModality,
 } from './modelCatalog';
 
 export interface ProviderModelCatalogEntry extends Omit<ProviderModelPreset, 'descriptor'> {
   source: 'official' | 'discovered' | 'curated';
-  status: 'active' | 'preview' | 'legacy' | 'deprecated' | 'removed';
+  status: 'active' | 'preview' | 'gated' | 'legacy' | 'deprecated' | 'removed';
   recommended: boolean;
   regions: string[];
   lastVerifiedAt: string | null;
@@ -42,16 +43,12 @@ interface StoredProviderModelCatalog {
 export const PROVIDER_MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 const CACHE_PREFIX = 'nexa-provider-model-catalog-v1:';
 
-function normalizeBaseUrl(value: string | null | undefined): string {
-  return (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
-}
-
 export function providerModelCatalogCacheKey(
   provider: string,
   baseUrl: string | null | undefined,
   apiKey: string,
 ): string {
-  return `${CACHE_PREFIX}${encodeURIComponent(`${provider.trim().toLowerCase()}::${normalizeBaseUrl(baseUrl)}::${credentialFingerprint(apiKey)}`)}`;
+  return `${CACHE_PREFIX}${encodeURIComponent(`${provider.trim().toLowerCase()}::${normalizeModelEndpointUrl(baseUrl)}::${credentialFingerprint(apiKey)}`)}`;
 }
 
 export function bindProviderModelCatalogCredential(
@@ -68,7 +65,7 @@ export function catalogMatchesProvider(
   apiKey: string,
 ): boolean {
   return snapshot.provider.trim().toLowerCase() === provider.trim().toLowerCase()
-    && normalizeBaseUrl(snapshot.baseUrl) === normalizeBaseUrl(baseUrl)
+    && normalizeModelEndpointUrl(snapshot.baseUrl) === normalizeModelEndpointUrl(baseUrl)
     && snapshot.credentialFingerprint === credentialFingerprint(apiKey);
 }
 

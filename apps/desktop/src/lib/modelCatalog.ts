@@ -247,12 +247,6 @@ export function isImplicitDefaultEligible(model: ModelDescriptor): boolean {
 
 /** Compact, stable facts shared by every model-settings surface. */
 export function modelDescriptorFacts(model: ModelDescriptor): string[] {
-  const capabilities = [
-    model.capabilities.toolCalling ? 'tools' : null,
-    model.capabilities.reasoning ? 'reasoning' : null,
-    model.capabilities.realtime ? 'realtime' : null,
-    model.capabilities.asyncJobs ? 'async' : null,
-  ].filter((value): value is string => Boolean(value));
   const credential = model.availableToCredential === true
     ? 'available'
     : model.availableToCredential === false
@@ -263,20 +257,24 @@ export function modelDescriptorFacts(model: ModelDescriptor): string[] {
     `lifecycle:${model.lifecycle}`,
     `readiness:${model.productReadiness}`,
     `access:${model.access}`,
-    ...(model.regions.length ? [`region:${model.regions.join('+')}`] : []),
+    `region:${model.regions.length ? model.regions.join('+') : 'unknown'}`,
     `io:${model.inputModalities.join('+')}→${model.outputModalities.join('+')}`,
-    ...capabilities,
+    `tools:${Boolean(model.capabilities.toolCalling)}`,
+    `reasoning:${Boolean(model.capabilities.reasoning)}`,
+    `realtime:${Boolean(model.capabilities.realtime)}`,
+    `async:${Boolean(model.capabilities.asyncJobs)}`,
     `source:${model.source}`,
-    ...(model.lastVerifiedAt ? [`verified:${model.lastVerifiedAt}`] : []),
-    ...(model.replacementModelId ? [`replacement:${model.replacementModelId}`] : []),
+    `verified:${model.lastVerifiedAt ?? 'unknown'}`,
+    `replacement:${model.replacementModelId ?? 'none'}`,
     `credential:${credential}`,
   ];
 }
 
 /** Single-line metadata for native select and datalist rows. */
 export function modelDescriptorSummary(model: ModelDescriptor): string {
-  const credential = model.availableToCredential === false ? ' · credential unavailable' : '';
-  return `${model.lifecycle} · ${model.productReadiness} · ${model.access} · ${model.source}${credential}`;
+  return modelDescriptorFacts(model)
+    .map((fact) => fact.replace(':', '=').replace(/_/g, ' '))
+    .join(' · ');
 }
 
 export function selectImplicitDefault<T extends { descriptor: ModelDescriptor }>(
@@ -287,8 +285,30 @@ export function selectImplicitDefault<T extends { descriptor: ModelDescriptor }>
     ?? null;
 }
 
+export function resolveExplicitModelSelection<T extends { id: string }>(
+  models: readonly T[],
+  modelId: string,
+): T | null {
+  const selected = modelId.trim();
+  if (!selected) return null;
+  return models.find((model) => model.id === selected) ?? null;
+}
+
 export function modelEndpointId(surface: ModelCatalogSurface, presetId: string): string {
   return `${surface}:${presetId.trim().toLowerCase()}`;
+}
+
+/** Normalize URL syntax while preserving case-sensitive path/query identity. */
+export function normalizeModelEndpointUrl(value: string | null | undefined): string {
+  const raw = (value ?? '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    const path = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '');
+    return `${url.protocol}//${url.host}${path}${url.search}${url.hash}`;
+  } catch {
+    return raw.replace(/\/+$/, '');
+  }
 }
 
 export function catalogEndpointIdForSelection(
@@ -297,9 +317,7 @@ export function catalogEndpointIdForSelection(
   configuredBaseUrl: string | null | undefined,
 ): string | null {
   if (!descriptor) return null;
-  const normalize = (value: string | null | undefined) =>
-    (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
-  if (normalize(catalogBaseUrl) !== normalize(configuredBaseUrl)) return null;
+  if (normalizeModelEndpointUrl(catalogBaseUrl) !== normalizeModelEndpointUrl(configuredBaseUrl)) return null;
   return descriptor.endpointIds[0] ?? null;
 }
 
