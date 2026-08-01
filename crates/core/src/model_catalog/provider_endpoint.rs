@@ -159,7 +159,7 @@ impl EndpointRegistry {
                         && (api_style.is_empty() || normalize(&endpoint.api_style) == api_style)
                 })
                 .collect::<Vec<_>>();
-            return (exact.len() == 1).then_some(exact[0]);
+            return (exact.len() == 1).then(|| exact[0]);
         }
 
         let provider_index = *self.provider_aliases.get(&normalize(provider_or_alias))?;
@@ -168,7 +168,7 @@ impl EndpointRegistry {
             .iter()
             .filter(|endpoint| api_style.is_empty() || normalize(&endpoint.api_style) == api_style)
             .collect::<Vec<_>>();
-        (matches.len() == 1).then_some(matches[0])
+        (matches.len() == 1).then(|| matches[0])
     }
 }
 
