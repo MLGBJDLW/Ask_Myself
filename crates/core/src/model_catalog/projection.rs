@@ -455,12 +455,6 @@ fn readiness(model: &Value, descriptor: &ModelDescriptor) -> ProductReadiness {
         "product_ready" => ProductReadiness::ProductReady,
         "known" => ProductReadiness::Known,
         _ if descriptor.source == ModelCatalogSource::Discovered => ProductReadiness::Discoverable,
-        _ if descriptor.recommended
-            && descriptor.lifecycle == ModelLifecycle::Active
-            && descriptor.access == ModelAccess::Public =>
-        {
-            ProductReadiness::ProductReady
-        }
         _ => ProductReadiness::Known,
     }
 }

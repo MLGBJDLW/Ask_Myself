@@ -25,6 +25,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { SharedCredentialNotice } from "./SharedCredentialNotice";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
+import { modelDescriptorSummary } from "../../lib/modelCatalog";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -419,8 +420,8 @@ export function ImageGenerationSettingsPanel({
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
                 {activePreset.models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}{model.recommended ? " *" : ""}
+                  <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
+                    {model.name}{model.recommended ? " *" : ""} · {modelDescriptorSummary(model.descriptor)}
                   </option>
                 ))}
               </select>

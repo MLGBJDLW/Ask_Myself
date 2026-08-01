@@ -314,6 +314,13 @@ export interface AgentConfig {
   providerEndpointId?: string | null;
   /** Canonical model identity retained alongside the legacy `model` field. */
   modelId?: string | null;
+  modelSelectionResolution?: {
+    providerId: string;
+    providerEndpointId?: string | null;
+    modelId: string;
+    kind: 'unchanged' | 'alias' | 'replacement' | 'unverified';
+    requiresUserNotice: boolean;
+  } | null;
   temperature: number | null;
   maxTokens: number | null;
   contextWindow: number | null;

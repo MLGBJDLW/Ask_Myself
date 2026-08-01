@@ -87,6 +87,16 @@ function testLegacyImagePresetProjectsCanonicalMetadata(): void {
   assertEqual(model.descriptor.limits.outputFormats?.[0], 'png', 'provider limits should project');
 }
 
+function testRecommendationDoesNotFabricateProductReadiness(): void {
+  const [model] = attachModelDescriptors(
+    [{ id: 'unverified', name: 'Unverified', recommended: true }],
+    { surface: 'text', providerId: 'provider', endpointId: 'text:provider' },
+  );
+
+  assertEqual(model.descriptor.productReadiness, 'known', 'recommendation is not readiness evidence');
+  assertEqual(isImplicitDefaultEligible(model.descriptor), false, 'unverified models must not default');
+}
+
 function testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability(): void {
   const facts = modelDescriptorFacts(descriptor({
     lifecycle: 'deprecated',
@@ -100,6 +110,7 @@ function testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability(): vo
 
   for (const expected of [
     'lifecycle:deprecated',
+    'readiness:product_ready',
     'access:application',
     'region:global',
     'io:text+image→image',
@@ -139,5 +150,6 @@ function testEndpointIdentityRequiresAnExactBaseUrlMatch(): void {
 
 testImplicitDefaultsRespectLifecycleAccessAndReadiness();
 testLegacyImagePresetProjectsCanonicalMetadata();
+testRecommendationDoesNotFabricateProductReadiness();
 testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability();
 testEndpointIdentityRequiresAnExactBaseUrlMatch();

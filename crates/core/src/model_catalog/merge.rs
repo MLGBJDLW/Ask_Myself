@@ -90,9 +90,6 @@ pub fn merge_catalog(input: CatalogMergeInput<'_>) -> ModelCatalogSnapshot {
                 .map(|id| normalize_id(id))
                 .any(|id| live_ids.contains(&id));
             model.available_to_credential = Some(available);
-            if available {
-                model.last_verified_at = Some(input.refreshed_at.to_string());
-            }
         }
         apply_probe(&mut model, input.probes, endpoint_id);
         emitted.insert(normalize_id(&model.id));

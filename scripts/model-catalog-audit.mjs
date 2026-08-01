@@ -49,12 +49,10 @@ function inferredAccess(model, lifecycle) {
   return 'public';
 }
 
-function inferredReadiness(model, lifecycle, access) {
+function inferredReadiness(model) {
   if (model.productReadiness) return model.productReadiness;
   if (model.source === 'discovered') return 'discoverable';
-  return model.recommended && lifecycle === 'active' && access === 'public'
-    ? 'product_ready'
-    : 'known';
+  return 'known';
 }
 
 function modelCapabilities(model) {
@@ -93,7 +91,7 @@ async function buildStaticCatalog() {
         seenModels.add(model.id);
         const lifecycle = inferredLifecycle(model);
         const access = inferredAccess(model, lifecycle);
-        const productReadiness = inferredReadiness(model, lifecycle, access);
+        const productReadiness = inferredReadiness(model);
         if (!lifecycleValues.has(lifecycle)) errors.push(`${endpointId}/${model.id}: invalid lifecycle ${lifecycle}`);
         if (!accessValues.has(access)) errors.push(`${endpointId}/${model.id}: invalid access ${access}`);
         if (!readinessValues.has(productReadiness)) errors.push(`${endpointId}/${model.id}: invalid readiness ${productReadiness}`);

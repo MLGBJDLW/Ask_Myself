@@ -19,6 +19,7 @@ import { Input } from '../ui/Input';
 import { Section } from './SettingsSection';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
 import { ModelDescriptorBadges } from './ModelDescriptorBadges';
+import { modelDescriptorSummary } from '../../lib/modelCatalog';
 
 interface EmbeddingConfigSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -230,8 +231,8 @@ export function EmbeddingConfigSection({
                     className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
                   >
                     {activeApiPreset.models.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''}
+                      <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
+                        {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''} · {modelDescriptorSummary(model.descriptor)}
                       </option>
                     ))}
                   </select>

@@ -11,6 +11,8 @@
         "name": "Text Embedding 3 Small",
         "dimensions": 1536,
         "supportsDimensionOverride": true,
+        "source": "curated",
+        "productReadiness": "product_ready",
         "recommended": true
       },
       {
@@ -63,6 +65,8 @@
         "name": "Jina Embeddings v5 Text Small",
         "dimensions": 1024,
         "supportsDimensionOverride": false,
+        "source": "curated",
+        "productReadiness": "product_ready",
         "recommended": true
       },
       {
@@ -91,6 +95,8 @@
         "name": "Mistral Embed",
         "dimensions": 1024,
         "supportsDimensionOverride": false,
+        "source": "curated",
+        "productReadiness": "product_ready",
         "recommended": true
       }
     ]

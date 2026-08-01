@@ -12,6 +12,7 @@ function factLabel(fact: string): string {
   const value = fact.slice(separator + 1);
   const labels: Record<string, string> = {
     lifecycle: 'status',
+    readiness: 'readiness',
     access: 'access',
     region: 'region',
     io: 'I/O',

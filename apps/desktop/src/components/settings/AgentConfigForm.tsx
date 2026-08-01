@@ -51,6 +51,7 @@ import {
 import { CollapsiblePanel } from "./SettingsSection";
 import {
   catalogEndpointIdForSelection,
+  modelDescriptorSummary,
   selectImplicitDefault,
 } from "../../lib/modelCatalog";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
@@ -925,11 +926,12 @@ export function AgentConfigForm({
                         key={m.id}
                         type="button"
                         aria-pressed={selected}
+                        disabled={m.descriptor.availableToCredential === false}
                         onClick={() => {
                           setModel(m.id);
                           setContextWindow(null);
                         }}
-                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 ${
+                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-50 ${
                           selected
                             ? "bg-accent/10 text-text-primary"
                             : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
@@ -940,7 +942,7 @@ export function AgentConfigForm({
                             {m.name}
                           </span>
                           <span className="block truncate text-xs text-text-tertiary">
-                            {m.id}
+                            {m.id} · {modelDescriptorSummary(m.descriptor)}
                           </span>
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
@@ -992,18 +994,29 @@ export function AgentConfigForm({
                 <option value="" disabled>—</option>
               )}
               {activePreset.models.map((m) => (
-                <option key={m.id} value={m.id}>
+                <option key={m.id} value={m.id} disabled={m.descriptor.availableToCredential === false}>
                   {m.tagKey
                     ? `${m.name} (${t(m.tagKey as TranslationKey)})`
                     : m.name}
                    {m.descriptor.source === "discovered" ? ` · ${t("settings.modelSourceDiscovered")}` : ""}
                   {m.recommended ? " ★" : ""}
+                  {` · ${modelDescriptorSummary(m.descriptor)}`}
                 </option>
               ))}
             </select>
           )}
           {!usesSearchableModelPicker && (
             <ModelDescriptorBadges descriptor={selectedPresetModel?.descriptor} />
+          )}
+          {config?.modelSelectionResolution?.requiresUserNotice && (
+            <p
+              className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+              data-testid="model-selection-resolution-notice"
+              role="status"
+            >
+              Saved model selection resolved to {config.modelSelectionResolution.modelId}
+              {` (${config.modelSelectionResolution.kind})`}.
+            </p>
           )}
           <button
             type="button"

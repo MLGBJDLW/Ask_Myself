@@ -173,9 +173,7 @@ export function projectModelDescriptor(
   const productReadiness = model.productReadiness
     ?? (source === 'discovered'
       ? 'discoverable'
-      : recommended && lifecycle === 'active' && access === 'public'
-        ? 'product_ready'
-        : 'known');
+      : 'known');
   const realtime = context.apiStyle?.toLowerCase().includes('realtime') ?? false;
   const rawCapabilities = model.capabilities ?? {};
 
@@ -263,6 +261,7 @@ export function modelDescriptorFacts(model: ModelDescriptor): string[] {
 
   return [
     `lifecycle:${model.lifecycle}`,
+    `readiness:${model.productReadiness}`,
     `access:${model.access}`,
     ...(model.regions.length ? [`region:${model.regions.join('+')}`] : []),
     `io:${model.inputModalities.join('+')}→${model.outputModalities.join('+')}`,
@@ -272,6 +271,12 @@ export function modelDescriptorFacts(model: ModelDescriptor): string[] {
     ...(model.replacementModelId ? [`replacement:${model.replacementModelId}`] : []),
     `credential:${credential}`,
   ];
+}
+
+/** Single-line metadata for native select and datalist rows. */
+export function modelDescriptorSummary(model: ModelDescriptor): string {
+  const credential = model.availableToCredential === false ? ' · credential unavailable' : '';
+  return `${model.lifecycle} · ${model.productReadiness} · ${model.access} · ${model.source}${credential}`;
 }
 
 export function selectImplicitDefault<T extends { descriptor: ModelDescriptor }>(
