@@ -23,6 +23,8 @@ jobs:
           node-version: 24
 
       - name: Audit curated and live catalogs
+        id: catalog_audit
+        continue-on-error: true
         env:
           NEXA_OPENAI_CATALOG_API_KEY: ${{ secrets.NEXA_OPENAI_CATALOG_API_KEY }}
           NEXA_OPENROUTER_CATALOG_API_KEY: ${{ secrets.NEXA_OPENROUTER_CATALOG_API_KEY }}
@@ -32,12 +34,14 @@ jobs:
         run: node scripts/model-catalog-audit.mjs --output .artifacts/model-catalog-drift
 
       - uses: actions/upload-artifact@v5
+        if: always()
         with:
           name: model-catalog-drift
           path: .artifacts/model-catalog-drift
           if-no-files-found: error
 
       - name: Open, update, or close drift issue
+        if: ${{ always() && hashFiles('.artifacts/model-catalog-drift/report.json') != '' }}
         uses: actions/github-script@v8
         with:
           script: |
@@ -83,3 +87,7 @@ jobs:
                 state: 'closed',
               });
             }
+
+      - name: Fail on static catalog validation errors
+        if: steps.catalog_audit.outcome == 'failure'
+        run: exit 1
