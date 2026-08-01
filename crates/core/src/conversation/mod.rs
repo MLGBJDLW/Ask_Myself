@@ -3097,9 +3097,66 @@ fn decrypt_agent_config_key(mut config: AgentConfig) -> Result<AgentConfig, Core
 fn resolve_agent_config_endpoint_id(
     provider: &str,
     base_url: Option<&str>,
-    _requested: Option<&str>,
+    requested: Option<&str>,
 ) -> String {
-    crate::model_catalog::resolve_or_derive_endpoint_id("text", provider, base_url)
+    if let Some(endpoint_id) =
+        crate::model_catalog::resolve_builtin_endpoint_id("text", provider, base_url)
+    {
+        return endpoint_id;
+    }
+
+    let derived = crate::model_catalog::resolve_or_derive_endpoint_id("text", provider, base_url);
+    let Some(requested) = requested
+        .map(str::trim)
+        .filter(|value| is_valid_text_endpoint_id(value))
+    else {
+        return derived;
+    };
+
+    let Ok(catalog) = crate::model_catalog::load_builtin_catalog() else {
+        return requested.to_string();
+    };
+    let Some(endpoint) = catalog
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id.eq_ignore_ascii_case(requested))
+    else {
+        // External endpoint registries may supply stable IDs that are not part
+        // of the built-in catalog. Preserve them instead of replacing their
+        // advertised identity with a legacy-derived hash.
+        return requested.to_string();
+    };
+
+    let provider_matches = catalog.providers.iter().any(|candidate| {
+        candidate.id.eq_ignore_ascii_case(&endpoint.provider_id)
+            && (candidate.id.eq_ignore_ascii_case(provider)
+                || candidate
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(provider)))
+    });
+    let normalized_base_url = crate::model_catalog::normalize_endpoint_url(base_url);
+    let endpoint_matches = normalized_base_url.is_empty()
+        || crate::model_catalog::normalize_endpoint_url(Some(&endpoint.base_url_template))
+            == normalized_base_url;
+
+    if provider_matches && endpoint_matches {
+        endpoint.id.clone()
+    } else {
+        // A known public endpoint ID must never be allowed to label a custom
+        // URL or a different provider's configuration.
+        derived
+    }
+}
+
+fn is_valid_text_endpoint_id(value: &str) -> bool {
+    value.len() <= 255
+        && value
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("text:"))
+        && value.len() > 5
+        && !value.chars().any(char::is_whitespace)
+        && !value.chars().any(char::is_control)
 }
 
 fn resolve_agent_config_model(
@@ -5161,6 +5218,31 @@ mod tests {
             crate::model_catalog::SelectionResolutionKind::Alias
         );
         assert!(resolution.requires_user_notice);
+    }
+
+    #[test]
+    fn explicit_endpoint_identity_roundtrips_without_crossing_public_boundaries() {
+        let external = resolve_agent_config_endpoint_id(
+            "open_ai",
+            Some("https://tenant.example.test/TenantA/v1"),
+            Some("text:tenant-a"),
+        );
+        assert_eq!(external, "text:tenant-a");
+
+        let conflicting_public = resolve_agent_config_endpoint_id(
+            "open_ai",
+            Some("https://tenant.example.test/TenantA/v1"),
+            Some("text:openai"),
+        );
+        assert_ne!(conflicting_public, "text:openai");
+        assert!(conflicting_public.starts_with("text:custom-"));
+
+        let requested_builtin = resolve_agent_config_endpoint_id(
+            "alibaba_model_studio",
+            None,
+            Some("text:qwen-cloud-intl"),
+        );
+        assert_eq!(requested_builtin, "text:qwen-cloud-intl");
     }
 
     #[test]

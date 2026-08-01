@@ -20,11 +20,23 @@ export function compareCapabilities(curated, discovered) {
 
 /** Compare one endpoint/credential snapshot without crossing identity scopes. */
 export function compareEndpointModels(endpoint, liveModels) {
-  const liveById = new Map((Array.isArray(liveModels) ? liveModels : [])
-    .filter((model) => typeof model?.id === 'string')
-    .map((model) => [model.id, model]));
   const curatedById = new Map(endpoint.models.map((model) => [model.id, model]));
-  const newIds = [...liveById.keys()].filter((id) => !curatedById.has(id)).sort();
+  const canonicalBySelectionId = new Map(endpoint.models.flatMap((model) =>
+    [model.id, ...(Array.isArray(model.aliases) ? model.aliases : [])]
+      .map((id) => [String(id).trim().toLowerCase(), model.id])));
+  const liveById = new Map();
+  const newIdSet = new Set();
+  for (const live of Array.isArray(liveModels) ? liveModels : []) {
+    if (typeof live?.id !== 'string' || !live.id.trim()) continue;
+    const canonicalId = canonicalBySelectionId.get(live.id.trim().toLowerCase());
+    if (!canonicalId) {
+      newIdSet.add(live.id);
+      continue;
+    }
+    const current = liveById.get(canonicalId);
+    if (!current || live.id === canonicalId) liveById.set(canonicalId, live);
+  }
+  const newIds = [...newIdSet].sort();
   const missingIds = [...curatedById.keys()].filter((id) => !liveById.has(id)).sort();
   const capabilityChanged = [];
   const lifecycleChanged = [];

@@ -5,6 +5,7 @@ const endpoint = {
   endpointId: 'text:tenant-a',
   models: [{
     id: 'model-a',
+    aliases: ['model-a-latest'],
     lifecycle: 'active',
     regions: ['us-east'],
     capabilities: { toolCalling: true },
@@ -33,4 +34,13 @@ const clean = compareEndpointModels(endpoint, [{
   capabilities: { toolCalling: true },
 }]);
 assert.equal(driftDetected(clean), false);
+
+const aliasOnly = compareEndpointModels(endpoint, [{
+  id: 'MODEL-A-LATEST',
+  regions: ['us-east'],
+  capabilities: { toolCalling: true },
+}]);
+assert.deepEqual(aliasOnly.newIds, []);
+assert.deepEqual(aliasOnly.missingIds, []);
+assert.equal(driftDetected(aliasOnly), false);
 process.stdout.write('model catalog audit fixtures passed\n');

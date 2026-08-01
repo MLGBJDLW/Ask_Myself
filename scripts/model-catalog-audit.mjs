@@ -98,6 +98,7 @@ async function buildStaticCatalog() {
         if (!readinessValues.has(productReadiness)) errors.push(`${endpointId}/${model.id}: invalid readiness ${productReadiness}`);
         models.push({
           id: model.id,
+          aliases: model.aliases ?? [],
           lifecycle,
           regions: model.regions ?? preset.regions ?? [],
           capabilities: modelCapabilities(model),
