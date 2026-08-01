@@ -164,6 +164,7 @@ fn apply_probe(model: &mut ModelDescriptor, probes: &[CapabilityProbeResult], en
         return;
     };
     if probe.is_passed() {
+        model.available_to_credential = Some(true);
         if model.product_readiness < ProductReadiness::Callable {
             model.product_readiness = ProductReadiness::Callable;
         }

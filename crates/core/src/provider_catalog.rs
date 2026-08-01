@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::llm::ProviderType;
 use crate::model_catalog::{
-    load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CatalogMergeInput,
-    DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor, MODEL_DESCRIPTOR_SCHEMA_VERSION,
+    load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CapabilityProbeResult,
+    CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor,
+    MODEL_DESCRIPTOR_SCHEMA_VERSION,
 };
 use crate::provider_registry::provider_type_from_key;
 
@@ -248,9 +249,27 @@ pub fn build_effective_model_catalog(
     provider: &str,
     base_url: Option<&str>,
     live_model_ids: Option<Vec<String>>,
+    verified_model_id: Option<&str>,
     refreshed_at: impl Into<String>,
 ) -> ProviderModelCatalogSnapshot {
     let refreshed_at = refreshed_at.into();
+    let live_model_ids = live_model_ids.map(|mut model_ids| {
+        if let Some(verified_model_id) = verified_model_id
+            .map(str::trim)
+            .filter(|model_id| !model_id.is_empty())
+        {
+            let verified = normalize_model_id(verified_model_id);
+            if !model_ids
+                .iter()
+                .any(|model_id| normalize_model_id(model_id) == verified)
+            {
+                // A successful completion is stronger account-scoped evidence
+                // than an incomplete provider listing.
+                model_ids.push(verified_model_id.to_string());
+            }
+        }
+        model_ids
+    });
     let preset = find_provider_preset(provider, base_url);
     let curated_models = preset
         .as_ref()
@@ -323,8 +342,13 @@ pub fn build_effective_model_catalog(
         models.push(catalog_entry_from_preset(curated, &default_regions, None));
     }
 
-    let descriptor_snapshot =
-        build_descriptor_snapshot(provider, base_url, live_model_ids.as_deref(), &refreshed_at);
+    let descriptor_snapshot = build_descriptor_snapshot(
+        provider,
+        base_url,
+        live_model_ids.as_deref(),
+        verified_model_id,
+        &refreshed_at,
+    );
 
     ProviderModelCatalogSnapshot {
         schema_version: descriptor_snapshot.schema_version,
@@ -347,6 +371,7 @@ fn build_descriptor_snapshot(
     provider: &str,
     base_url: Option<&str>,
     live_model_ids: Option<&[String]>,
+    verified_model_id: Option<&str>,
     refreshed_at: &str,
 ) -> ModelCatalogSnapshot {
     let endpoint_id = resolve_or_derive_endpoint_id("text", provider, base_url);
@@ -384,13 +409,19 @@ fn build_descriptor_snapshot(
             .map(|id| DiscoveredModel::new(id, &endpoint_id, region))
             .collect::<Vec<_>>()
     });
+    let probes = verified_model_id
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| CapabilityProbeResult::passed(model_id, &endpoint_id, refreshed_at))
+        .into_iter()
+        .collect::<Vec<_>>();
 
     merge_catalog(CatalogMergeInput {
         provider_id: canonical_provider_id,
         endpoint_id: &endpoint_id,
         curated: &curated,
         discovered: discovered.as_deref(),
-        probes: &[],
+        probes: &probes,
         refreshed_at,
     })
 }
@@ -977,6 +1008,7 @@ mod tests {
                 "account-only-model".to_string(),
                 "account-only-model".to_string(),
             ]),
+            None,
             "2026-07-31T00:00:00Z",
         );
 
@@ -1018,6 +1050,7 @@ mod tests {
             "open_ai",
             Some("https://api.openai.com/v1"),
             None,
+            None,
             "2026-07-31T00:00:00Z",
         );
 
@@ -1027,5 +1060,35 @@ mod tests {
             .models
             .iter()
             .all(|model| model.source != ModelCatalogSource::Discovered));
+    }
+
+    #[test]
+    fn successful_probe_keeps_a_model_available_when_listing_omits_it() {
+        let snapshot = build_effective_model_catalog(
+            "alibaba_model_studio",
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            Some(vec!["account-only-model".to_string()]),
+            Some("qwen3.7-max"),
+            "2026-07-31T00:00:00Z",
+        );
+
+        let tested = snapshot
+            .descriptors
+            .iter()
+            .find(|model| model.id == "qwen3.7-max")
+            .expect("the tested curated model should remain in the descriptor snapshot");
+        assert_eq!(tested.available_to_credential, Some(true));
+        assert_eq!(
+            tested.product_readiness,
+            crate::model_catalog::ProductReadiness::Callable
+        );
+        assert_eq!(
+            tested.last_verified_at.as_deref(),
+            Some("2026-07-31T00:00:00Z")
+        );
+        assert!(snapshot
+            .models
+            .iter()
+            .any(|model| model.id == "qwen3.7-max"));
     }
 }
