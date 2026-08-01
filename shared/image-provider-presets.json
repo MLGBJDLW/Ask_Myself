@@ -64,7 +64,7 @@
     "requiresApiKey": true,
     "description": "Qwen-Image through Alibaba Cloud Model Studio Beijing region.",
     "models": [
-      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false },
+      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false, "source": "official", "status": "preview", "access": "application", "regions": ["cn-beijing"], "lastVerifiedAt": "2026-08-01", "productReadiness": "known" },
       { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
       { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
       { "id": "qwen-image-max", "name": "Qwen Image Max" },
@@ -90,7 +90,7 @@
     "requiresApiKey": true,
     "description": "Qwen-Image through Alibaba Cloud Model Studio Singapore region.",
     "models": [
-      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false },
+      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false, "source": "official", "status": "preview", "access": "application", "regions": ["ap-southeast-1"], "lastVerifiedAt": "2026-08-01", "productReadiness": "known" },
       { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
       { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
       { "id": "qwen-image-max", "name": "Qwen Image Max" },

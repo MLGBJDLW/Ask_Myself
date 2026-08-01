@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexa.local/schemas/model-catalog-v2.json",
+  "title": "Nexa Model Catalog v2 Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "providerId",
+    "endpointId",
+    "models",
+    "tombstones",
+    "refreshedAt",
+    "liveDiscoverySucceeded",
+    "capabilityProbeSucceeded"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "providerId": { "$ref": "#/$defs/nonEmptyString" },
+    "endpointId": { "$ref": "#/$defs/nonEmptyString" },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modelDescriptor" }
+    },
+    "tombstones": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modelDescriptor" }
+    },
+    "refreshedAt": { "type": "string", "format": "date-time" },
+    "liveDiscoverySucceeded": { "type": "boolean" },
+    "capabilityProbeSucceeded": { "type": "boolean" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "nullableString": { "type": ["string", "null"] },
+    "modelLifecycle": {
+      "enum": ["active", "preview", "gated", "legacy", "deprecated", "removed"]
+    },
+    "modelAccess": {
+      "enum": ["public", "account_enablement", "application", "private_preview"]
+    },
+    "modelSource": { "enum": ["official", "discovered", "curated"] },
+    "productReadiness": {
+      "enum": ["known", "discoverable", "callable", "product_ready"]
+    },
+    "modality": { "enum": ["text", "image", "audio", "video", "file", "embedding"] },
+    "reasoning": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "effortLevels": { "type": "array", "items": { "type": "string" } },
+        "defaultEffort": { "type": ["string", "null"] },
+        "thinkingBudget": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "defaultTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "minTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "maxTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "step": { "type": ["integer", "null"], "minimum": 1 },
+            "allowZero": { "type": ["boolean", "null"] }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reasoning": { "$ref": "#/$defs/reasoning" },
+        "vision": { "type": "boolean" },
+        "audioInput": { "type": "boolean" },
+        "audioOutput": { "type": "boolean" },
+        "videoInput": { "type": "boolean" },
+        "videoOutput": { "type": "boolean" },
+        "toolCalling": { "type": "boolean" },
+        "parallelToolCalling": { "type": "boolean" },
+        "structuredOutput": { "type": "boolean" },
+        "imageGeneration": { "type": "boolean" },
+        "imageEditing": { "type": "boolean" },
+        "multiReferenceEditing": { "type": "boolean" },
+        "realtime": { "type": "boolean" },
+        "promptCache": { "type": "boolean" },
+        "asyncJobs": { "type": "boolean" },
+        "batch": { "type": "boolean" },
+        "dimensionOverride": { "type": "boolean" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contextTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "maxOutputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "maxImages": { "type": ["integer", "null"], "minimum": 0 },
+        "maxInputBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "maxVideoSeconds": { "type": ["integer", "null"], "minimum": 0 },
+        "maxAudioSeconds": { "type": ["integer", "null"], "minimum": 0 },
+        "embeddingDimensions": { "type": ["integer", "null"], "minimum": 1 },
+        "supportedSizes": { "type": "array", "items": { "type": "string" } },
+        "outputFormats": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "modelDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "id",
+        "aliases",
+        "displayName",
+        "providerId",
+        "family",
+        "version",
+        "lifecycle",
+        "access",
+        "regions",
+        "endpointIds",
+        "endpointKinds",
+        "inputModalities",
+        "outputModalities",
+        "capabilities",
+        "limits",
+        "pricingRef",
+        "releaseDate",
+        "deprecationDate",
+        "replacementModelId",
+        "source",
+        "lastVerifiedAt",
+        "productReadiness",
+        "availableToCredential",
+        "recommended"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "displayName": { "$ref": "#/$defs/nonEmptyString" },
+        "providerId": { "$ref": "#/$defs/nonEmptyString" },
+        "family": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nullableString" },
+        "lifecycle": { "$ref": "#/$defs/modelLifecycle" },
+        "access": { "$ref": "#/$defs/modelAccess" },
+        "regions": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "endpointIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "endpointKinds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "inputModalities": { "type": "array", "items": { "$ref": "#/$defs/modality" } },
+        "outputModalities": { "type": "array", "items": { "$ref": "#/$defs/modality" } },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "limits": { "$ref": "#/$defs/limits" },
+        "pricingRef": { "$ref": "#/$defs/nullableString" },
+        "releaseDate": { "$ref": "#/$defs/nullableString" },
+        "deprecationDate": { "$ref": "#/$defs/nullableString" },
+        "replacementModelId": { "$ref": "#/$defs/nullableString" },
+        "source": { "$ref": "#/$defs/modelSource" },
+        "lastVerifiedAt": { "$ref": "#/$defs/nullableString" },
+        "productReadiness": { "$ref": "#/$defs/productReadiness" },
+        "availableToCredential": { "type": ["boolean", "null"] },
+        "recommended": { "type": "boolean" }
+      }
+    },
+    "providerEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "providerId", "region", "baseUrlTemplate", "apiStyle", "transport", "authStyle", "workspaceRequired", "discoveryStrategy", "healthProbe"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "providerId": { "$ref": "#/$defs/nonEmptyString" },
+        "region": { "type": "string" },
+        "baseUrlTemplate": { "type": "string" },
+        "apiStyle": { "$ref": "#/$defs/nonEmptyString" },
+        "transport": { "enum": ["http", "sse", "websocket", "async_job"] },
+        "authStyle": { "enum": ["none", "bearer", "header", "query", "oauth2"] },
+        "workspaceRequired": { "type": "boolean" },
+        "discoveryStrategy": { "enum": ["none", "open_ai_models", "provider_catalog", "static"] },
+        "healthProbe": { "enum": ["none", "models", "lightweight_request"] }
+      }
+    },
+    "providerDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "aliases", "credentialKind", "documentationRef", "endpoints"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "displayName": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "credentialKind": { "enum": ["none", "api_key", "oauth", "service_account", "subscription"] },
+        "documentationRef": { "$ref": "#/$defs/nullableString" },
+        "endpoints": { "type": "array", "items": { "$ref": "#/$defs/providerEndpoint" } }
+      }
+    }
+  }
+}

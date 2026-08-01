@@ -33,13 +33,21 @@
         "name": "Qwen3.7 Text Embedding",
         "dimensions": 1024,
         "supportsDimensionOverride": true,
-        "recommended": true
+        "recommended": false,
+        "source": "curated",
+        "productReadiness": "known"
       },
       {
         "id": "text-embedding-v4",
         "name": "Text Embedding v4",
         "dimensions": 1024,
-        "supportsDimensionOverride": true
+        "supportsDimensionOverride": true,
+        "recommended": true,
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-01",
+        "productReadiness": "product_ready"
       }
     ]
   },

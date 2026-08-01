@@ -7425,7 +7425,12 @@
         "id": "qwen3.8-max-preview",
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
-        "recommended": true
+        "recommended": false,
+        "status": "preview",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "known",
+        "lastVerifiedAt": "2026-08-01"
       }
     ]
   },
@@ -7674,17 +7679,33 @@
       {
         "id": "qwen3-max-2026-01-23",
         "name": "Qwen3 Max",
-        "tagKey": "providers.tagMostIntelligent"
+        "tagKey": "providers.tagMostIntelligent",
+        "aliases": ["qwen3-max"],
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3.6-max-preview",
         "name": "Qwen3.6 Max Preview",
-        "tagKey": "providers.tagPreview"
+        "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3-max-preview",
         "name": "Qwen3 Max Preview",
-        "tagKey": "providers.tagPreview"
+        "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3.5-plus",
@@ -7731,7 +7752,11 @@
       {
         "id": "qwen3-coder-plus",
         "name": "Qwen3 Coder Plus",
-        "tagKey": "providers.tagCoding"
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "deprecated",
+        "replacementModelId": "qwen3.7-plus",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3-coder-flash",
@@ -7756,6 +7781,10 @@
         "id": "qwen3-vl-flash",
         "name": "Qwen3 VL Flash",
         "tagKey": "providers.tagVision",
+        "source": "official",
+        "status": "deprecated",
+        "replacementModelId": "qwen3.6-flash",
+        "lastVerifiedAt": "2026-08-01",
         "capabilities": {
           "vision": true
         }
