@@ -107,3 +107,42 @@ fn normalize_base_url(base_url: Option<&str>) -> String {
         .trim_end_matches('/')
         .to_lowercase()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwen_image_3_preview_is_available_in_both_regions() {
+        let presets = load_image_provider_presets().expect("image provider presets should parse");
+        let qwen_presets = presets
+            .iter()
+            .filter(|preset| preset.provider == "qwen")
+            .collect::<Vec<_>>();
+
+        assert_eq!(qwen_presets.len(), 2, "Beijing and Singapore presets");
+        for preset in qwen_presets {
+            let model = preset
+                .models
+                .iter()
+                .find(|model| model.id == "qwen-image-3.0-pro")
+                .expect("Qwen Image 3.0 Pro should be discoverable");
+            assert!(model.name.contains("Limited Preview"));
+            assert!(!model.recommended, "preview model must not become the default");
+        }
+    }
+
+    #[test]
+    fn qwen_image_2_pro_remains_the_default_during_preview() {
+        for base_url in [
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+            "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        ] {
+            assert_eq!(
+                default_image_model("qwen", Some("dashscope_multimodal"), Some(base_url))
+                    .as_deref(),
+                Some("qwen-image-2.0-pro")
+            );
+        }
+    }
+}
