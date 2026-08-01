@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.4...nexa-monorepo-v0.11.5) (2026-08-01)
+
+
+### Features
+
+* **chat:** submit completed choice cards immediately ([9dcfdf1](https://github.com/MLGBJDLW/Nexa/commit/9dcfdf1466aeebdc1025555666283e72598aed8b))
+* contribution activity and reliable interactive turns ([1943816](https://github.com/MLGBJDLW/Nexa/commit/19438163147c7c38e1a641e329b096788a5bed3d))
+* **models:** add Qwen Image 3.0 preview preset ([c4a9858](https://github.com/MLGBJDLW/Nexa/commit/c4a9858a3467f65d93eb62f5cce8acffddefec74))
+* **usage:** add contribution heatmap component ([f53677a](https://github.com/MLGBJDLW/Nexa/commit/f53677a1e5f5b9a332e265d8c65a6fd685f8dab1))
+* **usage:** lead with yearly contribution activity ([374b73c](https://github.com/MLGBJDLW/Nexa/commit/374b73c4b4ef67b88c5cd2c8baad9b63562966ef))
+* **video:** add typed structured analysis API ([7bbe356](https://github.com/MLGBJDLW/Nexa/commit/7bbe35650ad38706b5526f714a93f2587691c7c6))
+* **video:** expose timestamped transcript and frame OCR results ([462aba7](https://github.com/MLGBJDLW/Nexa/commit/462aba760f159682e7dcfbd824d15b609f630580))
+* **video:** type structured analysis timeline results ([1fb58ca](https://github.com/MLGBJDLW/Nexa/commit/1fb58cab167eda93cc1e634141979af8127cff44))
+
+
+### Bug Fixes
+
+* **chat:** hide structured question continuations from bubbles ([f0e99e7](https://github.com/MLGBJDLW/Nexa/commit/f0e99e7ea18d3d56a2285f26c15f52b6ffdf54a9))
+* **chat:** keep custom choice answers submittable ([7616a00](https://github.com/MLGBJDLW/Nexa/commit/7616a00181253fd27b8118e56cb7938a9f4d863e))
+* **chat:** never fold answer replies into thinking ([3bb07df](https://github.com/MLGBJDLW/Nexa/commit/3bb07dfeda6a7af42c2700bf8cc73e439b4d9db9))
+* **chat:** remove redundant submit control from auto-submit cards ([2f5e539](https://github.com/MLGBJDLW/Nexa/commit/2f5e5395edcaeff4966346592422115cdbe3efb6))
+* **ci:** unblock frontend contract checks ([6559135](https://github.com/MLGBJDLW/Nexa/commit/6559135a80d641e7395da825cf552c1ec35663a8))
+* **usage:** keep month labels type-safe ([30aee06](https://github.com/MLGBJDLW/Nexa/commit/30aee0647116d867b462c5b059ad37a8809f9e02))
+* **usage:** show a rolling 365-day contribution window ([355ac05](https://github.com/MLGBJDLW/Nexa/commit/355ac0503367160c76d3a9886af90422bc856280))
+* **video:** normalize native segment timestamps at the API boundary ([56b7307](https://github.com/MLGBJDLW/Nexa/commit/56b73075e8f76dc3148b1c4fa76093f07a765467))
+* **video:** separate analysis metadata from stored file metadata ([3fea2d1](https://github.com/MLGBJDLW/Nexa/commit/3fea2d1ff2c9c88dd67724f8abb84babff7b066a))
+
 ## [0.11.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.3...nexa-monorepo-v0.11.4) (2026-07-31)
 
 
