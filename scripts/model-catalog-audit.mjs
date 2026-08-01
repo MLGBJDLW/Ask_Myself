@@ -206,6 +206,7 @@ for (const endpoint of staticCatalog.endpoints) {
   if (discoveryCredentials.has(endpoint.endpointId)) probes.push(await probeEndpoint(endpoint));
 }
 const modelCount = staticCatalog.endpoints.reduce((total, endpoint) => total + endpoint.models.length, 0);
+const completedProbeCount = probes.filter((probe) => probe.status === 'ok').length;
 const hasDrift = probes.some((probe) => probe.status === 'ok' && (
   probe.newIds.length || probe.missingIds.length || probe.capabilityChanged.length
 ));
@@ -213,6 +214,7 @@ const report = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   hasDrift,
+  completedProbeCount,
   staticValidation: {
     endpointCount: staticCatalog.endpoints.length,
     modelCount,

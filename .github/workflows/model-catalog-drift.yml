@@ -69,7 +69,7 @@ jobs:
                   body,
                 });
               }
-            } else if (existing?.state === 'open') {
+            } else if (report.completedProbeCount > 0 && existing?.state === 'open') {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
