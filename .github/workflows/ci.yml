@@ -97,6 +97,9 @@ jobs:
       - name: Model catalog static audit
         run: npm run catalog:audit
 
+      - name: Model catalog audit fixtures
+        run: npm run catalog:audit:test
+
       - name: TypeScript check
         working-directory: apps/desktop
         run: npx tsc --noEmit

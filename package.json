@@ -4,6 +4,7 @@
   "scripts": {
     "tauri": "npm run tauri --prefix apps/desktop --",
     "catalog:audit": "node scripts/model-catalog-audit.mjs",
+    "catalog:audit:test": "node scripts/model-catalog-audit.test.mjs",
     "eval:smoke": "cargo test -p nexa-core developer_eval_smoke_workflow",
     "eval:nightly": "cargo test -p nexa-core developer_eval_nightly_workflow"
   },

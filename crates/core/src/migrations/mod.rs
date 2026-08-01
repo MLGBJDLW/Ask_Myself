@@ -1561,12 +1561,18 @@ Every answer that uses knowledge base search results.
             OR (kind = 'status' AND phase IN ('routing', 'planning'));",
     ),
     (
-        "v083_model_catalog_identity",
-        "ALTER TABLE agent_configs ADD COLUMN provider_endpoint_id TEXT;
-         ALTER TABLE agent_configs ADD COLUMN model_id TEXT;
-         UPDATE agent_configs
-         SET model_id = model,
-             provider_endpoint_id = CASE
+        "v083_model_catalog_endpoint_identity",
+        "ALTER TABLE agent_configs ADD COLUMN provider_endpoint_id TEXT;",
+    ),
+    (
+        "v084_model_catalog_model_identity",
+        "ALTER TABLE agent_configs ADD COLUMN model_id TEXT;",
+    ),
+    (
+        "v085_model_catalog_identity_backfill",
+        "UPDATE agent_configs
+         SET model_id = COALESCE(model_id, model),
+             provider_endpoint_id = COALESCE(provider_endpoint_id, CASE
                  WHEN rtrim(lower(COALESCE(base_url, '')), '/') = 'https://api.openai.com/v1' THEN 'text:openai'
                  WHEN rtrim(lower(COALESCE(base_url, '')), '/') = 'https://openrouter.ai/api/v1' THEN 'text:openrouter'
                  WHEN rtrim(lower(COALESCE(base_url, '')), '/') = 'https://api.anthropic.com/v1' THEN 'text:anthropic'
@@ -1584,7 +1590,7 @@ Every answer that uses knowledge base search results.
                  WHEN lower(provider) = 'deep_seek' THEN 'text:deepseek'
                  WHEN lower(provider) = 'lm_studio' THEN 'text:lmstudio'
                  ELSE NULL
-             END
+             END)
          WHERE model_id IS NULL OR provider_endpoint_id IS NULL;",
     ),
 ];
@@ -2429,16 +2435,46 @@ mod tests {
             assert!(exists, "agent_configs.{column} should exist");
         }
 
-        let migration_exists: bool = conn
+        for migration in [
+            "v083_model_catalog_endpoint_identity",
+            "v084_model_catalog_model_identity",
+            "v085_model_catalog_identity_backfill",
+        ] {
+            let migration_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM _migrations WHERE name = ?1",
+                    [migration],
+                    |row| row.get::<_, i64>(0).map(|count| count > 0),
+                )
+                .unwrap();
+            assert!(migration_exists, "{migration} should be recorded");
+        }
+    }
+
+    #[test]
+    fn test_model_catalog_identity_recovers_from_a_partially_added_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_migrations_table(&conn).unwrap();
+        conn.execute_batch(V_INITIAL_CONSOLIDATED).unwrap();
+        for name in MIGRATION_NAMES {
+            conn.execute(
+                "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
+                [name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("ALTER TABLE agent_configs ADD COLUMN provider_endpoint_id TEXT;")
+            .unwrap();
+
+        run_migrations(&conn).expect("partial model identity migration should recover");
+
+        let model_id_exists: bool = conn
             .query_row(
-                "SELECT COUNT(*) FROM _migrations WHERE name = 'v083_model_catalog_identity'",
+                "SELECT COUNT(*) FROM pragma_table_info('agent_configs') WHERE name = 'model_id'",
                 [],
                 |row| row.get::<_, i64>(0).map(|count| count > 0),
             )
             .unwrap();
-        assert!(
-            migration_exists,
-            "model catalog identity migration should be recorded"
-        );
+        assert!(model_id_exists);
     }
 }

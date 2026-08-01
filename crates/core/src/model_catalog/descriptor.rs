@@ -126,30 +126,6 @@ pub struct ModelCapabilities {
     pub dimension_override: bool,
 }
 
-impl ModelCapabilities {
-    pub(crate) fn merge_verified(&mut self, verified: &Self) {
-        if verified.reasoning.is_some() {
-            self.reasoning = verified.reasoning.clone();
-        }
-        self.vision |= verified.vision;
-        self.audio_input |= verified.audio_input;
-        self.audio_output |= verified.audio_output;
-        self.video_input |= verified.video_input;
-        self.video_output |= verified.video_output;
-        self.tool_calling |= verified.tool_calling;
-        self.parallel_tool_calling |= verified.parallel_tool_calling;
-        self.structured_output |= verified.structured_output;
-        self.image_generation |= verified.image_generation;
-        self.image_editing |= verified.image_editing;
-        self.multi_reference_editing |= verified.multi_reference_editing;
-        self.realtime |= verified.realtime;
-        self.prompt_cache |= verified.prompt_cache;
-        self.async_jobs |= verified.async_jobs;
-        self.batch |= verified.batch;
-        self.dimension_override |= verified.dimension_override;
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLimits {

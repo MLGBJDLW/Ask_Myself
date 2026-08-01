@@ -120,6 +120,7 @@ pub enum ModelCatalogSource {
 pub enum ModelLifecycleStatus {
     Active,
     Preview,
+    Gated,
     Legacy,
     Deprecated,
     Removed,

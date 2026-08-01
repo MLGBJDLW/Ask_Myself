@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { compareEndpointModels, driftDetected } from './model-catalog-audit-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outputFlag = process.argv.indexOf('--output');
@@ -98,7 +99,12 @@ async function buildStaticCatalog() {
         if (model.recommended && !(lifecycle === 'active' && access === 'public' && productReadiness === 'product_ready')) {
           errors.push(`${endpointId}/${model.id}: recommended model is not eligible as an implicit default`);
         }
-        models.push({ id: model.id, capabilities: modelCapabilities(model) });
+        models.push({
+          id: model.id,
+          lifecycle,
+          regions: model.regions ?? preset.regions ?? [],
+          capabilities: modelCapabilities(model),
+        });
       }
       endpoints.push({
         endpointId,
@@ -109,14 +115,6 @@ async function buildStaticCatalog() {
     }
   }
   return { endpoints, errors };
-}
-
-function compareCapabilities(curated, discovered) {
-  if (!discovered || typeof discovered !== 'object') return [];
-  return Object.entries(discovered)
-    .filter(([key, value]) => Object.hasOwn(curated, key) && curated[key] !== value)
-    .map(([key]) => key)
-    .sort();
 }
 
 async function probeEndpoint(endpoint) {
@@ -143,24 +141,12 @@ async function probeEndpoint(endpoint) {
       : Array.isArray(payload?.models)
         ? payload.models
         : [];
-    const liveById = new Map(liveModels
-      .filter((model) => typeof model?.id === 'string')
-      .map((model) => [model.id, model]));
-    const curatedById = new Map(endpoint.models.map((model) => [model.id, model]));
-    const newIds = [...liveById.keys()].filter((id) => !curatedById.has(id)).sort();
-    const missingIds = [...curatedById.keys()].filter((id) => !liveById.has(id)).sort();
-    const capabilityChanged = [];
-    for (const [id, curated] of curatedById) {
-      const changed = compareCapabilities(curated.capabilities, liveById.get(id)?.capabilities);
-      if (changed.length) capabilityChanged.push({ id, fields: changed });
-    }
+    const comparison = compareEndpointModels(endpoint, liveModels);
     return {
       endpointId: endpoint.endpointId,
       status: 'ok',
-      discoveredCount: liveById.size,
-      newIds,
-      missingIds,
-      capabilityChanged,
+      discoveredCount: liveModels.length,
+      ...comparison,
     };
   } catch (error) {
     const reason = error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'request_failed';
@@ -190,6 +176,8 @@ function markdownReport(report) {
         `New: ${probe.newIds.length ? probe.newIds.join(', ') : 'none'}`,
         `Missing: ${probe.missingIds.length ? probe.missingIds.join(', ') : 'none'}`,
         `Capability changes: ${probe.capabilityChanged.length ? probe.capabilityChanged.map((item) => `${item.id} (${item.fields.join(', ')})`).join('; ') : 'none'}`,
+        `Lifecycle changes: ${probe.lifecycleChanged.length ? probe.lifecycleChanged.map((item) => `${item.id} (${item.curated} → ${item.discovered})`).join('; ') : 'none'}`,
+        `Region changes: ${probe.regionChanged.length ? probe.regionChanged.map((item) => `${item.id} (${item.curated.join('+')} → ${item.discovered.join('+')})`).join('; ') : 'none'}`,
       );
     }
     lines.push('');
@@ -205,14 +193,19 @@ for (const endpoint of staticCatalog.endpoints) {
 }
 const modelCount = staticCatalog.endpoints.reduce((total, endpoint) => total + endpoint.models.length, 0);
 const completedProbeCount = probes.filter((probe) => probe.status === 'ok').length;
-const hasDrift = probes.some((probe) => probe.status === 'ok' && (
-  probe.newIds.length || probe.missingIds.length || probe.capabilityChanged.length
-));
+const attemptedProbeCount = probes.filter((probe) => probe.status !== 'skipped').length;
+const failedProbeCount = probes.filter((probe) => probe.status === 'error').length;
+const allAttemptedProbesSucceeded = attemptedProbeCount > 0 && failedProbeCount === 0;
+const hasDrift = failedProbeCount > 0
+  || probes.some((probe) => probe.status === 'ok' && driftDetected(probe));
 const report = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   hasDrift,
   completedProbeCount,
+  attemptedProbeCount,
+  failedProbeCount,
+  allAttemptedProbesSucceeded,
   staticValidation: {
     endpointCount: staticCatalog.endpoints.length,
     modelCount,

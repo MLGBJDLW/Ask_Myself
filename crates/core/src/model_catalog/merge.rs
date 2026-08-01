@@ -169,7 +169,7 @@ fn apply_probe(model: &mut ModelDescriptor, probes: &[CapabilityProbeResult], en
         }
         model.last_verified_at = Some(probe.verified_at.clone());
         if let Some(capabilities) = probe.capabilities.as_ref() {
-            model.capabilities.merge_verified(capabilities);
+            capabilities.apply_to(&mut model.capabilities);
         }
     } else if model.source == ModelCatalogSource::Discovered {
         model.product_readiness = ProductReadiness::Discoverable;

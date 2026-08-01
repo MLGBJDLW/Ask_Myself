@@ -4,7 +4,7 @@ use nexa_core::model_catalog::{
     CapabilityProbeResult, CatalogCacheKey, CatalogMergeInput, CredentialKind, DiscoveredModel,
     DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe, ModelAccess,
     ModelDescriptor, ModelLifecycle, ProductReadiness, ProviderDescriptor, ProviderEndpoint,
-    SavedModelSelection, SelectionResolutionKind,
+    SavedModelSelection, SelectionResolutionKind, VerifiedModelCapabilities,
 };
 
 fn descriptor(id: &str) -> ModelDescriptor {
@@ -91,6 +91,28 @@ fn passing_probe_promotes_discovered_model_to_callable_without_claiming_product_
     );
     assert!(!snapshot.models[0].is_implicit_default_eligible());
     assert_eq!(snapshot.models[0].available_to_credential, Some(true));
+}
+
+#[test]
+fn verified_negative_capability_overrides_stale_curated_metadata() {
+    let mut curated = descriptor("model");
+    curated.capabilities.tool_calling = true;
+    let mut probe = CapabilityProbeResult::passed("model", "provider-main", "2026-08-01T00:00:00Z");
+    probe.capabilities = Some(VerifiedModelCapabilities {
+        tool_calling: Some(false),
+        ..VerifiedModelCapabilities::default()
+    });
+
+    let snapshot = merge_catalog(CatalogMergeInput {
+        provider_id: "provider",
+        endpoint_id: "provider-main",
+        curated: &[curated],
+        discovered: None,
+        probes: &[probe],
+        refreshed_at: "2026-08-01T00:00:00Z",
+    });
+
+    assert!(!snapshot.models[0].capabilities.tool_calling);
 }
 
 #[test]

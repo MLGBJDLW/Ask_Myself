@@ -26,7 +26,7 @@ pub use lifecycle::{
     SavedModelSelectionResolution, SelectionResolutionKind,
 };
 pub use merge::{merge_catalog, CatalogMergeInput, ModelCatalogSnapshot};
-pub use probe::{CapabilityProbeResult, CapabilityProbeStatus};
+pub use probe::{CapabilityProbeResult, CapabilityProbeStatus, VerifiedModelCapabilities};
 pub use projection::{
     load_builtin_catalog, resolve_builtin_endpoint_id, resolve_or_derive_endpoint_id,
     BuiltinModelCatalog,
