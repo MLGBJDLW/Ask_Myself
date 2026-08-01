@@ -219,6 +219,8 @@ pub struct AgentTaskRun {
 pub struct AgentTurnLaunchRecord {
     pub conversation_id: String,
     pub user_message_id: String,
+    #[serde(default)]
+    pub user_message_sort_order: i64,
     pub turn_id: String,
     pub run_id: String,
     pub status: String,
@@ -1453,7 +1455,7 @@ impl Database {
             .query_row(
                 "SELECT r.id, r.turn_id, r.user_message_id, r.status,
                         m.content, m.artifacts_json, m.image_attachments_json,
-                        r.provider, r.model
+                        r.provider, r.model, m.sort_order
                  FROM agent_task_runs r
                  JOIN messages m ON m.id = r.user_message_id
                  WHERE r.conversation_id = ?1 AND r.idempotency_key = ?2",
@@ -1469,6 +1471,7 @@ impl Database {
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, Option<String>>(7)?,
                         row.get::<_, Option<String>>(8)?,
+                        row.get::<_, i64>(9)?,
                     ))
                 },
             )
@@ -1484,6 +1487,7 @@ impl Database {
             existing_attachments,
             existing_provider,
             existing_model,
+            existing_sort_order,
         )) = existing
         {
             let same_request = existing_content == message.content
@@ -1499,12 +1503,20 @@ impl Database {
             return Ok(AgentTurnLaunchRecord {
                 conversation_id: message.conversation_id.clone(),
                 user_message_id: existing_message_id,
+                user_message_sort_order: existing_sort_order,
                 turn_id: existing_turn_id,
                 run_id: existing_run_id,
                 status,
                 reused: true,
             });
         }
+
+        let user_message_sort_order = tx.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1
+             FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![&message.conversation_id],
+            |row| row.get::<_, i64>(0),
+        )?;
 
         tx.execute(
             "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
@@ -1518,7 +1530,7 @@ impl Database {
                 &tool_calls_json,
                 &artifacts_json,
                 message.token_count,
-                message.sort_order,
+                user_message_sort_order,
                 &message.thinking,
                 &image_attachments_json,
             ],
@@ -1552,6 +1564,7 @@ impl Database {
         Ok(AgentTurnLaunchRecord {
             conversation_id: message.conversation_id.clone(),
             user_message_id: message.id.clone(),
+            user_message_sort_order,
             turn_id,
             run_id,
             status: "queued".to_string(),
@@ -1571,9 +1584,10 @@ impl Database {
         }
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, turn_id, user_message_id, status
-             FROM agent_task_runs
-             WHERE conversation_id = ?1 AND idempotency_key = ?2",
+            "SELECT r.id, r.turn_id, r.user_message_id, r.status, m.sort_order
+             FROM agent_task_runs r
+             JOIN messages m ON m.id = r.user_message_id
+             WHERE r.conversation_id = ?1 AND r.idempotency_key = ?2",
             rusqlite::params![conversation_id, idempotency_key],
             |row| {
                 Ok(AgentTurnLaunchRecord {
@@ -1581,6 +1595,7 @@ impl Database {
                     run_id: row.get(0)?,
                     turn_id: row.get(1)?,
                     user_message_id: row.get(2)?,
+                    user_message_sort_order: row.get(4)?,
                     status: row.get(3)?,
                     reused: true,
                 })
@@ -4224,6 +4239,64 @@ mod tests {
             .to_string()
             .contains("already used for different input"));
         assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_agent_turn_launch_assigns_sort_order_inside_atomic_transaction() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        let mut message = ConversationMessage {
+            id: "message-first".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "First".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 1,
+            created_at: String::new(),
+            // Callers no longer need a full history read to calculate this.
+            sort_order: 99,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let first = db
+            .create_agent_turn_and_run(
+                &message,
+                "First",
+                Some("openai"),
+                Some("gpt-5"),
+                "sort-first",
+            )
+            .unwrap();
+        message.id = "message-second".to_string();
+        message.content = "Second".to_string();
+        let second = db
+            .create_agent_turn_and_run(
+                &message,
+                "Second",
+                Some("openai"),
+                Some("gpt-5"),
+                "sort-second",
+            )
+            .unwrap();
+
+        assert_eq!(first.user_message_sort_order, 0);
+        assert_eq!(second.user_message_sort_order, 1);
+        let messages = db.get_messages(&conversation.id).unwrap();
+        assert_eq!(messages[0].sort_order, 0);
+        assert_eq!(messages[1].sort_order, 1);
     }
 
     #[test]

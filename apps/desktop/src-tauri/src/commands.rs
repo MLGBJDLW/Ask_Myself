@@ -172,7 +172,7 @@ fn emit_terminal_agent_error_once(
 
 /// State for the MCP server manager.
 pub struct McpManagerState {
-    pub manager: TokioMutex<nexa_core::mcp::McpManager>,
+    pub manager: Arc<TokioMutex<nexa_core::mcp::McpManager>>,
 }
 
 /// State for tracking active model download cancellation.

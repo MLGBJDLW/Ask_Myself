@@ -226,7 +226,7 @@ fn main() {
                 sessions: nexa_core::runtime::AgentSessionManager::new(),
             });
             app.manage(McpManagerState {
-                manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
+                manager: Arc::new(TokioMutex::new(nexa_core::mcp::McpManager::new())),
             });
             app.manage(ApprovalState::default());
             app.manage(RealtimeTranscriptionState::default());

@@ -19,7 +19,7 @@ use nexa_core::mixture_of_agents::{
 use nexa_core::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 use nexa_core::runtime::{
     ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
-    RuntimeTerminalStatus, StartTurnRequest, RUNTIME_PROTOCOL_VERSION,
+    RuntimeTerminalStatus, StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
 };
 
 fn build_moa_provider(
@@ -161,6 +161,7 @@ pub async fn agent_chat_cmd(
 pub(super) async fn launch_desktop_agent_chat_turn(
     request: DesktopAgentChatLaunchRequest<'_>,
 ) -> Result<DesktopAgentChatLaunch, String> {
+    let launch_started = Instant::now();
     let DesktopAgentChatLaunchRequest {
         state,
         agent_state,
@@ -190,7 +191,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let collaboration_mode = AgentCollaborationMode::from_wire(collaboration_mode.as_deref())?;
     let moa_preset = MoaPresetId::from_wire(moa_preset.as_deref())?;
     let orchestration_profile = OrchestrationProfile::from_wire(orchestration_profile.as_deref())?;
-    let plan_mode = execution_mode.is_plan();
     let task_orchestrator_run_id = task_orchestrator_run_id
         .as_deref()
         .map(str::trim)
@@ -227,25 +227,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         conv.model = db_config.model.clone();
     }
 
-    // 3. Create LLM provider.
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, None);
-    let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
-    let provider = if collaboration_mode.is_moa() {
-        build_moa_provider(state.db.as_ref(), &db_config, provider, moa_preset)?
-    } else {
-        provider
-    };
-
-    // 4. Load conversation history and convert to LLM messages.
-    let existing_msgs = state
-        .db
-        .get_messages(&conversation_id)
-        .map_err(|e| e.to_string())?;
-    let history: Vec<Message> = existing_msgs.iter().map(conv_message_to_llm).collect();
-    let history = sanitize_tool_call_history(history);
-    let next_sort_order = existing_msgs.len() as i64;
-
+    // Validate orchestrated launches before allocating their durable run.
     if let Some(run_id) = task_orchestrator_run_id.as_deref() {
         let workflow_run = state
             .db
@@ -276,7 +258,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         )?;
     }
 
-    // 5. Save user message to DB.
+    // Persist only the minimal durable launch tuple before acknowledging. The
+    // database allocates sort order inside this same transaction, avoiding a
+    // full history read and a concurrent MAX(sort_order) race on the hot path.
     let persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
         user_artifacts,
         execution_mode,
@@ -295,7 +279,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         artifacts: persisted_user_artifacts,
         token_count: estimate_tokens(&message),
         created_at: String::new(),
-        sort_order: next_sort_order,
+        sort_order: 0,
         thinking: None,
         image_attachments: attachments.as_ref().and_then(|atts| {
             if atts.is_empty() {
@@ -305,7 +289,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
-    let user_llm_content = conversation_message_llm_context_content(&user_msg).to_string();
     let launch_record = state
         .db
         .create_agent_turn_and_run(
@@ -322,30 +305,27 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_orchestrator_run_id,
         ));
     }
-    let turn = state
-        .db
-        .get_conversation_turn(&launch_record.turn_id)
-        .map_err(|e| e.to_string())?;
-    let task_run = state
-        .db
-        .get_agent_task_run(&launch_record.run_id)
-        .map_err(|e| e.to_string())?;
-    let task_run_id_for_command = task_run.id.clone();
+    let task_run_id_for_command = launch_record.run_id.clone();
     if let Some(run_id) = task_orchestrator_run_id.as_deref() {
         state
             .db
-            .start_workflow_automation_run(run_id, &task_run.id, None)
+            .start_workflow_automation_run(run_id, &launch_record.run_id, None)
             .map_err(|err| err.to_string())?;
     }
     let stream_event_seq = Arc::new(AgentRunEventSequencer::default());
     let terminal_emitted = Arc::new(AtomicBool::new(false));
-    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
+    emit_agent_task_run_update(
+        &state.db,
+        &app_handle,
+        &conversation_id,
+        &launch_record.run_id,
+    );
     record_internal_agent_run_status_event(
         &state.db,
         &app_handle,
         &conversation_id,
-        &task_run.id,
-        Some(&turn.id),
+        &launch_record.run_id,
+        Some(&launch_record.turn_id),
         &stream_event_seq,
         AgentRunPhase::Routing,
         "Task queued",
@@ -353,139 +333,288 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         None,
     );
 
-    // 6. Build Desktop Agent Session turn config from conversation context.
-    let requested_skill_ids = skill_ids.unwrap_or_default();
-    let desktop_turn_config = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
-        db: &state.db,
-        conversation: &conv,
-        turn_id: &turn.id,
-        message: &message,
-        persona_id: persona_id.as_deref(),
-        explicit_skill_ids: &requested_skill_ids,
-        db_config: &db_config,
-        app_cfg: &app_cfg,
-        execution_mode,
-        power_mode,
-        collaboration_mode,
-        moa_preset,
-        orchestration_profile,
-        custom_orchestration: custom_orchestration.clone(),
-    });
-    let source_scope_ids = desktop_turn_config.source_scope_ids;
-    let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
-    let context_pack = desktop_turn_config.context_pack;
-    let executor_config = desktop_turn_config.executor_config;
-
-    let summarization_provider = build_desktop_summarization_provider(&db_config);
-
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
-    let session_dependencies =
-        build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
-            db: &state.db,
-            mcp_manager: &mcp_state.manager,
-            app_handle: &app_handle,
-            event_seq: &stream_event_seq,
-            conversation_id: &conversation_id,
-            task_run_id: &task_run.id,
-            turn_id: &turn.id,
-            message: &message,
-            pinned_skill_ids: &pinned_skill_ids,
-            provider_config: provider_config.clone(),
-            executor_config: executor_config.clone(),
-            subagent_allowed_tools: db_config.subagent_allowed_tools.clone(),
-            subagent_allowed_skill_ids: db_config.subagent_allowed_skill_ids.clone(),
-            cancel_token: cancel_token.clone(),
-            plan_mode,
-            mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
-            terminal_state,
-            browser_state,
-        })
-        .await;
-    let runtime_session_config =
-        build_desktop_agent_session_config(DesktopAgentSessionConfigInput {
-            db: state.db.as_ref(),
-            conversation_id: &conversation_id,
-            task_run_id: &task_run.id,
-            db_config: &db_config,
-            app_cfg: &app_cfg,
-            source_scope_ids: &source_scope_ids,
-            selected_skills: &session_dependencies.selected_skills,
-            auto_loaded_skills: &session_dependencies.auto_loaded_skills,
-            execution_mode,
-            collaboration_mode,
-            moa_preset,
-            orchestration_profile,
-            custom_orchestration,
-        });
-    let initial_task_artifacts = build_desktop_agent_initial_task_artifacts(
-        &session_dependencies.selected_skills,
-        &runtime_session_config,
-        &context_pack,
-        execution_mode,
-        &executor_config,
-    );
-    let _ = state.db.update_agent_task_run_progress(
-        &task_run.id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(&initial_task_artifacts),
-    );
-    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-
-    // 7b. Build user content parts (text + optional attachments).
-    let user_parts = build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
-        db: &state.db,
-        app_handle: Some(&app_handle),
-        provider_config: &provider_config,
-        db_config: &db_config,
-        message: &user_llm_content,
-        attachments: attachments.as_deref(),
-    })?;
-
-    // 8. Spawn the agent loop in a background task.
     let db = state.db.clone();
     let conv_id = conversation_id.clone();
-    let turn_id = turn.id.clone();
-    let task_run_id = task_run.id.clone();
+    let turn_id = launch_record.turn_id.clone();
+    let task_run_id = launch_record.run_id.clone();
+    let user_message_id = launch_record.user_message_id.clone();
+    let user_message_sort_order = launch_record.user_message_sort_order;
     let handle = app_handle.clone();
-    let assistant_sort_order = next_sort_order + 1;
     let db_config_for_post_success = db_config.clone();
     let task_orchestrator_run_id_for_task = task_orchestrator_run_id.clone();
-    let approval_runtime = DesktopAgentApprovalRuntime {
-        pending: approval_state.pending.clone(),
-        session_store: approval_state.session_store.clone(),
-        approval_mode: app_cfg.tool_approval_mode,
-    };
-
-    let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(0) as u64;
-
+    let approval_pending = approval_state.pending.clone();
+    let approval_session_store = approval_state.session_store.clone();
+    let mcp_manager = Arc::clone(&mcp_state.manager);
+    let requested_skill_ids = skill_ids.unwrap_or_default();
+    let user_llm_content = conversation_message_llm_context_content(&user_msg).to_string();
+    let launch_ack_ms = elapsed_millis(launch_started);
     const STREAM_KEEPALIVE_INTERVAL_SECS: u64 = 10;
-
-    state
-        .db
-        .mark_agent_task_run_started(&task_run.id, "initializing")
-        .map_err(|e| e.to_string())?;
-    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &task_run.id);
-    record_internal_agent_run_status_event(
+    record_turn_launch_metric(
         &state.db,
         &app_handle,
         &conversation_id,
-        &task_run.id,
+        &launch_record.run_id,
         Some(&turn_id),
         &stream_event_seq,
-        AgentRunPhase::Routing,
-        "Agent started",
-        Some("running"),
-        None,
+        TurnLaunchStage::LaunchAckMs,
+        launch_ack_ms,
     );
 
     let stream_event_seq_for_task = Arc::clone(&stream_event_seq);
     let task = tokio::spawn(async move {
+        let initialization = async {
+            db.mark_agent_task_run_started(&task_run_id, "initializing")
+                .map_err(|error| error.to_string())?;
+            emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
+            record_internal_agent_run_status_event(
+                &db,
+                &handle,
+                &conv_id,
+                &task_run_id,
+                Some(&turn_id),
+                &stream_event_seq_for_task,
+                AgentRunPhase::Routing,
+                "Agent started",
+                Some("running"),
+                None,
+            );
+
+            if cancel_token_clone.is_cancelled() {
+                return Err("Agent execution cancelled during initialization.".to_string());
+            }
+
+            let app_cfg = db.load_app_config().unwrap_or_default();
+            let provider_config = db_config_to_provider_config(&db_config, None);
+            let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+            let provider = if collaboration_mode.is_moa() {
+                build_moa_provider(db.as_ref(), &db_config, provider, moa_preset)?
+            } else {
+                provider
+            };
+
+            let history_started = Instant::now();
+            let history = db
+                .get_messages(&conv_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|entry| {
+                    entry.id != user_message_id && entry.sort_order < user_message_sort_order
+                })
+                .map(|entry| conv_message_to_llm(&entry))
+                .collect::<Vec<_>>();
+            let history = sanitize_tool_call_history(history);
+            record_turn_launch_metric(
+                &db,
+                &handle,
+                &conv_id,
+                &task_run_id,
+                Some(&turn_id),
+                &stream_event_seq_for_task,
+                TurnLaunchStage::HistoryLoadMs,
+                elapsed_millis(history_started),
+            );
+
+            let context_started = Instant::now();
+            let desktop_turn_config =
+                build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+                    db: &db,
+                    conversation: &conv,
+                    turn_id: &turn_id,
+                    message: &message,
+                    persona_id: persona_id.as_deref(),
+                    explicit_skill_ids: &requested_skill_ids,
+                    db_config: &db_config,
+                    app_cfg: &app_cfg,
+                    execution_mode,
+                    power_mode,
+                    collaboration_mode,
+                    moa_preset,
+                    orchestration_profile,
+                    custom_orchestration: custom_orchestration.clone(),
+                });
+            record_turn_launch_metric(
+                &db,
+                &handle,
+                &conv_id,
+                &task_run_id,
+                Some(&turn_id),
+                &stream_event_seq_for_task,
+                TurnLaunchStage::ContextBuildMs,
+                elapsed_millis(context_started),
+            );
+            let source_scope_ids = desktop_turn_config.source_scope_ids;
+            let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
+            let context_pack = desktop_turn_config.context_pack;
+            let executor_config = desktop_turn_config.executor_config;
+
+            let session_dependencies =
+                build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
+                    db: &db,
+                    mcp_manager: &mcp_manager,
+                    app_handle: &handle,
+                    event_seq: &stream_event_seq_for_task,
+                    conversation_id: &conv_id,
+                    task_run_id: &task_run_id,
+                    turn_id: &turn_id,
+                    message: &message,
+                    pinned_skill_ids: &pinned_skill_ids,
+                    provider_config: provider_config.clone(),
+                    executor_config: executor_config.clone(),
+                    subagent_allowed_tools: db_config.subagent_allowed_tools.clone(),
+                    subagent_allowed_skill_ids: db_config.subagent_allowed_skill_ids.clone(),
+                    cancel_token: cancel_token_clone.clone(),
+                    plan_mode: execution_mode.is_plan(),
+                    mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
+                    terminal_state,
+                    browser_state,
+                })
+                .await;
+            for (stage, elapsed_ms) in [
+                (
+                    TurnLaunchStage::SkillSelectMs,
+                    session_dependencies.metrics.skill_select_ms,
+                ),
+                (
+                    TurnLaunchStage::McpSyncMs,
+                    session_dependencies.metrics.mcp_sync_ms,
+                ),
+                (
+                    TurnLaunchStage::ToolRegistryMs,
+                    session_dependencies.metrics.tool_registry_ms,
+                ),
+            ] {
+                record_turn_launch_metric(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    Some(&turn_id),
+                    &stream_event_seq_for_task,
+                    stage,
+                    elapsed_ms,
+                );
+            }
+
+            if cancel_token_clone.is_cancelled() {
+                return Err("Agent execution cancelled during initialization.".to_string());
+            }
+
+            let request_build_started = Instant::now();
+            let runtime_session_config =
+                build_desktop_agent_session_config(DesktopAgentSessionConfigInput {
+                    db: db.as_ref(),
+                    conversation_id: &conv_id,
+                    task_run_id: &task_run_id,
+                    db_config: &db_config,
+                    app_cfg: &app_cfg,
+                    source_scope_ids: &source_scope_ids,
+                    selected_skills: &session_dependencies.selected_skills,
+                    auto_loaded_skills: &session_dependencies.auto_loaded_skills,
+                    execution_mode,
+                    collaboration_mode,
+                    moa_preset,
+                    orchestration_profile,
+                    custom_orchestration,
+                });
+            let initial_task_artifacts = build_desktop_agent_initial_task_artifacts(
+                &session_dependencies.selected_skills,
+                &runtime_session_config,
+                &context_pack,
+                execution_mode,
+                &executor_config,
+            );
+            let _ = db.update_agent_task_run_progress(
+                &task_run_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&initial_task_artifacts),
+            );
+            emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
+            record_turn_launch_metric(
+                &db,
+                &handle,
+                &conv_id,
+                &task_run_id,
+                Some(&turn_id),
+                &stream_event_seq_for_task,
+                TurnLaunchStage::RequestBuildMs,
+                elapsed_millis(request_build_started),
+            );
+
+            let attachment_started = Instant::now();
+            let user_parts =
+                build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+                    db: &db,
+                    app_handle: Some(&handle),
+                    provider_config: &provider_config,
+                    db_config: &db_config,
+                    message: &user_llm_content,
+                    attachments: attachments.as_deref(),
+                })?;
+            record_turn_launch_metric(
+                &db,
+                &handle,
+                &conv_id,
+                &task_run_id,
+                Some(&turn_id),
+                &stream_event_seq_for_task,
+                TurnLaunchStage::AttachmentPrepareMs,
+                elapsed_millis(attachment_started),
+            );
+
+            let summarization_provider = build_desktop_summarization_provider(&db_config);
+            let approval_runtime = DesktopAgentApprovalRuntime {
+                pending: approval_pending,
+                session_store: approval_session_store,
+                approval_mode: app_cfg.tool_approval_mode,
+            };
+            let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(0) as u64;
+            Ok::<_, String>((
+                provider,
+                session_dependencies,
+                executor_config,
+                approval_runtime,
+                summarization_provider,
+                history,
+                user_parts,
+                turn_timeout_secs,
+            ))
+        }
+        .await;
+
+        let (
+            provider,
+            session_dependencies,
+            executor_config,
+            approval_runtime,
+            summarization_provider,
+            history,
+            user_parts,
+            turn_timeout_secs,
+        ) = match initialization {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                finalize_desktop_agent_initialization_failure(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    task_orchestrator_run_id_for_task.as_deref(),
+                    &turn_id,
+                    &stream_event_seq_for_task,
+                    &terminal_emitted,
+                    &error,
+                );
+                return;
+            }
+        };
+
         let outcome = run_desktop_agent_turn(DesktopAgentTurnRequest {
             provider,
             dependencies: session_dependencies,
@@ -499,7 +628,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             db: db.clone(),
             conversation_id: conv_id.clone(),
             turn_id: turn_id.clone(),
-            assistant_sort_order,
+            assistant_sort_order: user_message_sort_order + 1,
             runtime: DesktopAgentTurnRuntime {
                 timeout_secs: turn_timeout_secs,
                 keepalive_interval_secs: STREAM_KEEPALIVE_INTERVAL_SECS,
@@ -591,16 +720,18 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         }
     });
 
-    // 8. Track the running task for potential cancellation.
+    // Register the background initializer before acknowledging the launch so
+    // cancellation and steering are available immediately.
     let launch = DesktopAgentChatLaunch {
         conversation_id: conversation_id.clone(),
         task_run_id: task_run_id_for_command.clone(),
         task_orchestrator_run_id: task_orchestrator_run_id.clone(),
-        handle: AgentTurnHandle::running(
-            conversation_id.clone(),
-            task_run_id_for_command.clone(),
-            turn.id.clone(),
-        ),
+        handle: AgentTurnHandle {
+            session_id: conversation_id.clone(),
+            run_id: task_run_id_for_command.clone(),
+            turn_id: launch_record.turn_id.clone(),
+            state: AgentTurnState::Starting,
+        },
     };
     agent_state
         .sessions
@@ -615,6 +746,95 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .await;
 
     Ok(launch)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_turn_launch_metric(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+    turn_id: Option<&str>,
+    event_seq: &AgentRunEventSequencer,
+    stage: TurnLaunchStage,
+    elapsed_ms: u64,
+) {
+    let payload = serde_json::json!({
+        "kind": "turnLaunchMetric",
+        "stage": stage.as_str(),
+        "elapsedMs": elapsed_ms,
+    });
+    record_internal_agent_run_status_event(
+        db,
+        app_handle,
+        conversation_id,
+        task_run_id,
+        turn_id,
+        event_seq,
+        AgentRunPhase::Routing,
+        stage.as_str(),
+        None,
+        Some(&payload),
+    );
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_desktop_agent_initialization_failure(
+    db: &Database,
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run_id: &str,
+    task_orchestrator_run_id: Option<&str>,
+    turn_id: &str,
+    event_seq: &AgentRunEventSequencer,
+    terminal_emitted: &AtomicBool,
+    error: &str,
+) {
+    warn!("Agent initialization failed for conversation {conversation_id}: {error}");
+    let cancelled = error.starts_with("Agent execution cancelled");
+    let status = if cancelled { "cancelled" } else { "failed" };
+    let turn_status = if cancelled { "cancelled" } else { "error" };
+    let summary = if cancelled {
+        "Agent initialization cancelled"
+    } else {
+        "Agent initialization failed"
+    };
+    let trace = serde_json::json!({ "initializationError": error, "status": status });
+    let _ = db.finalize_conversation_turn(turn_id, turn_status, None, Some(&trace));
+    let _ = db.finish_agent_task_run(
+        task_run_id,
+        status,
+        Some(summary),
+        Some(error),
+        Some(&trace),
+    );
+    if let Some(run_id) = task_orchestrator_run_id {
+        let _ = db.transition_workflow_automation_run(run_id, status, Some(summary));
+    }
+    let payload = serde_json::json!({ "stage": "initialization", "reason": error });
+    emit_terminal_agent_error_once(
+        terminal_emitted,
+        db,
+        app_handle,
+        event_seq,
+        TerminalAgentError {
+            conversation_id,
+            task_run_id,
+            turn_id,
+            message: if cancelled {
+                "Agent execution cancelled during initialization."
+            } else {
+                "Agent execution failed during initialization."
+            },
+            status,
+            payload: Some(&payload),
+        },
+    );
+    emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
 }
 
 fn desktop_agent_chat_launch(

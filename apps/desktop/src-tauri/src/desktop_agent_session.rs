@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use chrono::{Local, SecondsFormat, Utc};
@@ -41,7 +41,7 @@ use nexa_core::llm::{
     create_provider, model_supports_vision, ContentPart, LlmProvider, Message, ProviderConfig,
     ProviderType, ReasoningEffort, Role,
 };
-use nexa_core::mcp::McpManager;
+use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
@@ -54,7 +54,7 @@ use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
 use tauri::AppHandle;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
 use crate::agent_stream::{
@@ -119,6 +119,14 @@ pub struct DesktopAgentSessionDependencies {
     pub tools: ToolRegistry,
     pub selected_skills: Vec<Skill>,
     pub auto_loaded_skills: Vec<Skill>,
+    pub metrics: DesktopAgentDependencyMetrics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DesktopAgentDependencyMetrics {
+    pub skill_select_ms: u64,
+    pub mcp_sync_ms: u64,
+    pub tool_registry_ms: u64,
 }
 
 pub struct DesktopAgentTurnConfigRequest<'a> {
@@ -1414,14 +1422,31 @@ pub fn build_desktop_agent_initial_task_artifacts(
 }
 
 async fn sync_enabled_desktop_mcp_servers(
-    db: &Database,
     manager: &mut McpManager,
+    enabled_servers: &[McpServer],
     timeout_secs: u64,
 ) -> Result<HashMap<String, String>, String> {
-    let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
     Ok(manager
-        .sync_servers(&enabled_servers, Some(timeout_secs))
+        .sync_servers(enabled_servers, Some(timeout_secs))
         .await)
+}
+
+#[derive(Clone)]
+struct DesktopToolRegistrySnapshot {
+    generation: String,
+    tools: ToolRegistry,
+}
+
+static DESKTOP_TOOL_REGISTRY_SNAPSHOT: OnceLock<TokioMutex<Option<DesktopToolRegistrySnapshot>>> =
+    OnceLock::new();
+
+fn desktop_tool_registry_generation(
+    assembler: &PackageRuntimeAssembler,
+    enabled_servers: &[McpServer],
+) -> Result<String, String> {
+    let snapshot = serde_json::to_vec(&(assembler.snapshot(), enabled_servers))
+        .map_err(|error| format!("Failed to serialize tool registry generation: {error}"))?;
+    Ok(blake3::hash(&snapshot).to_hex().to_string())
 }
 
 pub async fn build_desktop_agent_session_dependencies(
@@ -1448,6 +1473,7 @@ pub async fn build_desktop_agent_session_dependencies(
         browser_state,
     } = request;
 
+    let skill_select_started = Instant::now();
     let selected_skills = if pinned_skill_ids.is_empty() {
         nexa_core::skills::get_available_skills_for_query(db, message)
     } else {
@@ -1473,15 +1499,10 @@ pub async fn build_desktop_agent_session_dependencies(
         warn!("Failed to auto-load skills for task run {task_run_id}: {err}");
         Vec::new()
     });
+    let skill_select_ms = elapsed_ms(skill_select_started);
 
+    let tool_registry_started = Instant::now();
     let package_assembler = PackageRuntimeAssembler::database_builtin(db);
-    let mut tools = package_assembler
-        .as_ref()
-        .map(PackageRuntimeAssembler::builtin_tool_registry)
-        .unwrap_or_else(|error| {
-            warn!("Failed to initialize Package Runtime Assembler: {error}");
-            canonical_builtin_tool_registry()
-        });
     emit_agent_frontend_event_with_presentation(
         app_handle,
         event_seq,
@@ -1496,20 +1517,69 @@ pub async fn build_desktop_agent_session_dependencies(
         AgentRunDisplayKind::Status,
         AgentRunEventImportance::Low,
     );
-    {
-        let mut manager = mcp_manager.lock().await;
-        match sync_enabled_desktop_mcp_servers(db, &mut manager, mcp_call_timeout_secs).await {
-            Ok(errors) => {
-                for (server_id, error) in errors {
-                    warn!("Failed to sync MCP server {server_id}: {error}");
+    let enabled_servers = db.get_enabled_mcp_servers().map_err(|error| {
+        warn!("Failed to load enabled MCP servers: {error}");
+        error
+    });
+    let generation = package_assembler
+        .as_ref()
+        .ok()
+        .zip(enabled_servers.as_ref().ok())
+        .and_then(|(assembler, servers)| {
+            desktop_tool_registry_generation(assembler, servers)
+                .map_err(|error| warn!("{error}"))
+                .ok()
+        })
+        .map(|generation| format!("{mcp_manager:p}:{generation}"));
+    let snapshot_cache = DESKTOP_TOOL_REGISTRY_SNAPSHOT.get_or_init(|| TokioMutex::new(None));
+    let mut snapshot_guard = snapshot_cache.lock().await;
+    let cached_tools = generation.as_ref().and_then(|generation| {
+        snapshot_guard
+            .as_ref()
+            .filter(|snapshot| snapshot.generation == *generation)
+            .map(|snapshot| snapshot.tools.clone())
+    });
+    let (mut tools, mcp_sync_ms) = if let Some(tools) = cached_tools {
+        (tools, 0)
+    } else {
+        let mut tools = package_assembler
+            .as_ref()
+            .map(PackageRuntimeAssembler::builtin_tool_registry)
+            .unwrap_or_else(|error| {
+                warn!("Failed to initialize Package Runtime Assembler: {error}");
+                canonical_builtin_tool_registry()
+            });
+        let mcp_sync_started = Instant::now();
+        if let Ok(enabled_servers) = enabled_servers.as_ref() {
+            let mut manager = mcp_manager.lock().await;
+            match sync_enabled_desktop_mcp_servers(
+                &mut manager,
+                enabled_servers,
+                mcp_call_timeout_secs,
+            )
+            .await
+            {
+                Ok(errors) => {
+                    for (server_id, error) in errors {
+                        warn!("Failed to sync MCP server {server_id}: {error}");
+                    }
                 }
+                Err(error) => warn!("Failed to load enabled MCP servers: {error}"),
             }
-            Err(error) => warn!("Failed to load enabled MCP servers: {error}"),
+            if let Err(error) = manager.register_tools(&mut tools).await {
+                warn!("Failed to register MCP tools: {error}");
+            }
         }
-        if let Err(error) = manager.register_tools(&mut tools).await {
-            warn!("Failed to register MCP tools: {error}");
+        let mcp_sync_ms = elapsed_ms(mcp_sync_started);
+        if let Some(generation) = generation {
+            *snapshot_guard = Some(DesktopToolRegistrySnapshot {
+                generation,
+                tools: tools.clone(),
+            });
         }
-    }
+        (tools, mcp_sync_ms)
+    };
+    drop(snapshot_guard);
 
     let delegation_runtime = DelegationRuntime::new(
         provider_config,
@@ -1590,7 +1660,16 @@ pub async fn build_desktop_agent_session_dependencies(
         tools,
         selected_skills,
         auto_loaded_skills,
+        metrics: DesktopAgentDependencyMetrics {
+            skill_select_ms,
+            mcp_sync_ms,
+            tool_registry_ms: elapsed_ms(tool_registry_started),
+        },
     }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> ApprovalCallback {
@@ -2029,6 +2108,34 @@ mod tests {
             missing_core_runtime_tools(&ToolRegistry::new()),
             REQUIRED_ACTIVITY_RUNTIME_TOOLS
         );
+    }
+
+    #[test]
+    fn registry_snapshot_generation_changes_with_mcp_configuration() {
+        let assembler = PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+            .expect("built-in package snapshot");
+        let mut server = nexa_core::mcp::McpServer {
+            id: "mcp-1".to_string(),
+            name: "Search".to_string(),
+            transport: "streamable_http".to_string(),
+            command: None,
+            args: None,
+            url: Some("https://mcp.example.test".to_string()),
+            env_json: None,
+            headers_json: Some(r#"{"Authorization":"Bearer first"}"#.to_string()),
+            enabled: true,
+            created_at: "2026-08-02T00:00:00Z".to_string(),
+            updated_at: "2026-08-02T00:00:00Z".to_string(),
+            builtin_id: None,
+        };
+
+        let first = desktop_tool_registry_generation(&assembler, &[server.clone()])
+            .expect("first generation");
+        server.headers_json = Some(r#"{"Authorization":"Bearer second"}"#.to_string());
+        let second =
+            desktop_tool_registry_generation(&assembler, &[server]).expect("second generation");
+
+        assert_ne!(first, second);
     }
 
     fn test_agent_config() -> DbAgentConfig {
