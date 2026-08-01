@@ -321,6 +321,31 @@ export function catalogEndpointIdForSelection(
   return descriptor.endpointIds[0] ?? null;
 }
 
+export function endpointIdForSavedSelection(input: {
+  descriptor: ModelDescriptor | null | undefined;
+  catalogBaseUrl: string | null | undefined;
+  configuredBaseUrl: string | null | undefined;
+  persistedEndpointId: string | null | undefined;
+  persistedProvider: string | null | undefined;
+  persistedBaseUrl: string | null | undefined;
+  currentProvider: string | null | undefined;
+}): string | null {
+  const catalogEndpointId = catalogEndpointIdForSelection(
+    input.descriptor,
+    input.catalogBaseUrl,
+    input.configuredBaseUrl,
+  );
+  if (catalogEndpointId) return catalogEndpointId;
+
+  const persistedEndpointId = input.persistedEndpointId?.trim();
+  if (!persistedEndpointId) return null;
+  if ((input.persistedProvider ?? '').trim().toLowerCase()
+    !== (input.currentProvider ?? '').trim().toLowerCase()) return null;
+  if (normalizeModelEndpointUrl(input.persistedBaseUrl)
+    !== normalizeModelEndpointUrl(input.configuredBaseUrl)) return null;
+  return persistedEndpointId;
+}
+
 export function canonicalModelProviderId(presetId: string, adapterProvider: string): string {
   const id = presetId.trim().toLowerCase();
   if (id === 'openai' || id === 'openai-live') return 'openai';

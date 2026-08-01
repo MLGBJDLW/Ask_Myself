@@ -50,7 +50,7 @@ import {
 } from "../../lib/subagentTools";
 import { CollapsiblePanel } from "./SettingsSection";
 import {
-  catalogEndpointIdForSelection,
+  endpointIdForSavedSelection,
   modelDescriptorSummary,
   selectImplicitDefault,
 } from "../../lib/modelCatalog";
@@ -292,11 +292,15 @@ export function AgentConfigForm({
     apiKey: initialIsLocal ? "" : (config?.apiKey ?? ""),
     baseUrl: initialBaseUrl || null,
     model: initialModel,
-    providerEndpointId: catalogEndpointIdForSelection(
-      initialPresetModel?.descriptor,
-      initialPreset?.baseUrl,
-      initialBaseUrl,
-    ),
+    providerEndpointId: endpointIdForSavedSelection({
+      descriptor: initialPresetModel?.descriptor,
+      catalogBaseUrl: initialPreset?.baseUrl,
+      configuredBaseUrl: initialBaseUrl,
+      persistedEndpointId: config?.providerEndpointId,
+      persistedProvider: config?.provider,
+      persistedBaseUrl: config?.baseUrl,
+      currentProvider: initialProvider,
+    }),
     modelId: initialPresetModel?.descriptor.id ?? config?.modelId ?? initialModel,
     temperature: config?.temperature ?? 0.3,
     maxTokens: config?.maxTokens ?? 4096,
@@ -661,11 +665,15 @@ export function AgentConfigForm({
         apiKey: isLocal ? "" : apiKey,
         baseUrl: normalizeBaseUrl(baseUrl) || null,
         model: model.trim(),
-        providerEndpointId: catalogEndpointIdForSelection(
-          selectedPresetModel?.descriptor ?? activePreset?.models[0]?.descriptor,
-          activePreset?.baseUrl,
-          baseUrl,
-        ),
+        providerEndpointId: endpointIdForSavedSelection({
+          descriptor: selectedPresetModel?.descriptor ?? activePreset?.models[0]?.descriptor,
+          catalogBaseUrl: activePreset?.baseUrl,
+          configuredBaseUrl: baseUrl,
+          persistedEndpointId: config?.providerEndpointId,
+          persistedProvider: config?.provider,
+          persistedBaseUrl: config?.baseUrl,
+          currentProvider: provider,
+        }),
         modelId: selectedPresetModel?.descriptor.id ?? model.trim(),
         temperature,
         maxTokens,

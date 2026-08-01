@@ -1,6 +1,7 @@
 import {
   attachModelDescriptors,
   catalogEndpointIdForSelection,
+  endpointIdForSavedSelection,
   isImplicitDefaultEligible,
   modelDescriptorFacts,
   normalizeModelEndpointUrl,
@@ -162,6 +163,36 @@ function testEndpointIdentityRequiresAnExactBaseUrlMatch(): void {
   );
 }
 
+function testSavedExternalEndpointIdentityRequiresAnUnchangedScope(): void {
+  const baseInput = {
+    descriptor: null,
+    catalogBaseUrl: null,
+    configuredBaseUrl: 'https://tenant.example.test/TenantA/v1',
+    persistedEndpointId: 'text:tenant-a',
+    persistedProvider: 'open_ai',
+    persistedBaseUrl: 'https://tenant.example.test/TenantA/v1/',
+    currentProvider: 'open_ai',
+  };
+  assertEqual(
+    endpointIdForSavedSelection(baseInput),
+    'text:tenant-a',
+    'an unchanged external endpoint identity should round-trip through the edit form',
+  );
+  assertEqual(
+    endpointIdForSavedSelection({
+      ...baseInput,
+      configuredBaseUrl: 'https://tenant.example.test/TenantB/v1',
+    }),
+    null,
+    'editing the endpoint URL must not retain a stale external identity',
+  );
+  assertEqual(
+    endpointIdForSavedSelection({ ...baseInput, currentProvider: 'anthropic' }),
+    null,
+    'editing the provider must not retain a stale external identity',
+  );
+}
+
 function testWizardRequiresAnExplicitNonEmptyModel(): void {
   const models = [{ id: 'known-model' }];
   assertEqual(resolveExplicitModelSelection(models, ''), null, 'an empty wizard model must not resolve');
@@ -177,4 +208,5 @@ testLegacyImagePresetProjectsCanonicalMetadata();
 testRecommendationDoesNotFabricateProductReadiness();
 testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability();
 testEndpointIdentityRequiresAnExactBaseUrlMatch();
+testSavedExternalEndpointIdentityRequiresAnUnchangedScope();
 testWizardRequiresAnExplicitNonEmptyModel();
