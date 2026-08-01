@@ -140,7 +140,20 @@ export function UsageAnalyticsSettingsTab() {
 
       <section className="rounded-xl border border-border bg-surface-1 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-semibold text-text-primary">{t('usage.trend')}</h3><span className="text-[11px] text-text-tertiary">{t('usage.range.year')} · {chartMode === 'tokens' ? t('usage.tokens') : t('usage.requests')}</span></div><div className="flex gap-2"><select value={filter.timeBucket ?? 'day'} onChange={(event) => setFilter({ ...filter, timeBucket: event.target.value as 'day' | 'week' | 'month' })} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="day">{t('usage.daily')}</option><option value="week">{t('usage.weekly')}</option><option value="month">{t('usage.monthly')}</option></select><select value={chartMode} onChange={(event) => setChartMode(event.target.value as 'tokens' | 'requests')} className="rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"><option value="tokens">{t('usage.tokens')}</option><option value="requests">{t('usage.requests')}</option></select></div></div>
-        {activityLoading && !activityData ? <div className="mt-4 h-28 animate-pulse rounded-lg bg-surface-2" /> : activityError && !activityData ? <div className="mt-4 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">{t('usage.loadFailed')}</div> : <UsageContributionHeatmap points={activityData?.timeSeries ?? []} mode={chartMode} locale={locale} valueLabel={chartMode === 'tokens' ? t('usage.tokens') : t('usage.requests')} startAt={activityFilter.startAt} endAt={activityFilter.endAt} />}
+        {activityLoading && !activityData ? (
+          <div className="mt-4 h-28 animate-pulse rounded-lg bg-surface-2" />
+        ) : activityError && !activityData ? (
+          <div className="mt-4 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">{t('usage.loadFailed')}</div>
+        ) : (
+          <UsageContributionHeatmap
+            points={activityData?.timeSeries ?? []}
+            mode={chartMode}
+            locale={locale}
+            valueLabel={chartMode === 'tokens' ? t('usage.tokens') : t('usage.requests')}
+            startAt={activityFilter.startAt}
+            endAt={activityFilter.endAt}
+          />
+        )}
         <div className="mt-4 border-t border-border/70 pt-4">
           <div className="mb-3 flex items-center justify-between gap-2 text-[11px] text-text-tertiary"><span>{rangeLabel(range, t)}</span><span>{filter.timeBucket === 'week' ? t('usage.weekly') : filter.timeBucket === 'month' ? t('usage.monthly') : t('usage.daily')}</span></div>
           {data.timeSeries.length === 0 ? <Empty t={t} /> : <div className="space-y-2">{data.timeSeries.map((point) => (

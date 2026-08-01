@@ -29,10 +29,11 @@ function thinking(id: string, text: string): LiveTraceTimelineItem {
 }
 
 function message(input: Partial<ConversationMessage> & Pick<ConversationMessage, 'id' | 'role'>): ConversationMessage {
+  const { id, role, ...overrides } = input;
   return {
-    id: input.id,
+    id,
     conversationId: 'conversation-1',
-    role: input.role,
+    role,
     content: input.content ?? '',
     toolCallId: null,
     toolCalls: [],
@@ -42,7 +43,7 @@ function message(input: Partial<ConversationMessage> & Pick<ConversationMessage,
     sortOrder: 0,
     thinking: null,
     imageAttachments: null,
-    ...input,
+    ...overrides,
   };
 }
 
