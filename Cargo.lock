@@ -3632,6 +3632,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "calamine",
  "candle-core",
  "candle-nn",

@@ -10,14 +10,16 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use super::transport::{shared_http_transport, HttpTransport};
 use super::{
-    configured_request_timeout, send_stream_start_request, streaming::parse_sse_stream,
-    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role, StreamChunk,
-    ToolCallRequest, ToolDefinition, Usage,
+    configured_request_timeout, send_stream_start_request, serialized_json_body,
+    streaming::parse_sse_stream, with_request_timeout, CompletionRequest, CompletionResponse,
+    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort,
+    Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::error::CoreError;
 use crate::provider_catalog::model_supports_reasoning_from_catalog;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -916,7 +918,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
 
 /// OpenAI-compatible LLM provider.
 pub struct OpenAiProvider {
-    client: reqwest::Client,
+    transport: Arc<HttpTransport>,
     config: ProviderConfig,
     request_timeout: Option<Duration>,
 }
@@ -926,22 +928,10 @@ impl OpenAiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let request_timeout = configured_request_timeout(timeout);
-        // SSE streams are extremely sensitive to HTTP/2 RST_STREAM frames
-        // emitted by reverse proxies (e.g. Cloudflare, nginx) that terminate
-        // long-lived idle h2 connections. Force HTTP/1.1 so the stream stays
-        // framed at the TCP level and use a short idle-pool timeout so stale
-        // keep-alive sockets are dropped before the upstream closes them.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_idle_timeout(std::time::Duration::from_secs(15))
-            .pool_max_idle_per_host(5)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .http1_only()
-            .build()
-            .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
+        let transport = shared_http_transport(&config)?;
 
         Ok(Self {
-            client,
+            transport,
             config,
             request_timeout,
         })
@@ -1007,7 +997,8 @@ impl LlmProvider for OpenAiProvider {
 
         let response = with_request_timeout(
             apply_openrouter_headers(
-                self.client
+                self.transport
+                    .client()
                     .get(&url)
                     .header("Authorization", format!("Bearer {api_key}")),
                 &self.config,
@@ -1032,16 +1023,18 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
         let body = build_request_body(request, false);
+        let body_bytes = serialized_json_body(&body, "OpenAI completion request")?;
 
         let mut attempt = 1;
         let oai: OaiResponse = loop {
             let response = match with_request_timeout(
                 apply_openrouter_headers(
-                    self.client
+                    self.transport
+                        .client()
                         .post(&url)
                         .header("Authorization", format!("Bearer {api_key}"))
                         .header("Content-Type", "application/json")
-                        .json(&body),
+                        .body(body_bytes.clone()),
                     &self.config,
                 ),
                 self.request_timeout,
@@ -1154,27 +1147,28 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
         let body = build_request_body(request, true);
+        let body_bytes = serialized_json_body(&body, "OpenAI stream request")?;
 
         info!("OpenAI stream request to {url}, model={}", request.model);
-        let body_json = serde_json::to_string(&body).unwrap_or_default();
-        debug!("Request body: {} bytes", body_json.len());
+        debug!("Request body: {} bytes", body_bytes.len());
 
         let response = send_stream_start_request(
             apply_openrouter_headers(
-                self.client
+                self.transport
+                    .client()
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
                     .header("Content-Type", "application/json")
-                    .json(&body),
+                    .body(body_bytes),
                 &self.config,
             ),
             self.request_timeout,
             "OpenAI stream request",
         )
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
+            self.transport.record_transport_failure(&e.to_string());
             error!("Stream send failed: {e}");
-            e
         })?;
 
         info!("Stream response status: {}", response.status());
@@ -1183,10 +1177,14 @@ impl LlmProvider for OpenAiProvider {
         let (tx, rx) = mpsc::channel(64);
         info!("SSE stream started");
 
+        let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
             if let Err(e) = parse_sse_stream(response, tx.clone()).await {
+                transport.record_transport_failure(&e.to_string());
                 error!("SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
+            } else {
+                transport.record_transport_success();
             }
             info!("SSE stream ended");
         });
