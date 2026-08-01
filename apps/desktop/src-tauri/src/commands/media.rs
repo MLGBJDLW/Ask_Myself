@@ -363,11 +363,15 @@ pub async fn analyze_video_cmd(
         })
         .map_err(|e| e.to_string())?;
 
+        let segment_count = result.transcript_segments.len();
+        let frame_texts_count = result.frame_texts.len();
         Ok(serde_json::json!({
             "transcript": result.full_transcript,
-            "segmentCount": result.transcript_segments.len(),
+            "segmentCount": segment_count,
+            "transcriptSegments": result.transcript_segments,
             "durationSecs": result.duration_secs,
-            "frameTextsCount": result.frame_texts.len(),
+            "frameTextsCount": frame_texts_count,
+            "frameTexts": result.frame_texts,
             "thumbnailPath": result.thumbnail_path.map(|p| p.to_string_lossy().to_string()),
             "metadata": result.metadata,
         }))

@@ -26,6 +26,12 @@ export interface FfmpegDownloadProgress {
   status: string;
 }
 
+export interface TranscriptSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
 export interface TranscriptChunk {
   text: string;
   startMs: number | null;
@@ -33,6 +39,7 @@ export interface TranscriptChunk {
   chunkType: string; // 'transcript' | 'frame_ocr' | 'subtitle'
 }
 
+/** Metadata projected from the persisted document record. */
 export interface VideoMetadata {
   durationSecs: number | null;
   width: number | null;
@@ -41,4 +48,33 @@ export interface VideoMetadata {
   framerate: number | null;
   thumbnailPath: string | null;
   creationTime: string | null;
+}
+
+/** Metadata returned directly by ffprobe during a native analysis run. */
+export interface VideoAnalysisMetadata {
+  durationSecs: number | null;
+  width: number | null;
+  height: number | null;
+  codec: string | null;
+  bitrate: number | null;
+  framerate: number | null;
+  creationTime: string | null;
+}
+
+/**
+ * Structured result returned by the native video-analysis command.
+ *
+ * Speaker identity, word alignment, and overlapping-speech metadata are not
+ * available yet; those belong to the meeting-analysis pipeline described in
+ * the platform capability audit.
+ */
+export interface VideoAnalysisResult {
+  transcript: string;
+  segmentCount: number;
+  transcriptSegments: TranscriptSegment[];
+  durationSecs: number | null;
+  frameTextsCount: number;
+  frameTexts: string[];
+  thumbnailPath: string | null;
+  metadata: VideoAnalysisMetadata | null;
 }
