@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.5...nexa-monorepo-v0.11.6) (2026-08-01)
+
+
+### Features
+
+* **models:** Add canonical catalog contracts ([9f47b57](https://github.com/MLGBJDLW/Nexa/commit/9f47b57beadfb66ad8473c4d2c9887e8e9b9b681))
+* **models:** Add canonical model catalog contracts ([7ba9840](https://github.com/MLGBJDLW/Nexa/commit/7ba984020f7786f9e67ae43734e7537d993eb997))
+* **models:** Unify catalog projections and settings ([e89a4a0](https://github.com/MLGBJDLW/Nexa/commit/e89a4a0e9d1bbdecd1092d22302a97cb9f97398f))
+* **settings:** Persist model endpoint identities ([50d6c33](https://github.com/MLGBJDLW/Nexa/commit/50d6c339aa78fd61bbc55913ffac7fdf3cd46d16))
+
+
+### Bug Fixes
+
+* **ci:** Preserve catalog drift diagnostics ([fc95568](https://github.com/MLGBJDLW/Nexa/commit/fc95568bcaf927d4e4aff54252ca94ff444c3be4))
+* **ci:** Preserve unverified drift issues ([e5f1876](https://github.com/MLGBJDLW/Nexa/commit/e5f187689a45d1ff3beeee554a213a53e32ea83b))
+* **ci:** Satisfy stable clippy lint ([a06beac](https://github.com/MLGBJDLW/Nexa/commit/a06beaca4065674646bec6fef7089a7da5debb2d))
+* **models:** Avoid endpoint miss panics ([b0757da](https://github.com/MLGBJDLW/Nexa/commit/b0757da03ccf67e009c94d4a980f1f1cdeb1e9c8))
+* **models:** Enforce endpoint identity isolation ([3f3bf0a](https://github.com/MLGBJDLW/Nexa/commit/3f3bf0a11e4c9d8620be5015046ebaae80987b6a))
+* **models:** Enforce verified selection boundaries ([d328cfb](https://github.com/MLGBJDLW/Nexa/commit/d328cfbfdd7b92816cb63676c9c05abe11a84f56))
+* **models:** Harden probes migrations and drift checks ([dd6ca1b](https://github.com/MLGBJDLW/Nexa/commit/dd6ca1bdd643b1ead4520f8dd9d2c54e5bfae11d))
+* **models:** Isolate custom endpoint identities ([1d99152](https://github.com/MLGBJDLW/Nexa/commit/1d99152964f6a5c5c6b2c11140c53d11454026fa))
+* **models:** Preserve endpoint and alias identities ([9136400](https://github.com/MLGBJDLW/Nexa/commit/9136400b0ccdebbe13327952456038e2cd9275d3))
+* **models:** Preserve successful model probes ([8c2e13c](https://github.com/MLGBJDLW/Nexa/commit/8c2e13c90426f3c17a039464b434a90f627c573f))
+* **models:** Require explicit readiness and resolve aliases ([21e746a](https://github.com/MLGBJDLW/Nexa/commit/21e746af0d211a05033b9209c0b888716f35eb9c))
+* **settings:** Keep custom image models editable ([7f6e77d](https://github.com/MLGBJDLW/Nexa/commit/7f6e77d0e1efc15a4085e9c8b7e4e9bc1b06fbdc))
+* **settings:** Preserve external endpoint identities ([162fb83](https://github.com/MLGBJDLW/Nexa/commit/162fb83166f9fcb657f636d28f425b31a2a48d8c))
+
 ## [0.11.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.4...nexa-monorepo-v0.11.5) (2026-08-01)
 
 
