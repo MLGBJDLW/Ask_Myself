@@ -1,9 +1,19 @@
 import sttProviderPresets from '../../../../shared/stt-provider-presets.json';
+import {
+  attachModelDescriptors,
+  canonicalModelProviderId,
+  inferModelCatalogRegion,
+  modelEndpointId,
+  selectImplicitDefault,
+  type LegacyCatalogModel,
+  type ModelDescriptor,
+} from './modelCatalog';
 
 export interface SttCatalogItem {
   id: string;
   name: string;
   recommended?: boolean;
+  descriptor: ModelDescriptor;
 }
 
 export interface SttProviderPreset {
@@ -19,10 +29,22 @@ export interface SttProviderPreset {
   models: SttCatalogItem[];
 }
 
-export const STT_PROVIDER_PRESETS = sttProviderPresets as SttProviderPreset[];
+type RawSttProviderPreset = Omit<SttProviderPreset, 'models'> & { models: LegacyCatalogModel[] };
+
+export const STT_PROVIDER_PRESETS: SttProviderPreset[] =
+  (sttProviderPresets as RawSttProviderPreset[]).map((preset) => ({
+    ...preset,
+    models: attachModelDescriptors(preset.models, {
+      surface: 'speech_to_text',
+      providerId: canonicalModelProviderId(preset.id, preset.provider),
+      endpointId: modelEndpointId('speech_to_text', preset.id),
+      region: inferModelCatalogRegion(preset.baseUrl),
+      apiStyle: preset.apiStyle,
+    }) as SttCatalogItem[],
+  }));
 
 export function defaultSttItem(items: SttCatalogItem[]): SttCatalogItem | null {
-  return items.find((item) => item.recommended) ?? items[0] ?? null;
+  return selectImplicitDefault(items);
 }
 
 /** Resolve the catalog entry that backs a saved speech-to-text configuration. */

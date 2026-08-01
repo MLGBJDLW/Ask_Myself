@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "Обновить модели"
   ,"modelSourceDiscovered": "Обнаружена"
   ,"modelStatus.preview": "Предпросмотр"
+  ,"modelStatus.gated": "Требуется доступ"
   ,"modelStatus.legacy": "Устаревшая"
   ,"modelStatus.deprecated": "Снята с поддержки"
   ,"modelCatalogLive": "Каталог аккаунта"

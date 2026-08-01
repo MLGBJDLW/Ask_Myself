@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "모델 새로고침"
   ,"modelSourceDiscovered": "검색됨"
   ,"modelStatus.preview": "미리보기"
+  ,"modelStatus.gated": "액세스 필요"
   ,"modelStatus.legacy": "레거시"
   ,"modelStatus.deprecated": "사용 중단 예정"
   ,"modelCatalogLive": "계정 실시간 카탈로그"

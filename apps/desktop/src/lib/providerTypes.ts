@@ -1,3 +1,5 @@
+import type { ModelDescriptor, ModelModality } from './modelCatalog';
+
 export type ReasoningEffortLevel =
   | 'none'
   | 'minimal'
@@ -31,6 +33,7 @@ export type ModelCatalogSource = 'official' | 'discovered' | 'curated';
 export type ModelLifecycleStatus =
   | 'active'
   | 'preview'
+  | 'gated'
   | 'legacy'
   | 'deprecated'
   | 'removed';
@@ -45,8 +48,9 @@ export interface ProviderModelPreset {
   status?: ModelLifecycleStatus;
   regions?: string[];
   lastVerifiedAt?: string | null;
-  modalities?: string[];
+  modalities?: ModelModality[];
   supportsTools?: boolean | null;
   supportsStructuredOutput?: boolean | null;
   reasoningEfforts?: ReasoningEffortLevel[];
+  descriptor: ModelDescriptor;
 }

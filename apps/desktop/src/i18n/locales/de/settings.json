@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "Modelle aktualisieren"
   ,"modelSourceDiscovered": "Erkannt"
   ,"modelStatus.preview": "Vorschau"
+  ,"modelStatus.gated": "Zugriff erforderlich"
   ,"modelStatus.legacy": "Veraltet"
   ,"modelStatus.deprecated": "Abgekündigt"
   ,"modelCatalogLive": "Live-Katalog des Kontos"

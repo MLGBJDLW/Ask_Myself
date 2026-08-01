@@ -18,6 +18,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Section } from './SettingsSection';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
+import { ModelDescriptorBadges } from './ModelDescriptorBadges';
 
 interface EmbeddingConfigSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -59,6 +60,9 @@ export function EmbeddingConfigSection({
   const activeApiPreset = embedConfig
     ? findEmbeddingProviderPreset(embedConfig.apiBaseUrl)
     : null;
+  const selectedModelDescriptor = activeApiPreset?.models.find(
+    (model) => model.id === embedConfig?.apiModel,
+  )?.descriptor;
   const sharedKeySource = embedConfig && activeApiPreset
     ? findSharedProviderCredential(
         agentConfigs,
@@ -238,6 +242,7 @@ export function EmbeddingConfigSection({
                     placeholder="text-embedding-3-small"
                   />
                 )}
+                <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingDimensions')}</label>

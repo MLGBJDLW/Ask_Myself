@@ -8,6 +8,10 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::ProviderType;
+use crate::model_catalog::{
+    load_builtin_catalog, merge_catalog, CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot,
+    ModelDescriptor, MODEL_DESCRIPTOR_SCHEMA_VERSION,
+};
 use crate::provider_registry::provider_type_from_key;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,12 +155,26 @@ pub struct ProviderModelCatalogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelCatalogSnapshot {
+    #[serde(default = "model_descriptor_schema_version")]
+    pub schema_version: u16,
     pub provider: String,
     #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub endpoint_id: String,
     pub models: Vec<ProviderModelCatalogEntry>,
+    #[serde(default)]
+    pub descriptors: Vec<ModelDescriptor>,
+    #[serde(default)]
+    pub tombstones: Vec<ModelDescriptor>,
     pub refreshed_at: String,
     pub live_discovery_succeeded: bool,
+    #[serde(default)]
+    pub capability_probe_succeeded: bool,
+}
+
+const fn model_descriptor_schema_version() -> u16 {
+    MODEL_DESCRIPTOR_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -304,16 +322,84 @@ pub fn build_effective_model_catalog(
         models.push(catalog_entry_from_preset(curated, &default_regions, None));
     }
 
+    let descriptor_snapshot = build_descriptor_snapshot(
+        provider,
+        base_url,
+        preset.as_ref(),
+        live_model_ids.as_deref(),
+        &refreshed_at,
+    );
+
     ProviderModelCatalogSnapshot {
+        schema_version: descriptor_snapshot.schema_version,
         provider: provider.trim().to_string(),
         base_url: base_url
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
+        endpoint_id: descriptor_snapshot.endpoint_id,
         models,
+        descriptors: descriptor_snapshot.models,
+        tombstones: descriptor_snapshot.tombstones,
         refreshed_at,
         live_discovery_succeeded: live_model_ids.is_some(),
+        capability_probe_succeeded: descriptor_snapshot.capability_probe_succeeded,
     }
+}
+
+fn build_descriptor_snapshot(
+    provider: &str,
+    base_url: Option<&str>,
+    preset: Option<&ProviderPreset>,
+    live_model_ids: Option<&[String]>,
+    refreshed_at: &str,
+) -> ModelCatalogSnapshot {
+    let endpoint_id = preset
+        .map(|preset| format!("text:{}", preset.id))
+        .unwrap_or_else(|| format!("text:{}", provider.trim().to_ascii_lowercase()));
+    let builtin = load_builtin_catalog().ok();
+    let curated = builtin
+        .as_ref()
+        .map(|catalog| {
+            catalog
+                .models
+                .iter()
+                .filter(|model| model.endpoint_ids.iter().any(|id| id == &endpoint_id))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let canonical_provider_id = curated
+        .first()
+        .map(|model| model.provider_id.as_str())
+        .unwrap_or_else(|| provider.trim());
+    let region = builtin
+        .as_ref()
+        .and_then(|catalog| catalog.endpoints.iter().find(|item| item.id == endpoint_id))
+        .map(|endpoint| endpoint.region.as_str())
+        .unwrap_or_else(|| {
+            if normalize_base_url(base_url).contains("dashscope-intl") {
+                "ap-southeast-1"
+            } else if normalize_base_url(base_url).contains("dashscope") {
+                "cn-beijing"
+            } else {
+                "global"
+            }
+        });
+    let discovered = live_model_ids.map(|ids| {
+        ids.iter()
+            .map(|id| DiscoveredModel::new(id, &endpoint_id, region))
+            .collect::<Vec<_>>()
+    });
+
+    merge_catalog(CatalogMergeInput {
+        provider_id: canonical_provider_id,
+        endpoint_id: &endpoint_id,
+        curated: &curated,
+        discovered: discovered.as_deref(),
+        probes: &[],
+        refreshed_at,
+    })
 }
 
 fn catalog_entry_from_preset(

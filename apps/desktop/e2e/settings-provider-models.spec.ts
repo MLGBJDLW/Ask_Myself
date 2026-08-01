@@ -485,10 +485,13 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
     .filter({ hasText: "Default Model" })
     .locator("xpath=../..");
   const modelSelect = modelField.getByRole("combobox");
-  await expect(modelSelect).toHaveValue("qwen3.8-max-preview");
+  await expect(modelSelect).toHaveValue("");
   await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
-  await expect(modelSelect.locator("option")).toHaveCount(1);
+  await expect(modelSelect.locator("option")).toHaveCount(2);
   await expect(modelSelect.locator('option[value="qwen3.7-flash"]')).toHaveCount(0);
+  await modelSelect.selectOption("qwen3.8-max-preview");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("status: preview");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("access: account enablement");
 });
 
 test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
@@ -574,6 +577,10 @@ test("settings exposes image generation model config under AI providers", async 
   const selects = panel.locator("select");
   await expect(selects.nth(0)).toHaveValue("qwen-dashscope-cn");
   await expect(selects.nth(1)).toHaveValue("qwen-image-2.0-pro");
+  await selects.nth(1).selectOption("qwen-image-3.0-pro");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("status: preview");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("access: application");
+  await selects.nth(1).selectOption("qwen-image-2.0-pro");
 
   await selects.nth(0).selectOption("google-gemini");
   await expect(selects.nth(1)).toHaveValue("gemini-3.1-flash-image");
@@ -858,7 +865,7 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
 
   const selects = section.locator("select");
   await selects.nth(0).selectOption("alibaba-model-studio-cn");
-  await expect(selects.nth(1)).toHaveValue("qwen3.7-text-embedding");
+  await expect(selects.nth(1)).toHaveValue("text-embedding-v4");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
   await expect(section.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await section.getByRole("button", { name: "Save Config" }).click();
@@ -866,7 +873,7 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
     window as unknown as { __savedEmbedConfig?: { apiKey?: string; apiModel?: string } }
   ).__savedEmbedConfig)).toEqual(expect.objectContaining({
     apiKey: "sk-qwen-demo",
-    apiModel: "qwen3.7-text-embedding",
+    apiModel: "text-embedding-v4",
   }));
 
   await selects.nth(0).selectOption("jina");

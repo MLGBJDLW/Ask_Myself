@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "重新整理模型"
   ,"modelSourceDiscovered": "即時發現"
   ,"modelStatus.preview": "預覽"
+  ,"modelStatus.gated": "需要開通"
   ,"modelStatus.legacy": "舊版"
   ,"modelStatus.deprecated": "已棄用"
   ,"modelCatalogLive": "帳戶即時目錄"

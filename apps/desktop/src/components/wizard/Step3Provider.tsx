@@ -11,6 +11,7 @@ import { ProviderIcon } from '../../lib/providerIcons';
 import * as api from '../../lib/api';
 import type { SaveAgentConfigInput } from '../../types/conversation';
 import type { ConnectionTestResult } from './useWizardState';
+import { selectImplicitDefault } from '../../lib/modelCatalog';
 
 interface Step3ProviderProps {
   onNext: () => void;
@@ -62,9 +63,8 @@ export function Step3Provider({
     setTesting(true);
     onTestResult(null, false);
     try {
-      const recommended = selectedPreset.models.find(m => m.recommended)?.id
-        ?? selectedPreset.models[0]?.id
-        ?? '';
+      const recommended = selectImplicitDefault(selectedPreset.models)?.id ?? '';
+      const recommendedDescriptor = selectedPreset.models.find((model) => model.id === recommended)?.descriptor;
       const config: SaveAgentConfigInput = {
         id: null,
         name: selectedPreset.name,
@@ -72,6 +72,8 @@ export function Step3Provider({
         apiKey: apiKey.trim(),
         baseUrl: selectedPreset.baseUrl,
         model: recommended,
+        providerEndpointId: recommendedDescriptor?.endpointIds[0] ?? null,
+        modelId: recommendedDescriptor?.id ?? recommended,
         temperature: null,
         maxTokens: null,
         contextWindow: null,

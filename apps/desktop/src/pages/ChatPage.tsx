@@ -183,6 +183,8 @@ function agentConfigToSaveInput(
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     model: patch.model,
+    providerEndpointId: config.providerEndpointId ?? null,
+    modelId: patch.model,
     temperature: config.temperature,
     maxTokens: config.maxTokens,
     contextWindow: config.contextWindow,

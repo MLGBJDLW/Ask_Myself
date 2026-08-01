@@ -24,6 +24,7 @@ import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { SharedCredentialNotice } from "./SharedCredentialNotice";
+import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -214,6 +215,9 @@ export function ImageGenerationSettingsPanel({
   const hasPresetModel =
     activePreset.models.length > 0 &&
     activePreset.models.some((model) => model.id === imageConfig.model);
+  const selectedModelDescriptor = activePreset.models.find(
+    (model) => model.id === imageConfig.model,
+  )?.descriptor;
   const sharedKeySource = useMemo(
     () => findSharedProviderCredential(agentConfigs, imageConfig.provider, imageConfig.baseUrl),
     [agentConfigs, imageConfig.baseUrl, imageConfig.provider],
@@ -429,6 +433,7 @@ export function ImageGenerationSettingsPanel({
                 placeholder={getDefaultImageModel(activePreset) || "model-name"}
               />
             )}
+            <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
           </div>
 
           {activePreset.sizeOptions.length > 0 && (

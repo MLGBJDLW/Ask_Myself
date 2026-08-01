@@ -22,6 +22,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
+import { ModelDescriptorBadges } from './ModelDescriptorBadges';
 
 interface TextToSpeechSettingsPanelProps {
   appConfig: AppConfig;
@@ -91,6 +92,9 @@ export function TextToSpeechSettingsPanel({
   );
   const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
+  const selectedModelDescriptor = activePreset.models.find(
+    (model) => model.id === config.model,
+  )?.descriptor;
   const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
   const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
   const sharedKeySource = !localProvider
@@ -352,6 +356,7 @@ export function TextToSpeechSettingsPanel({
                   <option key={model.id} value={model.id}>{model.name}{model.recommended ? ' *' : ''}</option>
                 ))}
               </select>
+              <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
             </div>
 
             <div className="space-y-2 md:col-span-2">
