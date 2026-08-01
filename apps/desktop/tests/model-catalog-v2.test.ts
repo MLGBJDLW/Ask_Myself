@@ -7,6 +7,7 @@ import {
   normalizeModelEndpointUrl,
   resolveExplicitModelSelection,
   selectImplicitDefault,
+  shouldUseCatalogModelSelect,
   type ModelDescriptor,
 } from '../src/lib/modelCatalog';
 import { providerModelCatalogCacheKey } from '../src/lib/providerModelCatalog';
@@ -203,6 +204,25 @@ function testWizardRequiresAnExplicitNonEmptyModel(): void {
   );
 }
 
+function testUncataloguedImageModelsRemainEditable(): void {
+  const models = [{ id: 'curated-image-model' }];
+  assertEqual(
+    shouldUseCatalogModelSelect('', models),
+    true,
+    'an empty image model should require an explicit curated selection',
+  );
+  assertEqual(
+    shouldUseCatalogModelSelect('curated-image-model', models),
+    true,
+    'a curated image model should use the metadata-rich select',
+  );
+  assertEqual(
+    shouldUseCatalogModelSelect('account-custom-image-model', models),
+    false,
+    'an uncatalogued saved image model should retain the editable text input',
+  );
+}
+
 testImplicitDefaultsRespectLifecycleAccessAndReadiness();
 testLegacyImagePresetProjectsCanonicalMetadata();
 testRecommendationDoesNotFabricateProductReadiness();
@@ -210,3 +230,4 @@ testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability();
 testEndpointIdentityRequiresAnExactBaseUrlMatch();
 testSavedExternalEndpointIdentityRequiresAnUnchangedScope();
 testWizardRequiresAnExplicitNonEmptyModel();
+testUncataloguedImageModelsRemainEditable();

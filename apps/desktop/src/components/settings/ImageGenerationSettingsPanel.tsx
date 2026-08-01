@@ -25,7 +25,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { SharedCredentialNotice } from "./SharedCredentialNotice";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
-import { modelDescriptorSummary } from "../../lib/modelCatalog";
+import { modelDescriptorSummary, shouldUseCatalogModelSelect } from "../../lib/modelCatalog";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -411,7 +411,7 @@ export function ImageGenerationSettingsPanel({
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-            {activePreset.models.length > 0 ? (
+            {shouldUseCatalogModelSelect(imageConfig.model, activePreset.models) ? (
               <select
                 value={imageConfig.model}
                 onChange={(event) =>

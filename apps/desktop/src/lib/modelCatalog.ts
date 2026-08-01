@@ -294,6 +294,15 @@ export function resolveExplicitModelSelection<T extends { id: string }>(
   return models.find((model) => model.id === selected) ?? null;
 }
 
+export function shouldUseCatalogModelSelect(
+  currentModel: string,
+  models: ReadonlyArray<{ id: string }>,
+): boolean {
+  const modelId = currentModel.trim();
+  return models.length > 0
+    && (!modelId || models.some((model) => model.id === modelId));
+}
+
 export function modelEndpointId(surface: ModelCatalogSurface, presetId: string): string {
   return `${surface}:${presetId.trim().toLowerCase()}`;
 }
