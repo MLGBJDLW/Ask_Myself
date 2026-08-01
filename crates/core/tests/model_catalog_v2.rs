@@ -1,9 +1,10 @@
 use nexa_core::model_catalog::{
-    load_builtin_catalog, merge_catalog, resolve_builtin_endpoint_id, resolve_saved_selection,
-    select_implicit_default, AuthStyle, CapabilityProbeResult, CatalogCacheKey, CatalogMergeInput,
-    CredentialKind, DiscoveredModel, DiscoveryStrategy, EndpointRegistry, EndpointTransport,
-    HealthProbe, ModelAccess, ModelDescriptor, ModelLifecycle, ProductReadiness,
-    ProviderDescriptor, ProviderEndpoint, SavedModelSelection, SelectionResolutionKind,
+    load_builtin_catalog, merge_catalog, resolve_builtin_endpoint_id,
+    resolve_or_derive_endpoint_id, resolve_saved_selection, select_implicit_default, AuthStyle,
+    CapabilityProbeResult, CatalogCacheKey, CatalogMergeInput, CredentialKind, DiscoveredModel,
+    DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe, ModelAccess,
+    ModelDescriptor, ModelLifecycle, ProductReadiness, ProviderDescriptor, ProviderEndpoint,
+    SavedModelSelection, SelectionResolutionKind,
 };
 
 fn descriptor(id: &str) -> ModelDescriptor {
@@ -249,6 +250,13 @@ fn legacy_provider_and_base_url_resolve_to_stable_endpoint_identity() {
         None,
         "an unmatched custom URL must not inherit the public OpenAI endpoint identity"
     );
+    let custom = resolve_or_derive_endpoint_id(
+        "text",
+        "open_ai",
+        Some("https://custom.example.test/v1?token=secret"),
+    );
+    assert!(custom.starts_with("text:custom-"));
+    assert!(!custom.contains("secret"));
 }
 
 #[test]

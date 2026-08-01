@@ -1,5 +1,6 @@
 import {
   attachModelDescriptors,
+  catalogEndpointIdForSelection,
   isImplicitDefaultEligible,
   modelDescriptorFacts,
   selectImplicitDefault,
@@ -114,6 +115,29 @@ function testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability(): vo
   }
 }
 
+function testEndpointIdentityRequiresAnExactBaseUrlMatch(): void {
+  const selected = descriptor({ endpointIds: ['text:openai'] });
+  assertEqual(
+    catalogEndpointIdForSelection(
+      selected,
+      'https://api.openai.com/v1',
+      'https://api.openai.com/v1/',
+    ),
+    'text:openai',
+    'normalized official URLs should retain the stable catalog endpoint',
+  );
+  assertEqual(
+    catalogEndpointIdForSelection(
+      selected,
+      'https://api.openai.com/v1',
+      'https://custom.example.test/v1',
+    ),
+    null,
+    'a custom URL must not inherit the public OpenAI endpoint identity',
+  );
+}
+
 testImplicitDefaultsRespectLifecycleAccessAndReadiness();
 testLegacyImagePresetProjectsCanonicalMetadata();
 testSettingsFactsExposeLifecycleAccessCapabilitiesAndAvailability();
+testEndpointIdentityRequiresAnExactBaseUrlMatch();

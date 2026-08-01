@@ -1583,7 +1583,7 @@ Every answer that uses knowledge base search results.
                  WHEN lower(provider) = 'open_ai' AND COALESCE(base_url, '') = '' THEN 'text:openai'
                  WHEN lower(provider) = 'deep_seek' THEN 'text:deepseek'
                  WHEN lower(provider) = 'lm_studio' THEN 'text:lmstudio'
-                 ELSE 'text:' || replace(lower(provider), '_', '-')
+                 ELSE NULL
              END
          WHERE model_id IS NULL OR provider_endpoint_id IS NULL;",
     ),

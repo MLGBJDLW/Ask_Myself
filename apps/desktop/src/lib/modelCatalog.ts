@@ -286,6 +286,18 @@ export function modelEndpointId(surface: ModelCatalogSurface, presetId: string):
   return `${surface}:${presetId.trim().toLowerCase()}`;
 }
 
+export function catalogEndpointIdForSelection(
+  descriptor: ModelDescriptor | null | undefined,
+  catalogBaseUrl: string | null | undefined,
+  configuredBaseUrl: string | null | undefined,
+): string | null {
+  if (!descriptor) return null;
+  const normalize = (value: string | null | undefined) =>
+    (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
+  if (normalize(catalogBaseUrl) !== normalize(configuredBaseUrl)) return null;
+  return descriptor.endpointIds[0] ?? null;
+}
+
 export function canonicalModelProviderId(presetId: string, adapterProvider: string): string {
   const id = presetId.trim().toLowerCase();
   if (id === 'openai' || id === 'openai-live') return 'openai';

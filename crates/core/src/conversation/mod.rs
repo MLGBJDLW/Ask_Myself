@@ -3078,26 +3078,9 @@ fn decrypt_agent_config_key(mut config: AgentConfig) -> Result<AgentConfig, Core
 fn resolve_agent_config_endpoint_id(
     provider: &str,
     base_url: Option<&str>,
-    requested: Option<&str>,
+    _requested: Option<&str>,
 ) -> String {
-    if let Some(endpoint_id) = requested.map(str::trim).filter(|value| !value.is_empty()) {
-        return endpoint_id.to_string();
-    }
-    if let Some(endpoint_id) =
-        crate::model_catalog::resolve_builtin_endpoint_id("text", provider, base_url)
-    {
-        return endpoint_id;
-    }
-
-    // Custom endpoint URLs may contain workspace paths or query credentials, so
-    // persist only a deterministic hash rather than the URL itself.
-    let identity = format!(
-        "{}|{}",
-        provider.trim().to_ascii_lowercase(),
-        base_url.unwrap_or_default().trim().trim_end_matches('/')
-    );
-    let digest = blake3::hash(identity.as_bytes()).to_hex();
-    format!("text:custom-{}", &digest[..12])
+    crate::model_catalog::resolve_or_derive_endpoint_id("text", provider, base_url)
 }
 
 impl Database {

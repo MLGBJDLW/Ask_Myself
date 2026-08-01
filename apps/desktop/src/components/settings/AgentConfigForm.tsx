@@ -49,7 +49,10 @@ import {
   usesDefaultSubagentToolSelection,
 } from "../../lib/subagentTools";
 import { CollapsiblePanel } from "./SettingsSection";
-import { selectImplicitDefault } from "../../lib/modelCatalog";
+import {
+  catalogEndpointIdForSelection,
+  selectImplicitDefault,
+} from "../../lib/modelCatalog";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
 
 interface AgentConfigFormProps {
@@ -288,10 +291,11 @@ export function AgentConfigForm({
     apiKey: initialIsLocal ? "" : (config?.apiKey ?? ""),
     baseUrl: initialBaseUrl || null,
     model: initialModel,
-    providerEndpointId:
-      initialPresetModel?.descriptor.endpointIds[0]
-      ?? config?.providerEndpointId
-      ?? null,
+    providerEndpointId: catalogEndpointIdForSelection(
+      initialPresetModel?.descriptor,
+      initialPreset?.baseUrl,
+      initialBaseUrl,
+    ),
     modelId: initialPresetModel?.descriptor.id ?? config?.modelId ?? initialModel,
     temperature: config?.temperature ?? 0.3,
     maxTokens: config?.maxTokens ?? 4096,
@@ -656,14 +660,11 @@ export function AgentConfigForm({
         apiKey: isLocal ? "" : apiKey,
         baseUrl: normalizeBaseUrl(baseUrl) || null,
         model: model.trim(),
-        providerEndpointId:
-          selectedPresetModel?.descriptor.endpointIds[0]
-          ?? activePreset?.models[0]?.descriptor.endpointIds[0]
-          ?? (config?.provider === provider
-            && normalizeBaseUrl(config.baseUrl) === normalizeBaseUrl(baseUrl)
-            ? config.providerEndpointId
-            : null)
-          ?? null,
+        providerEndpointId: catalogEndpointIdForSelection(
+          selectedPresetModel?.descriptor ?? activePreset?.models[0]?.descriptor,
+          activePreset?.baseUrl,
+          baseUrl,
+        ),
         modelId: selectedPresetModel?.descriptor.id ?? model.trim(),
         temperature,
         maxTokens,
@@ -698,9 +699,6 @@ export function AgentConfigForm({
       model,
       selectedPresetModel,
       activePreset,
-      config?.providerEndpointId,
-      config?.provider,
-      config?.baseUrl,
       temperature,
       maxTokens,
       contextWindow,

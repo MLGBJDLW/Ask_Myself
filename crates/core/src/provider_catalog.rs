@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::llm::ProviderType;
 use crate::model_catalog::{
-    load_builtin_catalog, merge_catalog, CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot,
-    ModelDescriptor, MODEL_DESCRIPTOR_SCHEMA_VERSION,
+    load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CatalogMergeInput,
+    DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor, MODEL_DESCRIPTOR_SCHEMA_VERSION,
 };
 use crate::provider_registry::provider_type_from_key;
 
@@ -322,13 +322,8 @@ pub fn build_effective_model_catalog(
         models.push(catalog_entry_from_preset(curated, &default_regions, None));
     }
 
-    let descriptor_snapshot = build_descriptor_snapshot(
-        provider,
-        base_url,
-        preset.as_ref(),
-        live_model_ids.as_deref(),
-        &refreshed_at,
-    );
+    let descriptor_snapshot =
+        build_descriptor_snapshot(provider, base_url, live_model_ids.as_deref(), &refreshed_at);
 
     ProviderModelCatalogSnapshot {
         schema_version: descriptor_snapshot.schema_version,
@@ -350,13 +345,10 @@ pub fn build_effective_model_catalog(
 fn build_descriptor_snapshot(
     provider: &str,
     base_url: Option<&str>,
-    preset: Option<&ProviderPreset>,
     live_model_ids: Option<&[String]>,
     refreshed_at: &str,
 ) -> ModelCatalogSnapshot {
-    let endpoint_id = preset
-        .map(|preset| format!("text:{}", preset.id))
-        .unwrap_or_else(|| format!("text:{}", provider.trim().to_ascii_lowercase()));
+    let endpoint_id = resolve_or_derive_endpoint_id("text", provider, base_url);
     let builtin = load_builtin_catalog().ok();
     let curated = builtin
         .as_ref()

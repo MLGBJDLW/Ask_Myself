@@ -210,7 +210,16 @@ test.beforeEach(async ({ page }) => {
           return null;
         case "test_agent_connection_cmd":
         case "refresh_provider_model_catalog_cmd": {
-          const config = _args.config as { provider?: string; baseUrl?: string | null };
+          const config = _args.config as {
+            provider?: string;
+            baseUrl?: string | null;
+            providerEndpointId?: string | null;
+          };
+          if (cmd === "test_agent_connection_cmd") {
+            (
+              window as unknown as { __lastTestAgentConfig?: unknown }
+            ).__lastTestAgentConfig = clone(config);
+          }
           return {
             provider: config.provider ?? "alibaba_model_studio",
             baseUrl: config.baseUrl ?? null,
@@ -447,6 +456,27 @@ test("provider refresh keeps account-discovered models selectable and cached", a
 
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
     .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
+});
+
+test("a custom base URL cannot inherit a public catalog endpoint identity", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: /^OpenAI/ }).click();
+
+  await page.locator('input[placeholder="sk-..."]').fill("sk-account");
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await baseUrlField.getByRole("textbox").fill("https://tenant.example.test/v1");
+  await page.getByRole("button", { name: "Test Connection" }).click();
+
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as {
+      __lastTestAgentConfig?: { providerEndpointId?: string | null };
+    }
+  ).__lastTestAgentConfig?.providerEndpointId)).toBeNull();
 });
 
 test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({ page }) => {

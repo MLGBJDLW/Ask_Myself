@@ -27,7 +27,10 @@ pub use lifecycle::{
 };
 pub use merge::{merge_catalog, CatalogMergeInput, ModelCatalogSnapshot};
 pub use probe::{CapabilityProbeResult, CapabilityProbeStatus};
-pub use projection::{load_builtin_catalog, resolve_builtin_endpoint_id, BuiltinModelCatalog};
+pub use projection::{
+    load_builtin_catalog, resolve_builtin_endpoint_id, resolve_or_derive_endpoint_id,
+    BuiltinModelCatalog,
+};
 pub use provider_endpoint::{
     AuthStyle, CredentialKind, DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe,
     ProviderDescriptor, ProviderEndpoint,

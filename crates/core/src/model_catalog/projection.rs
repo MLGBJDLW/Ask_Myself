@@ -213,6 +213,28 @@ pub fn resolve_builtin_endpoint_id(
     (matches.len() == 1).then(|| matches[0].id.clone())
 }
 
+/// Resolves a built-in endpoint or derives an opaque identity for a custom
+/// endpoint without persisting the URL (which may contain workspace paths or
+/// query credentials).
+pub fn resolve_or_derive_endpoint_id(
+    surface: &str,
+    provider_or_alias: &str,
+    base_url: Option<&str>,
+) -> String {
+    if let Some(endpoint_id) = resolve_builtin_endpoint_id(surface, provider_or_alias, base_url) {
+        return endpoint_id;
+    }
+    let surface = surface.trim().to_ascii_lowercase();
+    let identity = format!(
+        "{}|{}|{}",
+        surface,
+        provider_or_alias.trim().to_ascii_lowercase(),
+        normalize_url(base_url)
+    );
+    let digest = blake3::hash(identity.as_bytes()).to_hex();
+    format!("{surface}:custom-{}", &digest[..12])
+}
+
 fn project_model(
     surface: CatalogSurface,
     provider_id: &str,
