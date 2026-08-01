@@ -128,7 +128,10 @@ mod tests {
                 .find(|model| model.id == "qwen-image-3.0-pro")
                 .expect("Qwen Image 3.0 Pro should be discoverable");
             assert!(model.name.contains("Limited Preview"));
-            assert!(!model.recommended, "preview model must not become the default");
+            assert!(
+                !model.recommended,
+                "preview model must not become the default"
+            );
         }
     }
 
