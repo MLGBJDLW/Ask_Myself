@@ -186,6 +186,7 @@ pub fn resolve_builtin_endpoint_id(
         }) {
             return Some(endpoint.id.clone());
         }
+        return None;
     }
 
     let provider_or_alias = provider_or_alias.trim().to_ascii_lowercase();

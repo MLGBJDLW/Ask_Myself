@@ -244,6 +244,11 @@ fn legacy_provider_and_base_url_resolve_to_stable_endpoint_identity() {
         resolve_builtin_endpoint_id("text", "open_ai", None).as_deref(),
         Some("text:openai")
     );
+    assert_eq!(
+        resolve_builtin_endpoint_id("text", "open_ai", Some("https://custom.example.test/v1"),),
+        None,
+        "an unmatched custom URL must not inherit the public OpenAI endpoint identity"
+    );
 }
 
 #[test]
