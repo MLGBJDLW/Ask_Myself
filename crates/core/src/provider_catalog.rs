@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(token_plan.id, "qwen-token-plan-cn");
         assert_eq!(token_plan.models.len(), 1);
         assert_eq!(token_plan.models[0].id, "qwen3.8-max-preview");
-        assert_eq!(token_plan.models[0].recommended, Some(true));
+        assert_eq!(token_plan.models[0].recommended, Some(false));
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-max-preview"),
             Some(false)
