@@ -32,6 +32,7 @@ import {
 } from "../../lib/providerPresets";
 import {
   bindProviderModelCatalogCredential,
+  catalogModelsForSnapshot,
   catalogMatchesProvider,
   isProviderModelCatalogStale,
   loadProviderModelCatalog,
@@ -48,6 +49,12 @@ import {
   usesDefaultSubagentToolSelection,
 } from "../../lib/subagentTools";
 import { CollapsiblePanel } from "./SettingsSection";
+import {
+  endpointIdForSavedSelection,
+  modelDescriptorSummary,
+  selectImplicitDefault,
+} from "../../lib/modelCatalog";
+import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
 
 interface AgentConfigFormProps {
   config?: AgentConfig;
@@ -202,13 +209,13 @@ export function AgentConfigForm({
     preset ??
     findProviderPreset({ provider: initialProvider, baseUrl: initialBaseUrl });
   const presetDefaultModel =
-    initialPreset?.models.find((m) => m.recommended)?.id ||
-    initialPreset?.models[0]?.id ||
+    selectImplicitDefault(initialPreset?.models ?? [])?.id ||
     "";
   const initialIsLocal =
     LOCAL_PROVIDERS.includes(initialProvider) ||
     (initialPreset ? !initialPreset.requiresApiKey : false);
   const initialModel = config?.model ?? presetDefaultModel;
+  const initialPresetModel = initialPreset?.models.find((candidate) => candidate.id === initialModel);
   const initialUsesCustomModel =
     !!config &&
     !!initialPreset &&
@@ -285,6 +292,16 @@ export function AgentConfigForm({
     apiKey: initialIsLocal ? "" : (config?.apiKey ?? ""),
     baseUrl: initialBaseUrl || null,
     model: initialModel,
+    providerEndpointId: endpointIdForSavedSelection({
+      descriptor: initialPresetModel?.descriptor,
+      catalogBaseUrl: initialPreset?.baseUrl,
+      configuredBaseUrl: initialBaseUrl,
+      persistedEndpointId: config?.providerEndpointId,
+      persistedProvider: config?.provider,
+      persistedBaseUrl: config?.baseUrl,
+      currentProvider: initialProvider,
+    }),
+    modelId: initialPresetModel?.descriptor.id ?? config?.modelId ?? initialModel,
     temperature: config?.temperature ?? 0.3,
     maxTokens: config?.maxTokens ?? 4096,
     contextWindow: config?.contextWindow ?? null,
@@ -320,23 +337,20 @@ export function AgentConfigForm({
   const activePreset = useMemo(() => {
     if (!matchingModelCatalog) return curatedPreset;
     if (curatedPreset) {
-      return { ...curatedPreset, models: matchingModelCatalog.models };
+      return { ...curatedPreset, models: catalogModelsForSnapshot(matchingModelCatalog) };
     }
     return {
       id: `discovered-${provider}`,
       name: name || provider,
       provider,
       baseUrl,
-      models: matchingModelCatalog.models,
+      models: catalogModelsForSnapshot(matchingModelCatalog),
       requiresApiKey: !LOCAL_PROVIDERS.includes(provider),
       icon: "",
       description: "",
     } satisfies ProviderPreset;
   }, [baseUrl, curatedPreset, matchingModelCatalog, name, provider]);
-  const activePresetDefaultModel =
-    activePreset?.models.find((m) => m.recommended)?.id ||
-    activePreset?.models[0]?.id ||
-    "";
+  const activePresetDefaultModel = selectImplicitDefault(activePreset?.models ?? [])?.id ?? "";
   const selectedPresetModel =
     activePreset?.models.find((candidate) => candidate.id === model) ?? null;
   const usesSearchableModelPicker =
@@ -514,10 +528,7 @@ export function AgentConfigForm({
       const nextPreset =
         findProviderPreset({ provider, baseUrl: null }) ??
         (preset?.provider === provider ? preset : null);
-      const nextModel =
-        nextPreset?.models.find((m) => m.recommended)?.id ||
-        nextPreset?.models[0]?.id ||
-        "";
+      const nextModel = selectImplicitDefault(nextPreset?.models ?? [])?.id ?? "";
       if (nextModel) {
         setModel(nextModel);
       }
@@ -654,6 +665,16 @@ export function AgentConfigForm({
         apiKey: isLocal ? "" : apiKey,
         baseUrl: normalizeBaseUrl(baseUrl) || null,
         model: model.trim(),
+        providerEndpointId: endpointIdForSavedSelection({
+          descriptor: selectedPresetModel?.descriptor ?? activePreset?.models[0]?.descriptor,
+          catalogBaseUrl: activePreset?.baseUrl,
+          configuredBaseUrl: baseUrl,
+          persistedEndpointId: config?.providerEndpointId,
+          persistedProvider: config?.provider,
+          persistedBaseUrl: config?.baseUrl,
+          currentProvider: provider,
+        }),
+        modelId: selectedPresetModel?.descriptor.id ?? model.trim(),
         temperature,
         maxTokens,
         contextWindow: contextWindow,
@@ -685,6 +706,8 @@ export function AgentConfigForm({
       apiKey,
       baseUrl,
       model,
+      selectedPresetModel,
+      activePreset,
       temperature,
       maxTokens,
       contextWindow,
@@ -911,11 +934,12 @@ export function AgentConfigForm({
                         key={m.id}
                         type="button"
                         aria-pressed={selected}
+                        disabled={m.descriptor.availableToCredential === false}
                         onClick={() => {
                           setModel(m.id);
                           setContextWindow(null);
                         }}
-                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 ${
+                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-50 ${
                           selected
                             ? "bg-accent/10 text-text-primary"
                             : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
@@ -926,7 +950,7 @@ export function AgentConfigForm({
                             {m.name}
                           </span>
                           <span className="block truncate text-xs text-text-tertiary">
-                            {m.id}
+                            {m.id} · {modelDescriptorSummary(m.descriptor)}
                           </span>
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
@@ -935,14 +959,14 @@ export function AgentConfigForm({
                               {tag}
                             </span>
                           )}
-                          {m.source === "discovered" && (
+                          {m.descriptor.source === "discovered" && (
                             <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">
                               {t("settings.modelSourceDiscovered")}
                             </span>
                           )}
-                          {(m.status === "preview" || m.status === "legacy" || m.status === "deprecated") && (
+                          {(m.descriptor.lifecycle === "preview" || m.descriptor.lifecycle === "gated" || m.descriptor.lifecycle === "legacy" || m.descriptor.lifecycle === "deprecated") && (
                             <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
-                              {t(`settings.modelStatus.${m.status}` as TranslationKey)}
+                              {t(`settings.modelStatus.${m.descriptor.lifecycle}` as TranslationKey)}
                             </span>
                           )}
                           {m.recommended && (
@@ -957,9 +981,12 @@ export function AgentConfigForm({
                 )}
               </div>
               {selectedPresetModel && (
-                <p className="truncate text-xs text-text-tertiary">
-                  {selectedPresetModel.id}
-                </p>
+                <div className="space-y-2">
+                  <p className="truncate text-xs text-text-tertiary">
+                    {selectedPresetModel.id}
+                  </p>
+                  <ModelDescriptorBadges descriptor={selectedPresetModel.descriptor} />
+                </div>
               )}
             </div>
           ) : (
@@ -971,16 +998,33 @@ export function AgentConfigForm({
               }}
               className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
             >
+              {!activePreset.models.some((candidate) => candidate.id === model) && (
+                <option value="" disabled>—</option>
+              )}
               {activePreset.models.map((m) => (
-                <option key={m.id} value={m.id}>
+                <option key={m.id} value={m.id} disabled={m.descriptor.availableToCredential === false}>
                   {m.tagKey
                     ? `${m.name} (${t(m.tagKey as TranslationKey)})`
                     : m.name}
-                  {m.source === "discovered" ? ` · ${t("settings.modelSourceDiscovered")}` : ""}
+                   {m.descriptor.source === "discovered" ? ` · ${t("settings.modelSourceDiscovered")}` : ""}
                   {m.recommended ? " ★" : ""}
+                  {` · ${modelDescriptorSummary(m.descriptor)}`}
                 </option>
               ))}
             </select>
+          )}
+          {!usesSearchableModelPicker && (
+            <ModelDescriptorBadges descriptor={selectedPresetModel?.descriptor} />
+          )}
+          {config?.modelSelectionResolution?.requiresUserNotice && (
+            <p
+              className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+              data-testid="model-selection-resolution-notice"
+              role="status"
+            >
+              Saved model selection resolved to {config.modelSelectionResolution.modelId}
+              {` (${config.modelSelectionResolution.kind})`}.
+            </p>
           )}
           <button
             type="button"

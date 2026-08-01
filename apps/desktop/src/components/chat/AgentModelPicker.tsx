@@ -19,6 +19,11 @@ import {
   type ReasoningEffortLevel,
 } from '../../lib/providerPresets';
 import { ProviderIcon } from '../../lib/providerIcons';
+import {
+  canonicalModelProviderId,
+  modelEndpointId,
+  projectModelDescriptor,
+} from '../../lib/modelCatalog';
 import type { AgentConfig } from '../../types/conversation';
 
 export interface AgentModelSelection {
@@ -178,9 +183,20 @@ function makeModelRows(
     modelMap.set(model.id, model);
   }
   if (providerRow.config.model && !modelMap.has(providerRow.config.model)) {
-    modelMap.set(providerRow.config.model, {
+    const presetId = providerRow.preset?.id ?? providerRow.config.provider;
+    const fallbackModel = {
       id: providerRow.config.model,
       name: providerRow.config.model,
+      status: 'legacy' as const,
+      productReadiness: 'known' as const,
+    };
+    modelMap.set(providerRow.config.model, {
+      ...fallbackModel,
+      descriptor: projectModelDescriptor(fallbackModel, {
+        surface: 'text',
+        providerId: canonicalModelProviderId(presetId, providerRow.config.provider),
+        endpointId: modelEndpointId('text', presetId),
+      }),
     });
   }
 

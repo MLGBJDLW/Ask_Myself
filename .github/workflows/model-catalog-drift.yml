@@ -1,0 +1,93 @@
+name: Model catalog drift
+
+on:
+  schedule:
+    - cron: "23 3 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Audit curated and live catalogs
+        id: catalog_audit
+        continue-on-error: true
+        env:
+          NEXA_OPENAI_CATALOG_API_KEY: ${{ secrets.NEXA_OPENAI_CATALOG_API_KEY }}
+          NEXA_OPENROUTER_CATALOG_API_KEY: ${{ secrets.NEXA_OPENROUTER_CATALOG_API_KEY }}
+          NEXA_DEEPSEEK_CATALOG_API_KEY: ${{ secrets.NEXA_DEEPSEEK_CATALOG_API_KEY }}
+          NEXA_ALIBABA_CATALOG_API_KEY: ${{ secrets.NEXA_ALIBABA_CATALOG_API_KEY }}
+          NEXA_ALIBABA_INTL_CATALOG_API_KEY: ${{ secrets.NEXA_ALIBABA_INTL_CATALOG_API_KEY }}
+        run: node scripts/model-catalog-audit.mjs --output .artifacts/model-catalog-drift
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: model-catalog-drift
+          path: .artifacts/model-catalog-drift
+          if-no-files-found: error
+
+      - name: Open, update, or close drift issue
+        if: ${{ always() && hashFiles('.artifacts/model-catalog-drift/report.json') != '' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('.artifacts/model-catalog-drift/report.json', 'utf8'));
+            const body = fs.readFileSync('.artifacts/model-catalog-drift/report.md', 'utf8');
+            const title = 'Model catalog drift report';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              per_page: 100,
+            });
+            const existing = issues.find((issue) => !issue.pull_request && issue.title === title);
+            if (report.hasDrift) {
+              if (existing) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body,
+                  state: 'open',
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                });
+              }
+            } else if (report.allAttemptedProbesSucceeded && existing?.state === 'open') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `No drift detected at ${report.generatedAt}; closing this report.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+              });
+            }
+
+      - name: Fail on static catalog validation errors
+        if: steps.catalog_audit.outcome == 'failure'
+        run: exit 1

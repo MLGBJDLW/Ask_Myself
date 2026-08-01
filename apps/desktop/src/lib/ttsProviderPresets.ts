@@ -1,4 +1,13 @@
 import ttsProviderPresets from "../../../../shared/tts-provider-presets.json";
+import {
+  attachModelDescriptors,
+  canonicalModelProviderId,
+  inferModelCatalogRegion,
+  modelEndpointId,
+  selectImplicitDefault,
+  type LegacyCatalogModel,
+  type ModelDescriptor,
+} from './modelCatalog';
 
 export interface TtsCatalogItem {
   id: string;
@@ -9,6 +18,7 @@ export interface TtsCatalogItem {
   gender?: string | null;
   description?: string | null;
   previewUrl?: string | null;
+  descriptor?: ModelDescriptor;
 }
 
 export interface TtsProviderPreset {
@@ -25,9 +35,29 @@ export interface TtsProviderPreset {
   outputFormats: string[];
 }
 
-export const TTS_PROVIDER_PRESETS = ttsProviderPresets as TtsProviderPreset[];
+type RawTtsProviderPreset = Omit<TtsProviderPreset, 'models'> & { models: LegacyCatalogModel[] };
+
+export const TTS_PROVIDER_PRESETS: TtsProviderPreset[] =
+  (ttsProviderPresets as RawTtsProviderPreset[]).map((preset) => ({
+    ...preset,
+    models: attachModelDescriptors(preset.models, {
+      surface: 'text_to_speech',
+      providerId: canonicalModelProviderId(preset.id, preset.provider),
+      endpointId: modelEndpointId('text_to_speech', preset.id),
+      region: inferModelCatalogRegion(preset.baseUrl),
+      apiStyle: preset.apiStyle,
+      outputFormats: preset.outputFormats,
+    }) as TtsCatalogItem[],
+  }));
 
 export function defaultTtsItem(items: TtsCatalogItem[]): TtsCatalogItem | null {
+  const models = items.filter(
+    (item): item is TtsCatalogItem & { descriptor: ModelDescriptor } => Boolean(item.descriptor),
+  );
+  if (models.length === items.length) {
+    return selectImplicitDefault(models);
+  }
+  // Voice rows are not model descriptors and keep their existing preference order.
   return items.find((item) => item.recommended) ?? items[0] ?? null;
 }
 

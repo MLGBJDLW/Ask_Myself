@@ -22,6 +22,8 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
+import { ModelDescriptorBadges } from './ModelDescriptorBadges';
+import { modelDescriptorSummary } from '../../lib/modelCatalog';
 
 interface TextToSpeechSettingsPanelProps {
   appConfig: AppConfig;
@@ -91,6 +93,9 @@ export function TextToSpeechSettingsPanel({
   );
   const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
+  const selectedModelDescriptor = activePreset.models.find(
+    (model) => model.id === config.model,
+  )?.descriptor;
   const localProvider = Boolean(activePreset.local || config.apiStyle === 'sherpa_onnx');
   const localFamilyNeedsVoices = config.model === 'kokoro' || config.model === 'kitten';
   const sharedKeySource = !localProvider
@@ -348,10 +353,12 @@ export function TextToSpeechSettingsPanel({
                 onChange={(event) => update({ model: event.target.value })}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
+                {!activePreset.models.some((model) => model.id === config.model) && <option value="" disabled>—</option>}
                 {activePreset.models.map((model) => (
-                  <option key={model.id} value={model.id}>{model.name}{model.recommended ? ' *' : ''}</option>
+                  <option key={model.id} value={model.id} disabled={model.descriptor?.availableToCredential === false}>{model.name}{model.recommended ? ' *' : ''}{model.descriptor ? ` · ${modelDescriptorSummary(model.descriptor)}` : ''}</option>
                 ))}
               </select>
+              <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
             </div>
 
             <div className="space-y-2 md:col-span-2">

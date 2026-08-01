@@ -13,6 +13,8 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
+import { ModelDescriptorBadges } from './ModelDescriptorBadges';
+import { modelDescriptorSummary } from '../../lib/modelCatalog';
 
 interface SpeechToTextSettingsPanelProps {
   appConfig: AppConfig;
@@ -70,6 +72,9 @@ export function SpeechToTextSettingsPanel({
   );
   const scopeActive = Boolean(matchedPreset && scopedPresets.some((preset) => preset.id === matchedPreset.id));
   const activePreset = scopeActive ? matchedPreset! : scopedPresets[0];
+  const selectedModelDescriptor = activePreset.models.find(
+    (model) => model.id === config.model,
+  )?.descriptor;
   const isWhisper = config.apiStyle === 'local_whisper';
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
@@ -208,8 +213,9 @@ export function SpeechToTextSettingsPanel({
                 <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
                 <Input value={config.model} onChange={(event) => update({ model: event.target.value })} list="nexa-stt-models" />
                 <datalist id="nexa-stt-models">
-                  {activePreset.models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+                  {activePreset.models.map((model) => <option key={model.id} value={model.id}>{model.name} · {modelDescriptorSummary(model.descriptor)}</option>)}
                 </datalist>
+                <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
               </div>
             )}
             {!isWhisper && (

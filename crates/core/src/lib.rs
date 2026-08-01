@@ -54,6 +54,7 @@ pub mod mcp;
 pub mod media;
 pub mod migrations;
 pub mod mixture_of_agents;
+pub mod model_catalog;
 pub mod models;
 #[cfg(feature = "ocr")]
 pub mod ocr;

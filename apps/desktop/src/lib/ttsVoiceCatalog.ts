@@ -1,5 +1,6 @@
 import type { TextToSpeechConfig } from '../types/conversation';
 import { credentialFingerprint } from './credentialFingerprint';
+import { normalizeModelEndpointUrl } from './modelCatalog';
 
 export interface TtsVoiceCatalogEntry {
   id: string;
@@ -32,8 +33,12 @@ interface StoredTtsVoiceCatalog {
 export const TTS_VOICE_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 const CACHE_PREFIX = 'nexa-tts-voice-catalog-v1:';
 
-function normalize(value: string | null | undefined): string {
-  return (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
+function normalizeLabel(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function normalizeModelId(value: string | null | undefined): string {
+  return (value ?? '').trim();
 }
 
 type TtsVoiceCatalogIdentity = Pick<
@@ -47,10 +52,10 @@ export function ttsCredentialFingerprint(apiKey: string): string {
 
 export function ttsVoiceCatalogCacheKey(config: TtsVoiceCatalogIdentity): string {
   return `${CACHE_PREFIX}${encodeURIComponent([
-    normalize(config.provider),
-    normalize(config.apiStyle),
-    normalize(config.baseUrl),
-    normalize(config.model),
+    normalizeLabel(config.provider),
+    normalizeLabel(config.apiStyle),
+    normalizeModelEndpointUrl(config.baseUrl),
+    normalizeModelId(config.model),
     ttsCredentialFingerprint(config.apiKey),
   ].join('::'))}`;
 }
@@ -69,10 +74,10 @@ export function ttsVoiceCatalogMatches(
   snapshot: TtsVoiceCatalogSnapshot,
   config: TextToSpeechConfig,
 ): boolean {
-  return normalize(snapshot.provider) === normalize(config.provider)
-    && normalize(snapshot.apiStyle) === normalize(config.apiStyle)
-    && normalize(snapshot.baseUrl) === normalize(config.baseUrl)
-    && normalize(snapshot.model) === normalize(config.model)
+  return normalizeLabel(snapshot.provider) === normalizeLabel(config.provider)
+    && normalizeLabel(snapshot.apiStyle) === normalizeLabel(config.apiStyle)
+    && normalizeModelEndpointUrl(snapshot.baseUrl) === normalizeModelEndpointUrl(config.baseUrl)
+    && normalizeModelId(snapshot.model) === normalizeModelId(config.model)
     && snapshot.credentialFingerprint === ttsCredentialFingerprint(config.apiKey);
 }
 

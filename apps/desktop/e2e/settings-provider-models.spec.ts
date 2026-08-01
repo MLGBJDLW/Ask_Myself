@@ -210,7 +210,16 @@ test.beforeEach(async ({ page }) => {
           return null;
         case "test_agent_connection_cmd":
         case "refresh_provider_model_catalog_cmd": {
-          const config = _args.config as { provider?: string; baseUrl?: string | null };
+          const config = _args.config as {
+            provider?: string;
+            baseUrl?: string | null;
+            providerEndpointId?: string | null;
+          };
+          if (cmd === "test_agent_connection_cmd") {
+            (
+              window as unknown as { __lastTestAgentConfig?: unknown }
+            ).__lastTestAgentConfig = clone(config);
+          }
           return {
             provider: config.provider ?? "alibaba_model_studio",
             baseUrl: config.baseUrl ?? null,
@@ -449,6 +458,28 @@ test("provider refresh keeps account-discovered models selectable and cached", a
     .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
 });
 
+test("a custom base URL cannot inherit a public catalog endpoint identity", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: /^OpenAI/ }).click();
+
+  await page.locator('input[placeholder="sk-..."]').fill("sk-account");
+  await page.getByRole("button", { name: /GPT-5\.6 gpt-5\.6/ }).first().click();
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await baseUrlField.getByRole("textbox").fill("https://tenant.example.test/v1");
+  await page.getByRole("button", { name: "Test Connection" }).click();
+
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as {
+      __lastTestAgentConfig?: { providerEndpointId?: string | null };
+    }
+  ).__lastTestAgentConfig?.providerEndpointId)).toBeNull();
+});
+
 test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
@@ -485,10 +516,13 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
     .filter({ hasText: "Default Model" })
     .locator("xpath=../..");
   const modelSelect = modelField.getByRole("combobox");
-  await expect(modelSelect).toHaveValue("qwen3.8-max-preview");
+  await expect(modelSelect).toHaveValue("");
   await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
-  await expect(modelSelect.locator("option")).toHaveCount(1);
+  await expect(modelSelect.locator("option")).toHaveCount(2);
   await expect(modelSelect.locator('option[value="qwen3.7-flash"]')).toHaveCount(0);
+  await modelSelect.selectOption("qwen3.8-max-preview");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("status: preview");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("access: account enablement");
 });
 
 test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
@@ -513,6 +547,8 @@ test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ 
     .filter({ hasText: "Default Model" })
     .locator("xpath=../..");
   const modelSelect = modelField.getByRole("combobox");
+  await expect(modelSelect).toHaveValue("");
+  await modelSelect.selectOption("qwen3.7-flash");
   await expect(modelSelect).toHaveValue("qwen3.7-flash");
   await expect(modelSelect.locator("option")).toContainText([
     "Qwen3.7 Flash",
@@ -573,9 +609,15 @@ test("settings exposes image generation model config under AI providers", async 
   await expect(panel.getByText("Image provider defaults for generate_image")).toBeVisible();
   const selects = panel.locator("select");
   await expect(selects.nth(0)).toHaveValue("qwen-dashscope-cn");
+  await selects.nth(1).selectOption("qwen-image-2.0-pro");
   await expect(selects.nth(1)).toHaveValue("qwen-image-2.0-pro");
+  await selects.nth(1).selectOption("qwen-image-3.0-pro");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("status: preview");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("access: application");
+  await selects.nth(1).selectOption("qwen-image-2.0-pro");
 
   await selects.nth(0).selectOption("google-gemini");
+  await selects.nth(1).selectOption("gemini-3.1-flash-image");
   await expect(selects.nth(1)).toHaveValue("gemini-3.1-flash-image");
   await expect(selects.nth(1).locator("option")).toContainText([
     "Gemini 3.1 Flash Image",
@@ -583,6 +625,7 @@ test("settings exposes image generation model config under AI providers", async 
     "Gemini 3 Pro Image",
   ]);
   await selects.nth(0).selectOption("qwen-dashscope-cn");
+  await selects.nth(1).selectOption("qwen-image-2.0-pro");
 
   await panel.getByRole("button", { name: "Save" }).click();
   await page.waitForFunction(() => {
@@ -603,8 +646,9 @@ test("settings promotes low-latency speech providers with their own logos", asyn
 
   const selects = panel.locator("select");
   await expect(selects.nth(0).locator("option")).toHaveCount(8);
-  await expect(selects.nth(1)).toHaveValue("gpt-4o-mini-tts");
+  await selects.nth(1).selectOption("gpt-4o-mini-tts");
   await selects.nth(0).selectOption("groq");
+  await selects.nth(1).selectOption("canopylabs/orpheus-v1-english");
   await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
   await expect(selects.nth(2)).toHaveValue("wav");
   await expect(panel.locator('[title="Groq"]')).toContainText("GQ");
@@ -615,6 +659,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Hannah");
 
   await selects.nth(0).selectOption("elevenlabs");
+  await selects.nth(1).selectOption("eleven_flash_v2_5");
   await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
   await expect(panel.locator('[title="ElevenLabs"] > span')).toHaveAttribute(
     "style",
@@ -622,9 +667,11 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   );
 
   await selects.nth(0).selectOption("minimax");
+  await selects.nth(1).selectOption("speech-2.8-turbo");
   await expect(selects.nth(1)).toHaveValue("speech-2.8-turbo");
 
   await selects.nth(0).selectOption("dashscope-cosyvoice");
+  await selects.nth(1).selectOption("qwen-audio-3.0-tts-flash");
   await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
   await expect(panel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
@@ -643,6 +690,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   ).__savedAppConfig?.textToSpeech?.apiKey)).toBe("sk-qwen-demo");
 
   await selects.nth(0).selectOption("siliconflow");
+  await selects.nth(1).selectOption("fnlp/MOSS-TTSD-v0.5");
   await expect(selects.nth(1)).toHaveValue("fnlp/MOSS-TTSD-v0.5");
   await expect(panel.locator('[title="SiliconFlow"] > span')).toHaveAttribute(
     "style",
@@ -656,14 +704,17 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttProvider.locator("option")).toHaveCount(9);
 
   await sttProvider.selectOption("openai-live");
+  await sttPanel.locator('input[list="nexa-stt-models"]').fill("gpt-live-transcribe");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("gpt-live-transcribe");
 
   await sttProvider.selectOption("groq");
+  await sttPanel.locator('input[list="nexa-stt-models"]').fill("whisper-large-v3-turbo");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "whisper-large-v3-turbo",
   );
 
   await sttProvider.selectOption("alibaba-qwen-asr");
+  await sttPanel.locator('input[list="nexa-stt-models"]').fill("qwen3-asr-flash");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
@@ -676,6 +727,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
 
   await sttProvider.selectOption("siliconflow");
+  await sttPanel.locator('input[list="nexa-stt-models"]').fill("FunAudioLLM/SenseVoiceSmall");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "FunAudioLLM/SenseVoiceSmall",
   );
@@ -688,6 +740,7 @@ test("settings discards a stale voice preview after synthesis settings change", 
   const panel = page.getByTestId("text-to-speech-settings-panel");
   await panel.locator("button").first().click();
   await panel.locator("select").first().selectOption("dashscope-cosyvoice");
+  await panel.locator("select").nth(1).selectOption("qwen-audio-3.0-tts-flash");
   const previewText = panel
     .locator("label")
     .filter({ hasText: "Preview text" })
@@ -858,7 +911,8 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
 
   const selects = section.locator("select");
   await selects.nth(0).selectOption("alibaba-model-studio-cn");
-  await expect(selects.nth(1)).toHaveValue("qwen3.7-text-embedding");
+  await selects.nth(1).selectOption("text-embedding-v4");
+  await expect(selects.nth(1)).toHaveValue("text-embedding-v4");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
   await expect(section.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await section.getByRole("button", { name: "Save Config" }).click();
@@ -866,10 +920,11 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
     window as unknown as { __savedEmbedConfig?: { apiKey?: string; apiModel?: string } }
   ).__savedEmbedConfig)).toEqual(expect.objectContaining({
     apiKey: "sk-qwen-demo",
-    apiModel: "qwen3.7-text-embedding",
+    apiModel: "text-embedding-v4",
   }));
 
   await selects.nth(0).selectOption("jina");
+  await selects.nth(1).selectOption("jina-embeddings-v5-text-small");
   await expect(selects.nth(1)).toHaveValue("jina-embeddings-v5-text-small");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
   await expect(section.getByRole("spinbutton")).toBeDisabled();
@@ -879,6 +934,7 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
   );
 
   await selects.nth(0).selectOption("mistral");
+  await selects.nth(1).selectOption("mistral-embed");
   await expect(selects.nth(1)).toHaveValue("mistral-embed");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
 });

@@ -1518,6 +1518,8 @@ mod tests {
             api_key: String::new(),
             base_url: None,
             model: "test".to_string(),
+            provider_endpoint_id: None,
+            model_id: None,
             temperature: None,
             max_tokens: None,
             context_window: None,

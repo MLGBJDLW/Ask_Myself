@@ -8,7 +8,7 @@
     "baseUrl": "https://api.openai.com/v1",
     "description": "The latest steerable GPT-4o mini speech model, plus low-latency and HD options.",
     "models": [
-      { "id": "gpt-4o-mini-tts", "name": "GPT-4o Mini TTS (Latest)", "recommended": true },
+      { "id": "gpt-4o-mini-tts", "name": "GPT-4o Mini TTS (Latest)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "tts-1", "name": "TTS-1 (Lowest Latency)" },
       { "id": "tts-1-hd", "name": "TTS-1 HD" }
     ],
@@ -38,7 +38,7 @@
     "baseUrl": "https://api.groq.com/openai/v1",
     "description": "Very fast US-hosted Orpheus speech with expressive English and Saudi Arabic voices.",
     "models": [
-      { "id": "canopylabs/orpheus-v1-english", "name": "Orpheus English", "recommended": true },
+      { "id": "canopylabs/orpheus-v1-english", "name": "Orpheus English", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "canopylabs/orpheus-arabic-saudi", "name": "Orpheus Arabic (Saudi)" }
     ],
     "voices": [
@@ -62,7 +62,7 @@
     "baseUrl": "https://api.elevenlabs.io/v1",
     "description": "Expressive multilingual speech, including a Flash model optimized for very low latency.",
     "models": [
-      { "id": "eleven_flash_v2_5", "name": "Eleven Flash v2.5 (Fast)", "recommended": true },
+      { "id": "eleven_flash_v2_5", "name": "Eleven Flash v2.5 (Fast)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "eleven_v3", "name": "Eleven v3" },
       { "id": "eleven_multilingual_v2", "name": "Eleven Multilingual v2" }
     ],
@@ -80,7 +80,7 @@
     "baseUrl": "https://eastus.tts.speech.microsoft.com/cognitiveservices/v1",
     "description": "Microsoft neural speech with broad regional, multilingual, and Chinese voice coverage. Replace eastus with your Speech resource region.",
     "models": [
-      { "id": "neural", "name": "Azure Neural Speech", "recommended": true }
+      { "id": "neural", "name": "Azure Neural Speech", "source": "curated", "productReadiness": "known", "recommended": true }
     ],
     "voices": [
       { "id": "en-US-JennyMultilingualNeural", "name": "Jenny Multilingual (US)", "recommended": true },
@@ -100,7 +100,7 @@
     "baseUrl": "https://api.minimax.io/v1",
     "description": "Speech 2.8 turbo for speed and HD for higher-fidelity output.",
     "models": [
-      { "id": "speech-2.8-turbo", "name": "Speech 2.8 Turbo", "recommended": true },
+      { "id": "speech-2.8-turbo", "name": "Speech 2.8 Turbo", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "speech-2.8-hd", "name": "Speech 2.8 HD" }
     ],
     "voices": [
@@ -117,7 +117,7 @@
     "baseUrl": "https://dashscope.aliyuncs.com/api/v1/services/audio/tts",
     "description": "Alibaba Cloud Model Studio speech for Mandarin, English, dialects, and multilingual content. Voice availability is model-specific; custom model and voice IDs remain editable.",
     "models": [
-      { "id": "qwen-audio-3.0-tts-flash", "name": "Qwen Audio 3.0 TTS Flash", "recommended": true },
+      { "id": "qwen-audio-3.0-tts-flash", "name": "Qwen Audio 3.0 TTS Flash", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "qwen-audio-3.0-tts-plus", "name": "Qwen Audio 3.0 TTS Plus" },
       { "id": "cosyvoice-v3.5-flash", "name": "CosyVoice v3.5 Flash" },
       { "id": "cosyvoice-v3.5-plus", "name": "CosyVoice v3.5 Plus" },
@@ -142,7 +142,7 @@
     "baseUrl": "",
     "description": "Fast, private offline speech through sherpa-onnx-offline-tts. Supports VITS/Piper/MMS, multilingual Kokoro, and Kitten model packages on Windows, macOS, and Linux.",
     "models": [
-      { "id": "vits", "name": "VITS / Piper / MMS", "recommended": true },
+      { "id": "vits", "name": "VITS / Piper / MMS", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "kokoro", "name": "Kokoro" },
       { "id": "kitten", "name": "KittenTTS" }
     ],
@@ -162,7 +162,7 @@
     "baseUrl": "https://api.siliconflow.cn/v1",
     "description": "OpenAI-compatible hosted speech in China with multilingual MOSS-TTSD and editable model and voice IDs.",
     "models": [
-      { "id": "fnlp/MOSS-TTSD-v0.5", "name": "MOSS-TTSD v0.5", "recommended": true }
+      { "id": "fnlp/MOSS-TTSD-v0.5", "name": "MOSS-TTSD v0.5", "source": "curated", "productReadiness": "known", "recommended": true }
     ],
     "voices": [
       { "id": "fnlp/MOSS-TTSD-v0.5:alex", "name": "Alex", "recommended": true },

@@ -1329,11 +1329,18 @@ pub async fn test_agent_connection_cmd(
         .map_err(|e| e.to_string())?;
 
     let refreshed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let verified_model_id = config
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .unwrap_or_else(|| config.model.trim());
     match provider.list_models().await {
         Ok(models) => Ok(build_effective_model_catalog(
             &config.provider,
             config.base_url.as_deref(),
             Some(models),
+            Some(verified_model_id),
             refreshed_at,
         )),
         Err(error) => {
@@ -1345,6 +1352,7 @@ pub async fn test_agent_connection_cmd(
                 &config.provider,
                 config.base_url.as_deref(),
                 None,
+                Some(verified_model_id),
                 refreshed_at,
             ))
         }
@@ -1370,6 +1378,7 @@ pub async fn refresh_provider_model_catalog_cmd(
             &config.provider,
             config.base_url.as_deref(),
             Some(models),
+            None,
             refreshed_at,
         )),
         Err(error) => {
@@ -1380,6 +1389,7 @@ pub async fn refresh_provider_model_catalog_cmd(
             Ok(build_effective_model_catalog(
                 &config.provider,
                 config.base_url.as_deref(),
+                None,
                 None,
                 refreshed_at,
             ))

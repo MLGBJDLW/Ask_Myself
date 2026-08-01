@@ -1,4 +1,14 @@
 import embeddingProviderPresets from "../../../../shared/embedding-provider-presets.json";
+import {
+  attachModelDescriptors,
+  canonicalModelProviderId,
+  inferModelCatalogRegion,
+  modelEndpointId,
+  normalizeModelEndpointUrl,
+  selectImplicitDefault,
+  type LegacyCatalogModel,
+  type ModelDescriptor,
+} from './modelCatalog';
 
 export interface EmbeddingModelPreset {
   id: string;
@@ -6,6 +16,7 @@ export interface EmbeddingModelPreset {
   dimensions: number;
   supportsDimensionOverride: boolean;
   recommended?: boolean;
+  descriptor: ModelDescriptor;
 }
 
 export interface EmbeddingProviderPreset {
@@ -17,15 +28,29 @@ export interface EmbeddingProviderPreset {
   models: EmbeddingModelPreset[];
 }
 
-export const EMBEDDING_PROVIDER_PRESETS = embeddingProviderPresets as EmbeddingProviderPreset[];
+type RawEmbeddingProviderPreset = Omit<EmbeddingProviderPreset, 'models'> & {
+  models: LegacyCatalogModel[];
+};
+
+export const EMBEDDING_PROVIDER_PRESETS: EmbeddingProviderPreset[] =
+  (embeddingProviderPresets as RawEmbeddingProviderPreset[]).map((preset) => ({
+    ...preset,
+    models: attachModelDescriptors(preset.models, {
+      surface: 'embedding',
+      providerId: canonicalModelProviderId(preset.id, preset.provider),
+      endpointId: modelEndpointId('embedding', preset.id),
+      region: inferModelCatalogRegion(preset.baseUrl),
+      apiStyle: 'openai_embeddings',
+    }) as EmbeddingModelPreset[],
+  }));
 
 export function defaultEmbeddingModel(preset: EmbeddingProviderPreset): EmbeddingModelPreset | null {
-  return preset.models.find((model) => model.recommended) ?? preset.models[0] ?? null;
+  return selectImplicitDefault(preset.models);
 }
 
 export function findEmbeddingProviderPreset(baseUrl: string): EmbeddingProviderPreset | null {
-  const normalized = baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  const normalized = normalizeModelEndpointUrl(baseUrl);
   return EMBEDDING_PROVIDER_PRESETS.find(
-    (preset) => preset.baseUrl.replace(/\/+$/, "").toLowerCase() === normalized,
+    (preset) => normalizeModelEndpointUrl(preset.baseUrl) === normalized,
   ) ?? null;
 }

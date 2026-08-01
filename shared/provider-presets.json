@@ -15,6 +15,8 @@
         "id": "gpt-5.6",
         "name": "GPT-5.6",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "reasoning": {
@@ -385,6 +387,8 @@
         "id": "~anthropic/claude-fable-latest",
         "name": "Anthropic: Claude Fable Latest",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true,
@@ -6290,6 +6294,8 @@
         "id": "claude-fable-5",
         "name": "Claude Fable 5",
         "tagKey": "providers.tagMostIntelligent",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "reasoning": {
@@ -6527,6 +6533,8 @@
         "id": "gemini-3.6-flash",
         "name": "Gemini 3.6 Flash",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "reasoning": {
@@ -6704,6 +6712,8 @@
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "reasoning": {
@@ -6753,6 +6763,8 @@
         "id": "grok-4.5",
         "name": "Grok 4.5",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true,
@@ -6875,6 +6887,8 @@
         "id": "MiniMax-M3",
         "name": "MiniMax M3",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true,
@@ -7011,6 +7025,8 @@
         "id": "mistral-large-2512",
         "name": "Mistral Large 3",
         "tagKey": "providers.tagFlagship",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true
@@ -7090,6 +7106,8 @@
         "id": "qwen3.6:latest",
         "name": "Qwen 3.6",
         "tagKey": "providers.tagRecommended",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true
@@ -7196,6 +7214,8 @@
         "id": "glm-5.2",
         "name": "GLM-5.2",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "reasoning": {
@@ -7290,6 +7310,8 @@
         "id": "kimi-k3",
         "name": "Kimi K3",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true,
@@ -7373,6 +7395,8 @@
         "id": "Pro/zai-org/GLM-5",
         "name": "GLM-5 Pro",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true
       },
       {
@@ -7425,7 +7449,12 @@
         "id": "qwen3.8-max-preview",
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
-        "recommended": true
+        "recommended": false,
+        "status": "preview",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "known",
+        "lastVerifiedAt": "2026-08-01"
       }
     ]
   },
@@ -7454,6 +7483,8 @@
         "id": "qwen3.7-flash",
         "name": "Qwen3.7 Flash",
         "tagKey": "providers.tagFast",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true
@@ -7507,6 +7538,8 @@
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "tagKey": "providers.tagMostIntelligent",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true
       },
       {
@@ -7605,6 +7638,7 @@
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",
         "tagKey": "providers.tagLatest",
+        "productReadiness": "known",
         "recommended": true,
         "source": "official",
         "status": "active",
@@ -7674,17 +7708,33 @@
       {
         "id": "qwen3-max-2026-01-23",
         "name": "Qwen3 Max",
-        "tagKey": "providers.tagMostIntelligent"
+        "tagKey": "providers.tagMostIntelligent",
+        "aliases": ["qwen3-max"],
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3.6-max-preview",
         "name": "Qwen3.6 Max Preview",
-        "tagKey": "providers.tagPreview"
+        "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3-max-preview",
         "name": "Qwen3 Max Preview",
-        "tagKey": "providers.tagPreview"
+        "tagKey": "providers.tagPreview",
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-10-10",
+        "replacementModelId": "qwen3.7-max",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3.5-plus",
@@ -7731,7 +7781,11 @@
       {
         "id": "qwen3-coder-plus",
         "name": "Qwen3 Coder Plus",
-        "tagKey": "providers.tagCoding"
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "deprecated",
+        "replacementModelId": "qwen3.7-plus",
+        "lastVerifiedAt": "2026-08-01"
       },
       {
         "id": "qwen3-coder-flash",
@@ -7756,6 +7810,10 @@
         "id": "qwen3-vl-flash",
         "name": "Qwen3 VL Flash",
         "tagKey": "providers.tagVision",
+        "source": "official",
+        "status": "deprecated",
+        "replacementModelId": "qwen3.6-flash",
+        "lastVerifiedAt": "2026-08-01",
         "capabilities": {
           "vision": true
         }
@@ -7786,6 +7844,8 @@
         "id": "doubao-seed-2.0-pro",
         "name": "Doubao Seed 2.0 Pro",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true,
         "capabilities": {
           "vision": true
@@ -7859,6 +7919,8 @@
         "id": "yi-large",
         "name": "Yi Large",
         "tagKey": "providers.tagBest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true
       },
       {
@@ -7892,6 +7954,8 @@
         "id": "Baichuan-M3-Plus",
         "name": "Baichuan M3 Plus",
         "tagKey": "providers.tagLatest",
+        "source": "curated",
+        "productReadiness": "known",
         "recommended": true
       },
       {

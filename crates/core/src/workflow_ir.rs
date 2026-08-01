@@ -961,8 +961,8 @@ pub fn detect_project_verification_support(roots: &[PathBuf]) -> ProjectVerifica
                         scripts.iter().any(|(script_name, command)| {
                             (script_name == name || script_name.starts_with(&format!("{name}:")))
                                 && command.as_str().is_some_and(|command| {
-                                    !command.trim().is_empty()
-                                        && !(name == "test"
+                                    !(command.trim().is_empty()
+                                        || name == "test"
                                             && command
                                                 .to_ascii_lowercase()
                                                 .contains("no test specified"))

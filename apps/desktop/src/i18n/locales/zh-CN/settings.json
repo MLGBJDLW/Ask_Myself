@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "刷新模型"
   ,"modelSourceDiscovered": "实时发现"
   ,"modelStatus.preview": "预览"
+  ,"modelStatus.gated": "需要开通"
   ,"modelStatus.legacy": "旧版"
   ,"modelStatus.deprecated": "已弃用"
   ,"modelCatalogLive": "账户实时目录"

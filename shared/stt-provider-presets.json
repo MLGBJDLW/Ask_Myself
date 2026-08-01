@@ -9,7 +9,7 @@
     "baseUrl": "",
     "description": "Existing private Candle Whisper transcription. Works offline but is slower to initialize on CPU.",
     "models": [
-      { "id": "whisper-local", "name": "Model selected under Video & Audio", "recommended": true }
+      { "id": "whisper-local", "name": "Model selected under Video & Audio", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -21,7 +21,7 @@
     "baseUrl": "https://api.openai.com/v1",
     "description": "Hosted GPT-4o transcription with strong multilingual accuracy and fast short-form dictation.",
     "models": [
-      { "id": "gpt-4o-mini-transcribe", "name": "GPT-4o Mini Transcribe (Fast)", "recommended": true },
+      { "id": "gpt-4o-mini-transcribe", "name": "GPT-4o Mini Transcribe (Fast)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "gpt-4o-transcribe", "name": "GPT-4o Transcribe" },
       { "id": "whisper-1", "name": "Whisper-1" }
     ]
@@ -35,7 +35,7 @@
     "baseUrl": "https://api.openai.com/v1",
     "description": "Streams 24 kHz PCM microphone audio over a Realtime session and returns transcript deltas while you speak.",
     "models": [
-      { "id": "gpt-live-transcribe", "name": "GPT Live Transcribe", "recommended": true }
+      { "id": "gpt-live-transcribe", "name": "GPT Live Transcribe", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -47,7 +47,7 @@
     "baseUrl": "https://api.groq.com/openai/v1",
     "description": "OpenAI-compatible, very low-latency multilingual Whisper inference.",
     "models": [
-      { "id": "whisper-large-v3-turbo", "name": "Whisper Large V3 Turbo (Fast)", "recommended": true },
+      { "id": "whisper-large-v3-turbo", "name": "Whisper Large V3 Turbo (Fast)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "whisper-large-v3", "name": "Whisper Large V3 (Accurate)" }
     ]
   },
@@ -60,7 +60,7 @@
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "description": "Qwen3-ASR-Flash recognition through Alibaba Cloud Model Studio, with Mandarin, Cantonese, English, Japanese, Korean, and broad multilingual coverage.",
     "models": [
-      { "id": "qwen3-asr-flash", "name": "Qwen3 ASR Flash", "recommended": true }
+      { "id": "qwen3-asr-flash", "name": "Qwen3 ASR Flash", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -72,7 +72,7 @@
     "baseUrl": "https://api.siliconflow.cn/v1",
     "description": "OpenAI-compatible hosted transcription in China using SenseVoice or TeleSpeech ASR.",
     "models": [
-      { "id": "FunAudioLLM/SenseVoiceSmall", "name": "SenseVoice Small", "recommended": true },
+      { "id": "FunAudioLLM/SenseVoiceSmall", "name": "SenseVoice Small", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "TeleAI/TeleSpeechASR", "name": "TeleSpeech ASR" }
     ]
   },
@@ -87,7 +87,7 @@
     "sherpaModelFamily": "sense_voice",
     "description": "Fast offline Chinese, English, Japanese, Korean, and Cantonese recognition with inverse text normalization.",
     "models": [
-      { "id": "sense_voice", "name": "SenseVoice", "recommended": true }
+      { "id": "sense_voice", "name": "SenseVoice", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -101,7 +101,7 @@
     "sherpaModelFamily": "zipformer",
     "description": "Streaming-capable local Zipformer models using encoder, decoder, and joiner files.",
     "models": [
-      { "id": "zipformer", "name": "Streaming Zipformer", "recommended": true }
+      { "id": "zipformer", "name": "Streaming Zipformer", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -113,7 +113,7 @@
     "baseUrl": "",
     "description": "Any compatible /audio/transcriptions endpoint with an editable base URL and model ID.",
     "models": [
-      { "id": "whisper-1", "name": "Custom model", "recommended": true }
+      { "id": "whisper-1", "name": "Custom model", "source": "curated", "productReadiness": "known", "recommended": false }
     ]
   }
 ]

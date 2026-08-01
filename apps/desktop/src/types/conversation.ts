@@ -310,6 +310,17 @@ export interface AgentConfig {
   apiKey: string;
   baseUrl: string | null;
   model: string;
+  /** Stable Model Catalog v2 endpoint identity. */
+  providerEndpointId?: string | null;
+  /** Canonical model identity retained alongside the legacy `model` field. */
+  modelId?: string | null;
+  modelSelectionResolution?: {
+    providerId: string;
+    providerEndpointId?: string | null;
+    modelId: string;
+    kind: 'unchanged' | 'alias' | 'replacement' | 'unverified';
+    requiresUserNotice: boolean;
+  } | null;
   temperature: number | null;
   maxTokens: number | null;
   contextWindow: number | null;
@@ -350,6 +361,8 @@ export interface SaveAgentConfigInput {
   apiKey: string;
   baseUrl: string | null;
   model: string;
+  providerEndpointId?: string | null;
+  modelId?: string | null;
   temperature: number | null;
   maxTokens: number | null;
   contextWindow: number | null;

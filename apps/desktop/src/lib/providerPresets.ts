@@ -4,6 +4,14 @@ import type {
   ProviderModelPreset,
   ReasoningCapability,
 } from './providerTypes';
+import {
+  attachModelDescriptors,
+  canonicalModelProviderId,
+  inferModelCatalogRegion,
+  modelEndpointId,
+  normalizeModelEndpointUrl,
+  type LegacyCatalogModel,
+} from './modelCatalog';
 
 export type {
   ModelCatalogSource,
@@ -27,10 +35,27 @@ export interface ProviderPreset {
   capabilities?: ProviderCapabilities;
 }
 
-export const PROVIDER_PRESETS = providerPresets as ProviderPreset[];
+type RawProviderPreset = Omit<ProviderPreset, 'models'> & { models: LegacyCatalogModel[] };
+
+export const PROVIDER_PRESETS: ProviderPreset[] = (providerPresets as RawProviderPreset[]).map((preset) => ({
+  ...preset,
+  models: attachModelDescriptors(preset.models, {
+    surface: 'text',
+    providerId: canonicalModelProviderId(preset.id, preset.provider),
+    endpointId: modelEndpointId('text', preset.id),
+    region: inferModelCatalogRegion(preset.baseUrl),
+    apiStyle: preset.provider === 'anthropic'
+      ? 'anthropic_messages'
+      : preset.provider === 'google'
+        ? 'gemini_generate_content'
+        : preset.provider === 'ollama'
+          ? 'ollama_chat'
+          : 'openai_chat',
+  }) as ProviderModelPreset[],
+}));
 
 function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
-  return (baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return normalizeModelEndpointUrl(baseUrl);
 }
 
 function providerKeyForPresetLookup(provider: string, normalizedBaseUrl: string): string {

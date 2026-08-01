@@ -24,6 +24,8 @@ import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { SharedCredentialNotice } from "./SharedCredentialNotice";
+import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
+import { modelDescriptorSummary, shouldUseCatalogModelSelect } from "../../lib/modelCatalog";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -214,6 +216,9 @@ export function ImageGenerationSettingsPanel({
   const hasPresetModel =
     activePreset.models.length > 0 &&
     activePreset.models.some((model) => model.id === imageConfig.model);
+  const selectedModelDescriptor = activePreset.models.find(
+    (model) => model.id === imageConfig.model,
+  )?.descriptor;
   const sharedKeySource = useMemo(
     () => findSharedProviderCredential(agentConfigs, imageConfig.provider, imageConfig.baseUrl),
     [agentConfigs, imageConfig.baseUrl, imageConfig.provider],
@@ -406,7 +411,7 @@ export function ImageGenerationSettingsPanel({
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-            {activePreset.models.length > 0 && hasPresetModel ? (
+            {shouldUseCatalogModelSelect(imageConfig.model, activePreset.models) ? (
               <select
                 value={imageConfig.model}
                 onChange={(event) =>
@@ -414,9 +419,10 @@ export function ImageGenerationSettingsPanel({
                 }
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
+                {!hasPresetModel && <option value="" disabled>—</option>}
                 {activePreset.models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}{model.recommended ? " *" : ""}
+                  <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
+                    {model.name}{model.recommended ? " *" : ""} · {modelDescriptorSummary(model.descriptor)}
                   </option>
                 ))}
               </select>
@@ -429,6 +435,7 @@ export function ImageGenerationSettingsPanel({
                 placeholder={getDefaultImageModel(activePreset) || "model-name"}
               />
             )}
+            <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
           </div>
 
           {activePreset.sizeOptions.length > 0 && (

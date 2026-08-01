@@ -796,6 +796,7 @@
   ,"refreshModelCatalog": "モデルを更新"
   ,"modelSourceDiscovered": "検出済み"
   ,"modelStatus.preview": "プレビュー"
+  ,"modelStatus.gated": "アクセスが必要"
   ,"modelStatus.legacy": "旧版"
   ,"modelStatus.deprecated": "非推奨"
   ,"modelCatalogLive": "アカウントのライブカタログ"
