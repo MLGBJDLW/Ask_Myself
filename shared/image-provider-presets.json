@@ -64,6 +64,7 @@
     "requiresApiKey": true,
     "description": "Qwen-Image through Alibaba Cloud Model Studio Beijing region.",
     "models": [
+      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false },
       { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
       { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
       { "id": "qwen-image-max", "name": "Qwen Image Max" },
@@ -89,6 +90,7 @@
     "requiresApiKey": true,
     "description": "Qwen-Image through Alibaba Cloud Model Studio Singapore region.",
     "models": [
+      { "id": "qwen-image-3.0-pro", "name": "Qwen Image 3.0 Pro (Limited Preview)", "recommended": false },
       { "id": "qwen-image-2.0-pro", "name": "Qwen Image 2.0 Pro", "recommended": true },
       { "id": "qwen-image-2.0", "name": "Qwen Image 2.0" },
       { "id": "qwen-image-max", "name": "Qwen Image Max" },
