@@ -738,6 +738,9 @@ mod tests {
             subagent_token_budget: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
+            model_selection_resolution: None,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -801,6 +804,8 @@ mod tests {
             subagent_token_budget: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
         })
         .expect("save agent config")
     }

@@ -2057,6 +2057,9 @@ mod tests {
             subagent_token_budget: Some(4096),
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
+            model_selection_resolution: None,
             created_at: String::new(),
             updated_at: String::new(),
         }
