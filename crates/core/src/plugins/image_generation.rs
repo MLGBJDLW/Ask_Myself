@@ -767,6 +767,8 @@ mod tests {
             api_key: "qwen-key".to_string(),
             base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             model: "qwen3.6-plus".to_string(),
+            provider_endpoint_id: None,
+            model_id: None,
             temperature: None,
             max_tokens: None,
             context_window: None,

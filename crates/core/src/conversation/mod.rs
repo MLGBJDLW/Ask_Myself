@@ -109,6 +109,10 @@ pub struct AgentConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+    /// Stable endpoint identity from Model Catalog v2.
+    pub provider_endpoint_id: Option<String>,
+    /// Canonical model identity. `model` remains during the compatibility window.
+    pub model_id: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<i64>,
     pub context_window: Option<i64>,
@@ -399,6 +403,10 @@ pub struct SaveAgentConfigInput {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+    #[serde(default)]
+    pub provider_endpoint_id: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<i64>,
     pub context_window: Option<i64>,
@@ -3067,6 +3075,31 @@ fn decrypt_agent_config_key(mut config: AgentConfig) -> Result<AgentConfig, Core
     Ok(config)
 }
 
+fn resolve_agent_config_endpoint_id(
+    provider: &str,
+    base_url: Option<&str>,
+    requested: Option<&str>,
+) -> String {
+    if let Some(endpoint_id) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+        return endpoint_id.to_string();
+    }
+    if let Some(endpoint_id) =
+        crate::model_catalog::resolve_builtin_endpoint_id("text", provider, base_url)
+    {
+        return endpoint_id;
+    }
+
+    // Custom endpoint URLs may contain workspace paths or query credentials, so
+    // persist only a deterministic hash rather than the URL itself.
+    let identity = format!(
+        "{}|{}",
+        provider.trim().to_ascii_lowercase(),
+        base_url.unwrap_or_default().trim().trim_end_matches('/')
+    );
+    let digest = blake3::hash(identity.as_bytes()).to_hex();
+    format!("text:custom-{}", &digest[..12])
+}
+
 impl Database {
     /// Upsert an agent config. Returns the persisted row.
     pub fn save_agent_config(
@@ -3075,6 +3108,18 @@ impl Database {
     ) -> Result<AgentConfig, CoreError> {
         let id = input.id.clone().unwrap_or_else(new_id);
         let normalized_base_url = normalize_optional_url(input.base_url.as_deref());
+        let provider_endpoint_id = resolve_agent_config_endpoint_id(
+            &input.provider,
+            normalized_base_url.as_deref(),
+            input.provider_endpoint_id.as_deref(),
+        );
+        let model_id = input
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| input.model.trim())
+            .to_string();
         let encrypted_api_key = crate::crypto::encrypt_api_key(&input.api_key)?;
         let subagent_allowed_tools_json =
             serialize_optional_string_list(input.subagent_allowed_tools.as_deref())?;
@@ -3082,8 +3127,8 @@ impl Database {
             serialize_optional_string_list(input.subagent_allowed_skill_ids.as_deref())?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -3108,6 +3153,8 @@ impl Database {
                 subagent_token_budget = excluded.subagent_token_budget,
                 tool_timeout_secs = excluded.tool_timeout_secs,
                 agent_timeout_secs = excluded.agent_timeout_secs,
+                provider_endpoint_id = excluded.provider_endpoint_id,
+                model_id = excluded.model_id,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -3134,6 +3181,8 @@ impl Database {
                 input.subagent_token_budget,
                 input.tool_timeout_secs,
                 input.agent_timeout_secs,
+                &provider_endpoint_id,
+                &model_id,
             ],
         )?;
         drop(conn);
@@ -3144,7 +3193,7 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -3157,6 +3206,8 @@ impl Database {
                 api_key: row.get(3)?,
                 base_url: row.get(4)?,
                 model: row.get(5)?,
+                provider_endpoint_id: row.get(26)?,
+                model_id: row.get(27)?,
                 temperature: row.get(6)?,
                 max_tokens: row.get(7)?,
                 context_window: row.get(8)?,
@@ -3192,7 +3243,7 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         let config = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -3205,6 +3256,8 @@ impl Database {
                     api_key: row.get(3)?,
                     base_url: row.get(4)?,
                     model: row.get(5)?,
+                    provider_endpoint_id: row.get(26)?,
+                    model_id: row.get(27)?,
                     temperature: row.get(6)?,
                     max_tokens: row.get(7)?,
                     context_window: row.get(8)?,
@@ -3276,7 +3329,7 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
@@ -3289,6 +3342,8 @@ impl Database {
                     api_key: row.get(3)?,
                     base_url: row.get(4)?,
                     model: row.get(5)?,
+                    provider_endpoint_id: row.get(26)?,
+                    model_id: row.get(27)?,
                     temperature: row.get(6)?,
                     max_tokens: row.get(7)?,
                     context_window: row.get(8)?,
@@ -4905,6 +4960,8 @@ mod tests {
                 api_key: "sk-test".into(),
                 base_url: None,
                 model: "gpt-4o".into(),
+                provider_endpoint_id: None,
+                model_id: None,
                 temperature: Some(0.7),
                 max_tokens: Some(4096),
                 context_window: None,
@@ -4944,6 +5001,8 @@ mod tests {
                 api_key: "sk-test2".into(),
                 base_url: None,
                 model: "gpt-4o".into(),
+                provider_endpoint_id: None,
+                model_id: None,
                 temperature: Some(0.5),
                 max_tokens: Some(8192),
                 context_window: None,
@@ -4984,6 +5043,8 @@ mod tests {
                 api_key: "sk-test".into(),
                 base_url: Some("  https://dashscope.aliyuncs.com/compatible-mode/v1/  ".into()),
                 model: "qwen3.5-plus".into(),
+                provider_endpoint_id: None,
+                model_id: None,
                 temperature: Some(0.3),
                 max_tokens: Some(256),
                 context_window: None,
@@ -5026,6 +5087,8 @@ mod tests {
                 api_key: "key-a".into(),
                 base_url: None,
                 model: "gpt-4o".into(),
+                provider_endpoint_id: None,
+                model_id: None,
                 temperature: None,
                 max_tokens: None,
                 context_window: None,
@@ -5055,6 +5118,8 @@ mod tests {
                 api_key: "key-b".into(),
                 base_url: None,
                 model: "gpt-4o-mini".into(),
+                provider_endpoint_id: None,
+                model_id: None,
                 temperature: None,
                 max_tokens: None,
                 context_window: None,
