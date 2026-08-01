@@ -6,6 +6,7 @@ mod agent_task_events;
 mod app_events;
 mod browser;
 mod commands;
+mod delegation_scheduler;
 mod desktop_agent_session;
 mod subagent_tool;
 mod terminal_agent_tool;

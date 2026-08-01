@@ -7,6 +7,8 @@ pub const NEXUS_MAX_ITERATIONS_FLOOR: u32 = 48;
 pub const NEXUS_MAX_PARALLEL: u32 = 6;
 pub const NEXUS_MAX_CALLS_PER_TURN: u32 = 12;
 pub const NEXUS_TOKEN_BUDGET: u32 = 96_000;
+/// Backward-compatible signal that enables dedicated verification/judge lanes.
+/// Delegation v2 no longer freezes this percentage of the token budget.
 pub const NEXUS_VERIFICATION_RESERVE_PERCENT: u32 = 25;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,7 +82,7 @@ impl ResolvedAgentPowerPolicy {
          - For any non-trivial task with two or more independent investigation, implementation-planning, debugging, research, or review tracks, call `spawn_subagent_batch` early with 3-6 focused subagents. This is a required Nexus behavior, not an optional suggestion.\n\
          - Give each subagent a narrow role, explicit deliverable, relevant read-only tools, and disjoint ownership. Keep final synthesis and write ownership with the parent unless parallel writes are provably isolated.\n\
          - Work in evidence-driven waves: parallel reconnaissance first, parent synthesis and implementation second, then an independent verifier or `judge_subagent_results` pass. Reuse workflow templates such as `research_verify` when they fit.\n\
-         - Reserve at least one delegated call and 25% of the delegated token budget for verification or adjudication. Stop exploratory fan-out before consuming that reserve.\n\
+         - Use the runtime's dedicated verification and judge lanes after exploration. These lanes preserve concurrency and call admission without freezing a fixed percentage of the delegated token budget.\n\
          - Prefer objective checks, primary evidence, independent reproduction, and an explicit verifier or judge over majority voting. Correlated agreement is not proof.\n\
          - The runtime has selected only reasoning controls declared by the active model catalog. Never claim an unsupported reasoning level.\n\
          - Do not fan out a truly trivial or tightly coupled one-step task. Extra agents can add latency, cost, overthinking, and conflicting edits. If you do not delegate, state internally why the task is trivial or inseparable."

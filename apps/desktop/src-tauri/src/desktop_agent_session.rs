@@ -1588,6 +1588,7 @@ pub async fn build_desktop_agent_session_dependencies(
         subagent_allowed_skill_ids,
         cancel_token,
         Some(task_run_id.to_string()),
+        Some(conversation_id.to_string()),
     );
     tools.register(Box::new(SubagentTool::from_runtime(
         delegation_runtime.clone(),

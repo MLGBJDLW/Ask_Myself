@@ -50,7 +50,14 @@
         "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Choose one of the available workflow template IDs."
       },
       "parallel_group": { "type": "string" },
-      "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 }
+      "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 },
+      "completion_policy": {
+        "type": "string",
+        "enum": ["all", "quorum", "first_success", "deadline", "parent_decides"],
+        "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or the first completed result for parent review."
+      },
+      "quorum": { "type": "integer", "minimum": 1, "maximum": 8 },
+      "deadline_ms": { "type": "integer", "minimum": 250, "maximum": 180000 }
     },
     "additionalProperties": false
   }

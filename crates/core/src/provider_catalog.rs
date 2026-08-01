@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::llm::ProviderType;
 use crate::model_catalog::{
     load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CapabilityProbeResult,
-    CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor,
+    CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor, ModelLimits,
     MODEL_DESCRIPTOR_SCHEMA_VERSION,
 };
 use crate::provider_registry::provider_type_from_key;
@@ -526,6 +526,31 @@ pub fn model_capabilities_from_catalog(
         })
 }
 
+pub fn model_limits_from_catalog(provider_type: ProviderType, model: &str) -> Option<ModelLimits> {
+    let normalized_model = normalize_model_id(model);
+    if normalized_model.is_empty() {
+        return None;
+    }
+    let catalog = load_builtin_catalog().ok()?;
+    catalog.models.into_iter().find_map(|descriptor| {
+        let model_matches = normalize_model_id(&descriptor.id) == normalized_model
+            || descriptor
+                .aliases
+                .iter()
+                .any(|alias| normalize_model_id(alias) == normalized_model);
+        if !model_matches {
+            return None;
+        }
+        let provider_matches = descriptor.endpoint_ids.iter().any(|endpoint_id| {
+            catalog.endpoints.iter().any(|endpoint| {
+                endpoint.id == *endpoint_id
+                    && provider_type_from_key(&endpoint.provider_id) == Some(provider_type)
+            })
+        });
+        provider_matches.then_some(descriptor.limits)
+    })
+}
+
 pub fn model_supports_reasoning_from_catalog(
     provider_type: ProviderType,
     model: &str,
@@ -584,6 +609,15 @@ fn normalize_model_id(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_v2_exposes_verified_gemini_context_and_output_limits() {
+        let limits = model_limits_from_catalog(ProviderType::Google, "gemini-2.5-pro")
+            .expect("Gemini limits");
+
+        assert_eq!(limits.context_tokens, Some(1_048_576));
+        assert_eq!(limits.max_output_tokens, Some(65_536));
+    }
 
     #[test]
     fn deepseek_catalog_uses_v4_models() {
