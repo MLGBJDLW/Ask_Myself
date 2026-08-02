@@ -511,6 +511,7 @@ pub struct McpManager {
     clients: HashMap<String, Arc<Mutex<McpClient>>>,
     connected_servers: HashMap<String, McpServer>,
     managed_processes: HashMap<String, Child>,
+    connection_generation: u64,
 }
 
 impl McpManager {
@@ -519,6 +520,7 @@ impl McpManager {
             clients: HashMap::new(),
             connected_servers: HashMap::new(),
             managed_processes: HashMap::new(),
+            connection_generation: 0,
         }
     }
 
@@ -697,6 +699,7 @@ impl McpManager {
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
+                self.connection_generation = self.connection_generation.saturating_add(1);
                 Ok(tools)
             }
             "sse" | "streamable_http" => {
@@ -732,6 +735,7 @@ impl McpManager {
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
+                self.connection_generation = self.connection_generation.saturating_add(1);
                 Ok(tools)
             }
             other => Err(CoreError::InvalidInput(format!(
@@ -782,18 +786,31 @@ impl McpManager {
 
     /// Disconnect and shut down a specific MCP connector.
     pub async fn disconnect_server(&mut self, server_id: &str) -> Result<(), CoreError> {
-        self.connected_servers.remove(server_id);
-        if let Some(client) = self.clients.remove(server_id) {
+        let removed_server = self.connected_servers.remove(server_id).is_some();
+        let client = self.clients.remove(server_id);
+        let removed_client = client.is_some();
+        if let Some(client) = client {
             let mut guard = client.lock().await;
             guard.shutdown().await.ok();
         }
         // Kill managed process if present
-        if let Some(mut child) = self.managed_processes.remove(server_id) {
+        let process = self.managed_processes.remove(server_id);
+        let removed_process = process.is_some();
+        if let Some(mut child) = process {
             tracing::info!("Killing managed process for server {}", server_id);
             let _ = child.kill();
             let _ = child.wait();
         }
+        if removed_server || removed_client || removed_process {
+            self.connection_generation = self.connection_generation.saturating_add(1);
+        }
         Ok(())
+    }
+
+    /// Monotonic identity for the live client set. Registries that capture MCP
+    /// client Arcs must include this value in their cache key.
+    pub fn connection_generation(&self) -> u64 {
+        self.connection_generation
     }
 
     /// Disconnect all MCP connectors.
@@ -1010,6 +1027,33 @@ mod tests {
         assert_eq!(mcp_registry_slug("Web Search", "server"), "web_search");
         assert_eq!(mcp_registry_slug("search.query", "tool"), "search_query");
         assert_eq!(mcp_registry_slug("!!!", "tool"), "tool");
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_live_server_advances_registry_generation() {
+        let mut manager = McpManager::new();
+        manager.connected_servers.insert(
+            "server-1".into(),
+            McpServer {
+                id: "server-1".into(),
+                name: "Test".into(),
+                transport: "streamable_http".into(),
+                command: None,
+                args: None,
+                url: Some("https://example.test/mcp".into()),
+                env_json: None,
+                headers_json: None,
+                enabled: true,
+                created_at: String::new(),
+                updated_at: String::new(),
+                builtin_id: None,
+            },
+        );
+
+        let before = manager.connection_generation();
+        manager.disconnect_server("server-1").await.unwrap();
+
+        assert!(manager.connection_generation() > before);
     }
 
     #[test]

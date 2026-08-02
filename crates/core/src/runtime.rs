@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::agent::power_mode::AgentPowerMode;
@@ -64,6 +64,7 @@ pub struct ActiveAgentTurn {
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
     pub event_sequencer: Arc<AgentRunEventSequencer>,
     pub orchestrator_run_id: Option<String>,
+    pub frontend_paint_recorded: AtomicBool,
 }
 
 impl ActiveAgentTurn {
@@ -154,6 +155,29 @@ impl AgentSessionManager {
             return false;
         }
         active.contains_key(session_id)
+    }
+
+    /// Claim the one frontend-paint metric allowed for an active turn.
+    ///
+    /// The identity check prevents a delayed frame from a previous turn from
+    /// writing telemetry into a newer turn for the same conversation.
+    pub async fn claim_frontend_paint_metric(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        turn_id: &str,
+    ) -> bool {
+        let active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return false;
+        };
+        if turn.handle.run_id != run_id || turn.handle.turn_id != turn_id {
+            return false;
+        }
+        if turn.frontend_paint_recorded.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        true
     }
 
     /// Returns `None` only while another runtime operation holds the manager.
@@ -814,6 +838,7 @@ mod tests {
                 steering_tx: first_tx,
                 event_sequencer: Arc::new(AgentRunEventSequencer::default()),
                 orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
             })
             .await;
 
@@ -827,6 +852,7 @@ mod tests {
                 steering_tx: second_tx,
                 event_sequencer: Arc::new(AgentRunEventSequencer::default()),
                 orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
             })
             .await;
 
@@ -838,6 +864,21 @@ mod tests {
         assert_eq!(
             second_rx.recv().await.expect("steering message").content,
             "keep going"
+        );
+        assert!(
+            !manager
+                .claim_frontend_paint_metric("session-1", "run-1", "turn-1")
+                .await
+        );
+        assert!(
+            manager
+                .claim_frontend_paint_metric("session-1", "run-2", "turn-2")
+                .await
+        );
+        assert!(
+            !manager
+                .claim_frontend_paint_metric("session-1", "run-2", "turn-2")
+                .await
         );
 
         let active = manager.take("session-1").await.expect("active turn");

@@ -4,6 +4,7 @@
  */
 
 import type { AgentFrontendEvent } from '../types';
+import { recordAgentFrontendPaint } from './api';
 import type {
   AgentRunEvent,
   AgentTaskRun,
@@ -53,6 +54,23 @@ function stateHasVisiblePreview(state: InternalStreamState | undefined): boolean
     state.streamText.length > 0 ||
     state.streamRounds.length > 0
   ));
+}
+
+function stateHasVisibleGeneratedContent(state: InternalStreamState): boolean {
+  return Boolean(
+    state.streamText
+    || state.thinkingText
+    || state.toolCalls.length > 0
+    || state.streamRounds.some(round => Boolean(round.reply || round.thinking)),
+  );
+}
+
+function nextAnimationFrame(callback: () => void): void {
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    globalThis.requestAnimationFrame(callback);
+    return;
+  }
+  globalThis.setTimeout(callback, 0);
 }
 
 class StreamStoreImpl {
@@ -165,7 +183,7 @@ class StreamStoreImpl {
   }
 
   /** Initialize (or reset) stream state for a conversation. */
-  startStream(conversationId: string): void {
+  startStream(conversationId: string, launchStartedAt?: number): void {
     const existing = this._streams[conversationId];
     if (existing) {
       clearStreamWatchdog(existing);
@@ -174,6 +192,7 @@ class StreamStoreImpl {
 
     const state = createDefaultState();
     state.isStreaming = true;
+    state._launchStartedAt = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
     this._streams[conversationId] = state;
     this.resetTimeout(conversationId);
     this.notify(conversationId);
@@ -185,6 +204,7 @@ class StreamStoreImpl {
     if (!state) return;
     state.turnHandle = handle;
     this.notify(conversationId);
+    this.scheduleFrontendFirstPaint(conversationId, state);
   }
 
   /** Remove stream state entirely. */
@@ -295,6 +315,39 @@ class StreamStoreImpl {
     }, TOOL_PREPARING_DELAY_MS);
   }
 
+  private scheduleFrontendFirstPaint(
+    conversationId: string,
+    state: InternalStreamState,
+  ): void {
+    if (
+      state._frontendPaintScheduled
+      || state._frontendPaintReported
+      || state._launchStartedAt === null
+      || !state.turnHandle
+      || !stateHasVisibleGeneratedContent(state)
+    ) return;
+
+    state._frontendPaintScheduled = true;
+    nextAnimationFrame(() => {
+      nextAnimationFrame(() => {
+        const current = this._streams[conversationId];
+        if (!current || current._frontendPaintReported || !current.turnHandle) return;
+        current._frontendPaintScheduled = false;
+        current._frontendPaintReported = true;
+        const elapsedMs = (globalThis.performance?.now() ?? Date.now())
+          - (current._launchStartedAt ?? 0);
+        void recordAgentFrontendPaint(
+          conversationId,
+          current.turnHandle.runId,
+          current.turnHandle.turnId,
+          elapsedMs,
+        ).catch(() => {
+          // Paint telemetry must never affect the live conversation.
+        });
+      });
+    });
+  }
+
   /** Process an incoming agent event. */
   dispatch(conversationId: string, event: AgentFrontendEvent): void {
     if (event.runEvent) {
@@ -340,6 +393,7 @@ class StreamStoreImpl {
       } else {
         this.scheduleNotify(conversationId);
       }
+      this.scheduleFrontendFirstPaint(conversationId, state);
       return;
     }
 
@@ -397,6 +451,7 @@ class StreamStoreImpl {
     } else {
       this.scheduleNotify(conversationId);
     }
+    this.scheduleFrontendFirstPaint(conversationId, s);
   }
 }
 

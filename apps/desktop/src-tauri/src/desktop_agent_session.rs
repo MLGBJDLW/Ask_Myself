@@ -106,6 +106,7 @@ pub struct DesktopAgentTurnStream {
     pub task_run_id: String,
     pub event_seq: Arc<AgentRunEventSequencer>,
     pub terminal_emitted: Arc<AtomicBool>,
+    pub launch_started: Instant,
 }
 
 pub struct DesktopAgentApprovalRuntime {
@@ -1521,7 +1522,7 @@ pub async fn build_desktop_agent_session_dependencies(
         warn!("Failed to load enabled MCP servers: {error}");
         error
     });
-    let generation = package_assembler
+    let configuration_generation = package_assembler
         .as_ref()
         .ok()
         .zip(enabled_servers.as_ref().ok())
@@ -1529,8 +1530,14 @@ pub async fn build_desktop_agent_session_dependencies(
             desktop_tool_registry_generation(assembler, servers)
                 .map_err(|error| warn!("{error}"))
                 .ok()
-        })
-        .map(|generation| format!("{mcp_manager:p}:{generation}"));
+        });
+    let mut manager = mcp_manager.lock().await;
+    let generation = configuration_generation.as_ref().map(|generation| {
+        format!(
+            "{mcp_manager:p}:{generation}:{}",
+            manager.connection_generation()
+        )
+    });
     let snapshot_cache = DESKTOP_TOOL_REGISTRY_SNAPSHOT.get_or_init(|| TokioMutex::new(None));
     let mut snapshot_guard = snapshot_cache.lock().await;
     let cached_tools = generation.as_ref().and_then(|generation| {
@@ -1550,8 +1557,8 @@ pub async fn build_desktop_agent_session_dependencies(
                 canonical_builtin_tool_registry()
             });
         let mcp_sync_started = Instant::now();
+        let mut registry_snapshot_complete = enabled_servers.is_ok();
         if let Ok(enabled_servers) = enabled_servers.as_ref() {
-            let mut manager = mcp_manager.lock().await;
             match sync_enabled_desktop_mcp_servers(
                 &mut manager,
                 enabled_servers,
@@ -1560,26 +1567,38 @@ pub async fn build_desktop_agent_session_dependencies(
             .await
             {
                 Ok(errors) => {
+                    registry_snapshot_complete = errors.is_empty();
                     for (server_id, error) in errors {
                         warn!("Failed to sync MCP server {server_id}: {error}");
                     }
                 }
-                Err(error) => warn!("Failed to load enabled MCP servers: {error}"),
+                Err(error) => {
+                    registry_snapshot_complete = false;
+                    warn!("Failed to sync enabled MCP servers: {error}");
+                }
             }
             if let Err(error) = manager.register_tools(&mut tools).await {
+                registry_snapshot_complete = false;
                 warn!("Failed to register MCP tools: {error}");
             }
         }
         let mcp_sync_ms = elapsed_ms(mcp_sync_started);
-        if let Some(generation) = generation {
-            *snapshot_guard = Some(DesktopToolRegistrySnapshot {
-                generation,
-                tools: tools.clone(),
-            });
+        if registry_snapshot_complete {
+            if let Some(configuration_generation) = configuration_generation {
+                let generation = format!(
+                    "{mcp_manager:p}:{configuration_generation}:{}",
+                    manager.connection_generation()
+                );
+                *snapshot_guard = Some(DesktopToolRegistrySnapshot {
+                    generation,
+                    tools: tools.clone(),
+                });
+            }
         }
         (tools, mcp_sync_ms)
     };
     drop(snapshot_guard);
+    drop(manager);
 
     let delegation_runtime = DelegationRuntime::new(
         provider_config,
@@ -1807,6 +1826,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
             turn_id.clone(),
             Arc::clone(&stream.event_seq),
             Arc::clone(&stream.terminal_emitted),
+            stream.launch_started,
         )
         .run(events_rx),
     );

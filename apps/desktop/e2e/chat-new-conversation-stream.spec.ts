@@ -41,6 +41,7 @@ test.beforeEach(async ({ page }) => {
 
     const conversations: Record<string, Conversation> = {};
     const messagesByConversation: Record<string, Message[]> = {};
+    const frontendPaintCalls: Array<Record<string, unknown>> = [];
 
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -136,6 +137,9 @@ test.beforeEach(async ({ page }) => {
         case 'compact_conversation_cmd':
           return null;
         case 'agent_stop_cmd':
+          return null;
+        case 'record_agent_frontend_paint_cmd':
+          frontendPaintCalls.push(clone(args));
           return null;
         case 'save_agent_config_cmd':
           return clone(defaultAgentConfig);
@@ -309,7 +313,12 @@ test.beforeEach(async ({ page }) => {
             });
           }, 240);
 
-          return null;
+          return {
+            sessionId: conversationId,
+            runId: 'run-created-live',
+            turnId: 'turn-created-live',
+            state: 'starting',
+          };
         }
         default:
           return null;
@@ -328,6 +337,8 @@ test.beforeEach(async ({ page }) => {
       },
       convertFileSrc: (filePath: string) => filePath,
     };
+    (window as unknown as { __frontendPaintCalls__: Array<Record<string, unknown>> })
+      .__frontendPaintCalls__ = frontendPaintCalls;
 
     (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
       unregisterListener: (_event: string, eventId: number) => {
@@ -347,4 +358,16 @@ test('keeps the first live thinking and tool call visible when a new conversatio
   await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(chatLog.getByText('Planning the lookup first.')).toBeVisible();
   await expect(chatLog.getByTestId('tool-call-card')).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __frontendPaintCalls__: Array<Record<string, unknown>> })
+      .__frontendPaintCalls__[0],
+  )).toMatchObject({
+    conversationId: 'conv-created-live',
+    runId: 'run-created-live',
+    turnId: 'turn-created-live',
+  });
+  await expect.poll(() => page.evaluate(() => Number(
+    (window as unknown as { __frontendPaintCalls__: Array<Record<string, unknown>> })
+      .__frontendPaintCalls__[0]?.elapsedMs ?? 0,
+  ))).toBeGreaterThan(0);
 });

@@ -158,6 +158,44 @@ pub async fn agent_chat_cmd(
     .map(|launch| launch.handle)
 }
 
+#[tauri::command]
+pub async fn record_agent_frontend_paint_cmd(
+    state: tauri::State<'_, AppState>,
+    agent_state: tauri::State<'_, AgentState>,
+    app_handle: AppHandle,
+    conversation_id: String,
+    run_id: String,
+    turn_id: String,
+    elapsed_ms: u64,
+) -> Result<(), String> {
+    if !agent_state
+        .sessions
+        .claim_frontend_paint_metric(&conversation_id, &run_id, &turn_id)
+        .await
+    {
+        return Ok(());
+    }
+    let elapsed_ms = elapsed_ms.min(60 * 60 * 1_000);
+    let payload = serde_json::json!({
+        "kind": "turnLaunchMetric",
+        "stage": TurnLaunchStage::FrontendFirstPaintMs.as_str(),
+        "elapsedMs": elapsed_ms,
+        "turnId": turn_id,
+    });
+    state
+        .db
+        .record_agent_task_run_event(
+            &run_id,
+            "telemetry",
+            TurnLaunchStage::FrontendFirstPaintMs.as_str(),
+            Some("recorded"),
+            Some(&payload),
+        )
+        .map_err(|error| error.to_string())?;
+    emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &run_id);
+    Ok(())
+}
+
 pub(super) async fn launch_desktop_agent_chat_turn(
     request: DesktopAgentChatLaunchRequest<'_>,
 ) -> Result<DesktopAgentChatLaunch, String> {
@@ -638,6 +676,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 task_run_id: task_run_id.clone(),
                 event_seq: Arc::clone(&stream_event_seq_for_task),
                 terminal_emitted: Arc::clone(&terminal_emitted),
+                launch_started,
             },
         })
         .await;
@@ -742,6 +781,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             steering_tx,
             event_sequencer: Arc::clone(&stream_event_seq),
             orchestrator_run_id: task_orchestrator_run_id,
+            frontend_paint_recorded: AtomicBool::new(false),
         })
         .await;
 

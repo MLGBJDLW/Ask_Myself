@@ -431,6 +431,7 @@ fn main() {
             commands::export_workflow_automation_trajectory_cmd,
             // Agent chat
             commands::agent_chat_cmd,
+            commands::record_agent_frontend_paint_cmd,
             commands::agent_steer_cmd,
             commands::agent_stop_cmd,
             // Terminal

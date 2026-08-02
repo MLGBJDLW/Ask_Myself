@@ -1319,6 +1319,18 @@ export const agentSteer = (conversationId: string, message: string) =>
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
 
+export const recordAgentFrontendPaint = (
+  conversationId: string,
+  runId: string,
+  turnId: string,
+  elapsedMs: number,
+) => invoke<void>('record_agent_frontend_paint_cmd', {
+  conversationId,
+  runId,
+  turnId,
+  elapsedMs: Math.max(0, Math.round(elapsedMs)),
+});
+
 export const getModelContextWindow = (model: string) =>
   invoke<number>('get_model_context_window', { model });
 
