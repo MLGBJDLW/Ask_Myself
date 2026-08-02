@@ -63,6 +63,20 @@
   max-height: min(24rem, var(--radix-select-content-available-height));
 }
 
+.nexa-multi-select-content {
+  overflow: hidden;
+  min-width: var(--radix-dropdown-menu-trigger-width);
+  max-width: min(32rem, calc(100vw - 20px));
+  max-height: min(24rem, var(--radix-dropdown-menu-content-available-height));
+}
+
+.nexa-multi-select-viewport {
+  max-height: min(24rem, var(--radix-dropdown-menu-content-available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.25rem;
+}
+
 .nexa-select-viewport { padding: 0.25rem; }
 .nexa-select-item { padding-left: 1.9rem; }
 .nexa-select-indicator { position: absolute; left: 0.55rem; }

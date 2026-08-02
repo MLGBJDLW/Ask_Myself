@@ -124,33 +124,35 @@ export function NexaSelect({
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal container={overlayRoot}>
           <DropdownMenu.Content
-            className="nexa-overlay-content nexa-select-content pointer-events-auto p-1"
+            className="nexa-overlay-content nexa-multi-select-content pointer-events-auto"
             sideOffset={6}
             collisionPadding={10}
           >
-            {options.map(option => {
-              const checked = selectedValues.includes(option.value);
-              return (
-                <DropdownMenu.CheckboxItem
-                  key={option.value}
-                  checked={checked}
-                  disabled={option.disabled}
-                  onSelect={event => event.preventDefault()}
-                  onCheckedChange={() => {
-                    const next = checked
-                      ? selectedValues.filter(item => item !== option.value)
-                      : [...selectedValues, option.value];
-                    emitChange(next[0] ?? '', next);
-                  }}
-                  className="nexa-overlay-item nexa-select-item"
-                >
-                  <DropdownMenu.ItemIndicator className="nexa-select-indicator">
-                    <Check className="h-3.5 w-3.5" />
-                  </DropdownMenu.ItemIndicator>
-                  {option.label}
-                </DropdownMenu.CheckboxItem>
-              );
-            })}
+            <div className="nexa-multi-select-viewport">
+              {options.map(option => {
+                const checked = selectedValues.includes(option.value);
+                return (
+                  <DropdownMenu.CheckboxItem
+                    key={option.value}
+                    checked={checked}
+                    disabled={option.disabled}
+                    onSelect={event => event.preventDefault()}
+                    onCheckedChange={() => {
+                      const next = checked
+                        ? selectedValues.filter(item => item !== option.value)
+                        : [...selectedValues, option.value];
+                      emitChange(next[0] ?? '', next);
+                    }}
+                    className="nexa-overlay-item nexa-select-item"
+                  >
+                    <DropdownMenu.ItemIndicator className="nexa-select-indicator">
+                      <Check className="h-3.5 w-3.5" />
+                    </DropdownMenu.ItemIndicator>
+                    {option.label}
+                  </DropdownMenu.CheckboxItem>
+                );
+              })}
+            </div>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
