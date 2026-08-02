@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { NexaSelect } from "../ui/overlay";
 import {
   Eye,
   EyeOff,
@@ -830,7 +831,7 @@ export function AgentConfigForm({
         <label className="text-sm font-medium text-text-primary">
           {t("settings.providerType")}
         </label>
-        <select
+        <NexaSelect
           value={provider}
           onChange={(e) => {
             setProvider(e.target.value as ProviderType);
@@ -843,7 +844,7 @@ export function AgentConfigForm({
               {t(opt.labelKey as any)}
             </option>
           ))}
-        </select>
+        </NexaSelect>
       </div>
 
       {/* API Key — hidden for local providers */}
@@ -888,7 +889,7 @@ export function AgentConfigForm({
 
       {/* Model */}
       {activePreset && activePreset.models.length > 0 && !useCustomModel ? (
-        <div className="space-y-2">
+        <div className="space-y-2" data-testid="default-model-field">
           <div className="flex items-center justify-between gap-3">
             <label className="text-sm font-medium text-text-primary">
               {t("settings.defaultModel")}
@@ -990,7 +991,7 @@ export function AgentConfigForm({
               )}
             </div>
           ) : (
-            <select
+            <NexaSelect
               value={model}
               onChange={(e) => {
                 setModel(e.target.value);
@@ -1011,7 +1012,7 @@ export function AgentConfigForm({
                   {` · ${modelDescriptorSummary(m.descriptor)}`}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
           )}
           {!usesSearchableModelPicker && (
             <ModelDescriptorBadges descriptor={selectedPresetModel?.descriptor} />
@@ -1244,7 +1245,7 @@ export function AgentConfigForm({
                 <label className="text-sm font-medium text-text-primary">
                   {t("settings.reasoningEffort")}
                 </label>
-                <select
+                <NexaSelect
                   value={
                     normalizeReasoningEffort(
                       reasoningEffort,
@@ -1261,7 +1262,7 @@ export function AgentConfigForm({
                       {t(REASONING_EFFORT_LABEL_KEYS[level])}
                     </option>
                   ))}
-                </select>
+                </NexaSelect>
                 <p className="text-xs text-text-tertiary">
                   {t("settings.reasoningEffortHelp")}
                 </p>
@@ -1318,7 +1319,7 @@ export function AgentConfigForm({
             <label className="text-sm font-medium text-text-primary">
               {t("settings.summarizationProvider")}
             </label>
-            <select
+            <NexaSelect
               value={summarizationProvider ?? ""}
               onChange={(e) => setSummarizationProvider(e.target.value || null)}
               className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
@@ -1329,7 +1330,7 @@ export function AgentConfigForm({
                   {t(opt.labelKey as any)}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
             <p className="text-xs text-text-tertiary">
               {t("settings.summarizationProviderHelp")}
             </p>

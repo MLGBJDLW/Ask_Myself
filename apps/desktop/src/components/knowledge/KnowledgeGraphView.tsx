@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { useNavigate } from 'react-router';
 import {
   BookOpen,
@@ -968,7 +969,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
         <div className="grid gap-3 lg:grid-cols-[minmax(180px,0.9fr)_minmax(180px,0.8fr)_minmax(220px,1fr)_auto]">
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-text-tertiary">{t('knowledge.sourceScope')}</span>
-            <select
+            <NexaSelect
               value={selectedSourceId}
               onChange={(event) => setSelectedSourceId(event.target.value)}
               className="h-10 w-full rounded-md border border-border bg-surface-0 px-3 text-sm text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
@@ -977,7 +978,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
               {sources.map((source) => (
                 <option key={source.id} value={source.id}>{shortPath(source.rootPath)}</option>
               ))}
-            </select>
+            </NexaSelect>
           </label>
 
           <label className="space-y-1.5">
@@ -1039,7 +1040,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
           />
           <label className="relative">
             <Filter size={15} className="pointer-events-none absolute left-3 top-1/2 block shrink-0 -translate-y-1/2 text-text-tertiary" />
-            <select
+            <NexaSelect
               value={relationFilter}
               onChange={(event) => setRelationFilter(event.target.value)}
               className="h-10 w-full rounded-md border border-border bg-surface-0 py-0 pl-10 pr-3 text-sm text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
@@ -1048,7 +1049,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
               {relationTypes.map((relation) => (
                 <option key={relation} value={relation}>{relationLabel(relation, t)}</option>
               ))}
-            </select>
+            </NexaSelect>
           </label>
 
           <div className="space-y-1.5">
@@ -1073,7 +1074,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
 
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-text-tertiary">{t('knowledge.visibleBudget')}</span>
-            <select
+            <NexaSelect
               value={maxVisibleNodes}
               onChange={(event) => setMaxVisibleNodes(Number(event.target.value))}
               className="h-10 w-full rounded-md border border-border bg-surface-0 px-3 text-sm text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
@@ -1081,7 +1082,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
               {NODE_BUDGET_OPTIONS.map((value) => (
                 <option key={value} value={value}>{value}</option>
               ))}
-            </select>
+            </NexaSelect>
           </label>
         </div>
       </section>

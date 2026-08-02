@@ -27,6 +27,8 @@ import {
 } from '../src/lib/streaming/timelineViewModel';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
+import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
+import { upsertBoundedConversationCache } from '../src/lib/boundedConversationCache';
 import {
   isTaskTimelineEvent,
   taskTimelinePayloadFromTaskEvent,
@@ -1854,6 +1856,53 @@ test('stream registry keeps concurrent conversations independently addressable',
 
   streamStore.clearStream(firstId);
   streamStore.clearStream(secondId);
+});
+
+test('ordinary stream notifications coalesce by frame while urgent state flushes now', () => {
+  const queuedFrames: Array<() => void> = [];
+  const flushed: string[] = [];
+  const batcher = new ConversationFrameBatcher(
+    conversationId => flushed.push(conversationId),
+    callback => queuedFrames.push(callback),
+  );
+
+  batcher.schedule('conversation-a');
+  batcher.schedule('conversation-a');
+  batcher.schedule('conversation-b');
+  assertEqual(flushed.length, 0, 'ordinary notifications wait for a paint frame');
+  assertEqual(queuedFrames.length, 1, 'one frame serves all pending conversations');
+
+  batcher.flushNow('conversation-a');
+  assertEqual(flushed.join(','), 'conversation-a', 'urgent state is delivered immediately');
+  queuedFrames[0]();
+  assertEqual(flushed.join(','), 'conversation-a,conversation-b', 'urgent state is not duplicated');
+});
+
+test('conversation cache evicts least-recently-used entries by count and bytes', () => {
+  const recency = new Map<string, number>();
+  let cache: Record<string, string> = {};
+  const upsert = (id: string, value: string, tick: number, protectedKeys: string[] = []) => {
+    cache = upsertBoundedConversationCache(cache, id, value, {
+      maxEntries: 3,
+      maxBytes: 9,
+      estimateBytes: entry => entry.length,
+      recency,
+      protectedKeys,
+      tick,
+    });
+  };
+
+  upsert('a', 'aaa', 1);
+  upsert('b', 'bbb', 2);
+  upsert('c', 'ccc', 3);
+  upsert('d', 'ddd', 4, ['a']);
+  assert(Boolean(cache.a), 'protected conversation remains cached');
+  assert(!cache.b, 'least-recently-used unprotected conversation is evicted');
+  assertEqual(Object.keys(cache).length, 3, 'entry count remains bounded');
+
+  upsert('oversized', '1234567890', 5);
+  assert(Boolean(cache.oversized), 'new active entry remains available even above byte budget');
+  assert(!cache.c && !cache.d, 'older entries are evicted to satisfy the byte budget');
 });
 
 async function main(): Promise<void> {

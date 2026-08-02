@@ -1,12 +1,15 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useCallback, useEffect } from 'react';
 import { Bookmark, GitBranch, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { appTimeMs, parseAppDate } from '../../lib/dateTime';
 import type { Checkpoint, Conversation } from '../../types/conversation';
+import {
+  NexaPopover,
+  NexaPopoverContent,
+  NexaPopoverTrigger,
+} from '../ui/overlay';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -45,23 +48,6 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
   const [loading, setLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [branchingId, setBranchingId] = useState<string | null>(null);
-  const [panelPosition, setPanelPosition] = useState<{ left: number; top: number } | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const firstRestoreButtonRef = useRef<HTMLButtonElement>(null);
-
-  const updatePanelPosition = useCallback(() => {
-    const trigger = triggerRef.current;
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    const width = panelRef.current?.offsetWidth || 320;
-    const height = panelRef.current?.offsetHeight || 288;
-    setPanelPosition({
-      left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
-      top: Math.max(8, rect.top - height - 4),
-    });
-  }, []);
 
   /* ── Load checkpoints when dropdown opens ───────────────────────── */
   const load = useCallback(async () => {
@@ -84,68 +70,9 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
     }
   }, [open, load]);
 
-  useLayoutEffect(() => {
-    if (!open) {
-      setPanelPosition(null);
-      return;
-    }
-    updatePanelPosition();
-  }, [checkpoints.length, loading, open, updatePanelPosition]);
-
-  useEffect(() => {
-    if (!open) return;
-    const update = () => updatePanelPosition();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open, updatePanelPosition]);
-
-  const closeMenu = useCallback((restoreFocus = true) => {
+  const closeMenu = useCallback((_restoreFocus = true) => {
     setOpen(false);
-    if (restoreFocus) {
-      requestAnimationFrame(() => triggerRef.current?.focus());
-    }
   }, []);
-
-  /* ── Close on outside click ─────────────────────────────────────── */
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        ref.current
-        && !ref.current.contains(target)
-        && !panelRef.current?.contains(target)
-      ) {
-        closeMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [closeMenu, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeMenu();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [closeMenu, open]);
-
-  useEffect(() => {
-    if (!open || loading) return;
-    const frame = requestAnimationFrame(() => {
-      firstRestoreButtonRef.current?.focus() ?? panelRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [checkpoints.length, loading, open]);
 
   /* ── Restore a checkpoint ───────────────────────────────────────── */
   const handleRestore = useCallback(async (checkpointId: string) => {
@@ -186,13 +113,12 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
 
   /* ── Render ─────────────────────────────────────────────────────── */
   return (
-    <div ref={ref} className="relative inline-block">
+    <NexaPopover open={open} onOpenChange={setOpen}>
       {/* Trigger button */}
+      <NexaPopoverTrigger asChild>
       <button
-        ref={triggerRef}
         type="button"
         data-testid="checkpoint-menu-trigger"
-        onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"
         className="
@@ -203,26 +129,19 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
       >
         <Bookmark size={12} />
       </button>
+      </NexaPopoverTrigger>
 
       {/* Dropdown (opens upward since button is near bottom) */}
-      {typeof document !== 'undefined' ? createPortal(<AnimatePresence>
-        {open && (
-          <motion.div
-            ref={panelRef}
+          <NexaPopoverContent
             data-testid="checkpoint-menu-panel"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
             role="dialog"
             aria-modal="false"
             aria-label={t('chat.checkpoints')}
             tabIndex={-1}
-            style={panelPosition ?? { left: 0, top: 0, visibility: 'hidden' }}
+            side="top"
+            align="end"
             className="
-              fixed z-[100]
               w-80 max-h-72 overflow-y-auto
-              bg-surface-1 border border-border rounded-lg shadow-lg
             "
           >
             {/* Header */}
@@ -268,8 +187,7 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
                             <GitBranch size={12} />
                           </button>
                         )}
-                        <button
-                          ref={cp.id === checkpoints[0]?.id ? firstRestoreButtonRef : undefined}
+                          <button
                           type="button"
                           onClick={() => setConfirmingId(confirmingId === cp.id ? null : cp.id)}
                           className="p-1 rounded text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
@@ -316,9 +234,7 @@ export function CheckpointMenu({ conversationId, onRestore, onBranch }: Checkpoi
                 ))}
               </ul>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>, document.body) : null}
-    </div>
+          </NexaPopoverContent>
+    </NexaPopover>
   );
 }

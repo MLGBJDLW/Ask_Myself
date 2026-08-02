@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { NexaSelect } from '../components/ui/overlay';
 import { useNavigate } from 'react-router';
 import {
   Activity,
@@ -439,7 +440,7 @@ export function WorkflowsPage() {
                     <input className={textInputClass()} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
                   </Field>
                   <Field label={tr('templates')}>
-                    <select
+                    <NexaSelect
                       className={textInputClass()}
                       value={form.workflowTemplateId}
                       onChange={(event) => {
@@ -454,7 +455,7 @@ export function WorkflowsPage() {
                       {templates.map((template) => (
                         <option key={template.id} value={template.id}>{templateText(template, 'label', tr)}</option>
                       ))}
-                    </select>
+                    </NexaSelect>
                   </Field>
                   <Field label={tr('prompt')}>
                     <textarea className={textareaClass()} value={form.prompt || (selectedTemplate ? templateText(selectedTemplate, 'prompt', tr) : '')} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
@@ -493,7 +494,7 @@ export function WorkflowsPage() {
                     </div>
                   )}
                   <Field label={tr('sourceScope')}>
-                    <select
+                    <NexaSelect
                       multiple
                       className="min-h-28 w-full rounded-md border border-border/70 bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent/70"
                       value={form.sourceScope}
@@ -505,15 +506,15 @@ export function WorkflowsPage() {
                       {sources.map((source) => (
                         <option key={source.id} value={source.id}>{source.rootPath}</option>
                       ))}
-                    </select>
+                    </NexaSelect>
                   </Field>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <Field label={tr('riskLevel')}>
-                      <select className={textInputClass()} value={form.approvalPolicy.riskLevel} onChange={(event) => setForm({ ...form, approvalPolicy: { ...form.approvalPolicy, riskLevel: event.target.value } })}>
+                      <NexaSelect className={textInputClass()} value={form.approvalPolicy.riskLevel} onChange={(event) => setForm({ ...form, approvalPolicy: { ...form.approvalPolicy, riskLevel: event.target.value } })}>
                         <option value="low">{tr('riskLow')}</option>
                         <option value="medium">{tr('riskMedium')}</option>
                         <option value="high">{tr('riskHigh')}</option>
-                      </select>
+                      </NexaSelect>
                     </Field>
                     <label className="mt-6 inline-flex h-9 items-center gap-2 rounded-md border border-border/70 bg-surface-0 px-3 text-sm text-text-secondary">
                       <input
@@ -670,12 +671,12 @@ export function WorkflowsPage() {
                     <input className={textInputClass()} value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder={tr('browserUrlPlaceholder')} />
                   </Field>
                   <Field label={tr('mode')}>
-                    <select className={textInputClass()} value={browserMode} onChange={(event) => setBrowserMode(event.target.value)}>
+                    <NexaSelect className={textInputClass()} value={browserMode} onChange={(event) => setBrowserMode(event.target.value)}>
                       <option value="auto">{tr('modeAuto')}</option>
                       <option value="readability">{tr('modeReadability')}</option>
                       <option value="text">{tr('modeText')}</option>
                       <option value="metadata">{tr('modeMetadata')}</option>
-                    </select>
+                    </NexaSelect>
                   </Field>
                   <Button variant="primary" disabled={busy === 'browser'} onClick={() => void captureBrowser()} icon={busy === 'browser' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe2 className="h-4 w-4" />}>
                     {tr('capture')}

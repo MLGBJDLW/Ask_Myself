@@ -1,10 +1,13 @@
-import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
+import { useState, useRef, useEffect, lazy, Suspense } from "react";
 import { Smile } from "lucide-react";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useTranslation } from "../../i18n";
 import { useTheme } from "../../lib/ThemeProvider";
 import { isLightTheme } from "../../lib/theme";
-import { getSoftDropdownMotion } from "../../lib/uiMotion";
+import {
+  NexaPopover,
+  NexaPopoverContent,
+  NexaPopoverTrigger,
+} from "../ui/overlay";
 
 const LazyPicker = lazy(async () => {
   const [{ default: data }, { default: Picker }] = await Promise.all([
@@ -38,33 +41,12 @@ interface EmojiPickerProps {
 export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
   const { t } = useTranslation();
   const { theme } = useTheme();
-  const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const handleClickOutside = useCallback(
-    (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (open) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open, handleClickOutside]);
 
   return (
-    <div ref={containerRef} className="relative">
+    <NexaPopover open={open} onOpenChange={setOpen}>
+      <NexaPopoverTrigger asChild>
       <button
-        onClick={() => setOpen((prev) => !prev)}
         disabled={disabled}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
         aria-label={t("chat.insertEmoji")}
@@ -72,13 +54,9 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
       >
         <Smile className="h-3.5 w-3.5" />
       </button>
+      </NexaPopoverTrigger>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            {...getSoftDropdownMotion(!!shouldReduceMotion, 6)}
-            className="absolute bottom-10 right-0 z-50"
-          >
+      <NexaPopoverContent side="top" align="end" className="p-0">
             <Suspense
               fallback={
                 <div className="flex h-[350px] w-[352px] items-center justify-center rounded-lg bg-surface-1 shadow-lg">
@@ -99,9 +77,7 @@ export function EmojiPicker({ onEmojiSelect, disabled }: EmojiPickerProps) {
                 perLine={8}
               />
             </Suspense>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+      </NexaPopoverContent>
+    </NexaPopover>
   );
 }

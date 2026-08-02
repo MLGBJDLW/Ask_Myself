@@ -37,6 +37,7 @@ import type {
   StreamState,
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
+import { ConversationFrameBatcher } from './streaming/frameBatcher';
 export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
@@ -57,8 +58,9 @@ function stateHasVisiblePreview(state: InternalStreamState | undefined): boolean
 class StreamStoreImpl {
   private _streams: Record<string, InternalStreamState> = {};
   private _listeners = new Set<StoreListener>();
-  private _pendingNotify = new Set<string>();
-  private _notifyScheduled = false;
+  private _notifications = new ConversationFrameBatcher(
+    conversationId => this.notify(conversationId),
+  );
 
   subscribe = (listener: StoreListener): (() => void) => {
     this._listeners.add(listener);
@@ -72,19 +74,22 @@ class StreamStoreImpl {
   }
 
   private scheduleNotify(conversationId: string): void {
-    this._pendingNotify.add(conversationId);
-    if (!this._notifyScheduled) {
-      this._notifyScheduled = true;
-      queueMicrotask(() => {
-        this._notifyScheduled = false;
-        const pending = new Set(this._pendingNotify);
-        this._pendingNotify.clear();
-        for (const id of pending) {
-          for (const listener of this._listeners) {
-            listener(id);
-          }
-        }
-      });
+    this._notifications.schedule(conversationId);
+  }
+
+  private notifyImmediately(conversationId: string): void {
+    this._notifications.flushNow(conversationId);
+  }
+
+  private capLiveCollections(state: InternalStreamState): void {
+    if (state.traceEvents.length > 512) {
+      state.traceEvents = state.traceEvents.slice(-512);
+    }
+    if (state.streamRounds.length > 128) {
+      state.streamRounds = state.streamRounds.slice(-128);
+    }
+    if (state.taskEvents.length > 256) {
+      state.taskEvents = state.taskEvents.slice(-256);
     }
   }
 
@@ -325,7 +330,16 @@ class StreamStoreImpl {
           );
         },
       });
-      this.scheduleNotify(conversationId);
+      this.capLiveCollections(state);
+      if (
+        isTerminalEvent
+        || runEvent.kind === 'approvalRequested'
+        || runEvent.kind === 'approvalResolved'
+      ) {
+        this.notifyImmediately(conversationId);
+      } else {
+        this.scheduleNotify(conversationId);
+      }
       return;
     }
 
@@ -373,8 +387,16 @@ class StreamStoreImpl {
         );
       },
     });
-
-    this.scheduleNotify(conversationId);
+    this.capLiveCollections(s);
+    if (
+      isTerminalEvent
+      || eventType === 'approvalRequested'
+      || eventType === 'approvalResolved'
+    ) {
+      this.notifyImmediately(conversationId);
+    } else {
+      this.scheduleNotify(conversationId);
+    }
   }
 }
 

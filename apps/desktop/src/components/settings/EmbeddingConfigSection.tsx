@@ -1,4 +1,5 @@
 import { AlertTriangle, Brain, CheckCircle, KeyRound, Loader2, RefreshCw, Save, XCircle, Zap } from 'lucide-react';
+import { NexaSelect } from '../ui/overlay';
 import { useTranslation } from '../../i18n';
 import {
   defaultEmbeddingModel,
@@ -174,7 +175,7 @@ export function EmbeddingConfigSection({
             <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-3">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
-                <select
+                <NexaSelect
                   value={activeApiPreset?.id ?? 'custom'}
                   onChange={(event) => applyApiPreset(event.target.value)}
                   className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -182,7 +183,7 @@ export function EmbeddingConfigSection({
                   {EMBEDDING_PROVIDER_PRESETS.map((preset) => (
                     <option key={preset.id} value={preset.id}>{preset.name}</option>
                   ))}
-                </select>
+                </NexaSelect>
                 {activeApiPreset && (
                   <div className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-1/60 p-2.5">
                     <ProviderIcon
@@ -225,7 +226,7 @@ export function EmbeddingConfigSection({
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingModel')}</label>
                 {activeApiPreset && activeApiPreset.models.length > 0 ? (
-                  <select
+                  <NexaSelect
                     value={embedConfig.apiModel}
                     onChange={(event) => applyApiModel(event.target.value)}
                     className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -238,7 +239,7 @@ export function EmbeddingConfigSection({
                         {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''} · {modelDescriptorSummary(model.descriptor)}
                       </option>
                     ))}
-                  </select>
+                  </NexaSelect>
                 ) : (
                   <Input
                     value={embedConfig.apiModel}

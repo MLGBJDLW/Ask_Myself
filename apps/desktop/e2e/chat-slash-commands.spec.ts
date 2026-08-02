@@ -1,4 +1,9 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+
+async function selectNexaOption(trigger: Locator, value: string) {
+  await trigger.click();
+  await trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -362,14 +367,30 @@ test('Nexus activation respects reduced-motion preferences', async ({ page }) =>
   await expect(page.getByTestId('nexus-activation-effect')).toHaveCount(0);
 });
 
+test('the unified quality select supports Home End Enter and Escape', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+  const trigger = page.getByTestId('chat-quality-profile');
+
+  await trigger.focus();
+  await trigger.press('ArrowDown');
+  await page.getByRole('option').last().press('End');
+  await page.getByRole('option').last().press('Enter');
+  await expect(trigger).toHaveAttribute('data-value', 'custom');
+
+  await trigger.press('ArrowDown');
+  await page.getByRole('option').first().press('Home');
+  await page.getByRole('option').first().press('Escape');
+  await expect(trigger).toBeFocused();
+});
+
 test('MoA and orchestration profiles remain independent from Nexus and reach the backend', async ({ page }) => {
   await page.goto('/chat/conv-slash');
 
-  await page.getByTestId('chat-moa-preset').selectOption('crossModelCodeReview');
+  await selectNexaOption(page.getByTestId('chat-moa-preset'), 'crossModelCodeReview');
   await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Code Review');
   await expect(page.getByTestId('chat-moa-mode-banner')).toContainText('Independent from Nexus');
 
-  await page.getByTestId('chat-quality-profile').selectOption('codeUltra');
+  await selectNexaOption(page.getByTestId('chat-quality-profile'), 'codeUltra');
   await expect(page.getByTestId('chat-quality-profile-banner')).toContainText('Code Ultra');
   await expect(page.getByTestId('chat-quality-profile-banner')).toContainText('provider reasoning stays separate');
 
@@ -401,7 +422,7 @@ test('MoA and orchestration profiles remain independent from Nexus and reach the
 
 test('Custom orchestration exposes bounded runtime controls', async ({ page }) => {
   await page.goto('/chat/conv-slash');
-  await page.getByTestId('chat-quality-profile').selectOption('custom');
+  await selectNexaOption(page.getByTestId('chat-quality-profile'), 'custom');
   await page.getByTestId('chat-quality-custom-maxIterations').fill('48');
   await page.getByTestId('chat-quality-custom-maxParallel').fill('8');
   await page.getByTestId('chat-quality-custom-maxCallsPerTurn').fill('10');

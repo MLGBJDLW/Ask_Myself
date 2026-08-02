@@ -1,5 +1,47 @@
 import { expect, type Locator, test } from "@playwright/test";
 
+async function selectNexaOption(trigger: Locator, value: string) {
+  await trigger.click();
+  await trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
+}
+
+async function expectNexaValue(trigger: Locator, value: string) {
+  await expect(trigger).toHaveAttribute("data-value", value);
+}
+
+async function expectNexaOptions(trigger: Locator, expectedNames: string[]) {
+  await trigger.click();
+  const options = trigger.page().getByRole("option");
+  const labels = await options.allTextContents();
+  for (const expectedName of expectedNames) {
+    expect(labels.some(label => label.includes(expectedName))).toBe(true);
+  }
+  await trigger.page().keyboard.press("Escape");
+}
+
+async function expectNexaOptionCount(trigger: Locator, count: number) {
+  await trigger.click();
+  await expect(trigger.page().getByRole("option")).toHaveCount(count);
+  await trigger.page().keyboard.press("Escape");
+}
+
+async function expectNexaOption(
+  trigger: Locator,
+  value: string,
+  expectation: "visible" | "absent",
+  text?: string,
+) {
+  await trigger.click();
+  const option = trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`);
+  if (expectation === "visible") {
+    await expect(option).toBeVisible();
+    if (text) await expect(option).toContainText(text);
+  } else {
+    await expect(option).toHaveCount(0);
+  }
+  await trigger.page().keyboard.press("Escape");
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("nexa-locale", "en");
@@ -337,20 +379,20 @@ test("settings provider form shows updated preset models for add and edit flows"
   page,
 }) => {
   const modelField = () =>
-    page
-      .locator("label")
-      .filter({ hasText: "Default Model" })
-      .locator("xpath=../..");
+    page.getByTestId("default-model-field");
   const expectModelOptions = async (
-    modelSelect: Locator,
+    _modelSelect: Locator,
     expectedNames: string[],
   ) => {
-    const options = await modelField().locator("option, button").allTextContents();
+    const currentSelect = modelField().locator("[data-nexa-select-trigger]");
+    if (await currentSelect.count()) {
+      await expectNexaOptions(currentSelect, expectedNames);
+      return;
+    }
     for (const expectedName of expectedNames) {
-      expect(
-        options.some((option) => option.includes(expectedName)),
-        `expected model options to include ${expectedName}`,
-      ).toBe(true);
+      await expect(
+        modelField().getByRole("button").filter({ hasText: expectedName }).first(),
+      ).toBeVisible();
     }
   };
   const providerField = () =>
@@ -365,7 +407,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await page.getByRole("button", { name: "Add Provider" }).click();
   await page.getByRole("button", { name: /Anthropic/i }).click();
 
-  let modelSelect = modelField().getByRole("combobox");
+  let modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expect(modelSelect).toBeVisible();
   await expectModelOptions(modelSelect, [
     "Claude Opus 4.8",
@@ -375,8 +417,8 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Haiku 4.5",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("google");
-  modelSelect = modelField().getByRole("combobox");
+  await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "google");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
     "Gemini 3.6 Flash",
     "Gemini 3.5 Flash-Lite",
@@ -385,8 +427,8 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Gemini 3 Flash Preview",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("alibaba_model_studio");
-  modelSelect = modelField().getByRole("combobox");
+  await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "alibaba_model_studio");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
     "DeepSeek V4 Pro",
     "Kimi K2.7 Code",
@@ -399,8 +441,8 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Qwen3 VL Plus",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("zhipu");
-  modelSelect = modelField().getByRole("combobox");
+  await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "zhipu");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
     "GLM-5.2",
     "GLM-5.1",
@@ -410,21 +452,21 @@ test("settings provider form shows updated preset models for add and edit flows"
     "GLM-4.1V Thinking FlashX",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("deep_seek");
-  modelSelect = modelField().getByRole("combobox");
+  await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "deep_seek");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
     "DeepSeek V4 Pro",
     "DeepSeek V4 Flash",
   ]);
 
-  await providerField().getByRole("combobox").selectOption("moonshot");
-  modelSelect = modelField().getByRole("combobox");
+  await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "moonshot");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, ["Kimi K3", "Kimi K2.7"]);
 
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.getByTitle("Edit").first().click();
 
-  modelSelect = modelField().getByRole("combobox");
+  modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expect(modelSelect).toBeVisible();
   await expectModelOptions(modelSelect, [
     "Claude Opus 4.8",
@@ -446,13 +488,11 @@ test("provider refresh keeps account-discovered models selectable and cached", a
 
   await expect(page.getByTestId("provider-model-catalog-status")).toContainText("Live account catalog");
   const modelField = page
-    .locator("label")
-    .filter({ hasText: "Default Model" })
-    .locator("xpath=../..");
-  const modelSelect = modelField.getByRole("combobox");
-  await expect(modelSelect.locator('option[value="account-only-model"]')).toContainText("Discovered");
-  await modelSelect.selectOption("account-only-model");
-  await expect(modelSelect).toHaveValue("account-only-model");
+    .getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaOption(modelSelect, "account-only-model", "visible", "Discovered");
+  await selectNexaOption(modelSelect, "account-only-model");
+  await expectNexaValue(modelSelect, "account-only-model");
 
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
     .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
@@ -512,15 +552,13 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
   );
 
   const modelField = page
-    .locator("label")
-    .filter({ hasText: "Default Model" })
-    .locator("xpath=../..");
-  const modelSelect = modelField.getByRole("combobox");
-  await expect(modelSelect).toHaveValue("");
-  await expect(modelSelect.locator("option")).toContainText(["Qwen3.8 Max Preview"]);
-  await expect(modelSelect.locator("option")).toHaveCount(2);
-  await expect(modelSelect.locator('option[value="qwen3.7-flash"]')).toHaveCount(0);
-  await modelSelect.selectOption("qwen3.8-max-preview");
+    .getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "");
+  await expectNexaOptions(modelSelect, ["Qwen3.8 Max Preview"]);
+  await expectNexaOptionCount(modelSelect, 2);
+  await expectNexaOption(modelSelect, "qwen3.7-flash", "absent");
+  await selectNexaOption(modelSelect, "qwen3.8-max-preview");
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("status: preview");
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("access: account enablement");
 });
@@ -543,14 +581,12 @@ test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ 
   );
 
   const modelField = page
-    .locator("label")
-    .filter({ hasText: "Default Model" })
-    .locator("xpath=../..");
-  const modelSelect = modelField.getByRole("combobox");
-  await expect(modelSelect).toHaveValue("");
-  await modelSelect.selectOption("qwen3.7-flash");
-  await expect(modelSelect).toHaveValue("qwen3.7-flash");
-  await expect(modelSelect.locator("option")).toContainText([
+    .getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "");
+  await selectNexaOption(modelSelect, "qwen3.7-flash");
+  await expectNexaValue(modelSelect, "qwen3.7-flash");
+  await expectNexaOptions(modelSelect, [
     "Qwen3.7 Flash",
     "Qwen3.7 Plus",
     "Qwen3.7 Max",
@@ -563,13 +599,10 @@ test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog
   await page.getByTitle("Edit").nth(1).click();
 
   const modelField = page
-    .locator("label")
-    .filter({ hasText: "Default Model" })
-    .locator("xpath=../..");
-  const options = await modelField.locator("option, button").allTextContents();
-  expect(options.some((option) => option.includes("Qwen3.7 Max"))).toBe(true);
-  expect(options.some((option) => option.includes("DeepSeek V4 Pro"))).toBe(true);
-  expect(options.some((option) => option.includes("Qwen3.8 Max Preview"))).toBe(false);
+    .getByTestId("default-model-field");
+  await expect(modelField.getByRole("button").filter({ hasText: "Qwen3.7 Max" }).first()).toBeVisible();
+  await expect(modelField.getByRole("button").filter({ hasText: "DeepSeek V4 Pro" }).first()).toBeVisible();
+  await expect(modelField.getByRole("button").filter({ hasText: "qwen3.8-max-preview" })).toHaveCount(0);
 });
 
 test("settings exposes Alibaba Model Studio and SiliconFlow as router presets", async ({ page }) => {
@@ -603,29 +636,29 @@ test("settings exposes image generation model config under AI providers", async 
   await expect(panel.getByRole("heading", { name: "Image Generation" })).toBeVisible();
   await expect(panel.getByText("Qwen Image (DashScope Beijing)")).toBeVisible();
   await expect(panel.getByText("Qwen CN API key")).toBeVisible();
-  await expect(panel.locator("select")).toHaveCount(0);
+  await expect(panel.locator("[data-nexa-select-trigger]")).toHaveCount(0);
 
   await panel.getByRole("button", { name: "Expand image generation settings" }).click();
   await expect(panel.getByText("Image provider defaults for generate_image")).toBeVisible();
-  const selects = panel.locator("select");
-  await expect(selects.nth(0)).toHaveValue("qwen-dashscope-cn");
-  await selects.nth(1).selectOption("qwen-image-2.0-pro");
-  await expect(selects.nth(1)).toHaveValue("qwen-image-2.0-pro");
-  await selects.nth(1).selectOption("qwen-image-3.0-pro");
+  const selects = panel.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(selects.nth(0), "qwen-dashscope-cn");
+  await selectNexaOption(selects.nth(1), "qwen-image-2.0-pro");
+  await expectNexaValue(selects.nth(1), "qwen-image-2.0-pro");
+  await selectNexaOption(selects.nth(1), "qwen-image-3.0-pro");
   await expect(panel.getByTestId("model-descriptor-badges")).toContainText("status: preview");
   await expect(panel.getByTestId("model-descriptor-badges")).toContainText("access: application");
-  await selects.nth(1).selectOption("qwen-image-2.0-pro");
+  await selectNexaOption(selects.nth(1), "qwen-image-2.0-pro");
 
-  await selects.nth(0).selectOption("google-gemini");
-  await selects.nth(1).selectOption("gemini-3.1-flash-image");
-  await expect(selects.nth(1)).toHaveValue("gemini-3.1-flash-image");
-  await expect(selects.nth(1).locator("option")).toContainText([
+  await selectNexaOption(selects.nth(0), "google-gemini");
+  await selectNexaOption(selects.nth(1), "gemini-3.1-flash-image");
+  await expectNexaValue(selects.nth(1), "gemini-3.1-flash-image");
+  await expectNexaOptions(selects.nth(1), [
     "Gemini 3.1 Flash Image",
     "Gemini 3.1 Flash Lite Image",
     "Gemini 3 Pro Image",
   ]);
-  await selects.nth(0).selectOption("qwen-dashscope-cn");
-  await selects.nth(1).selectOption("qwen-image-2.0-pro");
+  await selectNexaOption(selects.nth(0), "qwen-dashscope-cn");
+  await selectNexaOption(selects.nth(1), "qwen-image-2.0-pro");
 
   await panel.getByRole("button", { name: "Save" }).click();
   await page.waitForFunction(() => {
@@ -644,35 +677,35 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(panel.getByRole("heading", { name: "Text to Speech" })).toBeVisible();
   await panel.locator("button").first().click();
 
-  const selects = panel.locator("select");
-  await expect(selects.nth(0).locator("option")).toHaveCount(8);
-  await selects.nth(1).selectOption("gpt-4o-mini-tts");
-  await selects.nth(0).selectOption("groq");
-  await selects.nth(1).selectOption("canopylabs/orpheus-v1-english");
-  await expect(selects.nth(1)).toHaveValue("canopylabs/orpheus-v1-english");
-  await expect(selects.nth(2)).toHaveValue("wav");
+  const selects = panel.locator("[data-nexa-select-trigger]");
+  await expectNexaOptionCount(selects.nth(0), 8);
+  await selectNexaOption(selects.nth(1), "gpt-4o-mini-tts");
+  await selectNexaOption(selects.nth(0), "groq");
+  await selectNexaOption(selects.nth(1), "canopylabs/orpheus-v1-english");
+  await expectNexaValue(selects.nth(1), "canopylabs/orpheus-v1-english");
+  await expectNexaValue(selects.nth(2), "wav");
   await expect(panel.locator('[title="Groq"]')).toContainText("GQ");
   await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Hannah");
   await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Fahad");
-  await selects.nth(1).selectOption("canopylabs/orpheus-arabic-saudi");
+  await selectNexaOption(selects.nth(1), "canopylabs/orpheus-arabic-saudi");
   await expect(panel.getByTestId("tts-voice-catalog")).toContainText("Fahad");
   await expect(panel.getByTestId("tts-voice-catalog")).not.toContainText("Hannah");
 
-  await selects.nth(0).selectOption("elevenlabs");
-  await selects.nth(1).selectOption("eleven_flash_v2_5");
-  await expect(selects.nth(1)).toHaveValue("eleven_flash_v2_5");
+  await selectNexaOption(selects.nth(0), "elevenlabs");
+  await selectNexaOption(selects.nth(1), "eleven_flash_v2_5");
+  await expectNexaValue(selects.nth(1), "eleven_flash_v2_5");
   await expect(panel.locator('[title="ElevenLabs"] > span')).toHaveAttribute(
     "style",
     /provider-icons\/elevenlabs\.svg/,
   );
 
-  await selects.nth(0).selectOption("minimax");
-  await selects.nth(1).selectOption("speech-2.8-turbo");
-  await expect(selects.nth(1)).toHaveValue("speech-2.8-turbo");
+  await selectNexaOption(selects.nth(0), "minimax");
+  await selectNexaOption(selects.nth(1), "speech-2.8-turbo");
+  await expectNexaValue(selects.nth(1), "speech-2.8-turbo");
 
-  await selects.nth(0).selectOption("dashscope-cosyvoice");
-  await selects.nth(1).selectOption("qwen-audio-3.0-tts-flash");
-  await expect(selects.nth(1)).toHaveValue("qwen-audio-3.0-tts-flash");
+  await selectNexaOption(selects.nth(0), "dashscope-cosyvoice");
+  await selectNexaOption(selects.nth(1), "qwen-audio-3.0-tts-flash");
+  await expectNexaValue(selects.nth(1), "qwen-audio-3.0-tts-flash");
   await expect(panel.getByTestId("tts-voice-input")).toHaveValue("longanhuan_v3.6");
   await expect(panel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await panel.getByRole("button", { name: "Refresh voices" }).click();
@@ -689,9 +722,9 @@ test("settings promotes low-latency speech providers with their own logos", asyn
     window as unknown as { __savedAppConfig?: { textToSpeech?: { apiKey?: string } } }
   ).__savedAppConfig?.textToSpeech?.apiKey)).toBe("sk-qwen-demo");
 
-  await selects.nth(0).selectOption("siliconflow");
-  await selects.nth(1).selectOption("fnlp/MOSS-TTSD-v0.5");
-  await expect(selects.nth(1)).toHaveValue("fnlp/MOSS-TTSD-v0.5");
+  await selectNexaOption(selects.nth(0), "siliconflow");
+  await selectNexaOption(selects.nth(1), "fnlp/MOSS-TTSD-v0.5");
+  await expectNexaValue(selects.nth(1), "fnlp/MOSS-TTSD-v0.5");
   await expect(panel.locator('[title="SiliconFlow"] > span')).toHaveAttribute(
     "style",
     /provider-icons\/siliconflow\.svg/,
@@ -701,19 +734,19 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttPanel.getByRole("heading", { name: "Speech to Text" })).toBeVisible();
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
-  await expect(sttProvider.locator("option")).toHaveCount(9);
+  await expectNexaOptionCount(sttProvider, 9);
 
-  await sttProvider.selectOption("openai-live");
+  await selectNexaOption(sttProvider, "openai-live");
   await sttPanel.locator('input[list="nexa-stt-models"]').fill("gpt-live-transcribe");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("gpt-live-transcribe");
 
-  await sttProvider.selectOption("groq");
+  await selectNexaOption(sttProvider, "groq");
   await sttPanel.locator('input[list="nexa-stt-models"]').fill("whisper-large-v3-turbo");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "whisper-large-v3-turbo",
   );
 
-  await sttProvider.selectOption("alibaba-qwen-asr");
+  await selectNexaOption(sttProvider, "alibaba-qwen-asr");
   await sttPanel.locator('input[list="nexa-stt-models"]').fill("qwen3-asr-flash");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
@@ -726,7 +759,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
     window as unknown as { __savedAppConfig?: { speechToText?: { apiKey?: string } } }
   ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
 
-  await sttProvider.selectOption("siliconflow");
+  await selectNexaOption(sttProvider, "siliconflow");
   await sttPanel.locator('input[list="nexa-stt-models"]').fill("FunAudioLLM/SenseVoiceSmall");
   await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
     "FunAudioLLM/SenseVoiceSmall",
@@ -739,8 +772,8 @@ test("settings discards a stale voice preview after synthesis settings change", 
 
   const panel = page.getByTestId("text-to-speech-settings-panel");
   await panel.locator("button").first().click();
-  await panel.locator("select").first().selectOption("dashscope-cosyvoice");
-  await panel.locator("select").nth(1).selectOption("qwen-audio-3.0-tts-flash");
+  await selectNexaOption(panel.locator("[data-nexa-select-trigger]").first(), "dashscope-cosyvoice");
+  await selectNexaOption(panel.locator("[data-nexa-select-trigger]").nth(1), "qwen-audio-3.0-tts-flash");
   const previewText = panel
     .locator("label")
     .filter({ hasText: "Preview text" })
@@ -779,7 +812,7 @@ test("settings never reuses a provider key for a user-edited endpoint", async ({
 
   const ttsPanel = page.getByTestId("text-to-speech-settings-panel");
   await ttsPanel.locator("button").first().click();
-  await ttsPanel.locator("select").first().selectOption("dashscope-cosyvoice");
+  await selectNexaOption(ttsPanel.locator("[data-nexa-select-trigger]").first(), "dashscope-cosyvoice");
   await expect(ttsPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await baseUrlInput(ttsPanel).fill("http://dashscope.aliyuncs.com/api/v1/services/audio/tts");
   await expect(ttsPanel.getByTestId("shared-credential-notice")).toHaveCount(0);
@@ -787,7 +820,7 @@ test("settings never reuses a provider key for a user-edited endpoint", async ({
 
   const sttPanel = page.getByTestId("speech-to-text-settings-panel");
   await sttPanel.locator("button").first().click();
-  await sttPanel.getByTestId("stt-provider-select").selectOption("alibaba-qwen-asr");
+  await selectNexaOption(sttPanel.getByTestId("stt-provider-select"), "alibaba-qwen-asr");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await baseUrlInput(sttPanel).fill("https://dashscope.aliyuncs.com:8443/api/v1/services/audio/asr/transcription");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveCount(0);
@@ -802,12 +835,12 @@ test("settings keeps local and cloud speech engines in one provider category", a
   await expect(speechCategory).toContainText("Speech");
   const localTts = speechCategory.getByTestId("text-to-speech-settings-panel");
   await localTts.locator("button").first().click();
-  await localTts.locator("select").first().selectOption("sherpa-onnx");
+  await selectNexaOption(localTts.locator("[data-nexa-select-trigger]").first(), "sherpa-onnx");
   await expect(localTts.getByTestId("tts-local-executable")).toHaveValue("sherpa-onnx-offline-tts");
 
   const localStt = speechCategory.getByTestId("speech-to-text-settings-panel");
   await localStt.locator("button").first().click();
-  await localStt.getByTestId("stt-provider-select").selectOption("sherpa-zipformer");
+  await selectNexaOption(localStt.getByTestId("stt-provider-select"), "sherpa-zipformer");
   await expect(localStt.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
 });
 
@@ -864,7 +897,7 @@ test("settings discard leaves speech drafts unpersisted while keeping saved Whis
   await page.getByRole("button", { name: "AI Providers" }).click();
   const localTts = page.getByTestId("text-to-speech-settings-panel");
   await localTts.locator("button").first().click();
-  await localTts.locator("select").first().selectOption("sherpa-onnx");
+  await selectNexaOption(localTts.locator("[data-nexa-select-trigger]").first(), "sherpa-onnx");
 
   await page.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Discard changes" }).click();
@@ -909,10 +942,10 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
   await section.locator("button").first().click();
   await section.getByRole("button", { name: "API", exact: true }).click();
 
-  const selects = section.locator("select");
-  await selects.nth(0).selectOption("alibaba-model-studio-cn");
-  await selects.nth(1).selectOption("text-embedding-v4");
-  await expect(selects.nth(1)).toHaveValue("text-embedding-v4");
+  const selects = section.locator("[data-nexa-select-trigger]");
+  await selectNexaOption(selects.nth(0), "alibaba-model-studio-cn");
+  await selectNexaOption(selects.nth(1), "text-embedding-v4");
+  await expectNexaValue(selects.nth(1), "text-embedding-v4");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
   await expect(section.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await section.getByRole("button", { name: "Save Config" }).click();
@@ -923,9 +956,9 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
     apiModel: "text-embedding-v4",
   }));
 
-  await selects.nth(0).selectOption("jina");
-  await selects.nth(1).selectOption("jina-embeddings-v5-text-small");
-  await expect(selects.nth(1)).toHaveValue("jina-embeddings-v5-text-small");
+  await selectNexaOption(selects.nth(0), "jina");
+  await selectNexaOption(selects.nth(1), "jina-embeddings-v5-text-small");
+  await expectNexaValue(selects.nth(1), "jina-embeddings-v5-text-small");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
   await expect(section.getByRole("spinbutton")).toBeDisabled();
   await expect(section.locator('[title="Jina AI"] > span')).toHaveAttribute(
@@ -933,9 +966,9 @@ test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", a
     /provider-icons\/jina\.svg/,
   );
 
-  await selects.nth(0).selectOption("mistral");
-  await selects.nth(1).selectOption("mistral-embed");
-  await expect(selects.nth(1)).toHaveValue("mistral-embed");
+  await selectNexaOption(selects.nth(0), "mistral");
+  await selectNexaOption(selects.nth(1), "mistral-embed");
+  await expectNexaValue(selects.nth(1), "mistral-embed");
   await expect(section.getByRole("spinbutton")).toHaveValue("1024");
 });
 

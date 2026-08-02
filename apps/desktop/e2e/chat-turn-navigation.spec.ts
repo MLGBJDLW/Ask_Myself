@@ -5,6 +5,7 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem('nexa-locale', 'en');
 
     const now = Date.now();
+    const turnCount = Number.parseInt(new URLSearchParams(window.location.search).get('turns') ?? '4', 10);
     const nowIso = new Date(now).toISOString();
     const conversation = {
       id: 'conv-turn-navigation',
@@ -15,7 +16,7 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
-    const messages = Array.from({ length: 4 }, (_, index) => {
+    const messages = Array.from({ length: turnCount }, (_, index) => {
       const number = index + 1;
       const userId = `m-user-${number}`;
       const assistantId = `m-assistant-${number}`;
@@ -90,7 +91,7 @@ test.beforeEach(async ({ page }) => {
       }
       return rows;
     }).flat();
-    const turns = Array.from({ length: 4 }, (_, index) => {
+    const turns = Array.from({ length: turnCount }, (_, index) => {
       const number = index + 1;
       return {
         id: `turn-${number}`,
@@ -253,6 +254,20 @@ test('navigates to every conversation turn from the right-side timeline', async 
   await expect(navigator.getByRole('button', { name: /^#4 ·/ })).toHaveAttribute('aria-current', 'step');
   await expect(navigator.getByRole('button', { name: /^#4 ·/ }).getByTestId('chat-turn-minimap-marker')).toHaveAttribute('data-active', 'true');
   await expect.poll(async () => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(500);
+});
+
+test('virtualizes a 10000-message conversation below the DOM row budget', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto('/chat/conv-turn-navigation?turns=5000');
+
+  const virtualList = page.locator('[data-chat-virtual-list="true"]');
+  await expect(virtualList).toBeVisible();
+  await expect.poll(
+    () => page.locator('[data-chat-virtual-row="true"]').count(),
+  ).toBeLessThan(200);
+  await expect(
+    page.locator('[data-chat-virtual-row="true"]').getByText('Question 5000:', { exact: false }),
+  ).toBeVisible();
 });
 
 test('keeps the compact turn timeline out of narrow chat layouts', async ({ page }) => {

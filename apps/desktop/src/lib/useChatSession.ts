@@ -28,6 +28,10 @@ import type {
 } from '../types/conversation';
 import { appTimeMs } from './dateTime';
 import { formatUserError } from './userError';
+import {
+  estimateJsonBytes,
+  upsertBoundedConversationCache,
+} from './boundedConversationCache';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -44,6 +48,11 @@ function generateTitle(message: string): string {
   }
   return truncated + '...';
 }
+
+const MAX_CACHED_CONVERSATIONS = 8;
+const MAX_MESSAGE_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_TURN_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_TASK_RUN_CACHE_BYTES = 16 * 1024 * 1024;
 
 /**
  * Merge imageAttachments from the prior in-memory message list onto a fresh
@@ -369,6 +378,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   // The effective active conversation id
   const activeId = externalConversationId ?? internalConversationId;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
 
   // Track last user message for retry
   const lastUserMessageRef = useRef<{
@@ -382,6 +393,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
+  const messageCacheRecencyRef = useRef<Map<string, number>>(new Map());
+  const turnCacheRecencyRef = useRef<Map<string, number>>(new Map());
+  const taskRunCacheRecencyRef = useRef<Map<string, number>>(new Map());
+  const cacheClockRef = useRef(0);
   const agentConfigsRef = useRef<AgentConfig[]>([]);
   const activeAgentConfigRef = useRef<AgentConfig | null>(null);
   const defaultAgentConfigRef = useRef<AgentConfig | null>(null);
@@ -406,10 +421,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const nextMessages = typeof updater === 'function'
         ? (updater as (prev: ConversationMessage[]) => ConversationMessage[])(current)
         : updater;
-      return {
-        ...prev,
-        [conversationId]: nextMessages,
-      };
+      return upsertBoundedConversationCache(prev, conversationId, nextMessages, {
+        maxEntries: MAX_CACHED_CONVERSATIONS,
+        maxBytes: MAX_MESSAGE_CACHE_BYTES,
+        estimateBytes: estimateJsonBytes,
+        recency: messageCacheRecencyRef.current,
+        protectedKeys: [
+          ...(activeIdRef.current ? [activeIdRef.current] : []),
+          ...streamStore.getRunningConversationIds(),
+        ],
+        tick: ++cacheClockRef.current,
+      });
     });
   }, []);
 
@@ -422,10 +444,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const nextTurns = typeof updater === 'function'
         ? (updater as (prev: ConversationTurn[]) => ConversationTurn[])(current)
         : updater;
-      return {
-        ...prev,
-        [conversationId]: nextTurns,
-      };
+      return upsertBoundedConversationCache(prev, conversationId, nextTurns, {
+        maxEntries: MAX_CACHED_CONVERSATIONS,
+        maxBytes: MAX_TURN_CACHE_BYTES,
+        estimateBytes: estimateJsonBytes,
+        recency: turnCacheRecencyRef.current,
+        protectedKeys: [
+          ...(activeIdRef.current ? [activeIdRef.current] : []),
+          ...streamStore.getRunningConversationIds(),
+        ],
+        tick: ++cacheClockRef.current,
+      });
     });
   }, []);
 
@@ -438,10 +467,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const nextRuns = typeof updater === 'function'
         ? (updater as (prev: AgentTaskRun[]) => AgentTaskRun[])(current)
         : updater;
-      return {
-        ...prev,
-        [conversationId]: nextRuns,
-      };
+      return upsertBoundedConversationCache(prev, conversationId, nextRuns, {
+        maxEntries: MAX_CACHED_CONVERSATIONS,
+        maxBytes: MAX_TASK_RUN_CACHE_BYTES,
+        estimateBytes: estimateJsonBytes,
+        recency: taskRunCacheRecencyRef.current,
+        protectedKeys: [
+          ...(activeIdRef.current ? [activeIdRef.current] : []),
+          ...streamStore.getRunningConversationIds(),
+        ],
+        tick: ++cacheClockRef.current,
+      });
     });
   }, []);
 
@@ -801,16 +837,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setMessageCache(prev => {
           const next = { ...prev };
           delete next[id];
+          messageCacheRecencyRef.current.delete(id);
           return next;
         });
         setTurnCache(prev => {
           const next = { ...prev };
           delete next[id];
+          turnCacheRecencyRef.current.delete(id);
           return next;
         });
         setTaskRunCache(prev => {
           const next = { ...prev };
           delete next[id];
+          taskRunCacheRecencyRef.current.delete(id);
           return next;
         });
         delete systemPromptCacheRef.current[id];
@@ -838,6 +877,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           const next = { ...prev };
           for (const id of ids) {
             delete next[id];
+            messageCacheRecencyRef.current.delete(id);
             delete systemPromptCacheRef.current[id];
             delete contextWindowCacheRef.current[id];
           }
@@ -845,12 +885,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         });
         setTurnCache(prev => {
           const next = { ...prev };
-          for (const id of ids) delete next[id];
+          for (const id of ids) {
+            delete next[id];
+            turnCacheRecencyRef.current.delete(id);
+          }
           return next;
         });
         setTaskRunCache(prev => {
           const next = { ...prev };
-          for (const id of ids) delete next[id];
+          for (const id of ids) {
+            delete next[id];
+            taskRunCacheRecencyRef.current.delete(id);
+          }
           return next;
         });
         if (activeId && idSet.has(activeId)) {
@@ -874,6 +920,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setMessageCache({});
       setTurnCache({});
       setTaskRunCache({});
+      messageCacheRecencyRef.current.clear();
+      turnCacheRecencyRef.current.clear();
+      taskRunCacheRecencyRef.current.clear();
       systemPromptCacheRef.current = {};
       contextWindowCacheRef.current = {};
       setUsageSnapshot(null);

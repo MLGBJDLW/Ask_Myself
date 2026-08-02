@@ -1,4 +1,5 @@
 import { RefreshCw, SearchCheck } from 'lucide-react';
+import { NexaSelect } from '../ui/overlay';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import * as api from '../../lib/api';
@@ -281,7 +282,7 @@ export function WebSearchSettingsPanel({
             <span className="text-sm font-medium text-text-primary">
               {t('settings.webSearchProfile')}
             </span>
-            <select
+            <NexaSelect
               value={config.providerProfile}
               onChange={(event) =>
                 updateConfig({
@@ -296,7 +297,7 @@ export function WebSearchSettingsPanel({
                   {t(PROFILE_LABEL_KEYS[profile])}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
             <span className="block text-xs leading-relaxed text-text-tertiary">
               {t(PROFILE_DESC_KEYS[config.providerProfile])}
             </span>
@@ -306,7 +307,7 @@ export function WebSearchSettingsPanel({
             <span className="text-sm font-medium text-text-primary">
               {t('settings.webSearchReranker')}
             </span>
-            <select
+            <NexaSelect
               value={config.reranker}
               onChange={(event) =>
                 updateConfig({
@@ -321,7 +322,7 @@ export function WebSearchSettingsPanel({
                   {t(RERANKER_LABEL_KEYS[reranker])}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
             <span className="block text-xs leading-relaxed text-text-tertiary">
               {t(RERANKER_DESC_KEYS[config.reranker])}
             </span>

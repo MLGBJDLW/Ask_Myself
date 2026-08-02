@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useOverlayRoot } from './overlay/OverlayProvider';
 
 interface TooltipProps {
   content: string;
@@ -10,6 +11,7 @@ interface TooltipProps {
 }
 
 export function Tooltip({ content, children, side = 'top', delay = 300 }: TooltipProps) {
+  const overlayRoot = useOverlayRoot();
   const [show, setShow] = useState(false);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
@@ -90,7 +92,7 @@ export function Tooltip({ content, children, side = 'top', delay = 300 }: Toolti
       onMouseLeave={handleLeave}
     >
       {children}
-      {typeof document !== 'undefined' ? createPortal(tooltip, document.body) : null}
+      {typeof document !== 'undefined' ? createPortal(tooltip, overlayRoot ?? document.body) : null}
     </div>
   );
 }

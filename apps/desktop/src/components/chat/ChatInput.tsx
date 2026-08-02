@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { NexaSelect } from "../ui/overlay";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles, CircleDollarSign, Timer, Users, ShieldCheck, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -1695,7 +1696,7 @@ export function ChatInput({
               }`}
             >
               <Users className="h-3.5 w-3.5" />
-              <select
+              <NexaSelect
                 data-testid="chat-moa-preset"
                 aria-label={t("chat.moaMode")}
                 value={moaModeEnabled ? moaPreset : "direct"}
@@ -1717,7 +1718,7 @@ export function ChatInput({
                 <option value="deepResearch">{t("chat.moaPreset.deepResearch")}</option>
                 <option value="crossModelCodeReview">{t("chat.moaPreset.crossModelCodeReview")}</option>
                 <option value="custom">{t("chat.moaPreset.custom")}</option>
-              </select>
+              </NexaSelect>
             </label>
 
             <label
@@ -1729,7 +1730,7 @@ export function ChatInput({
               }`}
             >
               <ShieldCheck className="h-3.5 w-3.5" />
-              <select
+              <NexaSelect
                 data-testid="chat-quality-profile"
                 aria-label={t("chat.qualityProfile")}
                 value={orchestrationProfile}
@@ -1744,7 +1745,7 @@ export function ChatInput({
                 <option value="codeUltra">{t("chat.qualityProfile.codeUltra")}</option>
                 <option value="researchUltra">{t("chat.qualityProfile.researchUltra")}</option>
                 <option value="custom">{t("chat.qualityProfile.custom")}</option>
-              </select>
+              </NexaSelect>
             </label>
 
             <button
