@@ -1,5 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { NexaSelect } from "../ui/overlay";
+import {
+  NexaPopover,
+  NexaPopoverAnchor,
+  NexaPopoverContent,
+  NexaPopoverTrigger,
+  NexaSelect,
+} from "../ui/overlay";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles, CircleDollarSign, Timer, Users, ShieldCheck, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -1337,6 +1343,12 @@ export function ChatInput({
   ) : null;
 
   return (
+    <NexaPopover
+      open={slashMenuOpen}
+      onOpenChange={(open) => {
+        if (!open && slashTrigger) setDismissedSlashToken(slashTrigger.token);
+      }}
+    >
     <div
       data-testid="chat-input"
       className={`relative border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
@@ -1356,9 +1368,14 @@ export function ChatInput({
       )}
 
       {slashMenuOpen && slashTrigger && (
-        <div
+        <NexaPopoverContent
           data-testid="slash-command-menu"
-          className="absolute bottom-full left-4 z-40 mb-2 w-[min(34rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30 ring-1 ring-white/[0.04]"
+          side="top"
+          align="start"
+          collisionPadding={16}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          className="w-[min(34rem,calc(100vw-2rem))] overflow-hidden p-0"
         >
           <div className="border-b border-border/60 px-2.5 py-1.5">
             <div className="flex min-h-7 items-center gap-2">
@@ -1486,71 +1503,7 @@ export function ChatInput({
               {t("chat.slashCommandNoResults")}
             </div>
           )}
-        </div>
-      )}
-
-      {workflowCatalogOpen && !slashMenuOpen && (
-        <div
-          data-testid="workflow-catalog-panel"
-          className="absolute bottom-full left-4 right-4 z-30 mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-0 shadow-2xl shadow-black/30"
-        >
-          <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
-            <Workflow className="h-4 w-4 text-accent" />
-            <span className="text-sm font-medium text-text-primary">{t("chat.workflows")}</span>
-            <span className="text-xs tabular-nums text-text-tertiary">
-              {workflowCatalogLoading
-                ? t("common.loading")
-                : t("chat.workflowTemplateCount", { count: String(workflowTemplates.length) })}
-            </span>
-            <button
-              type="button"
-              onClick={() => setWorkflowCatalogOpen(false)}
-              className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
-              aria-label={t("common.close")}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="grid max-h-72 gap-2 overflow-y-auto p-2 sm:grid-cols-2 lg:grid-cols-3">
-            {workflowTemplates.map((template) => (
-              <button
-                key={template.id}
-                type="button"
-                onClick={() => applyWorkflowTemplate(template)}
-                className="min-h-[112px] rounded-lg border border-border/70 bg-surface-1/70 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/40 focus:outline-none focus:ring-2 focus:ring-accent/30"
-                aria-label={`${template.label} workflow`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="text-sm font-medium leading-5 text-text-primary">
-                    {template.label}
-                  </span>
-                  <span className="shrink-0 rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
-                    {t("chat.workflowTasks", { count: String(template.tasks.length) })}
-                  </span>
-                </div>
-                <div className="mt-1.5 line-clamp-2 text-xs leading-5 text-text-secondary">
-                  {template.description}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {template.tasks.slice(0, 3).map((task) => (
-                    <span
-                      key={task.id}
-                      className="rounded-md bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary"
-                    >
-                      {task.roleLabel}
-                    </span>
-                  ))}
-                </div>
-              </button>
-            ))}
-            {!workflowCatalogLoading && workflowTemplates.length === 0 && (
-              <div className="col-span-full px-3 py-6 text-center text-sm text-text-tertiary">
-                {t("chat.workflowUnavailable")}
-              </div>
-            )}
-          </div>
-        </div>
+        </NexaPopoverContent>
       )}
 
       <div className="space-y-2">
@@ -1646,6 +1599,7 @@ export function ChatInput({
           onChange={handleFileSelect}
         />
 
+        <NexaPopoverAnchor asChild>
         <textarea
           data-testid="chat-input-textarea"
           ref={textareaRef}
@@ -1668,13 +1622,18 @@ export function ChatInput({
           rows={1}
           className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
+        </NexaPopoverAnchor>
 
         <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
+            <NexaPopover
+              open={workflowCatalogOpen && !slashMenuOpen}
+              onOpenChange={setWorkflowCatalogOpen}
+            >
+            <NexaPopoverTrigger asChild>
             <button
               type="button"
               data-testid="workflow-catalog-trigger"
-              onClick={() => setWorkflowCatalogOpen((open) => !open)}
               disabled={attachmentLocked}
               className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
               aria-label={t("chat.workflows")}
@@ -1684,6 +1643,74 @@ export function ChatInput({
               <span className="hidden sm:inline">{t("chat.workflows")}</span>
               <ChevronDown className={`h-3 w-3 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
             </button>
+            </NexaPopoverTrigger>
+            {workflowCatalogOpen && !slashMenuOpen && (
+              <NexaPopoverContent
+                data-testid="workflow-catalog-panel"
+                side="top"
+                align="start"
+                collisionPadding={16}
+                className="w-[min(64rem,calc(100vw-2rem))] overflow-hidden p-0"
+              >
+                <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+                  <Workflow className="h-4 w-4 text-accent" />
+                  <span className="text-sm font-medium text-text-primary">{t("chat.workflows")}</span>
+                  <span className="text-xs tabular-nums text-text-tertiary">
+                    {workflowCatalogLoading
+                      ? t("common.loading")
+                      : t("chat.workflowTemplateCount", { count: String(workflowTemplates.length) })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setWorkflowCatalogOpen(false)}
+                    className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                    aria-label={t("common.close")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="grid max-h-72 gap-2 overflow-y-auto p-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {workflowTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      onClick={() => applyWorkflowTemplate(template)}
+                      className="min-h-[112px] rounded-lg border border-border/70 bg-surface-1/70 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/40 focus:outline-none focus:ring-2 focus:ring-accent/30"
+                      aria-label={`${template.label} workflow`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-sm font-medium leading-5 text-text-primary">
+                          {template.label}
+                        </span>
+                        <span className="shrink-0 rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
+                          {t("chat.workflowTasks", { count: String(template.tasks.length) })}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 line-clamp-2 text-xs leading-5 text-text-secondary">
+                        {template.description}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {template.tasks.slice(0, 3).map((task) => (
+                          <span
+                            key={task.id}
+                            className="rounded-md bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary"
+                          >
+                            {task.roleLabel}
+                          </span>
+                        ))}
+                      </div>
+                    </button>
+                  ))}
+                  {!workflowCatalogLoading && workflowTemplates.length === 0 && (
+                    <div className="col-span-full px-3 py-6 text-center text-sm text-text-tertiary">
+                      {t("chat.workflowUnavailable")}
+                    </div>
+                  )}
+                </div>
+              </NexaPopoverContent>
+            )}
+            </NexaPopover>
 
             {sessionControls}
 
@@ -1992,5 +2019,6 @@ export function ChatInput({
         </div>
       </Modal>
     </div>
+    </NexaPopover>
   );
 }

@@ -248,6 +248,31 @@ test('slash command tabs filter the second-level option list', async ({ page }) 
   await expect(page.getByTestId('slash-command-option-frontend-design')).toHaveCount(0);
 });
 
+test('slash command menu uses the shared collision-aware overlay portal', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 520 });
+  await page.goto('/chat/conv-slash');
+  await page.getByTestId('chat-input-textarea').fill('/');
+
+  const bounds = await page.getByTestId('slash-command-menu').evaluate((menu) => {
+    const rect = menu.getBoundingClientRect();
+    return {
+      inOverlayRoot: Boolean(menu.closest('[data-nexa-overlay-root="true"]')),
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+
+  expect(bounds.inOverlayRoot).toBe(true);
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth);
+  expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
+});
+
 test('slash command keyboard selection scrolls with the active row', async ({ page }) => {
   await page.goto('/chat/conv-slash');
 

@@ -12,7 +12,6 @@
 
 .nexa-overlay-content {
   z-index: 1001;
-  overflow: hidden;
   border: 1px solid var(--overlay-border);
   border-radius: var(--overlay-radius);
   background: var(--overlay-bg);
@@ -58,6 +57,7 @@
 }
 
 .nexa-select-content {
+  overflow: hidden;
   min-width: var(--radix-select-trigger-width);
   max-width: min(32rem, calc(100vw - 20px));
   max-height: min(24rem, var(--radix-select-content-available-height));
