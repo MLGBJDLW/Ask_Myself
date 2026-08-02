@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.11.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.6...nexa-monorepo-v0.11.7) (2026-08-02)
+
+
+### Features
+
+* **delegation:** Add bounded multi-lane scheduling ([ca9acbc](https://github.com/MLGBJDLW/Nexa/commit/ca9acbcc2288a3779281f30a8519493c59e40c2b))
+* **frontend:** Bound long sessions and unify overlays ([0d021d3](https://github.com/MLGBJDLW/Nexa/commit/0d021d36be0f849155e3ac254b27242e889632e2))
+* **runtime:** upgrade delegation and long-session UI ([ead7b96](https://github.com/MLGBJDLW/Nexa/commit/ead7b9617929fc84ceedcb77701ef19ae89d9c34))
+
+
+### Bug Fixes
+
+* **core:** Retain warm provider transports ([bfb7305](https://github.com/MLGBJDLW/Nexa/commit/bfb7305c76154868550951b9e9e2be396153f63f))
+* **delegation:** Close final scheduler review gaps ([cc8a04d](https://github.com/MLGBJDLW/Nexa/commit/cc8a04de9629b406f24fc735f083cd6d0cdc9748))
+* **delegation:** Preserve residual workers and lane admission ([5a1e445](https://github.com/MLGBJDLW/Nexa/commit/5a1e4455884698bfb43a1ac988af8dce70d756e8))
+* **delegation:** Roll back failed judge startup ([a00399a](https://github.com/MLGBJDLW/Nexa/commit/a00399aa258384f78375e01941cae673bfc65533))
+* **frontend:** Bound completed stream state ([f23f3d4](https://github.com/MLGBJDLW/Nexa/commit/f23f3d4932f67cfadd64f60dc356a1f85bc74f03))
+* **frontend:** Isolate paint telemetry dependency ([5f1b9ab](https://github.com/MLGBJDLW/Nexa/commit/5f1b9ab3bf4efc3b1d9886bd009a2a55c1af3b33))
+* **frontend:** Port composer menus to shared overlays ([00a4b9a](https://github.com/MLGBJDLW/Nexa/commit/00a4b9a545e129619183ff0531415ee332af73ef))
+* **frontend:** scroll multi-select menus ([0f6fa76](https://github.com/MLGBJDLW/Nexa/commit/0f6fa76ebff53d76f6ba3b1e6dcded7b59e13290))
+* **mcp:** Recover failed live connections ([79d6c1a](https://github.com/MLGBJDLW/Nexa/commit/79d6c1a654be079e47e93c24ce06966248d94a00))
+* **runtime:** Complete launch telemetry and refresh MCP snapshots ([999613a](https://github.com/MLGBJDLW/Nexa/commit/999613a0104cae7e20fe839eb4747c141146d8e2))
+* **runtime:** preserve turn orchestration limits ([cd66e17](https://github.com/MLGBJDLW/Nexa/commit/cd66e17444444635bd460c5cdf7544f5f9950b43))
+* **runtime:** Resolve final P1 review findings ([d1d9927](https://github.com/MLGBJDLW/Nexa/commit/d1d99277aec2a24b42873308b7270c69de304c43))
+* **runtime:** resolve final review findings ([8c296e6](https://github.com/MLGBJDLW/Nexa/commit/8c296e67ee9afa3d6eefee752ac5de55857d0605))
+
+
+### Performance Improvements
+
+* **core:** Reuse adaptive provider transports ([50d58c7](https://github.com/MLGBJDLW/Nexa/commit/50d58c7980251f176b9e294bfb27379d660a57e3))
+* **delegation:** Separate connection and token deadlines ([22ab931](https://github.com/MLGBJDLW/Nexa/commit/22ab931b504bc8260939ab2592ba6be1af4c0f8c))
+* **runtime:** Acknowledge turns before heavy initialization ([99f4bc8](https://github.com/MLGBJDLW/Nexa/commit/99f4bc82eab45d8966ad30fcb931a81ed4ea9f1c))
+
 ## [0.11.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.5...nexa-monorepo-v0.11.6) (2026-08-01)
 
 
