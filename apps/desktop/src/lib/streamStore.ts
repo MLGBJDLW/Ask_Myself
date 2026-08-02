@@ -4,7 +4,7 @@
  */
 
 import type { AgentFrontendEvent } from '../types';
-import { recordAgentFrontendPaint } from './api';
+import { recordAgentFrontendPaint } from './frontendPaintTelemetry';
 import type {
   AgentRunEvent,
   AgentTaskRun,
