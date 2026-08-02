@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use super::{ProviderConfig, ProviderType};
@@ -14,6 +14,7 @@ const TRANSPORT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSPORT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSPORT_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 const H2_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(300);
+const MAX_POOLED_TRANSPORTS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HttpTransportMode {
@@ -152,27 +153,55 @@ impl HttpTransport {
     }
 }
 
-static HTTP_TRANSPORT_POOL: OnceLock<Mutex<HashMap<TransportPoolKey, Weak<HttpTransport>>>> =
-    OnceLock::new();
+struct TransportPoolEntry {
+    transport: Arc<HttpTransport>,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct TransportPool {
+    entries: HashMap<TransportPoolKey, TransportPoolEntry>,
+    clock: u64,
+}
+
+static HTTP_TRANSPORT_POOL: OnceLock<Mutex<TransportPool>> = OnceLock::new();
 
 pub(crate) fn shared_http_transport(
     config: &ProviderConfig,
 ) -> Result<Arc<HttpTransport>, CoreError> {
     let key = TransportPoolKey::from_config(config);
-    let pool = HTTP_TRANSPORT_POOL.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut entries = pool
+    let pool = HTTP_TRANSPORT_POOL.get_or_init(|| Mutex::new(TransportPool::default()));
+    let mut pool = pool
         .lock()
         .map_err(|_| CoreError::Internal("provider HTTP transport pool lock poisoned".into()))?;
-    if let Some(transport) = entries.get(&key).and_then(Weak::upgrade) {
-        return Ok(transport);
+    pool.clock = pool.clock.saturating_add(1);
+    let last_used = pool.clock;
+    if let Some(entry) = pool.entries.get_mut(&key) {
+        entry.last_used = last_used;
+        return Ok(Arc::clone(&entry.transport));
     }
 
-    entries.retain(|_, transport| transport.strong_count() > 0);
+    if pool.entries.len() >= MAX_POOLED_TRANSPORTS {
+        let oldest = pool
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone());
+        if let Some(oldest) = oldest {
+            pool.entries.remove(&oldest);
+        }
+    }
     let transport = Arc::new(HttpTransport::new(initial_transport_mode(
         config.provider_type,
         &key.endpoint,
     ))?);
-    entries.insert(key, Arc::downgrade(&transport));
+    pool.entries.insert(
+        key,
+        TransportPoolEntry {
+            transport: Arc::clone(&transport),
+            last_used,
+        },
+    );
     Ok(transport)
 }
 
@@ -344,6 +373,25 @@ mod tests {
         let second = shared_http_transport(&config).expect("second transport");
 
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn pool_keeps_transport_warm_after_provider_lifetimes_end() {
+        let config = config(
+            ProviderType::OpenAi,
+            Some("https://api.openai.com/v1/long-lived-pool-test"),
+            "rotating-provider-instance",
+        );
+        let first = shared_http_transport(&config).expect("first transport");
+        let retained = Arc::downgrade(&first);
+        drop(first);
+
+        let still_warm = retained
+            .upgrade()
+            .expect("the bounded pool must retain warm transports between turns");
+        let next_turn = shared_http_transport(&config).expect("next-turn transport");
+
+        assert!(Arc::ptr_eq(&still_warm, &next_turn));
     }
 
     #[test]
