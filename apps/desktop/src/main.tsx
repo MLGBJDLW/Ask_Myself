@@ -6,15 +6,18 @@ import { runLocalStorageMigrations } from "./lib/localStorageMigrations";
 import "@fontsource-variable/inter";
 import "./index.css";
 import { SpeechPlaybackProvider } from "./features/voice/SpeechPlaybackProvider";
+import { OverlayProvider } from "./components/ui/overlay";
 
 runLocalStorageMigrations();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <SpeechPlaybackProvider>
-        <App />
-      </SpeechPlaybackProvider>
+      <OverlayProvider>
+        <SpeechPlaybackProvider>
+          <App />
+        </SpeechPlaybackProvider>
+      </OverlayProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

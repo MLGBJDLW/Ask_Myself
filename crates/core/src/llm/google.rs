@@ -15,13 +15,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
-    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk, ToolCallDelta,
-    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
+    FinishReason, LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -1133,7 +1135,7 @@ async fn parse_gemini_stream(
 
 /// Google Gemini LLM provider.
 pub struct GeminiProvider {
-    client: reqwest::Client,
+    transport: Arc<HttpTransport>,
     config: ProviderConfig,
     request_timeout: Option<Duration>,
 }
@@ -1142,19 +1144,10 @@ impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let request_timeout = configured_request_timeout(timeout);
-        // Force HTTP/1.1 + short idle pool TTL so SSE streams are not
-        // interrupted by upstream HTTP/2 RST_STREAM frames on stale sockets.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_idle_timeout(std::time::Duration::from_secs(15))
-            .pool_max_idle_per_host(5)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .http1_only()
-            .build()
-            .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
+        let transport = shared_http_transport(&config)?;
 
         Ok(Self {
-            client,
+            transport,
             config,
             request_timeout,
         })
@@ -1219,7 +1212,7 @@ impl LlmProvider for GeminiProvider {
         let mut seen_page_tokens = HashSet::new();
 
         loop {
-            let mut request = self.client.get(&url).query(&[("key", api_key)]);
+            let mut request = self.transport.client().get(&url).query(&[("key", api_key)]);
             if let Some(token) = page_token.as_deref() {
                 request = request.query(&[("pageToken", token)]);
             }
@@ -1275,16 +1268,21 @@ impl LlmProvider for GeminiProvider {
 
         let (system_instruction, contents) = convert_messages(&request.messages);
         let body = build_request_body(request, system_instruction, contents);
+        let body_bytes = serialized_json_body(&body, "Gemini completion request")?;
 
         let response = with_request_timeout(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
         )
         .send()
         .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })
         .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
@@ -1292,7 +1290,11 @@ impl LlmProvider for GeminiProvider {
         let resp: GeminiResponse = response
             .json()
             .await
+            .inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            })
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        self.transport.record_transport_success();
 
         let (content, tool_calls, finish_reason, usage, thinking) = extract_response(&resp)?;
 
@@ -1323,6 +1325,7 @@ impl LlmProvider for GeminiProvider {
 
         let (system_instruction, contents) = convert_messages(&request.messages);
         let body = build_request_body(request, system_instruction, contents);
+        let body_bytes = serialized_json_body(&body, "Gemini stream request")?;
 
         info!(
             "Gemini stream request to {}..., model={}",
@@ -1331,17 +1334,18 @@ impl LlmProvider for GeminiProvider {
         );
 
         let response = send_stream_start_request(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
             "Gemini stream request",
         )
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
+            self.transport.record_transport_failure(&e.to_string());
             error!("Gemini stream send failed: {e}");
-            e
         })?;
 
         info!("Gemini stream response status: {}", response.status());
@@ -1350,10 +1354,14 @@ impl LlmProvider for GeminiProvider {
         let (tx, rx) = mpsc::channel(64);
         info!("Gemini SSE stream started");
 
+        let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
             if let Err(e) = parse_gemini_stream(response, tx.clone()).await {
+                transport.record_transport_failure(&e.to_string());
                 error!("Gemini SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
+            } else {
+                transport.record_transport_success();
             }
             info!("Gemini SSE stream ended");
         });

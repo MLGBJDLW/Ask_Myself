@@ -18,7 +18,7 @@ fn env_flag_enabled(name: &str) -> bool {
         )
 }
 
-pub(super) fn llm_streaming_disabled_by_env() -> bool {
+pub fn llm_streaming_disabled_by_env() -> bool {
     env_flag_enabled(DISABLE_LLM_STREAMING_ENV)
         || env_flag_enabled(LEGACY_DISABLE_LLM_STREAMING_ENV)
 }

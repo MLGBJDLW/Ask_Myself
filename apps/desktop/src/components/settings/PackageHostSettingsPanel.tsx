@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { AlertTriangle, CheckCircle2, PackageCheck, RefreshCw, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../../i18n';
@@ -139,7 +140,7 @@ function PackageRow({ record, busy, onToggleEnabled, onHealthChange }: PackageRo
         <div className="flex flex-wrap items-center gap-2 lg:justify-end">
           <label className="flex items-center gap-2 rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-xs text-text-secondary">
             <span>{t('settings.packageHost.healthLabel')}</span>
-            <select
+            <NexaSelect
               value={record.health}
               disabled={busy}
               onChange={(event) => onHealthChange(record, event.target.value as PackageHealthState)}
@@ -148,7 +149,7 @@ function PackageRow({ record, busy, onToggleEnabled, onHealthChange }: PackageRo
               {healthOptions.map((health) => (
                 <option key={health} value={health}>{t(healthLabelKeys[health])}</option>
               ))}
-            </select>
+            </NexaSelect>
           </label>
           <Button
             variant={enabled ? 'secondary' : 'primary'}

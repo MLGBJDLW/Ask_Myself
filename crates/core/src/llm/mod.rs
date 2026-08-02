@@ -1,6 +1,7 @@
 //! LLM provider types and traits for the agent framework.
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::{stream::BoxStream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,7 @@ pub mod ollama;
 pub mod openai;
 mod prompt_cache;
 pub mod streaming;
+pub(crate) mod transport;
 
 // ---------------------------------------------------------------------------
 // Core message types
@@ -389,6 +391,17 @@ pub(crate) fn with_request_timeout(
     }
 }
 
+/// Serialize a provider request exactly once and retain it in a cheaply
+/// cloneable byte buffer for retries and request-size telemetry.
+pub(crate) fn serialized_json_body<T: Serialize>(
+    value: &T,
+    context: &str,
+) -> Result<Bytes, CoreError> {
+    serde_json::to_vec(value)
+        .map(Bytes::from)
+        .map_err(|error| CoreError::Llm(format!("Failed to serialize {context}: {error}")))
+}
+
 pub(crate) async fn send_stream_start_request(
     builder: reqwest::RequestBuilder,
     timeout: Option<std::time::Duration>,
@@ -529,6 +542,15 @@ pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider
     }
 }
 
+/// Whether the adapter must obtain the complete response before it can expose
+/// a synthetic stream. Streaming-only deadlines must not wrap this mode.
+pub fn provider_uses_non_streaming_fallback(provider_type: ProviderType, model: &str) -> bool {
+    matches!(
+        provider_adapter_for_type(provider_type),
+        ProviderAdapterKind::OpenAiCompatible
+    ) && openai::requires_non_streaming_fallback(model)
+}
+
 /// Determines whether a model is expected to support vision/image inputs.
 /// Defaults to `true` for most modern models; only returns `false` for models
 /// known to lack vision support (text-only, embedding-only, older generations).
@@ -641,6 +663,36 @@ mod tests {
         assert!(model_supports_vision(
             &ProviderType::LmStudio,
             "local-vision-model"
+        ));
+    }
+
+    #[test]
+    fn serialized_request_bytes_are_reused_without_copying_the_payload() {
+        let body = serde_json::json!({"model": "gpt-test", "messages": ["hello"]});
+        let bytes = serialized_json_body(&body, "test request").expect("serialize request");
+        let retry = bytes.clone();
+
+        assert_eq!(bytes, serde_json::to_vec(&body).unwrap());
+        assert_eq!(bytes.as_ptr(), retry.as_ptr());
+    }
+
+    #[test]
+    fn openai_compatible_completion_only_models_report_non_streaming_fallback() {
+        assert!(provider_uses_non_streaming_fallback(
+            ProviderType::OpenAi,
+            "gpt-5.5-pro"
+        ));
+        assert!(provider_uses_non_streaming_fallback(
+            ProviderType::OpenRouter,
+            "gpt-5.5-pro-preview"
+        ));
+        assert!(!provider_uses_non_streaming_fallback(
+            ProviderType::OpenAi,
+            "gpt-5.5"
+        ));
+        assert!(!provider_uses_non_streaming_fallback(
+            ProviderType::Anthropic,
+            "gpt-5.5-pro"
         ));
     }
 

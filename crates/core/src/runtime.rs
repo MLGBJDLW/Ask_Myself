@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::agent::power_mode::AgentPowerMode;
@@ -64,6 +64,7 @@ pub struct ActiveAgentTurn {
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
     pub event_sequencer: Arc<AgentRunEventSequencer>,
     pub orchestrator_run_id: Option<String>,
+    pub frontend_paint_recorded: AtomicBool,
 }
 
 impl ActiveAgentTurn {
@@ -154,6 +155,29 @@ impl AgentSessionManager {
             return false;
         }
         active.contains_key(session_id)
+    }
+
+    /// Claim the one frontend-paint metric allowed for an active turn.
+    ///
+    /// The identity check prevents a delayed frame from a previous turn from
+    /// writing telemetry into a newer turn for the same conversation.
+    pub async fn claim_frontend_paint_metric(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        turn_id: &str,
+    ) -> bool {
+        let active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return false;
+        };
+        if turn.handle.run_id != run_id || turn.handle.turn_id != turn_id {
+            return false;
+        }
+        if turn.frontend_paint_recorded.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        true
     }
 
     /// Returns `None` only while another runtime operation holds the manager.
@@ -461,6 +485,60 @@ pub enum AgentTurnState {
     Terminal(RuntimeTerminalStatus),
 }
 
+/// Stable stage names shared by backend launch telemetry and frontend paint
+/// instrumentation. Values include their unit so exported metrics remain
+/// self-describing across protocol boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnLaunchStage {
+    LaunchAckMs,
+    HistoryLoadMs,
+    ContextBuildMs,
+    SkillSelectMs,
+    McpSyncMs,
+    ToolRegistryMs,
+    AttachmentPrepareMs,
+    RequestBuildMs,
+    ProviderConnectMs,
+    FirstSseByteMs,
+    FirstVisibleTokenMs,
+    FrontendFirstPaintMs,
+}
+
+impl TurnLaunchStage {
+    pub const ALL: [Self; 12] = [
+        Self::LaunchAckMs,
+        Self::HistoryLoadMs,
+        Self::ContextBuildMs,
+        Self::SkillSelectMs,
+        Self::McpSyncMs,
+        Self::ToolRegistryMs,
+        Self::AttachmentPrepareMs,
+        Self::RequestBuildMs,
+        Self::ProviderConnectMs,
+        Self::FirstSseByteMs,
+        Self::FirstVisibleTokenMs,
+        Self::FrontendFirstPaintMs,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LaunchAckMs => "launch_ack_ms",
+            Self::HistoryLoadMs => "history_load_ms",
+            Self::ContextBuildMs => "context_build_ms",
+            Self::SkillSelectMs => "skill_select_ms",
+            Self::McpSyncMs => "mcp_sync_ms",
+            Self::ToolRegistryMs => "tool_registry_ms",
+            Self::AttachmentPrepareMs => "attachment_prepare_ms",
+            Self::RequestBuildMs => "request_build_ms",
+            Self::ProviderConnectMs => "provider_connect_ms",
+            Self::FirstSseByteMs => "first_sse_byte_ms",
+            Self::FirstVisibleTokenMs => "first_visible_token_ms",
+            Self::FrontendFirstPaintMs => "frontend_first_paint_ms",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurnHandle {
@@ -705,6 +783,27 @@ mod tests {
     };
 
     #[test]
+    fn turn_launch_stages_expose_a_stable_cross_layer_metric_contract() {
+        assert_eq!(
+            TurnLaunchStage::ALL.map(TurnLaunchStage::as_str),
+            [
+                "launch_ack_ms",
+                "history_load_ms",
+                "context_build_ms",
+                "skill_select_ms",
+                "mcp_sync_ms",
+                "tool_registry_ms",
+                "attachment_prepare_ms",
+                "request_build_ms",
+                "provider_connect_ms",
+                "first_sse_byte_ms",
+                "first_visible_token_ms",
+                "frontend_first_paint_ms",
+            ]
+        );
+    }
+
+    #[test]
     fn run_event_sequencer_allocates_one_monotonic_sequence_across_producers() {
         let sequencer = std::sync::Arc::new(AgentRunEventSequencer::default());
         let mut producers = Vec::new();
@@ -739,6 +838,7 @@ mod tests {
                 steering_tx: first_tx,
                 event_sequencer: Arc::new(AgentRunEventSequencer::default()),
                 orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
             })
             .await;
 
@@ -752,6 +852,7 @@ mod tests {
                 steering_tx: second_tx,
                 event_sequencer: Arc::new(AgentRunEventSequencer::default()),
                 orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
             })
             .await;
 
@@ -763,6 +864,21 @@ mod tests {
         assert_eq!(
             second_rx.recv().await.expect("steering message").content,
             "keep going"
+        );
+        assert!(
+            !manager
+                .claim_frontend_paint_metric("session-1", "run-1", "turn-1")
+                .await
+        );
+        assert!(
+            manager
+                .claim_frontend_paint_metric("session-1", "run-2", "turn-2")
+                .await
+        );
+        assert!(
+            !manager
+                .claim_frontend_paint_metric("session-1", "run-2", "turn-2")
+                .await
         );
 
         let active = manager.take("session-1").await.expect("active turn");

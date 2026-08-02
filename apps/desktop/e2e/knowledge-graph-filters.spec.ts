@@ -1,5 +1,10 @@
 import { expect, test, type Locator } from '@playwright/test';
 
+async function selectNexaOption(trigger: Locator, value: string) {
+  await trigger.click();
+  await trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
+}
+
 async function expectVerticallyCentered(container: Locator, icon: Locator) {
   const [containerBox, iconBox] = await Promise.all([container.boundingBox(), icon.boundingBox()]);
   if (!containerBox || !iconBox) throw new Error('Missing icon geometry');
@@ -364,7 +369,7 @@ test('starts with a hub overview, drills into a readable focus, and expands to a
     .toBeGreaterThan(1);
 
   await page.getByRole('button', { name: 'Atlas' }).click();
-  await page.getByLabel('Nodes Shown').selectOption('100');
+  await selectNexaOption(page.getByLabel('Nodes Shown'), '100');
 
   await expect(page.getByRole('button', { name: /Remote Topic/i })).toBeVisible();
 });

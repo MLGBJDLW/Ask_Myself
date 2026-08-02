@@ -172,7 +172,7 @@ fn emit_terminal_agent_error_once(
 
 /// State for the MCP server manager.
 pub struct McpManagerState {
-    pub manager: TokioMutex<nexa_core::mcp::McpManager>,
+    pub manager: Arc<TokioMutex<nexa_core::mcp::McpManager>>,
 }
 
 /// State for tracking active model download cancellation.
@@ -736,8 +736,12 @@ mod tests {
             subagent_max_parallel: None,
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
+            model_selection_resolution: None,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -799,8 +803,11 @@ mod tests {
             subagent_max_parallel: None,
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
         })
         .expect("save agent config")
     }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Mic2, Save } from 'lucide-react';
 
 import { useTranslation } from '../../i18n';
@@ -155,7 +156,7 @@ export function SpeechToTextSettingsPanel({
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
-              <select
+              <NexaSelect
                 data-testid="stt-provider-select"
                 value={scopeActive ? activePreset.id : ''}
                 onChange={(event) => applyPreset(event.target.value)}
@@ -174,7 +175,7 @@ export function SpeechToTextSettingsPanel({
                 ) : (
                   scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)
                 )}
-              </select>
+              </NexaSelect>
               {groupedCatalog && (
                 <p className="text-[11px] leading-5 text-text-tertiary">{t('settings.speechProviderCatalogHint')}</p>
               )}

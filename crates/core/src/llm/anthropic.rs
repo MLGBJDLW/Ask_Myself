@@ -11,14 +11,16 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
-    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk, ToolCallDelta,
-    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
+    FinishReason, LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -817,7 +819,7 @@ async fn parse_anthropic_stream(
 
 /// Anthropic Claude LLM provider.
 pub struct AnthropicProvider {
-    client: reqwest::Client,
+    transport: Arc<HttpTransport>,
     config: ProviderConfig,
     request_timeout: Option<Duration>,
 }
@@ -826,19 +828,10 @@ impl AnthropicProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let request_timeout = configured_request_timeout(timeout);
-        // Force HTTP/1.1 + short idle pool TTL so SSE streams are not
-        // interrupted by upstream HTTP/2 RST_STREAM frames on stale sockets.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_idle_timeout(std::time::Duration::from_secs(15))
-            .pool_max_idle_per_host(5)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .http1_only()
-            .build()
-            .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
+        let transport = shared_http_transport(&config)?;
 
         Ok(Self {
-            client,
+            transport,
             config,
             request_timeout,
         })
@@ -1159,19 +1152,24 @@ impl LlmProvider for AnthropicProvider {
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, false);
+        let body_bytes = serialized_json_body(&body, "Anthropic completion request")?;
 
         let response = with_request_timeout(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", "prompt-caching-2024-07-31")
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
         )
         .send()
         .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })
         .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
@@ -1179,7 +1177,11 @@ impl LlmProvider for AnthropicProvider {
         let resp: AnthropicResponse = response
             .json()
             .await
+            .inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            })
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        self.transport.record_transport_success();
 
         // Extract text, thinking, and tool calls from content blocks.
         let mut text_parts = Vec::new();
@@ -1253,24 +1255,26 @@ impl LlmProvider for AnthropicProvider {
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, true);
+        let body_bytes = serialized_json_body(&body, "Anthropic stream request")?;
 
         info!("Anthropic stream request to {url}, model={}", request.model);
 
         let response = send_stream_start_request(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", "prompt-caching-2024-07-31")
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
             "Anthropic stream request",
         )
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
+            self.transport.record_transport_failure(&e.to_string());
             error!("Anthropic stream send failed: {e}");
-            e
         })?;
 
         info!("Anthropic stream response status: {}", response.status());
@@ -1279,10 +1283,14 @@ impl LlmProvider for AnthropicProvider {
         let (tx, rx) = mpsc::channel(64);
         info!("Anthropic SSE stream started");
 
+        let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
             if let Err(e) = parse_anthropic_stream(response, tx.clone()).await {
+                transport.record_transport_failure(&e.to_string());
                 error!("Anthropic SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
+            } else {
+                transport.record_transport_success();
             }
             info!("Anthropic SSE stream ended");
         });
@@ -1300,7 +1308,8 @@ impl LlmProvider for AnthropicProvider {
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)

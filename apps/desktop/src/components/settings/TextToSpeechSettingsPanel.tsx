@@ -1,4 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { NexaSelect } from '../ui/overlay';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Play, RefreshCw, Save, Search, Trash2, Volume2 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
@@ -280,7 +281,7 @@ export function TextToSpeechSettingsPanel({
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
-              <select
+              <NexaSelect
                 data-testid="tts-provider-select"
                 value={scopeActive ? activePreset.id : ''}
                 onChange={(event) => applyPreset(event.target.value)}
@@ -299,7 +300,7 @@ export function TextToSpeechSettingsPanel({
                 ) : (
                   scopedPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)
                 )}
-              </select>
+              </NexaSelect>
               {groupedCatalog && (
                 <p className="text-[11px] leading-5 text-text-tertiary">{t('settings.speechProviderCatalogHint')}</p>
               )}
@@ -348,7 +349,7 @@ export function TextToSpeechSettingsPanel({
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-              <select
+              <NexaSelect
                 value={config.model}
                 onChange={(event) => update({ model: event.target.value })}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -357,7 +358,7 @@ export function TextToSpeechSettingsPanel({
                 {activePreset.models.map((model) => (
                   <option key={model.id} value={model.id} disabled={model.descriptor?.availableToCredential === false}>{model.name}{model.recommended ? ' *' : ''}{model.descriptor ? ` · ${modelDescriptorSummary(model.descriptor)}` : ''}</option>
                 ))}
-              </select>
+              </NexaSelect>
               <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
             </div>
 
@@ -430,7 +431,7 @@ export function TextToSpeechSettingsPanel({
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.ttsOutputFormat')}</label>
-              <select
+              <NexaSelect
                 value={config.outputFormat}
                 onChange={(event) => update({ outputFormat: event.target.value })}
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -438,7 +439,7 @@ export function TextToSpeechSettingsPanel({
                 {activePreset.outputFormats.map((format) => (
                   <option key={format} value={format}>{format.toUpperCase()}</option>
                 ))}
-              </select>
+              </NexaSelect>
             </div>
 
             <div className="space-y-2">

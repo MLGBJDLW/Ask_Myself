@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use chrono::{Local, SecondsFormat, Utc};
@@ -41,7 +41,7 @@ use nexa_core::llm::{
     create_provider, model_supports_vision, ContentPart, LlmProvider, Message, ProviderConfig,
     ProviderType, ReasoningEffort, Role,
 };
-use nexa_core::mcp::McpManager;
+use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
@@ -54,7 +54,7 @@ use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
 use tauri::AppHandle;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
 use crate::agent_stream::{
@@ -68,7 +68,8 @@ use crate::browser::agent_tool::NativeBrowserSessionTool;
 use crate::browser::BrowserState;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
-    DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
+    DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
+    SubagentTool,
 };
 use crate::terminal_agent_tool::TerminalAgentTool;
 
@@ -106,6 +107,7 @@ pub struct DesktopAgentTurnStream {
     pub task_run_id: String,
     pub event_seq: Arc<AgentRunEventSequencer>,
     pub terminal_emitted: Arc<AtomicBool>,
+    pub launch_started: Instant,
 }
 
 pub struct DesktopAgentApprovalRuntime {
@@ -119,6 +121,14 @@ pub struct DesktopAgentSessionDependencies {
     pub tools: ToolRegistry,
     pub selected_skills: Vec<Skill>,
     pub auto_loaded_skills: Vec<Skill>,
+    pub metrics: DesktopAgentDependencyMetrics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DesktopAgentDependencyMetrics {
+    pub skill_select_ms: u64,
+    pub mcp_sync_ms: u64,
+    pub tool_registry_ms: u64,
 }
 
 pub struct DesktopAgentTurnConfigRequest<'a> {
@@ -178,7 +188,7 @@ pub struct DesktopAgentSessionConfigInput<'a> {
 
 pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub db: &'a Database,
-    pub mcp_manager: &'a tokio::sync::Mutex<McpManager>,
+    pub mcp_manager: &'a Arc<tokio::sync::Mutex<McpManager>>,
     pub app_handle: &'a AppHandle,
     pub event_seq: &'a AgentRunEventSequencer,
     pub conversation_id: &'a str,
@@ -1058,6 +1068,31 @@ pub fn build_desktop_agent_turn_config(
         delegated_token_budget: power_policy.subagent_token_budget,
         verification_reserve_percent: power_policy.verification_reserve_percent,
     });
+    let profile_overrides_persisted_delegation =
+        orchestration_profile != OrchestrationProfile::Balanced || power_mode.is_nexus();
+    let subagent_max_parallel = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_max_parallel
+    } else {
+        Some(orchestration_policy.max_parallel)
+    };
+    let subagent_max_calls_per_turn = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_max_calls_per_turn
+    } else {
+        Some(orchestration_policy.max_calls_per_turn)
+    };
+    let subagent_token_budget = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_token_budget
+    } else {
+        Some(orchestration_policy.delegated_token_budget)
+    };
+    let delegation_limits_v2 = db_config.delegation_limits_v2.clone().map(|mut limits| {
+        if profile_overrides_persisted_delegation {
+            limits.max_parallel = subagent_max_parallel;
+            limits.max_calls_per_turn = subagent_max_calls_per_turn;
+            limits.total_actual_tokens_soft_limit = subagent_token_budget.map(u64::from);
+        }
+        limits
+    });
     let orchestration_profile_section = orchestration_policy.prompt_section();
     let collaboration_mode_section = if collaboration_mode.is_moa() {
         format!(
@@ -1265,21 +1300,9 @@ pub fn build_desktop_agent_turn_config(
         summarization_model: db_config.summarization_model.clone(),
         summarization_provider_type: desktop_summarization_provider_config(db_config)
             .map(|config| config.provider_type),
-        subagent_max_parallel: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_max_parallel
-        } else {
-            Some(orchestration_policy.max_parallel)
-        },
-        subagent_max_calls_per_turn: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_max_calls_per_turn
-        } else {
-            Some(orchestration_policy.max_calls_per_turn)
-        },
-        subagent_token_budget: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_token_budget
-        } else {
-            Some(orchestration_policy.delegated_token_budget)
-        },
+        subagent_max_parallel,
+        subagent_max_calls_per_turn,
+        subagent_token_budget,
         subagent_verification_reserve_percent: if orchestration_profile
             == OrchestrationProfile::Balanced
         {
@@ -1287,6 +1310,7 @@ pub fn build_desktop_agent_turn_config(
         } else {
             Some(orchestration_policy.verification_reserve_percent)
         },
+        delegation_limits_v2,
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -1414,14 +1438,31 @@ pub fn build_desktop_agent_initial_task_artifacts(
 }
 
 async fn sync_enabled_desktop_mcp_servers(
-    db: &Database,
     manager: &mut McpManager,
+    enabled_servers: &[McpServer],
     timeout_secs: u64,
 ) -> Result<HashMap<String, String>, String> {
-    let enabled_servers = db.get_enabled_mcp_servers().map_err(|e| e.to_string())?;
     Ok(manager
-        .sync_servers(&enabled_servers, Some(timeout_secs))
+        .sync_servers(enabled_servers, Some(timeout_secs))
         .await)
+}
+
+#[derive(Clone)]
+struct DesktopToolRegistrySnapshot {
+    generation: String,
+    tools: ToolRegistry,
+}
+
+static DESKTOP_TOOL_REGISTRY_SNAPSHOT: OnceLock<TokioMutex<Option<DesktopToolRegistrySnapshot>>> =
+    OnceLock::new();
+
+fn desktop_tool_registry_generation(
+    assembler: &PackageRuntimeAssembler,
+    enabled_servers: &[McpServer],
+) -> Result<String, String> {
+    let snapshot = serde_json::to_vec(&(assembler.snapshot(), enabled_servers))
+        .map_err(|error| format!("Failed to serialize tool registry generation: {error}"))?;
+    Ok(blake3::hash(&snapshot).to_hex().to_string())
 }
 
 pub async fn build_desktop_agent_session_dependencies(
@@ -1448,6 +1489,7 @@ pub async fn build_desktop_agent_session_dependencies(
         browser_state,
     } = request;
 
+    let skill_select_started = Instant::now();
     let selected_skills = if pinned_skill_ids.is_empty() {
         nexa_core::skills::get_available_skills_for_query(db, message)
     } else {
@@ -1473,15 +1515,10 @@ pub async fn build_desktop_agent_session_dependencies(
         warn!("Failed to auto-load skills for task run {task_run_id}: {err}");
         Vec::new()
     });
+    let skill_select_ms = elapsed_ms(skill_select_started);
 
+    let tool_registry_started = Instant::now();
     let package_assembler = PackageRuntimeAssembler::database_builtin(db);
-    let mut tools = package_assembler
-        .as_ref()
-        .map(PackageRuntimeAssembler::builtin_tool_registry)
-        .unwrap_or_else(|error| {
-            warn!("Failed to initialize Package Runtime Assembler: {error}");
-            canonical_builtin_tool_registry()
-        });
     emit_agent_frontend_event_with_presentation(
         app_handle,
         event_seq,
@@ -1496,20 +1533,90 @@ pub async fn build_desktop_agent_session_dependencies(
         AgentRunDisplayKind::Status,
         AgentRunEventImportance::Low,
     );
-    {
-        let mut manager = mcp_manager.lock().await;
-        match sync_enabled_desktop_mcp_servers(db, &mut manager, mcp_call_timeout_secs).await {
-            Ok(errors) => {
-                for (server_id, error) in errors {
-                    warn!("Failed to sync MCP server {server_id}: {error}");
+    let enabled_servers = db.get_enabled_mcp_servers().map_err(|error| {
+        warn!("Failed to load enabled MCP servers: {error}");
+        error
+    });
+    let configuration_generation = package_assembler
+        .as_ref()
+        .ok()
+        .zip(enabled_servers.as_ref().ok())
+        .and_then(|(assembler, servers)| {
+            desktop_tool_registry_generation(assembler, servers)
+                .map_err(|error| warn!("{error}"))
+                .ok()
+        });
+    let mut manager = mcp_manager.lock().await;
+    let generation = configuration_generation.as_ref().map(|generation| {
+        format!(
+            "{mcp_manager:p}:{generation}:{}",
+            manager.connection_generation()
+        )
+    });
+    let snapshot_cache = DESKTOP_TOOL_REGISTRY_SNAPSHOT.get_or_init(|| TokioMutex::new(None));
+    let mut snapshot_guard = snapshot_cache.lock().await;
+    let cached_tools = generation.as_ref().and_then(|generation| {
+        snapshot_guard
+            .as_ref()
+            .filter(|snapshot| snapshot.generation == *generation)
+            .map(|snapshot| snapshot.tools.clone())
+    });
+    let (mut tools, mcp_sync_ms) = if let Some(tools) = cached_tools {
+        (tools, 0)
+    } else {
+        let mut tools = package_assembler
+            .as_ref()
+            .map(PackageRuntimeAssembler::builtin_tool_registry)
+            .unwrap_or_else(|error| {
+                warn!("Failed to initialize Package Runtime Assembler: {error}");
+                canonical_builtin_tool_registry()
+            });
+        let mcp_sync_started = Instant::now();
+        let mut registry_snapshot_complete = enabled_servers.is_ok();
+        if let Ok(enabled_servers) = enabled_servers.as_ref() {
+            match sync_enabled_desktop_mcp_servers(
+                &mut manager,
+                enabled_servers,
+                mcp_call_timeout_secs,
+            )
+            .await
+            {
+                Ok(errors) => {
+                    registry_snapshot_complete = errors.is_empty();
+                    for (server_id, error) in errors {
+                        warn!("Failed to sync MCP server {server_id}: {error}");
+                    }
+                }
+                Err(error) => {
+                    registry_snapshot_complete = false;
+                    warn!("Failed to sync enabled MCP servers: {error}");
                 }
             }
-            Err(error) => warn!("Failed to load enabled MCP servers: {error}"),
+            if let Err(error) = manager
+                .register_tools_with_recovery(&mut tools, Arc::downgrade(mcp_manager))
+                .await
+            {
+                registry_snapshot_complete = false;
+                warn!("Failed to register MCP tools: {error}");
+            }
         }
-        if let Err(error) = manager.register_tools(&mut tools).await {
-            warn!("Failed to register MCP tools: {error}");
+        let mcp_sync_ms = elapsed_ms(mcp_sync_started);
+        if registry_snapshot_complete {
+            if let Some(configuration_generation) = configuration_generation {
+                let generation = format!(
+                    "{mcp_manager:p}:{configuration_generation}:{}",
+                    manager.connection_generation()
+                );
+                *snapshot_guard = Some(DesktopToolRegistrySnapshot {
+                    generation,
+                    tools: tools.clone(),
+                });
+            }
         }
-    }
+        (tools, mcp_sync_ms)
+    };
+    drop(snapshot_guard);
+    drop(manager);
 
     let delegation_runtime = DelegationRuntime::new(
         provider_config,
@@ -1518,6 +1625,7 @@ pub async fn build_desktop_agent_session_dependencies(
         subagent_allowed_skill_ids,
         cancel_token,
         Some(task_run_id.to_string()),
+        Some(conversation_id.to_string()),
     );
     tools.register(Box::new(SubagentTool::from_runtime(
         delegation_runtime.clone(),
@@ -1526,6 +1634,9 @@ pub async fn build_desktop_agent_session_dependencies(
         delegation_runtime.clone(),
     )));
     tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+        delegation_runtime.clone(),
+    )));
+    tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
         delegation_runtime.clone(),
     )));
     if let Some(terminal_state) = terminal_state {
@@ -1590,7 +1701,16 @@ pub async fn build_desktop_agent_session_dependencies(
         tools,
         selected_skills,
         auto_loaded_skills,
+        metrics: DesktopAgentDependencyMetrics {
+            skill_select_ms,
+            mcp_sync_ms,
+            tool_registry_ms: elapsed_ms(tool_registry_started),
+        },
     }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> ApprovalCallback {
@@ -1727,6 +1847,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
             turn_id.clone(),
             Arc::clone(&stream.event_seq),
             Arc::clone(&stream.terminal_emitted),
+            stream.launch_started,
         )
         .run(events_rx),
     );
@@ -2031,6 +2152,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn registry_snapshot_generation_changes_with_mcp_configuration() {
+        let assembler = PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+            .expect("built-in package snapshot");
+        let mut server = nexa_core::mcp::McpServer {
+            id: "mcp-1".to_string(),
+            name: "Search".to_string(),
+            transport: "streamable_http".to_string(),
+            command: None,
+            args: None,
+            url: Some("https://mcp.example.test".to_string()),
+            env_json: None,
+            headers_json: Some(r#"{"Authorization":"Bearer first"}"#.to_string()),
+            enabled: true,
+            created_at: "2026-08-02T00:00:00Z".to_string(),
+            updated_at: "2026-08-02T00:00:00Z".to_string(),
+            builtin_id: None,
+        };
+
+        let first = desktop_tool_registry_generation(&assembler, &[server.clone()])
+            .expect("first generation");
+        server.headers_json = Some(r#"{"Authorization":"Bearer second"}"#.to_string());
+        let second =
+            desktop_tool_registry_generation(&assembler, &[server]).expect("second generation");
+
+        assert_ne!(first, second);
+    }
+
     fn test_agent_config() -> DbAgentConfig {
         DbAgentConfig {
             id: "agent-config-1".to_string(),
@@ -2055,8 +2204,12 @@ mod tests {
             subagent_max_parallel: Some(2),
             subagent_max_calls_per_turn: Some(3),
             subagent_token_budget: Some(4096),
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_endpoint_id: None,
+            model_id: None,
+            model_selection_resolution: None,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -2308,6 +2461,13 @@ mod tests {
 
         let mut nexus_db_config = test_agent_config();
         nexus_db_config.model = "gpt-5.6".to_string();
+        nexus_db_config.delegation_limits_v2 = Some(nexa_core::agent::DelegationLimitsConfig {
+            total_actual_tokens_soft_limit: Some(32_000),
+            max_parallel: Some(3),
+            max_calls_per_turn: Some(6),
+            queue_deadline_ms: Some(9_000),
+            ..Default::default()
+        });
         let nexus = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
             db: &db,
             conversation: &conversation,
@@ -2331,6 +2491,14 @@ mod tests {
         assert_eq!(nexus.subagent_max_calls_per_turn, Some(12));
         assert_eq!(nexus.subagent_token_budget, Some(96_000));
         assert_eq!(nexus.subagent_verification_reserve_percent, Some(25));
+        let nexus_limits = nexus
+            .delegation_limits_v2
+            .as_ref()
+            .expect("saved V2 limits remain available");
+        assert_eq!(nexus_limits.max_parallel, Some(6));
+        assert_eq!(nexus_limits.max_calls_per_turn, Some(12));
+        assert_eq!(nexus_limits.total_actual_tokens_soft_limit, Some(96_000));
+        assert_eq!(nexus_limits.queue_deadline_ms, Some(9_000));
         assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
         assert!(nexus
             .volatile_system_sections
@@ -2339,6 +2507,13 @@ mod tests {
 
         let mut unlimited_db_config = test_agent_config();
         unlimited_db_config.max_iterations = None;
+        unlimited_db_config.delegation_limits_v2 = Some(nexa_core::agent::DelegationLimitsConfig {
+            total_actual_tokens_soft_limit: Some(32_000),
+            max_parallel: Some(3),
+            max_calls_per_turn: Some(6),
+            run_deadline_ms: Some(240_000),
+            ..Default::default()
+        });
         let custom = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
             db: &db,
             conversation: &conversation,
@@ -2355,11 +2530,24 @@ mod tests {
             orchestration_profile: OrchestrationProfile::Custom,
             custom_orchestration: Some(CustomOrchestrationOptions {
                 max_iterations: Some(48),
+                max_parallel: Some(7),
+                max_calls_per_turn: Some(15),
+                delegated_token_budget: Some(77_000),
                 ..Default::default()
             }),
         })
         .executor_config;
         assert_eq!(custom.max_iterations, 48);
+        assert_eq!(custom.subagent_max_parallel, Some(7));
+        assert_eq!(custom.subagent_max_calls_per_turn, Some(15));
+        assert_eq!(custom.subagent_token_budget, Some(77_000));
+        let custom_limits = custom
+            .delegation_limits_v2
+            .expect("custom turn merges into saved V2 limits");
+        assert_eq!(custom_limits.max_parallel, Some(7));
+        assert_eq!(custom_limits.max_calls_per_turn, Some(15));
+        assert_eq!(custom_limits.total_actual_tokens_soft_limit, Some(77_000));
+        assert_eq!(custom_limits.run_deadline_ms, Some(240_000));
 
         let _ = std::fs::remove_dir_all(root);
     }

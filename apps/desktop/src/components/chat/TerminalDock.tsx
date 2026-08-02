@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { listen } from '@tauri-apps/api/event';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -617,7 +618,7 @@ export function TerminalDock({
           )}
           {statusText}
         </span>
-        <select
+        <NexaSelect
           value={selectedShell}
           onChange={(event) => handleShellChange(event.target.value as TerminalShell)}
           className="h-8 rounded-md border border-border/55 bg-surface-0 px-2 text-xs text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
@@ -628,9 +629,9 @@ export function TerminalDock({
               {option.label}
             </option>
           ))}
-        </select>
+        </NexaSelect>
         {availableSessions.length > 1 && (
-          <select
+          <NexaSelect
             value={session?.id ?? ''}
             onChange={(event) => handleSessionChange(event.target.value)}
             className="h-8 max-w-44 rounded-md border border-border/55 bg-surface-0 px-2 text-xs text-text-primary outline-none transition-colors hover:border-border-hover focus:border-accent"
@@ -642,7 +643,7 @@ export function TerminalDock({
                 {`${index + 1}: ${item.shell}${item.processId ? ` #${item.processId}` : ''}`}
               </option>
             ))}
-          </select>
+          </NexaSelect>
         )}
         {session && (
           <div className="min-w-0 flex-1 truncate text-[11px] text-text-tertiary">

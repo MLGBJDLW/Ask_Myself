@@ -164,6 +164,7 @@ test('checkpoint menu can open a saved point as a new branch', async ({ page }) 
 
   await expect(menu).toBeVisible();
   await expect(menu).toContainText('manual');
+  await expect.poll(() => menu.evaluate((panel) => getComputedStyle(panel).overflowY)).toBe('auto');
 
   await menu.getByRole('button', { name: /try as branch/i }).click();
 

@@ -7,3 +7,4 @@ export { Skeleton, CardSkeleton } from './Skeleton';
 export { Tooltip } from './Tooltip';
 export { ConfirmDialog } from './ConfirmDialog';
 export { EmptyState } from './EmptyState';
+export * from './overlay';

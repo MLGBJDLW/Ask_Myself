@@ -10,13 +10,15 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
-    with_request_timeout, CompletionRequest, CompletionResponse, ContentPart, FinishReason,
-    LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta, ToolCallRequest,
-    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
+    FinishReason, LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta,
+    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_TIMEOUT_SECS: u64 = 300; // Local models can be slow on first load.
@@ -448,7 +450,7 @@ async fn parse_ollama_ndjson_stream(
 
 /// Ollama local LLM provider.
 pub struct OllamaProvider {
-    client: reqwest::Client,
+    transport: Arc<HttpTransport>,
     config: ProviderConfig,
     request_timeout: Option<Duration>,
 }
@@ -457,18 +459,10 @@ impl OllamaProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, CoreError> {
         let timeout = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let request_timeout = configured_request_timeout(timeout);
-        // Ollama runs locally but we still force HTTP/1.1 + short pool TTL
-        // for consistency with the other providers; SSE framing is cleaner
-        // and there is no benefit to h2 multiplexing for sequential streams.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_idle_timeout(std::time::Duration::from_secs(15))
-            .http1_only()
-            .build()
-            .map_err(|e| CoreError::Llm(format!("Failed to create HTTP client: {e}")))?;
+        let transport = shared_http_transport(&config)?;
 
         Ok(Self {
-            client,
+            transport,
             config,
             request_timeout,
         })
@@ -521,10 +515,11 @@ impl LlmProvider for OllamaProvider {
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let url = format!("{}/api/tags", self.base_url());
 
-        let response = with_request_timeout(self.client.get(&url), self.request_timeout)
-            .send()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let response =
+            with_request_timeout(self.transport.client().get(&url), self.request_timeout)
+                .send()
+                .await
+                .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
 
@@ -544,12 +539,14 @@ impl LlmProvider for OllamaProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, false);
+        let body_bytes = serialized_json_body(&body, "Ollama completion request")?;
 
         let response = with_request_timeout(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
         )
         .send()
@@ -618,24 +615,33 @@ impl LlmProvider for OllamaProvider {
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, true);
+        let body_bytes = serialized_json_body(&body, "Ollama stream request")?;
 
         let response = send_stream_start_request(
-            self.client
+            self.transport
+                .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body),
+                .body(body_bytes),
             self.request_timeout,
             "Ollama stream request",
         )
-        .await?;
+        .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })?;
 
         let response = self.check_response(response).await?;
 
         let (tx, rx) = mpsc::channel(64);
 
+        let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
             if let Err(e) = parse_ollama_ndjson_stream(response, tx.clone()).await {
+                transport.record_transport_failure(&e.to_string());
                 let _ = tx.send(Err(e)).await;
+            } else {
+                transport.record_transport_success();
             }
         });
 

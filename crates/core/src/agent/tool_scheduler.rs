@@ -14,6 +14,7 @@ const MAX_TOOL_RESULT_CONTEXT_CHARS: usize = 24_000;
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSchedulerPolicy {
     configured_timeout_secs: Option<u32>,
+    delegated_timeout_secs: Option<u32>,
     dynamic_tool_visibility: bool,
     offered_tool_names: HashSet<String>,
     registered_tool_names: HashSet<String>,
@@ -30,12 +31,14 @@ pub(crate) struct ToolSchedulingDecision {
 impl ToolSchedulerPolicy {
     pub(crate) fn new(
         configured_timeout_secs: Option<u32>,
+        delegated_timeout_secs: Option<u32>,
         dynamic_tool_visibility: bool,
         offered_tool_names: HashSet<String>,
         registered_tool_names: HashSet<String>,
     ) -> Self {
         Self {
             configured_timeout_secs,
+            delegated_timeout_secs,
             dynamic_tool_visibility,
             offered_tool_names,
             registered_tool_names,
@@ -48,7 +51,20 @@ impl ToolSchedulerPolicy {
         call: &ToolCallRequest,
     ) -> ToolSchedulingDecision {
         let parsed_args = tools.normalized_arguments_for_scheduling(&call.name, &call.arguments);
-        let timeout = tool_timeout_for_call(self.configured_timeout_secs, &call.name, &parsed_args);
+        let configured_timeout_secs = if matches!(
+            call.name.as_str(),
+            "spawn_subagent" | "spawn_subagent_batch"
+        ) && self.configured_timeout_secs != Some(0)
+        {
+            match (self.configured_timeout_secs, self.delegated_timeout_secs) {
+                (Some(configured), Some(delegated)) => Some(configured.max(delegated)),
+                (None, Some(delegated)) => Some(delegated),
+                (configured, None) => configured,
+            }
+        } else {
+            self.configured_timeout_secs
+        };
+        let timeout = tool_timeout_for_call(configured_timeout_secs, &call.name, &parsed_args);
 
         let hidden_registered_tool = self.dynamic_tool_visibility
             && !self.offered_tool_names.contains(&call.name)
@@ -390,6 +406,7 @@ mod tests {
         let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
+            None,
             false,
             HashSet::from(["run_shell".to_string()]),
             HashSet::from(["run_shell".to_string()]),
@@ -432,6 +449,29 @@ mod tests {
     }
 
     #[test]
+    fn v2_worker_deadline_extends_the_outer_subagent_tool_timeout() {
+        let tools = crate::tools::default_tool_registry();
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            Some(260),
+            false,
+            HashSet::from(["spawn_subagent".to_string()]),
+            HashSet::from(["spawn_subagent".to_string()]),
+        );
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-v2-timeout".to_string(),
+                name: "spawn_subagent".to_string(),
+                arguments: serde_json::json!({ "task": "long worker" }).to_string(),
+                thought_signature: None,
+            },
+        );
+
+        assert_eq!(decision.timeout, Some(Duration::from_secs(260)));
+    }
+
+    #[test]
     fn timeout_gives_slow_builtin_tools_realistic_outer_budgets() {
         assert_eq!(
             tool_timeout_for_call(Some(30), "generate_image", &serde_json::json!({})),
@@ -459,6 +499,7 @@ mod tests {
         let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
+            None,
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string()]),
@@ -484,6 +525,7 @@ mod tests {
         let tools = crate::tools::default_tool_registry();
         let policy = ToolSchedulerPolicy::new(
             Some(30),
+            None,
             true,
             HashSet::from(["read_file".to_string()]),
             HashSet::from(["read_file".to_string(), "edit_file".to_string()]),

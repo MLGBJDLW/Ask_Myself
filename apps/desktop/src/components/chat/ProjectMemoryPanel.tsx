@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../../lib/api';
@@ -108,7 +109,7 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
       <div className="space-y-4">
         <div className="rounded-md border border-border bg-surface-1 p-3">
           <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr]">
-            <select
+            <NexaSelect
               value={kind}
               onChange={(e) => setKind(e.target.value)}
               className="h-9 rounded-md border border-border bg-surface-0 px-2 text-xs text-text-primary outline-none focus:border-accent"
@@ -116,7 +117,7 @@ export function ProjectMemoryPanel({ projectId, open, onClose }: ProjectMemoryPa
               {KIND_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
               ))}
-            </select>
+            </NexaSelect>
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}

@@ -4,6 +4,7 @@
  */
 
 import type { AgentFrontendEvent } from '../types';
+import { recordAgentFrontendPaint } from './frontendPaintTelemetry';
 import type {
   AgentRunEvent,
   AgentTaskRun,
@@ -37,9 +38,11 @@ import type {
   StreamState,
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
+import { ConversationFrameBatcher } from './streaming/frameBatcher';
 export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
+const MAX_RETAINED_STREAMS = 32;
 
 /* ── Store implementation ───────────────────────────────────────── */
 
@@ -54,11 +57,31 @@ function stateHasVisiblePreview(state: InternalStreamState | undefined): boolean
   ));
 }
 
+function stateHasVisibleGeneratedContent(state: InternalStreamState): boolean {
+  return Boolean(
+    state.streamText
+    || state.thinkingText
+    || state.toolCalls.length > 0
+    || state.streamRounds.some(round => Boolean(round.reply || round.thinking)),
+  );
+}
+
+function nextAnimationFrame(callback: () => void): void {
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    globalThis.requestAnimationFrame(callback);
+    return;
+  }
+  globalThis.setTimeout(callback, 0);
+}
+
 class StreamStoreImpl {
   private _streams: Record<string, InternalStreamState> = {};
+  private _recency = new Map<string, number>();
+  private _recencyTick = 0;
   private _listeners = new Set<StoreListener>();
-  private _pendingNotify = new Set<string>();
-  private _notifyScheduled = false;
+  private _notifications = new ConversationFrameBatcher(
+    conversationId => this.notify(conversationId),
+  );
 
   subscribe = (listener: StoreListener): (() => void) => {
     this._listeners.add(listener);
@@ -72,25 +95,52 @@ class StreamStoreImpl {
   }
 
   private scheduleNotify(conversationId: string): void {
-    this._pendingNotify.add(conversationId);
-    if (!this._notifyScheduled) {
-      this._notifyScheduled = true;
-      queueMicrotask(() => {
-        this._notifyScheduled = false;
-        const pending = new Set(this._pendingNotify);
-        this._pendingNotify.clear();
-        for (const id of pending) {
-          for (const listener of this._listeners) {
-            listener(id);
-          }
-        }
-      });
+    this._notifications.schedule(conversationId);
+  }
+
+  private notifyImmediately(conversationId: string): void {
+    this._notifications.flushNow(conversationId);
+  }
+
+  private capLiveCollections(state: InternalStreamState): void {
+    if (state.traceEvents.length > 512) {
+      state.traceEvents = state.traceEvents.slice(-512);
+    }
+    if (state.streamRounds.length > 128) {
+      state.streamRounds = state.streamRounds.slice(-128);
+    }
+    if (state.taskEvents.length > 256) {
+      state.taskEvents = state.taskEvents.slice(-256);
+    }
+  }
+
+  private touch(conversationId: string): void {
+    this._recencyTick += 1;
+    this._recency.set(conversationId, this._recencyTick);
+  }
+
+  private evictCompletedStreams(protectedConversationId?: string): void {
+    while (Object.keys(this._streams).length > MAX_RETAINED_STREAMS) {
+      const candidate = Object.entries(this._streams)
+        .filter(([id, state]) => id !== protectedConversationId && !state.isStreaming)
+        .sort(
+          ([left], [right]) => (this._recency.get(left) ?? 0) - (this._recency.get(right) ?? 0),
+        )[0];
+      if (!candidate) return;
+
+      const [conversationId, state] = candidate;
+      clearStreamWatchdog(state);
+      clearToolPreparingTimers(state);
+      delete this._streams[conversationId];
+      this._recency.delete(conversationId);
+      this.notify(conversationId);
     }
   }
 
   getStream(id: string): StreamState | undefined {
     const s = this._streams[id];
     if (!s) return undefined;
+    this.touch(id);
     return {
       turnHandle: s.turnHandle,
       isStreaming: s.isStreaming,
@@ -141,9 +191,11 @@ class StreamStoreImpl {
 
     const state = stateFactory();
     this._streams[conversationId] = state;
+    this.touch(conversationId);
     if (state.isStreaming) {
       this.resetTimeout(conversationId);
     }
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -160,7 +212,7 @@ class StreamStoreImpl {
   }
 
   /** Initialize (or reset) stream state for a conversation. */
-  startStream(conversationId: string): void {
+  startStream(conversationId: string, launchStartedAt?: number): void {
     const existing = this._streams[conversationId];
     if (existing) {
       clearStreamWatchdog(existing);
@@ -169,7 +221,10 @@ class StreamStoreImpl {
 
     const state = createDefaultState();
     state.isStreaming = true;
+    state._launchStartedAt = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
     this._streams[conversationId] = state;
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.resetTimeout(conversationId);
     this.notify(conversationId);
   }
@@ -180,6 +235,7 @@ class StreamStoreImpl {
     if (!state) return;
     state.turnHandle = handle;
     this.notify(conversationId);
+    this.scheduleFrontendFirstPaint(conversationId, state);
   }
 
   /** Remove stream state entirely. */
@@ -189,6 +245,7 @@ class StreamStoreImpl {
     clearStreamWatchdog(existing);
     clearToolPreparingTimers(existing);
     delete this._streams[conversationId];
+    this._recency.delete(conversationId);
     this.notify(conversationId);
   }
 
@@ -221,6 +278,8 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage: null,
     });
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -237,6 +296,8 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage,
     });
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -253,6 +314,8 @@ class StreamStoreImpl {
         traceTone: 'error',
         errorMessage: 'Connection lost',
       });
+      this.touch(conversationId);
+      this.evictCompletedStreams(conversationId);
       this.notify(conversationId);
     });
   }
@@ -290,6 +353,39 @@ class StreamStoreImpl {
     }, TOOL_PREPARING_DELAY_MS);
   }
 
+  private scheduleFrontendFirstPaint(
+    conversationId: string,
+    state: InternalStreamState,
+  ): void {
+    if (
+      state._frontendPaintScheduled
+      || state._frontendPaintReported
+      || state._launchStartedAt === null
+      || !state.turnHandle
+      || !stateHasVisibleGeneratedContent(state)
+    ) return;
+
+    state._frontendPaintScheduled = true;
+    nextAnimationFrame(() => {
+      nextAnimationFrame(() => {
+        const current = this._streams[conversationId];
+        if (!current || current._frontendPaintReported || !current.turnHandle) return;
+        current._frontendPaintScheduled = false;
+        current._frontendPaintReported = true;
+        const elapsedMs = (globalThis.performance?.now() ?? Date.now())
+          - (current._launchStartedAt ?? 0);
+        void recordAgentFrontendPaint(
+          conversationId,
+          current.turnHandle.runId,
+          current.turnHandle.turnId,
+          elapsedMs,
+        ).catch(() => {
+          // Paint telemetry must never affect the live conversation.
+        });
+      });
+    });
+  }
+
   /** Process an incoming agent event. */
   dispatch(conversationId: string, event: AgentFrontendEvent): void {
     if (event.runEvent) {
@@ -325,7 +421,19 @@ class StreamStoreImpl {
           );
         },
       });
-      this.scheduleNotify(conversationId);
+      this.touch(conversationId);
+      this.capLiveCollections(state);
+      if (isTerminalEvent) this.evictCompletedStreams(conversationId);
+      if (
+        isTerminalEvent
+        || runEvent.kind === 'approvalRequested'
+        || runEvent.kind === 'approvalResolved'
+      ) {
+        this.notifyImmediately(conversationId);
+      } else {
+        this.scheduleNotify(conversationId);
+      }
+      this.scheduleFrontendFirstPaint(conversationId, state);
       return;
     }
 
@@ -373,8 +481,19 @@ class StreamStoreImpl {
         );
       },
     });
-
-    this.scheduleNotify(conversationId);
+    this.touch(conversationId);
+    this.capLiveCollections(s);
+    if (isTerminalEvent) this.evictCompletedStreams(conversationId);
+    if (
+      isTerminalEvent
+      || eventType === 'approvalRequested'
+      || eventType === 'approvalResolved'
+    ) {
+      this.notifyImmediately(conversationId);
+    } else {
+      this.scheduleNotify(conversationId);
+    }
+    this.scheduleFrontendFirstPaint(conversationId, s);
   }
 }
 

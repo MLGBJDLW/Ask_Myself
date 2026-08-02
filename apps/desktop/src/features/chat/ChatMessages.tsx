@@ -10,6 +10,7 @@ import {
   useCallback,
 } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   MessageCircle,
   ChevronDown,
@@ -1403,6 +1404,41 @@ export function ChatMessages(props: ChatMessagesProps) {
     turns,
   ]);
 
+  const renderableMessageIndexes = useMemo(() => messages.flatMap((message, index) => {
+    if (message.role === "system") {
+      return isCompactionSummaryMessage(message) ? [index] : [];
+    }
+    if (message.role === "tool" || turnRenderMap.members.has(index)) return [];
+    const traceGroup = message.role === "assistant"
+      ? messageTraceGroups.get(index)
+      : undefined;
+    return traceGroup?.type === "member" ? [] : [index];
+  }), [messageTraceGroups, messages, turnRenderMap.members]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: renderableMessageIndexes.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 280,
+    overscan: 8,
+    getItemKey: virtualIndex => {
+      const messageIndex = renderableMessageIndexes[virtualIndex];
+      const message = messages[messageIndex];
+      const turn = turnRenderMap.anchors.get(messageIndex);
+      return turn ? `turn-${turn.turn.id}` : message?.id ?? virtualIndex;
+    },
+  });
+
+  const turnVirtualIndexById = useMemo(() => {
+    const indexes = new Map<string, number>();
+    renderableMessageIndexes.forEach((messageIndex, virtualIndex) => {
+      const message = messages[messageIndex];
+      if (message?.role !== 'user') return;
+      const navigationItem = turnNavigationByMessageId.get(message.id);
+      if (navigationItem) indexes.set(navigationItem.id, virtualIndex);
+    });
+    return indexes;
+  }, [messages, renderableMessageIndexes, turnNavigationByMessageId]);
+
   const {
     visibleTraceEvents,
     currentTimelineSections,
@@ -1440,14 +1476,18 @@ export function ChatMessages(props: ChatMessagesProps) {
     if (!container || turnNavigationItems.length === 0) return;
 
     const marker = container.scrollTop + Math.min(container.clientHeight * 0.34, 220);
-    let nextActive = turnNavigationItems[0].id;
-    for (const item of turnNavigationItems) {
-      const anchor = turnAnchorRefs.current.get(item.id);
-      if (!anchor || anchor.offsetTop > marker) break;
-      nextActive = item.id;
+    let nextActive = activeTurnNavigationId ?? turnNavigationItems[0].id;
+    let nextTop = Number.NEGATIVE_INFINITY;
+    const containerTop = container.getBoundingClientRect().top;
+    for (const [id, anchor] of turnAnchorRefs.current) {
+      const anchorTop = anchor.getBoundingClientRect().top - containerTop + container.scrollTop;
+      if (anchorTop <= marker && anchorTop > nextTop) {
+        nextTop = anchorTop;
+        nextActive = id;
+      }
     }
     setActiveTurnNavigationId((current) => current === nextActive ? current : nextActive);
-  }, [turnNavigationItems]);
+  }, [activeTurnNavigationId, turnNavigationItems]);
 
   const scheduleTurnNavigationUpdate = useCallback(() => {
     if (turnNavigationFrameRef.current != null) return;
@@ -1468,16 +1508,36 @@ export function ChatMessages(props: ChatMessagesProps) {
   const scrollToTurn = useCallback((id: string) => {
     const container = scrollContainerRef.current;
     const anchor = turnAnchorRefs.current.get(id);
-    if (!container || !anchor) return;
+    if (!container) return;
 
     shouldAutoFollowRef.current = false;
     setActiveTurnNavigationId(id);
-    const top = Math.max(0, anchor.offsetTop - Math.min(120, container.clientHeight * 0.16));
+    if (autoScrollFrameRef.current != null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
+    const virtualIndex = turnVirtualIndexById.get(id);
+    if (virtualIndex != null) {
+      if (virtualIndex === 0) {
+        container.scrollTo({ top: 0, behavior: 'auto' });
+      } else {
+        rowVirtualizer.scrollToIndex(virtualIndex, { align: 'start' });
+      }
+      return;
+    }
+    if (!anchor) return;
+    const top = Math.max(
+      0,
+      anchor.getBoundingClientRect().top
+        - container.getBoundingClientRect().top
+        + container.scrollTop
+        - Math.min(120, container.clientHeight * 0.16),
+    );
     container.scrollTo({
       top,
       behavior: shouldReduceMotion ? 'auto' : 'smooth',
     });
-  }, [shouldReduceMotion]);
+  }, [rowVirtualizer, shouldReduceMotion, turnVirtualIndexById]);
 
   const getScrollMetrics = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -1905,8 +1965,19 @@ export function ChatMessages(props: ChatMessagesProps) {
         onSelect={scrollToTurn}
         messageAreaLabel={t("chat.messageArea")}
       />
+      <div
+        data-chat-virtual-list="true"
+        style={{
+          height: `${rowVirtualizer.getTotalSize()}px`,
+          position: 'relative',
+          width: '100%',
+        }}
+      >
       <AnimatePresence initial={false}>
-        {messages.map((msg, idx) => {
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const idx = renderableMessageIndexes[virtualRow.index];
+          const msg = messages[idx];
+          const content = (() => {
           if (msg.role === "system") {
             return isCompactionSummaryMessage(msg)
               ? renderCompactStatus(false, `compact-status-${msg.id}`)
@@ -2135,8 +2206,27 @@ export function ChatMessages(props: ChatMessagesProps) {
               {renderFileDiffPreviews(assistantDiffs, `message-diff-${msg.id}`)}
             </div>
           );
+          })();
+          return (
+            <div
+              key={virtualRow.key}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              data-chat-virtual-row="true"
+              style={{
+                left: 0,
+                position: 'absolute',
+                top: 0,
+                transform: `translateY(${virtualRow.start}px)`,
+                width: '100%',
+              }}
+            >
+              {content}
+            </div>
+          );
         })}
       </AnimatePresence>
+      </div>
 
       {/* ── Interleaved per-round rendering ─────────────────────────── */}
       {shouldRenderLiveTraceTimeline && collapsedLiveTrace && (

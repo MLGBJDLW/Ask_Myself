@@ -25,6 +25,7 @@ import {
   projectModelDescriptor,
 } from '../../lib/modelCatalog';
 import type { AgentConfig } from '../../types/conversation';
+import { useOverlayRoot } from '../ui/overlay';
 
 export interface AgentModelSelection {
   config: AgentConfig;
@@ -245,6 +246,7 @@ export function AgentModelPicker({
   onSelect,
 }: AgentModelPickerProps) {
   const { t } = useTranslation();
+  const overlayRoot = useOverlayRoot();
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
   const [activeConfigId, setActiveConfigId] = useState(selectedConfig?.id ?? agentConfigs[0]?.id ?? '');
@@ -952,7 +954,7 @@ export function AgentModelPicker({
             </motion.div>
           )}
         </AnimatePresence>,
-        document.body,
+        overlayRoot ?? document.body,
       )}
     </div>
   );

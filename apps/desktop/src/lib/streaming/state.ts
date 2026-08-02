@@ -16,6 +16,9 @@ export interface InternalStreamState extends StreamState {
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: StreamTimeoutHandle | null;
   _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
+  _launchStartedAt: number | null;
+  _frontendPaintScheduled: boolean;
+  _frontendPaintReported: boolean;
 }
 
 export function createDefaultState(): InternalStreamState {
@@ -51,6 +54,9 @@ export function createDefaultState(): InternalStreamState {
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,
     _toolPreparingTimers: {},
+    _launchStartedAt: null,
+    _frontendPaintScheduled: false,
+    _frontendPaintReported: false,
   };
 }
 

@@ -6,6 +6,7 @@ mod agent_task_events;
 mod app_events;
 mod browser;
 mod commands;
+mod delegation_scheduler;
 mod desktop_agent_session;
 mod subagent_tool;
 mod terminal_agent_tool;
@@ -226,7 +227,7 @@ fn main() {
                 sessions: nexa_core::runtime::AgentSessionManager::new(),
             });
             app.manage(McpManagerState {
-                manager: TokioMutex::new(nexa_core::mcp::McpManager::new()),
+                manager: Arc::new(TokioMutex::new(nexa_core::mcp::McpManager::new())),
             });
             app.manage(ApprovalState::default());
             app.manage(RealtimeTranscriptionState::default());
@@ -430,6 +431,7 @@ fn main() {
             commands::export_workflow_automation_trajectory_cmd,
             // Agent chat
             commands::agent_chat_cmd,
+            commands::record_agent_frontend_paint_cmd,
             commands::agent_steer_cmd,
             commands::agent_stop_cmd,
             // Terminal

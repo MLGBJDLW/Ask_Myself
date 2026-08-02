@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { NexaSelect } from "../ui/overlay";
 import { ChevronDown, Eye, EyeOff, Image as ImageIcon, Save } from "lucide-react";
 import { useTranslation } from "../../i18n";
 import type {
@@ -338,7 +339,7 @@ export function ImageGenerationSettingsPanel({
           <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.provider')}</label>
-            <select
+            <NexaSelect
               value={currentPresetId}
               onChange={(event) => applyPreset(event.target.value)}
               className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -348,7 +349,7 @@ export function ImageGenerationSettingsPanel({
                   {preset.name}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
             <div className="flex items-center gap-2 text-xs text-text-tertiary">
               <ProviderIcon
                 provider={activePreset.provider}
@@ -412,7 +413,7 @@ export function ImageGenerationSettingsPanel({
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
             {shouldUseCatalogModelSelect(imageConfig.model, activePreset.models) ? (
-              <select
+              <NexaSelect
                 value={imageConfig.model}
                 onChange={(event) =>
                   updateImageConfig({ ...imageConfig, model: event.target.value })
@@ -425,7 +426,7 @@ export function ImageGenerationSettingsPanel({
                     {model.name}{model.recommended ? " *" : ""} · {modelDescriptorSummary(model.descriptor)}
                   </option>
                 ))}
-              </select>
+              </NexaSelect>
             ) : (
               <Input
                 value={imageConfig.model}
@@ -441,7 +442,7 @@ export function ImageGenerationSettingsPanel({
           {activePreset.sizeOptions.length > 0 && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.defaultSize')}</label>
-              <select
+              <NexaSelect
                 value={imageConfig.size ?? ""}
                 onChange={(event) =>
                   updateImageConfig({ ...imageConfig, size: event.target.value || null })
@@ -453,14 +454,14 @@ export function ImageGenerationSettingsPanel({
                     {size.label}
                   </option>
                 ))}
-              </select>
+              </NexaSelect>
             </div>
           )}
 
           {activePreset.qualityOptions.length > 0 && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.quality')}</label>
-              <select
+              <NexaSelect
                 value={imageConfig.quality ?? ""}
                 onChange={(event) =>
                   updateImageConfig({ ...imageConfig, quality: event.target.value || null })
@@ -472,14 +473,14 @@ export function ImageGenerationSettingsPanel({
                     {quality}
                   </option>
                 ))}
-              </select>
+              </NexaSelect>
             </div>
           )}
 
           {activePreset.outputFormats.length > 1 && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.outputFormat')}</label>
-              <select
+              <NexaSelect
                 value={imageConfig.outputFormat ?? ""}
                 onChange={(event) =>
                   updateImageConfig({ ...imageConfig, outputFormat: event.target.value || null })
@@ -491,7 +492,7 @@ export function ImageGenerationSettingsPanel({
                     {format}
                   </option>
                 ))}
-              </select>
+              </NexaSelect>
             </div>
           )}
           </div>

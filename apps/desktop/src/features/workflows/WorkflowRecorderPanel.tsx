@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { NexaSelect } from '../../components/ui/overlay';
 import {
   ClipboardList,
   ListPlus,
@@ -287,7 +288,7 @@ export function WorkflowRecorderPanel({
           </div>
 
           <Field label={tr('recordingWorkflowTemplate')}>
-            <select
+            <NexaSelect
               className={textInputClass()}
               value={templateId}
               onChange={(event) => setTemplateId(event.target.value)}
@@ -295,11 +296,11 @@ export function WorkflowRecorderPanel({
               {templates.map((template) => (
                 <option key={template.id} value={template.id}>{templateLabel(template, tr)}</option>
               ))}
-            </select>
+            </NexaSelect>
           </Field>
 
           <Field label={tr('recordingSourceScope')}>
-            <select
+            <NexaSelect
               multiple
               className="min-h-24 w-full rounded-md border border-border/70 bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent/70"
               value={draft.sourceScope}
@@ -311,7 +312,7 @@ export function WorkflowRecorderPanel({
               {sources.map((source) => (
                 <option key={source.id} value={source.id}>{source.rootPath}</option>
               ))}
-            </select>
+            </NexaSelect>
           </Field>
         </div>
       </section>
@@ -334,7 +335,7 @@ export function WorkflowRecorderPanel({
           <div className="space-y-2">
             {draft.steps.map((step, index) => (
               <div key={step.id} className="grid gap-2 rounded-md border border-border/60 bg-surface-0 p-2 md:grid-cols-[120px_1fr_44px]">
-                <select
+                <NexaSelect
                   className={textInputClass()}
                   value={step.kind}
                   aria-label={`${tr('recordingStepKind')} ${index + 1}`}
@@ -343,7 +344,7 @@ export function WorkflowRecorderPanel({
                   {STEP_KIND_OPTIONS.map((kind) => (
                     <option key={kind} value={kind}>{tr(`recordingStepKind.${kind}`)}</option>
                   ))}
-                </select>
+                </NexaSelect>
                 <input
                   className={textInputClass()}
                   value={step.text}

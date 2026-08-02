@@ -11,6 +11,7 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react';
+import { NexaSelect } from '../ui/overlay';
 import { useTranslation } from '../../i18n';
 import type { FfmpegDownloadProgress, VideoConfig } from '../../types/video';
 import { Badge } from '../ui/Badge';
@@ -234,7 +235,7 @@ export function VideoSettingsSection({
             <div>
               <p className="text-xs text-text-tertiary mb-2">{t('voice.microphoneDeviceDesc')}</p>
               <div className="flex items-center gap-2">
-                <select
+                <NexaSelect
                   value={micDeviceId ?? ''}
                   onChange={(e) => onMicDeviceChange(e.target.value || null)}
                   className="flex-1 rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none transition-colors duration-fast hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30"
@@ -245,7 +246,7 @@ export function VideoSettingsSection({
                       {device.label || `${t('voice.microphoneDeviceN')} ${index + 1}`}
                     </option>
                   ))}
-                </select>
+                </NexaSelect>
                 <button
                   type="button"
                   onClick={onRefreshMics}

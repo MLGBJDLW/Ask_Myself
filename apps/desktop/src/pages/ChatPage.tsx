@@ -18,6 +18,7 @@ import { useApprovalQueue } from '../lib/useApprovalQueue';
 import { useTranslation } from '../i18n';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
+import { useOverlayRoot } from '../components/ui/overlay';
 import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
@@ -201,6 +202,7 @@ function agentConfigToSaveInput(
     subagentMaxParallel: config.subagentMaxParallel,
     subagentMaxCallsPerTurn: config.subagentMaxCallsPerTurn,
     subagentTokenBudget: config.subagentTokenBudget,
+    delegationLimitsV2: config.delegationLimitsV2 ?? null,
     dynamicToolVisibility: config.dynamicToolVisibility,
     traceEnabled: config.traceEnabled,
     requireToolConfirmation: config.requireToolConfirmation,
@@ -243,6 +245,7 @@ function SessionSelect({
   onChange,
   options,
 }: SessionSelectProps) {
+  const overlayRoot = useOverlayRoot();
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
   const ref = useRef<HTMLDivElement>(null);
@@ -417,7 +420,7 @@ function SessionSelect({
             </motion.div>
           )}
         </AnimatePresence>,
-        document.body,
+        overlayRoot ?? document.body,
       )}
     </div>
   );

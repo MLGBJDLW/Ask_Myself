@@ -89,7 +89,8 @@ use self::long_task::{
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
-use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
+use self::sampling::completion_response_to_agent_stream;
+pub use self::sampling::llm_streaming_disabled_by_env;
 use self::stream_recovery::{
     ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
     StreamRecoveryPolicy,
@@ -250,6 +251,10 @@ pub struct AgentConfig {
     pub subagent_token_budget: Option<u32>,
     /// Percentage of delegated tokens reserved for verification/adjudication.
     pub subagent_verification_reserve_percent: Option<u32>,
+    /// Independent, versioned delegation limits. When absent, legacy
+    /// subagent fields are read for backward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_limits_v2: Option<DelegationLimitsConfig>,
     /// Maximum time for each tool call in seconds. 0 disables the outer tool timeout.
     pub tool_timeout_secs: Option<u32>,
     pub agent_timeout_secs: Option<u32>,
@@ -380,6 +385,7 @@ impl Default for AgentConfig {
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
             subagent_verification_reserve_percent: None,
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             cache_ttl_hours: None,
@@ -396,6 +402,22 @@ impl Default for AgentConfig {
             custom_orchestration: None,
         }
     }
+}
+
+/// Persisted/wire configuration for model-aware delegated execution limits.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationLimitsConfig {
+    pub input_context_limit: Option<u64>,
+    pub max_output_tokens_per_worker: Option<u64>,
+    pub total_actual_tokens_soft_limit: Option<u64>,
+    pub total_cost_soft_limit_micros: Option<u64>,
+    pub max_parallel: Option<u32>,
+    pub max_calls_per_turn: Option<u32>,
+    pub queue_deadline_ms: Option<u64>,
+    pub connect_deadline_ms: Option<u64>,
+    pub first_token_deadline_ms: Option<u64>,
+    pub run_deadline_ms: Option<u64>,
 }
 
 const DEFAULT_MODEL: &str = "gpt-4o-mini";

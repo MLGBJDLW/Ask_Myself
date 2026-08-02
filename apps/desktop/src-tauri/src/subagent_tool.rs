@@ -1,21 +1,31 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use futures::stream::{FuturesUnordered, StreamExt};
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::mpsc;
+
+use crate::delegation_scheduler::{
+    BudgetSnapshot, DelegationLimitPolicy, DelegationScheduler as SubagentBudgetController,
+};
 
 use nexa_core::agent::context::estimate_tool_tokens_for_model;
 use nexa_core::agent::{
-    AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind, CancellationToken,
+    llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
+    CancellationToken,
 };
+use nexa_core::conversation::conversation_message_llm_context_content;
 use nexa_core::conversation::memory::estimate_tokens_for_model;
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
-use nexa_core::llm::{create_provider, CompletionRequest, ContentPart, ProviderConfig, Usage};
+use nexa_core::llm::{
+    create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart, Message,
+    ProviderConfig, Role, Usage,
+};
+use nexa_core::provider_catalog::model_limits_from_catalog;
 use nexa_core::search;
 use nexa_core::skills::Skill;
 use nexa_core::task_run::AgentTaskRuntime;
@@ -38,7 +48,7 @@ const JUDGE_SUBAGENT_RESULTS_JSON: &str =
     include_str!("../../../../crates/core/prompts/tools/judge_subagent_results.json");
 const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
 const DEFAULT_SUBAGENT_MAX_TOKENS: u32 = 8_192;
-const MAX_SUBAGENT_MAX_TOKENS: u32 = 32_768;
+const CONSERVATIVE_SUBAGENT_MAX_TOKENS: u32 = 65_536;
 
 struct DelegationToolDef {
     description: String,
@@ -225,6 +235,10 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
     },
     SubagentToolSpec {
         name: "judge_subagent_results",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "observe_subagent_batch",
         enabled_by_default: false,
     },
     SubagentToolSpec {
@@ -426,35 +440,14 @@ pub struct JudgeSubagentResultsTool {
     runtime: DelegationRuntime,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BudgetSnapshot {
-    max_parallel: u32,
-    max_calls_per_turn: u32,
-    calls_started: u32,
-    remaining_calls: u32,
-    token_budget: u32,
-    tokens_spent: u32,
-    tokens_reserved: u32,
-    remaining_tokens: u32,
-    verification_reserve_tokens: u32,
+pub struct ObserveSubagentBatchTool {
+    runtime: DelegationRuntime,
 }
 
-#[derive(Debug)]
-struct SubagentBudgetState {
-    max_parallel: u32,
-    max_calls_per_turn: u32,
-    token_budget: u32,
-    calls_started: u32,
-    tokens_spent: u32,
-    tokens_reserved: u32,
-    verification_reserve_percent: u32,
-}
-
-#[derive(Clone)]
-struct SubagentBudgetController {
-    semaphore: Arc<Semaphore>,
-    state: Arc<Mutex<SubagentBudgetState>>,
+struct DelegationBatchState {
+    expected_workers: usize,
+    results: BTreeMap<usize, SubagentRunArtifact>,
+    cancel_tokens: Vec<CancellationToken>,
 }
 
 #[derive(Clone)]
@@ -464,8 +457,13 @@ pub struct DelegationRuntime {
     allowed_tools: Option<Vec<String>>,
     allowed_skill_ids: Option<Vec<String>>,
     parent_task_run_id: Option<String>,
+    parent_conversation_id: Option<String>,
     tool_registry: Arc<StdMutex<Option<ToolRegistry>>>,
     sessions: Arc<StdMutex<HashMap<String, SubagentSessionSnapshot>>>,
+    skill_index: Arc<OnceLock<SkillIndexSnapshot>>,
+    context_snapshots: Arc<StdMutex<HashMap<String, Arc<DelegationContextSnapshot>>>>,
+    batches: Arc<StdMutex<HashMap<String, DelegationBatchState>>>,
+    batch_notify: Arc<tokio::sync::Notify>,
     budget: SubagentBudgetController,
     cancel_token: CancellationToken,
     delegation_depth: u8,
@@ -489,127 +487,9 @@ impl JudgeSubagentResultsTool {
     }
 }
 
-impl SubagentBudgetController {
-    fn new(config: &AgentConfig) -> Self {
-        let max_parallel = config.subagent_max_parallel.unwrap_or(3).clamp(1, 12);
-        let max_calls_per_turn = config.subagent_max_calls_per_turn.unwrap_or(6).clamp(1, 32);
-        let token_budget = config
-            .subagent_token_budget
-            .unwrap_or(32_000)
-            .clamp(256, 200_000);
-        let verification_reserve_percent = config
-            .subagent_verification_reserve_percent
-            .unwrap_or_default()
-            .clamp(0, 80);
-
-        Self {
-            semaphore: Arc::new(Semaphore::new(max_parallel as usize)),
-            state: Arc::new(Mutex::new(SubagentBudgetState {
-                max_parallel,
-                max_calls_per_turn,
-                token_budget,
-                calls_started: 0,
-                tokens_spent: 0,
-                tokens_reserved: 0,
-                verification_reserve_percent,
-            })),
-        }
-    }
-
-    async fn begin_call(
-        &self,
-        label: &str,
-        reserved_tokens: u32,
-        is_verification: bool,
-        cancel_token: &CancellationToken,
-    ) -> Result<OwnedSemaphorePermit, CoreError> {
-        {
-            let mut state = self.state.lock().await;
-            if state.calls_started >= state.max_calls_per_turn {
-                return Err(CoreError::InvalidInput(format!(
-                    "Delegated execution budget exhausted: maximum {} calls per turn reached before starting {label}.",
-                    state.max_calls_per_turn
-                )));
-            }
-            if state.verification_reserve_percent > 0 && !is_verification {
-                let reserve_tokens = state
-                    .token_budget
-                    .saturating_mul(state.verification_reserve_percent)
-                    / 100;
-                let exploration_ceiling = state.token_budget.saturating_sub(reserve_tokens);
-                let committed_after_call = state
-                    .tokens_spent
-                    .saturating_add(state.tokens_reserved)
-                    .saturating_add(reserved_tokens);
-                if committed_after_call > exploration_ceiling {
-                    return Err(CoreError::InvalidInput(format!(
-                        "Nexus verification reserve reached before starting {label}. Keep {reserve_tokens} of {} delegated tokens available for verification or adjudication.",
-                        state.token_budget
-                    )));
-                }
-                if state.calls_started >= state.max_calls_per_turn.saturating_sub(1) {
-                    return Err(CoreError::InvalidInput(format!(
-                        "Nexus verification call reserve reached before starting {label}. Keep the final delegated call for verification or adjudication."
-                    )));
-                }
-            }
-            if state.tokens_spent >= state.token_budget && state.tokens_reserved == 0 {
-                return Err(CoreError::InvalidInput(format!(
-                    "Delegated execution token budget exhausted before starting {label}. Spent: {} of {} tokens.",
-                    state.tokens_spent,
-                    state.token_budget,
-                )));
-            }
-            state.calls_started += 1;
-            state.tokens_reserved = state.tokens_reserved.saturating_add(reserved_tokens);
-        }
-
-        let semaphore = self.semaphore.clone();
-        let permit = tokio::select! {
-            _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
-                "Delegated execution '{label}' was cancelled while waiting for a worker slot."
-            ))),
-            result = semaphore.acquire_owned() => result
-                .map_err(|_| CoreError::Internal("delegated execution semaphore closed".into())),
-        };
-
-        if permit.is_err() {
-            let mut state = self.state.lock().await;
-            state.calls_started = state.calls_started.saturating_sub(1);
-            state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
-        }
-        permit
-    }
-
-    async fn finish_call(&self, reserved_tokens: u32, usage: &Usage) {
-        let mut state = self.state.lock().await;
-        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
-        state.tokens_spent = state.tokens_spent.saturating_add(usage.total_tokens);
-    }
-
-    async fn release_reservation(&self, reserved_tokens: u32) {
-        let mut state = self.state.lock().await;
-        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
-    }
-
-    async fn snapshot(&self) -> BudgetSnapshot {
-        let state = self.state.lock().await;
-        BudgetSnapshot {
-            max_parallel: state.max_parallel,
-            max_calls_per_turn: state.max_calls_per_turn,
-            calls_started: state.calls_started,
-            remaining_calls: state.max_calls_per_turn.saturating_sub(state.calls_started),
-            token_budget: state.token_budget,
-            tokens_spent: state.tokens_spent,
-            tokens_reserved: state.tokens_reserved,
-            remaining_tokens: state
-                .token_budget
-                .saturating_sub(state.tokens_spent.saturating_add(state.tokens_reserved)),
-            verification_reserve_tokens: state
-                .token_budget
-                .saturating_mul(state.verification_reserve_percent)
-                / 100,
-        }
+impl ObserveSubagentBatchTool {
+    pub fn from_runtime(runtime: DelegationRuntime) -> Self {
+        Self { runtime }
     }
 }
 
@@ -621,6 +501,7 @@ impl DelegationRuntime {
         allowed_skill_ids: Option<Vec<String>>,
         cancel_token: CancellationToken,
         parent_task_run_id: Option<String>,
+        parent_conversation_id: Option<String>,
     ) -> Self {
         let budget = SubagentBudgetController::new(&base_config);
         Self {
@@ -629,8 +510,13 @@ impl DelegationRuntime {
             allowed_tools,
             allowed_skill_ids,
             parent_task_run_id,
+            parent_conversation_id,
             tool_registry: Arc::new(StdMutex::new(None)),
             sessions: Arc::new(StdMutex::new(HashMap::new())),
+            skill_index: Arc::new(OnceLock::new()),
+            context_snapshots: Arc::new(StdMutex::new(HashMap::new())),
+            batches: Arc::new(StdMutex::new(HashMap::new())),
+            batch_notify: Arc::new(tokio::sync::Notify::new()),
             budget,
             cancel_token,
             delegation_depth: 0,
@@ -662,11 +548,36 @@ impl DelegationRuntime {
             allowed_tools: self.allowed_tools.clone(),
             allowed_skill_ids: self.allowed_skill_ids.clone(),
             parent_task_run_id: self.parent_task_run_id.clone(),
+            parent_conversation_id: self.parent_conversation_id.clone(),
             tool_registry: Arc::clone(&self.tool_registry),
             sessions: Arc::clone(&self.sessions),
+            skill_index: Arc::clone(&self.skill_index),
+            context_snapshots: Arc::clone(&self.context_snapshots),
+            batches: Arc::clone(&self.batches),
+            batch_notify: Arc::clone(&self.batch_notify),
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth.saturating_add(1),
+        }
+    }
+
+    fn scoped_to_worker(&self, cancel_token: CancellationToken) -> Self {
+        Self {
+            provider_config: self.provider_config.clone(),
+            base_config: self.base_config.clone(),
+            allowed_tools: self.allowed_tools.clone(),
+            allowed_skill_ids: self.allowed_skill_ids.clone(),
+            parent_task_run_id: self.parent_task_run_id.clone(),
+            parent_conversation_id: self.parent_conversation_id.clone(),
+            tool_registry: Arc::clone(&self.tool_registry),
+            sessions: Arc::clone(&self.sessions),
+            skill_index: Arc::clone(&self.skill_index),
+            context_snapshots: Arc::clone(&self.context_snapshots),
+            batches: Arc::clone(&self.batches),
+            batch_notify: Arc::clone(&self.batch_notify),
+            budget: self.budget.clone(),
+            cancel_token,
+            delegation_depth: self.delegation_depth,
         }
     }
 
@@ -685,6 +596,91 @@ impl DelegationRuntime {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.insert(snapshot.task_id.clone(), snapshot);
         }
+    }
+
+    fn register_batch(&self, batch_id: &str, expected_workers: usize) {
+        if let Ok(mut batches) = self.batches.lock() {
+            batches.insert(
+                batch_id.to_string(),
+                DelegationBatchState {
+                    expected_workers,
+                    results: BTreeMap::new(),
+                    cancel_tokens: Vec::with_capacity(expected_workers),
+                },
+            );
+        }
+    }
+
+    fn add_batch_cancel_token(&self, batch_id: &str, token: CancellationToken) {
+        if let Ok(mut batches) = self.batches.lock() {
+            if let Some(batch) = batches.get_mut(batch_id) {
+                batch.cancel_tokens.push(token);
+            }
+        }
+    }
+
+    fn record_batch_result(&self, batch_id: &str, index: usize, run: SubagentRunArtifact) {
+        if let Ok(mut batches) = self.batches.lock() {
+            if let Some(batch) = batches.get_mut(batch_id) {
+                batch.results.insert(index, run);
+            }
+        }
+        self.batch_notify.notify_waiters();
+    }
+
+    fn batch_snapshot(&self, batch_id: &str) -> Option<(usize, Vec<SubagentRunArtifact>)> {
+        self.batches.lock().ok().and_then(|batches| {
+            batches.get(batch_id).map(|batch| {
+                (
+                    batch.expected_workers,
+                    batch.results.values().cloned().collect(),
+                )
+            })
+        })
+    }
+
+    fn cancel_batch(&self, batch_id: &str) -> bool {
+        let Some(tokens) = self.batches.lock().ok().and_then(|batches| {
+            batches
+                .get(batch_id)
+                .map(|batch| batch.cancel_tokens.clone())
+        }) else {
+            return false;
+        };
+        for token in tokens {
+            token.cancel();
+        }
+        true
+    }
+
+    fn context_snapshot(
+        &self,
+        db: &Database,
+        model: &str,
+        context_limit: u32,
+    ) -> Arc<DelegationContextSnapshot> {
+        let key = format!("{model}:{context_limit}");
+        if let Some(snapshot) = self
+            .context_snapshots
+            .lock()
+            .ok()
+            .and_then(|snapshots| snapshots.get(&key).cloned())
+        {
+            return snapshot;
+        }
+        let snapshot = Arc::new(load_delegation_context_snapshot(
+            db,
+            self.parent_conversation_id.as_deref(),
+            model,
+            context_limit,
+        ));
+        if let Ok(mut snapshots) = self.context_snapshots.lock() {
+            return snapshots
+                .entry(key)
+                .or_insert_with(|| Arc::clone(&snapshot))
+                .clone();
+        }
+        snapshot
     }
 }
 
@@ -772,6 +768,82 @@ struct SpawnSubagentBatchArgs {
     parallel_group: Option<String>,
     #[serde(default)]
     max_parallel: Option<u32>,
+    #[serde(default)]
+    completion_policy: Option<String>,
+    #[serde(default)]
+    quorum: Option<u32>,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+    #[serde(default)]
+    cancel_remaining: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObserveSubagentBatchArgs {
+    batch_id: String,
+    #[serde(default)]
+    wait_ms: Option<u64>,
+    #[serde(default)]
+    cancel_remaining: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum DelegationCompletionPolicy {
+    All,
+    Quorum { required: usize },
+    FirstSuccess,
+    Deadline { deadline_ms: u64 },
+    ParentDecides,
+}
+
+impl DelegationCompletionPolicy {
+    fn resolve(args: &SpawnSubagentBatchArgs, worker_count: usize) -> Result<Self, CoreError> {
+        let mode = args
+            .completion_policy
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("all")
+            .to_ascii_lowercase();
+        match mode.as_str() {
+            "all" => Ok(Self::All),
+            "quorum" => {
+                let required = args.quorum.unwrap_or_else(|| {
+                    u32::try_from(worker_count.saturating_div(2).saturating_add(1))
+                        .unwrap_or(u32::MAX)
+                }) as usize;
+                if required == 0 || required > worker_count {
+                    return Err(CoreError::InvalidInput(format!(
+                        "spawn_subagent_batch quorum must be between 1 and {worker_count}"
+                    )));
+                }
+                Ok(Self::Quorum { required })
+            }
+            "first_success" | "firstsuccess" => Ok(Self::FirstSuccess),
+            "deadline" => Ok(Self::Deadline {
+                deadline_ms: args.deadline_ms.unwrap_or(60_000).clamp(250, 180_000),
+            }),
+            "parent_decides" | "parentdecides" => Ok(Self::ParentDecides),
+            _ => Err(CoreError::InvalidInput(format!(
+                "Unsupported spawn_subagent_batch completion_policy '{mode}'"
+            ))),
+        }
+    }
+
+    fn is_satisfied(&self, runs: &[SubagentRunArtifact], pending: usize) -> bool {
+        let successes = runs.iter().filter(|run| !run.is_error).count();
+        match self {
+            Self::All | Self::Deadline { .. } => pending == 0,
+            Self::Quorum { required } => successes >= *required,
+            Self::FirstSuccess => successes > 0,
+            // Return after the first settled result. The parent can then wait
+            // for more evidence or cancel residual workers through the
+            // observe_subagent_batch decision channel.
+            Self::ParentDecides => !runs.is_empty() || pending == 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -810,6 +882,22 @@ struct EventCapture {
     finish_reason: Option<String>,
     tool_events: Vec<serde_json::Value>,
     thinking: Vec<String>,
+    error_message: Option<String>,
+}
+
+#[derive(Clone)]
+struct SkillIndexSnapshot {
+    generation: String,
+    skills: Arc<[Skill]>,
+}
+
+#[derive(Clone)]
+struct DelegationContextSnapshot {
+    id: String,
+    selected_message_ids: Arc<[String]>,
+    messages: Arc<[Message]>,
+    token_estimate: u32,
+    context_limit: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -946,6 +1034,90 @@ fn record_subtask_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn record_subagent_launch_metric(
+    db: &Database,
+    parent_run_id: &str,
+    subtask_run_id: &str,
+    call_label: &str,
+    stage: &str,
+    elapsed_ms: Option<u64>,
+    provider_invocation_id: Option<&str>,
+    measurement_status: &str,
+) {
+    record_subtask_event(
+        db,
+        parent_run_id,
+        &format!("Subagent telemetry {stage}: {call_label}"),
+        "telemetry",
+        Some(&serde_json::json!({
+            "kind": "turnLaunchMetric",
+            "scope": if provider_invocation_id.is_some() { "provider" } else { "subagent" },
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "measurementStatus": measurement_status,
+            "subtaskRunId": subtask_run_id,
+            "callLabel": call_label,
+            "providerInvocationId": provider_invocation_id,
+        })),
+    );
+}
+
+fn instant_elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn signal_progress_latch(sender: &mpsc::Sender<()>) {
+    // Provider-connect and first-response signals are edge-triggered latches,
+    // not event logs. Coalesce repeated stream deltas into the single pending
+    // slot so a long response cannot grow an unbounded notification queue.
+    let _ = sender.try_send(());
+}
+
+async fn acquire_batch_slot(
+    batch_slots: Arc<tokio::sync::Semaphore>,
+    cancel_token: &CancellationToken,
+    call_label: &str,
+    queue_started: Instant,
+    queue_deadline_ms: u64,
+) -> Result<tokio::sync::OwnedSemaphorePermit, CoreError> {
+    let elapsed_ms = u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let remaining_ms = queue_deadline_ms.saturating_sub(elapsed_ms);
+    if remaining_ms == 0 {
+        return Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+        )));
+    }
+
+    match Arc::clone(&batch_slots).try_acquire_owned() {
+        Ok(permit) => return Ok(permit),
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            return Err(CoreError::Internal(
+                "delegated batch semaphore closed".into(),
+            ));
+        }
+        Err(tokio::sync::TryAcquireError::NoPermits) => {}
+    }
+
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' was cancelled while waiting for its batch slot."
+        ))),
+        result = tokio::time::timeout(
+            Duration::from_millis(remaining_ms),
+            batch_slots.acquire_owned(),
+        ) => match result {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(CoreError::Internal(
+                "delegated batch semaphore closed".into()
+            )),
+            Err(_) => Err(CoreError::Agent(format!(
+                "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+            ))),
+        },
+    }
+}
+
 fn finish_subtask_run_best_effort(
     db: &Database,
     subtask_run_id: Option<&str>,
@@ -1030,16 +1202,83 @@ fn applied_skills(skills: &[Skill]) -> Vec<AppliedSkillRef> {
         .collect()
 }
 
-fn filter_enabled_skills(skills: Vec<Skill>, allowed_skill_ids: Option<&[String]>) -> Vec<Skill> {
+fn filter_enabled_skills(skills: &[Skill], allowed_skill_ids: Option<&[String]>) -> Vec<Skill> {
     match allowed_skill_ids {
         Some(ids) => {
             let allowed: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
             skills
-                .into_iter()
+                .iter()
                 .filter(|skill| allowed.contains(skill.id.as_str()))
+                .cloned()
                 .collect()
         }
-        None => skills,
+        None => skills.to_vec(),
+    }
+}
+
+fn load_skill_index_snapshot(db: &Database) -> SkillIndexSnapshot {
+    let mut skills = nexa_core::skills::load_builtin_skills();
+    skills.extend(db.get_enabled_skills().unwrap_or_default());
+    let encoded = serde_json::to_vec(&skills).unwrap_or_default();
+    SkillIndexSnapshot {
+        generation: blake3::hash(&encoded).to_hex().to_string(),
+        skills: Arc::from(skills),
+    }
+}
+
+fn load_delegation_context_snapshot(
+    db: &Database,
+    conversation_id: Option<&str>,
+    model: &str,
+    context_limit: u32,
+) -> DelegationContextSnapshot {
+    let token_budget = context_limit.saturating_mul(60) / 100;
+    let mut selected = Vec::new();
+    let mut token_estimate = 0u32;
+    if let Some(conversation_id) = conversation_id {
+        if let Ok(messages) = db.get_messages(conversation_id) {
+            for message in messages.into_iter().rev() {
+                let content = conversation_message_llm_context_content(&message).to_string();
+                let message_tokens = estimate_tokens_for_model(model, &content);
+                if !selected.is_empty()
+                    && token_estimate.saturating_add(message_tokens) > token_budget
+                {
+                    break;
+                }
+                token_estimate = token_estimate.saturating_add(message_tokens);
+                let is_tool_result = message.role == Role::Tool;
+                let role = match &message.role {
+                    Role::Tool => Role::User,
+                    role => role.clone(),
+                };
+                let content = if is_tool_result {
+                    format!("[Prior tool result]\n{content}")
+                } else {
+                    content
+                };
+                let mut projected = Message::text(role, content);
+                if message.role == Role::Assistant {
+                    projected.reasoning_content = message.thinking;
+                }
+                selected.push((message.id, projected));
+            }
+        }
+    }
+    selected.reverse();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(model.as_bytes());
+    hasher.update(&context_limit.to_le_bytes());
+    for (id, message) in &selected {
+        hasher.update(id.as_bytes());
+        hasher.update(message.text_content().as_bytes());
+    }
+    let (selected_message_ids, messages): (Vec<_>, Vec<_>) = selected.into_iter().unzip();
+    DelegationContextSnapshot {
+        id: hasher.finalize().to_hex().to_string(),
+        selected_message_ids: Arc::from(selected_message_ids),
+        messages: Arc::from(messages),
+        token_estimate,
+        context_limit,
     }
 }
 
@@ -1553,7 +1792,9 @@ async fn run_subagent_once(
     call_label: String,
     worker_id: Option<String>,
     args: SpawnSubagentArgs,
+    batch_slots: Option<Arc<tokio::sync::Semaphore>>,
 ) -> Result<SubagentRunArtifact, CoreError> {
+    let launch_started = Instant::now();
     if runtime.delegation_depth >= MAX_SUBAGENT_DELEGATION_DEPTH {
         return Err(CoreError::InvalidInput(format!(
             "Recursive delegated execution is blocked beyond depth {}.",
@@ -1568,10 +1809,13 @@ async fn run_subagent_once(
     let session_id = requested_task_id
         .clone()
         .unwrap_or_else(|| worker_id.clone().unwrap_or_else(|| call_label.clone()));
+    let history_load_started = Instant::now();
     let previous_session = requested_task_id
         .as_deref()
         .and_then(|task_id| runtime.get_session_snapshot(task_id));
+    let history_load_ms = instant_elapsed_ms(history_load_started);
 
+    let context_build_started = Instant::now();
     let mut config = runtime.base_config.clone();
     let model_route_fallback = apply_delegated_model_policy(
         &mut config,
@@ -1579,8 +1823,13 @@ async fn run_subagent_once(
         args.model_policy.as_ref(),
     );
     let effective_model = config.model.clone();
-    let provider = create_provider(runtime.provider_config.clone())
-        .map_err(|e| CoreError::Llm(e.to_string()))?;
+    let effective_provider_type = config
+        .provider_type
+        .unwrap_or(runtime.provider_config.provider_type);
+    let catalog_limits = effective_model
+        .as_deref()
+        .and_then(|model| model_limits_from_catalog(effective_provider_type, model));
+    let delegation_limits = runtime.budget.limits().await;
     config.max_iterations = args
         .max_iterations
         .unwrap_or_else(|| {
@@ -1589,14 +1838,38 @@ async fn run_subagent_once(
                 .unwrap_or(3)
         })
         .clamp(1, 6);
-    config.max_tokens = Some(
-        config
-            .max_tokens
-            .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS)
-            .clamp(1_024, MAX_SUBAGENT_MAX_TOKENS),
+    let catalog_context_limit = catalog_limits
+        .as_ref()
+        .and_then(|limits| limits.context_tokens)
+        .and_then(|limit| u32::try_from(limit).ok());
+    apply_delegated_model_limits(
+        &mut config,
+        delegation_limits.input_context_policy,
+        delegation_limits.max_output_tokens_per_worker,
+        catalog_context_limit,
+        catalog_limits
+            .as_ref()
+            .and_then(|limits| limits.max_output_tokens),
+        runtime.base_config.delegation_limits_v2.is_some(),
     );
+    let context_snapshot = runtime.context_snapshot(
+        &db,
+        effective_model.as_deref().unwrap_or("default"),
+        config.context_window.unwrap_or(128_000),
+    );
+    let context_build_ms = instant_elapsed_ms(context_build_started);
     let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
-    config.agent_timeout_secs = Some(timeout_secs as u32);
+    let run_deadline_ms = resolve_delegation_run_deadline_ms(
+        &runtime.base_config,
+        args.timeout_secs,
+        timeout_secs,
+        delegation_limits.run_deadline_ms,
+    );
+    config.agent_timeout_secs = Some(
+        u32::try_from(run_deadline_ms.div_ceil(1_000))
+            .unwrap_or(u32::MAX)
+            .max(1),
+    );
     config.request_kind = AgentRequestKind::SubagentWorker;
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
@@ -1615,25 +1888,26 @@ async fn run_subagent_once(
     let effective_source_scope =
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
     let evidence_handoff = build_evidence_handoff(&db, args.evidence_chunk_ids.as_deref());
+    let skill_select_started = Instant::now();
     let selected_skill_query = format!(
         "{}\n{}",
         args.task,
         args.context.clone().unwrap_or_default()
     );
+    let skill_index = runtime
+        .skill_index
+        .get_or_init(|| load_skill_index_snapshot(&db));
     let enabled_skills = nexa_core::skills::select_available_skills_from_pool(
-        filter_enabled_skills(
-            {
-                let mut combined = nexa_core::skills::load_builtin_skills();
-                combined.extend(db.get_enabled_skills().unwrap_or_default());
-                combined
-            },
-            runtime.allowed_skill_ids.as_deref(),
-        ),
+        filter_enabled_skills(&skill_index.skills, runtime.allowed_skill_ids.as_deref()),
         &selected_skill_query,
     );
     let applied_skill_refs = applied_skills(&enabled_skills);
+    let skill_select_ms = instant_elapsed_ms(skill_select_started);
+    let tool_registry_started = Instant::now();
     let tools =
         build_subagent_executor_tools(&runtime, &effective_allowed_tools, &worker_cancel_token)?;
+    let tool_registry_ms = instant_elapsed_ms(tool_registry_started);
+    let request_build_started = Instant::now();
     let request_text = build_subagent_request(
         &args,
         role_profile,
@@ -1643,8 +1917,11 @@ async fn run_subagent_once(
         &evidence_handoff,
         previous_session.as_ref(),
     );
-    let reserved_tokens = estimate_reserved_tokens(&config, &request_text, &tools);
-    let subtask_input = subtask_input_payload(
+    let request_build_ms = instant_elapsed_ms(request_build_started);
+    let initial_output_credit = initial_output_credit(role_profile, &args, &config);
+    let reserved_tokens =
+        estimate_reserved_tokens(&config, &request_text, &tools, initial_output_credit);
+    let mut subtask_input = subtask_input_payload(
         "subagent_run",
         &call_label,
         worker_id.as_deref(),
@@ -1656,6 +1933,16 @@ async fn run_subagent_once(
         reserved_tokens,
         timeout_secs,
     );
+    subtask_input["delegationLimitsV2"] =
+        serde_json::to_value(&delegation_limits).unwrap_or_else(|_| serde_json::json!({}));
+    subtask_input["initialOutputCredit"] = serde_json::json!(initial_output_credit);
+    subtask_input["skillIndexGeneration"] = serde_json::json!(&skill_index.generation);
+    subtask_input["contextSnapshot"] = serde_json::json!({
+        "id": &context_snapshot.id,
+        "selectedMessageIds": &context_snapshot.selected_message_ids,
+        "tokenEstimate": context_snapshot.token_estimate,
+        "contextLimit": context_snapshot.context_limit,
+    });
     let parent_task_run_id = runtime.parent_task_run_id.clone();
     let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
         let role_label = subtask_role_label(&args, role_profile, "Subagent");
@@ -1686,45 +1973,48 @@ async fn run_subagent_once(
     } else {
         None
     };
+    if let (Some(parent_run_id), Some(subtask_run_id)) =
+        (parent_task_run_id.as_deref(), subtask_run_id.as_deref())
+    {
+        for (stage, elapsed_ms, status) in [
+            (
+                "launch_ack_ms",
+                instant_elapsed_ms(launch_started),
+                "measured",
+            ),
+            ("history_load_ms", history_load_ms, "measured"),
+            ("context_build_ms", context_build_ms, "measured"),
+            ("skill_select_ms", skill_select_ms, "measured"),
+            ("mcp_sync_ms", 0, "shared_snapshot"),
+            ("tool_registry_ms", tool_registry_ms, "measured"),
+            ("attachment_prepare_ms", 0, "not_applicable"),
+            ("request_build_ms", request_build_ms, "measured"),
+        ] {
+            record_subagent_launch_metric(
+                &db,
+                parent_run_id,
+                subtask_run_id,
+                &call_label,
+                stage,
+                Some(elapsed_ms),
+                None,
+                status,
+            );
+        }
+    }
+    let queue_started = Instant::now();
+    let is_verification = role_profile.is_some_and(|profile| profile.id == "verifier");
     let _permit = match runtime
         .budget
         .begin_call(
             &call_label,
             reserved_tokens,
-            role_profile.is_some_and(|profile| profile.id == "verifier"),
+            is_verification,
             &worker_cancel_token,
         )
         .await
     {
-        Ok(permit) => {
-            if let Some(subtask_id) = subtask_run_id.as_deref() {
-                if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
-                    runtime.budget.release_reservation(reserved_tokens).await;
-                    finish_subtask_run_best_effort(
-                        &db,
-                        Some(subtask_id),
-                        "failed",
-                        None,
-                        Some(&err.to_string()),
-                    );
-                    return Err(err);
-                }
-            }
-            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
-                record_subtask_event(
-                    &db,
-                    parent_run_id,
-                    &format!("Subagent started: {call_label}"),
-                    "running",
-                    Some(&serde_json::json!({
-                        "subtaskRunId": &subtask_run_id,
-                        "callLabel": &call_label,
-                        "reservedTokens": reserved_tokens,
-                    })),
-                );
-            }
-            permit
-        }
+        Ok(permit) => permit,
         Err(err) => {
             let output = serde_json::json!({
                 "kind": "subagent_run_error",
@@ -1750,6 +2040,118 @@ async fn run_subagent_once(
             return Err(err);
         }
     };
+    // Acquire the batch-local cap only after the role-aware global scheduler
+    // has granted a lane. Explorers queued on their lane must never occupy
+    // generic batch slots and starve the dedicated verifier lane.
+    let _batch_permit = if let Some(batch_slots) = batch_slots {
+        match acquire_batch_slot(
+            batch_slots,
+            &worker_cancel_token,
+            &call_label,
+            queue_started,
+            delegation_limits.queue_deadline_ms,
+        )
+        .await
+        {
+            Ok(permit) => Some(permit),
+            Err(error) => {
+                runtime
+                    .budget
+                    .rollback_unstarted_worker(reserved_tokens, is_verification)
+                    .await;
+                finish_subtask_run_best_effort(
+                    &db,
+                    subtask_run_id.as_deref(),
+                    "failed",
+                    None,
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(subtask_id) = subtask_run_id.as_deref() {
+        if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
+            runtime
+                .budget
+                .rollback_unstarted_worker(reserved_tokens, is_verification)
+                .await;
+            finish_subtask_run_best_effort(
+                &db,
+                Some(subtask_id),
+                "failed",
+                None,
+                Some(&err.to_string()),
+            );
+            return Err(err);
+        }
+    }
+    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+        record_subtask_event(
+            &db,
+            parent_run_id,
+            &format!("Subagent started: {call_label}"),
+            "running",
+            Some(&serde_json::json!({
+                "subtaskRunId": &subtask_run_id,
+                "callLabel": &call_label,
+                "reservedTokens": reserved_tokens,
+                "queueWaitMs": u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            })),
+        );
+    }
+
+    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+        record_subtask_event(
+            &db,
+            parent_run_id,
+            &format!("Subagent connecting: {call_label}"),
+            "connecting",
+            Some(&serde_json::json!({
+                "subtaskRunId": &subtask_run_id,
+                "callLabel": &call_label,
+            })),
+        );
+    }
+    let provider = match create_provider(runtime.provider_config.clone()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            runtime.budget.release_reservation(reserved_tokens).await;
+            let error = CoreError::Llm(error.to_string());
+            finish_subtask_run_best_effort(
+                &db,
+                subtask_run_id.as_deref(),
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent failed: {call_label}"),
+                    "failed",
+                    Some(&serde_json::json!({
+                        "subtaskRunId": &subtask_run_id,
+                        "callLabel": &call_label,
+                        "error": error.to_string(),
+                        "phase": "connecting",
+                    })),
+                );
+            }
+            return Err(error);
+        }
+    };
+    let estimated_cost_micros =
+        nexa_core::usage_analytics::usage_cost_metadata(Some(effective_provider_type)).0;
+    let non_streaming_completion = llm_streaming_disabled_by_env()
+        || provider_uses_non_streaming_fallback(
+            effective_provider_type,
+            effective_model.as_deref().unwrap_or_default(),
+        );
 
     let executor = AgentExecutor::new(provider, tools, config)
         .with_usage_identity(
@@ -1764,11 +2166,110 @@ async fn run_subagent_once(
         .with_skills_override(enabled_skills);
 
     let (tx, event_rx) = mpsc::channel::<AgentEvent>(64);
-    let event_task = tokio::spawn(async move {
+    let (fatal_error_tx, mut fatal_error_rx) = mpsc::unbounded_channel::<String>();
+    let (provider_connected_tx, mut provider_connected_rx) = mpsc::channel::<()>(1);
+    let (first_response_tx, mut first_response_rx) = mpsc::channel::<()>(1);
+    let capture_cancel_token = worker_cancel_token.clone();
+    let telemetry_db = db.clone();
+    let telemetry_identity = parent_task_run_id.clone().zip(subtask_run_id.clone());
+    let telemetry_call_label = call_label.clone();
+    let mut event_task = tokio::spawn(async move {
         let mut event_rx = event_rx;
         let mut capture = EventCapture::default();
+        let mut provider_invocation_index = 0_u32;
+        let mut active_provider_invocation_id: Option<String> = None;
+        let mut first_provider_output_recorded = false;
 
         while let Some(event) = event_rx.recv().await {
+            let provider_connected = matches!(
+                &event,
+                AgentEvent::ControllerStatus { code, .. } if code == "provider_connected"
+            );
+            if provider_connected {
+                provider_invocation_index = provider_invocation_index.saturating_add(1);
+                let invocation_id = format!(
+                    "subagent-provider:{}:{}",
+                    telemetry_identity
+                        .as_ref()
+                        .map(|(_, subtask_id)| subtask_id.as_str())
+                        .unwrap_or("detached"),
+                    provider_invocation_index
+                );
+                active_provider_invocation_id = Some(invocation_id.clone());
+                first_provider_output_recorded = false;
+                if let Some((parent_run_id, subtask_run_id)) = telemetry_identity.as_ref() {
+                    record_subagent_launch_metric(
+                        &telemetry_db,
+                        parent_run_id,
+                        subtask_run_id,
+                        &telemetry_call_label,
+                        "provider_connect_ms",
+                        Some(instant_elapsed_ms(launch_started)),
+                        Some(&invocation_id),
+                        if non_streaming_completion {
+                            "completion_boundary"
+                        } else {
+                            "measured"
+                        },
+                    );
+                }
+                signal_progress_latch(&provider_connected_tx);
+            }
+            let is_provider_output = matches!(
+                &event,
+                AgentEvent::TextDelta { .. }
+                    | AgentEvent::Thinking { .. }
+                    | AgentEvent::ToolCallPreparing { .. }
+                    | AgentEvent::ToolCallArgsDelta { .. }
+                    | AgentEvent::ToolCallStart { .. }
+                    | AgentEvent::Done { .. }
+            );
+            if is_provider_output && active_provider_invocation_id.is_some() {
+                signal_progress_latch(&first_response_tx);
+                if !first_provider_output_recorded {
+                    first_provider_output_recorded = true;
+                    if let (Some((parent_run_id, subtask_run_id)), Some(provider_invocation_id)) = (
+                        telemetry_identity.as_ref(),
+                        active_provider_invocation_id.as_deref(),
+                    ) {
+                        let elapsed_ms = instant_elapsed_ms(launch_started);
+                        record_subagent_launch_metric(
+                            &telemetry_db,
+                            parent_run_id,
+                            subtask_run_id,
+                            &telemetry_call_label,
+                            "first_sse_byte_ms",
+                            (!non_streaming_completion).then_some(elapsed_ms),
+                            Some(provider_invocation_id),
+                            if non_streaming_completion {
+                                "not_applicable_completion_mode"
+                            } else {
+                                "measured"
+                            },
+                        );
+                        record_subagent_launch_metric(
+                            &telemetry_db,
+                            parent_run_id,
+                            subtask_run_id,
+                            &telemetry_call_label,
+                            "first_visible_token_ms",
+                            Some(elapsed_ms),
+                            Some(provider_invocation_id),
+                            "measured",
+                        );
+                        record_subagent_launch_metric(
+                            &telemetry_db,
+                            parent_run_id,
+                            subtask_run_id,
+                            &telemetry_call_label,
+                            "frontend_first_paint_ms",
+                            None,
+                            Some(provider_invocation_id),
+                            "not_applicable_background_worker",
+                        );
+                    }
+                }
+            }
             match event {
                 AgentEvent::ToolCallStart {
                     call_id,
@@ -1827,10 +2328,19 @@ async fn run_subagent_once(
                     capture.usage_total = usage_total;
                     capture.finish_reason = finish_reason;
                 }
+                AgentEvent::Error { message } => {
+                    capture.error_message = Some(message.clone());
+                    capture.tool_events.push(serde_json::json!({
+                        "phase": "error",
+                        "message": &message,
+                    }));
+                    let _ = fatal_error_tx.send(message);
+                    capture_cancel_token.cancel();
+                    break;
+                }
                 AgentEvent::TextDelta { .. }
                 | AgentEvent::StreamBlockDelta { .. }
                 | AgentEvent::StreamReset { .. }
-                | AgentEvent::Error { .. }
                 | AgentEvent::AutoCompacted { .. }
                 | AgentEvent::ToolRunStarted { .. }
                 | AgentEvent::ToolRunUpdated { .. }
@@ -1848,61 +2358,178 @@ async fn run_subagent_once(
         capture
     });
 
-    let final_result = tokio::select! {
-        _ = worker_cancel_token.cancelled() => Err(CoreError::Agent(format!(
+    let run_deadline = tokio::time::Instant::now() + Duration::from_millis(run_deadline_ms);
+    let provider_wait_started = Instant::now();
+    let connect_deadline = if non_streaming_completion {
+        // `complete()` cannot expose a connection boundary: its
+        // provider_connected event is emitted only after the full response.
+        // Let the overall run deadline govern this mode.
+        run_deadline
+    } else {
+        std::cmp::min(
+            run_deadline,
+            tokio::time::Instant::now()
+                + Duration::from_millis(delegation_limits.connect_deadline_ms),
+        )
+    };
+    let run_future = executor.run_with_source_scope(
+        context_snapshot.messages.as_ref().to_vec(),
+        vec![ContentPart::Text { text: request_text }],
+        &db,
+        None,
+        None,
+        Some(effective_source_scope.clone()),
+        tx,
+        0,
+    );
+    tokio::pin!(run_future);
+
+    let connect_stage = tokio::select! {
+        biased;
+        error = fatal_error_rx.recv() => Some(Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' failed: {}",
+            error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
+        )))),
+        _ = worker_cancel_token.cancelled() => Some(Err(CoreError::Agent(format!(
             "Delegated execution '{call_label}' was cancelled by the parent turn."
-        ))),
-        result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            executor.run_with_source_scope(
-                Vec::new(),
-                vec![ContentPart::Text { text: request_text }],
-                &db,
-                None,
-                None,
-                Some(effective_source_scope.clone()),
-                tx,
-                0,
-            )
-        ) => match result {
-            Ok(run) => run,
-            Err(_) => {
-                worker_cancel_token.cancel();
-                Err(CoreError::Agent(format!(
-                    "Delegated execution '{call_label}' timed out after {timeout_secs}s."
-                )))
+        )))),
+        result = &mut run_future => Some(result),
+        _ = provider_connected_rx.recv() => {
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent connected to provider: {call_label}"),
+                    "connected",
+                    Some(&serde_json::json!({
+                        "subtaskRunId": &subtask_run_id,
+                        "callLabel": &call_label,
+                        "connectMs": u64::try_from(provider_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    })),
+                );
+            }
+            None
+        },
+        _ = tokio::time::sleep_until(connect_deadline) => {
+            worker_cancel_token.cancel();
+            Some(Err(CoreError::Agent(if non_streaming_completion {
+                format!("Delegated execution '{call_label}' timed out after {run_deadline_ms}ms.")
+            } else {
+                format!(
+                    "Delegated execution '{call_label}' exceeded its {}ms provider-connect deadline.",
+                    delegation_limits.connect_deadline_ms
+                )
+            })))
+        }
+    };
+    let first_stage = match connect_stage {
+        Some(result) => Some(result),
+        None => {
+            let first_response_deadline = std::cmp::min(
+                run_deadline,
+                tokio::time::Instant::now()
+                    + Duration::from_millis(delegation_limits.first_token_deadline_ms),
+            );
+            tokio::select! {
+                biased;
+                error = fatal_error_rx.recv() => Some(Err(CoreError::Agent(format!(
+                    "Delegated execution '{call_label}' failed: {}",
+                    error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
+                )))),
+                _ = worker_cancel_token.cancelled() => Some(Err(CoreError::Agent(format!(
+                    "Delegated execution '{call_label}' was cancelled by the parent turn."
+                )))),
+                result = &mut run_future => Some(result),
+                _ = first_response_rx.recv() => {
+            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+                record_subtask_event(
+                    &db,
+                    parent_run_id,
+                    &format!("Subagent received first token: {call_label}"),
+                    "first_token",
+                    Some(&serde_json::json!({
+                        "subtaskRunId": &subtask_run_id,
+                        "callLabel": &call_label,
+                        "firstTokenMs": u64::try_from(provider_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    })),
+                );
+            }
+            None
+                },
+                _ = tokio::time::sleep_until(first_response_deadline) => {
+                    worker_cancel_token.cancel();
+                    Some(Err(CoreError::Agent(format!(
+                        "Delegated execution '{call_label}' exceeded its {}ms first-token deadline.",
+                        delegation_limits.first_token_deadline_ms
+                    ))))
+                }
             }
         }
     };
+    let final_result = match first_stage {
+        Some(result) => result,
+        None => tokio::select! {
+            biased;
+            error = fatal_error_rx.recv() => Err(CoreError::Agent(format!(
+                "Delegated execution '{call_label}' failed: {}",
+                error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
+            ))),
+            _ = worker_cancel_token.cancelled() => Err(CoreError::Agent(format!(
+                "Delegated execution '{call_label}' was cancelled by the parent turn."
+            ))),
+            result = &mut run_future => result,
+            _ = tokio::time::sleep_until(run_deadline) => {
+                worker_cancel_token.cancel();
+                Err(CoreError::Agent(format!(
+                    "Delegated execution '{call_label}' timed out after {run_deadline_ms}ms."
+                )))
+            }
+        },
+    };
 
-    let capture = event_task.await.unwrap_or_default();
+    let capture = match tokio::time::timeout(Duration::from_millis(500), &mut event_task).await {
+        Ok(Ok(capture)) => capture,
+        Ok(Err(error)) => {
+            warn!("Subagent event collector failed for {call_label}: {error}");
+            EventCapture::default()
+        }
+        Err(_) => {
+            event_task.abort();
+            let _ = event_task.await;
+            warn!("Subagent event collector exceeded its 500ms shutdown deadline for {call_label}");
+            EventCapture::default()
+        }
+    };
     runtime
         .budget
-        .finish_call(reserved_tokens, &capture.usage_total)
+        .finish_call(reserved_tokens, &capture.usage_total, estimated_cost_micros)
         .await;
     let final_message = match final_result {
         Ok(message) => message,
         Err(err) => {
+            let error_text = err.to_string();
+            let failure_status = delegated_failure_status(&error_text);
             let output = serde_json::json!({
                 "kind": "subagent_run_error",
                 "callLabel": &call_label,
-                "error": err.to_string(),
+                "error": &error_text,
+                "emittedError": capture.error_message,
                 "usageTotal": capture.usage_total,
                 "toolEvents": capture.tool_events,
             });
             finish_subtask_run_best_effort(
                 &db,
                 subtask_run_id.as_deref(),
-                "failed",
+                failure_status,
                 Some(&output),
-                Some(&err.to_string()),
+                Some(&error_text),
             );
             if let Some(parent_run_id) = parent_task_run_id.as_deref() {
                 record_subtask_event(
                     &db,
                     parent_run_id,
-                    &format!("Subagent failed: {call_label}"),
-                    "failed",
+                    &format!("Subagent {failure_status}: {call_label}"),
+                    failure_status,
                     Some(&output),
                 );
             }
@@ -1995,6 +2622,51 @@ async fn run_subagent_once(
     }
 
     Ok(run)
+}
+
+fn failed_subagent_run_artifact(
+    label: String,
+    fallback: SpawnSubagentArgs,
+    parallel_group: Option<String>,
+    error: &CoreError,
+) -> SubagentRunArtifact {
+    SubagentRunArtifact {
+        id: label.clone(),
+        session_id: label,
+        resumed_from_task_id: None,
+        previous_session: None,
+        status: "error".to_string(),
+        task: fallback.task,
+        role_id: fallback.role_id.clone(),
+        role_name: resolve_role_profile(fallback.role_id.as_deref(), fallback.role.as_deref())
+            .ok()
+            .flatten()
+            .map(|profile| profile.label.to_string()),
+        role: fallback.role,
+        model_policy: fallback.model_policy,
+        effective_model: None,
+        model_route_fallback: false,
+        expected_output: fallback.expected_output,
+        acceptance_criteria: fallback.acceptance_criteria,
+        evidence_chunk_ids: fallback.evidence_chunk_ids,
+        evidence_handoff: Vec::new(),
+        requested_source_scope: fallback.source_ids,
+        effective_source_scope: Vec::new(),
+        requested_allowed_tools: fallback.allowed_tools,
+        allowed_tools: Vec::new(),
+        allowed_skills: Vec::new(),
+        parallel_group,
+        deliverable_style: fallback.deliverable_style,
+        return_sections: fallback.return_sections,
+        result: format!("Subagent failed: {error}"),
+        finish_reason: None,
+        usage_total: Usage::default(),
+        tool_events: Vec::new(),
+        thinking: None,
+        source_scope_applied: false,
+        is_error: true,
+        error_message: Some(error.to_string()),
+    }
 }
 
 fn summarize_subagent_run(run: &SubagentRunArtifact) -> String {
@@ -2170,7 +2842,10 @@ fn normalize_allowed_tools(
 fn is_subagent_tool_name(name: &str) -> bool {
     matches!(
         name,
-        "spawn_subagent" | "spawn_subagent_batch" | "judge_subagent_results"
+        "spawn_subagent"
+            | "spawn_subagent_batch"
+            | "judge_subagent_results"
+            | "observe_subagent_batch"
     )
 }
 
@@ -2227,6 +2902,35 @@ fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>)
     }) as u64
 }
 
+fn resolve_delegation_run_deadline_ms(
+    config: &AgentConfig,
+    requested_timeout_secs: Option<u32>,
+    legacy_timeout_secs: u64,
+    configured_run_deadline_ms: u64,
+) -> u64 {
+    if config.delegation_limits_v2.is_some() {
+        requested_timeout_secs
+            .map(|requested| configured_run_deadline_ms.min(u64::from(requested) * 1_000))
+            .unwrap_or(configured_run_deadline_ms)
+    } else {
+        configured_run_deadline_ms.min(legacy_timeout_secs.saturating_mul(1_000))
+    }
+}
+
+fn delegated_failure_status(error_text: &str) -> &'static str {
+    if error_text.contains("timed out")
+        || error_text.contains("provider-connect deadline")
+        || error_text.contains("first-token deadline")
+        || error_text.contains("queue deadline")
+    {
+        "timed_out"
+    } else if error_text.contains("cancelled") {
+        "cancelled"
+    } else {
+        "failed"
+    }
+}
+
 fn estimate_subagent_timeout_secs(
     runtime: &DelegationRuntime,
     args: &SpawnSubagentArgs,
@@ -2243,12 +2947,87 @@ fn estimate_subagent_timeout_secs(
     }
 }
 
-fn estimate_reserved_tokens(config: &AgentConfig, request_text: &str, tools: &ToolRegistry) -> u32 {
+fn estimate_reserved_tokens(
+    config: &AgentConfig,
+    request_text: &str,
+    tools: &ToolRegistry,
+    initial_output_credit: u32,
+) -> u32 {
     let model = config.model.as_deref().unwrap_or("gpt-4o-mini");
     estimate_tokens_for_model(model, &config.system_prompt)
         .saturating_add(estimate_tokens_for_model(model, request_text))
         .saturating_add(estimate_tool_tokens_for_model(model, &tools.definitions()))
-        .saturating_add(config.max_tokens.unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS))
+        .saturating_add(initial_output_credit)
+}
+
+fn resolve_delegated_max_output(config: &AgentConfig, catalog_limit: Option<u64>) -> u32 {
+    let fallback_limit = u64::from(CONSERVATIVE_SUBAGENT_MAX_TOKENS);
+    let effective_limit = catalog_limit
+        .unwrap_or(fallback_limit)
+        .min(u64::from(u32::MAX)) as u32;
+    let requested_limit = config
+        .max_tokens
+        .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS)
+        .max(256);
+    requested_limit.min(effective_limit.max(1))
+}
+
+fn apply_delegated_model_limits(
+    config: &mut AgentConfig,
+    input_context_policy: DelegationLimitPolicy,
+    max_output_policy: DelegationLimitPolicy,
+    catalog_context_limit: Option<u32>,
+    catalog_output_limit: Option<u64>,
+    independent_v2_limits: bool,
+) {
+    config.context_window = match input_context_policy {
+        DelegationLimitPolicy::Explicit(limit) => u32::try_from(limit)
+            .ok()
+            .map(|limit| catalog_context_limit.map_or(limit, |catalog| limit.min(catalog))),
+        DelegationLimitPolicy::Auto if independent_v2_limits => {
+            catalog_context_limit.or(config.context_window)
+        }
+        DelegationLimitPolicy::Auto => config.context_window.or(catalog_context_limit),
+    };
+
+    match max_output_policy {
+        DelegationLimitPolicy::Explicit(limit) => {
+            config.max_tokens = u32::try_from(limit).ok();
+        }
+        DelegationLimitPolicy::Auto if independent_v2_limits => {
+            config.max_tokens = Some(
+                catalog_output_limit
+                    .map(|limit| limit.min(u64::from(u32::MAX)) as u32)
+                    .unwrap_or(CONSERVATIVE_SUBAGENT_MAX_TOKENS),
+            );
+        }
+        DelegationLimitPolicy::Auto => {}
+    }
+
+    config.max_tokens = Some(resolve_delegated_max_output(config, catalog_output_limit));
+}
+
+fn initial_output_credit(
+    role_profile: Option<&SubagentRoleProfile>,
+    args: &SpawnSubagentArgs,
+    config: &AgentConfig,
+) -> u32 {
+    let role_credit = match role_profile.map(|profile| profile.id) {
+        Some("critic" | "verifier") => 4_096,
+        Some("writer") => 16_384,
+        Some("researcher" | "planner") => 8_192,
+        _ => 8_192,
+    };
+    let explicit_long_form = args.deliverable_style.as_deref().is_some_and(|style| {
+        let style = style.to_ascii_lowercase();
+        style.contains("long") || style.contains("comprehensive")
+    });
+    let requested_credit = if explicit_long_form {
+        32_768
+    } else {
+        role_credit
+    };
+    requested_credit.min(config.max_tokens.unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS))
 }
 
 fn build_subagent_executor_tools(
@@ -2263,6 +3042,7 @@ fn build_subagent_executor_tools(
             "spawn_subagent",
             "spawn_subagent_batch",
             "judge_subagent_results",
+            "observe_subagent_batch",
         ]);
 
     if !runtime.can_delegate_further() {
@@ -2276,6 +3056,14 @@ fn build_subagent_executor_tools(
         .any(|name| name == "spawn_subagent")
     {
         registry.register(Box::new(SubagentTool::from_runtime(child_runtime.clone())));
+    }
+    if allowed_tool_names
+        .iter()
+        .any(|name| name == "observe_subagent_batch")
+    {
+        registry.register(Box::new(ObserveSubagentBatchTool::from_runtime(
+            child_runtime.clone(),
+        )));
     }
     if allowed_tool_names
         .iter()
@@ -2339,6 +3127,7 @@ impl Tool for SubagentTool {
             call_id.to_string(),
             None,
             args,
+            None,
         )
         .await
         {
@@ -2475,6 +3264,10 @@ impl Tool for SubagentBatchTool {
         let workflow_template_label = workflow_template.map(|template| template.label);
         let workflow_template_description = workflow_template.map(|template| template.description);
         let parallel_group = args.parallel_group.clone();
+        let completion_policy =
+            DelegationCompletionPolicy::resolve(&args, args.tasks.len().min(8))?;
+        let requested_max_parallel = args.max_parallel;
+        let cancel_remaining = args.cancel_remaining.unwrap_or(false);
         let normalized_tasks: Vec<(Option<String>, SpawnSubagentArgs)> = args
             .tasks
             .into_iter()
@@ -2492,8 +3285,7 @@ impl Tool for SubagentBatchTool {
             .collect::<Result<_, _>>()?;
 
         let budget_before = self.runtime.budget.snapshot().await;
-        let requested_parallel = args
-            .max_parallel
+        let requested_parallel = requested_max_parallel
             .unwrap_or_else(|| {
                 workflow_template
                     .map(|template| template.max_parallel)
@@ -2506,75 +3298,148 @@ impl Tool for SubagentBatchTool {
         let db = db.clone();
         let inherited_source_scope = source_scope.to_vec();
         let batch_parallel_group = parallel_group.clone();
-        let runs: Vec<SubagentRunArtifact> = stream::iter(normalized_tasks.into_iter().enumerate())
-            .map(|entry: (usize, (Option<String>, SpawnSubagentArgs))| {
-                let (index, (worker_id, task_args)) = entry;
-                let runtime = runtime.clone();
-                let db = db.clone();
-                let inherited_source_scope = inherited_source_scope.clone();
-                let batch_parallel_group = batch_parallel_group.clone();
-                async move {
-                    let label = worker_id
-                        .clone()
-                        .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
-                    let fallback = task_args.clone();
-                    match run_subagent_once(
-                        runtime,
-                        db,
-                        inherited_source_scope,
-                        label.clone(),
-                        worker_id,
-                        task_args,
+        let worker_count = normalized_tasks.len();
+        let batch_id = format!(
+            "{}:{}",
+            self.runtime
+                .parent_task_run_id
+                .as_deref()
+                .unwrap_or("detached"),
+            call_id
+        );
+        runtime.register_batch(&batch_id, worker_count);
+        let batch_slots = Arc::new(tokio::sync::Semaphore::new(effective_parallel));
+        let mut worker_cancel_tokens = Vec::with_capacity(worker_count);
+        let mut pending = FuturesUnordered::new();
+        for (index, (worker_id, task_args)) in normalized_tasks.into_iter().enumerate() {
+            let db = db.clone();
+            let inherited_source_scope = inherited_source_scope.clone();
+            let batch_parallel_group = batch_parallel_group.clone();
+            let worker_cancel = runtime.cancel_token.child_token();
+            let worker_runtime = runtime.scoped_to_worker(worker_cancel.clone());
+            let batch_runtime = runtime.clone();
+            let batch_slots = Arc::clone(&batch_slots);
+            worker_cancel_tokens.push(worker_cancel.clone());
+            runtime.add_batch_cancel_token(&batch_id, worker_cancel);
+            let worker_batch_id = batch_id.clone();
+            let detached_label = worker_id
+                .clone()
+                .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
+            let detached_fallback = task_args.clone();
+            let detached_parallel_group = batch_parallel_group.clone();
+            let batch_call_id = call_id.to_string();
+            let worker_task = tokio::spawn(async move {
+                let label = worker_id
+                    .clone()
+                    .unwrap_or_else(|| format!("{}-{}", batch_call_id, index + 1));
+                let fallback = task_args.clone();
+                let run = match run_subagent_once(
+                    worker_runtime,
+                    db,
+                    inherited_source_scope,
+                    label.clone(),
+                    worker_id,
+                    task_args,
+                    Some(batch_slots),
+                )
+                .await
+                {
+                    Ok(run) => run,
+                    Err(err) => {
+                        failed_subagent_run_artifact(label, fallback, batch_parallel_group, &err)
+                    }
+                };
+                batch_runtime.record_batch_result(&worker_batch_id, index, run.clone());
+                (index, run)
+            });
+            pending.push(async move {
+                worker_task.await.unwrap_or_else(|error| {
+                    let error = CoreError::Agent(format!(
+                        "Delegated worker task terminated unexpectedly: {error}"
+                    ));
+                    (
+                        index,
+                        failed_subagent_run_artifact(
+                            detached_label,
+                            detached_fallback,
+                            detached_parallel_group,
+                            &error,
+                        ),
                     )
-                    .await
-                    {
-                        Ok(run) => run,
-                        Err(err) => SubagentRunArtifact {
-                            id: label.clone(),
-                            session_id: label,
-                            resumed_from_task_id: None,
-                            previous_session: None,
-                            status: "error".to_string(),
-                            task: fallback.task,
-                            role_id: fallback.role_id.clone(),
-                            role_name: resolve_role_profile(
-                                fallback.role_id.as_deref(),
-                                fallback.role.as_deref(),
-                            )
-                            .ok()
-                            .flatten()
-                            .map(|profile| profile.label.to_string()),
-                            role: fallback.role,
-                            model_policy: fallback.model_policy,
-                            effective_model: None,
-                            model_route_fallback: false,
-                            expected_output: fallback.expected_output,
-                            acceptance_criteria: fallback.acceptance_criteria,
-                            evidence_chunk_ids: fallback.evidence_chunk_ids,
-                            evidence_handoff: Vec::new(),
-                            requested_source_scope: fallback.source_ids,
-                            effective_source_scope: Vec::new(),
-                            requested_allowed_tools: fallback.allowed_tools,
-                            allowed_tools: Vec::new(),
-                            allowed_skills: Vec::new(),
-                            parallel_group: batch_parallel_group.clone(),
-                            deliverable_style: fallback.deliverable_style,
-                            return_sections: fallback.return_sections,
-                            result: format!("Subagent failed: {err}"),
-                            finish_reason: None,
-                            usage_total: Usage::default(),
-                            tool_events: Vec::new(),
-                            thinking: None,
-                            source_scope_applied: false,
-                            is_error: true,
-                            error_message: Some(err.to_string()),
-                        },
+                })
+            });
+        }
+        let policy_deadline = match &completion_policy {
+            DelegationCompletionPolicy::Deadline { deadline_ms } => {
+                Some(tokio::time::Instant::now() + Duration::from_millis(*deadline_ms))
+            }
+            _ => None,
+        };
+        let mut indexed_runs = Vec::with_capacity(worker_count);
+        let mut policy_deadline_reached = false;
+        while !pending.is_empty() {
+            let next = if let Some(deadline) = policy_deadline {
+                match tokio::time::timeout_at(deadline, pending.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        policy_deadline_reached = true;
+                        None
                     }
                 }
-            })
-            .buffer_unordered(effective_parallel)
-            .collect()
-            .await;
+            } else {
+                pending.next().await
+            };
+            let Some((index, run)) = next else {
+                break;
+            };
+            indexed_runs.push((index, run));
+            let completed_runs = indexed_runs
+                .iter()
+                .map(|(_, run)| run.clone())
+                .collect::<Vec<_>>();
+            if completion_policy.is_satisfied(&completed_runs, pending.len()) {
+                break;
+            }
+        }
+
+        let policy_satisfied = policy_deadline_reached
+            || completion_policy.is_satisfied(
+                &indexed_runs
+                    .iter()
+                    .map(|(_, run)| run.clone())
+                    .collect::<Vec<_>>(),
+                pending.len(),
+            );
+        let pending_at_policy_completion = pending.len();
+        let continuing_workers = if !pending.is_empty() && !cancel_remaining {
+            // Each entry owns a Tokio JoinHandle. Dropping the collector
+            // detaches those tasks rather than cancelling them; their normal
+            // completion path persists a supplemental subtask timeline event.
+            pending.len()
+        } else {
+            0
+        };
+        if !pending.is_empty() && cancel_remaining {
+            // Dropping a future is not cancellation. Signal every worker first,
+            // then provide a bounded settlement window for durable final state.
+            for token in &worker_cancel_tokens {
+                token.cancel();
+            }
+            let settle_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            while !pending.is_empty() {
+                match tokio::time::timeout_at(settle_deadline, pending.next()).await {
+                    Ok(Some((index, run))) => indexed_runs.push((index, run)),
+                    _ => break,
+                }
+            }
+        }
+        let unsettled_workers = if cancel_remaining { pending.len() } else { 0 };
+        drop(pending);
+        indexed_runs.sort_by_key(|(index, _)| *index);
+        let runs = indexed_runs
+            .into_iter()
+            .map(|(_, run)| run)
+            .collect::<Vec<_>>();
 
         let budget_after = self.runtime.budget.snapshot().await;
         let completed_runs = runs.iter().filter(|run| !run.is_error).count();
@@ -2585,6 +3450,14 @@ impl Tool for SubagentBatchTool {
         }
         if let Some(template_label) = workflow_template_label {
             content.push_str(&format!(" using {template_label}"));
+        }
+        if pending_at_policy_completion > 0 {
+            content.push_str(&format!(
+                "; completion policy released the parent with {pending_at_policy_completion} worker(s) still settling"
+            ));
+            content.push_str(&format!(
+                ". Call observe_subagent_batch with batchId '{batch_id}' before final synthesis to receive supplemental evidence, wait for more results, or cancel residual workers"
+            ));
         }
         content.push_str(".\n\n");
         for run in &runs {
@@ -2599,6 +3472,7 @@ impl Tool for SubagentBatchTool {
             is_error: failed_runs > 0 && completed_runs == 0,
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_batch_result",
+                "batchId": &batch_id,
                 "batchGoal": batch_goal,
                 "workflowTemplate": workflow_template_id,
                 "workflowTemplateLabel": workflow_template_label,
@@ -2606,10 +3480,142 @@ impl Tool for SubagentBatchTool {
                 "parallelGroup": parallel_group,
                 "requestedMaxParallel": requested_parallel,
                 "effectiveMaxParallel": effective_parallel,
+                "completionPolicy": completion_policy,
+                "completionPolicySatisfied": policy_satisfied,
+                "pendingAtPolicyCompletion": pending_at_policy_completion,
+                "unsettledWorkers": unsettled_workers,
+                "continuingWorkers": continuing_workers,
+                "supplementalEvidenceTool": (continuing_workers > 0).then_some("observe_subagent_batch"),
+                "cancelRemaining": cancel_remaining,
                 "completedRuns": completed_runs,
                 "failedRuns": failed_runs,
                 "budgetBefore": budget_before,
                 "budgetAfter": budget_after,
+                "runs": runs,
+            })),
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for ObserveSubagentBatchTool {
+    fn name(&self) -> &str {
+        "observe_subagent_batch"
+    }
+
+    fn description(&self) -> &str {
+        "Observe supplemental results from a delegated batch after quorum, first-success, deadline, or parent-decides released the parent. Optionally wait for more results or cancel residual workers."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "batchId": {
+                    "type": "string",
+                    "description": "batchId returned by spawn_subagent_batch"
+                },
+                "waitMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 120000,
+                    "description": "Wait up to this duration for another supplemental result"
+                },
+                "cancelRemaining": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Cancel workers that have not yet settled"
+                }
+            },
+            "required": ["batchId"],
+            "additionalProperties": false
+        })
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SubAgent]
+    }
+
+    async fn execute(
+        &self,
+        context: nexa_core::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        let args: ObserveSubagentBatchArgs =
+            serde_json::from_str(context.arguments).map_err(|error| {
+                CoreError::InvalidInput(format!(
+                    "Invalid observe_subagent_batch arguments: {error}"
+                ))
+            })?;
+        let batch_id = args.batch_id.trim();
+        if batch_id.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "observe_subagent_batch requires batchId".into(),
+            ));
+        }
+        if args.cancel_remaining {
+            self.runtime.cancel_batch(batch_id);
+        }
+
+        let wait_ms = args.wait_ms.unwrap_or(0).min(120_000);
+        let baseline_count = self
+            .runtime
+            .batch_snapshot(batch_id)
+            .ok_or_else(|| CoreError::NotFound(format!("Delegated batch {batch_id}")))?
+            .1
+            .len();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+        let (expected_workers, runs) = loop {
+            let notified = self.runtime.batch_notify.notified();
+            tokio::pin!(notified);
+            // Register before reading the snapshot so a completion between
+            // the read and the await cannot be lost by notify_waiters().
+            notified.as_mut().enable();
+            let Some((expected, runs)) = self.runtime.batch_snapshot(batch_id) else {
+                return Err(CoreError::NotFound(format!("Delegated batch {batch_id}")));
+            };
+            if runs.len() >= expected
+                || runs.len() > baseline_count
+                || wait_ms == 0
+                || tokio::time::Instant::now() >= deadline
+            {
+                break (expected, runs);
+            }
+            if tokio::time::timeout_at(deadline, &mut notified)
+                .await
+                .is_err()
+            {
+                break self
+                    .runtime
+                    .batch_snapshot(batch_id)
+                    .unwrap_or((expected, runs));
+            }
+        };
+        let completed_workers = runs.len();
+        let pending_workers = expected_workers.saturating_sub(completed_workers);
+        let mut content = format!(
+            "Delegated batch {batch_id}: {completed_workers}/{expected_workers} worker(s) settled"
+        );
+        if pending_workers > 0 {
+            content.push_str(&format!("; {pending_workers} still running"));
+        }
+        content.push_str(".\n\n");
+        for run in &runs {
+            content.push_str("- ");
+            content.push_str(&summarize_subagent_run(run));
+            content.push('\n');
+        }
+
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content,
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "kind": "subagent_batch_observation",
+                "batchId": batch_id,
+                "expectedWorkers": expected_workers,
+                "completedWorkers": completed_workers,
+                "pendingWorkers": pending_workers,
+                "cancelRequested": args.cancel_remaining,
                 "runs": runs,
             })),
         })
@@ -2640,6 +3646,7 @@ impl Tool for JudgeSubagentResultsTool {
         &self,
         context: nexa_core::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let launch_started = Instant::now();
         let nexa_core::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -2712,13 +3719,37 @@ impl Tool for JudgeSubagentResultsTool {
         } else {
             None
         };
+        if let (Some(parent_run_id), Some(subtask_run_id)) =
+            (parent_task_run_id.as_deref(), subtask_run_id.as_deref())
+        {
+            for (stage, status) in [
+                ("launch_ack_ms", "measured"),
+                ("history_load_ms", "not_applicable"),
+                ("context_build_ms", "measured"),
+                ("skill_select_ms", "not_applicable"),
+                ("mcp_sync_ms", "shared_snapshot"),
+                ("tool_registry_ms", "not_applicable"),
+                ("attachment_prepare_ms", "not_applicable"),
+                ("request_build_ms", "measured"),
+            ] {
+                record_subagent_launch_metric(
+                    db,
+                    parent_run_id,
+                    subtask_run_id,
+                    call_id,
+                    stage,
+                    Some(instant_elapsed_ms(launch_started)),
+                    None,
+                    status,
+                );
+            }
+        }
         let _permit = match self
             .runtime
             .budget
-            .begin_call(
+            .begin_judge_call(
                 "judge_subagent_results",
                 reserved_tokens,
-                true,
                 &self.runtime.cancel_token,
             )
             .await
@@ -2729,7 +3760,7 @@ impl Tool for JudgeSubagentResultsTool {
                     {
                         self.runtime
                             .budget
-                            .release_reservation(reserved_tokens)
+                            .rollback_unstarted_judge(reserved_tokens)
                             .await;
                         finish_subtask_run_best_effort(
                             db,
@@ -2814,6 +3845,25 @@ impl Tool for JudgeSubagentResultsTool {
         };
         let judge_cancel_token = self.runtime.cancel_token.child_token();
         let timeout_secs = resolve_delegation_timeout_secs(&self.runtime.base_config, None);
+        let judge_limits = self.runtime.budget.limits().await;
+        let judge_timeout_ms = resolve_delegation_run_deadline_ms(
+            &self.runtime.base_config,
+            None,
+            timeout_secs,
+            judge_limits.run_deadline_ms,
+        );
+        let judge_cost_micros =
+            nexa_core::usage_analytics::usage_cost_metadata(self.runtime.base_config.provider_type)
+                .0;
+        let invocation_id = format!(
+            "judge:{}:{}",
+            subtask_run_id
+                .as_deref()
+                .or(parent_task_run_id.as_deref())
+                .or(conversation_id)
+                .unwrap_or("detached"),
+            call_id
+        );
         let response = tokio::select! {
             _ = judge_cancel_token.cancelled() => {
                 self.runtime.budget.release_reservation(reserved_tokens).await;
@@ -2843,9 +3893,12 @@ impl Tool for JudgeSubagentResultsTool {
                 }
                 return Err(err);
             }
-            result = tokio::time::timeout(Duration::from_secs(timeout_secs), provider.complete(&request)) => match result {
+            result = tokio::time::timeout(Duration::from_millis(judge_timeout_ms), provider.complete(&request)) => match result {
                 Ok(Ok(response)) => {
-                    self.runtime.budget.finish_call(reserved_tokens, &response.usage).await;
+                    self.runtime
+                        .budget
+                        .finish_call(reserved_tokens, &response.usage, judge_cost_micros)
+                        .await;
                     response
                 }
                 Ok(Err(err)) => {
@@ -2877,7 +3930,7 @@ impl Tool for JudgeSubagentResultsTool {
                     judge_cancel_token.cancel();
                     self.runtime.budget.release_reservation(reserved_tokens).await;
                     let err = CoreError::Agent(format!(
-                        "Delegated adjudication timed out after {timeout_secs}s."
+                        "Delegated adjudication timed out after {judge_timeout_ms}ms."
                     ));
                     let output = serde_json::json!({
                         "kind": "subagent_judgement_error",
@@ -2904,6 +3957,36 @@ impl Tool for JudgeSubagentResultsTool {
                 }
             }
         };
+        if let (Some(parent_run_id), Some(subtask_run_id)) =
+            (parent_task_run_id.as_deref(), subtask_run_id.as_deref())
+        {
+            let elapsed_ms = instant_elapsed_ms(launch_started);
+            for (stage, value, status) in [
+                (
+                    "provider_connect_ms",
+                    Some(elapsed_ms),
+                    "completion_boundary",
+                ),
+                ("first_sse_byte_ms", None, "not_applicable_completion_mode"),
+                ("first_visible_token_ms", Some(elapsed_ms), "measured"),
+                (
+                    "frontend_first_paint_ms",
+                    None,
+                    "not_applicable_background_worker",
+                ),
+            ] {
+                record_subagent_launch_metric(
+                    db,
+                    parent_run_id,
+                    subtask_run_id,
+                    call_id,
+                    stage,
+                    value,
+                    Some(&invocation_id),
+                    status,
+                );
+            }
+        }
 
         let provider_type = self.runtime.base_config.provider_type;
         let provider_id = nexa_core::usage_analytics::provider_type_id(provider_type);
@@ -2911,15 +3994,6 @@ impl Tool for JudgeSubagentResultsTool {
             nexa_core::usage_analytics::usage_cost_metadata(provider_type);
         let raw_usage =
             serde_json::to_value(&response.usage).unwrap_or_else(|_| serde_json::json!({}));
-        let invocation_id = format!(
-            "judge:{}:{}",
-            subtask_run_id
-                .as_deref()
-                .or(parent_task_run_id.as_deref())
-                .or(conversation_id)
-                .unwrap_or("detached"),
-            call_id
-        );
         if let Err(error) = db.record_ai_usage(&nexa_core::usage_analytics::AiUsageRecordInput {
             invocation_id: &invocation_id,
             occurred_at: None,
@@ -3041,6 +4115,7 @@ impl Tool for JudgeSubagentResultsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_core::conversation::{ConversationMessage, CreateConversationInput};
     use nexa_core::llm::ProviderType;
 
     fn test_runtime() -> DelegationRuntime {
@@ -3057,7 +4132,69 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
+    }
+
+    fn observed_batch_run(id: &str) -> SubagentRunArtifact {
+        failed_subagent_run_artifact(
+            id.to_string(),
+            SpawnSubagentArgs {
+                task: format!("task-{id}"),
+                task_id: None,
+                role_id: None,
+                role: None,
+                model_policy: None,
+                context: None,
+                expected_output: None,
+                max_iterations: None,
+                timeout_secs: None,
+                acceptance_criteria: None,
+                evidence_chunk_ids: None,
+                source_ids: None,
+                allowed_tools: None,
+                parallel_group: None,
+                deliverable_style: None,
+                return_sections: None,
+            },
+            None,
+            &CoreError::Agent(format!("settled-{id}")),
+        )
+    }
+
+    #[tokio::test]
+    async fn observe_batch_returns_after_one_new_supplemental_result() {
+        let runtime = test_runtime();
+        runtime.register_batch("batch-1", 3);
+        runtime.record_batch_result("batch-1", 0, observed_batch_run("first"));
+        let tool = ObserveSubagentBatchTool::from_runtime(runtime.clone());
+        let db = Database::open_memory().unwrap();
+        let arguments = serde_json::json!({
+            "batchId": "batch-1",
+            "waitMs": 120_000,
+        })
+        .to_string();
+        let source_scope = Vec::new();
+        let observe = tool.execute(nexa_core::tools::ToolExecutionContext::new(
+            "observe-1",
+            &arguments,
+            &db,
+            &source_scope,
+        ));
+        let complete_next = async {
+            tokio::task::yield_now().await;
+            runtime.record_batch_result("batch-1", 1, observed_batch_run("second"));
+        };
+
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(250), async {
+            tokio::join!(observe, complete_next)
+        })
+        .await
+        .expect("observation returns after one new result");
+        let artifacts = result.unwrap().artifacts.unwrap();
+
+        assert_eq!(artifacts["completedWorkers"], 2);
+        assert_eq!(artifacts["pendingWorkers"], 1);
     }
 
     #[test]
@@ -3343,6 +4480,16 @@ mod tests {
                 .await
         });
         tokio::task::yield_now().await;
+
+        let queued_snapshot = budget.snapshot().await;
+        assert_eq!(
+            queued_snapshot.calls_started, 1,
+            "queued admission must not consume call count before a worker slot exists"
+        );
+        assert_eq!(
+            queued_snapshot.tokens_reserved, 200,
+            "queued admission must not reserve output credit before a worker slot exists"
+        );
         queued_cancel.cancel();
 
         assert!(queued.await.unwrap().is_err());
@@ -3383,7 +4530,535 @@ mod tests {
         budget.release_reservation(700).await;
         budget.release_reservation(300).await;
         let snapshot = budget.snapshot().await;
-        assert_eq!(snapshot.verification_reserve_tokens, 250);
+        assert_eq!(snapshot.verification_reserve_tokens, 0);
+        assert_eq!(snapshot.exploration_lane_slots, 1);
+        assert_eq!(snapshot.verification_lane_slots, 1);
+        assert_eq!(snapshot.judge_lane_slots, 1);
         assert_eq!(snapshot.calls_started, 2);
+    }
+
+    #[tokio::test]
+    async fn test_nexus_verifier_cannot_consume_the_reserved_judge_call() {
+        let config = AgentConfig {
+            subagent_max_calls_per_turn: Some(3),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+
+        let worker = budget
+            .begin_call("worker", 100, false, &cancel)
+            .await
+            .unwrap();
+        let verifier = budget
+            .begin_call("verifier", 100, true, &cancel)
+            .await
+            .unwrap();
+        assert!(budget
+            .begin_call("second-verifier", 100, true, &cancel)
+            .await
+            .is_err());
+        let judge = budget
+            .begin_judge_call("judge", 100, &cancel)
+            .await
+            .expect("judge keeps its reserved call admission");
+
+        drop((worker, verifier, judge));
+        for _ in 0..3 {
+            budget.release_reservation(100).await;
+        }
+        assert_eq!(budget.snapshot().await.calls_started, 3);
+    }
+
+    #[tokio::test]
+    async fn test_small_custom_call_budget_keeps_exploration_admissible() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(3),
+            subagent_max_calls_per_turn: Some(2),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+
+        let first = budget
+            .begin_call("worker-a", 100, false, &cancel)
+            .await
+            .expect("a small custom call budget must still admit exploration");
+        let second = budget
+            .begin_call("worker-b", 100, false, &cancel)
+            .await
+            .expect("all explicitly configured calls remain usable without control lanes");
+
+        drop((first, second));
+        assert_eq!(budget.snapshot().await.calls_started, 2);
+    }
+
+    #[tokio::test]
+    async fn test_worker_queue_has_an_independent_deadline() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(1),
+            ..Default::default()
+        };
+        let budget =
+            SubagentBudgetController::new_with_queue_deadline(&config, Duration::from_millis(10));
+        let cancel = CancellationToken::new();
+        let active = budget
+            .begin_call("worker-a", 100, false, &cancel)
+            .await
+            .unwrap();
+
+        let error = budget
+            .begin_call("worker-b", 100, false, &cancel)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("queue deadline"));
+        assert_eq!(budget.snapshot().await.calls_started, 1);
+        drop(active);
+        budget.release_reservation(100).await;
+    }
+
+    #[test]
+    fn test_delegated_output_is_not_hard_clamped_to_32k() {
+        let config = AgentConfig {
+            max_tokens: Some(50_000),
+            ..Default::default()
+        };
+
+        assert_eq!(resolve_delegated_max_output(&config, None), 50_000);
+        assert_eq!(resolve_delegated_max_output(&config, Some(40_000)), 40_000);
+    }
+
+    #[test]
+    fn progress_latch_coalesces_unbounded_stream_deltas() {
+        let (sender, mut receiver) = mpsc::channel(1);
+
+        for _ in 0..100_000 {
+            signal_progress_latch(&sender);
+        }
+
+        assert_eq!(receiver.len(), 1);
+        assert_eq!(receiver.try_recv(), Ok(()));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_connect_does_not_consume_an_already_queued_first_response() {
+        let (connected_tx, mut connected_rx) = mpsc::channel(1);
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+
+        signal_progress_latch(&connected_tx);
+        signal_progress_latch(&response_tx);
+
+        assert_eq!(connected_rx.recv().await, Some(()));
+        assert_eq!(response_rx.recv().await, Some(()));
+    }
+
+    #[tokio::test]
+    async fn batch_slot_wait_shares_the_global_queue_deadline() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let _occupied = Arc::clone(&slots).acquire_owned().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let error = acquire_batch_slot(slots, &cancel, "queued-worker", Instant::now(), 20)
+            .await
+            .expect_err("batch-local admission must remain bounded");
+
+        assert!(error.to_string().contains("20ms queue deadline"));
+    }
+
+    #[tokio::test]
+    async fn batch_queue_failure_rolls_back_unstarted_call_and_token_credit() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(1),
+            subagent_max_calls_per_turn: Some(2),
+            subagent_token_budget: Some(1_000),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let permit = budget
+            .begin_call("queued", 100, false, &cancel)
+            .await
+            .unwrap();
+
+        budget.rollback_unstarted_worker(100, false).await;
+        let snapshot = budget.snapshot().await;
+
+        assert_eq!(snapshot.calls_started, 0);
+        assert_eq!(snapshot.tokens_reserved, 0);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn judge_startup_failure_rolls_back_global_and_judge_admission() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(3),
+            subagent_max_calls_per_turn: Some(3),
+            subagent_token_budget: Some(10_000),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let failed_judge = budget
+            .begin_judge_call("failed-judge", 100, &cancel)
+            .await
+            .unwrap();
+
+        budget.rollback_unstarted_judge(100).await;
+        drop(failed_judge);
+        let snapshot = budget.snapshot().await;
+        assert_eq!(snapshot.calls_started, 0);
+        assert_eq!(snapshot.tokens_reserved, 0);
+
+        drop(
+            budget
+                .begin_call("explorer", 100, false, &cancel)
+                .await
+                .unwrap(),
+        );
+        drop(
+            budget
+                .begin_call("verifier", 100, true, &cancel)
+                .await
+                .unwrap(),
+        );
+        let error = budget
+            .begin_call("extra-verifier", 100, true, &cancel)
+            .await
+            .expect_err("judge call credit must be reserved again after rollback");
+        assert!(error.to_string().contains("remain reserved"));
+    }
+
+    #[test]
+    fn v2_run_deadline_replaces_legacy_role_default_unless_call_is_explicitly_shorter() {
+        let config = AgentConfig {
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                run_deadline_ms: Some(240_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&config, None, 60, 240_000),
+            240_000
+        );
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&config, Some(30), 60, 240_000),
+            30_000
+        );
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&AgentConfig::default(), None, 60, 180_000),
+            60_000
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_remote_pricing_keeps_cost_limit_advisory_instead_of_blocking_workers() {
+        let config = AgentConfig {
+            provider_type: Some(ProviderType::OpenAi),
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                total_cost_soft_limit_micros: Some(1_000),
+                max_parallel: Some(1),
+                max_calls_per_turn: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+
+        let permit = budget
+            .begin_call("remote-worker", 100, false, &cancel)
+            .await
+            .expect("unknown pricing must not disable remote delegation");
+        let snapshot = budget.snapshot().await;
+
+        assert!(!snapshot.cost_accounting_available);
+        assert_eq!(snapshot.cost_soft_limit_micros, Some(1_000));
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn token_soft_limit_blocks_new_calls_while_residual_workers_are_running() {
+        let config = AgentConfig {
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                total_actual_tokens_soft_limit: Some(256),
+                max_parallel: Some(3),
+                max_calls_per_turn: Some(4),
+                ..Default::default()
+            }),
+            subagent_verification_reserve_percent: Some(0),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let first = budget
+            .begin_call("first", 100, false, &cancel)
+            .await
+            .unwrap();
+        let residual = budget
+            .begin_call("residual", 100, false, &cancel)
+            .await
+            .unwrap();
+        budget
+            .finish_call(
+                100,
+                &Usage {
+                    total_tokens: 300,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        drop(first);
+
+        let error = budget
+            .begin_call("new-worker", 100, false, &cancel)
+            .await
+            .expect_err("actual usage over the soft limit must stop new admission");
+
+        assert!(error.to_string().contains("token soft limit exhausted"));
+        drop(residual);
+    }
+
+    #[test]
+    fn independent_auto_limits_prefer_model_catalog_over_parent_limits() {
+        let mut config = AgentConfig {
+            context_window: Some(128_000),
+            max_tokens: Some(8_192),
+            ..Default::default()
+        };
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Auto,
+            Some(1_000_000),
+            Some(65_536),
+            true,
+        );
+
+        assert_eq!(config.context_window, Some(1_000_000));
+        assert_eq!(config.max_tokens, Some(65_536));
+    }
+
+    #[test]
+    fn independent_auto_output_uses_conservative_fallback_without_catalog_data() {
+        let mut config = AgentConfig {
+            max_tokens: Some(8_192),
+            ..Default::default()
+        };
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Auto,
+            None,
+            None,
+            true,
+        );
+
+        assert_eq!(config.max_tokens, Some(CONSERVATIVE_SUBAGENT_MAX_TOKENS));
+    }
+
+    #[test]
+    fn explicit_worker_output_cap_below_legacy_minimum_is_preserved() {
+        let mut config = AgentConfig {
+            max_tokens: Some(8_192),
+            ..Default::default()
+        };
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Explicit(512),
+            None,
+            Some(65_536),
+            true,
+        );
+
+        assert_eq!(config.max_tokens, Some(512));
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Explicit(512),
+            None,
+            Some(400),
+            true,
+        );
+
+        assert_eq!(config.max_tokens, Some(400));
+    }
+
+    #[test]
+    fn test_delegated_failure_status_preserves_deadline_and_error_semantics() {
+        for message in [
+            "exceeded its 30000ms provider-connect deadline",
+            "exceeded its 45000ms first-token deadline",
+            "exceeded its 15000ms queue deadline",
+            "timed out after 60s",
+        ] {
+            assert_eq!(delegated_failure_status(message), "timed_out");
+        }
+        assert_eq!(
+            delegated_failure_status("was cancelled by the parent turn"),
+            "cancelled"
+        );
+        assert_eq!(
+            delegated_failure_status("authentication failed with status 401"),
+            "failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delegation_runtime_uses_distinct_connection_and_first_token_deadlines() {
+        let limits = SubagentBudgetController::new(&AgentConfig::default())
+            .limits()
+            .await;
+
+        assert!(limits.connect_deadline_ms > 0);
+        assert!(limits.first_token_deadline_ms > limits.connect_deadline_ms);
+    }
+
+    #[tokio::test]
+    async fn delegation_limits_v2_overrides_legacy_dimensions_and_deadlines() {
+        let config = AgentConfig {
+            provider_type: Some(ProviderType::Ollama),
+            subagent_max_parallel: Some(2),
+            subagent_token_budget: Some(12_000),
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                input_context_limit: Some(1_000_000),
+                max_output_tokens_per_worker: Some(65_536),
+                total_actual_tokens_soft_limit: Some(240_000),
+                total_cost_soft_limit_micros: Some(1_000),
+                max_parallel: Some(6),
+                max_calls_per_turn: Some(12),
+                queue_deadline_ms: Some(5_000),
+                connect_deadline_ms: Some(20_000),
+                first_token_deadline_ms: Some(60_000),
+                run_deadline_ms: Some(240_000),
+            }),
+            ..Default::default()
+        };
+
+        let limits = SubagentBudgetController::new(&config).limits().await;
+
+        assert_eq!(limits.max_parallel, 6);
+        assert_eq!(limits.max_calls_per_turn, 12);
+        assert_eq!(
+            limits.input_context_policy,
+            DelegationLimitPolicy::Explicit(1_000_000)
+        );
+        assert_eq!(
+            limits.max_output_tokens_per_worker,
+            DelegationLimitPolicy::Explicit(65_536)
+        );
+        assert_eq!(limits.total_actual_tokens_soft_limit, Some(240_000));
+        assert_eq!(limits.total_cost_soft_limit_micros, Some(1_000));
+        assert!(limits.cost_accounting_available);
+        assert_eq!(limits.queue_deadline_ms, 5_000);
+        assert_eq!(limits.connect_deadline_ms, 20_000);
+        assert_eq!(limits.first_token_deadline_ms, 60_000);
+        assert_eq!(limits.run_deadline_ms, 240_000);
+    }
+
+    #[test]
+    fn test_context_snapshot_reuses_authorized_parent_history() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "google".to_string(),
+                model: "gemini-2.5-pro".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        db.add_message(&ConversationMessage {
+            id: "parent-message".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Parent context that the delegated worker needs".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 10,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+
+        let first = load_delegation_context_snapshot(
+            &db,
+            Some(&conversation.id),
+            "gemini-2.5-pro",
+            1_048_576,
+        );
+        let second = load_delegation_context_snapshot(
+            &db,
+            Some(&conversation.id),
+            "gemini-2.5-pro",
+            1_048_576,
+        );
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.selected_message_ids.as_ref(), &["parent-message"]);
+        assert_eq!(
+            first.messages[0].text_content(),
+            "Parent context that the delegated worker needs"
+        );
+        assert_eq!(first.context_limit, 1_048_576);
+    }
+
+    #[test]
+    fn test_batch_completion_policy_resolves_quorum_and_deadline() {
+        let quorum_args = SpawnSubagentBatchArgs {
+            tasks: Vec::new(),
+            batch_goal: None,
+            workflow_template: None,
+            parallel_group: None,
+            max_parallel: None,
+            completion_policy: Some("quorum".to_string()),
+            quorum: Some(3),
+            deadline_ms: None,
+            cancel_remaining: None,
+        };
+        assert_eq!(
+            DelegationCompletionPolicy::resolve(&quorum_args, 4).unwrap(),
+            DelegationCompletionPolicy::Quorum { required: 3 }
+        );
+
+        let deadline_args = SpawnSubagentBatchArgs {
+            completion_policy: Some("deadline".to_string()),
+            deadline_ms: Some(2_500),
+            ..quorum_args
+        };
+        assert_eq!(
+            DelegationCompletionPolicy::resolve(&deadline_args, 4).unwrap(),
+            DelegationCompletionPolicy::Deadline { deadline_ms: 2_500 }
+        );
+
+        let parent_args = SpawnSubagentBatchArgs {
+            completion_policy: Some("parent_decides".to_string()),
+            ..deadline_args
+        };
+        let parent_policy = DelegationCompletionPolicy::resolve(&parent_args, 4).unwrap();
+        assert_eq!(parent_policy, DelegationCompletionPolicy::ParentDecides);
+        assert!(!parent_policy.is_satisfied(&[], 4));
+        assert!(!parent_policy.is_satisfied(&[], 1));
+        assert!(parent_policy.is_satisfied(&[observed_batch_run("decision")], 3));
+        assert!(parent_policy.is_satisfied(&[], 0));
+
+        let schema = spawn_subagent_batch_parameters_schema();
+        assert_eq!(schema["properties"]["cancel_remaining"]["type"], "boolean");
     }
 }

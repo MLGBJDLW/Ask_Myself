@@ -180,6 +180,19 @@ test('workflow catalog can prefill the chat composer', async ({ page }) => {
   await expect(catalog).toContainText('Research + Verify');
   await expect(catalog).toContainText('Meeting Summary');
 
+  const overlayPlacement = await catalog.evaluate((panel) => {
+    const rect = panel.getBoundingClientRect();
+    return {
+      inOverlayRoot: Boolean(panel.closest('[data-nexa-overlay-root="true"]')),
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(overlayPlacement.inOverlayRoot).toBe(true);
+  expect(overlayPlacement.left).toBeGreaterThanOrEqual(0);
+  expect(overlayPlacement.right).toBeLessThanOrEqual(overlayPlacement.viewportWidth);
+
   await catalog.getByRole('button', { name: /Meeting Summary/ }).click();
 
   const composer = page.getByTestId('chat-input-textarea');

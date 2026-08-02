@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { NexaSelect } from '../ui/overlay';
 import { motion } from 'framer-motion';
 import { Brain, CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -155,7 +156,7 @@ export function Step3Provider({
       {selectedPreset && (
         <label className="mb-4 w-full space-y-2 text-left text-sm font-medium text-text-primary">
           <span>{t('settings.defaultModel')}</span>
-          <select
+          <NexaSelect
             value={selectedModelId}
             onChange={(event) => {
               setSelectedModelId(event.target.value);
@@ -174,7 +175,7 @@ export function Step3Provider({
                 {model.name} · {modelDescriptorSummary(model.descriptor)}
               </option>
             ))}
-          </select>
+          </NexaSelect>
         </label>
       )}
 

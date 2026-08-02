@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::process::{Child, Command as StdCommand};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use self::client::McpClient;
-use crate::tools::mcp_tool::McpTool;
+use crate::tools::mcp_tool::{McpClientSlot, McpTool};
 use crate::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
@@ -509,17 +510,54 @@ impl Database {
 /// Manages MCP connector connections and their lifecycle.
 pub struct McpManager {
     clients: HashMap<String, Arc<Mutex<McpClient>>>,
+    connection_health: HashMap<String, Arc<McpConnectionHealth>>,
+    connection_call_timeout_secs: HashMap<String, Option<u64>>,
     connected_servers: HashMap<String, McpServer>,
     managed_processes: HashMap<String, Child>,
+    connection_generation: Arc<AtomicU64>,
+}
+
+/// Shared liveness state held by both the manager and registered MCP tools.
+/// A failed tool call invalidates the registry generation without requiring
+/// the tool to own or lock the manager.
+pub(crate) struct McpConnectionHealth {
+    healthy: AtomicBool,
+    connection_generation: Arc<AtomicU64>,
+}
+
+impl McpConnectionHealth {
+    fn new(connection_generation: Arc<AtomicU64>) -> Self {
+        Self {
+            healthy: AtomicBool::new(true),
+            connection_generation,
+        }
+    }
+
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_unhealthy(&self) {
+        if self.healthy.swap(false, Ordering::AcqRel) {
+            self.connection_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl McpManager {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
+            connection_health: HashMap::new(),
+            connection_call_timeout_secs: HashMap::new(),
             connected_servers: HashMap::new(),
             managed_processes: HashMap::new(),
+            connection_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn advance_connection_generation(&self) {
+        self.connection_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Start a managed process for a built-in MCP connector.
@@ -695,8 +733,17 @@ impl McpManager {
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
+                self.connection_health.insert(
+                    server.id.clone(),
+                    Arc::new(McpConnectionHealth::new(Arc::clone(
+                        &self.connection_generation,
+                    ))),
+                );
+                self.connection_call_timeout_secs
+                    .insert(server.id.clone(), call_timeout_secs);
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
+                self.advance_connection_generation();
                 Ok(tools)
             }
             "sse" | "streamable_http" => {
@@ -730,8 +777,17 @@ impl McpManager {
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
+                self.connection_health.insert(
+                    server.id.clone(),
+                    Arc::new(McpConnectionHealth::new(Arc::clone(
+                        &self.connection_generation,
+                    ))),
+                );
+                self.connection_call_timeout_secs
+                    .insert(server.id.clone(), call_timeout_secs);
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
+                self.advance_connection_generation();
                 Ok(tools)
             }
             other => Err(CoreError::InvalidInput(format!(
@@ -761,13 +817,7 @@ impl McpManager {
 
         let mut errors = HashMap::new();
         for server in servers {
-            let needs_reconnect = self
-                .connected_servers
-                .get(&server.id)
-                .map(|current| runtime_config_changed(current, server))
-                .unwrap_or(true);
-
-            if !needs_reconnect {
+            if !self.server_needs_reconnect(server) {
                 continue;
             }
 
@@ -780,20 +830,87 @@ impl McpManager {
         errors
     }
 
+    fn server_needs_reconnect(&self, server: &McpServer) -> bool {
+        let config_changed = self
+            .connected_servers
+            .get(&server.id)
+            .map(|current| runtime_config_changed(current, server))
+            .unwrap_or(true);
+        let connection_unhealthy = self
+            .connection_health
+            .get(&server.id)
+            .map(|health| !health.is_healthy())
+            .unwrap_or(true);
+        config_changed || connection_unhealthy
+    }
+
+    /// Recover a failed client immediately and return the active connection.
+    /// Calls are serialized by the shared manager mutex. If another tool has
+    /// already replaced the failed client, reuse that newer connection.
+    pub async fn recover_server_after_failure(
+        &mut self,
+        server_id: &str,
+        failed_client: &Arc<Mutex<McpClient>>,
+    ) -> Result<Arc<Mutex<McpClient>>, CoreError> {
+        let current_client = self.clients.get(server_id).cloned().ok_or_else(|| {
+            CoreError::Internal(format!(
+                "MCP connector {server_id} has no active client to recover"
+            ))
+        })?;
+        if !Arc::ptr_eq(&current_client, failed_client) {
+            return Ok(current_client);
+        }
+        if let Some(health) = self.connection_health.get(server_id) {
+            health.mark_unhealthy();
+        }
+
+        let server = self
+            .connected_servers
+            .get(server_id)
+            .cloned()
+            .ok_or_else(|| CoreError::NotFound(format!("MCP connector {server_id}")))?;
+        let call_timeout_secs = self
+            .connection_call_timeout_secs
+            .get(server_id)
+            .copied()
+            .flatten();
+        self.connect_server(&server, call_timeout_secs).await?;
+        self.clients.get(server_id).cloned().ok_or_else(|| {
+            CoreError::Internal(format!(
+                "MCP connector {server_id} reconnected without an active client"
+            ))
+        })
+    }
+
     /// Disconnect and shut down a specific MCP connector.
     pub async fn disconnect_server(&mut self, server_id: &str) -> Result<(), CoreError> {
-        self.connected_servers.remove(server_id);
-        if let Some(client) = self.clients.remove(server_id) {
+        let removed_server = self.connected_servers.remove(server_id).is_some();
+        let client = self.clients.remove(server_id);
+        let removed_client = client.is_some();
+        let removed_health = self.connection_health.remove(server_id).is_some();
+        self.connection_call_timeout_secs.remove(server_id);
+        if let Some(client) = client {
             let mut guard = client.lock().await;
             guard.shutdown().await.ok();
         }
         // Kill managed process if present
-        if let Some(mut child) = self.managed_processes.remove(server_id) {
+        let process = self.managed_processes.remove(server_id);
+        let removed_process = process.is_some();
+        if let Some(mut child) = process {
             tracing::info!("Killing managed process for server {}", server_id);
             let _ = child.kill();
             let _ = child.wait();
         }
+        if removed_server || removed_client || removed_health || removed_process {
+            self.advance_connection_generation();
+        }
         Ok(())
+    }
+
+    /// Monotonic identity for the live client set. Registries that capture MCP
+    /// client Arcs must include this value in their cache key.
+    pub fn connection_generation(&self) -> u64 {
+        self.connection_generation.load(Ordering::Acquire)
     }
 
     /// Disconnect all MCP connectors.
@@ -823,16 +940,47 @@ impl McpManager {
 
     /// Register all MCP tools from connected servers into a ToolRegistry.
     pub async fn register_tools(&self, registry: &mut ToolRegistry) -> Result<(), CoreError> {
+        self.register_tools_inner(registry, None).await
+    }
+
+    /// Register tools that can eagerly recover a failed connection for later
+    /// calls in the same agent turn. The failed call itself is never retried,
+    /// because an MCP mutation may already have reached the server.
+    pub async fn register_tools_with_recovery(
+        &self,
+        registry: &mut ToolRegistry,
+        manager: Weak<Mutex<McpManager>>,
+    ) -> Result<(), CoreError> {
+        self.register_tools_inner(registry, Some(manager)).await
+    }
+
+    async fn register_tools_inner(
+        &self,
+        registry: &mut ToolRegistry,
+        recovery_manager: Option<Weak<Mutex<McpManager>>>,
+    ) -> Result<(), CoreError> {
         for (server_id, client) in &self.clients {
+            let health = self.connection_health.get(server_id).ok_or_else(|| {
+                CoreError::Internal(format!(
+                    "MCP connector {server_id} has no connection health state"
+                ))
+            })?;
             let tools = {
                 let mut guard = client.lock().await;
-                guard.list_tools().await?
+                match guard.list_tools().await {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        health.mark_unhealthy();
+                        return Err(error);
+                    }
+                }
             };
             let server_name = self
                 .connected_servers
                 .get(server_id)
                 .map(|server| server.name.as_str())
                 .unwrap_or("mcp");
+            let client_slot = Arc::new(McpClientSlot::new(Arc::clone(client)));
             for tool_info in tools {
                 let server_slug = mcp_registry_slug(server_name, "server");
                 let tool_slug = mcp_registry_slug(&tool_info.name, "tool");
@@ -843,10 +991,12 @@ impl McpManager {
                 }
                 let mcp_tool = McpTool::new(
                     tool_info,
-                    client.clone(),
+                    Arc::clone(&client_slot),
                     server_id.clone(),
                     registry_name,
                     server_name.to_string(),
+                    Arc::clone(health),
+                    recovery_manager.clone(),
                 );
                 registry.register(Box::new(mcp_tool));
             }
@@ -882,6 +1032,11 @@ impl Default for McpManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener as TokioTcpListener;
 
     #[test]
     fn parse_mcp_args_accepts_json_array() {
@@ -1010,6 +1165,340 @@ mod tests {
         assert_eq!(mcp_registry_slug("Web Search", "server"), "web_search");
         assert_eq!(mcp_registry_slug("search.query", "tool"), "search_query");
         assert_eq!(mcp_registry_slug("!!!", "tool"), "tool");
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_live_server_advances_registry_generation() {
+        let mut manager = McpManager::new();
+        manager.connected_servers.insert(
+            "server-1".into(),
+            McpServer {
+                id: "server-1".into(),
+                name: "Test".into(),
+                transport: "streamable_http".into(),
+                command: None,
+                args: None,
+                url: Some("https://example.test/mcp".into()),
+                env_json: None,
+                headers_json: None,
+                enabled: true,
+                created_at: String::new(),
+                updated_at: String::new(),
+                builtin_id: None,
+            },
+        );
+
+        let before = manager.connection_generation();
+        manager.disconnect_server("server-1").await.unwrap();
+
+        assert!(manager.connection_generation() > before);
+    }
+
+    #[test]
+    fn failed_tool_connection_invalidates_snapshot_and_requires_reconnect() {
+        let mut manager = McpManager::new();
+        let server = McpServer {
+            id: "server-1".into(),
+            name: "Test".into(),
+            transport: "streamable_http".into(),
+            command: None,
+            args: None,
+            url: Some("https://example.test/mcp".into()),
+            env_json: None,
+            headers_json: None,
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin_id: None,
+        };
+        let health = Arc::new(McpConnectionHealth::new(Arc::clone(
+            &manager.connection_generation,
+        )));
+        manager
+            .connected_servers
+            .insert(server.id.clone(), server.clone());
+        manager
+            .connection_health
+            .insert(server.id.clone(), Arc::clone(&health));
+
+        assert!(!manager.server_needs_reconnect(&server));
+        let before = manager.connection_generation();
+        health.mark_unhealthy();
+
+        assert!(manager.connection_generation() > before);
+        assert!(manager.server_needs_reconnect(&server));
+    }
+
+    async fn read_test_http_request(
+        stream: &mut tokio::net::TcpStream,
+    ) -> std::io::Result<(String, serde_json::Value)> {
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0_u8; 4096];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "request closed before headers",
+                ));
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let method = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while bytes.len() < header_end + content_length {
+            let mut chunk = [0_u8; 4096];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+        let payload = if content_length == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap()
+        };
+        Ok((method, payload))
+    }
+
+    async fn write_test_http_response(
+        stream: &mut tokio::net::TcpStream,
+        status: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> std::io::Result<()> {
+        let body = payload
+            .map(|value| serde_json::to_vec(value).map_err(std::io::Error::other))
+            .transpose()?
+            .unwrap_or_default();
+        let headers = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await?;
+        stream.write_all(&body).await?;
+        stream.flush().await
+    }
+
+    #[tokio::test]
+    async fn only_transport_failure_recovers_connection_for_the_next_call() {
+        let listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let initialize_calls = Arc::new(AtomicUsize::new(0));
+        let recovery_started = Arc::new(tokio::sync::Semaphore::new(0));
+        let recovery_release = Arc::new(tokio::sync::Semaphore::new(0));
+        let server_calls = Arc::clone(&tool_calls);
+        let server_initializes = Arc::clone(&initialize_calls);
+        let server_recovery_started = Arc::clone(&recovery_started);
+        let server_recovery_release = Arc::clone(&recovery_release);
+        let server_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let tool_calls = Arc::clone(&server_calls);
+                let initialize_calls = Arc::clone(&server_initializes);
+                let recovery_started = Arc::clone(&server_recovery_started);
+                let recovery_release = Arc::clone(&server_recovery_release);
+                tokio::spawn(async move {
+                    let (http_method, request) = read_test_http_request(&mut stream).await.unwrap();
+                    if http_method == "DELETE" {
+                        write_test_http_response(&mut stream, "204 No Content", None)
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                    let method = request
+                        .get("method")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let id = request
+                        .get("id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    match method {
+                        "initialize" => {
+                            if initialize_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                                recovery_started.add_permits(1);
+                                let _permit = recovery_release.acquire().await.unwrap();
+                            }
+                            let response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "protocolVersion": "2025-11-25",
+                                    "capabilities": {},
+                                    "serverInfo": { "name": "remote", "version": "1.0.0" }
+                                }
+                            });
+                            write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                .await
+                                .unwrap();
+                        }
+                        "notifications/initialized" => {
+                            write_test_http_response(&mut stream, "202 Accepted", None)
+                                .await
+                                .unwrap();
+                        }
+                        "tools/list" => {
+                            let response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "tools": [{
+                                        "name": "demo",
+                                        "description": "Demo tool",
+                                        "inputSchema": { "type": "object", "properties": {} }
+                                    }]
+                                }
+                            });
+                            write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                .await
+                                .unwrap();
+                        }
+                        "tools/call" => match tool_calls.fetch_add(1, Ordering::SeqCst) {
+                            0 => {
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "Invalid tool arguments"
+                                    }
+                                });
+                                write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                    .await
+                                    .unwrap();
+                            }
+                            1 => {
+                                write_test_http_response(
+                                    &mut stream,
+                                    "500 Internal Server Error",
+                                    Some(&serde_json::json!({ "error": "connection lost" })),
+                                )
+                                .await
+                                .unwrap();
+                            }
+                            _ => {
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": "recovered" }]
+                                    }
+                                });
+                                write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                    .await
+                                    .unwrap();
+                            }
+                        },
+                        other => panic!("unexpected MCP method {other}"),
+                    }
+                });
+            }
+        });
+
+        let manager = Arc::new(Mutex::new(McpManager::new()));
+        let server = McpServer {
+            id: "server-1".into(),
+            name: "Remote".into(),
+            transport: "streamable_http".into(),
+            command: None,
+            args: None,
+            url: Some(format!("http://{address}/mcp")),
+            env_json: None,
+            headers_json: None,
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin_id: None,
+        };
+        let mut registry = ToolRegistry::new();
+        {
+            let mut guard = manager.lock().await;
+            guard.connect_server(&server, Some(5)).await.unwrap();
+            guard
+                .register_tools_with_recovery(&mut registry, Arc::downgrade(&manager))
+                .await
+                .unwrap();
+        }
+        let db = Database::open_memory().unwrap();
+        let source_scope = Vec::new();
+        let tool = registry.get("mcp__remote__demo").unwrap();
+        let application_error = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                "{}",
+                &db,
+                &source_scope,
+            ))
+            .await
+            .unwrap();
+        assert!(application_error.is_error);
+        assert!(application_error.content.contains("Invalid tool arguments"));
+        assert!(!application_error.content.contains("recovery"));
+        assert_eq!(initialize_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), recovery_started.acquire())
+                .await
+                .is_err()
+        );
+
+        let transport_error = tokio::time::timeout(
+            Duration::from_millis(250),
+            tool.execute(crate::tools::ToolExecutionContext::new(
+                "call-2",
+                "{}",
+                &db,
+                &source_scope,
+            )),
+        )
+        .await
+        .expect("the original tool failure must not wait for reconnect")
+        .unwrap();
+        assert!(transport_error.is_error);
+        assert!(transport_error
+            .content
+            .contains("recovery scheduled for subsequent calls"));
+        tokio::time::timeout(Duration::from_secs(1), recovery_started.acquire())
+            .await
+            .expect("background recovery starts")
+            .unwrap()
+            .forget();
+        recovery_release.add_permits(1);
+
+        let second = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-3",
+                "{}",
+                &db,
+                &source_scope,
+            ))
+            .await
+            .unwrap();
+        assert!(!second.is_error);
+        assert_eq!(second.content, "recovered");
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 3);
+
+        server_task.abort();
     }
 
     #[test]

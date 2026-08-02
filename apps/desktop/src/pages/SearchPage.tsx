@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { NexaSelect } from '../components/ui/overlay';
 import { useNavigate, useLocation } from 'react-router';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
@@ -753,7 +754,7 @@ export function SearchPage() {
             <label className="mb-1.5 block text-[11px] font-medium text-text-tertiary">
               {t('search.fileTypeFilter')}
             </label>
-            <select
+            <NexaSelect
               aria-label={t('search.fileTypeFilter')}
               value={recallFileType}
               onChange={(e) => setRecallFileType(e.target.value)}
@@ -765,7 +766,7 @@ export function SearchPage() {
                   {t(ft.labelKey)}
                 </option>
               ))}
-            </select>
+            </NexaSelect>
           </div>
 
           <div>
@@ -1330,4 +1331,3 @@ export function SearchPage() {
     </div>
   );
 }
-

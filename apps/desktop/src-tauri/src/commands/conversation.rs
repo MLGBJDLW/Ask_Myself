@@ -449,7 +449,10 @@ pub async fn list_tool_access_map_cmd(
                 warn!("Failed to refresh enabled MCP servers for tool access map: {error}")
             }
         }
-        if let Err(error) = mcp_manager.register_tools(&mut registry).await {
+        if let Err(error) = mcp_manager
+            .register_tools_with_recovery(&mut registry, Arc::downgrade(&mcp_state.manager))
+            .await
+        {
             warn!("Failed to register MCP tools for tool access map: {error}");
         }
     }
@@ -1002,6 +1005,7 @@ pub async fn compact_conversation_cmd(
         subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
         subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
         subagent_verification_reserve_percent: None,
+        delegation_limits_v2: db_config.delegation_limits_v2.clone(),
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
