@@ -42,6 +42,7 @@ import { ConversationFrameBatcher } from './streaming/frameBatcher';
 export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
+const MAX_RETAINED_STREAMS = 32;
 
 /* ── Store implementation ───────────────────────────────────────── */
 
@@ -75,6 +76,8 @@ function nextAnimationFrame(callback: () => void): void {
 
 class StreamStoreImpl {
   private _streams: Record<string, InternalStreamState> = {};
+  private _recency = new Map<string, number>();
+  private _recencyTick = 0;
   private _listeners = new Set<StoreListener>();
   private _notifications = new ConversationFrameBatcher(
     conversationId => this.notify(conversationId),
@@ -111,9 +114,33 @@ class StreamStoreImpl {
     }
   }
 
+  private touch(conversationId: string): void {
+    this._recencyTick += 1;
+    this._recency.set(conversationId, this._recencyTick);
+  }
+
+  private evictCompletedStreams(protectedConversationId?: string): void {
+    while (Object.keys(this._streams).length > MAX_RETAINED_STREAMS) {
+      const candidate = Object.entries(this._streams)
+        .filter(([id, state]) => id !== protectedConversationId && !state.isStreaming)
+        .sort(
+          ([left], [right]) => (this._recency.get(left) ?? 0) - (this._recency.get(right) ?? 0),
+        )[0];
+      if (!candidate) return;
+
+      const [conversationId, state] = candidate;
+      clearStreamWatchdog(state);
+      clearToolPreparingTimers(state);
+      delete this._streams[conversationId];
+      this._recency.delete(conversationId);
+      this.notify(conversationId);
+    }
+  }
+
   getStream(id: string): StreamState | undefined {
     const s = this._streams[id];
     if (!s) return undefined;
+    this.touch(id);
     return {
       turnHandle: s.turnHandle,
       isStreaming: s.isStreaming,
@@ -164,9 +191,11 @@ class StreamStoreImpl {
 
     const state = stateFactory();
     this._streams[conversationId] = state;
+    this.touch(conversationId);
     if (state.isStreaming) {
       this.resetTimeout(conversationId);
     }
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -194,6 +223,8 @@ class StreamStoreImpl {
     state.isStreaming = true;
     state._launchStartedAt = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
     this._streams[conversationId] = state;
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.resetTimeout(conversationId);
     this.notify(conversationId);
   }
@@ -214,6 +245,7 @@ class StreamStoreImpl {
     clearStreamWatchdog(existing);
     clearToolPreparingTimers(existing);
     delete this._streams[conversationId];
+    this._recency.delete(conversationId);
     this.notify(conversationId);
   }
 
@@ -246,6 +278,8 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage: null,
     });
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -262,6 +296,8 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage,
     });
+    this.touch(conversationId);
+    this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
   }
 
@@ -278,6 +314,8 @@ class StreamStoreImpl {
         traceTone: 'error',
         errorMessage: 'Connection lost',
       });
+      this.touch(conversationId);
+      this.evictCompletedStreams(conversationId);
       this.notify(conversationId);
     });
   }
@@ -383,7 +421,9 @@ class StreamStoreImpl {
           );
         },
       });
+      this.touch(conversationId);
       this.capLiveCollections(state);
+      if (isTerminalEvent) this.evictCompletedStreams(conversationId);
       if (
         isTerminalEvent
         || runEvent.kind === 'approvalRequested'
@@ -441,7 +481,9 @@ class StreamStoreImpl {
         );
       },
     });
+    this.touch(conversationId);
     this.capLiveCollections(s);
+    if (isTerminalEvent) this.evictCompletedStreams(conversationId);
     if (
       isTerminalEvent
       || eventType === 'approvalRequested'

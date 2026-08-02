@@ -1905,6 +1905,28 @@ test('conversation cache evicts least-recently-used entries by count and bytes',
   assert(!cache.c && !cache.d, 'older entries are evicted to satisfy the byte budget');
 });
 
+test('completed stream state is bounded and recoverable from durable events', () => {
+  const ids = Array.from({ length: 40 }, (_, index) => `bounded-stream-${index}`);
+  ids.forEach(id => {
+    streamStore.restoreFromRunEvents(id, taskRun('completed'), []);
+  });
+
+  assertEqual(
+    streamStore.getStream(ids[0]),
+    undefined,
+    'the oldest completed stream is evicted from the in-memory preview cache',
+  );
+  assert(
+    streamStore.getStream(ids[ids.length - 1]),
+    'the newest completed stream remains available',
+  );
+
+  const restoredId = ids[0];
+  streamStore.restoreFromRunEvents(restoredId, taskRun('completed'), []);
+  assert(streamStore.getStream(restoredId), 'an evicted preview restores from durable events');
+  ids.forEach(id => streamStore.clearStream(id));
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     try {
