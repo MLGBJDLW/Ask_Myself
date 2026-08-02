@@ -2965,10 +2965,11 @@ fn resolve_delegated_max_output(config: &AgentConfig, catalog_limit: Option<u64>
     let effective_limit = catalog_limit
         .unwrap_or(fallback_limit)
         .min(u64::from(u32::MAX)) as u32;
-    config
+    let requested_limit = config
         .max_tokens
         .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS)
-        .clamp(1_024, effective_limit.max(1_024))
+        .max(256);
+    requested_limit.min(effective_limit.max(1))
 }
 
 fn apply_delegated_model_limits(
@@ -4863,6 +4864,36 @@ mod tests {
         );
 
         assert_eq!(config.max_tokens, Some(CONSERVATIVE_SUBAGENT_MAX_TOKENS));
+    }
+
+    #[test]
+    fn explicit_worker_output_cap_below_legacy_minimum_is_preserved() {
+        let mut config = AgentConfig {
+            max_tokens: Some(8_192),
+            ..Default::default()
+        };
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Explicit(512),
+            None,
+            Some(65_536),
+            true,
+        );
+
+        assert_eq!(config.max_tokens, Some(512));
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Explicit(512),
+            None,
+            Some(400),
+            true,
+        );
+
+        assert_eq!(config.max_tokens, Some(400));
     }
 
     #[test]

@@ -314,12 +314,12 @@ impl McpClient {
                 .stdin
                 .write_all(msg.as_bytes())
                 .await
-                .map_err(|e| CoreError::Mcp(format!("Failed to write to MCP server stdin: {e}")))?;
-            transport
-                .stdin
-                .flush()
-                .await
-                .map_err(|e| CoreError::Mcp(format!("Failed to flush MCP server stdin: {e}")))?;
+                .map_err(|e| {
+                    CoreError::McpTransport(format!("Failed to write to MCP server stdin: {e}"))
+                })?;
+            transport.stdin.flush().await.map_err(|e| {
+                CoreError::McpTransport(format!("Failed to flush MCP server stdin: {e}"))
+            })?;
             return Ok(());
         }
 
@@ -398,7 +398,7 @@ impl McpClient {
                     {
                         return Ok(result);
                     }
-                    return Err(CoreError::Mcp(format!(
+                    return Err(CoreError::McpTransport(format!(
                         "MCP server '{}' accepted {method} but no matching response arrived.",
                         self.server_name
                     )));
@@ -422,7 +422,7 @@ impl McpClient {
                     {
                         return Ok(result);
                     }
-                    return Err(CoreError::Mcp(format!(
+                    return Err(CoreError::McpTransport(format!(
                         "MCP server '{}' closed the SSE response for {method} before replying.",
                         self.server_name
                     )));
@@ -491,7 +491,7 @@ impl McpClient {
             let chunk = match next_chunk {
                 Ok(Some(Ok(chunk))) => chunk,
                 Ok(Some(Err(err))) => {
-                    return Err(CoreError::Mcp(format!(
+                    return Err(CoreError::McpTransport(format!(
                         "Failed to read SSE response from MCP server '{}': {err}",
                         self.server_name
                     )))
@@ -606,12 +606,12 @@ impl McpClient {
             Transport::Stdio(transport) => {
                 let stderr = transport.stderr_buf.lock().await;
                 if stderr.trim().is_empty() {
-                    CoreError::Mcp(format!(
+                    CoreError::McpTransport(format!(
                         "MCP stdio server '{}' closed unexpectedly.",
                         self.server_name
                     ))
                 } else {
-                    CoreError::Mcp(format!(
+                    CoreError::McpTransport(format!(
                         "MCP stdio server '{}' closed unexpectedly. stderr:\n{}",
                         self.server_name,
                         stderr.trim()
@@ -621,19 +621,19 @@ impl McpClient {
             Transport::LegacySse(transport) => {
                 let diagnostics = transport.diagnostics.lock().await;
                 if diagnostics.trim().is_empty() {
-                    CoreError::Mcp(format!(
+                    CoreError::McpTransport(format!(
                         "MCP SSE server '{}' closed its event stream unexpectedly.",
                         self.server_name
                     ))
                 } else {
-                    CoreError::Mcp(format!(
+                    CoreError::McpTransport(format!(
                         "MCP SSE server '{}' closed its event stream unexpectedly. Details:\n{}",
                         self.server_name,
                         diagnostics.trim()
                     ))
                 }
             }
-            Transport::StreamableHttp(_) => CoreError::Mcp(format!(
+            Transport::StreamableHttp(_) => CoreError::McpTransport(format!(
                 "MCP Streamable HTTP server '{}' closed unexpectedly.",
                 self.server_name
             )),
@@ -641,7 +641,7 @@ impl McpClient {
     }
 
     async fn transport_timeout_error(&self, method: &str) -> CoreError {
-        CoreError::Mcp(format!(
+        CoreError::McpTransport(format!(
             "Timed out waiting for MCP server '{}' to finish {method}.",
             self.server_name
         ))
@@ -786,13 +786,13 @@ impl McpClient {
         )
         .await
         .map_err(|_| {
-            CoreError::Mcp(format!(
+            CoreError::McpTransport(format!(
                 "Timed out connecting to legacy SSE MCP server at {}",
                 base_url
             ))
         })?
         .map_err(|e| {
-            CoreError::Mcp(format!(
+            CoreError::McpTransport(format!(
                 "Failed to connect to legacy SSE MCP server at {}: {e}",
                 base_url
             ))
@@ -844,13 +844,13 @@ impl McpClient {
             }
             Ok(Err(_)) => {
                 stream_handle.abort();
-                return Err(CoreError::Mcp(
+                return Err(CoreError::McpTransport(
                     "Legacy SSE MCP connection closed before publishing a message endpoint.".into(),
                 ));
             }
             Err(_) => {
                 stream_handle.abort();
-                return Err(CoreError::Mcp(
+                return Err(CoreError::McpTransport(
                     "Timed out waiting for a legacy SSE MCP endpoint event.".into(),
                 ));
             }
@@ -922,12 +922,12 @@ impl McpClient {
         )
         .await
         .map_err(|_| {
-            StreamablePostError::Core(CoreError::Mcp(format!(
+            StreamablePostError::Core(CoreError::McpTransport(format!(
                 "Timed out opening the Streamable HTTP event stream at {endpoint_url}"
             )))
         })?
         .map_err(|e| {
-            StreamablePostError::Core(CoreError::Mcp(format!(
+            StreamablePostError::Core(CoreError::McpTransport(format!(
                 "Failed to open the Streamable HTTP event stream at {endpoint_url}: {e}"
             )))
         })?;
@@ -938,11 +938,14 @@ impl McpClient {
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(StreamablePostError::Core(CoreError::Mcp(format!(
-                "Streamable HTTP GET {} returned {status}: {}",
-                endpoint_url,
-                body.trim()
-            ))));
+            return Err(StreamablePostError::Core(mcp_http_status_error(
+                status,
+                format!(
+                    "Streamable HTTP GET {} returned {status}: {}",
+                    endpoint_url,
+                    body.trim()
+                ),
+            )));
         }
 
         self.update_session_id(response.headers())?;
@@ -1000,12 +1003,12 @@ impl McpClient {
         )
         .await
         .map_err(|_| {
-            CoreError::Mcp(format!(
+            CoreError::McpTransport(format!(
                 "Timed out sending a request to legacy SSE MCP server at {message_url}"
             ))
         })?
         .map_err(|e| {
-            CoreError::Mcp(format!(
+            CoreError::McpTransport(format!(
                 "Failed to send a request to legacy SSE MCP server at {message_url}: {e}"
             ))
         })?;
@@ -1013,10 +1016,13 @@ impl McpClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(CoreError::Mcp(format!(
-                "Legacy SSE MCP server at {message_url} returned {status}: {}",
-                body.trim()
-            )));
+            return Err(mcp_http_status_error(
+                status,
+                format!(
+                    "Legacy SSE MCP server at {message_url} returned {status}: {}",
+                    body.trim()
+                ),
+            ));
         }
 
         Ok(())
@@ -1077,12 +1083,12 @@ impl McpClient {
         )
         .await
         .map_err(|_| {
-            StreamablePostError::Core(CoreError::Mcp(format!(
+            StreamablePostError::Core(CoreError::McpTransport(format!(
                 "Timed out sending a Streamable HTTP request to {endpoint_url}"
             )))
         })?
         .map_err(|e| {
-            StreamablePostError::Core(CoreError::Mcp(format!(
+            StreamablePostError::Core(CoreError::McpTransport(format!(
                 "Failed to send a Streamable HTTP request to {endpoint_url}: {e}"
             )))
         })?;
@@ -1093,11 +1099,14 @@ impl McpClient {
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(StreamablePostError::Core(CoreError::Mcp(format!(
-                "Streamable HTTP endpoint {} returned {status}: {}",
-                endpoint_url,
-                body.trim()
-            ))));
+            return Err(StreamablePostError::Core(mcp_http_status_error(
+                status,
+                format!(
+                    "Streamable HTTP endpoint {} returned {status}: {}",
+                    endpoint_url,
+                    body.trim()
+                ),
+            )));
         }
 
         self.update_session_id(response.headers())?;
@@ -1116,7 +1125,7 @@ impl McpClient {
         }
 
         let body = response.text().await.map_err(|e| {
-            StreamablePostError::Core(CoreError::Mcp(format!(
+            StreamablePostError::Core(CoreError::McpTransport(format!(
                 "Failed to read Streamable HTTP response from {}: {e}",
                 endpoint_url
             )))
@@ -1205,6 +1214,14 @@ fn build_http_client() -> Result<HttpClient, CoreError> {
         .connect_timeout(SSE_CONNECT_TIMEOUT)
         .build()
         .map_err(|e| CoreError::Mcp(format!("Failed to build HTTP client for MCP: {e}")))
+}
+
+fn mcp_http_status_error(status: StatusCode, message: String) -> CoreError {
+    if status.is_server_error() {
+        CoreError::McpTransport(message)
+    } else {
+        CoreError::Mcp(message)
+    }
 }
 
 fn build_header_map(headers: Option<&HashMap<String, String>>) -> Result<HeaderMap, CoreError> {

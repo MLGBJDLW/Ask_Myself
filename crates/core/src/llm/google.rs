@@ -1280,6 +1280,9 @@ impl LlmProvider for GeminiProvider {
         )
         .send()
         .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })
         .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
@@ -1287,7 +1290,11 @@ impl LlmProvider for GeminiProvider {
         let resp: GeminiResponse = response
             .json()
             .await
+            .inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            })
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        self.transport.record_transport_success();
 
         let (content, tool_calls, finish_reason, usage, thinking) = extract_response(&resp)?;
 

@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_tool_call_recovers_connection_for_the_next_call_in_the_same_registry() {
+    async fn only_transport_failure_recovers_connection_for_the_next_call() {
         let listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let tool_calls = Arc::new(AtomicUsize::new(0));
@@ -1374,27 +1374,42 @@ mod tests {
                                 .await
                                 .unwrap();
                         }
-                        "tools/call" if tool_calls.fetch_add(1, Ordering::SeqCst) == 0 => {
-                            write_test_http_response(
-                                &mut stream,
-                                "500 Internal Server Error",
-                                Some(&serde_json::json!({ "error": "connection lost" })),
-                            )
-                            .await
-                            .unwrap();
-                        }
-                        "tools/call" => {
-                            let response = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {
-                                    "content": [{ "type": "text", "text": "recovered" }]
-                                }
-                            });
-                            write_test_http_response(&mut stream, "200 OK", Some(&response))
+                        "tools/call" => match tool_calls.fetch_add(1, Ordering::SeqCst) {
+                            0 => {
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "Invalid tool arguments"
+                                    }
+                                });
+                                write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                    .await
+                                    .unwrap();
+                            }
+                            1 => {
+                                write_test_http_response(
+                                    &mut stream,
+                                    "500 Internal Server Error",
+                                    Some(&serde_json::json!({ "error": "connection lost" })),
+                                )
                                 .await
                                 .unwrap();
-                        }
+                            }
+                            _ => {
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": "recovered" }]
+                                    }
+                                });
+                                write_test_http_response(&mut stream, "200 OK", Some(&response))
+                                    .await
+                                    .unwrap();
+                            }
+                        },
                         other => panic!("unexpected MCP method {other}"),
                     }
                 });
@@ -1428,10 +1443,29 @@ mod tests {
         let db = Database::open_memory().unwrap();
         let source_scope = Vec::new();
         let tool = registry.get("mcp__remote__demo").unwrap();
-        let first = tokio::time::timeout(
+        let application_error = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-1",
+                "{}",
+                &db,
+                &source_scope,
+            ))
+            .await
+            .unwrap();
+        assert!(application_error.is_error);
+        assert!(application_error.content.contains("Invalid tool arguments"));
+        assert!(!application_error.content.contains("recovery"));
+        assert_eq!(initialize_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), recovery_started.acquire())
+                .await
+                .is_err()
+        );
+
+        let transport_error = tokio::time::timeout(
             Duration::from_millis(250),
             tool.execute(crate::tools::ToolExecutionContext::new(
-                "call-1",
+                "call-2",
                 "{}",
                 &db,
                 &source_scope,
@@ -1440,8 +1474,8 @@ mod tests {
         .await
         .expect("the original tool failure must not wait for reconnect")
         .unwrap();
-        assert!(first.is_error);
-        assert!(first
+        assert!(transport_error.is_error);
+        assert!(transport_error
             .content
             .contains("recovery scheduled for subsequent calls"));
         tokio::time::timeout(Duration::from_secs(1), recovery_started.acquire())
@@ -1453,7 +1487,7 @@ mod tests {
 
         let second = tool
             .execute(crate::tools::ToolExecutionContext::new(
-                "call-2",
+                "call-3",
                 "{}",
                 &db,
                 &source_scope,
@@ -1462,7 +1496,7 @@ mod tests {
             .unwrap();
         assert!(!second.is_error);
         assert_eq!(second.content, "recovered");
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 3);
 
         server_task.abort();
     }

@@ -157,27 +157,32 @@ impl Tool for McpTool {
                 artifacts: None,
             }),
             Err(e) => {
-                self.connection_health.mark_unhealthy();
-                let recovery = if let Some(manager) = self
-                    .recovery_manager
-                    .as_ref()
-                    .and_then(Weak::upgrade)
-                    .filter(|_| self.client.begin_recovery())
-                {
-                    let client_slot = Arc::clone(&self.client);
-                    let server_id = self.server_id.clone();
-                    tokio::spawn(async move {
-                        let recovered = manager
-                            .lock()
-                            .await
-                            .recover_server_after_failure(&server_id, &active_client)
-                            .await
-                            .ok();
-                        client_slot.finish_recovery(recovered).await;
-                    });
-                    " Connection recovery scheduled for subsequent calls in this turn.".to_string()
-                } else if self.recovery_manager.is_some() {
-                    " Connection recovery is already in progress.".to_string()
+                let recovery = if matches!(&e, CoreError::McpTransport(_)) {
+                    self.connection_health.mark_unhealthy();
+                    if let Some(manager) = self
+                        .recovery_manager
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .filter(|_| self.client.begin_recovery())
+                    {
+                        let client_slot = Arc::clone(&self.client);
+                        let server_id = self.server_id.clone();
+                        tokio::spawn(async move {
+                            let recovered = manager
+                                .lock()
+                                .await
+                                .recover_server_after_failure(&server_id, &active_client)
+                                .await
+                                .ok();
+                            client_slot.finish_recovery(recovered).await;
+                        });
+                        " Connection recovery scheduled for subsequent calls in this turn."
+                            .to_string()
+                    } else if self.recovery_manager.is_some() {
+                        " Connection recovery is already in progress.".to_string()
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
                 };

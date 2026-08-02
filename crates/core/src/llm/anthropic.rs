@@ -1167,6 +1167,9 @@ impl LlmProvider for AnthropicProvider {
         )
         .send()
         .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })
         .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
 
         let response = self.check_response(response).await?;
@@ -1174,7 +1177,11 @@ impl LlmProvider for AnthropicProvider {
         let resp: AnthropicResponse = response
             .json()
             .await
+            .inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            })
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        self.transport.record_transport_success();
 
         // Extract text, thinking, and tool calls from content blocks.
         let mut text_parts = Vec::new();

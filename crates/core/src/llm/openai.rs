@@ -1041,7 +1041,9 @@ impl LlmProvider for OpenAiProvider {
             )
             .send()
             .await
-            {
+            .inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            }) {
                 Ok(response) => response,
                 Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
                     warn!(
@@ -1067,7 +1069,9 @@ impl LlmProvider for OpenAiProvider {
                 Err(error) => return Err(error),
             };
 
-            match response.json().await {
+            match response.json().await.inspect_err(|error| {
+                self.transport.record_transport_failure(&error.to_string());
+            }) {
                 Ok(oai) => break oai,
                 Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
                     warn!(
@@ -1087,6 +1091,7 @@ impl LlmProvider for OpenAiProvider {
                 }
             }
         };
+        self.transport.record_transport_success();
 
         let choice = oai
             .choices

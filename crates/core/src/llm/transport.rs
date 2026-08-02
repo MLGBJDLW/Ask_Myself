@@ -429,6 +429,24 @@ mod tests {
     }
 
     #[test]
+    fn successful_completion_resets_the_h2_failure_streak() {
+        let transport = shared_http_transport(&config(
+            ProviderType::OpenAi,
+            Some("https://api.openai.com/v1/completion-reset-test"),
+            "completion-reset-key",
+        ))
+        .expect("transport");
+
+        transport.record_transport_failure("stream closed by HTTP/2 RST_STREAM");
+        transport.record_transport_success();
+        transport.record_transport_failure("stream closed by HTTP/2 RST_STREAM");
+
+        assert_eq!(transport.mode(), HttpTransportMode::Adaptive);
+        transport.record_transport_failure("stream closed by HTTP/2 RST_STREAM");
+        assert_eq!(transport.mode(), HttpTransportMode::Http1);
+    }
+
+    #[test]
     fn compatibility_and_local_endpoints_prefer_http1() {
         let custom = shared_http_transport(&config(
             ProviderType::Custom,

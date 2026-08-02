@@ -57,4 +57,11 @@ pub enum CoreError {
 
     #[error("MCP error: {0}")]
     Mcp(String),
+
+    /// An MCP failure that means the underlying connection can no longer be
+    /// trusted (for example, a timeout, closed stream, or transient HTTP 5xx).
+    /// Keeping this distinct from JSON-RPC/application errors prevents a tool
+    /// mistake from needlessly restarting a healthy stateful MCP server.
+    #[error("MCP transport error: {0}")]
+    McpTransport(String),
 }
