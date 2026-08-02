@@ -110,7 +110,8 @@ pub(crate) struct BudgetSnapshot {
 struct DelegationBudgetState {
     limits: DelegationLimitsV2,
     calls_started: u32,
-    exploration_calls_started: u32,
+    verification_calls_started: u32,
+    judge_calls_started: u32,
     tokens_spent: u32,
     tokens_reserved: u32,
 }
@@ -143,7 +144,8 @@ impl DelegationScheduler {
             state: Arc::new(Mutex::new(DelegationBudgetState {
                 limits,
                 calls_started: 0,
-                exploration_calls_started: 0,
+                verification_calls_started: 0,
+                judge_calls_started: 0,
                 tokens_spent: 0,
                 tokens_reserved: 0,
             })),
@@ -220,8 +222,10 @@ impl DelegationScheduler {
         let mut state = self.state.lock().await;
         Self::validate_admission(&state, label, lane)?;
         state.calls_started += 1;
-        if lane == DelegationLane::Exploration {
-            state.exploration_calls_started += 1;
+        if lane == DelegationLane::Verification {
+            state.verification_calls_started += 1;
+        } else if lane == DelegationLane::Judge {
+            state.judge_calls_started += 1;
         }
         state.tokens_reserved = state.tokens_reserved.saturating_add(reserved_tokens);
         drop(state);
@@ -233,23 +237,29 @@ impl DelegationScheduler {
         label: &str,
         lane: DelegationLane,
     ) -> Result<(), CoreError> {
-        if state.calls_started >= state.limits.max_calls_per_turn {
+        let reserved_for_other_control_lanes = match lane {
+            DelegationLane::Exploration => {
+                u32::from(
+                    state.limits.verification_lane_slots > 0
+                        && state.verification_calls_started == 0,
+                ) + u32::from(state.limits.judge_lane_slots > 0 && state.judge_calls_started == 0)
+            }
+            DelegationLane::Verification => {
+                u32::from(state.limits.judge_lane_slots > 0 && state.judge_calls_started == 0)
+            }
+            DelegationLane::Judge => u32::from(
+                state.limits.verification_lane_slots > 0 && state.verification_calls_started == 0,
+            ),
+        };
+        let lane_call_limit = state
+            .limits
+            .max_calls_per_turn
+            .saturating_sub(reserved_for_other_control_lanes);
+        if state.calls_started >= lane_call_limit {
             return Err(CoreError::InvalidInput(format!(
-                "Delegated execution budget exhausted: maximum {} calls per turn reached before starting {label}.",
-                state.limits.max_calls_per_turn
-            )));
-        }
-        let reserved_control_calls = u32::from(state.limits.verification_lane_slots > 0)
-            + u32::from(state.limits.judge_lane_slots > 0);
-        if lane == DelegationLane::Exploration
-            && state.exploration_calls_started
-                >= state
-                    .limits
-                    .max_calls_per_turn
-                    .saturating_sub(reserved_control_calls)
-        {
-            return Err(CoreError::InvalidInput(format!(
-                "Delegated exploration call limit reached before starting {label}; verification and judge calls retain dedicated admission."
+                "Delegated execution budget exhausted before starting {label}: {} call(s) started and {reserved_for_other_control_lanes} call credit(s) remain reserved for unused control lanes (maximum {} per turn).",
+                state.calls_started,
+                state.limits.max_calls_per_turn,
             )));
         }
         let token_budget = state

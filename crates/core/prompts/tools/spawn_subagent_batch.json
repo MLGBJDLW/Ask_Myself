@@ -54,10 +54,14 @@
       "completion_policy": {
         "type": "string",
         "enum": ["all", "quorum", "first_success", "deadline", "parent_decides"],
-        "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or the first completed result for parent review."
+        "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or after collecting the complete set for an explicit parent decision."
       },
       "quorum": { "type": "integer", "minimum": 1, "maximum": 8 },
-      "deadline_ms": { "type": "integer", "minimum": 250, "maximum": 180000 }
+      "deadline_ms": { "type": "integer", "minimum": 250, "maximum": 180000 },
+      "cancel_remaining": {
+        "type": "boolean",
+        "description": "Cancel workers still running when quorum, first_success, or deadline releases the parent. Defaults to false so they can finish and persist supplemental task-timeline evidence."
+      }
     },
     "additionalProperties": false
   }

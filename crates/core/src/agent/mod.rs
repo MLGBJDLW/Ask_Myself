@@ -89,7 +89,8 @@ use self::long_task::{
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
-use self::sampling::{completion_response_to_agent_stream, llm_streaming_disabled_by_env};
+use self::sampling::completion_response_to_agent_stream;
+pub use self::sampling::llm_streaming_disabled_by_env;
 use self::stream_recovery::{
     ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
     StreamRecoveryPolicy,

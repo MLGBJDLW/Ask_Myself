@@ -14,7 +14,8 @@ use crate::delegation_scheduler::{
 
 use nexa_core::agent::context::estimate_tool_tokens_for_model;
 use nexa_core::agent::{
-    AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind, CancellationToken,
+    llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
+    CancellationToken,
 };
 use nexa_core::conversation::conversation_message_llm_context_content;
 use nexa_core::conversation::memory::estimate_tokens_for_model;
@@ -689,6 +690,8 @@ struct SpawnSubagentBatchArgs {
     quorum: Option<u32>,
     #[serde(default)]
     deadline_ms: Option<u64>,
+    #[serde(default)]
+    cancel_remaining: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -741,7 +744,10 @@ impl DelegationCompletionPolicy {
             Self::All | Self::Deadline { .. } => pending == 0,
             Self::Quorum { required } => successes >= *required,
             Self::FirstSuccess => successes > 0,
-            Self::ParentDecides => !runs.is_empty(),
+            // A tool invocation has no out-of-band parent decision channel.
+            // Keep collecting so the parent can decide from the complete set
+            // instead of silently treating the first result as its decision.
+            Self::ParentDecides => pending == 0,
         }
     }
 }
@@ -2003,10 +2009,19 @@ async fn run_subagent_once(
 
     let run_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     let provider_wait_started = Instant::now();
-    let connect_deadline = std::cmp::min(
-        run_deadline,
-        tokio::time::Instant::now() + Duration::from_millis(delegation_limits.connect_deadline_ms),
-    );
+    let non_streaming_completion = llm_streaming_disabled_by_env();
+    let connect_deadline = if non_streaming_completion {
+        // `complete()` cannot expose a connection boundary: its
+        // provider_connected event is emitted only after the full response.
+        // Let the overall run deadline govern this mode.
+        run_deadline
+    } else {
+        std::cmp::min(
+            run_deadline,
+            tokio::time::Instant::now()
+                + Duration::from_millis(delegation_limits.connect_deadline_ms),
+        )
+    };
     let run_future = executor.run_with_source_scope(
         context_snapshot.messages.as_ref().to_vec(),
         vec![ContentPart::Text { text: request_text }],
@@ -2050,10 +2065,14 @@ async fn run_subagent_once(
         },
         _ = tokio::time::sleep_until(connect_deadline) => {
             worker_cancel_token.cancel();
-            Some(Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' exceeded its {}ms provider-connect deadline.",
-                delegation_limits.connect_deadline_ms
-            ))))
+            Some(Err(CoreError::Agent(if non_streaming_completion {
+                format!("Delegated execution '{call_label}' timed out after {timeout_secs}s.")
+            } else {
+                format!(
+                    "Delegated execution '{call_label}' exceeded its {}ms provider-connect deadline.",
+                    delegation_limits.connect_deadline_ms
+                )
+            })))
         }
     };
     let first_stage = match connect_stage {
@@ -2837,6 +2856,7 @@ impl Tool for SubagentBatchTool {
         let completion_policy =
             DelegationCompletionPolicy::resolve(&args, args.tasks.len().min(8))?;
         let requested_max_parallel = args.max_parallel;
+        let cancel_remaining = args.cancel_remaining.unwrap_or(false);
         let normalized_tasks: Vec<(Option<String>, SpawnSubagentArgs)> = args
             .tasks
             .into_iter()
@@ -2879,14 +2899,20 @@ impl Tool for SubagentBatchTool {
             let worker_runtime = runtime.scoped_to_worker(worker_cancel.clone());
             let batch_slots = Arc::clone(&batch_slots);
             worker_cancel_tokens.push(worker_cancel.clone());
-            pending.push(async move {
+            let detached_label = worker_id
+                .clone()
+                .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
+            let detached_fallback = task_args.clone();
+            let detached_parallel_group = batch_parallel_group.clone();
+            let batch_call_id = call_id.to_string();
+            let worker_task = tokio::spawn(async move {
                 let _batch_permit = batch_slots
                     .acquire_owned()
                     .await
                     .expect("batch worker semaphore remains open for the batch lifetime");
                 let label = worker_id
                     .clone()
-                    .unwrap_or_else(|| format!("{}-{}", call_id, index + 1));
+                    .unwrap_or_else(|| format!("{}-{}", batch_call_id, index + 1));
                 let fallback = task_args.clone();
                 let run = match run_subagent_once(
                     worker_runtime,
@@ -2904,6 +2930,22 @@ impl Tool for SubagentBatchTool {
                     }
                 };
                 (index, run)
+            });
+            pending.push(async move {
+                worker_task.await.unwrap_or_else(|error| {
+                    let error = CoreError::Agent(format!(
+                        "Delegated worker task terminated unexpectedly: {error}"
+                    ));
+                    (
+                        index,
+                        failed_subagent_run_artifact(
+                            detached_label,
+                            detached_fallback,
+                            detached_parallel_group,
+                            &error,
+                        ),
+                    )
+                })
             });
         }
         let policy_deadline = match &completion_policy {
@@ -2948,7 +2990,15 @@ impl Tool for SubagentBatchTool {
                 pending.len(),
             );
         let pending_at_policy_completion = pending.len();
-        if !pending.is_empty() {
+        let continuing_workers = if !pending.is_empty() && !cancel_remaining {
+            // Each entry owns a Tokio JoinHandle. Dropping the collector
+            // detaches those tasks rather than cancelling them; their normal
+            // completion path persists a supplemental subtask timeline event.
+            pending.len()
+        } else {
+            0
+        };
+        if !pending.is_empty() && cancel_remaining {
             // Dropping a future is not cancellation. Signal every worker first,
             // then provide a bounded settlement window for durable final state.
             for token in &worker_cancel_tokens {
@@ -2962,7 +3012,7 @@ impl Tool for SubagentBatchTool {
                 }
             }
         }
-        let unsettled_workers = pending.len();
+        let unsettled_workers = if cancel_remaining { pending.len() } else { 0 };
         drop(pending);
         indexed_runs.sort_by_key(|(index, _)| *index);
         let runs = indexed_runs
@@ -3009,6 +3059,8 @@ impl Tool for SubagentBatchTool {
                 "completionPolicySatisfied": policy_satisfied,
                 "pendingAtPolicyCompletion": pending_at_policy_completion,
                 "unsettledWorkers": unsettled_workers,
+                "continuingWorkers": continuing_workers,
+                "cancelRemaining": cancel_remaining,
                 "completedRuns": completed_runs,
                 "failedRuns": failed_runs,
                 "budgetBefore": budget_before,
@@ -3805,6 +3857,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_nexus_verifier_cannot_consume_the_reserved_judge_call() {
+        let config = AgentConfig {
+            subagent_max_calls_per_turn: Some(3),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+
+        let worker = budget
+            .begin_call("worker", 100, false, &cancel)
+            .await
+            .unwrap();
+        let verifier = budget
+            .begin_call("verifier", 100, true, &cancel)
+            .await
+            .unwrap();
+        assert!(budget
+            .begin_call("second-verifier", 100, true, &cancel)
+            .await
+            .is_err());
+        let judge = budget
+            .begin_judge_call("judge", 100, &cancel)
+            .await
+            .expect("judge keeps its reserved call admission");
+
+        drop((worker, verifier, judge));
+        for _ in 0..3 {
+            budget.release_reservation(100).await;
+        }
+        assert_eq!(budget.snapshot().await.calls_started, 3);
+    }
+
+    #[tokio::test]
     async fn test_worker_queue_has_an_independent_deadline() {
         let config = AgentConfig {
             subagent_max_parallel: Some(1),
@@ -3932,6 +4018,7 @@ mod tests {
             completion_policy: Some("quorum".to_string()),
             quorum: Some(3),
             deadline_ms: None,
+            cancel_remaining: None,
         };
         assert_eq!(
             DelegationCompletionPolicy::resolve(&quorum_args, 4).unwrap(),
@@ -3947,5 +4034,18 @@ mod tests {
             DelegationCompletionPolicy::resolve(&deadline_args, 4).unwrap(),
             DelegationCompletionPolicy::Deadline { deadline_ms: 2_500 }
         );
+
+        let parent_args = SpawnSubagentBatchArgs {
+            completion_policy: Some("parent_decides".to_string()),
+            ..deadline_args
+        };
+        let parent_policy = DelegationCompletionPolicy::resolve(&parent_args, 4).unwrap();
+        assert_eq!(parent_policy, DelegationCompletionPolicy::ParentDecides);
+        assert!(!parent_policy.is_satisfied(&[], 4));
+        assert!(!parent_policy.is_satisfied(&[], 1));
+        assert!(parent_policy.is_satisfied(&[], 0));
+
+        let schema = spawn_subagent_batch_parameters_schema();
+        assert_eq!(schema["properties"]["cancel_remaining"]["type"], "boolean");
     }
 }
