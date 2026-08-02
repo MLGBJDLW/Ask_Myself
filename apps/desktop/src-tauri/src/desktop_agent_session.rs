@@ -1068,6 +1068,31 @@ pub fn build_desktop_agent_turn_config(
         delegated_token_budget: power_policy.subagent_token_budget,
         verification_reserve_percent: power_policy.verification_reserve_percent,
     });
+    let profile_overrides_persisted_delegation =
+        orchestration_profile != OrchestrationProfile::Balanced || power_mode.is_nexus();
+    let subagent_max_parallel = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_max_parallel
+    } else {
+        Some(orchestration_policy.max_parallel)
+    };
+    let subagent_max_calls_per_turn = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_max_calls_per_turn
+    } else {
+        Some(orchestration_policy.max_calls_per_turn)
+    };
+    let subagent_token_budget = if orchestration_profile == OrchestrationProfile::Balanced {
+        power_policy.subagent_token_budget
+    } else {
+        Some(orchestration_policy.delegated_token_budget)
+    };
+    let delegation_limits_v2 = db_config.delegation_limits_v2.clone().map(|mut limits| {
+        if profile_overrides_persisted_delegation {
+            limits.max_parallel = subagent_max_parallel;
+            limits.max_calls_per_turn = subagent_max_calls_per_turn;
+            limits.total_actual_tokens_soft_limit = subagent_token_budget.map(u64::from);
+        }
+        limits
+    });
     let orchestration_profile_section = orchestration_policy.prompt_section();
     let collaboration_mode_section = if collaboration_mode.is_moa() {
         format!(
@@ -1275,21 +1300,9 @@ pub fn build_desktop_agent_turn_config(
         summarization_model: db_config.summarization_model.clone(),
         summarization_provider_type: desktop_summarization_provider_config(db_config)
             .map(|config| config.provider_type),
-        subagent_max_parallel: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_max_parallel
-        } else {
-            Some(orchestration_policy.max_parallel)
-        },
-        subagent_max_calls_per_turn: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_max_calls_per_turn
-        } else {
-            Some(orchestration_policy.max_calls_per_turn)
-        },
-        subagent_token_budget: if orchestration_profile == OrchestrationProfile::Balanced {
-            power_policy.subagent_token_budget
-        } else {
-            Some(orchestration_policy.delegated_token_budget)
-        },
+        subagent_max_parallel,
+        subagent_max_calls_per_turn,
+        subagent_token_budget,
         subagent_verification_reserve_percent: if orchestration_profile
             == OrchestrationProfile::Balanced
         {
@@ -1297,7 +1310,7 @@ pub fn build_desktop_agent_turn_config(
         } else {
             Some(orchestration_policy.verification_reserve_percent)
         },
-        delegation_limits_v2: db_config.delegation_limits_v2.clone(),
+        delegation_limits_v2,
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -2448,6 +2461,13 @@ mod tests {
 
         let mut nexus_db_config = test_agent_config();
         nexus_db_config.model = "gpt-5.6".to_string();
+        nexus_db_config.delegation_limits_v2 = Some(nexa_core::agent::DelegationLimitsConfig {
+            total_actual_tokens_soft_limit: Some(32_000),
+            max_parallel: Some(3),
+            max_calls_per_turn: Some(6),
+            queue_deadline_ms: Some(9_000),
+            ..Default::default()
+        });
         let nexus = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
             db: &db,
             conversation: &conversation,
@@ -2471,6 +2491,14 @@ mod tests {
         assert_eq!(nexus.subagent_max_calls_per_turn, Some(12));
         assert_eq!(nexus.subagent_token_budget, Some(96_000));
         assert_eq!(nexus.subagent_verification_reserve_percent, Some(25));
+        let nexus_limits = nexus
+            .delegation_limits_v2
+            .as_ref()
+            .expect("saved V2 limits remain available");
+        assert_eq!(nexus_limits.max_parallel, Some(6));
+        assert_eq!(nexus_limits.max_calls_per_turn, Some(12));
+        assert_eq!(nexus_limits.total_actual_tokens_soft_limit, Some(96_000));
+        assert_eq!(nexus_limits.queue_deadline_ms, Some(9_000));
         assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
         assert!(nexus
             .volatile_system_sections
@@ -2479,6 +2507,13 @@ mod tests {
 
         let mut unlimited_db_config = test_agent_config();
         unlimited_db_config.max_iterations = None;
+        unlimited_db_config.delegation_limits_v2 = Some(nexa_core::agent::DelegationLimitsConfig {
+            total_actual_tokens_soft_limit: Some(32_000),
+            max_parallel: Some(3),
+            max_calls_per_turn: Some(6),
+            run_deadline_ms: Some(240_000),
+            ..Default::default()
+        });
         let custom = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
             db: &db,
             conversation: &conversation,
@@ -2495,11 +2530,24 @@ mod tests {
             orchestration_profile: OrchestrationProfile::Custom,
             custom_orchestration: Some(CustomOrchestrationOptions {
                 max_iterations: Some(48),
+                max_parallel: Some(7),
+                max_calls_per_turn: Some(15),
+                delegated_token_budget: Some(77_000),
                 ..Default::default()
             }),
         })
         .executor_config;
         assert_eq!(custom.max_iterations, 48);
+        assert_eq!(custom.subagent_max_parallel, Some(7));
+        assert_eq!(custom.subagent_max_calls_per_turn, Some(15));
+        assert_eq!(custom.subagent_token_budget, Some(77_000));
+        let custom_limits = custom
+            .delegation_limits_v2
+            .expect("custom turn merges into saved V2 limits");
+        assert_eq!(custom_limits.max_parallel, Some(7));
+        assert_eq!(custom_limits.max_calls_per_turn, Some(15));
+        assert_eq!(custom_limits.total_actual_tokens_soft_limit, Some(77_000));
+        assert_eq!(custom_limits.run_deadline_ms, Some(240_000));
 
         let _ = std::fs::remove_dir_all(root);
     }
