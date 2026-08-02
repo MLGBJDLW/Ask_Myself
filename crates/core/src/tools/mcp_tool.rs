@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::error::CoreError;
 use crate::mcp::client::McpClient;
-use crate::mcp::McpToolInfo;
+use crate::mcp::{McpConnectionHealth, McpToolInfo};
 
 use super::{Tool, ToolCategory, ToolResult};
 
@@ -18,16 +18,18 @@ pub struct McpTool {
     registry_name: String,
     description: String,
     client: Arc<Mutex<McpClient>>,
+    connection_health: Arc<McpConnectionHealth>,
     _server_id: String,
 }
 
 impl McpTool {
-    pub fn new(
+    pub(crate) fn new(
         info: McpToolInfo,
         client: Arc<Mutex<McpClient>>,
         server_id: String,
         registry_name: String,
         server_name: String,
+        connection_health: Arc<McpConnectionHealth>,
     ) -> Self {
         let description = match info.description.as_deref() {
             Some(text) if !text.trim().is_empty() => {
@@ -40,6 +42,7 @@ impl McpTool {
             registry_name,
             description,
             client,
+            connection_health,
             _server_id: server_id,
         }
     }
@@ -84,12 +87,15 @@ impl Tool for McpTool {
                 is_error: false,
                 artifacts: None,
             }),
-            Err(e) => Ok(ToolResult {
-                call_id: call_id.to_string(),
-                content: format!("MCP tool error: {e}"),
-                is_error: true,
-                artifacts: None,
-            }),
+            Err(e) => {
+                self.connection_health.mark_unhealthy();
+                Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: format!("MCP tool error: {e}"),
+                    is_error: true,
+                    artifacts: None,
+                })
+            }
         }
     }
 }

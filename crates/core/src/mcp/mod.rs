@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::process::{Child, Command as StdCommand};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -509,19 +510,52 @@ impl Database {
 /// Manages MCP connector connections and their lifecycle.
 pub struct McpManager {
     clients: HashMap<String, Arc<Mutex<McpClient>>>,
+    connection_health: HashMap<String, Arc<McpConnectionHealth>>,
     connected_servers: HashMap<String, McpServer>,
     managed_processes: HashMap<String, Child>,
-    connection_generation: u64,
+    connection_generation: Arc<AtomicU64>,
+}
+
+/// Shared liveness state held by both the manager and registered MCP tools.
+/// A failed tool call invalidates the registry generation without requiring
+/// the tool to own or lock the manager.
+pub(crate) struct McpConnectionHealth {
+    healthy: AtomicBool,
+    connection_generation: Arc<AtomicU64>,
+}
+
+impl McpConnectionHealth {
+    fn new(connection_generation: Arc<AtomicU64>) -> Self {
+        Self {
+            healthy: AtomicBool::new(true),
+            connection_generation,
+        }
+    }
+
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_unhealthy(&self) {
+        if self.healthy.swap(false, Ordering::AcqRel) {
+            self.connection_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl McpManager {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
+            connection_health: HashMap::new(),
             connected_servers: HashMap::new(),
             managed_processes: HashMap::new(),
-            connection_generation: 0,
+            connection_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn advance_connection_generation(&self) {
+        self.connection_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Start a managed process for a built-in MCP connector.
@@ -697,9 +731,15 @@ impl McpManager {
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
+                self.connection_health.insert(
+                    server.id.clone(),
+                    Arc::new(McpConnectionHealth::new(Arc::clone(
+                        &self.connection_generation,
+                    ))),
+                );
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
-                self.connection_generation = self.connection_generation.saturating_add(1);
+                self.advance_connection_generation();
                 Ok(tools)
             }
             "sse" | "streamable_http" => {
@@ -733,9 +773,15 @@ impl McpManager {
                 let tools = client.list_tools().await?;
                 self.clients
                     .insert(server.id.clone(), Arc::new(Mutex::new(client)));
+                self.connection_health.insert(
+                    server.id.clone(),
+                    Arc::new(McpConnectionHealth::new(Arc::clone(
+                        &self.connection_generation,
+                    ))),
+                );
                 self.connected_servers
                     .insert(server.id.clone(), server.clone());
-                self.connection_generation = self.connection_generation.saturating_add(1);
+                self.advance_connection_generation();
                 Ok(tools)
             }
             other => Err(CoreError::InvalidInput(format!(
@@ -765,13 +811,7 @@ impl McpManager {
 
         let mut errors = HashMap::new();
         for server in servers {
-            let needs_reconnect = self
-                .connected_servers
-                .get(&server.id)
-                .map(|current| runtime_config_changed(current, server))
-                .unwrap_or(true);
-
-            if !needs_reconnect {
+            if !self.server_needs_reconnect(server) {
                 continue;
             }
 
@@ -784,11 +824,26 @@ impl McpManager {
         errors
     }
 
+    fn server_needs_reconnect(&self, server: &McpServer) -> bool {
+        let config_changed = self
+            .connected_servers
+            .get(&server.id)
+            .map(|current| runtime_config_changed(current, server))
+            .unwrap_or(true);
+        let connection_unhealthy = self
+            .connection_health
+            .get(&server.id)
+            .map(|health| !health.is_healthy())
+            .unwrap_or(true);
+        config_changed || connection_unhealthy
+    }
+
     /// Disconnect and shut down a specific MCP connector.
     pub async fn disconnect_server(&mut self, server_id: &str) -> Result<(), CoreError> {
         let removed_server = self.connected_servers.remove(server_id).is_some();
         let client = self.clients.remove(server_id);
         let removed_client = client.is_some();
+        let removed_health = self.connection_health.remove(server_id).is_some();
         if let Some(client) = client {
             let mut guard = client.lock().await;
             guard.shutdown().await.ok();
@@ -801,8 +856,8 @@ impl McpManager {
             let _ = child.kill();
             let _ = child.wait();
         }
-        if removed_server || removed_client || removed_process {
-            self.connection_generation = self.connection_generation.saturating_add(1);
+        if removed_server || removed_client || removed_health || removed_process {
+            self.advance_connection_generation();
         }
         Ok(())
     }
@@ -810,7 +865,7 @@ impl McpManager {
     /// Monotonic identity for the live client set. Registries that capture MCP
     /// client Arcs must include this value in their cache key.
     pub fn connection_generation(&self) -> u64 {
-        self.connection_generation
+        self.connection_generation.load(Ordering::Acquire)
     }
 
     /// Disconnect all MCP connectors.
@@ -841,9 +896,20 @@ impl McpManager {
     /// Register all MCP tools from connected servers into a ToolRegistry.
     pub async fn register_tools(&self, registry: &mut ToolRegistry) -> Result<(), CoreError> {
         for (server_id, client) in &self.clients {
+            let health = self.connection_health.get(server_id).ok_or_else(|| {
+                CoreError::Internal(format!(
+                    "MCP connector {server_id} has no connection health state"
+                ))
+            })?;
             let tools = {
                 let mut guard = client.lock().await;
-                guard.list_tools().await?
+                match guard.list_tools().await {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        health.mark_unhealthy();
+                        return Err(error);
+                    }
+                }
             };
             let server_name = self
                 .connected_servers
@@ -864,6 +930,7 @@ impl McpManager {
                     server_id.clone(),
                     registry_name,
                     server_name.to_string(),
+                    Arc::clone(health),
                 );
                 registry.register(Box::new(mcp_tool));
             }
@@ -1054,6 +1121,41 @@ mod tests {
         manager.disconnect_server("server-1").await.unwrap();
 
         assert!(manager.connection_generation() > before);
+    }
+
+    #[test]
+    fn failed_tool_connection_invalidates_snapshot_and_requires_reconnect() {
+        let mut manager = McpManager::new();
+        let server = McpServer {
+            id: "server-1".into(),
+            name: "Test".into(),
+            transport: "streamable_http".into(),
+            command: None,
+            args: None,
+            url: Some("https://example.test/mcp".into()),
+            env_json: None,
+            headers_json: None,
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin_id: None,
+        };
+        let health = Arc::new(McpConnectionHealth::new(Arc::clone(
+            &manager.connection_generation,
+        )));
+        manager
+            .connected_servers
+            .insert(server.id.clone(), server.clone());
+        manager
+            .connection_health
+            .insert(server.id.clone(), Arc::clone(&health));
+
+        assert!(!manager.server_needs_reconnect(&server));
+        let before = manager.connection_generation();
+        health.mark_unhealthy();
+
+        assert!(manager.connection_generation() > before);
+        assert!(manager.server_needs_reconnect(&server));
     }
 
     #[test]
