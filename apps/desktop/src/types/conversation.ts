@@ -303,6 +303,19 @@ export interface ImageAttachment {
   originalName: string;
 }
 
+export interface DelegationLimitsConfig {
+  inputContextLimit?: number | null;
+  maxOutputTokensPerWorker?: number | null;
+  totalActualTokensSoftLimit?: number | null;
+  totalCostSoftLimitMicros?: number | null;
+  maxParallel?: number | null;
+  maxCallsPerTurn?: number | null;
+  queueDeadlineMs?: number | null;
+  connectDeadlineMs?: number | null;
+  firstTokenDeadlineMs?: number | null;
+  runDeadlineMs?: number | null;
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -345,6 +358,8 @@ export interface AgentConfig {
   subagentMaxCallsPerTurn?: number | null;
   /** Soft token budget for delegated workers and judges per turn. */
   subagentTokenBudget?: number | null;
+  /** Independent model-aware delegated execution limits. */
+  delegationLimitsV2?: DelegationLimitsConfig | null;
   toolTimeoutSecs?: number | null;
   agentTimeoutSecs?: number | null;
   dynamicToolVisibility?: boolean | null;
@@ -387,6 +402,8 @@ export interface SaveAgentConfigInput {
   subagentMaxCallsPerTurn?: number | null;
   /** Soft token budget for delegated workers and judges per turn. */
   subagentTokenBudget?: number | null;
+  /** Independent model-aware delegated execution limits. */
+  delegationLimitsV2?: DelegationLimitsConfig | null;
   dynamicToolVisibility?: boolean | null;
   traceEnabled?: boolean | null;
   requireToolConfirmation?: boolean | null;

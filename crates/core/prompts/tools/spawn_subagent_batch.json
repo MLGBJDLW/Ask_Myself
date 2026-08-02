@@ -54,13 +54,13 @@
       "completion_policy": {
         "type": "string",
         "enum": ["all", "quorum", "first_success", "deadline", "parent_decides"],
-        "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or after collecting the complete set for an explicit parent decision."
+        "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or after the first settled result for an explicit parent decision. If workers remain, use observe_subagent_batch with the returned batchId to collect supplemental evidence or cancel them before final synthesis."
       },
       "quorum": { "type": "integer", "minimum": 1, "maximum": 8 },
       "deadline_ms": { "type": "integer", "minimum": 250, "maximum": 180000 },
       "cancel_remaining": {
         "type": "boolean",
-        "description": "Cancel workers still running when quorum, first_success, or deadline releases the parent. Defaults to false so they can finish and persist supplemental task-timeline evidence."
+        "description": "Cancel workers still running when a completion policy releases the parent. Defaults to false; remaining results are available through observe_subagent_batch as supplemental evidence."
       }
     },
     "additionalProperties": false

@@ -68,7 +68,8 @@ use crate::browser::agent_tool::NativeBrowserSessionTool;
 use crate::browser::BrowserState;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
-    DelegationRuntime, JudgeSubagentResultsTool, SubagentBatchTool, SubagentTool,
+    DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
+    SubagentTool,
 };
 use crate::terminal_agent_tool::TerminalAgentTool;
 
@@ -1296,6 +1297,7 @@ pub fn build_desktop_agent_turn_config(
         } else {
             Some(orchestration_policy.verification_reserve_percent)
         },
+        delegation_limits_v2: db_config.delegation_limits_v2.clone(),
         tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
@@ -1616,6 +1618,9 @@ pub async fn build_desktop_agent_session_dependencies(
         delegation_runtime.clone(),
     )));
     tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+        delegation_runtime.clone(),
+    )));
+    tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
         delegation_runtime.clone(),
     )));
     if let Some(terminal_state) = terminal_state {
@@ -2183,6 +2188,7 @@ mod tests {
             subagent_max_parallel: Some(2),
             subagent_max_calls_per_turn: Some(3),
             subagent_token_budget: Some(4096),
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
             provider_endpoint_id: None,

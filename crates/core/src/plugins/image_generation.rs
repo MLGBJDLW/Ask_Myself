@@ -785,6 +785,7 @@ mod tests {
             subagent_max_parallel: None,
             subagent_max_calls_per_turn: None,
             subagent_token_budget: None,
+            delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
         })

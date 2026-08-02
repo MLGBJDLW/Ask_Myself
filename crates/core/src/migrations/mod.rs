@@ -1593,6 +1593,10 @@ Every answer that uses knowledge base search results.
              END)
          WHERE model_id IS NULL OR provider_endpoint_id IS NULL;",
     ),
+    (
+        "v086_delegation_limits_v2",
+        "ALTER TABLE agent_configs ADD COLUMN delegation_limits_v2_json TEXT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

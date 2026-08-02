@@ -422,7 +422,7 @@ fn apply_openrouter_headers(
     }
 }
 
-fn requires_non_streaming_fallback(model: &str) -> bool {
+pub(crate) fn requires_non_streaming_fallback(model: &str) -> bool {
     model.to_lowercase().starts_with("gpt-5.5-pro")
 }
 

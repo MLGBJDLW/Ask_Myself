@@ -27,6 +27,7 @@ pub(crate) struct DelegationLimitsV2 {
     pub max_output_tokens_per_worker: DelegationLimitPolicy,
     pub total_actual_tokens_soft_limit: Option<u64>,
     pub total_cost_soft_limit_micros: Option<u64>,
+    pub cost_accounting_available: bool,
     pub max_parallel: u32,
     pub max_calls_per_turn: u32,
     pub exploration_lane_slots: u32,
@@ -40,44 +41,90 @@ pub(crate) struct DelegationLimitsV2 {
 
 impl DelegationLimitsV2 {
     pub(crate) fn resolve(config: &AgentConfig) -> Self {
-        let max_parallel = config.subagent_max_parallel.unwrap_or(3).clamp(1, 12);
-        let max_calls_per_turn = config.subagent_max_calls_per_turn.unwrap_or(6).clamp(1, 32);
+        let configured = config.delegation_limits_v2.as_ref();
+        let max_parallel = configured
+            .and_then(|limits| limits.max_parallel)
+            .or(config.subagent_max_parallel)
+            .unwrap_or(3)
+            .clamp(1, 12);
+        let max_calls_per_turn = configured
+            .and_then(|limits| limits.max_calls_per_turn)
+            .or(config.subagent_max_calls_per_turn)
+            .unwrap_or(6)
+            .clamp(1, 32);
         let dedicated_lanes = config
             .subagent_verification_reserve_percent
             .unwrap_or_default()
             > 0
-            && max_parallel >= 3;
+            && max_parallel >= 3
+            && max_calls_per_turn >= 3;
         let (exploration_lane_slots, verification_lane_slots, judge_lane_slots) = if dedicated_lanes
         {
             (max_parallel - 2, 1, 1)
         } else {
             (max_parallel, 0, 0)
         };
+        let run_deadline_ms = configured
+            .and_then(|limits| limits.run_deadline_ms)
+            .unwrap_or(DEFAULT_RUN_DEADLINE_MS)
+            .clamp(1_000, 3_600_000);
         Self {
-            input_context_policy: config
-                .context_window
-                .map(|value| DelegationLimitPolicy::Explicit(u64::from(value)))
+            input_context_policy: configured
+                .and_then(|limits| limits.input_context_limit)
+                .or_else(|| {
+                    configured
+                        .is_none()
+                        .then_some(config.context_window.map(u64::from))
+                        .flatten()
+                })
+                .map(|value| DelegationLimitPolicy::Explicit(value.clamp(1_024, 10_000_000)))
                 .unwrap_or(DelegationLimitPolicy::Auto),
-            max_output_tokens_per_worker: config
-                .max_tokens
-                .map(|value| DelegationLimitPolicy::Explicit(u64::from(value)))
+            max_output_tokens_per_worker: configured
+                .and_then(|limits| limits.max_output_tokens_per_worker)
+                .or_else(|| {
+                    configured
+                        .is_none()
+                        .then_some(config.max_tokens.map(u64::from))
+                        .flatten()
+                })
+                .map(|value| DelegationLimitPolicy::Explicit(value.clamp(256, 1_000_000)))
                 .unwrap_or(DelegationLimitPolicy::Auto),
-            total_actual_tokens_soft_limit: Some(u64::from(
-                config
-                    .subagent_token_budget
-                    .unwrap_or(32_000)
-                    .clamp(256, 200_000),
-            )),
-            total_cost_soft_limit_micros: None,
+            total_actual_tokens_soft_limit: match configured {
+                Some(limits) => limits
+                    .total_actual_tokens_soft_limit
+                    .map(|value| value.clamp(256, 10_000_000)),
+                None => Some(u64::from(
+                    config
+                        .subagent_token_budget
+                        .unwrap_or(32_000)
+                        .clamp(256, 200_000),
+                )),
+            },
+            total_cost_soft_limit_micros: configured
+                .and_then(|limits| limits.total_cost_soft_limit_micros),
+            cost_accounting_available: nexa_core::usage_analytics::usage_cost_metadata(
+                config.provider_type,
+            )
+            .0
+            .is_some(),
             max_parallel,
             max_calls_per_turn,
             exploration_lane_slots,
             verification_lane_slots,
             judge_lane_slots,
-            queue_deadline_ms: DEFAULT_QUEUE_DEADLINE_MS,
-            connect_deadline_ms: DEFAULT_CONNECT_DEADLINE_MS,
-            first_token_deadline_ms: DEFAULT_FIRST_TOKEN_DEADLINE_MS,
-            run_deadline_ms: DEFAULT_RUN_DEADLINE_MS,
+            queue_deadline_ms: configured
+                .and_then(|limits| limits.queue_deadline_ms)
+                .unwrap_or(DEFAULT_QUEUE_DEADLINE_MS)
+                .clamp(100, run_deadline_ms),
+            connect_deadline_ms: configured
+                .and_then(|limits| limits.connect_deadline_ms)
+                .unwrap_or(DEFAULT_CONNECT_DEADLINE_MS)
+                .clamp(100, run_deadline_ms),
+            first_token_deadline_ms: configured
+                .and_then(|limits| limits.first_token_deadline_ms)
+                .unwrap_or(DEFAULT_FIRST_TOKEN_DEADLINE_MS)
+                .clamp(100, run_deadline_ms),
+            run_deadline_ms,
         }
     }
 }
@@ -101,6 +148,9 @@ pub(crate) struct BudgetSnapshot {
     pub tokens_reserved: u32,
     pub remaining_tokens: u32,
     pub verification_reserve_tokens: u32,
+    pub cost_soft_limit_micros: Option<u64>,
+    pub cost_spent_micros: u64,
+    pub cost_accounting_available: bool,
     pub exploration_lane_slots: u32,
     pub verification_lane_slots: u32,
     pub judge_lane_slots: u32,
@@ -114,6 +164,7 @@ struct DelegationBudgetState {
     judge_calls_started: u32,
     tokens_spent: u32,
     tokens_reserved: u32,
+    cost_spent_micros: u64,
 }
 
 #[derive(Clone)]
@@ -148,6 +199,7 @@ impl DelegationScheduler {
                 judge_calls_started: 0,
                 tokens_spent: 0,
                 tokens_reserved: 0,
+                cost_spent_micros: 0,
             })),
         }
     }
@@ -272,6 +324,19 @@ impl DelegationScheduler {
                 state.tokens_spent,
             )));
         }
+        if let Some(cost_limit) = state.limits.total_cost_soft_limit_micros {
+            if !state.limits.cost_accounting_available {
+                return Err(CoreError::InvalidInput(format!(
+                    "Delegated execution cost limit is configured, but provider pricing is unavailable before starting {label}."
+                )));
+            }
+            if state.cost_spent_micros >= cost_limit {
+                return Err(CoreError::InvalidInput(format!(
+                    "Delegated execution cost soft limit exhausted before starting {label}. Spent: {} of {cost_limit} micros.",
+                    state.cost_spent_micros,
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -295,10 +360,18 @@ impl DelegationScheduler {
         }
     }
 
-    pub(crate) async fn finish_call(&self, reserved_tokens: u32, usage: &Usage) {
+    pub(crate) async fn finish_call(
+        &self,
+        reserved_tokens: u32,
+        usage: &Usage,
+        estimated_cost_micros: Option<u64>,
+    ) {
         let mut state = self.state.lock().await;
         state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
         state.tokens_spent = state.tokens_spent.saturating_add(usage.total_tokens);
+        state.cost_spent_micros = state
+            .cost_spent_micros
+            .saturating_add(estimated_cost_micros.unwrap_or(0));
     }
 
     pub(crate) async fn release_reservation(&self, reserved_tokens: u32) {
@@ -329,6 +402,9 @@ impl DelegationScheduler {
             // V2 reserves worker lanes and role credits, not a frozen fraction
             // of the entire delegated token budget.
             verification_reserve_tokens: 0,
+            cost_soft_limit_micros: state.limits.total_cost_soft_limit_micros,
+            cost_spent_micros: state.cost_spent_micros,
+            cost_accounting_available: state.limits.cost_accounting_available,
             exploration_lane_slots: state.limits.exploration_lane_slots,
             verification_lane_slots: state.limits.verification_lane_slots,
             judge_lane_slots: state.limits.judge_lane_slots,

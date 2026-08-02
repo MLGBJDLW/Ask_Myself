@@ -261,13 +261,40 @@ export function AgentConfigForm({
     string[]
   >(config?.subagentAllowedSkillIds ?? []);
   const [subagentMaxParallel, setSubagentMaxParallel] = useState<number | null>(
-    config?.subagentMaxParallel ?? 3,
+    config?.delegationLimitsV2?.maxParallel ?? config?.subagentMaxParallel ?? 3,
   );
   const [subagentMaxCallsPerTurn, setSubagentMaxCallsPerTurn] = useState<
     number | null
-  >(config?.subagentMaxCallsPerTurn ?? 6);
+  >(
+    config?.delegationLimitsV2?.maxCallsPerTurn
+      ?? config?.subagentMaxCallsPerTurn
+      ?? 6,
+  );
   const [subagentTokenBudget, setSubagentTokenBudget] = useState<number | null>(
-    config?.subagentTokenBudget ?? 32000,
+    config?.delegationLimitsV2?.totalActualTokensSoftLimit
+      ?? config?.subagentTokenBudget
+      ?? 32000,
+  );
+  const [subagentInputContextLimit, setSubagentInputContextLimit] = useState<number | null>(
+    config?.delegationLimitsV2?.inputContextLimit ?? null,
+  );
+  const [subagentMaxOutputTokens, setSubagentMaxOutputTokens] = useState<number | null>(
+    config?.delegationLimitsV2?.maxOutputTokensPerWorker ?? null,
+  );
+  const [subagentCostLimitMicros, setSubagentCostLimitMicros] = useState<number | null>(
+    config?.delegationLimitsV2?.totalCostSoftLimitMicros ?? null,
+  );
+  const [subagentQueueDeadlineMs, setSubagentQueueDeadlineMs] = useState<number | null>(
+    config?.delegationLimitsV2?.queueDeadlineMs ?? 15000,
+  );
+  const [subagentConnectDeadlineMs, setSubagentConnectDeadlineMs] = useState<number | null>(
+    config?.delegationLimitsV2?.connectDeadlineMs ?? 15000,
+  );
+  const [subagentFirstTokenDeadlineMs, setSubagentFirstTokenDeadlineMs] = useState<number | null>(
+    config?.delegationLimitsV2?.firstTokenDeadlineMs ?? 45000,
+  );
+  const [subagentRunDeadlineMs, setSubagentRunDeadlineMs] = useState<number | null>(
+    config?.delegationLimitsV2?.runDeadlineMs ?? 180000,
   );
   const [enabledSkills, setEnabledSkills] = useState<Skill[]>([]);
   const [mcpToolDescriptors, setMcpToolDescriptors] = useState<
@@ -320,9 +347,38 @@ export function AgentConfigForm({
       ? null
       : (config?.subagentAllowedTools?.map(canonicalSubagentToolName) ?? null),
     subagentAllowedSkillIds: config?.subagentAllowedSkillIds ?? null,
-    subagentMaxParallel: config?.subagentMaxParallel ?? 3,
-    subagentMaxCallsPerTurn: config?.subagentMaxCallsPerTurn ?? 6,
-    subagentTokenBudget: config?.subagentTokenBudget ?? 32000,
+    subagentMaxParallel:
+      config?.delegationLimitsV2?.maxParallel ?? config?.subagentMaxParallel ?? 3,
+    subagentMaxCallsPerTurn:
+      config?.delegationLimitsV2?.maxCallsPerTurn
+      ?? config?.subagentMaxCallsPerTurn
+      ?? 6,
+    subagentTokenBudget:
+      config?.delegationLimitsV2?.totalActualTokensSoftLimit
+      ?? config?.subagentTokenBudget
+      ?? 32000,
+    delegationLimitsV2: {
+      inputContextLimit: config?.delegationLimitsV2?.inputContextLimit ?? null,
+      maxOutputTokensPerWorker:
+        config?.delegationLimitsV2?.maxOutputTokensPerWorker ?? null,
+      totalActualTokensSoftLimit:
+        config?.delegationLimitsV2?.totalActualTokensSoftLimit
+        ?? config?.subagentTokenBudget
+        ?? 32000,
+      totalCostSoftLimitMicros:
+        config?.delegationLimitsV2?.totalCostSoftLimitMicros ?? null,
+      maxParallel:
+        config?.delegationLimitsV2?.maxParallel ?? config?.subagentMaxParallel ?? 3,
+      maxCallsPerTurn:
+        config?.delegationLimitsV2?.maxCallsPerTurn
+        ?? config?.subagentMaxCallsPerTurn
+        ?? 6,
+      queueDeadlineMs: config?.delegationLimitsV2?.queueDeadlineMs ?? 15000,
+      connectDeadlineMs: config?.delegationLimitsV2?.connectDeadlineMs ?? 15000,
+      firstTokenDeadlineMs:
+        config?.delegationLimitsV2?.firstTokenDeadlineMs ?? 45000,
+      runDeadlineMs: config?.delegationLimitsV2?.runDeadlineMs ?? 180000,
+    },
   });
 
   const isLocal =
@@ -698,6 +754,18 @@ export function AgentConfigForm({
         subagentMaxParallel,
         subagentMaxCallsPerTurn,
         subagentTokenBudget,
+        delegationLimitsV2: {
+          inputContextLimit: subagentInputContextLimit,
+          maxOutputTokensPerWorker: subagentMaxOutputTokens,
+          totalActualTokensSoftLimit: subagentTokenBudget,
+          totalCostSoftLimitMicros: subagentCostLimitMicros,
+          maxParallel: subagentMaxParallel,
+          maxCallsPerTurn: subagentMaxCallsPerTurn,
+          queueDeadlineMs: subagentQueueDeadlineMs,
+          connectDeadlineMs: subagentConnectDeadlineMs,
+          firstTokenDeadlineMs: subagentFirstTokenDeadlineMs,
+          runDeadlineMs: subagentRunDeadlineMs,
+        },
       };
     },
     [
@@ -728,6 +796,13 @@ export function AgentConfigForm({
       subagentMaxParallel,
       subagentMaxCallsPerTurn,
       subagentTokenBudget,
+      subagentInputContextLimit,
+      subagentMaxOutputTokens,
+      subagentCostLimitMicros,
+      subagentQueueDeadlineMs,
+      subagentConnectDeadlineMs,
+      subagentFirstTokenDeadlineMs,
+      subagentRunDeadlineMs,
       isLocal,
       orderToolSelection,
       orderSkillSelection,
@@ -1416,6 +1491,82 @@ export function AgentConfigForm({
                 {t("settings.tokenBudgetPerTurnDesc")}
               </p>
             </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            {[
+              {
+                label: "Per-agent input context",
+                value: subagentInputContextLimit,
+                setValue: setSubagentInputContextLimit,
+                min: 1024,
+                step: 1024,
+                placeholder: "Auto from model catalog",
+              },
+              {
+                label: "Per-agent max output",
+                value: subagentMaxOutputTokens,
+                setValue: setSubagentMaxOutputTokens,
+                min: 256,
+                step: 256,
+                placeholder: "Auto from model catalog",
+              },
+              {
+                label: "Total cost soft limit (µUSD)",
+                value: subagentCostLimitMicros,
+                setValue: setSubagentCostLimitMicros,
+                min: 0,
+                step: 1000,
+                placeholder: "Disabled",
+              },
+              {
+                label: "Queue deadline (ms)",
+                value: subagentQueueDeadlineMs,
+                setValue: setSubagentQueueDeadlineMs,
+                min: 100,
+                step: 100,
+                placeholder: "15000",
+              },
+              {
+                label: "Provider connect deadline (ms)",
+                value: subagentConnectDeadlineMs,
+                setValue: setSubagentConnectDeadlineMs,
+                min: 100,
+                step: 100,
+                placeholder: "15000",
+              },
+              {
+                label: "First token deadline (ms)",
+                value: subagentFirstTokenDeadlineMs,
+                setValue: setSubagentFirstTokenDeadlineMs,
+                min: 100,
+                step: 100,
+                placeholder: "45000",
+              },
+              {
+                label: "Worker run deadline (ms)",
+                value: subagentRunDeadlineMs,
+                setValue: setSubagentRunDeadlineMs,
+                min: 1000,
+                step: 1000,
+                placeholder: "180000",
+              },
+            ].map(({ label, value, setValue, min, step, placeholder }) => (
+              <div key={label} className="space-y-2">
+                <label className="text-sm font-medium text-text-primary">{label}</label>
+                <Input
+                  type="number"
+                  value={value ?? ""}
+                  onChange={(event) => {
+                    const raw = event.target.value.trim();
+                    setValue(raw ? Number.parseInt(raw, 10) || null : null);
+                  }}
+                  min={min}
+                  step={step}
+                  placeholder={placeholder}
+                />
+              </div>
+            ))}
           </div>
 
           <div className="space-y-3">

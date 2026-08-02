@@ -141,6 +141,9 @@ pub struct AgentConfig {
     pub subagent_max_calls_per_turn: Option<i64>,
     /// Soft total token budget for subagent and adjudication work per turn.
     pub subagent_token_budget: Option<i64>,
+    /// Independent delegated execution limits persisted as versioned JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_limits_v2: Option<crate::agent::DelegationLimitsConfig>,
     pub tool_timeout_secs: Option<i64>,
     pub agent_timeout_secs: Option<i64>,
     pub created_at: String,
@@ -436,6 +439,9 @@ pub struct SaveAgentConfigInput {
     pub subagent_max_calls_per_turn: Option<i64>,
     /// Soft total token budget for subagent and adjudication work per turn.
     pub subagent_token_budget: Option<i64>,
+    /// Independent delegated execution limits. Legacy fields remain readable.
+    #[serde(default)]
+    pub delegation_limits_v2: Option<crate::agent::DelegationLimitsConfig>,
     pub tool_timeout_secs: Option<i64>,
     pub agent_timeout_secs: Option<i64>,
 }
@@ -527,6 +533,12 @@ fn serialize_optional_string_list(value: Option<&[String]>) -> Result<Option<Str
 
 fn parse_optional_string_list(value: Option<String>) -> Option<Vec<String>> {
     value.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+}
+
+fn parse_delegation_limits_v2(
+    value: Option<String>,
+) -> Option<crate::agent::DelegationLimitsConfig> {
+    value.and_then(|json| serde_json::from_str(&json).ok())
 }
 
 fn serialize_string_list(value: &[String]) -> Result<String, CoreError> {
@@ -3224,10 +3236,18 @@ impl Database {
             serialize_optional_string_list(input.subagent_allowed_tools.as_deref())?;
         let subagent_allowed_skill_ids_json =
             serialize_optional_string_list(input.subagent_allowed_skill_ids.as_deref())?;
+        let delegation_limits_v2_json = input
+            .delegation_limits_v2
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid delegation limits v2: {error}"))
+            })?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -3254,6 +3274,7 @@ impl Database {
                 agent_timeout_secs = excluded.agent_timeout_secs,
                 provider_endpoint_id = excluded.provider_endpoint_id,
                 model_id = excluded.model_id,
+                delegation_limits_v2_json = excluded.delegation_limits_v2_json,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -3282,6 +3303,7 @@ impl Database {
                 input.agent_timeout_secs,
                 &provider_endpoint_id,
                 &model_id,
+                &delegation_limits_v2_json,
             ],
         )?;
         drop(conn);
@@ -3292,12 +3314,13 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             let subagent_allowed_tools_json: Option<String> = row.get(19)?;
             let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
+            let delegation_limits_v2_json: Option<String> = row.get(28)?;
             Ok(AgentConfig {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -3328,6 +3351,7 @@ impl Database {
                 subagent_max_parallel: row.get(21)?,
                 subagent_max_calls_per_turn: row.get(22)?,
                 subagent_token_budget: row.get(23)?,
+                delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                 tool_timeout_secs: row.get(24)?,
                 agent_timeout_secs: row.get(25)?,
             })
@@ -3343,12 +3367,13 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         let config = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
                 let subagent_allowed_tools_json: Option<String> = row.get(19)?;
                 let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
+                let delegation_limits_v2_json: Option<String> = row.get(28)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -3379,6 +3404,7 @@ impl Database {
                     subagent_max_parallel: row.get(21)?,
                     subagent_max_calls_per_turn: row.get(22)?,
                     subagent_token_budget: row.get(23)?,
+                    delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                     tool_timeout_secs: row.get(24)?,
                     agent_timeout_secs: row.get(25)?,
                 })
@@ -3430,12 +3456,13 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
                 let subagent_allowed_tools_json: Option<String> = row.get(19)?;
                 let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
+                let delegation_limits_v2_json: Option<String> = row.get(28)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -3466,6 +3493,7 @@ impl Database {
                     subagent_max_parallel: row.get(21)?,
                     subagent_max_calls_per_turn: row.get(22)?,
                     subagent_token_budget: row.get(23)?,
+                    delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                     tool_timeout_secs: row.get(24)?,
                     agent_timeout_secs: row.get(25)?,
                 })
@@ -5110,6 +5138,18 @@ mod tests {
     #[test]
     fn test_agent_config_crud() {
         let db = Database::open_memory().unwrap();
+        let delegation_limits_v2 = crate::agent::DelegationLimitsConfig {
+            input_context_limit: Some(1_000_000),
+            max_output_tokens_per_worker: Some(65_536),
+            total_actual_tokens_soft_limit: Some(240_000),
+            total_cost_soft_limit_micros: Some(5_000_000),
+            max_parallel: Some(6),
+            max_calls_per_turn: Some(12),
+            queue_deadline_ms: Some(5_000),
+            connect_deadline_ms: Some(20_000),
+            first_token_deadline_ms: Some(60_000),
+            run_deadline_ms: Some(240_000),
+        };
 
         // Save (create)
         let config = db
@@ -5138,6 +5178,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: Some(delegation_limits_v2.clone()),
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
@@ -5146,6 +5187,10 @@ mod tests {
         assert_eq!(
             config.image_generation_model.as_deref(),
             Some("gpt-image-1")
+        );
+        assert_eq!(
+            config.delegation_limits_v2.as_ref(),
+            Some(&delegation_limits_v2)
         );
 
         // List
@@ -5179,6 +5224,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: Some(delegation_limits_v2.clone()),
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
@@ -5221,6 +5267,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
@@ -5261,6 +5308,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
@@ -5351,6 +5399,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
@@ -5382,6 +5431,7 @@ mod tests {
                 subagent_max_parallel: None,
                 subagent_max_calls_per_turn: None,
                 subagent_token_budget: None,
+                delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
             })
