@@ -3759,7 +3759,7 @@ impl Tool for JudgeSubagentResultsTool {
                     {
                         self.runtime
                             .budget
-                            .release_reservation(reserved_tokens)
+                            .rollback_unstarted_judge(reserved_tokens)
                             .await;
                         finish_subtask_run_best_effort(
                             db,
@@ -4689,6 +4689,47 @@ mod tests {
         assert_eq!(snapshot.calls_started, 0);
         assert_eq!(snapshot.tokens_reserved, 0);
         drop(permit);
+    }
+
+    #[tokio::test]
+    async fn judge_startup_failure_rolls_back_global_and_judge_admission() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(3),
+            subagent_max_calls_per_turn: Some(3),
+            subagent_token_budget: Some(10_000),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let failed_judge = budget
+            .begin_judge_call("failed-judge", 100, &cancel)
+            .await
+            .unwrap();
+
+        budget.rollback_unstarted_judge(100).await;
+        drop(failed_judge);
+        let snapshot = budget.snapshot().await;
+        assert_eq!(snapshot.calls_started, 0);
+        assert_eq!(snapshot.tokens_reserved, 0);
+
+        drop(
+            budget
+                .begin_call("explorer", 100, false, &cancel)
+                .await
+                .unwrap(),
+        );
+        drop(
+            budget
+                .begin_call("verifier", 100, true, &cancel)
+                .await
+                .unwrap(),
+        );
+        let error = budget
+            .begin_call("extra-verifier", 100, true, &cancel)
+            .await
+            .expect_err("judge call credit must be reserved again after rollback");
+        assert!(error.to_string().contains("remain reserved"));
     }
 
     #[test]

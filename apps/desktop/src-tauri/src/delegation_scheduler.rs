@@ -390,6 +390,13 @@ impl DelegationScheduler {
         state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
     }
 
+    pub(crate) async fn rollback_unstarted_judge(&self, reserved_tokens: u32) {
+        let mut state = self.state.lock().await;
+        state.calls_started = state.calls_started.saturating_sub(1);
+        state.judge_calls_started = state.judge_calls_started.saturating_sub(1);
+        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
+    }
+
     pub(crate) async fn snapshot(&self) -> BudgetSnapshot {
         let state = self.state.lock().await;
         let token_budget = state
