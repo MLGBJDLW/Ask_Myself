@@ -188,7 +188,7 @@ pub struct DesktopAgentSessionConfigInput<'a> {
 
 pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub db: &'a Database,
-    pub mcp_manager: &'a tokio::sync::Mutex<McpManager>,
+    pub mcp_manager: &'a Arc<tokio::sync::Mutex<McpManager>>,
     pub app_handle: &'a AppHandle,
     pub event_seq: &'a AgentRunEventSequencer,
     pub conversation_id: &'a str,
@@ -1579,7 +1579,10 @@ pub async fn build_desktop_agent_session_dependencies(
                     warn!("Failed to sync enabled MCP servers: {error}");
                 }
             }
-            if let Err(error) = manager.register_tools(&mut tools).await {
+            if let Err(error) = manager
+                .register_tools_with_recovery(&mut tools, Arc::downgrade(mcp_manager))
+                .await
+            {
                 registry_snapshot_complete = false;
                 warn!("Failed to register MCP tools: {error}");
             }

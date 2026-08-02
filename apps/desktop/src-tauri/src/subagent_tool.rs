@@ -1074,6 +1074,50 @@ fn signal_progress_latch(sender: &mpsc::Sender<()>) {
     let _ = sender.try_send(());
 }
 
+async fn acquire_batch_slot(
+    batch_slots: Arc<tokio::sync::Semaphore>,
+    cancel_token: &CancellationToken,
+    call_label: &str,
+    queue_started: Instant,
+    queue_deadline_ms: u64,
+) -> Result<tokio::sync::OwnedSemaphorePermit, CoreError> {
+    let elapsed_ms = u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let remaining_ms = queue_deadline_ms.saturating_sub(elapsed_ms);
+    if remaining_ms == 0 {
+        return Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+        )));
+    }
+
+    match Arc::clone(&batch_slots).try_acquire_owned() {
+        Ok(permit) => return Ok(permit),
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            return Err(CoreError::Internal(
+                "delegated batch semaphore closed".into(),
+            ));
+        }
+        Err(tokio::sync::TryAcquireError::NoPermits) => {}
+    }
+
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' was cancelled while waiting for its batch slot."
+        ))),
+        result = tokio::time::timeout(
+            Duration::from_millis(remaining_ms),
+            batch_slots.acquire_owned(),
+        ) => match result {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(CoreError::Internal(
+                "delegated batch semaphore closed".into()
+            )),
+            Err(_) => Err(CoreError::Agent(format!(
+                "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+            ))),
+        },
+    }
+}
+
 fn finish_subtask_run_best_effort(
     db: &Database,
     subtask_run_id: Option<&str>,
@@ -1815,7 +1859,17 @@ async fn run_subagent_once(
     );
     let context_build_ms = instant_elapsed_ms(context_build_started);
     let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
-    config.agent_timeout_secs = Some(timeout_secs as u32);
+    let run_deadline_ms = resolve_delegation_run_deadline_ms(
+        &runtime.base_config,
+        args.timeout_secs,
+        timeout_secs,
+        delegation_limits.run_deadline_ms,
+    );
+    config.agent_timeout_secs = Some(
+        u32::try_from(run_deadline_ms.div_ceil(1_000))
+            .unwrap_or(u32::MAX)
+            .max(1),
+    );
     config.request_kind = AgentRequestKind::SubagentWorker;
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
@@ -1949,46 +2003,18 @@ async fn run_subagent_once(
         }
     }
     let queue_started = Instant::now();
+    let is_verification = role_profile.is_some_and(|profile| profile.id == "verifier");
     let _permit = match runtime
         .budget
         .begin_call(
             &call_label,
             reserved_tokens,
-            role_profile.is_some_and(|profile| profile.id == "verifier"),
+            is_verification,
             &worker_cancel_token,
         )
         .await
     {
-        Ok(permit) => {
-            if let Some(subtask_id) = subtask_run_id.as_deref() {
-                if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
-                    runtime.budget.release_reservation(reserved_tokens).await;
-                    finish_subtask_run_best_effort(
-                        &db,
-                        Some(subtask_id),
-                        "failed",
-                        None,
-                        Some(&err.to_string()),
-                    );
-                    return Err(err);
-                }
-            }
-            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
-                record_subtask_event(
-                    &db,
-                    parent_run_id,
-                    &format!("Subagent started: {call_label}"),
-                    "running",
-                    Some(&serde_json::json!({
-                        "subtaskRunId": &subtask_run_id,
-                        "callLabel": &call_label,
-                        "reservedTokens": reserved_tokens,
-                        "queueWaitMs": u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    })),
-                );
-            }
-            permit
-        }
+        Ok(permit) => permit,
         Err(err) => {
             let output = serde_json::json!({
                 "kind": "subagent_run_error",
@@ -2018,21 +2044,21 @@ async fn run_subagent_once(
     // has granted a lane. Explorers queued on their lane must never occupy
     // generic batch slots and starve the dedicated verifier lane.
     let _batch_permit = if let Some(batch_slots) = batch_slots {
-        let permit = tokio::select! {
-            _ = worker_cancel_token.cancelled() => Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' was cancelled while waiting for its batch slot."
-            ))),
-            result = batch_slots.acquire_owned() => match result {
-                Ok(permit) => Ok(permit),
-                Err(_) => Err(CoreError::Internal(
-                    "delegated batch semaphore closed".into()
-                )),
-            },
-        };
-        match permit {
+        match acquire_batch_slot(
+            batch_slots,
+            &worker_cancel_token,
+            &call_label,
+            queue_started,
+            delegation_limits.queue_deadline_ms,
+        )
+        .await
+        {
             Ok(permit) => Some(permit),
             Err(error) => {
-                runtime.budget.release_reservation(reserved_tokens).await;
+                runtime
+                    .budget
+                    .rollback_unstarted_worker(reserved_tokens, is_verification)
+                    .await;
                 finish_subtask_run_best_effort(
                     &db,
                     subtask_run_id.as_deref(),
@@ -2046,6 +2072,37 @@ async fn run_subagent_once(
     } else {
         None
     };
+
+    if let Some(subtask_id) = subtask_run_id.as_deref() {
+        if let Err(err) = db.mark_agent_subtask_run_started(subtask_id, "running") {
+            runtime
+                .budget
+                .rollback_unstarted_worker(reserved_tokens, is_verification)
+                .await;
+            finish_subtask_run_best_effort(
+                &db,
+                Some(subtask_id),
+                "failed",
+                None,
+                Some(&err.to_string()),
+            );
+            return Err(err);
+        }
+    }
+    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
+        record_subtask_event(
+            &db,
+            parent_run_id,
+            &format!("Subagent started: {call_label}"),
+            "running",
+            Some(&serde_json::json!({
+                "subtaskRunId": &subtask_run_id,
+                "callLabel": &call_label,
+                "reservedTokens": reserved_tokens,
+                "queueWaitMs": u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            })),
+        );
+    }
 
     if let Some(parent_run_id) = parent_task_run_id.as_deref() {
         record_subtask_event(
@@ -2167,7 +2224,7 @@ async fn run_subagent_once(
                     | AgentEvent::ToolCallStart { .. }
                     | AgentEvent::Done { .. }
             );
-            if is_provider_output {
+            if is_provider_output && active_provider_invocation_id.is_some() {
                 signal_progress_latch(&first_response_tx);
                 if !first_provider_output_recorded {
                     first_provider_output_recorded = true;
@@ -2301,9 +2358,6 @@ async fn run_subagent_once(
         capture
     });
 
-    let run_deadline_ms = delegation_limits
-        .run_deadline_ms
-        .min(timeout_secs.saturating_mul(1_000));
     let run_deadline = tokio::time::Instant::now() + Duration::from_millis(run_deadline_ms);
     let provider_wait_started = Instant::now();
     let connect_deadline = if non_streaming_completion {
@@ -2341,9 +2395,6 @@ async fn run_subagent_once(
         )))),
         result = &mut run_future => Some(result),
         _ = provider_connected_rx.recv() => {
-            // Status/thinking emitted while retrying the connection is visible
-            // progress, but it is not a provider token.
-            while first_response_rx.try_recv().is_ok() {}
             if let Some(parent_run_id) = parent_task_run_id.as_deref() {
                 record_subtask_event(
                     &db,
@@ -2849,6 +2900,21 @@ fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>)
             .min(turn_timeout)
             .clamp(15, 180)
     }) as u64
+}
+
+fn resolve_delegation_run_deadline_ms(
+    config: &AgentConfig,
+    requested_timeout_secs: Option<u32>,
+    legacy_timeout_secs: u64,
+    configured_run_deadline_ms: u64,
+) -> u64 {
+    if config.delegation_limits_v2.is_some() {
+        requested_timeout_secs
+            .map(|requested| configured_run_deadline_ms.min(u64::from(requested) * 1_000))
+            .unwrap_or(configured_run_deadline_ms)
+    } else {
+        configured_run_deadline_ms.min(legacy_timeout_secs.saturating_mul(1_000))
+    }
 }
 
 fn delegated_failure_status(error_text: &str) -> &'static str {
@@ -3779,9 +3845,12 @@ impl Tool for JudgeSubagentResultsTool {
         let judge_cancel_token = self.runtime.cancel_token.child_token();
         let timeout_secs = resolve_delegation_timeout_secs(&self.runtime.base_config, None);
         let judge_limits = self.runtime.budget.limits().await;
-        let judge_timeout_ms = judge_limits
-            .run_deadline_ms
-            .min(timeout_secs.saturating_mul(1_000));
+        let judge_timeout_ms = resolve_delegation_run_deadline_ms(
+            &self.runtime.base_config,
+            None,
+            timeout_secs,
+            judge_limits.run_deadline_ms,
+        );
         let judge_cost_micros =
             nexa_core::usage_analytics::usage_cost_metadata(self.runtime.base_config.provider_type)
                 .0;
@@ -4572,6 +4641,147 @@ mod tests {
         assert_eq!(receiver.len(), 1);
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_connect_does_not_consume_an_already_queued_first_response() {
+        let (connected_tx, mut connected_rx) = mpsc::channel(1);
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+
+        signal_progress_latch(&connected_tx);
+        signal_progress_latch(&response_tx);
+
+        assert_eq!(connected_rx.recv().await, Some(()));
+        assert_eq!(response_rx.recv().await, Some(()));
+    }
+
+    #[tokio::test]
+    async fn batch_slot_wait_shares_the_global_queue_deadline() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let _occupied = Arc::clone(&slots).acquire_owned().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let error = acquire_batch_slot(slots, &cancel, "queued-worker", Instant::now(), 20)
+            .await
+            .expect_err("batch-local admission must remain bounded");
+
+        assert!(error.to_string().contains("20ms queue deadline"));
+    }
+
+    #[tokio::test]
+    async fn batch_queue_failure_rolls_back_unstarted_call_and_token_credit() {
+        let config = AgentConfig {
+            subagent_max_parallel: Some(1),
+            subagent_max_calls_per_turn: Some(2),
+            subagent_token_budget: Some(1_000),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let permit = budget
+            .begin_call("queued", 100, false, &cancel)
+            .await
+            .unwrap();
+
+        budget.rollback_unstarted_worker(100, false).await;
+        let snapshot = budget.snapshot().await;
+
+        assert_eq!(snapshot.calls_started, 0);
+        assert_eq!(snapshot.tokens_reserved, 0);
+        drop(permit);
+    }
+
+    #[test]
+    fn v2_run_deadline_replaces_legacy_role_default_unless_call_is_explicitly_shorter() {
+        let config = AgentConfig {
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                run_deadline_ms: Some(240_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&config, None, 60, 240_000),
+            240_000
+        );
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&config, Some(30), 60, 240_000),
+            30_000
+        );
+        assert_eq!(
+            resolve_delegation_run_deadline_ms(&AgentConfig::default(), None, 60, 180_000),
+            60_000
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_remote_pricing_keeps_cost_limit_advisory_instead_of_blocking_workers() {
+        let config = AgentConfig {
+            provider_type: Some(ProviderType::OpenAi),
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                total_cost_soft_limit_micros: Some(1_000),
+                max_parallel: Some(1),
+                max_calls_per_turn: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+
+        let permit = budget
+            .begin_call("remote-worker", 100, false, &cancel)
+            .await
+            .expect("unknown pricing must not disable remote delegation");
+        let snapshot = budget.snapshot().await;
+
+        assert!(!snapshot.cost_accounting_available);
+        assert_eq!(snapshot.cost_soft_limit_micros, Some(1_000));
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn token_soft_limit_blocks_new_calls_while_residual_workers_are_running() {
+        let config = AgentConfig {
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                total_actual_tokens_soft_limit: Some(256),
+                max_parallel: Some(3),
+                max_calls_per_turn: Some(4),
+                ..Default::default()
+            }),
+            subagent_verification_reserve_percent: Some(0),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let first = budget
+            .begin_call("first", 100, false, &cancel)
+            .await
+            .unwrap();
+        let residual = budget
+            .begin_call("residual", 100, false, &cancel)
+            .await
+            .unwrap();
+        budget
+            .finish_call(
+                100,
+                &Usage {
+                    total_tokens: 300,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        drop(first);
+
+        let error = budget
+            .begin_call("new-worker", 100, false, &cancel)
+            .await
+            .expect_err("actual usage over the soft limit must stop new admission");
+
+        assert!(error.to_string().contains("token soft limit exhausted"));
+        drop(residual);
     }
 
     #[test]

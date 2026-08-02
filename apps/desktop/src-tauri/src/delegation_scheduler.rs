@@ -318,19 +318,17 @@ impl DelegationScheduler {
             .limits
             .total_actual_tokens_soft_limit
             .unwrap_or(u64::MAX);
-        if u64::from(state.tokens_spent) >= token_budget && state.tokens_reserved == 0 {
+        if u64::from(state.tokens_spent) >= token_budget {
             return Err(CoreError::InvalidInput(format!(
                 "Delegated execution token soft limit exhausted before starting {label}. Spent: {} of {token_budget} tokens.",
                 state.tokens_spent,
             )));
         }
         if let Some(cost_limit) = state.limits.total_cost_soft_limit_micros {
-            if !state.limits.cost_accounting_available {
-                return Err(CoreError::InvalidInput(format!(
-                    "Delegated execution cost limit is configured, but provider pricing is unavailable before starting {label}."
-                )));
-            }
-            if state.cost_spent_micros >= cost_limit {
+            // A soft cost limit is enforceable only when the selected provider
+            // has versioned pricing metadata. Unknown pricing remains visible
+            // in BudgetSnapshot, but must not disable all remote delegation.
+            if state.limits.cost_accounting_available && state.cost_spent_micros >= cost_limit {
                 return Err(CoreError::InvalidInput(format!(
                     "Delegated execution cost soft limit exhausted before starting {label}. Spent: {} of {cost_limit} micros.",
                     state.cost_spent_micros,
@@ -376,6 +374,19 @@ impl DelegationScheduler {
 
     pub(crate) async fn release_reservation(&self, reserved_tokens: u32) {
         let mut state = self.state.lock().await;
+        state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
+    }
+
+    pub(crate) async fn rollback_unstarted_worker(
+        &self,
+        reserved_tokens: u32,
+        is_verification: bool,
+    ) {
+        let mut state = self.state.lock().await;
+        state.calls_started = state.calls_started.saturating_sub(1);
+        if is_verification {
+            state.verification_calls_started = state.verification_calls_started.saturating_sub(1);
+        }
         state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);
     }
 

@@ -449,7 +449,10 @@ pub async fn list_tool_access_map_cmd(
                 warn!("Failed to refresh enabled MCP servers for tool access map: {error}")
             }
         }
-        if let Err(error) = mcp_manager.register_tools(&mut registry).await {
+        if let Err(error) = mcp_manager
+            .register_tools_with_recovery(&mut registry, Arc::downgrade(&mcp_state.manager))
+            .await
+        {
             warn!("Failed to register MCP tools for tool access map: {error}");
         }
     }
