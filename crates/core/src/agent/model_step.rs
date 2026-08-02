@@ -109,6 +109,13 @@ impl AgentExecutor {
                     info!("Initiating LLM completion in non-streaming mode");
                     match self.provider.complete(&current_request).await {
                         Ok(response) => {
+                            let _ = tx
+                                .send(AgentEvent::ControllerStatus {
+                                    code: "provider_connected".to_string(),
+                                    content: "Provider connection established".to_string(),
+                                    tone: None,
+                                })
+                                .await;
                             *context_recovery_attempts = 0;
                             stream_chunks_to_provider_events(completion_response_to_agent_stream(
                                 response,
@@ -137,6 +144,13 @@ impl AgentExecutor {
                         match self.provider.stream_events(&current_request).await {
                             Ok(s) => {
                                 info!("LLM stream connected");
+                                let _ = tx
+                                    .send(AgentEvent::ControllerStatus {
+                                        code: "provider_connected".to_string(),
+                                        content: "Provider connection established".to_string(),
+                                        tone: None,
+                                    })
+                                    .await;
                                 *context_recovery_attempts = 0;
                                 break s;
                             }
