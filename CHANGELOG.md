@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.8...nexa-monorepo-v0.11.9) (2026-08-03)
+
+
+### Features
+
+* **office:** add transactional artifact runtime ([d35053c](https://github.com/MLGBJDLW/Nexa/commit/d35053c0715a46e6786913a1505805823b0d91d6))
+* upgrade Office artifact runtime and validation ([0e5ab29](https://github.com/MLGBJDLW/Nexa/commit/0e5ab2957424eadbe9096572a8f063c59e0b8277))
+
+
+### Bug Fixes
+
+* **skills:** embed complete built-in resource bundles ([1980d30](https://github.com/MLGBJDLW/Nexa/commit/1980d305304f4fe3cba382c356a3d1e213a721ff))
+
 ## [0.11.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.7...nexa-monorepo-v0.11.8) (2026-08-03)
 
 
