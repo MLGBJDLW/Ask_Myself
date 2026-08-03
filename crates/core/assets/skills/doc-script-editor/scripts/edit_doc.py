@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import shutil
@@ -22,9 +23,20 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from bisect import bisect_right
 from pathlib import Path
-from typing import Iterable, Any
+from typing import Any
 from xml.dom import minidom
+from xml.etree import ElementTree as ET
+
+from office_artifact_runtime import (
+    office_backend_statuses,
+    publish_staged_artifact,
+    scan_ooxml_risks,
+    staging_path,
+    validate_ooxml_package,
+    write_artifact_manifest,
+)
 
 MAX_EXTRACT_BYTES = 50 * 1024
 HISTORY_DIR = ".nexa/doc-history"
@@ -61,7 +73,7 @@ def _run_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProces
             "CREATE_NO_WINDOW",
             0,
         )
-    return subprocess.run(cmd, **kwargs)
+    return subprocess.run(cmd, check=kwargs.pop("check", False), **kwargs)
 
 
 def _die(msg: str, code: int = 1) -> None:
@@ -124,6 +136,21 @@ def _validate_output_dir(raw: str, *, allow_existing: bool = True) -> Path:
 
 def _ext(p: Path) -> str:
     return p.suffix.lower().lstrip(".")
+
+
+def _staged_copy(path: Path) -> Path:
+    staged = staging_path(path)
+    shutil.copy2(path, staged)
+    return staged
+
+
+def _publish_edit(staged: Path, path: Path) -> tuple[Path | None, dict[str, Any] | None]:
+    try:
+        snapshot, report = publish_staged_artifact(staged, path, Path.cwd(), validate=True)
+    except ValueError as error:
+        staged.unlink(missing_ok=True)
+        _die(f"VALIDATION_FAILED: staged artifact was not published\n{error}", 1)
+    return snapshot, report.to_dict() if report is not None else None
 
 
 def _parse_pages(spec: str | None, total: int) -> list[int]:
@@ -363,6 +390,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         })
         if not args.json:
             print(f"  Playwright     BROKEN  ({type(e).__name__}: {e})")
+    office_backends = office_backend_statuses()
+    if not args.json:
+        print("\nOffice artifact backends:")
+        for backend in office_backends:
+            detail = f" ({backend['detail']})" if backend.get("detail") else ""
+            print(f"  {backend['label']:<22} {backend['status'].upper()}{detail}")
     if args.json:
         payload = {
             "python": {
@@ -371,6 +404,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             },
             "status": "ok" if not missing_core else "missing",
             "dependencies": results,
+            "officeBackends": office_backends,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     if missing_core:
@@ -470,16 +504,64 @@ def cmd_extract(args: argparse.Namespace) -> int:
 # replace / redact (shared core)
 # ---------------------------------------------------------------------------
 
-def _iter_docx_runs(doc) -> Iterable:
-    for para in doc.paragraphs:
-        for run in para.runs:
-            yield run
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.paragraphs:
-                    for run in para.runs:
-                        yield run
+def _replace_across_text_nodes(nodes: list[Any], find: str, replace: str, apply: bool) -> int:
+    fragments = [node.text or "" for node in nodes]
+    combined = "".join(fragments)
+    if not combined or find not in combined:
+        return 0
+
+    starts: list[int] = []
+    cursor = 0
+    for fragment in fragments:
+        starts.append(cursor)
+        cursor += len(fragment)
+
+    matches: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        start = combined.find(find, cursor)
+        if start < 0:
+            break
+        matches.append((start, start + len(find)))
+        cursor = start + len(find)
+
+    if not apply:
+        return len(matches)
+
+    for start, end in reversed(matches):
+        start_index = max(0, bisect_right(starts, start) - 1)
+        end_index = max(0, bisect_right(starts, end - 1) - 1)
+        start_offset = start - starts[start_index]
+        end_offset = end - starts[end_index]
+        start_text = nodes[start_index].text or ""
+        end_text = nodes[end_index].text or ""
+        if start_index == end_index:
+            nodes[start_index].text = start_text[:start_offset] + replace + start_text[end_offset:]
+            continue
+        nodes[start_index].text = start_text[:start_offset] + replace
+        for index in range(start_index + 1, end_index):
+            nodes[index].text = ""
+        nodes[end_index].text = end_text[end_offset:]
+    return len(matches)
+
+
+def _docx_text_groups(doc) -> list[list[Any]]:
+    from docx.oxml.ns import qn  # type: ignore
+
+    groups: list[list[Any]] = []
+    seen_roots: set[int] = set()
+    for part in doc.part.package.parts:
+        root = getattr(part, "element", None)
+        if root is None:
+            root = getattr(part, "_element", None)
+        if root is None or id(root) in seen_roots:
+            continue
+        seen_roots.add(id(root))
+        for paragraph in root.iter(qn("w:p")):
+            nodes = list(paragraph.iter(qn("w:t")))
+            if nodes:
+                groups.append(nodes)
+    return groups
 
 
 def _replace_docx(path: Path, find: str, replace: str, dry_run: bool) -> int:
@@ -487,26 +569,56 @@ def _replace_docx(path: Path, find: str, replace: str, dry_run: bool) -> int:
         import docx  # type: ignore
     except ImportError:
         _missing("python-docx")
-    doc = docx.Document(str(path))
-    before = "\n".join(p.text for p in doc.paragraphs)
-    count = 0
-    for run in _iter_docx_runs(doc):
-        if find in run.text:
-            count += run.text.count(find)
-            if not dry_run:
-                run.text = run.text.replace(find, replace)
+    working = path if dry_run else _staged_copy(path)
+    doc = docx.Document(str(working))
+    groups = _docx_text_groups(doc)
+    before_lines = ["".join(node.text or "" for node in nodes) for nodes in groups]
+    count = sum(
+        _replace_across_text_nodes(nodes, find, replace, apply=not dry_run)
+        for nodes in groups
+    )
     if dry_run:
-        after = before.replace(find, replace)
+        after_lines = [line.replace(find, replace) for line in before_lines]
         diff = difflib.unified_diff(
-            before.splitlines(), after.splitlines(),
+            before_lines, after_lines,
             fromfile=str(path), tofile=f"{path} (preview)", lineterm="",
         )
         sys.stdout.write("\n".join(diff) + "\n")
         print(f"\n[DRY-RUN] matches: {count}")
         return 0
-    doc.save(str(path))
-    print(f"replaced {count} occurrence(s) in {path}")
+    if count == 0:
+        working.unlink(missing_ok=True)
+        print(f"replaced 0 occurrence(s) in {path}")
+        return 0
+    doc.save(str(working))
+    snapshot, validation = _publish_edit(working, path)
+    print(json.dumps({
+        "replaced": count,
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
+
+
+def _pptx_text_groups(prs) -> list[list[Any]]:
+    drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    paragraph_tag = f"{{{drawing_ns}}}p"
+    text_tag = f"{{{drawing_ns}}}t"
+    groups: list[list[Any]] = []
+    seen_roots: set[int] = set()
+    for part in prs.part.package.iter_parts():
+        root = getattr(part, "element", None)
+        if root is None:
+            root = getattr(part, "_element", None)
+        if root is None or id(root) in seen_roots:
+            continue
+        seen_roots.add(id(root))
+        for paragraph in root.iter(paragraph_tag):
+            nodes = list(paragraph.iter(text_tag))
+            if nodes:
+                groups.append(nodes)
+    return groups
 
 
 def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
@@ -514,20 +626,14 @@ def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
         from pptx import Presentation  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    prs = Presentation(str(path))
-    count = 0
-    before_lines: list[str] = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            for para in shape.text_frame.paragraphs:
-                for run in para.runs:
-                    before_lines.append(run.text)
-                    if find in run.text:
-                        count += run.text.count(find)
-                        if not dry_run:
-                            run.text = run.text.replace(find, replace)
+    working = path if dry_run else _staged_copy(path)
+    prs = Presentation(str(working))
+    groups = _pptx_text_groups(prs)
+    before_lines = ["".join(node.text or "" for node in nodes) for nodes in groups]
+    count = sum(
+        _replace_across_text_nodes(nodes, find, replace, apply=not dry_run)
+        for nodes in groups
+    )
     if dry_run:
         before = "\n".join(before_lines)
         after = before.replace(find, replace)
@@ -538,32 +644,89 @@ def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
         sys.stdout.write("\n".join(diff) + "\n")
         print(f"\n[DRY-RUN] matches: {count}")
         return 0
-    prs.save(str(path))
-    print(f"replaced {count} occurrence(s) in {path}")
+    if count == 0:
+        working.unlink(missing_ok=True)
+        print(f"replaced 0 occurrence(s) in {path}")
+        return 0
+    prs.save(str(working))
+    snapshot, validation = _publish_edit(working, path)
+    print(json.dumps({
+        "replaced": count,
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
 def _replace_xlsx(path: Path, find: str, replace: str, dry_run: bool) -> int:
-    try:
-        import openpyxl  # type: ignore
-    except ImportError:
-        _missing("openpyxl")
-    wb = openpyxl.load_workbook(str(path))
+    spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    text_tag = f"{{{spreadsheet_ns}}}t"
+    container_tags = {
+        f"{{{spreadsheet_ns}}}si",
+        f"{{{spreadsheet_ns}}}is",
+        f"{{{spreadsheet_ns}}}comment",
+    }
+    scalar_tags = {
+        f"{{{spreadsheet_ns}}}f",
+        f"{{{spreadsheet_ns}}}definedName",
+    }
+    editable_parts = (
+        "xl/sharedStrings.xml",
+        "xl/workbook.xml",
+        "xl/worksheets/",
+        "xl/comments",
+    )
     before_lines: list[str] = []
     after_lines: list[str] = []
     count = 0
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and find in cell.value:
-                    before = f"{ws.title}!{cell.coordinate}: {cell.value}"
-                    after_value = cell.value.replace(find, replace)
-                    after = f"{ws.title}!{cell.coordinate}: {after_value}"
-                    before_lines.append(before)
-                    after_lines.append(after)
-                    count += cell.value.count(find)
-                    if not dry_run:
-                        cell.value = after_value
+    staged = _staged_copy(path) if not dry_run else None
+    source = staged or path
+    repacked = staging_path(source) if not dry_run else None
+    try:
+        with zipfile.ZipFile(source) as archive:
+            destination = zipfile.ZipFile(repacked, "w") if repacked is not None else None
+            try:
+                for info in archive.infolist():
+                    data = archive.read(info.filename)
+                    if info.filename.startswith(editable_parts) and info.filename.endswith(".xml"):
+                        root = ET.fromstring(data)
+                        groups: list[list[Any]] = []
+                        part_matches = 0
+                        for element in root.iter():
+                            if element.tag in container_tags:
+                                nodes = list(element.iter(text_tag))
+                                if nodes:
+                                    groups.append(nodes)
+                            elif element.tag in scalar_tags:
+                                groups.append([element])
+                        for nodes in groups:
+                            before = "".join(node.text or "" for node in nodes)
+                            matches = _replace_across_text_nodes(
+                                nodes, find, replace, apply=not dry_run
+                            )
+                            if matches:
+                                count += matches
+                                part_matches += matches
+                                before_lines.append(f"{info.filename}: {before}")
+                                after_lines.append(
+                                    f"{info.filename}: {before.replace(find, replace)}"
+                                )
+                        if not dry_run and part_matches:
+                            data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                    if destination is not None:
+                        destination.writestr(info, data)
+            finally:
+                if destination is not None:
+                    destination.close()
+        if not dry_run and repacked is not None and staged is not None:
+            os.replace(repacked, staged)
+    except Exception:
+        if repacked is not None:
+            repacked.unlink(missing_ok=True)
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        raise
     if dry_run:
         diff = difflib.unified_diff(
             before_lines, after_lines,
@@ -572,8 +735,18 @@ def _replace_xlsx(path: Path, find: str, replace: str, dry_run: bool) -> int:
         sys.stdout.write("\n".join(diff) + "\n")
         print(f"\n[DRY-RUN] matches: {count}")
         return 0
-    wb.save(str(path))
-    print(f"replaced {count} occurrence(s) in {path}")
+    if count == 0:
+        staged.unlink(missing_ok=True)
+        print(f"replaced 0 occurrence(s) in {path}")
+        return 0
+    snapshot, validation = _publish_edit(staged, path)
+    print(json.dumps({
+        "replaced": count,
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "preservationRisk": scan_ooxml_risks(path),
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -611,7 +784,8 @@ def cmd_insert_slide(args: argparse.Namespace) -> int:
         from pptx.util import Inches  # type: ignore
     except ImportError:
         _missing("python-pptx")
-    prs = Presentation(str(path))
+    staged = _staged_copy(path)
+    prs = Presentation(str(staged))
     layout = prs.slide_layouts[1] if len(prs.slide_layouts) > 1 else prs.slide_layouts[0]
     slide = prs.slides.add_slide(layout)
     # Populate title/body if placeholders exist.
@@ -632,14 +806,20 @@ def cmd_insert_slide(args: argparse.Namespace) -> int:
 
     # Reorder: move new slide to position after --after.
     after = max(0, int(args.after))
-    xml_slides = prs.slides._sldIdLst  # noqa: SLF001
+    xml_slides = prs.slides._sldIdLst
     slides = list(xml_slides)
     new_el = slides[-1]
     xml_slides.remove(new_el)
     xml_slides.insert(after, new_el)
 
-    prs.save(str(path))
-    print(f"inserted slide after position {after} in {path}")
+    prs.save(str(staged))
+    snapshot, validation = _publish_edit(staged, path)
+    print(json.dumps({
+        "insertedAfter": after,
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -679,6 +859,28 @@ def _numbered_markdown_text(stripped: str) -> str | None:
     if sep and prefix.isdigit() and rest.startswith(" "):
         return rest.strip()
     return None
+
+
+def _docx_add_hyperlink(paragraph, label: str, url: str) -> None:
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT  # type: ignore
+    from docx.oxml import OxmlElement  # type: ignore
+    from docx.oxml.ns import qn  # type: ignore
+
+    relationship_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+    run = OxmlElement("w:r")
+    properties = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    properties.extend([color, underline])
+    text = OxmlElement("w:t")
+    text.text = label
+    run.extend([properties, text])
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
 
 
 def _docx_add_inline_markdown(paragraph, text: str) -> None:
@@ -756,7 +958,9 @@ def _docx_add_inline_markdown(paragraph, text: str) -> None:
                     flush_plain(i)
                     label = text[i + 1:label_end]
                     url = text[label_end + 2:url_end]
-                    if label:
+                    if url and url.lower().startswith(("https://", "http://", "mailto:")):
+                        _docx_add_hyperlink(paragraph, label or url, url)
+                    elif label:
                         paragraph.add_run(label)
                         if url:
                             paragraph.add_run(f" ({url})")
@@ -834,6 +1038,7 @@ def cmd_create_docx(args: argparse.Namespace) -> int:
     except ImportError:
         _missing("python-docx")
     path = _validate_output_path(args.path, {"docx"})
+    staged = staging_path(path)
     doc = docx.Document(str(_validate_path(args.template))) if args.template else docx.Document()
     if args.font:
         doc.styles["Normal"].font.name = args.font
@@ -851,22 +1056,55 @@ def cmd_create_docx(args: argparse.Namespace) -> int:
             section.footer.paragraphs[0].text = args.footer
     if args.author:
         doc.core_properties.author = args.author
-    doc.save(str(path))
-    print(f"created DOCX: {path}")
+    try:
+        doc.save(str(staged))
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    print(json.dumps({
+        "created": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_create_xlsx(args: argparse.Namespace) -> int:
     path = _validate_output_path(args.path, {"xlsx"})
+    staged = staging_path(path)
+    staged_qa = staged.with_suffix(".xlsx.qa.json")
     spec_path = _validate_path(args.spec)
     create_xlsx_from_spec, _ = _load_xlsx_renderer()
-    result = create_xlsx_from_spec(
-        path,
-        spec_path,
-        workspace_root=Path.cwd(),
-    )
+    try:
+        result = create_xlsx_from_spec(
+            staged,
+            spec_path,
+            workspace_root=Path.cwd(),
+        )
+        if result["qa"]["status"] == "fail":
+            staged.unlink(missing_ok=True)
+            staged_qa.unlink(missing_ok=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 4
+        snapshot, validation = _publish_edit(staged, path)
+    except BaseException:
+        staged_qa.unlink(missing_ok=True)
+        raise
+    finally:
+        staged.unlink(missing_ok=True)
+    final_qa = path.with_suffix(".xlsx.qa.json")
+    result["path"] = str(path)
+    result["qaPath"] = str(final_qa)
+    result["artifact"] = {
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }
+    if staged_qa.exists():
+        write_artifact_manifest(final_qa, result, Path.cwd())
+        staged_qa.unlink(missing_ok=True)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result["qa"]["status"] != "fail" else 4
+    return 0
 
 
 def _load_xlsx_renderer():
@@ -878,7 +1116,10 @@ def _load_xlsx_renderer():
     if str(renderer_dir) not in sys.path:
         sys.path.insert(0, str(renderer_dir))
     try:
-        from xlsx_model_renderer import audit_xlsx_formula_integrity, create_xlsx_from_spec  # type: ignore
+        from xlsx_model_renderer import (  # type: ignore
+            audit_xlsx_formula_integrity,
+            create_xlsx_from_spec,
+        )
     except ImportError as exc:
         _die(f"ERROR: failed to load XLSX renderer: {exc}", 1)
     return create_xlsx_from_spec, audit_xlsx_formula_integrity
@@ -915,9 +1156,19 @@ def _load_html_deck_renderer():
 
 
 def cmd_create_pptx(args: argparse.Namespace) -> int:
+    path = _validate_output_path(args.path, {"pptx"})
+    staged = staging_path(path)
     create_pptx_from_spec = _load_pptx_renderer()
-    output = create_pptx_from_spec(args.path, args.spec, args.template, Path.cwd())
-    print(f"created PPTX: {output}")
+    try:
+        create_pptx_from_spec(str(staged), args.spec, args.template, Path.cwd())
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    print(json.dumps({
+        "created": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -927,18 +1178,36 @@ def cmd_create_html_pptx(args: argparse.Namespace) -> int:
     if args.spec != "-":
         args.spec = str(_validate_path(args.spec))
     args.outdir = str(_validate_output_dir(args.outdir))
-    args.path = str(_validate_output_path(args.path, {"pptx"}))
+    path = _validate_output_path(args.path, {"pptx"})
+    staged = staging_path(path)
     render_html_deck = _load_html_deck_renderer()
-    result = render_html_deck(
-        spec_path=args.spec,
-        out_dir=args.outdir,
-        pptx_path=args.path,
-        mode=args.mode,
-        screenshot=args.screenshot,
-        workspace_root=Path.cwd(),
-    )
+    try:
+        result = render_html_deck(
+            spec_path=args.spec,
+            out_dir=args.outdir,
+            pptx_path=str(staged),
+            mode=args.mode,
+            screenshot=args.screenshot,
+            workspace_root=Path.cwd(),
+        )
+        if result["qa"]["status"] == "fail":
+            staged.unlink(missing_ok=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 4
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    result["artifact"] = {
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }
+    pptx_result = result.get("manifest", {}).get("pptx")
+    if isinstance(pptx_result, dict):
+        pptx_result["path"] = str(path)
+        write_artifact_manifest(Path(result["manifestPath"]), result["manifest"], Path.cwd())
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result["qa"]["status"] != "fail" else 4
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -973,15 +1242,21 @@ def cmd_pack(args: argparse.Namespace) -> int:
     if not (input_dir / "[Content_Types].xml").exists():
         _die("ERROR: input directory does not look like an unpacked Office document", 3)
     path = _validate_output_path(args.path, {"docx", "pptx", "xlsx"})
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in sorted(input_dir.rglob("*")):
-            if item.is_file():
-                zf.write(item, item.relative_to(input_dir).as_posix())
-    with zipfile.ZipFile(path) as zf:
-        bad = zf.testzip()
-        if bad:
-            _die(f"ERROR: corrupt Office ZIP member after pack: {bad}", 1)
-    print(f"packed {input_dir} -> {path}")
+    staged = staging_path(path)
+    try:
+        with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as zf:
+            for item in sorted(input_dir.rglob("*")):
+                if item.is_file():
+                    zf.write(item, item.relative_to(input_dir).as_posix())
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    print(json.dumps({
+        "packedFrom": str(input_dir),
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1081,19 +1356,102 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if _ext(path) != "xlsx":
         _die("ERROR: recalc_xlsx requires a .xlsx file", 3)
+    soffice = _find_soffice()
+    if not soffice:
+        _die(
+            "MISSING_DEP: LibreOffice/soffice\n"
+            "Use lint_xlsx for static checks or install LibreOffice for real recalculation.",
+            2,
+        )
+
+    risk = scan_ooxml_risks(path)
+    unsafe_features = {
+        key: parts
+        for key, parts in risk["features"].items()
+        if parts and key in {"macros", "signatures", "externalLinks", "pivotCaches", "dataModel"}
+    }
+    if unsafe_features and not args.allow_risky:
+        print(json.dumps({
+            "status": "blocked",
+            "recalculated": False,
+            "reason": "LibreOffice round-trip could damage preservation-sensitive workbook features.",
+            "risk": risk,
+            "hint": "Use Excel COM/precise OOXML, or pass --allow-risky only after explicit review.",
+        }, ensure_ascii=False, indent=2))
+        return 5
+
     _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
-    formula_qa = audit_xlsx_formula_integrity(path)
+    before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix=".nexa-recalc-", dir=path.parent) as tmp:
+        root = Path(tmp)
+        source_dir = root / "source"
+        output_dir = root / "output"
+        profile_dir = root / "profile"
+        source_dir.mkdir()
+        output_dir.mkdir()
+        source = source_dir / path.name
+        shutil.copy2(path, source)
+        cmd = [
+            *_soffice_base_cmd(soffice, profile_dir),
+            "--convert-to",
+            "xlsx:Calc MS Excel 2007 XML",
+            "--outdir",
+            str(output_dir),
+            str(source),
+        ]
+        completed = _run_subprocess(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=_soffice_env(),
+            timeout=120,
+        )
+        recalculated = output_dir / path.name
+        if completed.returncode != 0 or not recalculated.is_file():
+            detail = completed.stderr.strip() or completed.stdout.strip() or "no output file"
+            _die(f"ERROR: LibreOffice recalculation failed: {detail}", 1)
+
+        structural = validate_ooxml_package(recalculated)
+        if structural.status == "fail":
+            print(json.dumps({
+                "status": "fail",
+                "recalculated": False,
+                "reason": "LibreOffice output failed OOXML validation and was not published.",
+                "validation": structural.to_dict(),
+            }, ensure_ascii=False, indent=2))
+            return 1
+        formula_qa = audit_xlsx_formula_integrity(recalculated)
+        cached_error_total, cached_errors = _scan_xlsx_formula_errors(recalculated)
+        if formula_qa["status"] == "fail" or cached_error_total:
+            print(json.dumps({
+                "status": "fail",
+                "recalculated": False,
+                "reason": "Recalculated workbook failed formula QA and was not published.",
+                "formula_qa": formula_qa,
+                "cached_formula_errors": cached_errors,
+            }, ensure_ascii=False, indent=2))
+            return 1
+        staged = staging_path(path)
+        shutil.copy2(recalculated, staged)
+        snapshot, validation = _publish_edit(staged, path)
+
+    after_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     result = {
         "status": formula_qa["status"],
-        "legacy_command": "recalc_xlsx",
-        "recalculated": False,
-        "message": "LibreOffice is not used. Formulas were linted and the workbook's calculation metadata is preserved for Excel to recalculate on open.",
+        "backend": "libreoffice",
+        "recalculated": True,
+        "rewritten": True,
+        "contentChanged": before_hash != after_hash,
         "formula_qa": formula_qa,
-        "cached_formula_errors": _scan_xlsx_formula_errors(path)[1],
+        "cached_formula_errors": cached_errors,
         "total_formulas": _count_xlsx_formulas(path),
+        "risk": risk,
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if formula_qa["status"] != "fail" else 1
+    return 0
 
 
 def cmd_lint_xlsx(args: argparse.Namespace) -> int:
@@ -1103,37 +1461,140 @@ def cmd_lint_xlsx(args: argparse.Namespace) -> int:
     _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
     formula_qa = audit_xlsx_formula_integrity(path)
     total_errors, cached_errors = _scan_xlsx_formula_errors(path)
+    contract_result = _validate_xlsx_contract(path, args.contract) if args.contract else None
     result = {
-        "status": "fail" if formula_qa["status"] == "fail" or total_errors else formula_qa["status"],
+        "status": "fail" if (
+            formula_qa["status"] == "fail"
+            or total_errors
+            or (contract_result is not None and contract_result["status"] == "fail")
+        ) else formula_qa["status"],
         "formula_qa": formula_qa,
         "cached_formula_errors": cached_errors,
+        "preservationRisk": scan_ooxml_risks(path),
+        "contract": contract_result,
         "note": "No LibreOffice or Excel process was used.",
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["status"] != "fail" else 1
 
+
+def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
+    try:
+        import openpyxl  # type: ignore
+    except ImportError:
+        _missing("openpyxl")
+
+    contract = _read_json(contract_path)
+    wb = openpyxl.load_workbook(str(path), data_only=False, read_only=False)
+    values_wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+    errors: list[dict[str, Any]] = []
+    checks: dict[str, Any] = {}
+    try:
+        required_sheets = [str(name) for name in contract.get("required_sheets", [])]
+        missing_sheets = [name for name in required_sheets if name not in wb.sheetnames]
+        checks["requiredSheets"] = {"required": required_sheets, "missing": missing_sheets}
+        for name in missing_sheets:
+            errors.append({"code": "sheet.missing", "sheet": name})
+
+        required_names = [str(name) for name in contract.get("required_named_ranges", [])]
+        existing_names = {str(item.name) for item in wb.defined_names.values()}
+        missing_names = [name for name in required_names if name not in existing_names]
+        checks["requiredNamedRanges"] = {"required": required_names, "missing": missing_names}
+        for name in missing_names:
+            errors.append({"code": "named_range.missing", "name": name})
+
+        hardcode_findings: dict[str, list[str]] = {}
+        for sheet_name in contract.get("no_numeric_hardcodes_in", []):
+            if sheet_name not in wb.sheetnames:
+                continue
+            locations: list[str] = []
+            for row in wb[sheet_name].iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                        locations.append(cell.coordinate)
+            if locations:
+                hardcode_findings[str(sheet_name)] = locations[:200]
+                errors.append({
+                    "code": "formula.numeric_hardcode",
+                    "sheet": str(sheet_name),
+                    "locations": locations[:200],
+                    "truncated": len(locations) > 200,
+                })
+        checks["numericHardcodes"] = hardcode_findings
+
+        row_checks: dict[str, Any] = {}
+        for sheet_name, minimum in contract.get("min_rows", {}).items():
+            if sheet_name not in wb.sheetnames:
+                continue
+            actual = wb[sheet_name].max_row
+            row_checks[str(sheet_name)] = {"minimum": int(minimum), "actual": actual}
+            if actual < int(minimum):
+                errors.append({
+                    "code": "rows.minimum",
+                    "sheet": str(sheet_name),
+                    "minimum": int(minimum),
+                    "actual": actual,
+                })
+        checks["minimumRows"] = row_checks
+
+        sentinel_checks: dict[str, Any] = {}
+        for reference, expected in contract.get("sentinels", {}).items():
+            sheet_name, separator, coordinate = str(reference).rpartition("!")
+            if not separator or sheet_name not in values_wb.sheetnames:
+                errors.append({"code": "sentinel.invalid_reference", "reference": reference})
+                continue
+            actual = values_wb[sheet_name][coordinate].value
+            matches = actual == expected
+            if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+                matches = abs(float(actual) - float(expected)) <= 1e-9
+            sentinel_checks[str(reference)] = {
+                "expected": expected,
+                "actual": actual,
+                "matches": matches,
+            }
+            if not matches:
+                errors.append({
+                    "code": "sentinel.mismatch",
+                    "reference": reference,
+                    "expected": expected,
+                    "actual": actual,
+                })
+        checks["sentinels"] = sentinel_checks
+    finally:
+        wb.close()
+        values_wb.close()
+
+    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+
 def cmd_validate(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     ext = _ext(path)
+    result: dict[str, Any] = {"format": ext, "path": str(path), "status": "pass"}
     if ext in {"docx", "pptx", "xlsx"}:
-        with zipfile.ZipFile(path) as zf:
-            bad = zf.testzip()
-            if bad:
-                _die(f"ERROR: corrupt Office ZIP member: {bad}", 1)
+        structural = validate_ooxml_package(path)
+        result["structural"] = structural.to_dict()
+        if structural.status == "fail":
+            result["status"] = "fail"
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 1
     if ext == "docx":
         try:
             import docx  # type: ignore
         except ImportError:
             _missing("python-docx")
         doc = docx.Document(str(path))
-        print(f"VALID DOCX paragraphs={len(doc.paragraphs)} tables={len(doc.tables)}")
+        result["backend"] = {
+            "id": "python-docx",
+            "paragraphs": len(doc.paragraphs),
+            "tables": len(doc.tables),
+        }
     elif ext == "pptx":
         try:
             from pptx import Presentation  # type: ignore
         except ImportError:
             _missing("python-pptx")
         prs = Presentation(str(path))
-        print(f"VALID PPTX slides={len(prs.slides)}")
+        result["backend"] = {"id": "python-pptx", "slides": len(prs.slides)}
     elif ext == "xlsx":
         try:
             import openpyxl  # type: ignore
@@ -1145,29 +1606,46 @@ def cmd_validate(args: argparse.Namespace) -> int:
         wb.close()
         total_errors, errors = _scan_xlsx_formula_errors(path)
         formula_count = _count_xlsx_formulas(path)
-        print(f"VALID XLSX sheets={sheet_count} names={sheet_names} formulas={formula_count} formula_errors={total_errors}")
+        result["backend"] = {
+            "id": "openpyxl",
+            "sheets": sheet_count,
+            "sheetNames": sheet_names.split(",") if sheet_names else [],
+            "formulas": formula_count,
+            "formulaErrors": total_errors,
+        }
         if errors:
-            print(json.dumps(errors, ensure_ascii=False, indent=2))
+            result["status"] = "fail"
+            result["cachedFormulaErrors"] = errors
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1
         try:
             _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
             formula_qa = audit_xlsx_formula_integrity(path)
-            print(json.dumps({"formula_qa": formula_qa}, ensure_ascii=False, indent=2))
+            result["formulaQa"] = formula_qa
             if formula_qa["status"] == "fail":
+                result["status"] = "fail"
+                print(json.dumps(result, ensure_ascii=False, indent=2))
                 return 1
         except SystemExit:
             raise
         except Exception as exc:  # noqa: BLE001
-            print(f"WARNING: XLSX formula lint unavailable: {type(exc).__name__}: {exc}")
+            result["formulaQaWarning"] = f"{type(exc).__name__}: {exc}"
+            if result["status"] == "pass":
+                result["status"] = "warn"
     elif ext == "pdf":
         try:
             from pypdf import PdfReader  # type: ignore
         except ImportError:
             _missing("pypdf")
         reader = PdfReader(str(path))
-        print(f"VALID PDF pages={len(reader.pages)}")
+        result["backend"] = {"id": "pypdf", "pages": len(reader.pages)}
     else:
         _die(f"ERROR: validate does not support .{ext}", 3)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        backend = result.get("backend", {})
+        print(f"VALID {ext.upper()} backend={backend.get('id', 'structural')} status={result['status']}")
     return 0
 
 
@@ -1275,12 +1753,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.set_defaults(func=cmd_render)
 
     p_lint = sub.add_parser("lint_xlsx", help="Lint XLSX formulas without LibreOffice or Excel automation")
+    p_lint.add_argument(
+        "--contract",
+        default=None,
+        help="Optional absolute JSON workbook contract with sheets, names, hardcodes, rows, and sentinels",
+    )
     p_lint.set_defaults(func=cmd_lint_xlsx)
 
-    p_recalc = sub.add_parser("recalc_xlsx", help="Legacy alias: lint XLSX formulas without LibreOffice")
+    p_recalc = sub.add_parser("recalc_xlsx", help="Recalculate and resave XLSX with LibreOffice")
+    p_recalc.add_argument(
+        "--allow-risky",
+        action="store_true",
+        help="Allow LibreOffice round-trip after reviewing preservation-sensitive features",
+    )
     p_recalc.set_defaults(func=cmd_recalc_xlsx)
 
-    p_val = sub.add_parser("validate", help="Validate that a document opens with its backend")
+    p_val = sub.add_parser("validate", help="Validate OOXML structure, relationships, content types, and backend open")
+    p_val.add_argument("--json", action="store_true", help="Emit machine-readable validation JSON")
     p_val.set_defaults(func=cmd_validate)
 
     p_conv = sub.add_parser("convert", help="Convert via LibreOffice headless")

@@ -8,9 +8,9 @@ description: Create, edit, review, and validate Microsoft Word DOCX documents wi
 2. Run `scripts/docx_audit.py --path <file> --pretty` before editing existing DOCX files or after generating layout-sensitive documents.
 3. For a new document, first create a reviewable Markdown or JSON blueprint with `create_file`/`edit_file`, then run `create_docx` or a file-backed Python renderer. Keep the blueprint unless the user asks for only the binary.
 4. For complex layout, write a short workspace script with `create_file`/`edit_file`, pass input/output paths to it via `run_shell`, validate the DOCX, and delete temporary scratch scripts only after the output is verified.
-5. For an existing document, create a version snapshot before risky edits, then preserve the original template, margins, headers, footers, styles, and tables.
+5. For an existing document, use the transactional editor or Office artifact job so risky edits are staged, validated, snapshotted, and atomically published; preserve the original template, margins, headers, footers, styles, and tables.
 6. For comments, tracked changes, relationship repair, embedded media, or template-sensitive surgery, unpack the DOCX, edit OOXML, repack, and validate.
-7. After writing, validate the DOCX. Render or convert to PDF for visual QA when layout matters and the backends are available.
+7. After writing, validate the DOCX relationships, Content Types, XML, and backend open. Render or convert to PDF for visual QA when layout matters and the backends are available. Markdown links created by `create_docx` are real external hyperlink relationships, and `replace` matches text split across runs in body, table, header, footer, and other loaded story parts.
 
 ## Quality Rules
 1. Use clear hierarchy: cover/title block, heading levels, short sections, tables for comparable data, and callouts for decisions, risks, or recommendations.

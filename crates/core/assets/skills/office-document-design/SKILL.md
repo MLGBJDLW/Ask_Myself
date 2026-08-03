@@ -16,10 +16,11 @@ Use this skill as the Office router. It should keep routing concise, then rely o
 ## Common Rules
 1. Produce real editable Office files through Python-backed libraries or `doc-script-editor`; do not route Office work through deleted native generator tools.
 2. Keep file bytes on disk. Never paste binary content or base64 Office blobs into tool arguments.
-3. Validate after write with `edit_doc.py --path <file> validate` when possible.
+3. Validate after write with `edit_doc.py --path <file> validate`; use `office_artifact_service.py` for multi-step transactional work and a unified `artifact-manifest.json`.
 4. Render or convert layout-sensitive outputs for visual QA only when the required system tools are already available.
-5. For XLSX formulas, recalculate and scan for formula errors before completion.
+5. For XLSX formulas, lint first; when real cached values are required, use guarded LibreOffice recalculation or an explicitly selected Windows COM finalizer, then scan formula errors before completion.
 6. Preserve existing templates unless the user explicitly asks for a redesign.
+7. Keep the Nexa OpenXML backend as the local default. OfficeCLI is a separately installed optional binary whose public repository does not contain the full implementation; use it only for explicit create jobs with network consent, never as an implicit local editing backend.
 
 ## Planning Resource
 Read `scripts/outline-blueprint.md` when the request needs multiple Office files, a deck/report/workbook structure, or a quick content-to-format plan.

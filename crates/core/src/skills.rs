@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_materialize_pptx_skill_writes_runtime_scripts_to_disk() {
+    fn test_materialize_office_skills_writes_runtime_resource_closure_to_disk() {
         let dir = tempdir().unwrap();
         let base = materialize_skills_to_disk(dir.path()).unwrap();
         let pptx_dir = base.join("pptx-presentation-design");
@@ -1029,10 +1029,41 @@ mod tests {
             "scripts/pptx_asset_pack.py",
             "scripts/pptx_regression_suite.py",
             "scripts/pptx_delivery_pack.py",
+            "scripts/html_deck_renderer.py",
+            "scripts/test_html_deck_renderer.py",
         ] {
             assert!(
                 pptx_dir.join(path).exists(),
                 "expected materialized PPTX skill resource {path}"
+            );
+        }
+
+        let xlsx_dir = base.join("xlsx-workbook-design");
+        for path in [
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/xlsx-playbook.md",
+            "scripts/xlsx_audit.py",
+            "scripts/xlsx_model_renderer.py",
+            "scripts/test_xlsx_model_renderer.py",
+        ] {
+            assert!(
+                xlsx_dir.join(path).exists(),
+                "expected materialized XLSX skill resource {path}"
+            );
+        }
+
+        let editor_dir = base.join("doc-script-editor");
+        for path in [
+            "scripts/edit_doc.py",
+            "scripts/office_artifact_runtime.py",
+            "scripts/office_artifact_service.py",
+            "scripts/test_office_artifact_runtime.py",
+            "scripts/requirements.txt",
+        ] {
+            assert!(
+                editor_dir.join(path).exists(),
+                "expected materialized document runtime resource {path}"
             );
         }
     }
