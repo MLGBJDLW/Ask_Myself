@@ -3,10 +3,40 @@
 //! Follows the same pattern as `ocr.rs`: config struct, model management,
 //! DB persistence, progress callbacks.
 
+use crate::app_settings::SpeechToTextConfig;
 use crate::db::Database;
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static ACTIVE_MEDIA_JOBS: AtomicUsize = AtomicUsize::new(0);
+static MEDIA_ANALYSIS_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+struct MediaJobLease {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl MediaJobLease {
+    fn acquire() -> Self {
+        ACTIVE_MEDIA_JOBS.fetch_add(1, Ordering::SeqCst);
+        let guard = MEDIA_ANALYSIS_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for MediaJobLease {
+    fn drop(&mut self) {
+        ACTIVE_MEDIA_JOBS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn media_jobs_active() -> bool {
+    ACTIVE_MEDIA_JOBS.load(Ordering::SeqCst) > 0
+}
 
 // ═══════════════════════════════════════════
 // Configuration
@@ -23,6 +53,23 @@ pub enum WhisperModel {
     Medium, // ~1.5 GB, high accuracy
     Large, // ~3.1 GB, most accurate
     LargeTurbo, // ~1.6 GB, best speed/accuracy tradeoff
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaTranscriptionMode {
+    LocalWhisper,
+    #[default]
+    InheritSpeechToText,
+    Disabled,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaFailurePolicy {
+    #[default]
+    BestEffort,
+    RequireTranscript,
 }
 
 impl WhisperModel {
@@ -122,6 +169,10 @@ impl WhisperModel {
 #[serde(rename_all = "camelCase")]
 pub struct VideoConfig {
     pub enabled: bool,
+    #[serde(default)]
+    pub transcription_mode: MediaTranscriptionMode,
+    #[serde(default)]
+    pub failure_policy: MediaFailurePolicy,
     #[serde(alias = "whisper_model")]
     pub whisper_model: WhisperModel,
     pub language: Option<String>, // None = auto-detect
@@ -137,7 +188,7 @@ pub struct VideoConfig {
     pub model_path: String,
     #[serde(default = "default_scene_threshold", alias = "scene_threshold")]
     pub scene_threshold: f64,
-    #[serde(default = "default_true", alias = "use_gpu")]
+    #[serde(default, alias = "use_gpu")]
     pub use_gpu: bool,
     #[serde(default = "default_true", alias = "prefer_embedded_subtitles")]
     pub prefer_embedded_subtitles: bool,
@@ -152,7 +203,7 @@ fn default_true() -> bool {
     true
 }
 fn default_beam_size() -> u32 {
-    5
+    1
 }
 
 impl Default for VideoConfig {
@@ -166,6 +217,8 @@ impl Default for VideoConfig {
             .to_string();
         Self {
             enabled: false, // Disabled by default (unlike OCR)
+            transcription_mode: MediaTranscriptionMode::default(),
+            failure_policy: MediaFailurePolicy::default(),
             whisper_model: WhisperModel::default(),
             language: None,
             translate_to_english: false,
@@ -174,7 +227,7 @@ impl Default for VideoConfig {
             frame_interval_secs: 10,
             model_path,
             scene_threshold: default_scene_threshold(),
-            use_gpu: default_true(),
+            use_gpu: false,
             prefer_embedded_subtitles: default_true(),
             beam_size: default_beam_size(),
         }
@@ -202,10 +255,34 @@ pub struct VideoProcessingProgress {
 
 /// A timestamped segment of transcribed speech.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualEvent {
+    pub timestamp_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+    pub confidence: f32,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedFrame {
+    pub path: PathBuf,
+    pub timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaAnalysisWarning {
+    pub code: String,
+    pub message: String,
 }
 
 /// Result of video analysis.
@@ -214,7 +291,8 @@ pub struct VideoAnalysisResult {
     pub transcript_segments: Vec<TranscriptSegment>,
     pub full_transcript: String,
     pub duration_secs: Option<f64>,
-    pub frame_texts: Vec<String>, // OCR text from extracted frames
+    pub visual_events: Vec<VisualEvent>,
+    pub warnings: Vec<MediaAnalysisWarning>,
     pub thumbnail_path: Option<PathBuf>,
     pub metadata: Option<VideoMetadata>,
 }
@@ -232,6 +310,33 @@ pub struct VideoMetadata {
     pub creation_time: Option<String>,
     #[serde(alias = "duration_secs")]
     pub duration_secs: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaProbe {
+    pub has_audio: bool,
+    pub subtitle_streams: Vec<SubtitleStream>,
+    pub metadata: VideoMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityRuntimeStatus {
+    pub configured: bool,
+    pub ready: bool,
+    pub degraded: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRuntimeStatus {
+    pub enabled: bool,
+    pub transcription_mode: MediaTranscriptionMode,
+    pub failure_policy: MediaFailurePolicy,
+    pub probe: CapabilityRuntimeStatus,
+    pub transcription: CapabilityRuntimeStatus,
+    pub visual_analysis: CapabilityRuntimeStatus,
 }
 
 /// Metadata for an embedded subtitle stream.
@@ -410,20 +515,20 @@ pub fn extract_frames(
     output_dir: &Path,
     interval_secs: u32,
     config: &VideoConfig,
-) -> Result<Vec<PathBuf>, CoreError> {
+) -> Result<Vec<ExtractedFrame>, CoreError> {
     let interval_secs = interval_secs.max(1);
     std::fs::create_dir_all(output_dir)
         .map_err(|e| CoreError::Video(format!("Failed to create frame output dir: {e}")))?;
 
     let ffmpeg = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
-    let fps_filter = format!("fps=1/{interval_secs}");
+    let fps_filter = format!("fps=1/{interval_secs},showinfo");
     let output_pattern = output_dir.join("frame_%04d.jpg");
     let canonical_path =
         std::fs::canonicalize(video_path).unwrap_or_else(|_| video_path.to_path_buf());
     let video = canonical_path.to_string_lossy();
     let pattern = output_pattern.to_string_lossy();
 
-    run_ffmpeg_command(
+    let output = run_ffmpeg_command(
         ffmpeg,
         &[
             "-i",
@@ -446,7 +551,18 @@ pub fn extract_frames(
         .filter(|p| p.extension().is_some_and(|ext| ext == "jpg"))
         .collect();
     frames.sort();
-    Ok(frames)
+    let timestamps = parse_showinfo_timestamps(&String::from_utf8_lossy(&output.stderr));
+    Ok(frames
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| ExtractedFrame {
+            path,
+            timestamp_ms: timestamps
+                .get(index)
+                .copied()
+                .unwrap_or(index as i64 * interval_secs as i64 * 1000),
+        })
+        .collect())
 }
 
 /// Extract keyframes using FFmpeg scene-change detection.
@@ -456,12 +572,12 @@ pub fn extract_keyframes(
     output_dir: &Path,
     scene_threshold: f64,
     config: &VideoConfig,
-) -> Result<Vec<PathBuf>, CoreError> {
+) -> Result<Vec<ExtractedFrame>, CoreError> {
     std::fs::create_dir_all(output_dir)
         .map_err(|e| CoreError::Video(format!("Failed to create keyframe output dir: {e}")))?;
 
     let ffmpeg = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
-    let vf = format!("select='gt(scene,{scene_threshold})'");
+    let vf = format!("select='gt(scene,{scene_threshold})',showinfo");
     let output_pattern = output_dir.join("scene_%04d.jpg");
     let canonical_path =
         std::fs::canonicalize(video_path).unwrap_or_else(|_| video_path.to_path_buf());
@@ -478,10 +594,13 @@ pub fn extract_keyframes(
         1800,
     );
 
-    if let Err(e) = result {
-        tracing::warn!("Scene detection failed, will fall back to fixed-interval: {e}");
-        return Ok(Vec::new());
-    }
+    let output = match result {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::warn!("Scene detection failed, will fall back to fixed-interval: {e}");
+            return Ok(Vec::new());
+        }
+    };
 
     let mut frames: Vec<PathBuf> = std::fs::read_dir(output_dir)
         .map_err(|e| CoreError::Video(format!("Failed to read keyframe dir: {e}")))?
@@ -490,7 +609,34 @@ pub fn extract_keyframes(
         .filter(|p| p.extension().is_some_and(|ext| ext == "jpg"))
         .collect();
     frames.sort();
-    Ok(frames)
+    let timestamps = parse_showinfo_timestamps(&String::from_utf8_lossy(&output.stderr));
+    if frames.len() != timestamps.len() {
+        tracing::warn!(
+            "Scene timestamp count ({}) did not match frame count ({}); falling back to fixed interval",
+            timestamps.len(),
+            frames.len(),
+        );
+        return Ok(Vec::new());
+    }
+    Ok(frames
+        .into_iter()
+        .zip(timestamps)
+        .map(|(path, timestamp_ms)| ExtractedFrame { path, timestamp_ms })
+        .collect())
+}
+
+fn parse_showinfo_timestamps(stderr: &str) -> Vec<i64> {
+    let marker = "pts_time:";
+    stderr
+        .lines()
+        .filter_map(|line| {
+            let value = line.split_once(marker)?.1.split_whitespace().next()?;
+            value
+                .parse::<f64>()
+                .ok()
+                .map(|seconds| (seconds * 1000.0).round() as i64)
+        })
+        .collect()
 }
 
 /// Get video duration in seconds using FFprobe.
@@ -523,32 +669,6 @@ pub fn get_video_duration(video_path: &Path, config: &VideoConfig) -> Result<f64
 // ═══════════════════════════════════════════
 // Subtitle Extraction
 // ═══════════════════════════════════════════
-
-/// Check if a video file contains at least one audio stream.
-fn has_audio_stream(ffmpeg_path: &str, video_path: &Path) -> bool {
-    let ffprobe = derive_ffprobe_path(ffmpeg_path);
-    let canonical_path =
-        std::fs::canonicalize(video_path).unwrap_or_else(|_| video_path.to_path_buf());
-    let video_str = canonical_path.to_string_lossy();
-    match run_ffmpeg_command(
-        &ffprobe,
-        &[
-            "-v",
-            "quiet",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=codec_type",
-            "-of",
-            "csv=p=0",
-            &video_str,
-        ],
-        30,
-    ) {
-        Ok(output) => !output.stdout.is_empty(),
-        Err(_) => false,
-    }
-}
 
 /// Detect embedded subtitle streams in a video file using ffprobe.
 pub fn detect_subtitle_streams(
@@ -933,81 +1053,150 @@ fn apply_timestamp_rules(
     Ok(result)
 }
 
-/// Transcribe a WAV file using candle-transformers Whisper.
 #[cfg(feature = "video")]
-pub fn transcribe_audio(
-    wav_path: &Path,
-    config: &VideoConfig,
-) -> Result<Vec<TranscriptSegment>, CoreError> {
-    use candle_core::{IndexOp, Tensor};
-    use candle_transformers::models::whisper::{self as m, audio, Config as WhisperConfig};
+struct CachedWhisperRuntime {
+    model_key: PathBuf,
+    device: candle_core::Device,
+    tokenizer: tokenizers::Tokenizer,
+    model: candle_transformers::models::whisper::model::Whisper,
+    num_mel_bins: usize,
+    vocab_size: usize,
+    max_target_positions: usize,
+    suppress_token_ids: Vec<u32>,
+}
 
-    // Device — GPU requires candle "cuda" or "metal" features at compile time.
+#[cfg(feature = "video")]
+static WHISPER_RUNTIME: std::sync::OnceLock<std::sync::Mutex<Option<CachedWhisperRuntime>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(feature = "video")]
+fn load_whisper_runtime(config: &VideoConfig) -> Result<CachedWhisperRuntime, CoreError> {
+    use candle_transformers::models::whisper::{self as m, Config as WhisperConfig};
+
     let device = candle_core::Device::Cpu;
-
-    // ── load model files ──────────────────────────────────────────────
     let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
-
+    let model_key = std::fs::canonicalize(&model_dir).unwrap_or_else(|_| model_dir.clone());
     let config_path = model_dir.join("config.json");
     let whisper_config: WhisperConfig = serde_json::from_str(
         &std::fs::read_to_string(&config_path)
             .map_err(|e| CoreError::Video(format!("Failed to read whisper config: {e}")))?,
     )
     .map_err(|e| CoreError::Video(format!("Failed to parse whisper config: {e}")))?;
-
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+    let tokenizer = tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
         .map_err(|e| CoreError::Video(format!("Failed to load tokenizer: {e}")))?;
-
     let weight_paths: Vec<PathBuf> = config
         .whisper_model
         .weight_files()
         .iter()
-        .map(|f| model_dir.join(f))
+        .map(|file| model_dir.join(file))
         .collect();
-
-    // SAFETY: model files are read-only after download and not modified while mapped.
+    // SAFETY: model files are read-only after download and deletion is blocked
+    // while the cached runtime is in use.
     let vb =
         unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&weight_paths, m::DTYPE, &device) }
             .map_err(|e| CoreError::Video(format!("Failed to load model weights: {e}")))?;
-
     let num_mel_bins = whisper_config.num_mel_bins;
     let vocab_size = whisper_config.vocab_size;
     let max_target_positions = whisper_config.max_target_positions;
     let suppress_token_ids = whisper_config.suppress_tokens.clone();
-
-    let mut model = m::model::Whisper::load(&vb, whisper_config)
+    let model = m::model::Whisper::load(&vb, whisper_config)
         .map_err(|e| CoreError::Video(format!("Failed to build whisper model: {e}")))?;
 
+    Ok(CachedWhisperRuntime {
+        model_key,
+        device,
+        tokenizer,
+        model,
+        num_mel_bins,
+        vocab_size,
+        max_target_positions,
+        suppress_token_ids,
+    })
+}
+
+#[cfg(feature = "video")]
+fn clear_whisper_runtime_cache() {
+    if let Some(cache) = WHISPER_RUNTIME.get() {
+        if let Ok(mut runtime) = cache.lock() {
+            runtime.take();
+        }
+    }
+}
+
+/// Transcribe a WAV file using a process-wide cached candle-transformers
+/// Whisper runtime. Access is serialized because its decoder owns a mutable
+/// KV cache; the first decoder step flushes that cache for each chunk.
+#[cfg(feature = "video")]
+pub fn transcribe_audio(
+    wav_path: &Path,
+    config: &VideoConfig,
+) -> Result<Vec<TranscriptSegment>, CoreError> {
+    use candle_core::{IndexOp, Tensor};
+    use candle_transformers::models::whisper::{self as m, audio};
+
+    if config.use_gpu {
+        tracing::warn!("GPU transcription was requested but this build uses the CPU backend");
+    }
+    if config.beam_size > 1 {
+        tracing::warn!("Beam search was requested but this build uses greedy decoding");
+    }
+
+    let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
+    let model_key = std::fs::canonicalize(&model_dir).unwrap_or(model_dir);
+    let cache = WHISPER_RUNTIME.get_or_init(|| std::sync::Mutex::new(None));
+    let mut runtime_guard = cache
+        .lock()
+        .map_err(|_| CoreError::Video("Whisper runtime cache is poisoned".into()))?;
+    if runtime_guard
+        .as_ref()
+        .is_none_or(|runtime| runtime.model_key != model_key)
+    {
+        *runtime_guard = Some(load_whisper_runtime(config)?);
+    }
+    let runtime = runtime_guard
+        .as_mut()
+        .ok_or_else(|| CoreError::Video("Whisper runtime failed to initialize".into()))?;
+    let CachedWhisperRuntime {
+        device,
+        tokenizer,
+        model,
+        num_mel_bins,
+        vocab_size,
+        max_target_positions,
+        suppress_token_ids,
+        ..
+    } = runtime;
+    let num_mel_bins = *num_mel_bins;
+    let vocab_size = *vocab_size;
+    let max_target_positions = *max_target_positions;
+
     // ── special tokens ────────────────────────────────────────────────
-    let sot_token = whisper_token_id(&tokenizer, m::SOT_TOKEN)?;
-    let eot_token = whisper_token_id(&tokenizer, m::EOT_TOKEN)?;
-    let transcribe_token = whisper_token_id(&tokenizer, m::TRANSCRIBE_TOKEN)?;
-    let translate_token = whisper_token_id(&tokenizer, m::TRANSLATE_TOKEN)?;
-    let no_timestamps_token = whisper_token_id(&tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
+    let sot_token = whisper_token_id(tokenizer, m::SOT_TOKEN)?;
+    let eot_token = whisper_token_id(tokenizer, m::EOT_TOKEN)?;
+    let transcribe_token = whisper_token_id(tokenizer, m::TRANSCRIBE_TOKEN)?;
+    let translate_token = whisper_token_id(tokenizer, m::TRANSLATE_TOKEN)?;
+    let no_timestamps_token = whisper_token_id(tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
     let no_speech_token = m::NO_SPEECH_TOKENS
         .iter()
-        .find_map(|t| whisper_token_id(&tokenizer, t).ok())
+        .find_map(|t| whisper_token_id(tokenizer, t).ok())
         .ok_or_else(|| CoreError::Video("No-speech token not found in tokenizer".into()))?;
 
-    let language_token = if let Some(ref lang) = config.language {
-        Some(
-            whisper_token_id(&tokenizer, &format!("<|{lang}|>"))
-                .map_err(|_| CoreError::Video(format!("Unsupported language: {lang}")))?,
-        )
-    } else {
-        // Default to English when language is unset
-        whisper_token_id(&tokenizer, "<|en|>").ok()
-    };
+    let mut language_token = config
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty() && !language.eq_ignore_ascii_case("auto"))
+        .map(|language| {
+            whisper_token_id(tokenizer, &format!("<|{language}|>"))
+                .map_err(|_| CoreError::Video(format!("Unsupported language: {language}")))
+        })
+        .transpose()?;
 
     let task_token = if config.translate_to_english {
         translate_token
     } else {
         transcribe_token
     };
-
-    // Number of preamble tokens before decoded content begins
-    let sample_begin = if language_token.is_some() { 3 } else { 2 };
 
     // Suppress tokens mask (also suppress <|notimestamps|> since we want timestamps)
     let suppress_mask: Vec<f32> = (0..vocab_size as u32)
@@ -1019,7 +1208,7 @@ pub fn transcribe_audio(
             }
         })
         .collect();
-    let suppress_mask = Tensor::new(suppress_mask.as_slice(), &device)
+    let suppress_mask = Tensor::new(suppress_mask.as_slice(), device)
         .map_err(|e| CoreError::Video(format!("Suppress mask tensor: {e}")))?;
 
     // ── audio → mel spectrogram ───────────────────────────────────────
@@ -1027,7 +1216,7 @@ pub fn transcribe_audio(
     let mel_filters = compute_mel_filters(m::SAMPLE_RATE as f64, m::N_FFT, num_mel_bins);
     let mel = audio::pcm_to_mel(&model.config, &audio_data, &mel_filters);
     let mel_len = mel.len();
-    let mel = Tensor::from_vec(mel, (1, num_mel_bins, mel_len / num_mel_bins), &device)
+    let mel = Tensor::from_vec(mel, (1, num_mel_bins, mel_len / num_mel_bins), device)
         .map_err(|e| CoreError::Video(format!("Mel tensor: {e}")))?;
 
     // ── decode in 30-second chunks ────────────────────────────────────
@@ -1054,6 +1243,51 @@ pub fn transcribe_audio(
             .forward(&mel_segment, true)
             .map_err(|e| CoreError::Video(format!("Encoder forward: {e}")))?;
 
+        // Whisper multilingual models require a language token in the decode
+        // prompt. When the user selects Auto, identify it from the first
+        // encoded chunk using the same language-token scoring procedure as
+        // Candle's upstream Whisper example, then reuse it for later chunks.
+        if language_token.is_none() {
+            const LANGUAGE_CODES: &str = "en zh de es ru ko fr ja pt tr pl ca nl ar sv it id hi fi vi he uk el ms cs ro da hu ta no th ur hr bg lt la mi ml cy sk te fa lv bn sr az sl kn et mk br eu is hy ne mn bs kk sq sw gl mr pa si km sn yo so af oc ka be tg sd gu am yi lo uz fo ht ps tk nn mt sa lb my bo tl mg as tt haw ln ha ba jw su";
+            let tokens = Tensor::new(&[[sot_token]], device)
+                .map_err(|e| CoreError::Video(format!("Language token input: {e}")))?;
+            let ys = model
+                .decoder
+                .forward(&tokens, &audio_features, true)
+                .map_err(|e| CoreError::Video(format!("Language detection decoder: {e}")))?;
+            let logits = model
+                .decoder
+                .final_linear(&ys.i(..1).map_err(|e| CoreError::Video(format!("i: {e}")))?)
+                .map_err(|e| CoreError::Video(format!("Language detection logits: {e}")))?
+                .i(0)
+                .and_then(|tensor| tensor.i(0))
+                .map_err(|e| CoreError::Video(format!("Language detection slice: {e}")))?
+                .to_vec1::<f32>()
+                .map_err(|e| CoreError::Video(format!("Language detection values: {e}")))?;
+            language_token = LANGUAGE_CODES
+                .split_ascii_whitespace()
+                .filter_map(|code| {
+                    whisper_token_id(tokenizer, &format!("<|{code}|>"))
+                        .ok()
+                        .and_then(|token| {
+                            logits
+                                .get(token as usize)
+                                .copied()
+                                .map(|score| (token, score))
+                        })
+                })
+                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(token, _)| token);
+            if language_token.is_none() {
+                return Err(CoreError::Video(
+                    "Whisper tokenizer contains no supported language tokens".into(),
+                ));
+            }
+        }
+
+        // SOT, detected/configured language, then task token.
+        let sample_begin = 3;
+
         // Build initial token sequence: SOT [lang] task
         let mut tokens = vec![sot_token];
         if let Some(lt) = language_token {
@@ -1063,7 +1297,7 @@ pub fn transcribe_audio(
 
         // Autoregressive decoding with greedy search
         for i in 0..sample_len {
-            let tokens_t = Tensor::new(tokens.as_slice(), &device)
+            let tokens_t = Tensor::new(tokens.as_slice(), device)
                 .map_err(|e| CoreError::Video(format!("Token tensor: {e}")))?
                 .unsqueeze(0)
                 .map_err(|e| CoreError::Video(format!("Unsqueeze: {e}")))?;
@@ -1194,6 +1428,144 @@ pub fn transcribe_audio(
     Ok(segments)
 }
 
+#[cfg(feature = "video")]
+fn wav_duration_ms(wav_path: &Path) -> Result<i64, CoreError> {
+    let reader = hound::WavReader::open(wav_path)
+        .map_err(|error| CoreError::Video(format!("Failed to open WAV: {error}")))?;
+    let spec = reader.spec();
+    let frames = reader.duration() as f64 / spec.channels.max(1) as f64;
+    Ok((frames / spec.sample_rate.max(1) as f64 * 1000.0).round() as i64)
+}
+
+#[cfg(feature = "video")]
+fn transcribe_cloud_wav_chunks(
+    wav_path: &Path,
+    speech: &SpeechToTextConfig,
+) -> Result<Vec<TranscriptSegment>, CoreError> {
+    const CHUNK_SECONDS: usize = 8 * 60;
+    let mut reader = hound::WavReader::open(wav_path)
+        .map_err(|error| CoreError::Video(format!("Failed to open WAV: {error}")))?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(CoreError::Video(
+            "Cloud media transcription requires normalized 16-bit PCM WAV audio".into(),
+        ));
+    }
+    let samples_per_chunk =
+        spec.sample_rate as usize * spec.channels.max(1) as usize * CHUNK_SECONDS;
+    let temp_dir = tempfile::tempdir()
+        .map_err(|error| CoreError::Video(format!("Failed to create ASR temp dir: {error}")))?;
+    let mut samples = reader.samples::<i16>();
+    let mut processed_samples = 0usize;
+    let mut chunk_index = 0usize;
+    let mut segments = Vec::new();
+
+    loop {
+        let chunk_path = temp_dir.path().join(format!("chunk-{chunk_index:04}.wav"));
+        let mut writer = hound::WavWriter::create(&chunk_path, spec)
+            .map_err(|error| CoreError::Video(format!("Failed to create ASR chunk: {error}")))?;
+        let mut written = 0usize;
+        for _ in 0..samples_per_chunk {
+            let Some(sample) = samples.next() else { break };
+            writer
+                .write_sample(
+                    sample
+                        .map_err(|error| CoreError::Video(format!("Read WAV sample: {error}")))?,
+                )
+                .map_err(|error| CoreError::Video(format!("Write ASR chunk: {error}")))?;
+            written += 1;
+        }
+        writer
+            .finalize()
+            .map_err(|error| CoreError::Video(format!("Finalize ASR chunk: {error}")))?;
+        if written == 0 {
+            let _ = std::fs::remove_file(&chunk_path);
+            break;
+        }
+
+        let start_ms = ((processed_samples as f64
+            / spec.channels.max(1) as f64
+            / spec.sample_rate.max(1) as f64)
+            * 1000.0)
+            .round() as i64;
+        processed_samples += written;
+        let end_ms = ((processed_samples as f64
+            / spec.channels.max(1) as f64
+            / spec.sample_rate.max(1) as f64)
+            * 1000.0)
+            .round() as i64;
+        let text = crate::speech_to_text::transcribe_cloud_wav_blocking(
+            std::fs::read(&chunk_path)?,
+            speech,
+        )?;
+        if !text.trim().is_empty() {
+            segments.push(TranscriptSegment {
+                start_ms,
+                end_ms,
+                text,
+            });
+        }
+        chunk_index += 1;
+    }
+    Ok(segments)
+}
+
+#[cfg(feature = "video")]
+fn transcribe_media_wav(
+    wav_path: &Path,
+    video: &VideoConfig,
+    speech: &SpeechToTextConfig,
+) -> Result<Vec<TranscriptSegment>, CoreError> {
+    match video.transcription_mode {
+        MediaTranscriptionMode::Disabled => Ok(Vec::new()),
+        MediaTranscriptionMode::LocalWhisper => transcribe_audio(wav_path, video),
+        MediaTranscriptionMode::InheritSpeechToText => match speech.api_style.as_str() {
+            "local_whisper" => {
+                let mut inherited = video.clone();
+                inherited.language = speech.language.clone().or_else(|| video.language.clone());
+                transcribe_audio(wav_path, &inherited)
+            }
+            "openai_transcription" | "dashscope_asr" => {
+                transcribe_cloud_wav_chunks(wav_path, speech)
+            }
+            "sherpa_onnx" => {
+                let text = crate::speech_to_text::transcribe_sherpa_wav(wav_path, speech)?;
+                Ok(vec![TranscriptSegment {
+                    start_ms: 0,
+                    end_ms: wav_duration_ms(wav_path)?,
+                    text,
+                }])
+            }
+            style => Err(CoreError::InvalidInput(format!(
+                "Speech-to-text backend {style} cannot transcribe media files"
+            ))),
+        },
+    }
+}
+
+fn media_warning(code: &str, error: &CoreError) -> MediaAnalysisWarning {
+    MediaAnalysisWarning {
+        code: code.to_string(),
+        message: error.to_string(),
+    }
+}
+
+fn degraded_analysis_result(
+    duration_secs: Option<f64>,
+    code: &str,
+    error: &CoreError,
+) -> VideoAnalysisResult {
+    VideoAnalysisResult {
+        transcript_segments: Vec::new(),
+        full_transcript: String::new(),
+        duration_secs,
+        visual_events: Vec::new(),
+        warnings: vec![media_warning(code, error)],
+        thumbnail_path: None,
+        metadata: None,
+    }
+}
+
 /// Read WAV file into f32 samples normalized to [-1.0, 1.0], converting stereo to mono.
 fn read_wav_pcm(wav_path: &Path) -> Result<Vec<f32>, CoreError> {
     let reader = hound::WavReader::open(wav_path)
@@ -1249,6 +1621,89 @@ pub fn check_whisper_model_exists(config: &VideoConfig) -> bool {
         .required_files()
         .iter()
         .all(|f| model_dir.join(f).exists())
+}
+
+pub fn media_runtime_status(
+    video: &VideoConfig,
+    ocr: &crate::ocr::OcrConfig,
+    speech: &SpeechToTextConfig,
+) -> MediaRuntimeStatus {
+    if !video.enabled {
+        let inactive = CapabilityRuntimeStatus {
+            configured: false,
+            ready: false,
+            degraded: false,
+            reason: None,
+        };
+        return MediaRuntimeStatus {
+            enabled: false,
+            transcription_mode: video.transcription_mode,
+            failure_policy: video.failure_policy,
+            probe: inactive.clone(),
+            transcription: inactive.clone(),
+            visual_analysis: inactive,
+        };
+    }
+
+    let ffmpeg_ready = check_ffmpeg(video).unwrap_or(false);
+    let probe = CapabilityRuntimeStatus {
+        configured: true,
+        ready: ffmpeg_ready,
+        degraded: !ffmpeg_ready,
+        reason: (!ffmpeg_ready).then(|| "ffmpeg_unavailable".to_string()),
+    };
+
+    let transcription = match video.transcription_mode {
+        MediaTranscriptionMode::Disabled => CapabilityRuntimeStatus {
+            configured: true,
+            ready: true,
+            degraded: false,
+            reason: None,
+        },
+        MediaTranscriptionMode::LocalWhisper => {
+            let ready = check_whisper_model_exists(video);
+            CapabilityRuntimeStatus {
+                configured: true,
+                ready,
+                degraded: !ready,
+                reason: (!ready).then(|| "whisper_model_unavailable".to_string()),
+            }
+        }
+        MediaTranscriptionMode::InheritSpeechToText => {
+            let configured = speech.is_configured();
+            let ready = match speech.api_style.as_str() {
+                "local_whisper" => configured && check_whisper_model_exists(video),
+                "openai_transcription" | "dashscope_asr" | "sherpa_onnx" => configured,
+                _ => false,
+            };
+            CapabilityRuntimeStatus {
+                configured,
+                ready,
+                degraded: !ready,
+                reason: (!configured)
+                    .then(|| "speech_to_text_not_configured".to_string())
+                    .or_else(|| (!ready).then(|| "speech_to_text_backend_unavailable".to_string())),
+            }
+        }
+    };
+
+    let visual_ready =
+        !video.frame_extraction_enabled || (ocr.enabled && crate::ocr::check_ocr_models_exist(ocr));
+    let visual_analysis = CapabilityRuntimeStatus {
+        configured: !video.frame_extraction_enabled || ocr.enabled,
+        ready: visual_ready,
+        degraded: !visual_ready,
+        reason: (!visual_ready).then(|| "ocr_models_unavailable".to_string()),
+    };
+
+    MediaRuntimeStatus {
+        enabled: true,
+        transcription_mode: video.transcription_mode,
+        failure_policy: video.failure_policy,
+        probe,
+        transcription,
+        visual_analysis,
+    }
 }
 
 /// Download the selected Whisper model (safetensors format) with progress reporting.
@@ -1406,6 +1861,7 @@ fn download_with_fallback(
 
 /// Delete all model files for the configured whisper model.
 pub fn delete_whisper_model(config: &VideoConfig) -> Result<(), CoreError> {
+    clear_whisper_runtime_cache();
     let model_dir = Path::new(&config.model_path).join(config.whisper_model.dir_name());
     if model_dir.exists() {
         std::fs::remove_dir_all(&model_dir)
@@ -1759,11 +2215,69 @@ pub fn generate_thumbnail(
 // Video Metadata Extraction
 // ═══════════════════════════════════════════
 
-/// Extract rich metadata from a video file via ffprobe.
-pub fn extract_video_metadata(
-    ffmpeg_path: &str,
-    video_path: &Path,
-) -> Result<VideoMetadata, CoreError> {
+fn parse_media_probe(parsed: &serde_json::Value) -> MediaProbe {
+    let streams = parsed["streams"].as_array().cloned().unwrap_or_default();
+    let video_stream = streams
+        .iter()
+        .find(|stream| stream["codec_type"].as_str() == Some("video"));
+    let has_audio = streams
+        .iter()
+        .any(|stream| stream["codec_type"].as_str() == Some("audio"));
+    let subtitle_streams = streams
+        .iter()
+        .filter(|stream| stream["codec_type"].as_str() == Some("subtitle"))
+        .filter_map(|stream| {
+            Some(SubtitleStream {
+                index: stream["index"].as_u64()? as usize,
+                language: stream["tags"]["language"].as_str().map(ToOwned::to_owned),
+                codec_name: stream["codec_name"].as_str()?.to_string(),
+                title: stream["tags"]["title"].as_str().map(ToOwned::to_owned),
+            })
+        })
+        .collect();
+
+    let width = video_stream
+        .and_then(|stream| stream["width"].as_u64())
+        .map(|value| value as u32);
+    let height = video_stream
+        .and_then(|stream| stream["height"].as_u64())
+        .map(|value| value as u32);
+    let codec = video_stream
+        .and_then(|stream| stream["codec_name"].as_str())
+        .map(ToOwned::to_owned);
+    let framerate = video_stream.and_then(|stream| {
+        let rate = stream["r_frame_rate"].as_str()?;
+        let (numerator, denominator) = rate.split_once('/')?;
+        let numerator = numerator.parse::<f64>().ok()?;
+        let denominator = denominator.parse::<f64>().ok()?;
+        (denominator > 0.0).then_some(numerator / denominator)
+    });
+    let format = &parsed["format"];
+    let metadata = VideoMetadata {
+        width,
+        height,
+        codec,
+        bitrate: format["bit_rate"]
+            .as_str()
+            .and_then(|value| value.parse().ok()),
+        framerate,
+        creation_time: format["tags"]["creation_time"]
+            .as_str()
+            .map(ToOwned::to_owned),
+        duration_secs: format["duration"]
+            .as_str()
+            .and_then(|value| value.parse().ok()),
+    };
+    MediaProbe {
+        has_audio,
+        subtitle_streams,
+        metadata,
+    }
+}
+
+/// Probe streams, duration, and video metadata with one ffprobe process.
+pub fn probe_media(video_path: &Path, config: &VideoConfig) -> Result<MediaProbe, CoreError> {
+    let ffmpeg_path = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
     let ffprobe = derive_ffprobe_path(ffmpeg_path);
     let video = video_path.to_string_lossy();
 
@@ -1776,8 +2290,6 @@ pub fn extract_video_metadata(
             "json",
             "-show_format",
             "-show_streams",
-            "-select_streams",
-            "v:0",
             &video,
         ],
         30,
@@ -1787,49 +2299,19 @@ pub fn extract_video_metadata(
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| CoreError::Video(format!("Failed to parse ffprobe metadata JSON: {e}")))?;
 
-    let stream = parsed["streams"].as_array().and_then(|a| a.first());
+    Ok(parse_media_probe(&parsed))
+}
 
-    let width = stream.and_then(|s| s["width"].as_u64()).map(|v| v as u32);
-    let height = stream.and_then(|s| s["height"].as_u64()).map(|v| v as u32);
-    let codec = stream
-        .and_then(|s| s["codec_name"].as_str())
-        .map(|s| s.to_string());
-    let framerate = stream.and_then(|s| {
-        let r_frame_rate = s["r_frame_rate"].as_str()?;
-        let parts: Vec<&str> = r_frame_rate.split('/').collect();
-        if parts.len() == 2 {
-            let num: f64 = parts[0].parse().ok()?;
-            let den: f64 = parts[1].parse().ok()?;
-            if den > 0.0 {
-                Some(num / den)
-            } else {
-                None
-            }
-        } else {
-            r_frame_rate.parse().ok()
-        }
-    });
-
-    let format = &parsed["format"];
-    let bitrate = format["bit_rate"]
-        .as_str()
-        .and_then(|s| s.parse::<u64>().ok());
-    let duration_secs = format["duration"]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok());
-    let creation_time = format["tags"]["creation_time"]
-        .as_str()
-        .map(|s| s.to_string());
-
-    Ok(VideoMetadata {
-        width,
-        height,
-        codec,
-        bitrate,
-        framerate,
-        creation_time,
-        duration_secs,
-    })
+/// Extract rich metadata from a video file via ffprobe.
+pub fn extract_video_metadata(
+    ffmpeg_path: &str,
+    video_path: &Path,
+) -> Result<VideoMetadata, CoreError> {
+    let config = VideoConfig {
+        ffmpeg_path: Some(ffmpeg_path.to_string()),
+        ..VideoConfig::default()
+    };
+    Ok(probe_media(video_path, &config)?.metadata)
 }
 
 // ═══════════════════════════════════════════
@@ -1842,8 +2324,29 @@ pub fn extract_video_metadata(
 pub fn analyze_audio(
     audio_path: &Path,
     config: &VideoConfig,
+    speech_config: &SpeechToTextConfig,
     on_progress: impl Fn(VideoProcessingProgress),
 ) -> Result<VideoAnalysisResult, CoreError> {
+    if !config.enabled {
+        return Err(CoreError::InvalidInput("Media analysis is disabled".into()));
+    }
+    let _job = MediaJobLease::acquire();
+    if config.transcription_mode == MediaTranscriptionMode::Disabled {
+        on_progress(VideoProcessingProgress {
+            phase: "complete".into(),
+            progress_pct: 100.0,
+            detail: Some("Audio transcription is disabled".into()),
+        });
+        return Ok(VideoAnalysisResult {
+            transcript_segments: Vec::new(),
+            full_transcript: String::new(),
+            duration_secs: None,
+            visual_events: Vec::new(),
+            warnings: Vec::new(),
+            thumbnail_path: None,
+            metadata: None,
+        });
+    }
     // 1. Get duration
     let duration_secs = get_video_duration(audio_path, config).ok();
 
@@ -1879,7 +2382,21 @@ pub fn analyze_audio(
                 progress_pct: 0.0,
                 detail: Some("Converting to WAV format...".into()),
             });
-            extract_audio(audio_path, &wav, config)?;
+            if let Err(error) = extract_audio(audio_path, &wav, config) {
+                if config.failure_policy == MediaFailurePolicy::BestEffort {
+                    on_progress(VideoProcessingProgress {
+                        phase: "complete".into(),
+                        progress_pct: 100.0,
+                        detail: Some("Audio analysis completed with warnings".into()),
+                    });
+                    return Ok(degraded_analysis_result(
+                        duration_secs,
+                        "audio_conversion_unavailable",
+                        &error,
+                    ));
+                }
+                return Err(error);
+            }
             temp_dir = Some(td);
             wav
         }
@@ -1892,7 +2409,21 @@ pub fn analyze_audio(
             progress_pct: 0.0,
             detail: Some("Converting to WAV format...".into()),
         });
-        extract_audio(audio_path, &wav, config)?;
+        if let Err(error) = extract_audio(audio_path, &wav, config) {
+            if config.failure_policy == MediaFailurePolicy::BestEffort {
+                on_progress(VideoProcessingProgress {
+                    phase: "complete".into(),
+                    progress_pct: 100.0,
+                    detail: Some("Audio analysis completed with warnings".into()),
+                });
+                return Ok(degraded_analysis_result(
+                    duration_secs,
+                    "audio_conversion_unavailable",
+                    &error,
+                ));
+            }
+            return Err(error);
+        }
         temp_dir = Some(td);
         wav
     };
@@ -1903,7 +2434,16 @@ pub fn analyze_audio(
         progress_pct: 30.0,
         detail: Some("Running Whisper transcription...".into()),
     });
-    let segments = transcribe_audio(&wav_path, config)?;
+    let mut warnings = Vec::new();
+    let segments = match transcribe_media_wav(&wav_path, config, speech_config) {
+        Ok(segments) => segments,
+        Err(error) if config.failure_policy == MediaFailurePolicy::BestEffort => {
+            tracing::warn!("Audio transcription degraded: {error}");
+            warnings.push(media_warning("transcription_unavailable", &error));
+            Vec::new()
+        }
+        Err(error) => return Err(error),
+    };
     let full_transcript = segments
         .iter()
         .map(|s| s.text.as_str())
@@ -1923,7 +2463,8 @@ pub fn analyze_audio(
         transcript_segments: segments,
         full_transcript,
         duration_secs,
-        frame_texts: Vec::new(), // No frames for audio
+        visual_events: Vec::new(),
+        warnings,
         thumbnail_path: None,
         metadata: None,
     })
@@ -1944,24 +2485,34 @@ impl Drop for TempDirGuard {
 pub fn analyze_video(
     video_path: &Path,
     config: &VideoConfig,
+    #[allow(unused_variables)] ocr_config: &crate::ocr::OcrConfig,
+    speech_config: &SpeechToTextConfig,
     on_progress: impl Fn(VideoProcessingProgress),
 ) -> Result<VideoAnalysisResult, CoreError> {
-    // Early check: verify Whisper model exists if we'll need transcription
-    let ffmpeg = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
-    let has_embedded_subs = config.prefer_embedded_subtitles
-        && detect_subtitle_streams(ffmpeg, video_path)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-    let has_audio = has_audio_stream(ffmpeg, video_path);
-
-    if !has_embedded_subs && has_audio && !check_whisper_model_exists(config) {
-        return Err(CoreError::Video(
-            "Whisper model not found. Please download it in Settings > Models before analyzing video files.".into(),
-        ));
+    if !config.enabled {
+        return Err(CoreError::InvalidInput("Media analysis is disabled".into()));
     }
-
-    // 1. Get duration
-    let duration_secs = get_video_duration(video_path, config).ok();
+    let _job = MediaJobLease::acquire();
+    let ffmpeg = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
+    let probe = match probe_media(video_path, config) {
+        Ok(probe) => probe,
+        Err(error) if config.failure_policy == MediaFailurePolicy::BestEffort => {
+            tracing::warn!("Media probing degraded: {error}");
+            on_progress(VideoProcessingProgress {
+                phase: "complete".into(),
+                progress_pct: 100.0,
+                detail: Some("Media analysis completed with warnings".into()),
+            });
+            return Ok(degraded_analysis_result(
+                None,
+                "media_probe_unavailable",
+                &error,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    let duration_secs = probe.metadata.duration_secs;
+    let mut warnings = Vec::new();
 
     // 2. Create temp directory for working files (RAII cleanup on drop)
     let temp_dir = std::env::temp_dir().join(format!("nexa-video-{}", uuid::Uuid::new_v4()));
@@ -1973,8 +2524,8 @@ pub fn analyze_video(
     let subtitle_segments = if !config.prefer_embedded_subtitles {
         None
     } else {
-        match detect_subtitle_streams(ffmpeg, video_path) {
-            Ok(streams) if !streams.is_empty() => {
+        match probe.subtitle_streams.as_slice() {
+            streams if !streams.is_empty() => {
                 on_progress(VideoProcessingProgress {
                     phase: "extracting_subtitles".into(),
                     progress_pct: 10.0,
@@ -2009,24 +2560,46 @@ pub fn analyze_video(
         }
     };
 
-    // 4. Fall back to Whisper transcription if no embedded subtitles
+    // 4. Fall back to the configured media transcription backend.
     let segments = if let Some(subs) = subtitle_segments {
         subs
-    } else if has_audio_stream(ffmpeg, video_path) {
+    } else if probe.has_audio && config.transcription_mode != MediaTranscriptionMode::Disabled {
         let wav_path = temp_dir.join("audio.wav");
         on_progress(VideoProcessingProgress {
             phase: "extracting_audio".into(),
             progress_pct: 10.0,
             detail: Some("Extracting audio track...".into()),
         });
-        extract_audio(video_path, &wav_path, config)?;
-
-        on_progress(VideoProcessingProgress {
-            phase: "transcribing".into(),
-            progress_pct: 30.0,
-            detail: Some("Running Whisper transcription...".into()),
-        });
-        transcribe_audio(&wav_path, config)?
+        match extract_audio(video_path, &wav_path, config) {
+            Ok(()) => {
+                on_progress(VideoProcessingProgress {
+                    phase: "transcribing".into(),
+                    progress_pct: 30.0,
+                    detail: Some("Running media transcription...".into()),
+                });
+                match transcribe_media_wav(&wav_path, config, speech_config) {
+                    Ok(segments) => segments,
+                    Err(error) if config.failure_policy == MediaFailurePolicy::BestEffort => {
+                        tracing::warn!("Video transcription degraded: {error}");
+                        warnings.push(media_warning("transcription_unavailable", &error));
+                        Vec::new()
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) if config.failure_policy == MediaFailurePolicy::BestEffort => {
+                tracing::warn!("Video audio extraction degraded: {error}");
+                warnings.push(media_warning("audio_extraction_unavailable", &error));
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        }
+    } else if config.failure_policy == MediaFailurePolicy::RequireTranscript
+        && config.transcription_mode != MediaTranscriptionMode::Disabled
+    {
+        return Err(CoreError::Video(
+            "A transcript is required, but the media has no usable audio or subtitles".into(),
+        ));
     } else {
         tracing::info!("No audio track found, skipping transcription");
         Vec::new()
@@ -2040,50 +2613,98 @@ pub fn analyze_video(
 
     // 5. Optionally extract frames for OCR
     #[cfg(feature = "ocr")]
-    let mut frame_texts = Vec::new();
+    let mut visual_events = Vec::new();
     #[cfg(not(feature = "ocr"))]
-    let frame_texts = Vec::new();
+    let visual_events = Vec::new();
     #[cfg(feature = "ocr")]
     if config.frame_extraction_enabled {
-        on_progress(VideoProcessingProgress {
-            phase: "extracting_frames".into(),
-            progress_pct: 70.0,
-            detail: Some("Extracting key frames...".into()),
-        });
-        let frames_dir = temp_dir.join("frames");
-
-        // Try scene-change detection first, fall back to fixed-interval
-        let frame_paths = {
-            let keyframes =
-                extract_keyframes(video_path, &frames_dir, config.scene_threshold, config)?;
-            if keyframes.is_empty() {
-                let fallback_dir = temp_dir.join("frames_fixed");
-                extract_frames(
-                    video_path,
-                    &fallback_dir,
-                    config.frame_interval_secs,
-                    config,
-                )?
-            } else {
-                keyframes
-            }
-        };
-
-        // OCR each frame using existing OCR pipeline
-        use crate::ocr::{extract_text_from_image, OcrConfig};
-        let ocr_config = OcrConfig::default();
-        for (i, frame_path) in frame_paths.iter().enumerate() {
-            on_progress(VideoProcessingProgress {
-                phase: "ocr".into(),
-                progress_pct: 70.0 + (i as f32 / frame_paths.len() as f32) * 25.0,
-                detail: Some(format!("OCR frame {}/{}", i + 1, frame_paths.len())),
+        if !ocr_config.enabled {
+            warnings.push(MediaAnalysisWarning {
+                code: "visual_analysis_disabled".into(),
+                message: "Frame extraction is enabled but OCR is disabled".into(),
             });
-            if let Ok(frame_bytes) = std::fs::read(frame_path) {
-                if let Ok(result) =
-                    extract_text_from_image(&frame_bytes, "image/jpeg", &ocr_config, None)
-                {
-                    if !result.full_text.trim().is_empty() {
-                        frame_texts.push(result.full_text);
+        } else {
+            on_progress(VideoProcessingProgress {
+                phase: "extracting_frames".into(),
+                progress_pct: 70.0,
+                detail: Some("Extracting key frames...".into()),
+            });
+            let frames_dir = temp_dir.join("frames");
+            let extracted =
+                extract_keyframes(video_path, &frames_dir, config.scene_threshold, config)
+                    .and_then(|keyframes| {
+                        if keyframes.is_empty() {
+                            extract_frames(
+                                video_path,
+                                &temp_dir.join("frames_fixed"),
+                                config.frame_interval_secs,
+                                config,
+                            )
+                        } else {
+                            Ok(keyframes)
+                        }
+                    });
+            let frame_paths = match extracted {
+                Ok(frames) => frames,
+                Err(error) => {
+                    tracing::warn!("Frame extraction degraded: {error}");
+                    warnings.push(media_warning("frame_extraction_unavailable", &error));
+                    Vec::new()
+                }
+            };
+
+            use crate::ocr::{extract_text_from_image, OcrSource};
+            let mut ocr_warning_recorded = false;
+            for (index, frame) in frame_paths.iter().enumerate() {
+                on_progress(VideoProcessingProgress {
+                    phase: "ocr".into(),
+                    progress_pct: 70.0 + (index as f32 / frame_paths.len().max(1) as f32) * 25.0,
+                    detail: Some(format!("OCR frame {}/{}", index + 1, frame_paths.len())),
+                });
+                let frame_bytes = match std::fs::read(&frame.path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        if !ocr_warning_recorded {
+                            warnings.push(MediaAnalysisWarning {
+                                code: "frame_ocr_unavailable".into(),
+                                message: error.to_string(),
+                            });
+                            ocr_warning_recorded = true;
+                        }
+                        continue;
+                    }
+                };
+                match extract_text_from_image(&frame_bytes, "image/jpeg", ocr_config, None) {
+                    Ok(result) if !result.full_text.trim().is_empty() => {
+                        let source = match result.source {
+                            OcrSource::PaddleOcr => "paddle_ocr",
+                            OcrSource::LlmVision => "llm_vision",
+                            OcrSource::None => "none",
+                        };
+                        let end_ms = frame_paths
+                            .get(index + 1)
+                            .map(|next| next.timestamp_ms)
+                            .or_else(|| {
+                                duration_secs.map(|duration| (duration * 1000.0).round() as i64)
+                            })
+                            .unwrap_or(
+                                frame.timestamp_ms + config.frame_interval_secs as i64 * 1000,
+                            )
+                            .max(frame.timestamp_ms + 1);
+                        visual_events.push(VisualEvent {
+                            timestamp_ms: frame.timestamp_ms,
+                            end_ms,
+                            text: result.full_text,
+                            confidence: result.avg_confidence,
+                            source: source.into(),
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if !ocr_warning_recorded {
+                            warnings.push(media_warning("frame_ocr_unavailable", &error));
+                            ocr_warning_recorded = true;
+                        }
                     }
                 }
             }
@@ -2114,9 +2735,6 @@ pub fn analyze_video(
         }
     };
 
-    // 7. Extract video metadata via ffprobe
-    let video_meta = extract_video_metadata(ffmpeg, video_path).ok();
-
     // Cleanup handled by TempDirGuard on drop
     on_progress(VideoProcessingProgress {
         phase: "complete".into(),
@@ -2128,9 +2746,10 @@ pub fn analyze_video(
         transcript_segments: segments,
         full_transcript,
         duration_secs,
-        frame_texts,
+        visual_events,
+        warnings,
         thumbnail_path,
-        metadata: video_meta,
+        metadata: Some(probe.metadata),
     })
 }
 
@@ -2140,7 +2759,12 @@ pub fn analyze_video(
 
 impl Database {
     pub fn save_video_config(&self, config: &VideoConfig) -> Result<(), CoreError> {
-        let json = serde_json::to_string(config)?;
+        let mut normalized = config.clone();
+        // The bundled Candle runtime currently executes this path on CPU with
+        // greedy decoding. Persist only settings that the runtime honors.
+        normalized.use_gpu = false;
+        normalized.beam_size = 1;
+        let json = serde_json::to_string(&normalized)?;
         self.conn().execute(
             "INSERT OR REPLACE INTO video_config (key, value) VALUES ('config', ?1)",
             [&json],
@@ -2156,7 +2780,9 @@ impl Database {
         );
         match result {
             Ok(json) => {
-                let config: VideoConfig = serde_json::from_str(&json)?;
+                let mut config: VideoConfig = serde_json::from_str(&json)?;
+                config.use_gpu = false;
+                config.beam_size = 1;
                 Ok(config)
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(VideoConfig::default()),
@@ -2228,9 +2854,114 @@ mod tests {
     fn test_default_config() {
         let config = VideoConfig::default();
         assert!(!config.enabled);
+        assert_eq!(
+            config.transcription_mode,
+            MediaTranscriptionMode::InheritSpeechToText
+        );
+        assert_eq!(config.failure_policy, MediaFailurePolicy::BestEffort);
         assert_eq!(config.whisper_model, WhisperModel::Base);
         assert_eq!(config.frame_interval_secs, 10);
         assert!(!config.frame_extraction_enabled);
+        assert!(!config.use_gpu);
+        assert_eq!(config.beam_size, 1);
+    }
+
+    #[test]
+    fn legacy_video_config_gets_media_policy_defaults() {
+        let mut value = serde_json::to_value(VideoConfig::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("transcriptionMode");
+        object.remove("failurePolicy");
+
+        let config: VideoConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.transcription_mode,
+            MediaTranscriptionMode::InheritSpeechToText
+        );
+        assert_eq!(config.failure_policy, MediaFailurePolicy::BestEffort);
+    }
+
+    #[test]
+    fn showinfo_parser_preserves_real_frame_timestamps() {
+        let stderr = "[Parsed_showinfo_1] n:0 pts:123 pts_time:1.234 pos:0\n\
+                      [Parsed_showinfo_1] n:1 pts:987 pts_time:9.8765 pos:1";
+        assert_eq!(parse_showinfo_timestamps(stderr), vec![1234, 9877]);
+    }
+
+    #[test]
+    fn media_probe_collects_stream_capabilities_in_one_result() {
+        let probe = parse_media_probe(&serde_json::json!({
+            "streams": [
+                { "index": 0, "codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30000/1001" },
+                { "index": 1, "codec_type": "audio", "codec_name": "aac" },
+                { "index": 2, "codec_type": "subtitle", "codec_name": "subrip", "tags": { "language": "zh", "title": "Chinese" } }
+            ],
+            "format": { "duration": "42.5", "bit_rate": "900000" }
+        }));
+        assert!(probe.has_audio);
+        assert_eq!(probe.subtitle_streams.len(), 1);
+        assert_eq!(probe.subtitle_streams[0].language.as_deref(), Some("zh"));
+        assert_eq!(probe.metadata.width, Some(1920));
+        assert_eq!(probe.metadata.duration_secs, Some(42.5));
+    }
+
+    #[test]
+    fn inherited_cloud_speech_readiness_does_not_require_whisper() {
+        let video = VideoConfig {
+            enabled: true,
+            transcription_mode: MediaTranscriptionMode::InheritSpeechToText,
+            ffmpeg_path: Some("/nonexistent/ffmpeg".into()),
+            ..VideoConfig::default()
+        };
+        let speech = SpeechToTextConfig {
+            provider: "openai".into(),
+            api_style: "openai_transcription".into(),
+            api_key: "test-key".into(),
+            base_url: Some("https://example.invalid/v1".into()),
+            model: "whisper-1".into(),
+            ..SpeechToTextConfig::default()
+        };
+        let status = media_runtime_status(&video, &crate::ocr::OcrConfig::default(), &speech);
+        assert!(status.transcription.configured);
+        assert!(status.transcription.ready);
+        assert!(!status.transcription.degraded);
+        assert!(status.probe.degraded);
+    }
+
+    #[test]
+    fn disabled_media_runtime_has_no_degraded_capabilities() {
+        let status = media_runtime_status(
+            &VideoConfig::default(),
+            &crate::ocr::OcrConfig::default(),
+            &SpeechToTextConfig::default(),
+        );
+        assert!(!status.enabled);
+        assert!(!status.probe.degraded);
+        assert!(!status.transcription.degraded);
+        assert!(!status.visual_analysis.degraded);
+    }
+
+    #[test]
+    fn disabled_audio_transcription_does_not_require_ffmpeg_or_asr() {
+        let temp = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
+        let video = VideoConfig {
+            enabled: true,
+            transcription_mode: MediaTranscriptionMode::Disabled,
+            ffmpeg_path: Some("/definitely/missing/ffmpeg".into()),
+            ..VideoConfig::default()
+        };
+        let result = analyze_audio(temp.path(), &video, &SpeechToTextConfig::default(), |_| {})
+            .expect("disabled transcription should be a no-op");
+        assert!(result.transcript_segments.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn media_job_lease_tracks_model_deletion_guard() {
+        // Other media tests may execute in parallel, so only assert the
+        // invariant this lease owns: while it exists, deletion is guarded.
+        let _lease = MediaJobLease::acquire();
+        assert!(media_jobs_active());
     }
 
     #[test]
@@ -2260,6 +2991,8 @@ mod tests {
             enabled: true,
             whisper_model: WhisperModel::Small,
             language: Some("zh".into()),
+            use_gpu: true,
+            beam_size: 7,
             ..VideoConfig::default()
         };
         db.save_video_config(&config).unwrap();
@@ -2268,6 +3001,8 @@ mod tests {
         assert!(loaded.enabled);
         assert_eq!(loaded.whisper_model, WhisperModel::Small);
         assert_eq!(loaded.language, Some("zh".into()));
+        assert!(!loaded.use_gpu);
+        assert_eq!(loaded.beam_size, 1);
     }
 
     #[test]

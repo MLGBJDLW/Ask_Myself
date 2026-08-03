@@ -497,6 +497,8 @@ fn main() {
             #[cfg(feature = "video")]
             commands::save_video_config_cmd,
             #[cfg(feature = "video")]
+            commands::get_media_runtime_status_cmd,
+            #[cfg(feature = "video")]
             commands::check_whisper_model_cmd,
             #[cfg(feature = "video")]
             commands::download_whisper_model_cmd,
