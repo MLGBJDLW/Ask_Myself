@@ -21,7 +21,7 @@ jobs:
       - name: Install system dependencies (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libdbus-1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libdbus-1-dev libreoffice-calc poppler-utils
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -66,6 +66,16 @@ jobs:
           cargo check -p nexa-core --no-default-features --features local-embeddings
           cargo check -p nexa-core --no-default-features --features ocr
           cargo check -p nexa-core --no-default-features --features video
+
+      - name: Office artifact runtime smoke
+        run: |
+          python3 -m venv /tmp/nexa-office-venv
+          /tmp/nexa-office-venv/bin/python -m pip install --disable-pip-version-check -r crates/core/assets/skills/doc-script-editor/scripts/requirements.txt
+          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/doc-script-editor/scripts/test_office_artifact_runtime.py -v
+          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/xlsx-workbook-design/scripts/test_xlsx_model_renderer.py -v
+          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_renderer.py -v
+          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_html_deck_renderer.py -v
+          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_upgrade_pipeline.py -v
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
