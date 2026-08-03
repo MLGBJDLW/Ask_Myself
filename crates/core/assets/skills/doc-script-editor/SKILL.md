@@ -4,7 +4,7 @@ description: Activate when creating, editing, validating, converting, rendering,
 ---
 
 ## Trigger
-Creating, editing, validating, converting, rendering, unpacking, or analyzing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via the `run_shell` tool invoking `scripts/edit_doc.py` or a short Python script using the bundled requirements.
+Creating, editing, validating, converting, rendering, unpacking, or analyzing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via `scripts/edit_doc.py`; use `scripts/office_artifact_service.py` when the work should run as one structured, transactional Job/Result with a delivery manifest.
 
 ## Pairing
 Use this skill as the execution backend. Pair it with the format skill that carries design and QA rules:
@@ -17,7 +17,7 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 
 ## When to use
 - Creating new DOCX, XLSX, or PPTX files with Python libraries when the result must be a real Office artifact
-- Targeted text replace inside a `.docx`, `.pptx`, or `.xlsx` while preserving formatting
+- Targeted text replace inside a `.docx`, `.pptx`, or `.xlsx`, including matches split across DOCX/PPTX runs
 - Extracting plain text from a `.pdf` / `.docx` / `.pptx` / `.xlsx` for review or summarization
 - Inserting a new slide into an existing `.pptx` at a specific position
 - Redacting sensitive substrings across a document
@@ -27,6 +27,7 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 - Unpacking/repacking DOCX/PPTX/XLSX OOXML for template-aware edits, comments, relationship fixes, image replacement, or structure repair
 - Recalculating XLSX formulas and scanning for residual Excel formula errors
 - Creating a versioned snapshot before a risky edit
+- Running multi-step Office work through a staged Job/Result protocol that validates before atomic publish and writes `artifact-manifest.json`
 - Creating a new Office document when the user cares about layout, tables, formulas, speaker notes, charts, template compatibility, or repeatable Python control
 
 ## When NOT to use
@@ -118,6 +119,13 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx validate
    ```
 
+10. Run a transactional Office job from a reviewable JSON contract:
+   ```
+   python <SKILL_DIR>/scripts/office_artifact_service.py --preflight
+   python <SKILL_DIR>/scripts/office_artifact_service.py --job /abs/source/office-job.json
+   ```
+   Use `jobVersion: 1`, `format`, `intent`, `input`/`output`, `operations`, `preservationPolicy`, `validationContract`, and `renderPolicy`. The default `nexa-openxml` backend is local. `officecli` is an optional installed binary for explicit `create_new` jobs only and also requires `allowNetworkBackend: true`; never select it implicitly because hosted mode may transmit prompts or files. Microsoft Office COM is an explicit Windows-only finalizer.
+
 Always call `check` first in a fresh environment:
 ```
 python <SKILL_DIR>/scripts/edit_doc.py check
@@ -125,11 +133,11 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 
 ## Decision tree
 
-1. Existing Office/PDF file? Use `version` first for risky changes, then `replace`, `redact`, `insert_slide`, `extract`, `validate`, or a custom Python script.
+1. Existing Office/PDF file? Prefer a transactional job for multi-step or risky changes. Direct `replace`, `redact`, `insert_slide`, `pack`, and create commands stage, validate, snapshot, and atomically publish automatically; use `version` for an extra user-addressable checkpoint.
 2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, `create_pptx`, or `create_html_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
 3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
 4. Need PDF/image preview or conversion QA? Use `render` when system Poppler is already available, or `convert --to pdf` with system LibreOffice already available, then inspect/extract.
-5. XLSX contains formulas? Use `lint_xlsx` after writing formulas, then `validate` to scan formula references and cached error values without LibreOffice.
+5. XLSX contains formulas? Use `lint_xlsx` after writing formulas, optionally with `--contract`. Use `recalc_xlsx` only when real cached values are required and LibreOffice is available; it blocks preservation-sensitive round-trips unless explicitly reviewed.
 6. Python unavailable? Prepare the Python runtime first. If LibreOffice/Poppler are unavailable, explain that conversion/render QA needs those system tools rather than asking the app to install them.
 
 ## Adopted Office-skill patterns
@@ -144,12 +152,13 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Undo stack** — every snapshot is addressable by version number, nothing is clobbered in place
 - **Chunked streaming** — `extract` truncates > 50 KB output with a clear notice so large docs don't blow the context
 - **Capability check** — `check` subcommand reports available/missing backends with exit code 2 if core deps are absent
-- **Validate after write** — `validate` opens the file with its backend and checks Office ZIP integrity
+- **Validate after write** — `validate` checks ZIP/CRC, XML parseability, required parts, Content Types, duplicate/missing relationships, formula errors, and backend readability
 - **Visual QA** — `render` converts Office/PDF pages to PNG/JPEG images with isolated LibreOffice profiles
 - **HTML-first PPTX** — `create_html_pptx` keeps the deck source as reviewable HTML/CSS, optionally captures Playwright screenshots, exports hybrid native/raster PPTX, and writes manifest/QA JSON
 - **Conversion QA** — `convert` uses LibreOffice headless with an isolated user profile for PDF previews and format conversion
 - **OOXML escape hatch** — `unpack` / `pack` make low-level template and relationship fixes possible without passing binary data through tool arguments
-- **Formula safety** — `create_xlsx`, `lint_xlsx`, and `validate` use the XLSX skill renderer/linter for formula references, structured table references, external links, cached error values, and `#REF!` checks without LibreOffice
+- **Formula safety** — `lint_xlsx` supports workbook contracts and risk inventory; `recalc_xlsx` performs a real guarded LibreOffice open/save, verifies the rewritten artifact, scans cached errors, and publishes only after validation
+- **Transactional runtime** — `office_artifact_service.py` exposes backend preflight, structured Job/Result, capability routing, staging/publish/rollback, and one `artifact-manifest.json`
 
 ## Dependencies
 In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.
@@ -193,7 +202,7 @@ Only install backends the user actually needs — don't pull `python-pptx` for a
 | pack           | .docx/.pptx/.xlsx | (none)           |
 | replace        | .docx            | python-docx      |
 | replace        | .pptx            | python-pptx      |
-| replace        | .xlsx            | openpyxl         |
+| replace        | .xlsx            | precise OOXML ZIP/XML edit (no broad openpyxl round-trip) |
 | redact         | .docx / .pptx    | python-docx / python-pptx |
 | extract        | .docx            | python-docx      |
 | extract        | .pptx            | python-pptx      |
@@ -202,8 +211,9 @@ Only install backends the user actually needs — don't pull `python-pptx` for a
 | insert_slide   | .pptx            | python-pptx      |
 | render         | Office/PDF       | LibreOffice + Poppler |
 | lint_xlsx      | .xlsx            | openpyxl         |
-| recalc_xlsx    | .xlsx            | openpyxl; legacy alias for `lint_xlsx` |
-| validate       | .docx/.pptx/.xlsx/.pdf | matching backend |
+| recalc_xlsx    | .xlsx            | LibreOffice + openpyxl formula/error verification |
+| validate       | .docx/.pptx/.xlsx/.pdf | stdlib OOXML validator + matching backend |
+| office_artifact_service | .docx/.pptx/.xlsx | matching selected backend |
 | convert        | Office/PDF       | LibreOffice      |
 | version        | any              | (none)           |
 
