@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.7...nexa-monorepo-v0.11.8) (2026-08-03)
+
+
+### Features
+
+* **media:** add policy-aware analysis runtime ([e0ac69a](https://github.com/MLGBJDLW/Nexa/commit/e0ac69a2245ea2139be8305878c6d19d85866705))
+* **settings:** integrate media capability status ([94472ef](https://github.com/MLGBJDLW/Nexa/commit/94472eff5add98f350e117c9e81335f7f78c77bc))
+* **settings:** unify catalog model pickers ([9caa4c4](https://github.com/MLGBJDLW/Nexa/commit/9caa4c4a533d05d7968a1bc48bb9cf959b860472))
+* upgrade media analysis runtime and settings ([22067f1](https://github.com/MLGBJDLW/Nexa/commit/22067f170ca0fa06a3a522bca2985ba545cb7dc4))
+
+
+### Bug Fixes
+
+* **chat:** preserve conversation sidebar preference ([bccbaa2](https://github.com/MLGBJDLW/Nexa/commit/bccbaa232ebe4f687b90d6f77f388b04082f6e92))
+* **core:** gate media-only ingest symbols ([2d7291e](https://github.com/MLGBJDLW/Nexa/commit/2d7291e9c5f6a5ccfaf91587fe5a086c9542cace))
+
+
+### Performance Improvements
+
+* **ingest:** skip unchanged media analysis ([1ccd7c5](https://github.com/MLGBJDLW/Nexa/commit/1ccd7c59e47708065b81bacb051ea603a56d3fb7))
+
 ## [0.11.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.6...nexa-monorepo-v0.11.7) (2026-08-02)
 
 
