@@ -15,11 +15,13 @@ use tracing::{debug, info, warn};
 use crate::db::Database;
 use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
+#[cfg(feature = "video")]
+use crate::parse::hash_file_content;
 #[cfg(test)]
 use crate::parse::parse_file;
 use crate::parse::{
-    detect_mime_type, file_appears_binary, hash_file_content, parse_file_with_media_config,
-    ParsedChunk, ParsedDocument,
+    detect_mime_type, file_appears_binary, parse_file_with_media_config, ParsedChunk,
+    ParsedDocument,
 };
 use crate::privacy::{self, PrivacyConfig};
 
@@ -1093,6 +1095,7 @@ fn classify_file(
     progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
 ) -> Result<FileClassification, CoreError> {
+    #[cfg(feature = "video")]
     let file_path = path.to_string_lossy().to_string();
     #[cfg(feature = "video")]
     let known_content_hash = {

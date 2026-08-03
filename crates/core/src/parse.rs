@@ -283,7 +283,7 @@ fn parse_file_inner(
     llm_provider_type: Option<crate::llm::ProviderType>,
     #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
-    known_content_hash: Option<&str>,
+    #[cfg_attr(not(feature = "video"), allow(unused_variables))] known_content_hash: Option<&str>,
 ) -> Result<ParsedDocument, CoreError> {
     let max_chars = max_chunk_chars.unwrap_or(DEFAULT_MAX_CHUNK_CHARS);
     let mime_type = detect_mime_type(path);
