@@ -47,6 +47,7 @@
 .nexa-select-trigger {
   display: inline-flex;
   min-width: 0;
+  overflow: hidden;
   align-items: center;
   justify-content: space-between;
   outline: none;
@@ -78,7 +79,8 @@
 }
 
 .nexa-select-viewport { padding: 0.25rem; }
-.nexa-select-item { padding-left: 1.9rem; }
+.nexa-select-item { min-width: 0; padding-left: 1.9rem; }
+.nexa-select-item > [data-radix-select-item-text] { min-width: 0; flex: 1; overflow: hidden; }
 .nexa-select-indicator { position: absolute; left: 0.55rem; }
 .nexa-select-label { padding: 0.5rem 0.65rem 0.25rem; color: var(--color-text-tertiary); font-size: 0.68rem; font-weight: 600; }
 .nexa-select-scroll-button { display: flex; height: 1.5rem; align-items: center; justify-content: center; color: var(--color-text-tertiary); }

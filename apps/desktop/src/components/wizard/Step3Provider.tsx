@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react';
-import { NexaSelect } from '../ui/overlay';
 import { motion } from 'framer-motion';
 import { Brain, CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,7 +11,8 @@ import { ProviderIcon } from '../../lib/providerIcons';
 import * as api from '../../lib/api';
 import type { SaveAgentConfigInput } from '../../types/conversation';
 import type { ConnectionTestResult } from './useWizardState';
-import { modelDescriptorSummary, resolveExplicitModelSelection } from '../../lib/modelCatalog';
+import { resolveExplicitModelSelection } from '../../lib/modelCatalog';
+import { CatalogModelPicker } from '../settings/CatalogModelPicker';
 
 interface Step3ProviderProps {
   onNext: () => void;
@@ -154,29 +154,18 @@ export function Step3Provider({
       </div>
 
       {selectedPreset && (
-        <label className="mb-4 w-full space-y-2 text-left text-sm font-medium text-text-primary">
+        <div className="mb-4 w-full space-y-2 text-left text-sm font-medium text-text-primary">
           <span>{t('settings.defaultModel')}</span>
-          <NexaSelect
+          <CatalogModelPicker
             value={selectedModelId}
-            onChange={(event) => {
-              setSelectedModelId(event.target.value);
+            onValueChange={(model) => {
+              setSelectedModelId(model);
               onTestResult(null, false);
             }}
-            className="h-10 w-full rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
-          >
-            <option value="" disabled>—</option>
-            {selectedPreset.models.map((model) => (
-              <option
-                key={model.id}
-                value={model.id}
-                disabled={model.descriptor.lifecycle === 'removed'
-                  || model.descriptor.availableToCredential === false}
-              >
-                {model.name} · {modelDescriptorSummary(model.descriptor)}
-              </option>
-            ))}
-          </NexaSelect>
-        </label>
+            models={selectedPreset.models}
+            surface="text"
+          />
+        </div>
       )}
 
       {selectedPreset && needsKey && (

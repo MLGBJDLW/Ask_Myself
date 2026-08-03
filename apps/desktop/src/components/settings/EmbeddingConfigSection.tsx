@@ -20,7 +20,7 @@ import { Input } from '../ui/Input';
 import { Section } from './SettingsSection';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
 import { ModelDescriptorBadges } from './ModelDescriptorBadges';
-import { modelDescriptorSummary } from '../../lib/modelCatalog';
+import { CatalogModelPicker } from './CatalogModelPicker';
 
 interface EmbeddingConfigSectionProps {
   embedConfig: EmbedderConfig | null;
@@ -226,20 +226,12 @@ export function EmbeddingConfigSection({
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingModel')}</label>
                 {activeApiPreset && activeApiPreset.models.length > 0 ? (
-                  <NexaSelect
+                  <CatalogModelPicker
                     value={embedConfig.apiModel}
-                    onChange={(event) => applyApiModel(event.target.value)}
-                    className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
-                  >
-                    {!activeApiPreset.models.some((model) => model.id === embedConfig.apiModel) && (
-                      <option value="" disabled>—</option>
-                    )}
-                    {activeApiPreset.models.map((model) => (
-                      <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
-                        {model.name} · {model.dimensions}d{model.recommended ? ' *' : ''} · {modelDescriptorSummary(model.descriptor)}
-                      </option>
-                    ))}
-                  </NexaSelect>
+                    onValueChange={applyApiModel}
+                    models={activeApiPreset.models.map((model) => ({ ...model, secondary: `${model.dimensions}d` }))}
+                    surface="embedding"
+                  />
                 ) : (
                   <Input
                     value={embedConfig.apiModel}
@@ -247,7 +239,7 @@ export function EmbeddingConfigSection({
                     placeholder="text-embedding-3-small"
                   />
                 )}
-                <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
+                <ModelDescriptorBadges descriptor={selectedModelDescriptor} surface="embedding" />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.embeddingDimensions')}</label>

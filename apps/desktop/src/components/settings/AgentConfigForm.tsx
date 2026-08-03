@@ -9,7 +9,6 @@ import {
   X,
   CheckCircle,
   BrainCircuit,
-  Search,
   RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,7 +27,6 @@ import {
   getReasoningCapability,
   type ReasoningCapability,
   type ReasoningEffortLevel,
-  type ProviderModelPreset,
   type ProviderPreset,
 } from "../../lib/providerPresets";
 import {
@@ -52,10 +50,10 @@ import {
 import { CollapsiblePanel } from "./SettingsSection";
 import {
   endpointIdForSavedSelection,
-  modelDescriptorSummary,
   selectImplicitDefault,
 } from "../../lib/modelCatalog";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
+import { CatalogModelPicker } from "./CatalogModelPicker";
 
 interface AgentConfigFormProps {
   config?: AgentConfig;
@@ -107,7 +105,6 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
 };
 
 const LOCAL_PROVIDERS: ProviderType[] = ["ollama", "lm_studio"];
-const MODEL_SEARCH_THRESHOLD = 20;
 
 const REASONING_EFFORT_LABEL_KEYS: Record<
   ReasoningEffortLevel,
@@ -124,11 +121,6 @@ const REASONING_EFFORT_LABEL_KEYS: Record<
 
 function normalizeBaseUrl(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\/+$/, "");
-}
-
-function modelNamespace(modelId: string): string {
-  const raw = modelId.split("/")[0] ?? "";
-  return raw.replace(/^~+/, "").replace(/[-_]/g, " ");
 }
 
 function defaultReasoningEffort(
@@ -308,7 +300,6 @@ export function AgentConfigForm({
     message: string;
   } | null>(null);
   const [useCustomModel, setUseCustomModel] = useState(initialUsesCustomModel);
-  const [modelSearch, setModelSearch] = useState("");
   const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalogSnapshot | null>(() =>
     loadProviderModelCatalog(initialProvider, initialBaseUrl, initialIsLocal ? "" : (config?.apiKey ?? "")),
   );
@@ -410,31 +401,6 @@ export function AgentConfigForm({
   const activePresetDefaultModel = selectImplicitDefault(activePreset?.models ?? [])?.id ?? "";
   const selectedPresetModel =
     activePreset?.models.find((candidate) => candidate.id === model) ?? null;
-  const usesSearchableModelPicker =
-    (activePreset?.models.length ?? 0) > MODEL_SEARCH_THRESHOLD;
-  const filteredPresetModels = useMemo(() => {
-    if (!activePreset) {
-      return [];
-    }
-    const needle = modelSearch.trim().toLowerCase();
-    if (!needle) {
-      return activePreset.models;
-    }
-
-    return activePreset.models.filter((candidate) => {
-      const tagLabel = candidate.tagKey
-        ? t(candidate.tagKey as TranslationKey)
-        : "";
-      return [
-        candidate.name,
-        candidate.id,
-        modelNamespace(candidate.id),
-        tagLabel,
-      ]
-        .filter(Boolean)
-        .some((part) => part.toLowerCase().includes(needle));
-    });
-  }, [activePreset, modelSearch, t]);
   const reasoningCapability = useMemo(
     () => getReasoningCapability({ provider, baseUrl, model }),
     [provider, baseUrl, model],
@@ -592,7 +558,6 @@ export function AgentConfigForm({
     }
 
     setContextWindow(null);
-    setModelSearch("");
     previousProviderRef.current = provider;
   }, [baseUrl, provider, preset, useCustomModel]);
 
@@ -970,11 +935,6 @@ export function AgentConfigForm({
               {t("settings.defaultModel")}
             </label>
             <span className="flex items-center gap-2">
-              {usesSearchableModelPicker && (
-                <span className="text-xs text-text-tertiary">
-                  {filteredPresetModels.length}/{activePreset.models.length}
-                </span>
-              )}
               <button
                 type="button"
                 onClick={() => void handleCatalogRefresh()}
@@ -986,112 +946,20 @@ export function AgentConfigForm({
               </button>
             </span>
           </div>
-          {usesSearchableModelPicker ? (
-            <div className="space-y-2">
-              <Input
-                value={modelSearch}
-                onChange={(e) => setModelSearch(e.target.value)}
-                placeholder={t("settings.modelSearchPlaceholder")}
-                icon={<Search size={15} />}
-              />
-              <div className="max-h-72 overflow-y-auto rounded-md border border-border bg-surface-1">
-                {filteredPresetModels.length === 0 ? (
-                  <div className="px-3 py-6 text-center text-sm text-text-tertiary">
-                    {t("settings.modelSearchNoResults")}
-                  </div>
-                ) : (
-                  filteredPresetModels.map((m: ProviderModelPreset) => {
-                    const selected = m.id === model;
-                    const tag = m.tagKey
-                      ? t(m.tagKey as TranslationKey)
-                      : null;
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        aria-pressed={selected}
-                        disabled={m.descriptor.availableToCredential === false}
-                        onClick={() => {
-                          setModel(m.id);
-                          setContextWindow(null);
-                        }}
-                        className={`flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-50 ${
-                          selected
-                            ? "bg-accent/10 text-text-primary"
-                            : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
-                        }`}
-                      >
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">
-                            {m.name}
-                          </span>
-                          <span className="block truncate text-xs text-text-tertiary">
-                            {m.id} · {modelDescriptorSummary(m.descriptor)}
-                          </span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          {tag && (
-                            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-secondary">
-                              {tag}
-                            </span>
-                          )}
-                          {m.descriptor.source === "discovered" && (
-                            <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">
-                              {t("settings.modelSourceDiscovered")}
-                            </span>
-                          )}
-                          {(m.descriptor.lifecycle === "preview" || m.descriptor.lifecycle === "gated" || m.descriptor.lifecycle === "legacy" || m.descriptor.lifecycle === "deprecated") && (
-                            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
-                              {t(`settings.modelStatus.${m.descriptor.lifecycle}` as TranslationKey)}
-                            </span>
-                          )}
-                          {m.recommended && (
-                            <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
-                              ★
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-              {selectedPresetModel && (
-                <div className="space-y-2">
-                  <p className="truncate text-xs text-text-tertiary">
-                    {selectedPresetModel.id}
-                  </p>
-                  <ModelDescriptorBadges descriptor={selectedPresetModel.descriptor} />
-                </div>
-              )}
-            </div>
-          ) : (
-            <NexaSelect
-              value={model}
-              onChange={(e) => {
-                setModel(e.target.value);
-                setContextWindow(null);
-              }}
-              className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
-            >
-              {!activePreset.models.some((candidate) => candidate.id === model) && (
-                <option value="" disabled>—</option>
-              )}
-              {activePreset.models.map((m) => (
-                <option key={m.id} value={m.id} disabled={m.descriptor.availableToCredential === false}>
-                  {m.tagKey
-                    ? `${m.name} (${t(m.tagKey as TranslationKey)})`
-                    : m.name}
-                   {m.descriptor.source === "discovered" ? ` · ${t("settings.modelSourceDiscovered")}` : ""}
-                  {m.recommended ? " ★" : ""}
-                  {` · ${modelDescriptorSummary(m.descriptor)}`}
-                </option>
-              ))}
-            </NexaSelect>
-          )}
-          {!usesSearchableModelPicker && (
-            <ModelDescriptorBadges descriptor={selectedPresetModel?.descriptor} />
-          )}
+          <CatalogModelPicker
+            value={model}
+            onValueChange={(nextModel) => {
+              setModel(nextModel);
+              setContextWindow(null);
+            }}
+            models={activePreset.models.map((candidate) => ({
+              ...candidate,
+              secondary: candidate.tagKey ? t(candidate.tagKey as TranslationKey) : null,
+            }))}
+            surface="text"
+            dataTestId="default-model-picker"
+          />
+          <ModelDescriptorBadges descriptor={selectedPresetModel?.descriptor} surface="text" />
           {config?.modelSelectionResolution?.requiresUserNotice && (
             <p
               className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"

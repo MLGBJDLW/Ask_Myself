@@ -15,7 +15,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
 import { ModelDescriptorBadges } from './ModelDescriptorBadges';
-import { modelDescriptorSummary } from '../../lib/modelCatalog';
+import { CatalogModelPicker } from './CatalogModelPicker';
 
 interface SpeechToTextSettingsPanelProps {
   appConfig: AppConfig;
@@ -212,11 +212,13 @@ export function SpeechToTextSettingsPanel({
             {!isWhisper && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-                <Input value={config.model} onChange={(event) => update({ model: event.target.value })} list="nexa-stt-models" />
-                <datalist id="nexa-stt-models">
-                  {activePreset.models.map((model) => <option key={model.id} value={model.id}>{model.name} · {modelDescriptorSummary(model.descriptor)}</option>)}
-                </datalist>
-                <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
+                <CatalogModelPicker
+                  value={config.model}
+                  onValueChange={(model) => update({ model })}
+                  models={activePreset.models}
+                  surface="speech_to_text"
+                />
+                <ModelDescriptorBadges descriptor={selectedModelDescriptor} surface="speech_to_text" />
               </div>
             )}
             {!isWhisper && (

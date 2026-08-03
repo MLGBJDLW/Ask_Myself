@@ -26,7 +26,8 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { SharedCredentialNotice } from "./SharedCredentialNotice";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
-import { modelDescriptorSummary, shouldUseCatalogModelSelect } from "../../lib/modelCatalog";
+import { shouldUseCatalogModelSelect } from "../../lib/modelCatalog";
+import { CatalogModelPicker } from "./CatalogModelPicker";
 
 interface ImageGenerationSettingsPanelProps {
   appConfig: AppConfig;
@@ -214,9 +215,6 @@ export function ImageGenerationSettingsPanel({
       }, providerPresets) ?? fallbackPresetForConfig(imageConfig, providerPresets),
     [imageConfig.apiStyle, imageConfig.baseUrl, imageConfig.provider, providerPresets],
   );
-  const hasPresetModel =
-    activePreset.models.length > 0 &&
-    activePreset.models.some((model) => model.id === imageConfig.model);
   const selectedModelDescriptor = activePreset.models.find(
     (model) => model.id === imageConfig.model,
   )?.descriptor;
@@ -413,20 +411,14 @@ export function ImageGenerationSettingsPanel({
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
             {shouldUseCatalogModelSelect(imageConfig.model, activePreset.models) ? (
-              <NexaSelect
+              <CatalogModelPicker
                 value={imageConfig.model}
-                onChange={(event) =>
-                  updateImageConfig({ ...imageConfig, model: event.target.value })
+                onValueChange={(model) =>
+                  updateImageConfig({ ...imageConfig, model })
                 }
-                className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
-              >
-                {!hasPresetModel && <option value="" disabled>—</option>}
-                {activePreset.models.map((model) => (
-                  <option key={model.id} value={model.id} disabled={model.descriptor.availableToCredential === false}>
-                    {model.name}{model.recommended ? " *" : ""} · {modelDescriptorSummary(model.descriptor)}
-                  </option>
-                ))}
-              </NexaSelect>
+                models={activePreset.models}
+                surface="image"
+              />
             ) : (
               <Input
                 value={imageConfig.model}
@@ -436,7 +428,7 @@ export function ImageGenerationSettingsPanel({
                 placeholder={getDefaultImageModel(activePreset) || "model-name"}
               />
             )}
-            <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
+            <ModelDescriptorBadges descriptor={selectedModelDescriptor} surface="image" />
           </div>
 
           {activePreset.sizeOptions.length > 0 && (
