@@ -15,7 +15,15 @@ import type { PrivacyConfig } from "../types/privacy";
 import type { Project, CreateProjectInput, UpdateProjectInput } from "../types/project";
 import type { EmbedderConfig } from "../types/embedder";
 import type { OcrConfig } from "../types/ocr";
-import type { VideoConfig, TranscriptChunk, VideoMetadata } from "../types/video";
+import type {
+  MediaAnalysisWarning,
+  MediaRuntimeStatus,
+  VideoConfig,
+  TranscriptChunk,
+  TranscriptSegment,
+  VideoMetadata,
+  VisualEvent,
+} from "../types/video";
 import type {
   AgentConfig,
   AppConfig,
@@ -1545,6 +1553,9 @@ export const getVideoConfig = () =>
 export const saveVideoConfig = (config: VideoConfig) =>
   invoke<void>('save_video_config_cmd', { config });
 
+export const getMediaRuntimeStatus = () =>
+  invoke<MediaRuntimeStatus>('get_media_runtime_status_cmd');
+
 export const checkWhisperModel = (config: VideoConfig) =>
   invoke<boolean>('check_whisper_model_cmd', { config });
 
@@ -1695,8 +1706,12 @@ export const analyzeVideo = (path: string) =>
   invoke<{
     transcript: string;
     segmentCount: number;
+    transcriptSegments: TranscriptSegment[];
     durationSecs: number | null;
     frameTextsCount: number;
+    frameTexts: string[];
+    visualEvents: VisualEvent[];
+    warnings: MediaAnalysisWarning[];
     thumbnailPath: string | null;
     metadata: VideoMetadata | null;
   }>('analyze_video_cmd', { path });

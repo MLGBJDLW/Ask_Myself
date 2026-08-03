@@ -97,15 +97,18 @@ test.beforeEach(async ({ page }) => {
 
     const ocrConfig = {
       enabled: false,
-      minConfidence: 0.5,
-      llmFallback: false,
-      detectionLimit: 2048,
+      confidenceThreshold: 0.5,
+      llmFallbackEnabled: false,
+      detLimitSideLen: 2048,
       useCls: false,
       modelPath: "",
+      languages: ["en"],
     };
 
     const videoConfig = {
       enabled: false,
+      transcriptionMode: "inherit_speech_to_text",
+      failurePolicy: "best_effort",
       whisperModel: "base",
       language: null,
       translateToEnglish: false,
@@ -870,6 +873,27 @@ test("settings keeps local and cloud speech engines in one provider category", a
   await localStt.locator("button").first().click();
   await selectNexaOption(localStt.getByTestId("stt-provider-select"), "sherpa-zipformer");
   await expect(localStt.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
+});
+
+test("media settings expose truthful policies and keep microphone controls with voice input", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Media Processing" }).click();
+
+  const videoSection = page
+    .getByRole("heading", { name: "Video Analysis" })
+    .locator("xpath=ancestor::section");
+  await videoSection.locator("button").first().click();
+  await expect(videoSection.getByText("Transcription source")).toBeVisible();
+  await expect(videoSection.getByText("Failure policy")).toBeVisible();
+  await expect(videoSection.getByText("GPU Acceleration")).toHaveCount(0);
+  await expect(videoSection.getByText("Beam Search Width")).toHaveCount(0);
+  await expect(videoSection.getByText("Microphone", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  const speechInput = page.getByTestId("speech-to-text-settings-panel");
+  await speechInput.locator("button").first().click();
+  await expect(speechInput.getByText("Voice Input", { exact: true })).toBeVisible();
+  await expect(speechInput.getByText("Runtime not ready")).toBeVisible();
 });
 
 test("settings applies a managed model root and exposes OCR deletion", async ({ page }) => {

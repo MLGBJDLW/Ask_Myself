@@ -4,8 +4,6 @@ import {
   ChevronDown,
   Film,
   Loader2,
-  Mic,
-  RefreshCw,
   Save,
   Settings2,
   Trash2,
@@ -18,7 +16,6 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Input } from '../ui/Input';
-import { MicrophoneTestPanel } from './MicrophoneTestPanel';
 import { Section } from './SettingsSection';
 
 interface VideoSettingsSectionProps {
@@ -30,14 +27,10 @@ interface VideoSettingsSectionProps {
   videoSaveLoading: boolean;
   showAdvancedVideo: boolean;
   deleteModelConfirmOpen: boolean;
-  micDevices: MediaDeviceInfo[];
-  micDeviceId: string | null;
   onConfigChange: (config: VideoConfig) => void;
   onMarkDirty: () => void;
   onFfmpegDownload: () => void;
   onAdvancedToggle: () => void;
-  onMicDeviceChange: (deviceId: string | null) => void;
-  onRefreshMics: () => void;
   onRequestDeleteModel: () => void;
   onCloseDeleteModel: () => void;
   onConfirmDeleteModel: () => void;
@@ -53,14 +46,10 @@ export function VideoSettingsSection({
   videoSaveLoading,
   showAdvancedVideo,
   deleteModelConfirmOpen,
-  micDevices,
-  micDeviceId,
   onConfigChange,
   onMarkDirty,
   onFfmpegDownload,
   onAdvancedToggle,
-  onMicDeviceChange,
-  onRefreshMics,
   onRequestDeleteModel,
   onCloseDeleteModel,
   onConfirmDeleteModel,
@@ -107,6 +96,38 @@ export function VideoSettingsSection({
                 }`}
               />
             </button>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <p className="mb-1 text-sm font-medium text-text-primary">{t('settings.videoTranscriptionMode')}</p>
+              <p className="mb-2 text-xs text-text-tertiary">{t('settings.videoTranscriptionModeDesc')}</p>
+              <NexaSelect
+                value={videoConfig.transcriptionMode}
+                onChange={(event) => updateConfig({
+                  transcriptionMode: event.target.value as VideoConfig['transcriptionMode'],
+                })}
+                className="w-full rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary"
+              >
+                <option value="inherit_speech_to_text">{t('settings.videoTranscriptionInherit')}</option>
+                <option value="local_whisper">{t('settings.videoTranscriptionLocal')}</option>
+                <option value="disabled">{t('settings.videoTranscriptionDisabled')}</option>
+              </NexaSelect>
+            </div>
+            <div>
+              <p className="mb-1 text-sm font-medium text-text-primary">{t('settings.videoFailurePolicy')}</p>
+              <p className="mb-2 text-xs text-text-tertiary">{t('settings.videoFailurePolicyDesc')}</p>
+              <NexaSelect
+                value={videoConfig.failurePolicy}
+                onChange={(event) => updateConfig({
+                  failurePolicy: event.target.value as VideoConfig['failurePolicy'],
+                })}
+                className="w-full rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary"
+              >
+                <option value="best_effort">{t('settings.videoFailureBestEffort')}</option>
+                <option value="require_transcript">{t('settings.videoFailureRequireTranscript')}</option>
+              </NexaSelect>
+            </div>
           </div>
 
           {/* FFmpeg Status */}
@@ -159,8 +180,8 @@ export function VideoSettingsSection({
             </div>
           )}
 
-          {/* Language */}
-          <div>
+          {/* Local Whisper language */}
+          {videoConfig.transcriptionMode === 'local_whisper' && <div>
             <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoLanguage')}</p>
             <p className="text-xs text-text-tertiary mb-2">{t('settings.videoLanguageDesc')}</p>
             <Input
@@ -170,10 +191,10 @@ export function VideoSettingsSection({
               placeholder="en, zh, ja..."
               className="w-40"
             />
-          </div>
+          </div>}
 
           {/* Translate to English */}
-          <div className="flex items-center justify-between">
+          {videoConfig.transcriptionMode === 'local_whisper' && <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-text-primary">{t('settings.videoTranslate')}</p>
               <p className="text-xs text-text-tertiary">{t('settings.videoTranslateDesc')}</p>
@@ -190,7 +211,7 @@ export function VideoSettingsSection({
                 }`}
               />
             </button>
-          </div>
+          </div>}
 
           {/* Frame Extraction */}
           <div className="flex items-center justify-between">
@@ -226,40 +247,6 @@ export function VideoSettingsSection({
             </div>
           )}
 
-          {/* Voice Input - Microphone Selection */}
-          <div className="space-y-3 border-t border-border pt-4 mt-4">
-            <div className="flex items-center gap-2">
-              <Mic size={16} className="text-text-secondary" />
-              <p className="text-sm font-medium text-text-primary">{t('voice.microphoneSection')}</p>
-            </div>
-            <div>
-              <p className="text-xs text-text-tertiary mb-2">{t('voice.microphoneDeviceDesc')}</p>
-              <div className="flex items-center gap-2">
-                <NexaSelect
-                  value={micDeviceId ?? ''}
-                  onChange={(e) => onMicDeviceChange(e.target.value || null)}
-                  className="flex-1 rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary outline-none transition-colors duration-fast hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30"
-                >
-                  <option value="">{t('voice.microphoneDefault')}</option>
-                  {micDevices.map((device, index) => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                      {device.label || `${t('voice.microphoneDeviceN')} ${index + 1}`}
-                    </option>
-                  ))}
-                </NexaSelect>
-                <button
-                  type="button"
-                  onClick={onRefreshMics}
-                  className="rounded-lg border border-border bg-surface-0 p-2 text-text-tertiary transition-colors hover:border-border-hover hover:text-text-secondary cursor-pointer"
-                  title={t('voice.microphoneRefresh')}
-                >
-                  <RefreshCw size={14} />
-                </button>
-              </div>
-              <MicrophoneTestPanel deviceId={micDeviceId} />
-            </div>
-          </div>
-
           {/* Advanced Settings - collapsible */}
           <div className="space-y-4 border-t border-border pt-4 mt-4">
             <button
@@ -277,26 +264,6 @@ export function VideoSettingsSection({
 
             {showAdvancedVideo && (
               <div className="space-y-4 pl-4">
-                {/* GPU Acceleration */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">{t('settings.videoGpu')}</p>
-                    <p className="text-xs text-text-tertiary">{t('settings.videoGpuDesc')}</p>
-                  </div>
-                  <button
-                    onClick={() => updateConfig({ useGpu: !videoConfig.useGpu })}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-fast cursor-pointer ${
-                      videoConfig.useGpu ? 'bg-accent' : 'bg-surface-3'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-fast ${
-                        videoConfig.useGpu ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-
                 {/* Prefer Embedded Subtitles */}
                 <div className="flex items-center justify-between">
                   <div>
@@ -335,23 +302,6 @@ export function VideoSettingsSection({
                   </div>
                 </div>
 
-                {/* Beam Size */}
-                <div>
-                  <p className="text-sm font-medium text-text-primary mb-1">{t('settings.videoBeamSize')}</p>
-                  <p className="text-xs text-text-tertiary mb-2">{t('settings.videoBeamSizeDesc')}</p>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min={1}
-                      max={10}
-                      step={1}
-                      value={videoConfig.beamSize}
-                      onChange={(e) => updateConfig({ beamSize: parseInt(e.target.value) })}
-                      className="flex-1 accent-accent"
-                    />
-                    <span className="text-xs text-text-secondary w-6 text-right">{videoConfig.beamSize}</span>
-                  </div>
-                </div>
               </div>
             )}
           </div>

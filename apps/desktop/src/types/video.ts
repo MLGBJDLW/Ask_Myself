@@ -1,7 +1,11 @@
 export type WhisperModel = 'tiny' | 'base' | 'small' | 'medium' | 'large' | 'large_turbo';
+export type MediaTranscriptionMode = 'local_whisper' | 'inherit_speech_to_text' | 'disabled';
+export type MediaFailurePolicy = 'best_effort' | 'require_transcript';
 
 export interface VideoConfig {
   enabled: boolean;
+  transcriptionMode: MediaTranscriptionMode;
+  failurePolicy: MediaFailurePolicy;
   whisperModel: WhisperModel;
   language: string | null; // null = auto-detect
   translateToEnglish: boolean;
@@ -13,6 +17,22 @@ export interface VideoConfig {
   useGpu: boolean;
   preferEmbeddedSubtitles: boolean;
   beamSize: number;            // 1-10
+}
+
+export interface CapabilityRuntimeStatus {
+  configured: boolean;
+  ready: boolean;
+  degraded: boolean;
+  reason: string | null;
+}
+
+export interface MediaRuntimeStatus {
+  enabled: boolean;
+  transcriptionMode: MediaTranscriptionMode;
+  failurePolicy: MediaFailurePolicy;
+  probe: CapabilityRuntimeStatus;
+  transcription: CapabilityRuntimeStatus;
+  visualAnalysis: CapabilityRuntimeStatus;
 }
 
 export interface VideoDownloadProgress {
@@ -61,6 +81,19 @@ export interface VideoAnalysisMetadata {
   creationTime: string | null;
 }
 
+export interface VisualEvent {
+  timestampMs: number;
+  endMs: number;
+  text: string;
+  confidence: number;
+  source: string;
+}
+
+export interface MediaAnalysisWarning {
+  code: string;
+  message: string;
+}
+
 /**
  * Structured result returned by the native video-analysis command.
  *
@@ -75,6 +108,8 @@ export interface VideoAnalysisResult {
   durationSecs: number | null;
   frameTextsCount: number;
   frameTexts: string[];
+  visualEvents: VisualEvent[];
+  warnings: MediaAnalysisWarning[];
   thumbnailPath: string | null;
   metadata: VideoAnalysisMetadata | null;
 }

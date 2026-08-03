@@ -86,6 +86,7 @@
   "batchConfirm.rebuildEmbeddings.message": "This will recompute embeddings across your indexed content. It may take a while and can use significant CPU resources.",
   "batchConfirm.rebuildEmbeddings.confirm": "Rebuild Embeddings",
   "whisperModelMissing": "동영상 처리가 활성화되어 있지만 Whisper 모델이 다운로드되지 않았습니다. 스캔 시 동영상 파일이 전사되지 않습니다.",
+  "mediaAnalysisDegraded": "미디어 분석이 활성화되었지만 일부 런타임을 사용할 수 없습니다. 스캔은 구성된 실패 정책을 따릅니다.",
   "goToSettings": "설정으로 이동",
   "browse": "Browse",
   "fileBrowser": "File browser",

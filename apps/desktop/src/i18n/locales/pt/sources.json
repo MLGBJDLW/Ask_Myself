@@ -86,6 +86,7 @@
   "batchConfirm.rebuildEmbeddings.message": "This will recompute embeddings across your indexed content. It may take a while and can use significant CPU resources.",
   "batchConfirm.rebuildEmbeddings.confirm": "Rebuild Embeddings",
   "whisperModelMissing": "O processamento de vídeo está ativado, mas o modelo Whisper não foi baixado. Os arquivos de vídeo não serão transcritos durante a varredura.",
+  "mediaAnalysisDegraded": "A análise de mídia está ativada, mas um ou mais componentes estão indisponíveis. As varreduras seguirão a política de falha configurada.",
   "goToSettings": "Ir para Configurações",
   "browse": "Browse",
   "fileBrowser": "File browser",
