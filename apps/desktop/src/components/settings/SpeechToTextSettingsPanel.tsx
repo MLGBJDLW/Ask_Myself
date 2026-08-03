@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { NexaSelect } from '../ui/overlay';
-import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Mic2, Save } from 'lucide-react';
+import { ChevronDown, Cloud, Eye, EyeOff, Laptop, Mic2, RefreshCw, Save } from 'lucide-react';
 
 import { useTranslation } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
@@ -15,7 +15,8 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
 import { ModelDescriptorBadges } from './ModelDescriptorBadges';
-import { modelDescriptorSummary } from '../../lib/modelCatalog';
+import { CatalogModelPicker } from './CatalogModelPicker';
+import { MicrophoneTestPanel } from './MicrophoneTestPanel';
 
 interface SpeechToTextSettingsPanelProps {
   appConfig: AppConfig;
@@ -26,6 +27,11 @@ interface SpeechToTextSettingsPanelProps {
   agentConfigs?: AgentConfig[];
   providerScope?: 'all' | 'cloud' | 'local';
   defaultExpanded?: boolean;
+  micDevices?: MediaDeviceInfo[];
+  micDeviceId?: string | null;
+  onMicDeviceChange?: (deviceId: string | null) => void;
+  onRefreshMics?: () => void;
+  localRuntimeReady?: boolean | null;
 }
 
 export const DEFAULT_STT_CONFIG: SpeechToTextConfig = {
@@ -54,6 +60,11 @@ export function SpeechToTextSettingsPanel({
   agentConfigs = [],
   providerScope = 'all',
   defaultExpanded = false,
+  micDevices = [],
+  micDeviceId = null,
+  onMicDeviceChange,
+  onRefreshMics,
+  localRuntimeReady = null,
 }: SpeechToTextSettingsPanelProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -144,6 +155,19 @@ export function SpeechToTextSettingsPanel({
               {runsOnDevice ? <Laptop size={10} /> : <Cloud size={10} />}
               {runsOnDevice ? t('settings.speechRuntimeLocal') : t('settings.speechRuntimeCloud')}
             </Badge>
+            <Badge variant="default" className={isWhisper && localRuntimeReady === true
+              ? 'border-success/20 bg-success/10 text-success'
+              : isWhisper && localRuntimeReady === false
+                ? 'border-danger/20 bg-danger/10 text-danger'
+                : 'border-border/70 bg-surface-1 text-text-tertiary'}>
+              {isWhisper
+                ? localRuntimeReady === true
+                  ? t('settings.runtimeReady')
+                  : localRuntimeReady === false
+                    ? t('settings.runtimeNotReady')
+                    : t('settings.runtimeChecking')
+                : t('settings.runtimeUnverified')}
+            </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">{activePreset.name} · {config.model}</p>
         </div>
@@ -212,11 +236,13 @@ export function SpeechToTextSettingsPanel({
             {!isWhisper && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-                <Input value={config.model} onChange={(event) => update({ model: event.target.value })} list="nexa-stt-models" />
-                <datalist id="nexa-stt-models">
-                  {activePreset.models.map((model) => <option key={model.id} value={model.id}>{model.name} · {modelDescriptorSummary(model.descriptor)}</option>)}
-                </datalist>
-                <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
+                <CatalogModelPicker
+                  value={config.model}
+                  onValueChange={(model) => update({ model })}
+                  models={activePreset.models}
+                  surface="speech_to_text"
+                />
+                <ModelDescriptorBadges descriptor={selectedModelDescriptor} surface="speech_to_text" />
               </div>
             )}
             {!isWhisper && (
@@ -263,6 +289,36 @@ export function SpeechToTextSettingsPanel({
                 </div>
               </>
             )}
+          </div>
+          <div className="mt-4 space-y-3 border-t border-border pt-4">
+            <div className="flex items-center gap-2">
+              <Mic2 size={15} className="text-text-secondary" />
+              <p className="text-sm font-medium text-text-primary">{t('voice.microphoneSection')}</p>
+            </div>
+            <p className="text-xs text-text-tertiary">{t('voice.microphoneDeviceDesc')}</p>
+            <div className="flex items-center gap-2">
+              <NexaSelect
+                value={micDeviceId ?? ''}
+                onChange={(event) => onMicDeviceChange?.(event.target.value || null)}
+                className="flex-1 rounded-lg border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary"
+              >
+                <option value="">{t('voice.microphoneDefault')}</option>
+                {micDevices.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `${t('voice.microphoneDeviceN')} ${index + 1}`}
+                  </option>
+                ))}
+              </NexaSelect>
+              <button
+                type="button"
+                onClick={onRefreshMics}
+                className="rounded-lg border border-border bg-surface-0 p-2 text-text-tertiary transition-colors hover:text-text-secondary"
+                title={t('voice.microphoneRefresh')}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+            <MicrophoneTestPanel deviceId={micDeviceId} />
           </div>
           <div className="mt-4 flex justify-end border-t border-border pt-3">
             <Button type="button" variant="primary" size="sm" icon={<Save size={14} />} loading={loading} onClick={() => void onSave({ ...appConfig, speechToText: materializedConfig })} disabled={!configured}>

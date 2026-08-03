@@ -86,6 +86,7 @@
   "batchConfirm.rebuildEmbeddings.message": "This will recompute embeddings across your indexed content. It may take a while and can use significant CPU resources.",
   "batchConfirm.rebuildEmbeddings.confirm": "Rebuild Embeddings",
   "whisperModelMissing": "Videoverarbeitung ist aktiviert, aber das Whisper-Modell wurde noch nicht heruntergeladen. Videodateien werden beim Scannen nicht transkribiert.",
+  "mediaAnalysisDegraded": "Die Medienanalyse ist aktiviert, aber mindestens eine Laufzeit ist nicht verfügbar. Scans folgen der konfigurierten Fehlerstrategie.",
   "goToSettings": "Zu den Einstellungen",
   "browse": "Browse",
   "fileBrowser": "File browser",

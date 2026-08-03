@@ -708,6 +708,22 @@ export function SettingsPage() {
   }, [activeTab, loadVideoConfig, videoConfig]);
 
   useEffect(() => {
+    if (
+      activeTab === 'providers'
+      && appConfig?.speechToText?.apiStyle === 'local_whisper'
+      && whisperModelExists === null
+    ) {
+      void refreshWhisperReadiness(videoConfig);
+    }
+  }, [
+    activeTab,
+    appConfig?.speechToText?.apiStyle,
+    refreshWhisperReadiness,
+    videoConfig,
+    whisperModelExists,
+  ]);
+
+  useEffect(() => {
     if (!videoDownloading) { progressStore.update('videoDownload', null); }
   }, [videoDownloading]);
 
@@ -1736,6 +1752,11 @@ export function SettingsPage() {
           onSelectedPresetChange={setSelectedPreset}
           onSetDefault={handleSetDefault}
           onDeleteTargetChange={setDeleteTarget}
+          micDevices={micDevices}
+          micDeviceId={micDeviceId}
+          onMicDeviceChange={setMicDeviceId}
+          onRefreshMics={refreshMics}
+          localSpeechRuntimeReady={whisperModelExists}
         />
       )}
 
@@ -1827,14 +1848,10 @@ export function SettingsPage() {
         videoSaveLoading={videoSaveLoading}
         showAdvancedVideo={showAdvancedVideo}
         deleteModelConfirmOpen={deleteModelConfirmOpen}
-        micDevices={micDevices}
-        micDeviceId={micDeviceId}
         onConfigChange={setVideoConfig}
         onMarkDirty={() => markDirty('video')}
         onFfmpegDownload={handleFfmpegDownload}
         onAdvancedToggle={() => setShowAdvancedVideo((value) => !value)}
-        onMicDeviceChange={setMicDeviceId}
-        onRefreshMics={refreshMics}
         onRequestDeleteModel={() => setDeleteModelConfirmOpen(true)}
         onCloseDeleteModel={() => setDeleteModelConfirmOpen(false)}
         onConfirmDeleteModel={handleWhisperDelete}

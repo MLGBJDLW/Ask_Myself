@@ -120,6 +120,25 @@ pub fn save_video_config_cmd(
 
 #[cfg(feature = "video")]
 #[tauri::command]
+pub async fn get_media_runtime_status_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::video::MediaRuntimeStatus, String> {
+    let video = state.db.load_video_config().map_err(|e| e.to_string())?;
+    let ocr = state.db.load_ocr_config().map_err(|e| e.to_string())?;
+    let speech = state
+        .db
+        .load_app_config()
+        .map_err(|e| e.to_string())?
+        .speech_to_text;
+    tokio::task::spawn_blocking(move || {
+        nexa_core::video::media_runtime_status(&video, &ocr, &speech)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
 pub async fn check_whisper_model_cmd(
     config: nexa_core::video::VideoConfig,
 ) -> Result<bool, String> {
@@ -193,7 +212,7 @@ pub async fn download_ffmpeg_cmd(
 #[cfg(feature = "video")]
 #[tauri::command]
 pub fn delete_whisper_model_cmd(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    if state.whisper_busy.load(Ordering::SeqCst) {
+    if state.whisper_busy.load(Ordering::SeqCst) || nexa_core::video::media_jobs_active() {
         return Err("Cannot delete model while transcription is in progress".into());
     }
     let config = state.db.load_video_config().map_err(|e| e.to_string())?;
@@ -325,8 +344,25 @@ pub async fn analyze_video_cmd(
     // Validate path is within a registered source directory.
     validate_path_in_scope(&db, &path)?;
 
+    if whisper_busy.swap(true, Ordering::SeqCst) {
+        return Err("Media analysis already in progress".into());
+    }
+
     tokio::task::spawn_blocking(move || {
+        struct WhisperGuard(Arc<AtomicBool>);
+        impl Drop for WhisperGuard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = WhisperGuard(whisper_busy);
+
         let config = db.load_video_config().map_err(|e| e.to_string())?;
+        let ocr_config = db.load_ocr_config().map_err(|e| e.to_string())?;
+        let speech_config = db
+            .load_app_config()
+            .map_err(|e| e.to_string())?
+            .speech_to_text;
         let file_path = std::path::Path::new(&path);
         if !file_path.is_file() {
             return Err(format!("File not found: {path}"));
@@ -337,41 +373,43 @@ pub async fn analyze_video_cmd(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // Set whisper_busy guard; ensure it resets even on panic.
-        whisper_busy.store(true, Ordering::SeqCst);
-        struct WhisperGuard(Arc<AtomicBool>);
-        impl Drop for WhisperGuard {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
-            }
-        }
-        let _guard = WhisperGuard(whisper_busy);
-
         let ah = app_handle.clone();
         let fname = file_name.clone();
-        let result = nexa_core::video::analyze_video(file_path, &config, move |progress| {
-            emit_app_event(
-                &ah,
-                "video:processing-progress",
-                &serde_json::json!({
-                    "progress": progress.progress_pct,
-                    "phase": progress.phase,
-                    "detail": progress.detail,
-                    "fileName": &fname,
-                }),
-            );
-        })
+        let result = nexa_core::video::analyze_video(
+            file_path,
+            &config,
+            &ocr_config,
+            &speech_config,
+            move |progress| {
+                emit_app_event(
+                    &ah,
+                    "video:processing-progress",
+                    &serde_json::json!({
+                        "progress": progress.progress_pct,
+                        "phase": progress.phase,
+                        "detail": progress.detail,
+                        "fileName": &fname,
+                    }),
+                );
+            },
+        )
         .map_err(|e| e.to_string())?;
 
         let segment_count = result.transcript_segments.len();
-        let frame_texts_count = result.frame_texts.len();
+        let frame_texts = result
+            .visual_events
+            .iter()
+            .map(|event| event.text.clone())
+            .collect::<Vec<_>>();
         Ok(serde_json::json!({
             "transcript": result.full_transcript,
             "segmentCount": segment_count,
             "transcriptSegments": result.transcript_segments,
             "durationSecs": result.duration_secs,
-            "frameTextsCount": frame_texts_count,
-            "frameTexts": result.frame_texts,
+            "frameTextsCount": frame_texts.len(),
+            "frameTexts": frame_texts,
+            "visualEvents": result.visual_events,
+            "warnings": result.warnings,
             "thumbnailPath": result.thumbnail_path.map(|p| p.to_string_lossy().to_string()),
             "metadata": result.metadata,
         }))
@@ -407,7 +445,7 @@ pub async fn get_video_transcript_cmd(
                         });
                 let chunk_type = if heading
                     .as_deref()
-                    .is_some_and(|h| h.starts_with("[Frame OCR"))
+                    .is_some_and(|h| h.starts_with('[') && h.contains("confidence"))
                 {
                     "frame_ocr"
                 } else {

@@ -86,6 +86,7 @@
   "batchConfirm.rebuildEmbeddings.message": "This will recompute embeddings across your indexed content. It may take a while and can use significant CPU resources.",
   "batchConfirm.rebuildEmbeddings.confirm": "Rebuild Embeddings",
   "whisperModelMissing": "Обработка видео включена, но модель Whisper не загружена. Видеофайлы не будут транскрибированы при сканировании.",
+  "mediaAnalysisDegraded": "Анализ медиа включен, но один или несколько компонентов недоступны. Сканирование продолжится по настроенной политике сбоев.",
   "goToSettings": "Перейти в настройки",
   "browse": "Browse",
   "fileBrowser": "File browser",

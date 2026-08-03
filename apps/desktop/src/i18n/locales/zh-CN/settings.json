@@ -203,6 +203,15 @@
   "videoSection": "视频分析",
   "videoEnabled": "启用视频分析",
   "videoEnabledDesc": "使用 FFmpeg + Whisper 语音转文字技术从视频文件中提取文本",
+  "videoTranscriptionMode": "转录来源",
+  "videoTranscriptionModeDesc": "继承语音输入、使用本地 Whisper，或关闭媒体转录。",
+  "videoTranscriptionInherit": "继承语音输入",
+  "videoTranscriptionLocal": "本地 Whisper",
+  "videoTranscriptionDisabled": "关闭转录",
+  "videoFailurePolicy": "失败策略",
+  "videoFailurePolicyDesc": "选择转录失败时是否继续索引画面和元数据。",
+  "videoFailureBestEffort": "尽力完成（推荐）",
+  "videoFailureRequireTranscript": "必须成功转录",
   "videoFfmpegStatus": "FFmpeg 状态",
   "videoFfmpegAvailable": "可用",
   "videoFfmpegNotFound": "未找到",
@@ -407,6 +416,10 @@
   "expandImageGeneration": "展开生图模型设置",
   "collapseImageGeneration": "收起生图模型设置",
   "configured": "已配置",
+  "runtimeReady": "运行时已就绪",
+  "runtimeNotReady": "运行时未就绪",
+  "runtimeChecking": "正在检查运行时",
+  "runtimeUnverified": "运行时尚未验证",
   "needsApiKey": "需要 API Key",
   "providerApiKeySource": "{provider} API Key",
   "dedicatedApiKeySource": "独立生图 Key",
@@ -815,4 +828,22 @@
   ,"ttsVoiceCatalogStale": "已过期"
   ,"ttsPreviewText": "声音试听文本"
   ,"ttsPreview": "试听声音"
+  ,"selectModel": "选择模型"
+  ,"modelPickerAria": "模型目录选择器"
+  ,"modelModalityText": "文本"
+  ,"modelModalityImage": "图像"
+  ,"modelModalityAudio": "音频"
+  ,"modelModalityVideo": "视频"
+  ,"modelModalityFile": "文件"
+  ,"modelModalityEmbedding": "嵌入"
+  ,"modelMetaStatus": "状态"
+  ,"modelMetaReadiness": "就绪度"
+  ,"modelMetaAccess": "访问"
+  ,"modelMetaRegion": "区域"
+  ,"modelMetaIo": "输入/输出"
+  ,"modelMetaSource": "来源"
+  ,"modelMetaReplacement": "替代模型"
+  ,"modelMetaCredential": "凭据"
+  ,"modelCredentialUnavailable": "当前凭据不可用"
+  ,"modelMetadataAria": "{model} 的元数据"
 }

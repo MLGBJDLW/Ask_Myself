@@ -210,8 +210,15 @@ function agentConfigToSaveInput(
 }
 
 const CHAT_SIDEBAR_WIDTH_KEY = 'chat-sidebar-width';
+const CHAT_SIDEBAR_COLLAPSED_KEY = 'chat-sidebar-collapsed';
 const CHAT_SIDEBAR_MIN_WIDTH = 200;
 const CHAT_SIDEBAR_MAX_WIDTH = 420;
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
+  ));
+}
 
 interface SessionSelectProps {
   icon: ReactNode;
@@ -832,10 +839,13 @@ export function ChatPage() {
 
   /* ── Sidebar collapsed state ──────────────────────────────────────── */
 
-  const SIDEBAR_STORAGE_KEY = 'chat-sidebar-collapsed';
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'; } catch { return false; }
+  const [sidebarPreferenceCollapsed, setSidebarPreferenceCollapsed] = useState(() => {
+    try { return localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_KEY) === 'true'; } catch { return false; }
   });
+  const [sidebarAutoCollapsed, setSidebarAutoCollapsed] = useState(() => {
+    try { return window.matchMedia('(max-width: 767px)').matches; } catch { return false; }
+  });
+  const sidebarCollapsed = sidebarPreferenceCollapsed || sidebarAutoCollapsed;
   const {
     size: chatSidebarWidth,
     setSize: setChatSidebarWidth,
@@ -849,12 +859,11 @@ export function ChatPage() {
   });
 
   const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
-      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }, []);
+    const next = !sidebarCollapsed;
+    setSidebarAutoCollapsed(false);
+    setSidebarPreferenceCollapsed(next);
+    try { localStorage.setItem(CHAT_SIDEBAR_COLLAPSED_KEY, String(next)); } catch { /* ignore */ }
+  }, [sidebarCollapsed]);
 
   const handleChatSidebarResizeKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -876,7 +885,7 @@ export function ChatPage() {
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
     const handler = (e: MediaQueryListEvent | MediaQueryList) => {
-      if (e.matches) setSidebarCollapsed(true);
+      setSidebarAutoCollapsed(e.matches);
     };
     handler(mq);
     mq.addEventListener('change', handler);
@@ -886,7 +895,12 @@ export function ChatPage() {
   // Ctrl+B to toggle sidebar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'b') {
+      if (
+        (e.ctrlKey || e.metaKey)
+        && !e.shiftKey
+        && e.key.toLowerCase() === 'b'
+        && !isEditableShortcutTarget(e.target)
+      ) {
         e.preventDefault();
         toggleSidebar();
       }
@@ -1222,6 +1236,8 @@ export function ChatPage() {
     <div className="flex h-full min-h-0">
       {/* Sidebar */}
       <motion.div
+        data-testid="chat-history-sidebar"
+        data-collapsed={sidebarCollapsed}
         initial={false}
         animate={{ width: sidebarCollapsed ? 0 : chatSidebarWidth }}
         transition={isChatSidebarResizing ? { duration: 0 } : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}

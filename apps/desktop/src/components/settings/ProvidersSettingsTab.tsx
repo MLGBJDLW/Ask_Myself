@@ -32,6 +32,11 @@ interface ProvidersSettingsTabProps {
   onSelectedPresetChange: (preset: ProviderPreset | null) => void;
   onSetDefault: (id: string) => void;
   onDeleteTargetChange: (config: AgentConfig) => void;
+  micDevices?: MediaDeviceInfo[];
+  micDeviceId?: string | null;
+  onMicDeviceChange?: (deviceId: string | null) => void;
+  onRefreshMics?: () => void;
+  localSpeechRuntimeReady?: boolean | null;
 }
 
 export function ProvidersSettingsTab({
@@ -52,6 +57,11 @@ export function ProvidersSettingsTab({
   onSelectedPresetChange,
   onSetDefault,
   onDeleteTargetChange,
+  micDevices,
+  micDeviceId,
+  onMicDeviceChange,
+  onRefreshMics,
+  localSpeechRuntimeReady,
 }: ProvidersSettingsTabProps) {
   const { t } = useTranslation();
   const providerLabels: Record<string, string> = {
@@ -263,6 +273,11 @@ export function ProvidersSettingsTab({
                   onChange={onAppConfigChange}
                   onMarkDirty={onMarkAppConfigDirty}
                   onSave={onAppConfigSave}
+                  micDevices={micDevices}
+                  micDeviceId={micDeviceId}
+                  onMicDeviceChange={onMicDeviceChange}
+                  onRefreshMics={onRefreshMics}
+                  localRuntimeReady={localSpeechRuntimeReady}
                 />
               </div>
             </>

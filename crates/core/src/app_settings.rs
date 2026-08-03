@@ -148,10 +148,9 @@ impl TextToSpeechConfig {
     }
 }
 
-/// Dedicated voice-input transcription settings. This is intentionally
-/// separate from video analysis: microphone input can use a low-latency cloud
-/// or sherpa-onnx recognizer while video ingestion keeps its local Whisper
-/// configuration and offline defaults.
+/// Dedicated voice-input transcription settings. Media ingestion can inherit
+/// this backend so microphone and file transcription share one provider
+/// contract, while an explicit local-Whisper media override remains available.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechToTextConfig {

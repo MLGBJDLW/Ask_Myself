@@ -10,6 +10,7 @@ import {
 export interface NexaComboboxOption {
   value: string;
   label: string;
+  description?: string;
   keywords?: string[];
   disabled?: boolean;
   badge?: ReactNode;
@@ -17,6 +18,8 @@ export interface NexaComboboxOption {
 
 export function NexaCombobox({
   ariaLabel,
+  className = '',
+  dataTestId,
   emptyLabel = 'No results',
   onValueChange,
   options,
@@ -25,6 +28,8 @@ export function NexaCombobox({
   value,
 }: {
   ariaLabel: string;
+  className?: string;
+  dataTestId?: string;
   emptyLabel?: string;
   onValueChange: (value: string) => void;
   options: NexaComboboxOption[];
@@ -38,8 +43,16 @@ export function NexaCombobox({
   return (
     <NexaPopover open={open} onOpenChange={setOpen}>
       <NexaPopoverTrigger asChild>
-        <button type="button" className="nexa-select-trigger" aria-label={ariaLabel} aria-expanded={open}>
-          <span className="truncate">{selected?.label ?? placeholder}</span>
+        <button
+          type="button"
+          className={`nexa-select-trigger ${className}`}
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          data-nexa-select-trigger
+          data-value={value ?? ''}
+          data-testid={dataTestId}
+        >
+          <span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? placeholder}</span>
           <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 text-text-tertiary" />
         </button>
       </NexaPopoverTrigger>
@@ -51,7 +64,8 @@ export function NexaCombobox({
             {options.map(option => (
               <Command.Item
                 key={option.value}
-                value={[option.label, ...(option.keywords ?? [])].join(' ')}
+                value={option.value}
+                keywords={[option.label, option.description ?? '', ...(option.keywords ?? [])]}
                 disabled={option.disabled}
                 onSelect={() => {
                   onValueChange(option.value);
@@ -60,7 +74,12 @@ export function NexaCombobox({
                 className="nexa-overlay-item"
               >
                 <Check className={`h-3.5 w-3.5 ${option.value === value ? 'opacity-100' : 'opacity-0'}`} />
-                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-text-primary">{option.label}</span>
+                  {option.description && (
+                    <span className="block truncate text-[11px] text-text-tertiary">{option.description}</span>
+                  )}
+                </span>
                 {option.badge}
               </Command.Item>
             ))}

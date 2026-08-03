@@ -24,7 +24,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { SharedCredentialNotice } from './SharedCredentialNotice';
 import { ModelDescriptorBadges } from './ModelDescriptorBadges';
-import { modelDescriptorSummary } from '../../lib/modelCatalog';
+import { CatalogModelPicker } from './CatalogModelPicker';
 
 interface TextToSpeechSettingsPanelProps {
   appConfig: AppConfig;
@@ -349,17 +349,13 @@ export function TextToSpeechSettingsPanel({
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.model')}</label>
-              <NexaSelect
+              <CatalogModelPicker
                 value={config.model}
-                onChange={(event) => update({ model: event.target.value })}
-                className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
-              >
-                {!activePreset.models.some((model) => model.id === config.model) && <option value="" disabled>—</option>}
-                {activePreset.models.map((model) => (
-                  <option key={model.id} value={model.id} disabled={model.descriptor?.availableToCredential === false}>{model.name}{model.recommended ? ' *' : ''}{model.descriptor ? ` · ${modelDescriptorSummary(model.descriptor)}` : ''}</option>
-                ))}
-              </NexaSelect>
-              <ModelDescriptorBadges descriptor={selectedModelDescriptor} />
+                onValueChange={(model) => update({ model })}
+                models={activePreset.models.flatMap((model) => model.descriptor ? [{ ...model, descriptor: model.descriptor }] : [])}
+                surface="text_to_speech"
+              />
+              <ModelDescriptorBadges descriptor={selectedModelDescriptor} surface="text_to_speech" />
             </div>
 
             <div className="space-y-2 md:col-span-2">

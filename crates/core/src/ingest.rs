@@ -15,8 +15,13 @@ use tracing::{debug, info, warn};
 use crate::db::Database;
 use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
 use crate::error::CoreError;
+#[cfg(feature = "video")]
+use crate::parse::hash_file_content;
+#[cfg(test)]
+use crate::parse::parse_file;
 use crate::parse::{
-    detect_mime_type, file_appears_binary, parse_file, ParsedChunk, ParsedDocument,
+    detect_mime_type, file_appears_binary, parse_file_with_media_config, ParsedChunk,
+    ParsedDocument,
 };
 use crate::privacy::{self, PrivacyConfig};
 
@@ -232,6 +237,12 @@ fn scan_source_inner(
     // Load video config from DB so user settings are used during parsing.
     #[cfg(feature = "video")]
     let video_config = db.load_video_config().ok();
+    #[cfg(all(feature = "video", feature = "ocr"))]
+    let ocr_config = db.load_ocr_config().ok();
+    #[cfg(all(feature = "video", not(feature = "ocr")))]
+    let ocr_config = Some(crate::ocr::OcrConfig::default());
+    #[cfg(feature = "video")]
+    let speech_config = app_cfg.speech_to_text.clone();
 
     let root = Path::new(&source.root_path);
     if !root.exists() {
@@ -380,12 +391,28 @@ fn scan_source_inner(
             continue;
         }
 
+        let media_progress = |progress: f32| {
+            if let Some(cb) = &on_progress {
+                cb(ScanProgress {
+                    source_id: source_id.to_string(),
+                    phase: "analyzing_media".to_string(),
+                    current: progress.clamp(0.0, 100.0).round() as usize,
+                    total: 100,
+                    current_file: Some(rel_str.clone()),
+                });
+            }
+        };
         match classify_file(
             file_path,
             &existing_docs,
             privacy_cfg,
             #[cfg(feature = "video")]
+            ocr_config.as_ref(),
+            #[cfg(feature = "video")]
             video_config.as_ref(),
+            #[cfg(feature = "video")]
+            Some(&speech_config),
+            Some(&media_progress),
             max_chunk_chars,
         ) {
             Ok(FileClassification::New(parsed)) => {
@@ -1057,21 +1084,54 @@ enum FileClassification {
 }
 
 /// Classify a file as new, changed, or unchanged (without performing DB writes).
+#[allow(clippy::too_many_arguments)]
 fn classify_file(
     path: &Path,
     existing_docs: &HashMap<String, (String, String)>,
     privacy: &PrivacyConfig,
+    #[cfg(feature = "video")] ocr_config: Option<&crate::ocr::OcrConfig>,
     #[cfg(feature = "video")] video_config: Option<&crate::video::VideoConfig>,
+    #[cfg(feature = "video")] speech_config: Option<&crate::app_settings::SpeechToTextConfig>,
+    progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
 ) -> Result<FileClassification, CoreError> {
-    let mut parsed = parse_file(
+    #[cfg(feature = "video")]
+    let file_path = path.to_string_lossy().to_string();
+    #[cfg(feature = "video")]
+    let known_content_hash = {
+        let mime_type = detect_mime_type(path);
+        if mime_type.starts_with("audio/") || mime_type.starts_with("video/") {
+            let hash = hash_file_content(path)?;
+            if existing_docs
+                .get(&file_path)
+                .is_some_and(|(_, existing_hash)| existing_hash == &hash)
+            {
+                debug!("Skipping unchanged media before analysis: {}", file_path);
+                return Ok(FileClassification::Unchanged);
+            }
+            Some(hash)
+        } else {
+            None
+        }
+    };
+
+    let mut parsed = parse_file_with_media_config(
         path,
+        #[cfg(feature = "video")]
+        ocr_config,
+        #[cfg(not(feature = "video"))]
         None,
         #[cfg(feature = "video")]
         video_config,
+        #[cfg(feature = "video")]
+        speech_config,
         None,
-        None,
+        progress_callback,
         max_chunk_chars,
+        #[cfg(feature = "video")]
+        known_content_hash.as_deref(),
+        #[cfg(not(feature = "video"))]
+        None,
     )?;
 
     // Apply content redaction when privacy is enabled.
@@ -1269,6 +1329,12 @@ pub fn ingest_single_file(
     // Load video config from DB so user settings are used during parsing.
     #[cfg(feature = "video")]
     let video_config = db.load_video_config().ok();
+    #[cfg(all(feature = "video", feature = "ocr"))]
+    let ocr_config = db.load_ocr_config().ok();
+    #[cfg(all(feature = "video", not(feature = "ocr")))]
+    let ocr_config = Some(crate::ocr::OcrConfig::default());
+    #[cfg(feature = "video")]
+    let speech_config = app_cfg.speech_to_text.clone();
 
     // Derive max chunk size from the configured embedding model.
     // Floor at 1500 chars — the embedder truncates its own input, but
@@ -1278,14 +1344,42 @@ pub fn ingest_single_file(
         .ok()
         .map(|cfg| cfg.local_embedding_model().max_chunk_chars().max(1500));
 
-    let parsed_result = parse_file(
+    let existing_document = db.get_document_by_path(&path_str)?;
+    #[cfg(feature = "video")]
+    let known_content_hash = {
+        let mime_type = detect_mime_type(path);
+        if mime_type.starts_with("audio/") || mime_type.starts_with("video/") {
+            let hash = hash_file_content(path)?;
+            if existing_document
+                .as_ref()
+                .is_some_and(|(_, existing_hash)| existing_hash == &hash)
+            {
+                debug!("Single-file ingest: unchanged media before analysis {path_str}");
+                return Ok(IngestFileResult::Unchanged);
+            }
+            Some(hash)
+        } else {
+            None
+        }
+    };
+
+    let parsed_result = parse_file_with_media_config(
         path,
+        #[cfg(feature = "video")]
+        ocr_config.as_ref(),
+        #[cfg(not(feature = "video"))]
         None,
         #[cfg(feature = "video")]
         video_config.as_ref(),
+        #[cfg(feature = "video")]
+        Some(&speech_config),
         None,
         None,
         max_chunk_chars,
+        #[cfg(feature = "video")]
+        known_content_hash.as_deref(),
+        #[cfg(not(feature = "video"))]
+        None,
     );
 
     let mut parsed = match parsed_result {
@@ -1311,7 +1405,7 @@ pub fn ingest_single_file(
     let _ = db.clear_scan_error(source_id, &path_str);
 
     // Check if the document already exists.
-    match db.get_document_by_path(&parsed.file_path)? {
+    match existing_document {
         Some((doc_id, existing_hash)) => {
             if existing_hash == parsed.content_hash {
                 debug!("Single-file ingest: unchanged {}", parsed.file_path);
@@ -1962,5 +2056,39 @@ mod tests {
         assert_eq!(r2.files_skipped, 10);
         assert_eq!(r2.files_added, 0);
         assert_eq!(r2.files_updated, 0);
+    }
+
+    #[cfg(feature = "video")]
+    #[test]
+    fn unchanged_media_is_classified_before_any_ffmpeg_work() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("unchanged.mp4");
+        fs::write(
+            &path,
+            b"invalid video bytes are sufficient for hash preflight",
+        )
+        .unwrap();
+        let path_string = path.to_string_lossy().to_string();
+        let hash = hash_file_content(&path).unwrap();
+        let existing = HashMap::from([(path_string, ("doc-1".to_string(), hash))]);
+        let video = crate::video::VideoConfig {
+            enabled: true,
+            ffmpeg_path: Some("/definitely/missing/ffmpeg".into()),
+            ..crate::video::VideoConfig::default()
+        };
+
+        let classification = classify_file(
+            &path,
+            &existing,
+            &PrivacyConfig::default(),
+            Some(&crate::ocr::OcrConfig::default()),
+            Some(&video),
+            Some(&crate::app_settings::SpeechToTextConfig::default()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(classification, FileClassification::Unchanged));
     }
 }

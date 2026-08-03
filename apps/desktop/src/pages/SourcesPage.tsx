@@ -23,6 +23,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import * as api from '../lib/api';
 import type { Source, ScanError, IngestResult, EmbedResult } from '../types';
+import type { MediaRuntimeStatus } from '../types/video';
 import { useProgress, progressStore } from '../lib/progressStore';
 import { useTranslation } from '../i18n';
 import type { TranslationKeys } from '../i18n/types';
@@ -36,10 +37,10 @@ import { CardSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { VideoProcessingProgress } from '../components/media/VideoProcessingProgress';
 import { SourceFileTree } from '../components/sources/SourceFileTree';
-import { getWhisperReadiness } from '../features/voice';
 import { undoableAction } from '../lib/undoToast';
 import { getSoftCollapseMotion } from '../lib/uiMotion';
 import { formatUserError } from '../lib/userError';
+import { sourceMayIncludeMedia } from '../lib/mediaSourceScope';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -192,8 +193,17 @@ export function SourcesPage() {
   }, [progress.batchProgress, progress.embedRebuildProgress]);
   const [pendingBatchAction, setPendingBatchAction] = useState<BatchAction | null>(null);
 
-  // Whisper model check
-  const [whisperModelMissing, setWhisperModelMissing] = useState(false);
+  const [mediaRuntimeStatus, setMediaRuntimeStatus] = useState<MediaRuntimeStatus | null>(null);
+  const hasMediaScope = useMemo(() => sources.some(sourceMayIncludeMedia), [sources]);
+  const mediaAnalysisDegraded = Boolean(
+    hasMediaScope
+    && mediaRuntimeStatus?.enabled
+    && (
+      mediaRuntimeStatus.probe.degraded
+      || mediaRuntimeStatus.transcription.degraded
+      || mediaRuntimeStatus.visualAnalysis.degraded
+    ),
+  );
 
   /* 鈹€鈹€ Load 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
@@ -232,11 +242,14 @@ export function SourcesPage() {
   }, [loadSources]);
 
   useEffect(() => {
-    api.getVideoConfig()
-      .then(config => config && getWhisperReadiness(config))
-      .then(exists => setWhisperModelMissing(exists === false))
-      .catch(() => {}); // Video feature may not be compiled
-  }, []);
+    if (!hasMediaScope) {
+      setMediaRuntimeStatus(null);
+      return;
+    }
+    api.getMediaRuntimeStatus()
+      .then(setMediaRuntimeStatus)
+      .catch(() => setMediaRuntimeStatus(null)); // Video feature may not be compiled
+  }, [hasMediaScope]);
 
   /* 鈹€鈹€ File-change event listener 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
@@ -633,15 +646,15 @@ export function SourcesPage() {
         </div>
       )}
 
-      {whisperModelMissing && (
+      {mediaAnalysisDegraded && (
         <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm mb-4">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span>{t('sources.whisperModelMissing')}</span>
+          <span>{t('sources.mediaAnalysisDegraded')}</span>
           <Button
             variant="secondary"
             size="sm"
             className="ml-auto shrink-0"
-            onClick={() => navigate('/settings?tab=models')}
+            onClick={() => navigate('/settings?tab=media')}
           >
             {t('sources.goToSettings')}
           </Button>
@@ -1221,4 +1234,3 @@ export function SourcesPage() {
     </div>
   );
 }
-

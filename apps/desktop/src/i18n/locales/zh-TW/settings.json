@@ -203,6 +203,15 @@
   "videoSection": "影片分析",
   "videoEnabled": "啟用影片分析",
   "videoEnabledDesc": "使用 FFmpeg + Whisper 語音轉文字技術從影片檔案中擷取文字",
+  "videoTranscriptionMode": "轉錄來源",
+  "videoTranscriptionModeDesc": "繼承語音輸入、使用本機 Whisper，或關閉媒體轉錄。",
+  "videoTranscriptionInherit": "繼承語音輸入",
+  "videoTranscriptionLocal": "本機 Whisper",
+  "videoTranscriptionDisabled": "關閉轉錄",
+  "videoFailurePolicy": "失敗策略",
+  "videoFailurePolicyDesc": "選擇轉錄失敗時是否繼續索引畫面與中繼資料。",
+  "videoFailureBestEffort": "盡力完成（建議）",
+  "videoFailureRequireTranscript": "必須成功轉錄",
   "videoFfmpegStatus": "FFmpeg 狀態",
   "videoFfmpegAvailable": "可用",
   "videoFfmpegNotFound": "未找到",
@@ -391,6 +400,10 @@
   "expandImageGeneration": "展開生圖模型設定",
   "collapseImageGeneration": "收合生圖模型設定",
   "configured": "已設定",
+  "runtimeReady": "執行環境已就緒",
+  "runtimeNotReady": "執行環境未就緒",
+  "runtimeChecking": "正在檢查執行環境",
+  "runtimeUnverified": "執行環境尚未驗證",
   "needsApiKey": "需要 API Key",
   "providerApiKeySource": "{provider} API Key",
   "dedicatedApiKeySource": "獨立生圖 Key",
@@ -815,4 +828,22 @@
   ,"ttsVoiceCatalogStale": "已過期"
   ,"ttsPreviewText": "語音試聽文字"
   ,"ttsPreview": "試聽語音"
+  ,"selectModel": "選擇模型"
+  ,"modelPickerAria": "模型目錄選擇器"
+  ,"modelModalityText": "文字"
+  ,"modelModalityImage": "圖像"
+  ,"modelModalityAudio": "音訊"
+  ,"modelModalityVideo": "影片"
+  ,"modelModalityFile": "檔案"
+  ,"modelModalityEmbedding": "嵌入"
+  ,"modelMetaStatus": "狀態"
+  ,"modelMetaReadiness": "就緒度"
+  ,"modelMetaAccess": "存取"
+  ,"modelMetaRegion": "區域"
+  ,"modelMetaIo": "輸入/輸出"
+  ,"modelMetaSource": "來源"
+  ,"modelMetaReplacement": "替代模型"
+  ,"modelMetaCredential": "憑證"
+  ,"modelCredentialUnavailable": "目前憑證不可用"
+  ,"modelMetadataAria": "{model} 的中繼資料"
 }

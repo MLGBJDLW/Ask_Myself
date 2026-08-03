@@ -5,8 +5,6 @@
 //! paragraph-aware (plain text / log) chunks.
 
 use std::collections::HashMap;
-#[cfg(feature = "video")]
-use std::io::BufReader;
 use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
@@ -36,6 +34,17 @@ pub fn file_appears_binary(path: &std::path::Path) -> Result<bool, CoreError> {
     let mut prefix = [0_u8; BINARY_SNIFF_BYTES];
     let bytes_read = file.read(&mut prefix)?;
     Ok(bytes_appear_binary(&prefix[..bytes_read]))
+}
+
+/// Compute a streaming content hash without loading a potentially large media
+/// file into memory. Ingestion can use this before invoking FFmpeg/OCR/ASR.
+pub fn hash_file_content(path: &Path) -> Result<String, CoreError> {
+    let file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(&mut std::io::BufReader::new(file))
+        .map_err(|error| CoreError::Parse(format!("Hash error: {error}")))?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Read a file as text with encoding detection.
@@ -200,15 +209,43 @@ pub fn parse_file(
     #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
 ) -> Result<ParsedDocument, CoreError> {
-    parse_file_with_llm_provider_type(
+    parse_file_with_media_config(
         path,
         ocr_config,
         #[cfg(feature = "video")]
         video_config,
+        #[cfg(feature = "video")]
+        None,
+        llm_provider,
+        progress_callback,
+        max_chunk_chars,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn parse_file_with_media_config(
+    path: &Path,
+    ocr_config: Option<&crate::ocr::OcrConfig>,
+    #[cfg(feature = "video")] video_config: Option<&crate::video::VideoConfig>,
+    #[cfg(feature = "video")] speech_config: Option<&crate::app_settings::SpeechToTextConfig>,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    progress_callback: Option<&dyn Fn(f32)>,
+    max_chunk_chars: Option<usize>,
+    known_content_hash: Option<&str>,
+) -> Result<ParsedDocument, CoreError> {
+    parse_file_inner(
+        path,
+        ocr_config,
+        #[cfg(feature = "video")]
+        video_config,
+        #[cfg(feature = "video")]
+        speech_config,
         llm_provider,
         None,
         progress_callback,
         max_chunk_chars,
+        known_content_hash,
     )
 }
 
@@ -220,6 +257,33 @@ pub fn parse_file_with_llm_provider_type(
     llm_provider_type: Option<crate::llm::ProviderType>,
     #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
     max_chunk_chars: Option<usize>,
+) -> Result<ParsedDocument, CoreError> {
+    parse_file_inner(
+        path,
+        ocr_config,
+        #[cfg(feature = "video")]
+        video_config,
+        #[cfg(feature = "video")]
+        None,
+        llm_provider,
+        llm_provider_type,
+        progress_callback,
+        max_chunk_chars,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_file_inner(
+    path: &Path,
+    ocr_config: Option<&crate::ocr::OcrConfig>,
+    #[cfg(feature = "video")] video_config: Option<&crate::video::VideoConfig>,
+    #[cfg(feature = "video")] speech_config: Option<&crate::app_settings::SpeechToTextConfig>,
+    llm_provider: Option<&dyn crate::llm::LlmProvider>,
+    llm_provider_type: Option<crate::llm::ProviderType>,
+    #[allow(unused_variables)] progress_callback: Option<&dyn Fn(f32)>,
+    max_chunk_chars: Option<usize>,
+    #[cfg_attr(not(feature = "video"), allow(unused_variables))] known_content_hash: Option<&str>,
 ) -> Result<ParsedDocument, CoreError> {
     let max_chars = max_chunk_chars.unwrap_or(DEFAULT_MAX_CHUNK_CHARS);
     let mime_type = detect_mime_type(path);
@@ -277,7 +341,18 @@ pub fn parse_file_with_llm_provider_type(
     #[cfg(feature = "video")]
     if mime_type.starts_with("audio/") {
         let cfg = video_config.cloned().unwrap_or_default();
-        return parse_audio(path, &mime_type, &cfg, progress_callback);
+        if !cfg.enabled {
+            return parse_media_stub(path, &mime_type, known_content_hash);
+        }
+        let speech = speech_config.cloned().unwrap_or_default();
+        return parse_audio(
+            path,
+            &mime_type,
+            &cfg,
+            &speech,
+            progress_callback,
+            known_content_hash,
+        );
     }
     #[cfg(not(feature = "video"))]
     if mime_type.starts_with("audio/") {
@@ -308,7 +383,20 @@ pub fn parse_file_with_llm_provider_type(
     #[cfg(feature = "video")]
     if mime_type.starts_with("video/") {
         let cfg = video_config.cloned().unwrap_or_default();
-        return parse_video(path, &mime_type, &cfg, progress_callback);
+        if !cfg.enabled {
+            return parse_media_stub(path, &mime_type, known_content_hash);
+        }
+        let ocr = ocr_config.cloned().unwrap_or_default();
+        let speech = speech_config.cloned().unwrap_or_default();
+        return parse_video(
+            path,
+            &mime_type,
+            &cfg,
+            &ocr,
+            &speech,
+            progress_callback,
+            known_content_hash,
+        );
     }
     #[cfg(not(feature = "video"))]
     if mime_type.starts_with("video/") {
@@ -377,6 +465,35 @@ pub fn parse_file_with_llm_provider_type(
         chunks,
         visual_artifacts: Vec::new(),
         metadata: doc_metadata,
+    })
+}
+
+#[cfg(feature = "video")]
+fn parse_media_stub(
+    path: &Path,
+    mime_type: &str,
+    known_content_hash: Option<&str>,
+) -> Result<ParsedDocument, CoreError> {
+    let file_metadata = std::fs::metadata(path)?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut metadata = extract_fs_metadata(path);
+    metadata.insert("media_analysis".into(), "disabled".into());
+    Ok(ParsedDocument {
+        file_path: path.to_string_lossy().to_string(),
+        title: file_name.clone(),
+        file_name,
+        mime_type: mime_type.to_string(),
+        file_size: file_metadata.len() as i64,
+        content_hash: match known_content_hash {
+            Some(hash) => hash.to_string(),
+            None => hash_file_content(path)?,
+        },
+        chunks: Vec::new(),
+        visual_artifacts: Vec::new(),
+        metadata,
     })
 }
 
@@ -834,16 +951,16 @@ fn parse_audio(
     path: &Path,
     mime_type: &str,
     config: &crate::video::VideoConfig,
+    speech_config: &crate::app_settings::SpeechToTextConfig,
     progress_callback: Option<&dyn Fn(f32)>,
+    known_content_hash: Option<&str>,
 ) -> Result<ParsedDocument, CoreError> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as i64;
-    let file = std::fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher
-        .update_reader(&mut BufReader::new(file))
-        .map_err(|e| CoreError::Parse(format!("Hash error: {e}")))?;
-    let content_hash = hasher.finalize().to_hex().to_string();
+    let content_hash = match known_content_hash {
+        Some(hash) => hash.to_string(),
+        None => hash_file_content(path)?,
+    };
 
     let file_path = path.to_string_lossy().to_string();
     let file_name = path
@@ -851,7 +968,7 @@ fn parse_audio(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let result = crate::video::analyze_audio(path, config, |progress| {
+    let result = crate::video::analyze_audio(path, config, speech_config, |progress| {
         if let Some(cb) = &progress_callback {
             cb(progress.progress_pct);
         }
@@ -888,6 +1005,12 @@ fn parse_audio(
     if let Some(dur) = result.duration_secs {
         doc_metadata.insert("duration_secs".into(), format!("{dur:.1}"));
     }
+    if !result.warnings.is_empty() {
+        doc_metadata.insert(
+            "media_analysis_warnings".into(),
+            serde_json::to_string(&result.warnings).unwrap_or_default(),
+        );
+    }
 
     Ok(ParsedDocument {
         file_path,
@@ -913,18 +1036,20 @@ fn normalize_for_comparison(text: &str) -> String {
 
 /// Remove consecutive duplicate OCR texts (common for slides/titles held on screen).
 #[cfg(feature = "video")]
-fn deduplicate_frame_texts(frame_texts: &[String]) -> Vec<(usize, String)> {
-    let mut deduped: Vec<(usize, String)> = Vec::new();
-    for (idx, text) in frame_texts.iter().enumerate() {
-        if text.trim().is_empty() {
+fn deduplicate_visual_events(
+    visual_events: &[crate::video::VisualEvent],
+) -> Vec<crate::video::VisualEvent> {
+    let mut deduped: Vec<crate::video::VisualEvent> = Vec::new();
+    for event in visual_events {
+        if event.text.trim().is_empty() {
             continue;
         }
-        if let Some((_, prev)) = deduped.last() {
-            if normalize_for_comparison(text) == normalize_for_comparison(prev) {
+        if let Some(previous) = deduped.last() {
+            if normalize_for_comparison(&event.text) == normalize_for_comparison(&previous.text) {
                 continue;
             }
         }
-        deduped.push((idx, text.clone()));
+        deduped.push(event.clone());
     }
     deduped
 }
@@ -952,16 +1077,17 @@ fn parse_video(
     path: &Path,
     mime_type: &str,
     config: &crate::video::VideoConfig,
+    ocr_config: &crate::ocr::OcrConfig,
+    speech_config: &crate::app_settings::SpeechToTextConfig,
     progress_callback: Option<&dyn Fn(f32)>,
+    known_content_hash: Option<&str>,
 ) -> Result<ParsedDocument, CoreError> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len() as i64;
-    let file = std::fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher
-        .update_reader(&mut BufReader::new(file))
-        .map_err(|e| CoreError::Parse(format!("Hash error: {e}")))?;
-    let content_hash = hasher.finalize().to_hex().to_string();
+    let content_hash = match known_content_hash {
+        Some(hash) => hash.to_string(),
+        None => hash_file_content(path)?,
+    };
 
     let file_path = path.to_string_lossy().to_string();
     let file_name = path
@@ -969,11 +1095,12 @@ fn parse_video(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let result = crate::video::analyze_video(path, config, |progress| {
-        if let Some(cb) = &progress_callback {
-            cb(progress.progress_pct);
-        }
-    })?;
+    let result =
+        crate::video::analyze_video(path, config, ocr_config, speech_config, |progress| {
+            if let Some(cb) = &progress_callback {
+                cb(progress.progress_pct);
+            }
+        })?;
 
     let segments = &result.transcript_segments;
     let mut chunks: Vec<ParsedChunk> = segments
@@ -1023,20 +1150,21 @@ fn parse_video(
 
     // Add frame OCR text as additional chunks with timestamp correlation.
     let base_index = chunks.len() as i32;
-    let frame_interval_secs = config.frame_interval_secs as i64;
-    let deduped_frames = deduplicate_frame_texts(&result.frame_texts);
-    for (i, (orig_idx, frame_text)) in deduped_frames.iter().enumerate() {
-        let ts_secs = *orig_idx as i64 * frame_interval_secs;
-        let ts_end = ts_secs + frame_interval_secs;
+    let deduped_frames = deduplicate_visual_events(&result.visual_events);
+    for (i, event) in deduped_frames.iter().enumerate() {
+        let ts_secs = event.timestamp_ms / 1000;
         let ts_h = ts_secs / 3600;
         let ts_m = (ts_secs % 3600) / 60;
         let ts_s = ts_secs % 60;
         chunks.push(ParsedChunk {
-            content: frame_text.clone(),
+            content: event.text.clone(),
             chunk_index: base_index + i as i32,
-            start_offset: ts_secs * 1000, // store as ms like transcript chunks
-            end_offset: ts_end * 1000,
-            heading_context: Some(format!("[Frame OCR @ {:02}:{:02}:{:02}]", ts_h, ts_m, ts_s)),
+            start_offset: event.timestamp_ms,
+            end_offset: event.end_ms,
+            heading_context: Some(format!(
+                "[{} @ {:02}:{:02}:{:02}; confidence {:.2}]",
+                event.source, ts_h, ts_m, ts_s, event.confidence,
+            )),
             overlap_start: 0,
         });
     }
@@ -1047,6 +1175,12 @@ fn parse_video(
     }
     if let Some(ref thumb) = result.thumbnail_path {
         doc_metadata.insert("thumbnail_path".into(), thumb.to_string_lossy().to_string());
+    }
+    if !result.warnings.is_empty() {
+        doc_metadata.insert(
+            "media_analysis_warnings".into(),
+            serde_json::to_string(&result.warnings).unwrap_or_default(),
+        );
     }
     if let Some(ref meta) = result.metadata {
         if let Some(w) = meta.width {
@@ -2596,6 +2730,35 @@ Final thoughts go here with enough text to pass the minimum chunk size threshold
         assert!(
             doc.chunks[0].content.contains("This is test content"),
             "Should extract text from content.xml"
+        );
+    }
+
+    #[cfg(feature = "video")]
+    #[test]
+    fn disabled_media_analysis_returns_a_metadata_stub_without_ffmpeg() {
+        let mut file = NamedTempFile::with_suffix(".mp4").unwrap();
+        file.write_all(b"not a real video; disabled analysis must not probe it")
+            .unwrap();
+        file.flush().unwrap();
+        let expected_hash = hash_file_content(file.path()).unwrap();
+
+        let document = parse_file_with_media_config(
+            file.path(),
+            Some(&crate::ocr::OcrConfig::default()),
+            Some(&crate::video::VideoConfig::default()),
+            Some(&crate::app_settings::SpeechToTextConfig::default()),
+            None,
+            None,
+            None,
+            Some(&expected_hash),
+        )
+        .unwrap();
+
+        assert!(document.chunks.is_empty());
+        assert_eq!(document.content_hash, expected_hash);
+        assert_eq!(
+            document.metadata.get("media_analysis").map(String::as_str),
+            Some("disabled")
         );
     }
 }

@@ -178,7 +178,7 @@ export function NexaSelect({
         title={props.title}
         className={`nexa-select-trigger ${className}`}
       >
-        <SelectPrimitive.Value />
+        <SelectPrimitive.Value className="min-w-0 flex-1 truncate text-left" />
         <SelectPrimitive.Icon className="ml-2 shrink-0 text-text-tertiary">
           <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
         </SelectPrimitive.Icon>
@@ -212,7 +212,9 @@ export function NexaSelect({
                     <SelectPrimitive.ItemIndicator className="nexa-select-indicator">
                       <Check className="h-3.5 w-3.5" />
                     </SelectPrimitive.ItemIndicator>
-                    <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
+                    <SelectPrimitive.ItemText>
+                      <span className="block min-w-0 truncate">{option.label}</span>
+                    </SelectPrimitive.ItemText>
                   </SelectPrimitive.Item>
                 ))}
               </SelectPrimitive.Group>

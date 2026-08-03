@@ -203,6 +203,15 @@
   "videoSection": "Анализ видео",
   "videoEnabled": "Включить анализ видео",
   "videoEnabledDesc": "Извлекать текст из видеофайлов с помощью FFmpeg + Whisper распознавания речи",
+  "videoTranscriptionMode": "Источник транскрипции",
+  "videoTranscriptionModeDesc": "Наследовать голосовой ввод, использовать локальный Whisper или отключить транскрипцию медиа.",
+  "videoTranscriptionInherit": "Наследовать голосовой ввод",
+  "videoTranscriptionLocal": "Локальный Whisper",
+  "videoTranscriptionDisabled": "Отключено",
+  "videoFailurePolicy": "Политика сбоев",
+  "videoFailurePolicyDesc": "Выберите, продолжать ли индексацию изображения и метаданных без транскрипта.",
+  "videoFailureBestEffort": "По возможности (рекомендуется)",
+  "videoFailureRequireTranscript": "Требовать транскрипт",
   "videoFfmpegStatus": "Статус FFmpeg",
   "videoFfmpegAvailable": "Доступен",
   "videoFfmpegNotFound": "Не найден",
@@ -391,6 +400,10 @@
   "expandImageGeneration": "Развернуть настройки генерации изображений",
   "collapseImageGeneration": "Свернуть настройки генерации изображений",
   "configured": "Настроено",
+  "runtimeReady": "Среда готова",
+  "runtimeNotReady": "Среда не готова",
+  "runtimeChecking": "Проверка среды",
+  "runtimeUnverified": "Среда не проверена",
   "needsApiKey": "Нужен API-ключ",
   "providerApiKeySource": "API-ключ {provider}",
   "dedicatedApiKeySource": "Отдельный ключ изображений",
@@ -815,4 +828,22 @@
   ,"ttsVoiceCatalogStale": "Stale"
   ,"ttsPreviewText": "Voice preview text"
   ,"ttsPreview": "Preview voice"
+  ,"selectModel": "Выбрать модель"
+  ,"modelPickerAria": "Выбор модели из каталога"
+  ,"modelModalityText": "текст"
+  ,"modelModalityImage": "изображение"
+  ,"modelModalityAudio": "аудио"
+  ,"modelModalityVideo": "видео"
+  ,"modelModalityFile": "файл"
+  ,"modelModalityEmbedding": "эмбеддинг"
+  ,"modelMetaStatus": "Статус"
+  ,"modelMetaReadiness": "Готовность"
+  ,"modelMetaAccess": "Доступ"
+  ,"modelMetaRegion": "Регион"
+  ,"modelMetaIo": "Ввод/вывод"
+  ,"modelMetaSource": "Источник"
+  ,"modelMetaReplacement": "Замена"
+  ,"modelMetaCredential": "Учётные данные"
+  ,"modelCredentialUnavailable": "Недоступно для этих учётных данных"
+  ,"modelMetadataAria": "Метаданные модели {model}"
 }

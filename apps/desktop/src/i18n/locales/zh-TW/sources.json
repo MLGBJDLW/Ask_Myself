@@ -86,6 +86,7 @@
   "batchConfirm.rebuildEmbeddings.message": "這會為已索引內容重新計算嵌入，可能耗時較長，並佔用較多 CPU 資源。",
   "batchConfirm.rebuildEmbeddings.confirm": "重建嵌入",
   "whisperModelMissing": "影片處理已啟用，但 Whisper 模型尚未下載。掃描時將無法轉錄影片檔案。",
+  "mediaAnalysisDegraded": "媒體分析已啟用，但部分執行元件尚未就緒。掃描將依設定的失敗策略繼續。",
   "goToSettings": "前往設定",
   "browse": "瀏覽",
   "fileBrowser": "文件浏览器",

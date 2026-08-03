@@ -126,6 +126,8 @@ test.beforeEach(async ({ page }) => {
         case "get_video_config_cmd":
           return {
             enabled: false,
+            transcriptionMode: "inherit_speech_to_text",
+            failurePolicy: "best_effort",
             whisperModel: "tiny",
             language: null,
             translateToEnglish: false,

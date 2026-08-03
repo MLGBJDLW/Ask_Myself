@@ -203,6 +203,15 @@
   "videoSection": "Análise de vídeo",
   "videoEnabled": "Ativar análise de vídeo",
   "videoEnabledDesc": "Extrair texto de arquivos de vídeo usando FFmpeg + Whisper reconhecimento de fala",
+  "videoTranscriptionMode": "Fonte de transcrição",
+  "videoTranscriptionModeDesc": "Herdar Entrada de voz, usar Whisper local ou desativar a transcrição de mídia.",
+  "videoTranscriptionInherit": "Herdar Entrada de voz",
+  "videoTranscriptionLocal": "Whisper local",
+  "videoTranscriptionDisabled": "Desativado",
+  "videoFailurePolicy": "Política de falha",
+  "videoFailurePolicyDesc": "Escolha se a indexação visual e de metadados continua sem transcrição.",
+  "videoFailureBestEffort": "Melhor esforço (recomendado)",
+  "videoFailureRequireTranscript": "Exigir transcrição",
   "videoFfmpegStatus": "Status do FFmpeg",
   "videoFfmpegAvailable": "Disponível",
   "videoFfmpegNotFound": "Não encontrado",
@@ -391,6 +400,10 @@
   "expandImageGeneration": "Expandir configurações de geração de imagens",
   "collapseImageGeneration": "Recolher configurações de geração de imagens",
   "configured": "Configurado",
+  "runtimeReady": "Runtime pronto",
+  "runtimeNotReady": "Runtime não pronto",
+  "runtimeChecking": "Verificando runtime",
+  "runtimeUnverified": "Runtime não verificado",
   "needsApiKey": "Precisa de chave de API",
   "providerApiKeySource": "Chave de API de {provider}",
   "dedicatedApiKeySource": "Chave de imagem dedicada",
@@ -815,4 +828,22 @@
   ,"ttsVoiceCatalogStale": "Stale"
   ,"ttsPreviewText": "Voice preview text"
   ,"ttsPreview": "Preview voice"
+  ,"selectModel": "Selecionar modelo"
+  ,"modelPickerAria": "Seletor do catálogo de modelos"
+  ,"modelModalityText": "texto"
+  ,"modelModalityImage": "imagem"
+  ,"modelModalityAudio": "áudio"
+  ,"modelModalityVideo": "vídeo"
+  ,"modelModalityFile": "arquivo"
+  ,"modelModalityEmbedding": "embedding"
+  ,"modelMetaStatus": "Status"
+  ,"modelMetaReadiness": "Prontidão"
+  ,"modelMetaAccess": "Acesso"
+  ,"modelMetaRegion": "Região"
+  ,"modelMetaIo": "E/S"
+  ,"modelMetaSource": "Origem"
+  ,"modelMetaReplacement": "Substituição"
+  ,"modelMetaCredential": "Credencial"
+  ,"modelCredentialUnavailable": "Indisponível para esta credencial"
+  ,"modelMetadataAria": "Metadados de {model}"
 }

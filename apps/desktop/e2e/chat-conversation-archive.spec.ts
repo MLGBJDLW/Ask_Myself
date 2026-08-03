@@ -257,3 +257,32 @@ test('a direct archived conversation link opens read-only without joining the ac
   await expect(page.getByTestId('conversation-item-conv-archived')).toBeVisible();
   await expect(page.getByPlaceholder('Type a message...')).toBeVisible();
 });
+
+test('responsive sidebar collapse is temporary and restores the user preference', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto('/chat/conv-active');
+
+  const sidebar = page.getByTestId('chat-history-sidebar');
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+
+  await page.setViewportSize({ width: 700, height: 720 });
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'true');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('chat-sidebar-collapsed')))
+    .toBeNull();
+
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+});
+
+test('typing shortcuts do not toggle the conversation sidebar', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto('/chat/conv-active');
+
+  const sidebar = page.getByTestId('chat-history-sidebar');
+  const composer = page.getByPlaceholder('Type a message...');
+  await composer.focus();
+  await composer.press('Control+b');
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('chat-sidebar-collapsed')))
+    .toBeNull();
+});

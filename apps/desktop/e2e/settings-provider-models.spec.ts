@@ -97,15 +97,18 @@ test.beforeEach(async ({ page }) => {
 
     const ocrConfig = {
       enabled: false,
-      minConfidence: 0.5,
-      llmFallback: false,
-      detectionLimit: 2048,
+      confidenceThreshold: 0.5,
+      llmFallbackEnabled: false,
+      detLimitSideLen: 2048,
       useCls: false,
       modelPath: "",
+      languages: ["en"],
     };
 
     const videoConfig = {
       enabled: false,
+      transcriptionMode: "inherit_speech_to_text",
+      failurePolicy: "best_effort",
       whisperModel: "base",
       language: null,
       translateToEnglish: false,
@@ -477,6 +480,31 @@ test("settings provider form shows updated preset models for add and edit flows"
   ]);
 });
 
+test("catalog model picker stays compact and searchable in a narrow settings column", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: /^OpenAI/ }).click();
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  const picker = page.getByTestId("default-model-picker");
+  await expect(picker).toBeVisible();
+  expect(await picker.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    overflow: getComputedStyle(element).overflow,
+  }))).toEqual(expect.objectContaining({ overflow: "hidden" }));
+  expect(await picker.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+  await picker.click();
+  const search = page.getByPlaceholder("Search models by name, provider, or ID");
+  await search.fill("gpt-5.6-sol");
+  const option = page.locator('[role="option"][data-value="gpt-5.6-sol"]');
+  await expect(option).toBeVisible();
+  await expect(option).toContainText("gpt-5.6-sol");
+  await expect(option).toContainText("text→text");
+});
+
 test("provider refresh keeps account-discovered models selectable and cached", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
@@ -505,7 +533,10 @@ test("a custom base URL cannot inherit a public catalog endpoint identity", asyn
   await page.getByRole("button", { name: /^OpenAI/ }).click();
 
   await page.locator('input[placeholder="sk-..."]').fill("sk-account");
-  await page.getByRole("button", { name: /GPT-5\.6 gpt-5\.6/ }).first().click();
+  await selectNexaOption(
+    page.getByTestId("default-model-field").locator("[data-nexa-select-trigger]"),
+    "gpt-5.6",
+  );
   const baseUrlField = page
     .locator("label")
     .filter({ hasText: "Base URL" })
@@ -559,8 +590,8 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
   await expectNexaOptionCount(modelSelect, 2);
   await expectNexaOption(modelSelect, "qwen3.7-flash", "absent");
   await selectNexaOption(modelSelect, "qwen3.8-max-preview");
-  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("status: preview");
-  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("access: account enablement");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Status: preview");
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");
 });
 
 test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
@@ -645,8 +676,8 @@ test("settings exposes image generation model config under AI providers", async 
   await selectNexaOption(selects.nth(1), "qwen-image-2.0-pro");
   await expectNexaValue(selects.nth(1), "qwen-image-2.0-pro");
   await selectNexaOption(selects.nth(1), "qwen-image-3.0-pro");
-  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("status: preview");
-  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("access: application");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("Status: preview");
+  await expect(panel.getByTestId("model-descriptor-badges")).toContainText("Access: application");
   await selectNexaOption(selects.nth(1), "qwen-image-2.0-pro");
 
   await selectNexaOption(selects.nth(0), "google-gemini");
@@ -842,6 +873,27 @@ test("settings keeps local and cloud speech engines in one provider category", a
   await localStt.locator("button").first().click();
   await selectNexaOption(localStt.getByTestId("stt-provider-select"), "sherpa-zipformer");
   await expect(localStt.getByTestId("stt-sherpa-executable")).toHaveValue("sherpa-onnx");
+});
+
+test("media settings expose truthful policies and keep microphone controls with voice input", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Media Processing" }).click();
+
+  const videoSection = page
+    .getByRole("heading", { name: "Video Analysis" })
+    .locator("xpath=ancestor::section");
+  await videoSection.locator("button").first().click();
+  await expect(videoSection.getByText("Transcription source")).toBeVisible();
+  await expect(videoSection.getByText("Failure policy")).toBeVisible();
+  await expect(videoSection.getByText("GPU Acceleration")).toHaveCount(0);
+  await expect(videoSection.getByText("Beam Search Width")).toHaveCount(0);
+  await expect(videoSection.getByText("Microphone", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  const speechInput = page.getByTestId("speech-to-text-settings-panel");
+  await speechInput.locator("button").first().click();
+  await expect(speechInput.getByText("Voice Input", { exact: true })).toBeVisible();
+  await expect(speechInput.getByText("Runtime not ready")).toBeVisible();
 });
 
 test("settings applies a managed model root and exposes OCR deletion", async ({ page }) => {
