@@ -132,7 +132,7 @@ function defaultReasoningEffort(
   }
   return capability?.defaultEffort && levels.includes(capability.defaultEffort)
     ? capability.defaultEffort
-    : levels[0];
+    : levels.find((level) => level !== "none") ?? levels[0];
 }
 
 function normalizeReasoningEffort(
@@ -155,7 +155,7 @@ function defaultThinkingBudget(
   if (!budget?.enabled) {
     return null;
   }
-  return budget.defaultTokens ?? budget.minTokens ?? 10000;
+  return budget.defaultTokens ?? null;
 }
 
 function normalizeThinkingBudget(
@@ -167,8 +167,11 @@ function normalizeThinkingBudget(
     return null;
   }
 
-  const fallback = defaultThinkingBudget(capability) ?? 10000;
-  let next = Number.isFinite(value) && value !== null ? value : fallback;
+  const fallback = defaultThinkingBudget(capability);
+  if ((!Number.isFinite(value) || value === null) && fallback === null) {
+    return null;
+  }
+  let next = Number.isFinite(value) && value !== null ? value : fallback!;
   if (budget.allowZero && next === 0) {
     return 0;
   }
@@ -408,6 +411,8 @@ export function AgentConfigForm({
   const reasoningEffortOptions = reasoningCapability?.effortLevels ?? [];
   const thinkingBudgetCapability = reasoningCapability?.thinkingBudget;
   const supportsReasoning = reasoningCapability !== null;
+  const reasoningAlwaysOn = reasoningCapability?.mode === "always";
+  const reasoningControlsExclusive = reasoningCapability?.effortBudgetExclusive === true;
   const supportsThinkingBudget = thinkingBudgetCapability?.enabled === true;
   const supportsReasoningEffort = reasoningEffortOptions.length > 0;
   const subagentToolCatalog = useMemo(
@@ -634,6 +639,11 @@ export function AgentConfigForm({
       return;
     }
 
+    if (reasoningAlwaysOn && reasoningEnabled !== true) {
+      setReasoningEnabled(true);
+      return;
+    }
+
     if (reasoningEnabled !== true) {
       if (thinkingBudget !== null) {
         setThinkingBudget(null);
@@ -644,23 +654,25 @@ export function AgentConfigForm({
       return;
     }
 
-    const nextThinkingBudget = normalizeThinkingBudget(
-      thinkingBudget,
-      reasoningCapability,
-    );
+    const preferEffort = reasoningControlsExclusive &&
+      (reasoningEffort !== null || thinkingBudget === null);
+    const nextThinkingBudget = preferEffort
+      ? null
+      : normalizeThinkingBudget(thinkingBudget, reasoningCapability);
     if (thinkingBudget !== nextThinkingBudget) {
       setThinkingBudget(nextThinkingBudget);
     }
 
-    const nextReasoningEffort = normalizeReasoningEffort(
-      reasoningEffort,
-      reasoningCapability,
-    );
+    const nextReasoningEffort = reasoningControlsExclusive && !preferEffort
+      ? null
+      : normalizeReasoningEffort(reasoningEffort, reasoningCapability);
     if (reasoningEffort !== nextReasoningEffort) {
       setReasoningEffort(nextReasoningEffort);
     }
   }, [
     reasoningCapability,
+    reasoningAlwaysOn,
+    reasoningControlsExclusive,
     reasoningEffort,
     reasoningEnabled,
     supportsReasoning,
@@ -670,13 +682,20 @@ export function AgentConfigForm({
   const buildInput = useCallback(
     (): SaveAgentConfigInput => {
       const normalizedReasoningEnabled =
-        supportsReasoning && reasoningEnabled === true ? true : null;
+        supportsReasoning
+          ? reasoningAlwaysOn
+            ? true
+            : reasoningEnabled
+          : null;
+      const preferEffort = reasoningControlsExclusive &&
+        (reasoningEffort !== null || thinkingBudget === null);
       const normalizedThinkingBudget =
-        normalizedReasoningEnabled && supportsThinkingBudget
+        normalizedReasoningEnabled && supportsThinkingBudget && !preferEffort
           ? normalizeThinkingBudget(thinkingBudget, reasoningCapability)
           : null;
       const normalizedReasoningEffort =
-        normalizedReasoningEnabled && supportsReasoningEffort
+        normalizedReasoningEnabled && supportsReasoningEffort &&
+          (!reasoningControlsExclusive || preferEffort)
           ? normalizeReasoningEffort(reasoningEffort, reasoningCapability)
           : null;
 
@@ -747,6 +766,8 @@ export function AgentConfigForm({
       contextWindow,
       isDefault,
       reasoningEnabled,
+      reasoningAlwaysOn,
+      reasoningControlsExclusive,
       thinkingBudget,
       reasoningEffort,
       reasoningCapability,
@@ -1122,13 +1143,13 @@ export function AgentConfigForm({
           <input
             type="checkbox"
             checked={reasoningEnabled === true}
-            disabled={!supportsReasoning}
+            disabled={!supportsReasoning || reasoningAlwaysOn}
             onChange={(e) => {
               if (!supportsReasoning) {
                 return;
               }
               const enabled = e.target.checked;
-              setReasoningEnabled(enabled ? true : null);
+              setReasoningEnabled(enabled);
               if (enabled) {
                 setThinkingBudget(defaultThinkingBudget(reasoningCapability));
                 setReasoningEffort(defaultReasoningEffort(reasoningCapability));
@@ -1168,10 +1189,11 @@ export function AgentConfigForm({
                     }
                     const parsed = Number.parseInt(val, 10);
                     setThinkingBudget(Number.isNaN(parsed) ? null : parsed);
+                    if (!Number.isNaN(parsed) && reasoningControlsExclusive) {
+                      setReasoningEffort(null);
+                    }
                   }}
-                  placeholder={String(
-                    defaultThinkingBudget(reasoningCapability) ?? 10000,
-                  )}
+                  placeholder={String(defaultThinkingBudget(reasoningCapability) ?? "")}
                   min={thinkingBudgetCapability?.allowZero ? 0 : thinkingBudgetCapability?.minTokens ?? 1}
                   max={thinkingBudgetCapability?.maxTokens}
                   step={thinkingBudgetCapability?.step ?? 1}
@@ -1197,7 +1219,12 @@ export function AgentConfigForm({
                     reasoningEffortOptions[0] ??
                     ""
                   }
-                  onChange={(e) => setReasoningEffort(e.target.value)}
+                  onChange={(e) => {
+                    setReasoningEffort(e.target.value);
+                    if (reasoningControlsExclusive) {
+                      setThinkingBudget(null);
+                    }
+                  }}
                   className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
                 >
                   {reasoningEffortOptions.map((level) => (

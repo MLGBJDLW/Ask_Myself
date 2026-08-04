@@ -7316,13 +7316,25 @@
         "id": "kimi-k3",
         "name": "Kimi K3",
         "tagKey": "providers.tagLatest",
-        "source": "curated",
+        "source": "official",
+        "status": "active",
         "productReadiness": "known",
         "recommended": true,
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 1048576,
         "capabilities": {
           "vision": true,
+          "videoInput": true,
+          "promptCache": true,
           "reasoning": {
+            "mode": "always",
             "effortLevels": [
+              "low",
+              "high",
               "max"
             ],
             "defaultEffort": "max",
@@ -7336,9 +7348,14 @@
         "id": "kimi-k2.7-code",
         "name": "Kimi K2.7 Code",
         "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-04",
+        "contextTokens": 262144,
         "capabilities": {
           "vision": true,
           "reasoning": {
+            "mode": "always",
             "effortLevels": [],
             "thinkingBudget": {
               "enabled": false
@@ -7350,28 +7367,66 @@
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-04",
+        "contextTokens": 262144,
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       },
       {
         "id": "kimi-k2.5",
         "name": "Kimi K2.5",
-        "tagKey": "providers.tagBest"
+        "tagKey": "providers.tagBest",
+        "source": "official",
+        "status": "deprecated",
+        "deprecationDate": "2026-08-31",
+        "replacementModelId": "kimi-k3",
+        "lastVerifiedAt": "2026-08-04",
+        "contextTokens": 262144,
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "kimi-k2-thinking",
         "name": "Kimi K2 Thinking",
-        "tagKey": "providers.tagReasoning"
+        "tagKey": "providers.tagReasoning",
+        "source": "official",
+        "status": "removed",
+        "replacementModelId": "kimi-k3",
+        "lastVerifiedAt": "2026-08-04"
       },
       {
         "id": "kimi-k2",
         "name": "Kimi K2",
-        "tagKey": "providers.tagCode"
+        "tagKey": "providers.tagCode",
+        "source": "official",
+        "status": "removed",
+        "replacementModelId": "kimi-k2.7-code",
+        "lastVerifiedAt": "2026-08-04"
       },
       {
         "id": "kimi-latest",
-        "name": "Kimi Latest"
+        "name": "Kimi Latest",
+        "source": "official",
+        "status": "removed",
+        "replacementModelId": "kimi-k3",
+        "lastVerifiedAt": "2026-08-04"
       }
     ]
   },
@@ -7437,20 +7492,47 @@
     "baseUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "Qwen3.8 Max Preview via the Token Plan endpoint and sk-sp API key",
+    "description": "China Token Plan for interactive coding and agent tools; requires a dedicated sk-sp key that must not be mixed with pay-as-you-go endpoints",
     "capabilities": {
-      "reasoning": {
-        "effortLevels": [],
-        "thinkingBudget": {
-          "enabled": true,
-          "defaultTokens": 10000,
-          "minTokens": 1,
-          "step": 500
-        }
-      },
-      "vision": false
+      "vision": true
     },
     "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "known",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
       {
         "id": "qwen3.8-max-preview",
         "name": "Qwen3.8 Max Preview",
@@ -7460,7 +7542,118 @@
         "access": "account_enablement",
         "source": "official",
         "productReadiness": "known",
-        "lastVerifiedAt": "2026-08-01"
+        "lastVerifiedAt": "2026-08-04",
+        "regions": ["cn-beijing"],
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "qwen-token-plan-global",
+    "name": "QwenCloud Token Plan (Global)",
+    "provider": "qwen",
+    "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "requiresApiKey": true,
+    "icon": "🪶",
+    "description": "Global Token Plan for interactive coding and agent tools; requires its dedicated sk-sp key and Singapore subscription endpoint",
+    "capabilities": {
+      "vision": true
+    },
+    "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "tagKey": "providers.tagLatest",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "known",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-max-preview",
+        "name": "Qwen3.8 Max Preview",
+        "tagKey": "providers.tagPreview",
+        "recommended": false,
+        "status": "preview",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "known",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
       }
     ]
   },
@@ -7471,20 +7664,46 @@
     "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "requiresApiKey": true,
     "icon": "🪶",
-    "description": "QwenCloud pay-as-you-go international endpoint with multimodal Qwen3.7 models and regular sk API keys",
+    "description": "QwenCloud pay-as-you-go international endpoint with formal Qwen3.8 Max and regular sk API keys; separate from Token Plan",
     "capabilities": {
-      "reasoning": {
-        "effortLevels": [],
-        "thinkingBudget": {
-          "enabled": true,
-          "defaultTokens": 10000,
-          "minTokens": 1,
-          "step": 500
-        }
-      },
       "vision": true
     },
     "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "known",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
       {
         "id": "qwen3.7-flash",
         "name": "Qwen3.7 Flash",
@@ -7493,7 +7712,14 @@
         "productReadiness": "known",
         "recommended": true,
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7501,7 +7727,14 @@
         "name": "Qwen3.7 Plus",
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7514,7 +7747,14 @@
         "lastVerifiedAt": "2026-07-31",
         "modalities": ["text"],
         "capabilities": {
-          "vision": false
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       }
     ]
@@ -7528,53 +7768,148 @@
     "icon": "🪶",
     "description": "Alibaba Cloud router for Qwen plus mainstream third-party DeepSeek, Kimi, GLM, and MiniMax models",
     "capabilities": {
-      "reasoning": {
-        "effortLevels": [],
-        "thinkingBudget": {
-          "enabled": true,
-          "defaultTokens": 10000,
-          "minTokens": 1,
-          "step": 500
-        }
-      },
       "vision": false
     },
     "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "known",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "xhigh",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
       {
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "tagKey": "providers.tagMostIntelligent",
         "source": "curated",
         "productReadiness": "known",
-        "recommended": true
+        "recommended": false,
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
-        "tagKey": "providers.tagFast"
+        "tagKey": "providers.tagFast",
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "kimi-k2.7-code",
         "name": "Kimi K2.7 Code",
         "tagKey": "providers.tagCode",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       },
       {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      {
+        "id": "kimi-k2.5",
+        "name": "Kimi K2.5",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
         "id": "glm-5.2",
-        "name": "GLM-5.2"
+        "name": "GLM-5.2",
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "glm-5.1",
-        "name": "GLM-5.1"
+        "name": "GLM-5.1",
+        "capabilities": {
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       },
       {
         "id": "MiniMax-M2.5",
@@ -7587,11 +7922,20 @@
         "source": "official",
         "status": "active",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-07-31",
-        "modalities": ["text", "image"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       },
       {
@@ -7623,11 +7967,111 @@
         "source": "official",
         "status": "active",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-07-31",
-        "modalities": ["text", "image"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "kimi/kimi-k2.7-code-highspeed",
+        "name": "Kimi K2.7 Code Highspeed",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "kimi/kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "kimi/kimi-k2.6",
+        "name": "Kimi K2.6 (Moonshot route)",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "kimi/kimi-k2.5",
+        "name": "Kimi K2.5 (Moonshot route)",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-04",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       },
       {
@@ -7653,7 +8097,14 @@
         "modalities": ["text"],
         "supportsTools": true,
         "capabilities": {
-          "vision": false
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7661,7 +8112,14 @@
         "name": "Qwen3.7 Plus",
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7675,7 +8133,14 @@
         "modalities": ["text", "image"],
         "supportsTools": true,
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7688,7 +8153,14 @@
         "modalities": ["text"],
         "supportsTools": true,
         "capabilities": {
-          "vision": false
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7701,14 +8173,28 @@
         "lastVerifiedAt": "2026-07-31",
         "modalities": ["text"],
         "capabilities": {
-          "vision": false
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
         "id": "qwen3.7-plus-2026-05-26",
         "name": "Qwen3.7 Plus 2026-05-26",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7747,7 +8233,14 @@
         "name": "Qwen3.5 Plus",
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7755,7 +8248,14 @@
         "name": "Qwen3.6 Plus",
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7763,7 +8263,14 @@
         "name": "Qwen3.6 Flash",
         "tagKey": "providers.tagFast",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {
@@ -7771,7 +8278,14 @@
         "name": "Qwen3.5 Flash",
         "tagKey": "providers.tagFast",
         "capabilities": {
-          "vision": true
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true
+            }
+          }
         }
       },
       {

@@ -1337,6 +1337,7 @@ pub async fn set_default_agent_config_cmd(
 pub async fn test_agent_connection_cmd(
     config: SaveAgentConfigInput,
 ) -> Result<ProviderModelCatalogSnapshot, String> {
+    validate_agent_config_credential_contract(&config).map_err(|error| error.to_string())?;
     let provider_config = ProviderConfig {
         provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),
@@ -1386,6 +1387,7 @@ pub async fn test_agent_connection_cmd(
 pub async fn refresh_provider_model_catalog_cmd(
     config: SaveAgentConfigInput,
 ) -> Result<ProviderModelCatalogSnapshot, String> {
+    validate_agent_config_credential_contract(&config).map_err(|error| error.to_string())?;
     let provider_config = ProviderConfig {
         provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),

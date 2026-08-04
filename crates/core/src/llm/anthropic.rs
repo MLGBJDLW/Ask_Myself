@@ -899,6 +899,7 @@ mod tests {
             tools,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: None,
             routing_session_id: None,

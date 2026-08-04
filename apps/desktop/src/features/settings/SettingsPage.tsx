@@ -1506,8 +1506,8 @@ export function SettingsPage() {
       setEditingConfig(undefined);
       setSelectedPreset(null);
       loadAgentConfigs();
-    } catch {
-      toast.error(t('common.error'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('common.error'));
     } finally {
       setAgentSaveLoading(false);
     }

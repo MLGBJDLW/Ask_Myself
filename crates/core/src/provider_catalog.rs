@@ -27,15 +27,21 @@ pub struct ThinkingBudgetCapability {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub step: Option<u32>,
+    #[serde(default)]
+    pub allow_zero: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReasoningCapability {
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub effort_levels: Vec<String>,
     #[serde(default)]
     pub default_effort: Option<String>,
+    #[serde(default)]
+    pub effort_budget_exclusive: bool,
     #[serde(default)]
     pub thinking_budget: Option<ThinkingBudgetCapability>,
 }
@@ -764,7 +770,7 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"deepseek-v4-pro"));
+        assert_eq!(ids.first(), Some(&"qwen3.8-max"));
         assert!(ids.contains(&"kimi-k2.7-code"));
         assert!(ids.contains(&"glm-5.2"));
         assert!(ids.contains(&"MiniMax-M2.5"));
@@ -779,6 +785,29 @@ mod tests {
         assert!(ids.contains(&"glm-5.2-fast-preview"));
         assert!(ids.contains(&"qwen3.6-plus"));
         assert!(!ids.contains(&"qwen3.8-max-preview"));
+
+        let qwen38 = qwen
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.8-max")
+            .expect("formal qwen3.8-max should be listed");
+        assert_eq!(qwen38.recommended, Some(true));
+        assert_eq!(qwen38.modalities, vec!["text", "image", "video"]);
+        let qwen38_reasoning = qwen38
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("qwen3.8-max should expose endpoint-scoped reasoning");
+        assert_eq!(qwen38_reasoning.mode.as_deref(), Some("optional"));
+        assert!(qwen38_reasoning.effort_budget_exclusive);
+        assert_eq!(qwen38_reasoning.default_effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            qwen38_reasoning
+                .thinking_budget
+                .as_ref()
+                .and_then(|budget| budget.max_tokens),
+            Some(262_144)
+        );
 
         let qwen37 = qwen
             .models
@@ -801,13 +830,32 @@ mod tests {
         )
         .expect("Qwen Token Plan preset should match its dedicated endpoint");
         assert_eq!(token_plan.id, "qwen-token-plan-cn");
-        assert_eq!(token_plan.models.len(), 1);
-        assert_eq!(token_plan.models[0].id, "qwen3.8-max-preview");
-        assert_eq!(token_plan.models[0].recommended, Some(false));
+        assert_eq!(token_plan.models.len(), 2);
+        assert_eq!(token_plan.models[0].id, "qwen3.8-max");
+        assert_eq!(token_plan.models[0].recommended, Some(true));
+        assert_eq!(token_plan.models[1].id, "qwen3.8-max-preview");
+        assert_eq!(token_plan.models[1].recommended, Some(false));
+        let preview_reasoning = token_plan.models[1]
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("preview should expose its always-thinking contract");
+        assert_eq!(preview_reasoning.mode.as_deref(), Some("always"));
+        assert!(!preview_reasoning
+            .effort_levels
+            .iter()
+            .any(|effort| effort == "none"));
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-max-preview"),
-            Some(false)
+            Some(true)
         );
+        let global_token_plan = find_provider_preset(
+            "qwen",
+            Some("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"),
+        )
+        .expect("global Token Plan should keep its own endpoint identity");
+        assert_eq!(global_token_plan.id, "qwen-token-plan-global");
+        assert_eq!(global_token_plan.models[0].id, "qwen3.8-max");
         assert_eq!(
             find_provider_preset("alibaba_model_studio", None)
                 .expect("Alibaba Model Studio should keep its pay-as-you-go default")
@@ -827,6 +875,7 @@ mod tests {
         )
         .expect("QwenCloud international preset should match its pay-as-you-go endpoint");
         assert_eq!(qwen_cloud.id, "qwen-cloud-intl");
+        assert_eq!(qwen_cloud.models[0].id, "qwen3.8-max");
         let flash = qwen_cloud
             .models
             .iter()

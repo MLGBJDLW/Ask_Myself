@@ -78,10 +78,11 @@ impl AgentExecutor {
             },
             stop: None,
             thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
-                Some(self.config.thinking_budget.unwrap_or(10_000))
+                self.config.thinking_budget
             } else {
                 None
             },
+            reasoning_enabled: self.config.reasoning_enabled,
             reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
                 self.config.reasoning_effort.clone()
             } else {

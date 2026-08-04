@@ -14,6 +14,7 @@ pub mod google;
 pub mod ollama;
 pub mod openai;
 pub mod prompt_cache;
+pub mod reasoning_profile;
 pub mod streaming;
 pub(crate) mod transport;
 
@@ -134,7 +135,7 @@ pub struct ToolCallRequest {
 }
 
 /// Provider-specific reasoning effort level.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     None,
@@ -181,6 +182,11 @@ pub struct CompletionRequest {
     /// Anthropic extended thinking budget (token count).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget: Option<u32>,
+    /// Explicit user intent for providers whose reasoning mode is controlled
+    /// independently from effort or budget. `None` preserves the provider's
+    /// documented default instead of inventing a cross-provider fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_enabled: Option<bool>,
     /// Provider-specific reasoning effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -214,6 +220,7 @@ impl Default for CompletionRequest {
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: None,
             routing_session_id: None,

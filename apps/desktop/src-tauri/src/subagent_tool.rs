@@ -3835,12 +3835,14 @@ impl Tool for JudgeSubagentResultsTool {
             } else {
                 None
             },
+            reasoning_enabled: self.runtime.base_config.reasoning_enabled,
             reasoning_effort: if self.runtime.base_config.power_mode.is_nexus() {
                 self.runtime.base_config.reasoning_effort.clone()
             } else {
                 None
             },
             provider_type: self.runtime.base_config.provider_type,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
         let judge_cancel_token = self.runtime.cancel_token.child_token();

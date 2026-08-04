@@ -33,12 +33,13 @@ use nexa_core::approval::ToolApprovalMode;
 use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    conversation_message_llm_context_content, AgentConfig as DbAgentConfig, AgentExecutionGraph,
-    AgentSubtaskRun, AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskArtifactVersion,
-    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, AgentTaskRunPageCursor,
-    AgentTaskRunSummaryPage, CheckpointBranch, CollectionContext, Conversation,
-    ConversationMessage, ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput,
-    CreateConversationInput, ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
+    conversation_message_llm_context_content, validate_agent_config_credential_contract,
+    AgentConfig as DbAgentConfig, AgentExecutionGraph, AgentSubtaskRun, AgentTaskArtifact,
+    AgentTaskArtifactSummary, AgentTaskArtifactVersion, AgentTaskRun, AgentTaskRunEvent,
+    AgentTaskRunListItem, AgentTaskRunPageCursor, AgentTaskRunSummaryPage, CheckpointBranch,
+    CollectionContext, Conversation, ConversationMessage, ConversationStats, ConversationTurn,
+    CreateAgentTaskArtifactInput, CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
+    UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
@@ -543,8 +544,10 @@ fn build_connection_probe_request(config: &SaveAgentConfigInput) -> CompletionRe
         tools: None,
         stop: None,
         thinking_budget: None,
+        reasoning_enabled: None,
         reasoning_effort: None,
         provider_type: Some(provider_type_for_input(config)),
+        routing_session_id: None,
         parallel_tool_calls: true,
     }
 }

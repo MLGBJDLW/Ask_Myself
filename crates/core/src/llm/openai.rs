@@ -11,12 +11,18 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::prompt_cache::{resolve_prompt_cache_profile, PromptCacheApiStyle, PromptCacheProfile};
+use super::reasoning_profile::{
+    resolve_reasoning_profile, ReasoningApiStyle, ReasoningBudgetField, ReasoningEffortField,
+    ThinkingModeControl,
+};
 use super::transport::{shared_http_transport, HttpTransport};
+#[cfg(test)]
+use super::ReasoningEffort;
 use super::{
     configured_request_timeout, send_stream_start_request, serialized_json_body,
     streaming::parse_sse_stream, with_request_timeout, CompletionRequest, CompletionResponse,
-    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort,
-    Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
+    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, Role,
+    StreamChunk, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::error::CoreError;
 use crate::provider_catalog::model_supports_reasoning_from_catalog;
@@ -57,6 +63,8 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    preserve_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
@@ -77,6 +85,8 @@ struct OaiStreamOptions {
 struct OaiThinking {
     #[serde(rename = "type")]
     thinking_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -372,36 +382,6 @@ fn is_reasoning_model(model: &str, provider_type: Option<&ProviderType>) -> bool
 
     let m = model.to_lowercase();
     m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.starts_with("gpt-5")
-}
-
-/// Check if the model is a DeepSeek reasoner.
-fn is_deepseek_reasoner(model: &str) -> bool {
-    let m = model.to_lowercase();
-    m.contains("deepseek-reasoner") || m.contains("deepseek-r1")
-}
-
-fn deepseek_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
-    // DeepSeek accepts `high` and `max`; low/medium are compatibility aliases
-    // for high, and xhigh is an alias for max.
-    match effort {
-        Some(ReasoningEffort::Max) | Some(ReasoningEffort::XHigh) => "max",
-        _ => "high",
-    }
-    .to_string()
-}
-
-fn openai_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
-    match effort {
-        Some(ReasoningEffort::None) => "none",
-        Some(ReasoningEffort::Minimal) => "minimal",
-        Some(ReasoningEffort::Low) => "low",
-        Some(ReasoningEffort::Medium) => "medium",
-        Some(ReasoningEffort::High) => "high",
-        Some(ReasoningEffort::XHigh) => "xhigh",
-        Some(ReasoningEffort::Max) => "high",
-        None => "medium",
-    }
-    .to_string()
 }
 
 fn reasoning_value_to_text(value: serde_json::Value) -> Option<String> {
@@ -818,53 +798,48 @@ fn build_request_body_with_config(
     stream: bool,
     config: Option<&ProviderConfig>,
 ) -> OaiRequest {
-    let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
-    let is_deepseek = is_deepseek_reasoner(&request.model);
-    let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
-    let is_qwen_provider = matches!(
-        request.provider_type,
-        Some(ProviderType::Qwen | ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
-    );
-    let is_router_provider = matches!(
-        request.provider_type,
-        Some(ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
-    );
-    let model_lower = request.model.to_lowercase();
-    let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
-        || (model_lower.contains("deepseek") && !is_router_provider);
-    let deepseek_thinking_requested =
-        request.thinking_budget.is_some() || request.reasoning_effort.is_some();
-    let deepseek_thinking_mode = if is_deepseek_provider {
-        Some(if deepseek_thinking_requested {
-            "enabled"
-        } else {
-            "disabled"
-        })
-    } else {
-        None
-    };
-    let deepseek_thinking_enabled = deepseek_thinking_mode == Some("enabled");
-    let qwen_thinking_enabled = is_qwen_provider
-        && (request.thinking_budget.is_some()
-            || request
-                .reasoning_effort
-                .as_ref()
-                .is_some_and(|effort| effort != &ReasoningEffort::None));
-    let include_reasoning_content =
-        (is_deepseek_provider && deepseek_thinking_enabled) || qwen_thinking_enabled;
-    let synthesize_missing_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
-    let needs_completion_tokens = !is_openrouter_provider
-        && !is_qwen_provider
-        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
-    let suppress_temperature = !is_openrouter_provider
-        && !is_qwen_provider
-        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
-    // Some providers/models require function arguments as JSON objects, not strings.
-    let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
     let provider_type = request
         .provider_type
         .or_else(|| config.map(|config| config.provider_type))
         .unwrap_or(ProviderType::Custom);
+    let reasoning_profile = resolve_reasoning_profile(
+        provider_type,
+        config.and_then(|config| config.base_url.as_deref()),
+        ReasoningApiStyle::OpenAiChatCompletions,
+        &request.model,
+    );
+    let reasoning_supported = reasoning_profile.id != "openai-reasoning-v1"
+        || is_reasoning_model(&request.model, Some(&provider_type));
+    let requested_reasoning_mode = reasoning_profile.requested_mode(
+        request.reasoning_enabled,
+        request.reasoning_effort.as_ref(),
+        request.thinking_budget,
+    );
+    let effort_can_encode_disabled =
+        reasoning_profile.mode_control == ThinkingModeControl::ProviderDefault;
+    let requested_effort = request.reasoning_effort.as_ref().or_else(|| {
+        (requested_reasoning_mode == Some(true) && request.thinking_budget.is_none())
+            .then_some(reasoning_profile.default_effort.as_ref())
+            .flatten()
+    });
+    let wire_effort = (reasoning_supported
+        && (requested_reasoning_mode != Some(false) || effort_can_encode_disabled))
+        .then(|| reasoning_profile.wire_effort(requested_effort))
+        .flatten();
+    let wire_budget = (reasoning_supported && requested_reasoning_mode != Some(false))
+        .then(|| reasoning_profile.wire_budget(request.thinking_budget, wire_effort.is_some()))
+        .flatten();
+    let include_reasoning_content =
+        reasoning_supported && reasoning_profile.should_replay_reasoning(requested_reasoning_mode);
+    let synthesize_missing_reasoning_content =
+        include_reasoning_content && reasoning_profile.synthesize_missing_reasoning_history;
+    let needs_completion_tokens = reasoning_profile.use_max_completion_tokens
+        && is_reasoning_model(&request.model, Some(&provider_type));
+    let suppress_temperature = reasoning_supported
+        && reasoning_profile.omit_temperature_when_reasoning
+        && requested_reasoning_mode != Some(false);
+    // Some providers/models require function arguments as JSON objects, not strings.
+    let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
     let cache_profile = resolve_prompt_cache_profile(
         provider_type,
         config.and_then(|config| config.base_url.as_deref()),
@@ -920,40 +895,49 @@ fn build_request_body_with_config(
         } else {
             None
         },
-        reasoning_effort: if deepseek_thinking_enabled {
-            Some(deepseek_reasoning_effort(request.reasoning_effort.as_ref()))
-        } else if is_reasoning && !is_openrouter_provider && !is_qwen_provider {
-            request
-                .reasoning_effort
-                .as_ref()
-                .map(|effort| openai_reasoning_effort(Some(effort)))
-        } else {
-            None
-        },
-        reasoning: if is_openrouter_provider {
-            request
-                .reasoning_effort
-                .as_ref()
-                .map(|effort| OaiReasoning {
-                    effort: Some(openai_reasoning_effort(Some(effort))),
-                    max_tokens: None,
-                })
-                .or_else(|| {
-                    request.thinking_budget.map(|budget| OaiReasoning {
-                        effort: None,
-                        max_tokens: Some(budget),
-                    })
-                })
-        } else {
-            None
-        },
-        thinking: deepseek_thinking_mode.map(|mode| OaiThinking {
-            thinking_type: mode.to_string(),
-        }),
-        enable_thinking: qwen_thinking_enabled.then_some(true),
-        thinking_budget: qwen_thinking_enabled
-            .then_some(request.thinking_budget)
+        reasoning_effort: (reasoning_profile.effort_field == ReasoningEffortField::TopLevel)
+            .then_some(wire_effort.clone())
             .flatten(),
+        reasoning: if reasoning_profile.effort_field == ReasoningEffortField::NestedReasoning
+            || reasoning_profile.budget_field == ReasoningBudgetField::NestedReasoning
+        {
+            (wire_effort.is_some() || wire_budget.is_some()).then(|| OaiReasoning {
+                effort: wire_effort.clone(),
+                max_tokens: wire_budget,
+            })
+        } else {
+            None
+        },
+        thinking: match reasoning_profile.mode_control {
+            ThinkingModeControl::ThinkingType => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+                    keep: None,
+                })
+            }
+            ThinkingModeControl::ThinkingTypeWithKeep => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+                    keep: enabled.then(|| "all".to_string()),
+                })
+            }
+            ThinkingModeControl::AdaptiveThinking => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "adaptive" } else { "disabled" }.to_string(),
+                    keep: None,
+                })
+            }
+            _ => None,
+        },
+        enable_thinking: (reasoning_profile.mode_control == ThinkingModeControl::EnableThinking)
+            .then_some(requested_reasoning_mode)
+            .flatten(),
+        thinking_budget: (reasoning_profile.budget_field == ReasoningBudgetField::ThinkingBudget)
+            .then_some(wire_budget)
+            .flatten(),
+        preserve_thinking: (reasoning_profile.send_preserve_thinking
+            && requested_reasoning_mode != Some(false))
+        .then_some(true),
         tools: request.tools.as_ref().map(|t| convert_tools(t)),
         parallel_tool_calls: match request.tools.as_ref() {
             Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
@@ -1291,6 +1275,33 @@ mod tests {
     use futures::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn endpoint_config(provider_type: ProviderType, base_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider_type,
+            api_key: Some("test-key".to_string()),
+            base_url: Some(base_url.to_string()),
+            org_id: None,
+            timeout_secs: None,
+        }
+    }
+
+    fn endpoint_reasoning_request(model: &str) -> CompletionRequest {
+        CompletionRequest {
+            model: model.to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            provider_type: None,
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        }
+    }
+
     async fn serve_delayed_sse_response(listener: tokio::net::TcpListener) -> std::io::Result<()> {
         let (mut socket, _) = listener.accept().await?;
         let mut request = Vec::new();
@@ -1365,6 +1376,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(1024),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1374,10 +1386,179 @@ data: [DONE]
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["max_tokens"], 100);
         assert!(body.get("temperature").is_none());
-        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn moonshot_k3_defaults_to_max_and_never_invents_a_token_budget() {
+        let request = endpoint_reasoning_request("kimi-k3");
+        let config = endpoint_config(ProviderType::Moonshot, "https://api.moonshot.ai/v1");
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert_eq!(body["reasoning_effort"], "max");
+        assert!(body.get("thinking_budget").is_none());
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn alibaba_routed_k3_accepts_only_max_and_preserves_thinking() {
+        let mut request = endpoint_reasoning_request("kimi/kimi-k3");
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        request.thinking_budget = Some(20_000);
+        let config = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking_budget").is_none());
+        assert_eq!(body["preserve_thinking"], true);
+
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn qwen38_effort_aliases_and_budget_are_mutually_exclusive_on_token_plan() {
+        let mut request = endpoint_reasoning_request("qwen3.8-max");
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        request.thinking_budget = Some(32_768);
+        let config = endpoint_config(
+            ProviderType::Qwen,
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["enable_thinking"], true);
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(body.get("thinking_budget").is_none());
+
+        request.reasoning_effort = None;
+        request.thinking_budget = Some(300_000);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["thinking_budget"], 262_144);
+
+        request.reasoning_enabled = Some(false);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["enable_thinking"], false);
+        assert!(body.get("thinking_budget").is_none());
+
+        request.model = "qwen3.8-max-preview".to_string();
+        request.reasoning_effort = None;
+        request.thinking_budget = None;
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn provider_specific_thinking_objects_do_not_leak_between_models() {
+        let moonshot = endpoint_config(ProviderType::Moonshot, "https://api.moonshot.ai/v1");
+        let mut k26 = endpoint_reasoning_request("kimi-k2.6");
+        k26.reasoning_enabled = Some(true);
+        let body =
+            serde_json::to_value(build_request_body_with_config(&k26, false, Some(&moonshot)))
+                .unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["keep"], "all");
+
+        let alibaba = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+        let mut minimax = endpoint_reasoning_request("MiniMax/MiniMax-M3");
+        minimax.reasoning_enabled = Some(true);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax,
+            false,
+            Some(&alibaba),
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body.get("reasoning_effort").is_none());
+
+        minimax.reasoning_enabled = Some(false);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax,
+            false,
+            Some(&alibaba),
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn unknown_endpoint_emits_no_intermediary_reasoning_fields() {
+        let mut request = endpoint_reasoning_request("kimi/kimi-k3");
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        request.thinking_budget = Some(20_000);
+        let config = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://tenant.example.test/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        for field in [
+            "reasoning_effort",
+            "thinking_budget",
+            "enable_thinking",
+            "thinking",
+            "preserve_thinking",
+        ] {
+            assert!(body.get(field).is_none(), "unexpected field {field}");
+        }
     }
 
     #[tokio::test]
@@ -1405,6 +1586,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
             routing_session_id: None,
@@ -1432,6 +1614,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(1024),
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::Max),
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1454,6 +1637,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1464,9 +1648,9 @@ data: [DONE]
 
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["max_completion_tokens"], 100);
+        assert_eq!(body["max_tokens"], 100);
         assert!(body.get("temperature").is_none());
-        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
@@ -1488,6 +1672,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1524,6 +1709,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1565,6 +1751,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1593,13 +1780,14 @@ data: [DONE]
             reasoning_content: Some("prior reasoning".to_string()),
         };
         let request = CompletionRequest {
-            model: "deepseek-v4-chat".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             messages: vec![Message::text(Role::User, "hello"), assistant],
             temperature: Some(0.4),
             max_tokens: Some(100),
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: Some(false),
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
@@ -1622,6 +1810,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
             routing_session_id: None,
@@ -1649,6 +1838,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenAi),
             routing_session_id: None,
@@ -1682,6 +1872,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenRouter),
             routing_session_id: None,
@@ -1707,6 +1898,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenRouter),
             routing_session_id: None,
@@ -1755,6 +1947,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -1798,6 +1991,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -1814,26 +2008,38 @@ data: [DONE]
     }
 
     #[test]
-    fn router_thinking_uses_native_enable_thinking_fields() {
-        for provider_type in [ProviderType::AlibabaModelStudio, ProviderType::SiliconFlow] {
-            let request = CompletionRequest {
-                model: "deepseek-ai/DeepSeek-V3.2".to_string(),
-                messages: vec![Message::text(Role::User, "hello")],
-                temperature: Some(0.4),
-                max_tokens: Some(100),
-                tools: None,
-                stop: None,
-                thinking_budget: Some(4096),
-                reasoning_effort: None,
-                provider_type: Some(provider_type),
-                routing_session_id: None,
-                parallel_tool_calls: true,
-            };
-            let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
-            assert_eq!(body["enable_thinking"], true);
-            assert_eq!(body["thinking_budget"], 4096);
-            assert!(body.get("thinking").is_none());
-        }
+    fn intermediary_reasoning_fields_require_an_endpoint_scoped_profile() {
+        let request_for = |provider_type| CompletionRequest {
+            model: "deepseek-ai/DeepSeek-V3.2".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(4096),
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            provider_type: Some(provider_type),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let alibaba = serde_json::to_value(build_request_body(
+            &request_for(ProviderType::AlibabaModelStudio),
+            false,
+        ))
+        .unwrap();
+        assert!(alibaba.get("enable_thinking").is_none());
+        assert!(alibaba.get("thinking_budget").is_none());
+
+        let siliconflow = serde_json::to_value(build_request_body(
+            &request_for(ProviderType::SiliconFlow),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(siliconflow["enable_thinking"], true);
+        assert_eq!(siliconflow["thinking_budget"], 4096);
+        assert!(siliconflow.get("thinking").is_none());
     }
 
     #[test]
@@ -1846,6 +2052,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -1891,6 +2098,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -1921,6 +2129,7 @@ data: [DONE]
             }]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -1951,6 +2160,7 @@ data: [DONE]
             }]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::AlibabaModelStudio),
             routing_session_id: None,
@@ -1996,6 +2206,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
@@ -2030,6 +2241,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
             routing_session_id: None,
@@ -2063,6 +2275,7 @@ data: [DONE]
             tools: Some(vec![tool.clone()]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
             routing_session_id: None,
@@ -2099,6 +2312,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Custom),
             routing_session_id: None,
@@ -2295,6 +2509,7 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,

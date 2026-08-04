@@ -167,6 +167,7 @@ pub async fn summarize_evicted_messages_with_usage(
         tools: None,
         stop: None,
         thinking_budget: None,
+        reasoning_enabled: None,
         reasoning_effort: None,
         provider_type,
         routing_session_id: None,

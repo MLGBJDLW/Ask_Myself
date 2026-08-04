@@ -504,6 +504,47 @@ fn normalize_optional_url(url: Option<&str>) -> Option<String> {
     })
 }
 
+const TOKEN_PLAN_CN_ENDPOINT: &str =
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+const TOKEN_PLAN_GLOBAL_ENDPOINT: &str =
+    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+const ALIBABA_PAYG_CN_ENDPOINT: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const ALIBABA_PAYG_GLOBAL_ENDPOINT: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
+
+/// Enforce credential boundaries that are part of a provider product contract.
+///
+/// Token Plan subscription keys are deliberately not interchangeable with
+/// pay-as-you-go Model Studio/QwenCloud keys, even though the endpoints can
+/// expose overlapping model IDs.
+pub fn validate_agent_config_credential_contract(
+    input: &SaveAgentConfigInput,
+) -> Result<(), CoreError> {
+    let endpoint = normalize_optional_url(input.base_url.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let key = input.api_key.trim();
+    let is_token_plan_endpoint = matches!(
+        endpoint.as_str(),
+        TOKEN_PLAN_CN_ENDPOINT | TOKEN_PLAN_GLOBAL_ENDPOINT
+    );
+    let is_alibaba_payg_endpoint = matches!(
+        endpoint.as_str(),
+        ALIBABA_PAYG_CN_ENDPOINT | ALIBABA_PAYG_GLOBAL_ENDPOINT
+    );
+
+    if is_token_plan_endpoint && !key.starts_with("sk-sp") {
+        return Err(CoreError::InvalidInput(
+            "Qwen Token Plan endpoints require the dedicated subscription key beginning with 'sk-sp'; pay-as-you-go API keys are not interchangeable.".to_string(),
+        ));
+    }
+    if is_alibaba_payg_endpoint && key.starts_with("sk-sp") {
+        return Err(CoreError::InvalidInput(
+            "Token Plan 'sk-sp' keys cannot be used with the standard Model Studio/QwenCloud pay-as-you-go endpoint. Select the matching Token Plan provider instead.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn role_to_str(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
@@ -3355,6 +3396,7 @@ impl Database {
         &self,
         input: &SaveAgentConfigInput,
     ) -> Result<AgentConfig, CoreError> {
+        validate_agent_config_credential_contract(input)?;
         let id = input.id.clone().unwrap_or_else(new_id);
         let normalized_base_url = normalize_optional_url(input.base_url.as_deref());
         let provider_endpoint_id = resolve_agent_config_endpoint_id(
@@ -3935,6 +3977,7 @@ pub async fn generate_title_with_usage(
         tools: None,
         stop: None,
         thinking_budget: None,
+        reasoning_enabled: None,
         reasoning_effort: None,
         provider_type,
         routing_session_id: None,
@@ -4060,6 +4103,63 @@ mod tests {
             thinking: None,
             image_attachments: None,
         }
+    }
+
+    fn credential_contract_input(base_url: &str, api_key: &str) -> SaveAgentConfigInput {
+        SaveAgentConfigInput {
+            id: None,
+            name: "Credential contract".into(),
+            provider: "qwen".into(),
+            api_key: api_key.into(),
+            base_url: Some(base_url.into()),
+            model: "qwen3.8-max".into(),
+            provider_endpoint_id: None,
+            model_id: None,
+            temperature: None,
+            max_tokens: None,
+            context_window: None,
+            is_default: false,
+            reasoning_enabled: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_iterations: None,
+            summarization_model: None,
+            summarization_provider: None,
+            image_generation_model: None,
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: None,
+            subagent_max_calls_per_turn: None,
+            subagent_token_budget: None,
+            delegation_limits_v2: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn token_plan_credentials_are_not_interchangeable_with_payg() {
+        for endpoint in [TOKEN_PLAN_CN_ENDPOINT, TOKEN_PLAN_GLOBAL_ENDPOINT] {
+            let valid = credential_contract_input(endpoint, "sk-sp-test");
+            assert!(validate_agent_config_credential_contract(&valid).is_ok());
+
+            let invalid = credential_contract_input(endpoint, "sk-payg-test");
+            assert!(validate_agent_config_credential_contract(&invalid)
+                .expect_err("pay-as-you-go key must be rejected")
+                .to_string()
+                .contains("sk-sp"));
+        }
+
+        for endpoint in [ALIBABA_PAYG_CN_ENDPOINT, ALIBABA_PAYG_GLOBAL_ENDPOINT] {
+            let invalid = credential_contract_input(endpoint, "sk-sp-test");
+            assert!(validate_agent_config_credential_contract(&invalid)
+                .expect_err("Token Plan key must be rejected")
+                .to_string()
+                .contains("pay-as-you-go"));
+        }
+
+        let custom = credential_contract_input("https://tenant.example.test/v1", "sk-sp-test");
+        assert!(validate_agent_config_credential_contract(&custom).is_ok());
     }
 
     #[test]
