@@ -2985,6 +2985,74 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Atomically replace a conversation's persisted message projection.
+    /// Compaction uses this instead of one autocommit per retained message so
+    /// large histories cannot leave a partially rewritten conversation or
+    /// monopolize the SQLite connection with repeated fsyncs.
+    pub fn replace_messages(
+        &self,
+        conversation_id: &str,
+        messages: &[ConversationMessage],
+    ) -> Result<(), CoreError> {
+        if messages
+            .iter()
+            .any(|message| message.conversation_id != conversation_id)
+        {
+            return Err(CoreError::InvalidInput(
+                "Replacement messages must belong to the target conversation".to_string(),
+            ));
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+            for msg in messages {
+                let role = role_to_str(&msg.role);
+                let tool_calls = (!msg.tool_calls.is_empty())
+                    .then(|| serde_json::to_string(&msg.tool_calls))
+                    .transpose()?;
+                let artifacts = msg
+                    .artifacts
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                let image_attachments = msg
+                    .image_attachments
+                    .as_ref()
+                    .filter(|attachments| !attachments.is_empty())
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                stmt.execute(rusqlite::params![
+                    &msg.id,
+                    conversation_id,
+                    role,
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tool_calls,
+                    &artifacts,
+                    msg.token_count,
+                    msg.sort_order,
+                    &msg.thinking,
+                    &image_attachments,
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3018,35 +3086,39 @@ impl Database {
         conversation_id: &str,
         messages: &[ConversationMessage],
     ) -> Result<(), CoreError> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )?;
-        for msg in messages {
-            let role_str = role_to_str(&msg.role);
-            let tc_json = if msg.tool_calls.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&msg.tool_calls)?)
-            };
-            let artifacts_json = match &msg.artifacts {
-                Some(value) => Some(serde_json::to_string(value)?),
-                None => None,
-            };
-            stmt.execute(rusqlite::params![
-                &Uuid::new_v4().to_string(),
-                checkpoint_id,
-                conversation_id,
-                role_str,
-                &msg.content,
-                &msg.tool_call_id,
-                &tc_json,
-                &artifacts_json,
-                msg.token_count,
-                msg.sort_order,
-            ])?;
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for msg in messages {
+                let role_str = role_to_str(&msg.role);
+                let tc_json = if msg.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&msg.tool_calls)?)
+                };
+                let artifacts_json = match &msg.artifacts {
+                    Some(value) => Some(serde_json::to_string(value)?),
+                    None => None,
+                };
+                stmt.execute(rusqlite::params![
+                    &Uuid::new_v4().to_string(),
+                    checkpoint_id,
+                    conversation_id,
+                    role_str,
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tc_json,
+                    &artifacts_json,
+                    msg.token_count,
+                    msg.sort_order,
+                ])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -5915,6 +5987,65 @@ mod tests {
         assert_eq!(
             restored[1].artifacts.as_ref().unwrap()["kind"],
             "verification"
+        );
+    }
+
+    #[test]
+    fn replace_messages_is_atomic_and_conversation_scoped() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let target = db.create_conversation(&input).unwrap();
+        let neighbor = db.create_conversation(&input).unwrap();
+        let message = |conversation_id: &str, content: &str, sort_order| ConversationMessage {
+            id: new_id(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::User,
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        db.add_message(&message(&target.id, "old target", 0))
+            .unwrap();
+        db.add_message(&message(&neighbor.id, "neighbor", 0))
+            .unwrap();
+
+        let replacement = message(&target.id, "compacted target", 0);
+        db.replace_messages(&target.id, std::slice::from_ref(&replacement))
+            .unwrap();
+        assert_eq!(
+            db.get_messages(&target.id).unwrap()[0].content,
+            "compacted target"
+        );
+        assert_eq!(
+            db.get_messages(&neighbor.id).unwrap()[0].content,
+            "neighbor"
+        );
+
+        let wrong_conversation = message(&neighbor.id, "must reject", 0);
+        assert!(db
+            .replace_messages(&target.id, &[wrong_conversation])
+            .is_err());
+        assert_eq!(
+            db.get_messages(&target.id).unwrap()[0].content,
+            "compacted target"
+        );
+        assert_eq!(
+            db.get_messages(&neighbor.id).unwrap()[0].content,
+            "neighbor"
         );
     }
 

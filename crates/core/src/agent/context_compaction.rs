@@ -49,6 +49,16 @@ fn compaction_boundary(
         return None;
     }
 
+    // Manual compaction can receive tens of thousands of persisted messages.
+    // Re-summing every candidate tail makes boundary selection quadratic and
+    // can starve the desktop runtime. Compute each message once, then answer
+    // every candidate from the suffix table in O(1).
+    let mut suffix_tokens = vec![0_u32; messages.len() + 1];
+    for index in (prefix_end..messages.len()).rev() {
+        suffix_tokens[index] = suffix_tokens[index + 1]
+            .saturating_add(estimate_message_tokens_for_model(model, &messages[index]));
+    }
+
     let latest_allowed = user_starts[user_starts.len() - min_recent_turns];
     let mut selected = None;
     for boundary in user_starts.into_iter().skip(1) {
@@ -56,10 +66,7 @@ fn compaction_boundary(
             break;
         }
         selected = Some(boundary);
-        let tail_tokens = messages[boundary..]
-            .iter()
-            .map(|message| estimate_message_tokens_for_model(model, message))
-            .sum::<u32>();
+        let tail_tokens = suffix_tokens[boundary];
         if tail_tokens <= target_tail_tokens {
             return Some(boundary);
         }
@@ -159,6 +166,9 @@ impl AgentExecutor {
             usage_source: "provider",
             request_status: "success",
             latency_ms: None,
+            time_to_first_token_ms: None,
+            upstream_provider_id: None,
+            cache_outcome_reason: None,
             estimated_cost_micros,
             currency,
             pricing_version,
@@ -584,6 +594,24 @@ mod tests {
             Message::text(Role::Assistant, "answer"),
         ];
         assert_eq!(compaction_boundary(&messages, "gpt-4o", 1, 2), None);
+    }
+
+    #[test]
+    fn compaction_boundary_scales_linearly_for_large_histories() {
+        let mut messages = Vec::with_capacity(8_000);
+        for index in 0..4_000 {
+            messages.push(Message::text(Role::User, format!("request {index}")));
+            messages.push(Message::text(Role::Assistant, "response"));
+        }
+
+        let started = std::time::Instant::now();
+        let boundary = compaction_boundary(&messages, "gpt-4o", 32, 2);
+
+        assert!(boundary.is_some());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "large-history boundary selection regressed beyond linear-time expectations"
+        );
     }
 
     #[test]

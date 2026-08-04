@@ -1074,14 +1074,12 @@ pub async fn compact_conversation_cmd(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 4. Replace messages in DB: delete old, insert compacted.
+    // 4. Replace the retained projection atomically. This is a single SQLite
+    // transaction, avoiding one autocommit/fsync per retained message.
     state
         .db
-        .delete_messages(&conversation_id)
+        .replace_messages(&conversation_id, &compacted)
         .map_err(|e| e.to_string())?;
-    for msg in &compacted {
-        state.db.add_message(msg).map_err(|e| e.to_string())?;
-    }
 
     let messages_after = compacted.len();
     let evicted_messages = if messages_after < messages_before {

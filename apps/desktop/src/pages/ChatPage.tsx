@@ -1166,33 +1166,48 @@ export function ChatPage() {
     handleSuggestionClick(buildBrowserArtifactPrompt(artifact));
   }, [handleSuggestionClick]);
 
-  const [isCompacting, setIsCompacting] = useState(false);
-  const [compactCompleteVisible, setCompactCompleteVisible] = useState(false);
+  const [compactionStatusByConversation, setCompactionStatusByConversation] = useState<
+    Record<string, 'compacting' | 'complete'>
+  >({});
+  const activeCompactionStatus = chat.activeId
+    ? compactionStatusByConversation[chat.activeId]
+    : undefined;
+  const isCompacting = activeCompactionStatus === 'compacting';
+  const compactCompleteVisible = activeCompactionStatus === 'complete';
   const handleCompactConversation = useCallback(async () => {
-    if (!chat.activeId) return;
-    if (isCompacting) return;
-    setCompactCompleteVisible(false);
-    setIsCompacting(true);
+    const conversationId = chat.activeId;
+    if (!conversationId || compactionStatusByConversation[conversationId] === 'compacting') return;
+    setCompactionStatusByConversation((current) => ({
+      ...current,
+      [conversationId]: 'compacting',
+    }));
     try {
-      await api.compactConversation(chat.activeId);
-      await chat.reloadMessages({ resetUsage: true });
-      setCompactCompleteVisible(true);
+      await api.compactConversation(conversationId);
+      await chat.reloadMessages({ resetUsage: true, conversationId });
+      setCompactionStatusByConversation((current) => ({
+        ...current,
+        [conversationId]: 'complete',
+      }));
     } catch (e) {
+      setCompactionStatusByConversation((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
       toast.error(formatUserError(t('chat.compact'), e));
-    } finally {
-      setIsCompacting(false);
     }
-  }, [chat.activeId, chat.reloadMessages, isCompacting, t]);
+  }, [chat.activeId, chat.reloadMessages, compactionStatusByConversation, t]);
 
   useEffect(() => {
-    if (chat.isStreaming) {
-      setCompactCompleteVisible(false);
-    }
-  }, [chat.isStreaming]);
-
-  useEffect(() => {
-    setCompactCompleteVisible(false);
-  }, [chat.activeId]);
+    const conversationId = chat.activeId;
+    if (!conversationId || !chat.isStreaming) return;
+    setCompactionStatusByConversation((current) => {
+      if (!(conversationId in current)) return current;
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
+  }, [chat.activeId, chat.isStreaming]);
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null

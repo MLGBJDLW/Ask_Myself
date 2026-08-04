@@ -5,6 +5,7 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem('nexa-locale', 'en');
     if (!sessionStorage.getItem('__e2e_initialized__')) {
       localStorage.removeItem('chat-token-usage-v1');
+      localStorage.removeItem('__e2e_usage_samples__');
       sessionStorage.setItem('__e2e_initialized__', '1');
     }
 
@@ -125,6 +126,47 @@ test.beforeEach(async ({ page }) => {
 
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+    type UsageSample = {
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      thinkingTokens: number;
+      cacheReadTokens: number;
+      cacheMissTokens: number;
+      cacheCreationTokens: number;
+      lastPromptTokens: number;
+      contextBreakdown?: unknown;
+    };
+    const usageSamples = (): Record<string, UsageSample[]> =>
+      JSON.parse(localStorage.getItem('__e2e_usage_samples__') ?? '{}') as Record<string, UsageSample[]>;
+    const recordUsageSample = (conversationId: string, sample: UsageSample) => {
+      const all = usageSamples();
+      all[conversationId] = [...(all[conversationId] ?? []), sample];
+      localStorage.setItem('__e2e_usage_samples__', JSON.stringify(all));
+    };
+    const durableUsageSnapshot = (conversationId: string) => {
+      const samples = usageSamples()[conversationId] ?? [];
+      const latest = samples.at(-1);
+      if (!latest) return null;
+      const sum = (field: keyof UsageSample) => samples.reduce((total, sample) => {
+        const value = sample[field];
+        return total + (typeof value === 'number' ? value : 0);
+      }, 0);
+      return {
+        source: 'provider',
+        promptTokens: sum('promptTokens'),
+        completionTokens: sum('completionTokens'),
+        totalTokens: sum('totalTokens'),
+        thinkingTokens: sum('thinkingTokens'),
+        cacheReadTokens: sum('cacheReadTokens'),
+        cacheMissTokens: sum('cacheMissTokens'),
+        cacheCreationTokens: sum('cacheCreationTokens'),
+        lastPromptTokens: latest.lastPromptTokens,
+        contextBreakdown: latest.contextBreakdown,
+        providerRaw: null,
+      };
+    };
+
     const defaultAgentConfig = {
       id: 'cfg-e2e',
       name: 'E2E Config',
@@ -177,6 +219,8 @@ test.beforeEach(async ({ page }) => {
           const messages = messagesByConversation[id] ?? [];
           return [clone(conversation), clone(messages)];
         }
+        case 'get_conversation_usage_snapshot_cmd':
+          return durableUsageSnapshot(String(args.conversationId ?? ''));
         case 'list_sources':
           return [];
         case 'get_conversation_sources_cmd':
@@ -197,7 +241,7 @@ test.beforeEach(async ({ page }) => {
         case 'compact_conversation_cmd': {
           const conversationId = String(args.conversationId ?? '');
           const before = messagesByConversation[conversationId] ?? [];
-          await new Promise((resolve) => setTimeout(resolve, 400));
+          await new Promise((resolve) => setTimeout(resolve, 1200));
 
           if (before.length === 0) {
             return {
@@ -300,6 +344,7 @@ test.beforeEach(async ({ page }) => {
             artifacts: null,
           };
           messagesByConversation[conversationId] = [...currentMessages, userMessage, assistantMessage];
+          recordUsageSample(conversationId, streamUsage);
           if (conversations[conversationId]) {
             conversations[conversationId].updatedAt = new Date().toISOString();
           }
@@ -495,5 +540,21 @@ test('manual compact keeps the draft editable, locks send, and refreshes context
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
   await expect(page.getByText('Compaction complete').first()).toBeVisible();
   await expect(page.getByTestId('chat-context-trigger')).not.toHaveAttribute('aria-label', /7% context used/);
-  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /0% context used/);
+  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /No usage data yet/);
+});
+
+test('manual compact status and completion stay scoped to the target conversation', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  await page.getByTestId('chat-compact').click();
+  await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
+
+  await page.getByTestId('conversation-item-conv-empty').click();
+  await expect(page.getByTestId('chat-compact-status')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).not.toHaveAttribute('placeholder', /compacting/i);
+
+  await page.waitForTimeout(500);
+  await expect(page.getByText('Compaction complete')).toHaveCount(0);
+
+  await page.getByTestId('conversation-item-conv-e2e').click();
+  await expect(page.getByText('Compaction complete').first()).toBeVisible();
 });

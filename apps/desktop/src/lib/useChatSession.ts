@@ -328,7 +328,10 @@ export interface UseChatSessionReturn {
   retry: (messageId?: string) => Promise<void>;
   clearError: () => void;
   loadConversations: () => Promise<void>;
-  reloadMessages: (options?: { resetUsage?: boolean }) => Promise<void>;
+  reloadMessages: (options?: {
+    resetUsage?: boolean;
+    conversationId?: string;
+  }) => Promise<void>;
   deleteMessage: (messageId: string) => void;
   editAndResend: (messageId: string, newContent: string) => Promise<void>;
   switchAgentConfig: (config: AgentConfig) => Promise<void>;
@@ -1301,25 +1304,33 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   }, [activeId, messages, setMessagesForConversation, streamSend]);
 
   /* ── Reload messages (e.g. after compaction) ────────────────────── */
-  const reloadMessages = useCallback(async (options?: { resetUsage?: boolean }) => {
-    if (!activeId) return;
+  const reloadMessages = useCallback(async (options?: {
+    resetUsage?: boolean;
+    conversationId?: string;
+  }) => {
+    const targetConversationId = options?.conversationId ?? activeId;
+    if (!targetConversationId) return;
     if (options?.resetUsage) {
-      setUsageSnapshot(null);
-      suppressedLiveUsageRef.current.add(activeId);
+      if (activeIdRef.current === targetConversationId) {
+        setUsageSnapshot(null);
+      }
+      suppressedLiveUsageRef.current.add(targetConversationId);
     }
     try {
       const [[, msgs], conversationTurns, agentTaskRuns, durableUsage] = await Promise.all([
-        api.getConversation(activeId),
-        api.getConversationTurns(activeId),
-        api.getAgentTaskRuns(activeId),
+        api.getConversation(targetConversationId),
+        api.getConversationTurns(targetConversationId),
+        api.getAgentTaskRuns(targetConversationId),
         options?.resetUsage
           ? Promise.resolve(null)
-          : api.getConversationUsageSnapshot(activeId),
+          : api.getConversationUsageSnapshot(targetConversationId),
       ]);
-      setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
-      setTurnsForConversation(activeId, conversationTurns);
-      setTaskRunsForConversation(activeId, agentTaskRuns);
-      setUsageSnapshot(durableUsage);
+      setMessagesForConversation(targetConversationId, (prev) => mergeLocalMessageState(prev, msgs));
+      setTurnsForConversation(targetConversationId, conversationTurns);
+      setTaskRunsForConversation(targetConversationId, agentTaskRuns);
+      if (activeIdRef.current === targetConversationId) {
+        setUsageSnapshot(durableUsage);
+      }
     } catch { /* ignore */ }
   }, [activeId, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
@@ -1356,9 +1367,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           if (!Number.isFinite(startedAt)) return null;
           return {
             startedAtEpochMs: startedAt,
+            startedAtMonotonicMs: null,
             firstEventAtEpochMs: null,
             firstVisibleOutputAtEpochMs: null,
             finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+            finishedAtMonotonicMs: null,
           };
         })()
       : null;
@@ -1370,13 +1383,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const scopedRateLimited = activeId && !liveUsageSuppressed ? rateLimited : false;
   const scopedError = activeId ? chatError : null;
 
-  const usageForView = scopedLastUsage ?? usageSnapshot;
+  // Streaming usage describes the in-flight run. Once the run is durable,
+  // prefer the backend conversation snapshot so cache and token totals remain
+  // aggregated across completed turns instead of falling back to only the
+  // latest run kept by the stream store.
+  const isUsingLiveUsage = (activeIsStreaming || usageSnapshot == null) && scopedLastUsage != null;
+  const usageForView = isUsingLiveUsage ? scopedLastUsage : usageSnapshot ?? scopedLastUsage;
 
   const tokenUsage = contextWindow > 0
     ? (usageForView
       ? (() => {
           const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
-          const source = scopedLastUsage ? 'live' as const : usageSnapshot?.source ?? 'normalized';
+          const source = isUsingLiveUsage ? 'live' as const : usageSnapshot?.source ?? 'normalized';
           return {
             promptTokens,
             aggregatePromptTokens: usageForView.promptTokens,
