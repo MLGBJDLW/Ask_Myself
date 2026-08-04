@@ -298,7 +298,7 @@
   "appearance.language": "Idioma",
   "appearance.language.description": "Escolher idioma de exibição",
   "developerMode": "Developer mode",
-  "developerMode.description": "Show internal diagnostics such as agent quality evaluation.",
+  "developerMode.description": "Show internal runtime diagnostics and agent quality evaluation.",
   "tabModelsEmbedding": "Modelos e Embedding",
   "tabMedia": "Processamento de mídia",
   "tabDataPrivacy": "Dados e Privacidade",

@@ -298,7 +298,7 @@
   "appearance.language": "言語",
   "appearance.language.description": "表示言語を選択",
   "developerMode": "Developer mode",
-  "developerMode.description": "Show internal diagnostics such as agent quality evaluation.",
+  "developerMode.description": "Show internal runtime diagnostics and agent quality evaluation.",
   "tabModelsEmbedding": "モデルとエンベディング",
   "tabMedia": "メディア処理",
   "tabDataPrivacy": "データとプライバシー",

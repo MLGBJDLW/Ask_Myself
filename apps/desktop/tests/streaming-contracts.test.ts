@@ -1066,6 +1066,7 @@ test('timeline view model ignores skill index selections for loaded skill summar
     turn,
     routeKind: 'DirectResponse',
     traceItems: items,
+    includeDeveloper: true,
   });
 
   const skillSection = sections.find((section) => section.id === 'turn-skills-turn-selected');
@@ -1119,6 +1120,7 @@ test('timeline view model counts auto-loaded skill selections', () => {
     turn,
     routeKind: 'DirectResponse',
     traceItems: items,
+    includeDeveloper: true,
   });
 
   const skillSection = sections.find((section) => section.id === 'turn-skills-turn-auto-loaded');
@@ -1207,6 +1209,7 @@ test('timeline view model dedupes loaded skills while ignoring index selections'
     turn,
     routeKind: 'DirectResponse',
     traceItems: items,
+    includeDeveloper: true,
   });
 
   const skillSection = sections.find((section) => section.id === 'turn-skills-turn-1');
@@ -1245,7 +1248,20 @@ test('timeline view model reports when a traced turn activated no skills', () =>
     traceItems: items,
   });
 
-  const skillSection = sections.find((section) => section.id === 'turn-skills-turn-2');
+  assertEqual(
+    sections.some((section) => section.id === 'turn-skills-turn-2'),
+    false,
+    'ordinary mode should hide no-skill diagnostics',
+  );
+
+  const developerSections = turnLifecycleTimelineSections({
+    turn,
+    routeKind: 'DirectResponse',
+    traceItems: items,
+    includeDeveloper: true,
+  });
+
+  const skillSection = developerSections.find((section) => section.id === 'turn-skills-turn-2');
   assert(skillSection, 'turn lifecycle should include no-skill summary');
   if (skillSection.kind !== 'status') {
     throw new Error(`no-skill summary should be a status section, got ${skillSection.kind}`);
@@ -1616,6 +1632,40 @@ test('persisted trace replay omits completed steering controls', () => {
   });
 
   assertEqual(sections.length, 0, 'completed steering is not replayed from persisted trace');
+});
+
+test('runtime diagnostics replay only in developer mode', () => {
+  for (const [index, text] of [
+    'Resume checkpoint saved after tool round 3.',
+    'The model requested the same tool call batch 3 times without visible progress.',
+    'Evidence audit: passed.',
+  ].entries()) {
+    const item = {
+      kind: 'status' as const,
+      text,
+      tone: 'muted' as const,
+      visibility: 'developer' as const,
+    };
+    assertEqual(
+      persistedTraceItemToTimelineSections({
+        item,
+        id: `diagnostic-${index}`,
+        trace: true,
+      }).length,
+      0,
+      `ordinary mode should hide ${text}`,
+    );
+    assertEqual(
+      persistedTraceItemToTimelineSections({
+        item,
+        id: `diagnostic-${index}`,
+        trace: true,
+        includeDeveloper: true,
+      }).length,
+      1,
+      `developer mode should show ${text}`,
+    );
+  }
 });
 
 test('watchdog arms, fires, and clears timeout handles', async () => {

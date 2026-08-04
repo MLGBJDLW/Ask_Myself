@@ -300,7 +300,7 @@
   "appearance.language": "语言",
   "appearance.language.description": "选择显示语言",
   "developerMode": "开发者模式",
-  "developerMode.description": "显示 Agent 质量评测等内部诊断选项。",
+  "developerMode.description": "显示运行时诊断、技能轨迹和 Agent 质量评测等内部信息。",
   "tabModelsEmbedding": "模型与嵌入",
   "tabMedia": "媒体处理",
   "tabDataPrivacy": "数据与隐私",

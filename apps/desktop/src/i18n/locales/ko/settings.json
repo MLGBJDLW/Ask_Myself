@@ -298,7 +298,7 @@
   "appearance.language": "언어",
   "appearance.language.description": "표시 언어 선택",
   "developerMode": "Developer mode",
-  "developerMode.description": "Show internal diagnostics such as agent quality evaluation.",
+  "developerMode.description": "Show internal runtime diagnostics and agent quality evaluation.",
   "tabModelsEmbedding": "모델과 임베딩",
   "tabMedia": "미디어 처리",
   "tabDataPrivacy": "데이터 및 개인정보",

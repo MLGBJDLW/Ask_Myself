@@ -204,6 +204,24 @@ pub(super) fn append_internal_persisted_trace_status(
     });
 }
 
+pub(super) fn append_developer_persisted_trace_status(
+    items: &mut Vec<PersistedTraceItem>,
+    text: &str,
+    tone: &str,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    items.push(PersistedTraceItem::Status {
+        text: trimmed.to_string(),
+        tone: tone.to_string(),
+        visibility: AgentRunEventVisibility::Developer,
+        display_kind: AgentRunDisplayKind::Status,
+    });
+}
+
 pub(super) fn append_persisted_trace_loop_event(
     items: &mut Vec<PersistedTraceItem>,
     event: TurnLoopEvent,
@@ -508,14 +526,17 @@ mod tests {
     fn persisted_statuses_carry_semantic_presentation() {
         let mut items = Vec::new();
         append_persisted_trace_status(&mut items, "Visible status", "info");
+        append_developer_persisted_trace_status(&mut items, "Developer status", "muted");
         append_internal_persisted_trace_status(&mut items, "Internal status", "muted");
 
         let artifacts = build_trace_artifacts(&items).expect("trace artifacts");
 
         assert_eq!(artifacts["items"][0]["visibility"], "user");
         assert_eq!(artifacts["items"][0]["displayKind"], "status");
-        assert_eq!(artifacts["items"][1]["visibility"], "internal");
+        assert_eq!(artifacts["items"][1]["visibility"], "developer");
         assert_eq!(artifacts["items"][1]["displayKind"], "status");
+        assert_eq!(artifacts["items"][2]["visibility"], "internal");
+        assert_eq!(artifacts["items"][2]["displayKind"], "status");
     }
 
     #[test]

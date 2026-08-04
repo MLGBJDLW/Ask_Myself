@@ -241,7 +241,7 @@ impl AgentExecutor {
                     .unwrap_or("pending")
             )
         };
-        append_persisted_trace_status(
+        append_developer_persisted_trace_status(
             persisted_trace_items,
             &verification_trace_status,
             verification_artifact_tone(&verification_artifact),

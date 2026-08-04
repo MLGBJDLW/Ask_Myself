@@ -361,7 +361,7 @@ export function turnLifecycleTimelineSections(input: {
     });
   }
 
-  if (traceItems && traceItems.length > 0) {
+  if (includeDeveloper && traceItems && traceItems.length > 0) {
     const skills = skillNamesFromTraceItems(traceItems);
     sections.push({
       kind: 'status',

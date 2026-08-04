@@ -872,13 +872,14 @@ impl AgentExecutor {
                     };
                     loop_recorder.record(event.clone());
                     append_persisted_trace_loop_event(persisted_trace_items, event);
-                    append_persisted_trace_status(
+                    append_developer_persisted_trace_status(
                         persisted_trace_items,
                         &intervention.reason,
                         "warning",
                     );
                     let _ = tx
-                        .send(AgentEvent::Status {
+                        .send(AgentEvent::ControllerStatus {
+                            code: "loop_guard_intervention".to_string(),
                             content: intervention.reason.clone(),
                             tone: Some("warning".to_string()),
                         })

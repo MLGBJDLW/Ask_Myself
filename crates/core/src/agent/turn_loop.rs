@@ -957,13 +957,14 @@ impl AgentExecutor {
                         };
                         loop_recorder.record(event.clone());
                         append_persisted_trace_loop_event(&mut persisted_trace_items, event);
-                        append_persisted_trace_status(
+                        append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
                             &intervention.reason,
                             "warning",
                         );
                         let _ = tx
-                            .send(AgentEvent::Status {
+                            .send(AgentEvent::ControllerStatus {
+                                code: "loop_guard_intervention".to_string(),
                                 content: intervention.reason.clone(),
                                 tone: Some("warning".to_string()),
                             })
@@ -1091,7 +1092,7 @@ impl AgentExecutor {
                         let blockers = workflow_ir.completion_blockers();
                         let status =
                             format!("Workflow completion blocked by: {}", blockers.join(", "));
-                        append_persisted_trace_status(
+                        append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
                             &status,
                             "warning",
@@ -1141,9 +1142,14 @@ impl AgentExecutor {
                         "Goal remains active; continuing execution: {}",
                         goal.objective
                     );
-                    append_persisted_trace_status(&mut persisted_trace_items, &status, "info");
+                    append_developer_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &status,
+                        "info",
+                    );
                     let _ = tx
-                        .send(AgentEvent::Status {
+                        .send(AgentEvent::ControllerStatus {
+                            code: "goal_continuation".to_string(),
                             content: status,
                             tone: Some("info".to_string()),
                         })
@@ -1219,7 +1225,7 @@ impl AgentExecutor {
                     };
                     loop_recorder.record(event.clone());
                     append_persisted_trace_loop_event(&mut persisted_trace_items, event);
-                    append_persisted_trace_status(
+                    append_developer_persisted_trace_status(
                         &mut persisted_trace_items,
                         &intervention.reason,
                         "warning",
@@ -1228,7 +1234,8 @@ impl AgentExecutor {
                 });
             if let Some(reason) = loop_guard_block_reason.as_ref() {
                 let _ = tx
-                    .send(AgentEvent::Status {
+                    .send(AgentEvent::ControllerStatus {
+                        code: "loop_guard_intervention".to_string(),
                         content: reason.clone(),
                         tone: Some("warning".to_string()),
                     })
@@ -1329,9 +1336,14 @@ impl AgentExecutor {
                             "Resume checkpoint saved after tool round {}.",
                             iteration.saturating_add(1)
                         );
-                        append_persisted_trace_status(&mut persisted_trace_items, &summary, "info");
+                        append_developer_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &summary,
+                            "info",
+                        );
                         let _ = tx
-                            .send(AgentEvent::Status {
+                            .send(AgentEvent::ControllerStatus {
+                                code: "resume_checkpoint_saved".to_string(),
                                 content: summary,
                                 tone: Some("muted".to_string()),
                             })
