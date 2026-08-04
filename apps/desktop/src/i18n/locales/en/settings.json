@@ -470,6 +470,7 @@
   "showKey": "Show API key",
   "reasoningSection": "Reasoning / Thinking",
   "enableReasoning": "Enable Reasoning / Thinking",
+  "reasoningAlwaysOn": "Reasoning is always on for this model.",
   "thinkingBudget": "Thinking Budget (tokens)",
   "thinkingBudgetHelp": "Token budget for models that expose a thinking-token control.",
   "reasoningEffort": "Reasoning Effort",

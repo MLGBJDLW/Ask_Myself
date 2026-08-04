@@ -470,6 +470,7 @@
   "showKey": "显示密钥",
   "reasoningSection": "推理 / 思维链",
   "enableReasoning": "启用推理 / 思维链",
+  "reasoningAlwaysOn": "此模型始终启用推理。",
   "thinkingBudget": "思考预算 (token数)",
   "thinkingBudgetHelp": "适用于支持思考 token 预算控制的模型。",
   "reasoningEffort": "推理强度",

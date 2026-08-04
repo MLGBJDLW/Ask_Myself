@@ -25,7 +25,6 @@ import type { Skill } from "../../types/extensions";
 import {
   findProviderPreset,
   getReasoningCapability,
-  type ReasoningCapability,
   type ReasoningEffortLevel,
   type ProviderPreset,
 } from "../../lib/providerPresets";
@@ -53,6 +52,12 @@ import {
   selectImplicitDefault,
 } from "../../lib/modelCatalog";
 import { ModelDescriptorBadges } from "./ModelDescriptorBadges";
+import {
+  defaultReasoningEffort,
+  defaultThinkingBudget,
+  normalizeReasoningEffort,
+  normalizeThinkingBudget,
+} from "../../lib/reasoningControls";
 import { CatalogModelPicker } from "./CatalogModelPicker";
 
 interface AgentConfigFormProps {
@@ -121,67 +126,6 @@ const REASONING_EFFORT_LABEL_KEYS: Record<
 
 function normalizeBaseUrl(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\/+$/, "");
-}
-
-function defaultReasoningEffort(
-  capability: ReasoningCapability | null,
-): ReasoningEffortLevel | null {
-  const levels = capability?.effortLevels ?? [];
-  if (levels.length === 0) {
-    return null;
-  }
-  return capability?.defaultEffort && levels.includes(capability.defaultEffort)
-    ? capability.defaultEffort
-    : levels.find((level) => level !== "none") ?? levels[0];
-}
-
-function normalizeReasoningEffort(
-  value: string | null,
-  capability: ReasoningCapability | null,
-): ReasoningEffortLevel | null {
-  const levels = capability?.effortLevels ?? [];
-  if (levels.length === 0) {
-    return null;
-  }
-  return levels.includes(value as ReasoningEffortLevel)
-    ? (value as ReasoningEffortLevel)
-    : defaultReasoningEffort(capability);
-}
-
-function defaultThinkingBudget(
-  capability: ReasoningCapability | null,
-): number | null {
-  const budget = capability?.thinkingBudget;
-  if (!budget?.enabled) {
-    return null;
-  }
-  return budget.defaultTokens ?? null;
-}
-
-function normalizeThinkingBudget(
-  value: number | null,
-  capability: ReasoningCapability | null,
-): number | null {
-  const budget = capability?.thinkingBudget;
-  if (!budget?.enabled) {
-    return null;
-  }
-
-  const fallback = defaultThinkingBudget(capability);
-  if ((!Number.isFinite(value) || value === null) && fallback === null) {
-    return null;
-  }
-  let next = Number.isFinite(value) && value !== null ? value : fallback!;
-  if (budget.allowZero && next === 0) {
-    return 0;
-  }
-  if (budget.minTokens != null) {
-    next = Math.max(next, budget.minTokens);
-  }
-  if (budget.maxTokens != null) {
-    next = Math.min(next, budget.maxTokens);
-  }
-  return Math.round(next);
 }
 
 export function AgentConfigForm({
@@ -380,7 +324,7 @@ export function AgentConfigForm({
     (preset ? !preset.requiresApiKey : false);
   const curatedPreset =
     findProviderPreset({ provider, baseUrl }) ??
-    (preset?.provider === provider ? preset : null);
+    (!baseUrl.trim() && preset?.provider === provider ? preset : null);
   const matchingModelCatalog = modelCatalog
     && catalogMatchesProvider(modelCatalog, provider, baseUrl, isLocal ? "" : apiKey)
     ? modelCatalog
@@ -1161,7 +1105,7 @@ export function AgentConfigForm({
             className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
           />
           <span className="text-sm text-text-primary">
-            {t("settings.enableReasoning")}
+            {t(reasoningAlwaysOn ? "settings.reasoningAlwaysOn" : "settings.enableReasoning")}
           </span>
         </label>
         {!supportsReasoning && (

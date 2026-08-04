@@ -6,6 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::provider_boundary::{
+    endpoint_id, is_alibaba_chat_endpoint, is_azure_openai_endpoint, is_deepseek_public_endpoint,
+    is_moonshot_public_endpoint, is_openai_public_endpoint, is_openrouter_public_endpoint,
+    is_siliconflow_public_endpoint, provider_id,
+};
 use super::{ProviderType, ReasoningEffort};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,104 +178,6 @@ impl ReasoningProfile {
     }
 }
 
-fn provider_id(provider: ProviderType) -> &'static str {
-    match provider {
-        ProviderType::OpenAi => "openai",
-        ProviderType::OpenRouter => "openrouter",
-        ProviderType::Anthropic => "anthropic",
-        ProviderType::Google => "google",
-        ProviderType::DeepSeek => "deepseek",
-        ProviderType::Ollama => "ollama",
-        ProviderType::LmStudio => "lmStudio",
-        ProviderType::AzureOpenAi => "azureOpenAi",
-        ProviderType::Zhipu => "zhipu",
-        ProviderType::Moonshot => "moonshot",
-        ProviderType::Qwen => "qwen",
-        ProviderType::AlibabaModelStudio => "alibabaModelStudio",
-        ProviderType::SiliconFlow => "siliconFlow",
-        ProviderType::Doubao => "doubao",
-        ProviderType::Yi => "yi",
-        ProviderType::Baichuan => "baichuan",
-        ProviderType::Custom => "custom",
-    }
-}
-
-fn default_endpoint(provider: ProviderType) -> &'static str {
-    match provider {
-        ProviderType::OpenAi => "https://api.openai.com/v1",
-        ProviderType::OpenRouter => "https://openrouter.ai/api/v1",
-        ProviderType::DeepSeek => "https://api.deepseek.com",
-        ProviderType::Moonshot => "https://api.moonshot.ai/v1",
-        ProviderType::Qwen | ProviderType::AlibabaModelStudio => {
-            "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        }
-        ProviderType::SiliconFlow => "https://api.siliconflow.cn/v1",
-        _ => "",
-    }
-}
-
-fn trusted_url(provider: ProviderType, base_url: Option<&str>) -> Option<reqwest::Url> {
-    let endpoint = base_url.unwrap_or_else(|| default_endpoint(provider));
-    let url = reqwest::Url::parse(endpoint).ok()?;
-    (url.scheme() == "https" && url.port_or_known_default() == Some(443)).then_some(url)
-}
-
-fn endpoint_id(provider: ProviderType, base_url: Option<&str>) -> String {
-    let endpoint = base_url.unwrap_or_else(|| default_endpoint(provider));
-    let normalized = endpoint.trim().trim_end_matches('/').to_ascii_lowercase();
-    let Some(url) = trusted_url(provider, base_url) else {
-        let digest = blake3::hash(normalized.as_bytes()).to_hex();
-        return format!("custom-{}", &digest[..16]);
-    };
-    match url.host_str().unwrap_or_default() {
-        "api.openai.com" => "openai-public".to_string(),
-        "openrouter.ai" => "openrouter-public".to_string(),
-        "api.deepseek.com" => "deepseek-public".to_string(),
-        "api.moonshot.ai" | "api.moonshot.cn" => "moonshot-public".to_string(),
-        "token-plan.cn-beijing.maas.aliyuncs.com" => "token-plan-cn".to_string(),
-        "token-plan.ap-southeast-1.maas.aliyuncs.com" => "token-plan-global".to_string(),
-        "dashscope.aliyuncs.com" => "alibaba-cn-beijing".to_string(),
-        "dashscope-intl.aliyuncs.com" => "qwencloud-global".to_string(),
-        "dashscope-us.aliyuncs.com" => "alibaba-us-virginia".to_string(),
-        "api.siliconflow.cn" => "siliconflow-public".to_string(),
-        host if host.ends_with(".maas.aliyuncs.com") => {
-            let digest = blake3::hash(host.as_bytes()).to_hex();
-            format!("alibaba-workspace-{}", &digest[..12])
-        }
-        _ => {
-            let digest = blake3::hash(normalized.as_bytes()).to_hex();
-            format!("custom-{}", &digest[..16])
-        }
-    }
-}
-
-fn is_openai_chat_path(url: &reqwest::Url) -> bool {
-    url.path().trim_end_matches('/') == "/compatible-mode/v1"
-        || url.path().trim_end_matches('/') == "/v1"
-}
-
-fn is_alibaba_chat_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
-    if !matches!(
-        provider,
-        ProviderType::Qwen | ProviderType::AlibabaModelStudio
-    ) {
-        return false;
-    }
-    let Some(url) = trusted_url(provider, base_url) else {
-        return false;
-    };
-    let host = url.host_str().unwrap_or_default();
-    is_openai_chat_path(&url)
-        && (matches!(
-            host,
-            "dashscope.aliyuncs.com"
-                | "dashscope-intl.aliyuncs.com"
-                | "dashscope-us.aliyuncs.com"
-                | "token-plan.cn-beijing.maas.aliyuncs.com"
-                | "token-plan.ap-southeast-1.maas.aliyuncs.com"
-        ) || host.ends_with(".maas.aliyuncs.com"))
-}
-
 fn profile(
     key: ReasoningProfileKey,
     id: &str,
@@ -320,10 +227,8 @@ pub fn resolve_reasoning_profile(
     }
 
     let model = model.trim().to_ascii_lowercase();
-    let host = trusted_url(provider, base_url).and_then(|url| url.host_str().map(str::to_string));
-
-    if matches!(provider, ProviderType::OpenAi | ProviderType::AzureOpenAi)
-        && (provider == ProviderType::AzureOpenAi || host.as_deref() == Some("api.openai.com"))
+    if (provider == ProviderType::OpenAi && is_openai_public_endpoint(provider, base_url))
+        || (provider == ProviderType::AzureOpenAi && is_azure_openai_endpoint(provider, base_url))
     {
         let mut value = profile(
             key,
@@ -348,7 +253,7 @@ pub fn resolve_reasoning_profile(
         return value;
     }
 
-    if provider == ProviderType::OpenRouter && host.as_deref() == Some("openrouter.ai") {
+    if provider == ProviderType::OpenRouter && is_openrouter_public_endpoint(provider, base_url) {
         let mut value = profile(
             key,
             "openrouter-normalized-reasoning-v1",
@@ -373,7 +278,7 @@ pub fn resolve_reasoning_profile(
     }
 
     if provider == ProviderType::DeepSeek
-        && host.as_deref() == Some("api.deepseek.com")
+        && is_deepseek_public_endpoint(provider, base_url)
         && (model.contains("reasoner") || model.contains("r1") || model.contains("v4"))
     {
         let mut value = profile(
@@ -397,9 +302,7 @@ pub fn resolve_reasoning_profile(
         return value;
     }
 
-    if provider == ProviderType::Moonshot
-        && matches!(host.as_deref(), Some("api.moonshot.ai" | "api.moonshot.cn"))
-    {
+    if provider == ProviderType::Moonshot && is_moonshot_public_endpoint(provider, base_url) {
         let mut value = match model.as_str() {
             "kimi-k3" => profile(
                 key,
@@ -645,7 +548,7 @@ pub fn resolve_reasoning_profile(
         }
     }
 
-    if provider == ProviderType::SiliconFlow && host.as_deref() == Some("api.siliconflow.cn") {
+    if provider == ProviderType::SiliconFlow && is_siliconflow_public_endpoint(provider, base_url) {
         let mut value = profile(
             key,
             "siliconflow-compatible-budget-v1",

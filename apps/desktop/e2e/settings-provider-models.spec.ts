@@ -433,6 +433,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "alibaba_model_studio");
   modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
+    "Qwen3.8 Max",
     "DeepSeek V4 Pro",
     "Kimi K2.7 Code",
     "GLM-5.2",
@@ -526,7 +527,7 @@ test("provider refresh keeps account-discovered models selectable and cached", a
     .some((key) => key.startsWith("nexa-provider-model-catalog-v1:")))).toBe(true);
 });
 
-test("a custom base URL cannot inherit a public catalog endpoint identity", async ({ page }) => {
+test("an edited public base URL cannot inherit catalog identity or capabilities", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
@@ -541,7 +542,11 @@ test("a custom base URL cannot inherit a public catalog endpoint identity", asyn
     .locator("label")
     .filter({ hasText: "Base URL" })
     .locator("xpath=..");
-  await baseUrlField.getByRole("textbox").fill("https://tenant.example.test/v1");
+  await baseUrlField.getByRole("textbox").fill("https://api.openai.com/evil?tenant=1");
+  await page.getByRole("button", { name: /^Advanced Settings/ }).click();
+  await expect(page.getByText("No configurable reasoning controls are available for this model.")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Enable reasoning" })).toBeDisabled();
+  await expect(page.getByTestId("default-model-picker")).toHaveCount(0);
   await page.getByRole("button", { name: "Test Connection" }).click();
 
   await expect.poll(() => page.evaluate(() => (
@@ -571,7 +576,7 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
   await page.getByRole("button", { name: "Add Provider" }).click();
 
   const tokenPlanCard = page.getByRole("button", { name: /^Qwen Token Plan/ });
-  await expect(tokenPlanCard).toContainText("sk-sp API key");
+  await expect(tokenPlanCard).toContainText("sk-sp key");
   await tokenPlanCard.click();
 
   const baseUrlField = page
@@ -586,7 +591,7 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
     .getByTestId("default-model-field");
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
   await expectNexaValue(modelSelect, "");
-  await expectNexaOptions(modelSelect, ["Qwen3.8 Max Preview"]);
+  await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.8 Max Preview"]);
   await expectNexaOptionCount(modelSelect, 2);
   await expectNexaOption(modelSelect, "qwen3.7-flash", "absent");
   await selectNexaOption(modelSelect, "qwen3.8-max-preview");
@@ -618,6 +623,7 @@ test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ 
   await selectNexaOption(modelSelect, "qwen3.7-flash");
   await expectNexaValue(modelSelect, "qwen3.7-flash");
   await expectNexaOptions(modelSelect, [
+    "Qwen3.8 Max",
     "Qwen3.7 Flash",
     "Qwen3.7 Plus",
     "Qwen3.7 Max",
@@ -631,9 +637,10 @@ test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog
 
   const modelField = page
     .getByTestId("default-model-field");
-  await expect(modelField.getByRole("button").filter({ hasText: "Qwen3.7 Max" }).first()).toBeVisible();
-  await expect(modelField.getByRole("button").filter({ hasText: "DeepSeek V4 Pro" }).first()).toBeVisible();
-  await expect(modelField.getByRole("button").filter({ hasText: "qwen3.8-max-preview" })).toHaveCount(0);
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "qwen3.6-plus");
+  await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.7 Max", "DeepSeek V4 Pro"]);
+  await expectNexaOption(modelSelect, "qwen3.8-max-preview", "absent");
 });
 
 test("settings exposes Alibaba Model Studio and SiliconFlow as router presets", async ({ page }) => {
@@ -765,21 +772,20 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect(sttPanel.getByRole("heading", { name: "Speech to Text" })).toBeVisible();
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
+  const sttModel = sttPanel.locator("[data-nexa-select-trigger]").nth(1);
   await expectNexaOptionCount(sttProvider, 9);
 
   await selectNexaOption(sttProvider, "openai-live");
-  await sttPanel.locator('input[list="nexa-stt-models"]').fill("gpt-live-transcribe");
-  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("gpt-live-transcribe");
+  await selectNexaOption(sttModel, "gpt-live-transcribe");
+  await expectNexaValue(sttModel, "gpt-live-transcribe");
 
   await selectNexaOption(sttProvider, "groq");
-  await sttPanel.locator('input[list="nexa-stt-models"]').fill("whisper-large-v3-turbo");
-  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
-    "whisper-large-v3-turbo",
-  );
+  await selectNexaOption(sttModel, "whisper-large-v3-turbo");
+  await expectNexaValue(sttModel, "whisper-large-v3-turbo");
 
   await selectNexaOption(sttProvider, "alibaba-qwen-asr");
-  await sttPanel.locator('input[list="nexa-stt-models"]').fill("qwen3-asr-flash");
-  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue("qwen3-asr-flash");
+  await selectNexaOption(sttModel, "qwen3-asr-flash");
+  await expectNexaValue(sttModel, "qwen3-asr-flash");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
     "style",
@@ -791,10 +797,8 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
 
   await selectNexaOption(sttProvider, "siliconflow");
-  await sttPanel.locator('input[list="nexa-stt-models"]').fill("FunAudioLLM/SenseVoiceSmall");
-  await expect(sttPanel.locator('input[list="nexa-stt-models"]')).toHaveValue(
-    "FunAudioLLM/SenseVoiceSmall",
-  );
+  await selectNexaOption(sttModel, "FunAudioLLM/SenseVoiceSmall");
+  await expectNexaValue(sttModel, "FunAudioLLM/SenseVoiceSmall");
 });
 
 test("settings discards a stale voice preview after synthesis settings change", async ({ page }) => {

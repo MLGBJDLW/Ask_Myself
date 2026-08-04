@@ -454,6 +454,7 @@
   "showKey": "顯示密鑰",
   "reasoningSection": "推理 / 思維鏈",
   "enableReasoning": "啟用推理 / 思維鏈",
+  "reasoningAlwaysOn": "此模型始終啟用推理。",
   "thinkingBudget": "思考預算 (token數)",
   "thinkingBudgetHelp": "適用於支援思考 token 預算控制的模型。",
   "reasoningEffort": "推理強度",
