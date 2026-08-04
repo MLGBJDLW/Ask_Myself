@@ -8,6 +8,11 @@ use crate::usage_analytics::{provider_type_id, usage_cost_metadata, AiUsageRecor
 const COMPACTION_TARGET_USAGE: f32 = 0.55;
 const MIN_RECENT_TURNS: usize = 2;
 
+pub struct ConversationCompaction {
+    pub messages: Vec<ConversationMessage>,
+    pub checkpoint_id: Option<String>,
+}
+
 struct SummarizationUsageContext<'a> {
     db: &'a Database,
     conversation_id: Option<&'a str>,
@@ -408,9 +413,12 @@ impl AgentExecutor {
         messages: &[ConversationMessage],
         db: Option<&Database>,
         label: &str,
-    ) -> Result<Vec<ConversationMessage>, CoreError> {
+    ) -> Result<ConversationCompaction, CoreError> {
         if messages.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ConversationCompaction {
+                messages: Vec::new(),
+                checkpoint_id: None,
+            });
         }
         let model = self.config.model.as_deref().unwrap_or("gpt-4o");
         let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
@@ -427,13 +435,19 @@ impl AgentExecutor {
             .unwrap_or_else(|| model_context_window(model));
         let budget = ctx_window.saturating_sub(max_response_tokens);
         if budget == 0 {
-            return Ok(messages.to_vec());
+            return Ok(ConversationCompaction {
+                messages: messages.to_vec(),
+                checkpoint_id: None,
+            });
         }
 
         let prefix_end = system_prefix_end(&llm_msgs);
         let target = (budget as f32 * COMPACTION_TARGET_USAGE) as u32;
         let Some(evict_end) = compaction_boundary(&llm_msgs, model, target, 1) else {
-            return Ok(messages.to_vec());
+            return Ok(ConversationCompaction {
+                messages: messages.to_vec(),
+                checkpoint_id: None,
+            });
         };
         let evicted = &llm_msgs[prefix_end..evict_end];
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
@@ -471,18 +485,20 @@ impl AgentExecutor {
         }
 
         // Archive evicted messages as a checkpoint before replacing.
-        if let Some(db) = db {
+        let checkpoint_id = if let Some(db) = db {
             let est_tokens: u32 = messages[prefix_end..evict_end]
                 .iter()
                 .map(|m| m.token_count)
                 .sum();
-            db.create_checkpoint_with_messages(
+            Some(db.create_checkpoint_with_messages(
                 conversation_id,
                 label,
                 est_tokens,
                 &messages[prefix_end..evict_end],
-            )?;
-        }
+            )?)
+        } else {
+            None
+        };
 
         // Build compacted ConversationMessages to persist.
         let summary_content =
@@ -516,7 +532,10 @@ impl AgentExecutor {
             compacted.push(m);
         }
 
-        Ok(compacted)
+        Ok(ConversationCompaction {
+            messages: compacted,
+            checkpoint_id,
+        })
     }
 }
 

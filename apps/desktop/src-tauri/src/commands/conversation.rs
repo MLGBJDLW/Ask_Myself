@@ -1080,16 +1080,23 @@ pub async fn compact_conversation_cmd(
     }
 
     // 3. Run compaction (creates a checkpoint before evicting).
-    let compacted = executor
+    let compaction = executor
         .compact_conversation(&conversation_id, &messages, Some(&state.db), "manual")
         .await
         .map_err(|e| e.to_string())?;
+    let checkpoint_id = compaction.checkpoint_id;
+    let compacted = compaction.messages;
 
     // 4. Replace the retained projection atomically. This is a single SQLite
     // transaction, avoiding one autocommit/fsync per retained message.
     state
         .db
-        .replace_messages_if_unchanged(&conversation_id, &messages, &compacted)
+        .replace_messages_if_unchanged(
+            &conversation_id,
+            &messages,
+            &compacted,
+            checkpoint_id.as_deref(),
+        )
         .map_err(|e| e.to_string())?;
 
     let messages_after = compacted.len();

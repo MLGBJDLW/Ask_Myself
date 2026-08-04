@@ -3012,6 +3012,7 @@ impl Database {
         conversation_id: &str,
         expected_messages: &[ConversationMessage],
         replacement_messages: &[ConversationMessage],
+        checkpoint_id: Option<&str>,
     ) -> Result<(), CoreError> {
         if expected_messages
             .iter()
@@ -3025,6 +3026,28 @@ impl Database {
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let active_run = tx.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM agent_task_runs
+                 WHERE conversation_id = ?1
+                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+             )",
+            rusqlite::params![conversation_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if active_run {
+            if let Some(checkpoint_id) = checkpoint_id {
+                tx.execute(
+                    "DELETE FROM conversation_checkpoints WHERE id = ?1 AND conversation_id = ?2",
+                    rusqlite::params![checkpoint_id, conversation_id],
+                )?;
+            }
+            tx.commit()?;
+            return Err(CoreError::InvalidInput(
+                "Wait for the active response to finish before compacting this conversation"
+                    .to_string(),
+            ));
+        }
         let current_message_ids = {
             let mut stmt = tx.prepare(
                 "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC",
@@ -3043,6 +3066,13 @@ impl Database {
             .map(String::as_str)
             .ne(expected_message_ids.iter().copied())
         {
+            if let Some(checkpoint_id) = checkpoint_id {
+                tx.execute(
+                    "DELETE FROM conversation_checkpoints WHERE id = ?1 AND conversation_id = ?2",
+                    rusqlite::params![checkpoint_id, conversation_id],
+                )?;
+            }
+            tx.commit()?;
             return Err(CoreError::InvalidInput(
                 "Conversation changed while compaction was in progress; retry after the active turn finishes"
                     .to_string(),
@@ -6134,8 +6164,13 @@ mod tests {
         let original_created_at = expected[0].created_at.clone();
         let mut replacement = expected[0].clone();
         replacement.content = "compacted target".to_string();
-        db.replace_messages_if_unchanged(&target.id, &expected, std::slice::from_ref(&replacement))
-            .unwrap();
+        db.replace_messages_if_unchanged(
+            &target.id,
+            &expected,
+            std::slice::from_ref(&replacement),
+            None,
+        )
+        .unwrap();
         let replaced = db.get_messages(&target.id).unwrap();
         assert_eq!(replaced[0].content, "compacted target");
         assert_eq!(replaced[0].created_at, original_created_at);
@@ -6146,7 +6181,7 @@ mod tests {
 
         let wrong_conversation = message(&neighbor.id, "must reject", 0);
         assert!(db
-            .replace_messages_if_unchanged(&target.id, &replaced, &[wrong_conversation])
+            .replace_messages_if_unchanged(&target.id, &replaced, &[wrong_conversation], None,)
             .is_err());
         assert_eq!(
             db.get_messages(&target.id).unwrap()[0].content,
@@ -6158,12 +6193,26 @@ mod tests {
         );
 
         let stale_snapshot = db.get_messages(&target.id).unwrap();
+        let stale_checkpoint = db
+            .create_checkpoint_with_messages(
+                &target.id,
+                "manual",
+                stale_snapshot[0].token_count,
+                &stale_snapshot,
+            )
+            .unwrap();
         db.add_message(&message(&target.id, "arrived during compaction", 1))
             .unwrap();
         assert!(db
-            .replace_messages_if_unchanged(&target.id, &stale_snapshot, &stale_snapshot)
+            .replace_messages_if_unchanged(
+                &target.id,
+                &stale_snapshot,
+                &stale_snapshot,
+                Some(&stale_checkpoint),
+            )
             .is_err());
         assert_eq!(db.get_messages(&target.id).unwrap().len(), 2);
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
     }
 
     #[test]
@@ -6201,13 +6250,14 @@ mod tests {
             .is_err());
         assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
 
-        db.create_checkpoint_with_messages(
-            &target.id,
-            "manual",
-            4,
-            std::slice::from_ref(&target_message),
-        )
-        .unwrap();
+        let checkpoint_id = db
+            .create_checkpoint_with_messages(
+                &target.id,
+                "manual",
+                4,
+                std::slice::from_ref(&target_message),
+            )
+            .unwrap();
         assert_eq!(db.list_checkpoints(&target.id).unwrap().len(), 1);
 
         assert!(!db
@@ -6225,6 +6275,12 @@ mod tests {
         assert!(db
             .conversation_has_active_agent_task_run(&target.id)
             .unwrap());
+        let expected = db.get_messages(&target.id).unwrap();
+        assert!(db
+            .replace_messages_if_unchanged(&target.id, &expected, &expected, Some(&checkpoint_id),)
+            .is_err());
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
+        assert_eq!(db.get_messages(&target.id).unwrap().len(), expected.len());
         db.finish_agent_task_run(&run.run_id, "completed", None, None, None)
             .unwrap();
         assert!(!db
