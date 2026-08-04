@@ -372,7 +372,7 @@ pub struct StreamChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
-    Chunk { chunk: StreamChunk },
+    Chunk { chunk: Box<StreamChunk> },
     RecoverableError { message: String },
     Cancelled { message: String },
     TerminalError { message: String },
@@ -389,7 +389,9 @@ fn provider_stream_event_from_chunk_result(
     item: Result<StreamChunk, CoreError>,
 ) -> ProviderStreamEvent {
     match item {
-        Ok(chunk) => ProviderStreamEvent::Chunk { chunk },
+        Ok(chunk) => ProviderStreamEvent::Chunk {
+            chunk: Box::new(chunk),
+        },
         Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
             ProviderStreamEvent::RecoverableError { message }
         }

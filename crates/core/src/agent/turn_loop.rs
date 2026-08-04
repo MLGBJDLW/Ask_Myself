@@ -904,15 +904,17 @@ impl AgentExecutor {
                         last_prompt_tokens: &mut last_prompt_tokens,
                         last_context_breakdown: &mut last_context_breakdown,
                     },
-                    iteration,
-                    tool_calls.len(),
-                    last_finish_reason.clone(),
-                    chunk_usage,
-                    request_latency_ms,
-                    time_to_first_token_ms,
-                    prompt_cache_observation
-                        .as_ref()
-                        .map(prompt_cache::PromptCacheTraceObservation::cache_outcome_reason),
+                    usage_accounting::ModelStepUsageObservation {
+                        iteration,
+                        tool_call_count: tool_calls.len(),
+                        finish_reason: last_finish_reason.clone(),
+                        chunk_usage,
+                        request_latency_ms,
+                        time_to_first_token_ms,
+                        cache_outcome_reason: prompt_cache_observation
+                            .as_ref()
+                            .map(prompt_cache::PromptCacheTraceObservation::cache_outcome_reason),
+                    },
                 )
                 .await;
             if let Some(observation) = prompt_cache_observation {

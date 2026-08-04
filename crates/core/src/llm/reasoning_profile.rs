@@ -184,10 +184,10 @@ fn profile(
     mode_control: ThinkingModeControl,
     effort_field: ReasoningEffortField,
     effort_mapping: ReasoningEffortMapping,
-    accepted_efforts: &[ReasoningEffort],
-    default_effort: Option<ReasoningEffort>,
+    effort_policy: (&[ReasoningEffort], Option<ReasoningEffort>),
     budget_field: ReasoningBudgetField,
 ) -> ReasoningProfile {
+    let (accepted_efforts, default_effort) = effort_policy;
     ReasoningProfile {
         id: id.to_string(),
         version: 1,
@@ -236,16 +236,18 @@ pub fn resolve_reasoning_profile(
             ThinkingModeControl::ProviderDefault,
             ReasoningEffortField::TopLevel,
             ReasoningEffortMapping::OpenAiCompatible,
-            &[
-                ReasoningEffort::None,
-                ReasoningEffort::Minimal,
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::Max,
-                ReasoningEffort::XHigh,
-            ],
-            None,
+            (
+                &[
+                    ReasoningEffort::None,
+                    ReasoningEffort::Minimal,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                    ReasoningEffort::XHigh,
+                ],
+                None,
+            ),
             ReasoningBudgetField::None,
         );
         value.omit_temperature_when_reasoning = true;
@@ -260,16 +262,18 @@ pub fn resolve_reasoning_profile(
             ThinkingModeControl::ProviderDefault,
             ReasoningEffortField::NestedReasoning,
             ReasoningEffortMapping::OpenAiCompatible,
-            &[
-                ReasoningEffort::None,
-                ReasoningEffort::Minimal,
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::Max,
-                ReasoningEffort::XHigh,
-            ],
-            None,
+            (
+                &[
+                    ReasoningEffort::None,
+                    ReasoningEffort::Minimal,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                    ReasoningEffort::XHigh,
+                ],
+                None,
+            ),
             ReasoningBudgetField::NestedReasoning,
         );
         value.effort_budget_exclusive = true;
@@ -287,13 +291,15 @@ pub fn resolve_reasoning_profile(
             ThinkingModeControl::ThinkingType,
             ReasoningEffortField::TopLevel,
             ReasoningEffortMapping::Exact,
-            &[
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::Max,
-            ],
-            Some(ReasoningEffort::High),
+            (
+                &[
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ],
+                Some(ReasoningEffort::High),
+            ),
             ReasoningBudgetField::None,
         );
         value.preserve_reasoning_history = true;
@@ -310,12 +316,14 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::AlwaysOn,
                 ReasoningEffortField::TopLevel,
                 ReasoningEffortMapping::Exact,
-                &[
-                    ReasoningEffort::Low,
-                    ReasoningEffort::High,
-                    ReasoningEffort::Max,
-                ],
-                Some(ReasoningEffort::Max),
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::High,
+                        ReasoningEffort::Max,
+                    ],
+                    Some(ReasoningEffort::Max),
+                ),
                 ReasoningBudgetField::None,
             ),
             "kimi-k2.7-code" | "kimi-k2.7-code-highspeed" => profile(
@@ -324,8 +332,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::AlwaysOn,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             ),
             "kimi-k2.6" => profile(
@@ -334,8 +341,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::ThinkingTypeWithKeep,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             ),
             "kimi-k2.5" => profile(
@@ -344,8 +350,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::ThinkingType,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             ),
             _ => return ReasoningProfile::unsupported(key),
@@ -368,12 +373,14 @@ pub fn resolve_reasoning_profile(
                 mode_control,
                 ReasoningEffortField::TopLevel,
                 ReasoningEffortMapping::Qwen38Chat,
-                &[
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::XHigh,
-                ],
-                Some(ReasoningEffort::XHigh),
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::XHigh,
+                    ],
+                    Some(ReasoningEffort::XHigh),
+                ),
                 ReasoningBudgetField::ThinkingBudget,
             );
             value.min_budget_tokens = Some(0);
@@ -393,8 +400,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::EnableThinking,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::ThinkingBudget,
             );
             value.preserve_reasoning_history = true;
@@ -408,8 +414,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::AlwaysOn,
                 ReasoningEffortField::TopLevel,
                 ReasoningEffortMapping::Exact,
-                &[ReasoningEffort::Max],
-                Some(ReasoningEffort::Max),
+                (&[ReasoningEffort::Max], Some(ReasoningEffort::Max)),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -428,8 +433,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::AlwaysOn,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -445,8 +449,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::EnableThinking,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -463,8 +466,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::EnableThinking,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::ThinkingBudget,
             );
             value.preserve_reasoning_history = true;
@@ -479,14 +481,16 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::EnableThinking,
                 ReasoningEffortField::TopLevel,
                 ReasoningEffortMapping::Exact,
-                &[
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::High,
-                    ReasoningEffort::XHigh,
-                    ReasoningEffort::Max,
-                ],
-                Some(ReasoningEffort::High),
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::High,
+                        ReasoningEffort::XHigh,
+                        ReasoningEffort::Max,
+                    ],
+                    Some(ReasoningEffort::High),
+                ),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -522,8 +526,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::EnableThinking,
                 ReasoningEffortField::TopLevel,
                 ReasoningEffortMapping::Exact,
-                &efforts,
-                None,
+                (&efforts, None),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -538,8 +541,7 @@ pub fn resolve_reasoning_profile(
                 ThinkingModeControl::AdaptiveThinking,
                 ReasoningEffortField::None,
                 ReasoningEffortMapping::Exact,
-                &[],
-                None,
+                (&[], None),
                 ReasoningBudgetField::None,
             );
             value.preserve_reasoning_history = true;
@@ -555,8 +557,7 @@ pub fn resolve_reasoning_profile(
             ThinkingModeControl::EnableThinking,
             ReasoningEffortField::None,
             ReasoningEffortMapping::Exact,
-            &[],
-            None,
+            (&[], None),
             ReasoningBudgetField::ThinkingBudget,
         );
         value.confidence = CapabilityConfidence::CuratedCompatibility;
