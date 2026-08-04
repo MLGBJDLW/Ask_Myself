@@ -60,10 +60,9 @@ function normalizePresetBaseUrl(baseUrl: string | null | undefined): string {
 
 function providerKeyForPresetLookup(provider: string, normalizedBaseUrl: string): string {
   const isLegacyQwenPayg = provider === "qwen"
-    && !normalizedBaseUrl.includes("token-plan.")
-    && (
-      normalizedBaseUrl.includes("dashscope")
-      || normalizedBaseUrl.includes("maas.aliyuncs.com")
+    && PROVIDER_PRESETS.some(
+      (preset) => preset.provider === 'alibaba_model_studio'
+        && normalizePresetBaseUrl(preset.baseUrl) === normalizedBaseUrl,
     );
   return isLegacyQwenPayg ? "alibaba_model_studio" : provider;
 }
@@ -85,6 +84,10 @@ export function findProviderPreset(input: {
     if (exactMatch) {
       return exactMatch;
     }
+    // A configured endpoint is part of the capability identity. Familiar
+    // provider labels or hosts must not make an edited endpoint inherit an
+    // official model/reasoning contract.
+    return null;
   }
 
   const providerMatches = PROVIDER_PRESETS.filter(

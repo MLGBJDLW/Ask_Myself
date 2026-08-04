@@ -43,6 +43,9 @@ pub struct AiUsageRecordInput<'a> {
     pub usage_source: &'a str,
     pub request_status: &'a str,
     pub latency_ms: Option<u64>,
+    pub time_to_first_token_ms: Option<u64>,
+    pub upstream_provider_id: Option<&'a str>,
+    pub cache_outcome_reason: Option<&'a str>,
     pub estimated_cost_micros: Option<u64>,
     pub currency: Option<&'a str>,
     pub pricing_version: Option<&'a str>,
@@ -123,13 +126,14 @@ impl Database {
                 conversation_id, turn_id, run_id, subtask_run_id, project_id,
                 prompt_tokens, completion_tokens, thinking_tokens, total_tokens,
                 cache_read_tokens, cache_miss_tokens, cache_creation_tokens,
-                usage_source, request_status, latency_ms,
+                usage_source, request_status, latency_ms, time_to_first_token_ms,
+                upstream_provider_id, cache_outcome_reason,
                 estimated_cost_micros, currency, pricing_version, provider_raw_json
              ) VALUES (
                 ?1, ?2, COALESCE(?3, datetime('now')), ?4, ?5,
                 ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31
              )",
             params![
                 Uuid::new_v4().to_string(),
@@ -156,6 +160,9 @@ impl Database {
                 input.usage_source,
                 input.request_status,
                 input.latency_ms.map(to_i64),
+                input.time_to_first_token_ms.map(to_i64),
+                input.upstream_provider_id,
+                input.cache_outcome_reason,
                 input.estimated_cost_micros.map(to_i64),
                 input.currency,
                 input.pricing_version,
@@ -180,6 +187,9 @@ impl Database {
         usage: Option<&Usage>,
         estimated_prompt_tokens: u32,
         normalized_cache_miss_tokens: Option<u32>,
+        latency_ms: Option<u64>,
+        time_to_first_token_ms: Option<u64>,
+        cache_outcome_reason: Option<&str>,
     ) -> Result<bool, CoreError> {
         let run = turn_id
             .map(|turn_id| {
@@ -235,7 +245,10 @@ impl Database {
                         as u64,
                     usage.cache_read_tokens.unwrap_or(0) as u64,
                     usage.cache_creation_tokens.unwrap_or(0) as u64,
-                    serde_json::to_value(usage)?,
+                    usage
+                        .provider_raw
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "usageCoverage": "notReported" })),
                 ),
                 None => (
                     "estimated",
@@ -245,10 +258,14 @@ impl Database {
                     estimated_prompt_tokens as u64,
                     0,
                     0,
-                    serde_json::json!({"estimatedPromptTokens": estimated_prompt_tokens}),
+                    serde_json::json!({
+                        "usageCoverage": "notReported",
+                        "estimatedPromptTokens": estimated_prompt_tokens
+                    }),
                 ),
             };
         let (estimated_cost_micros, currency, pricing_version) = usage_cost_metadata(provider_type);
+        let upstream_provider_id = reported_upstream_provider(provider_type, usage);
         self.record_ai_usage(&AiUsageRecordInput {
             invocation_id: &invocation_id,
             occurred_at: None,
@@ -272,7 +289,10 @@ impl Database {
             cache_creation_tokens: cache_creation,
             usage_source: source,
             request_status: "success",
-            latency_ms: None,
+            latency_ms,
+            time_to_first_token_ms,
+            upstream_provider_id,
+            cache_outcome_reason,
             estimated_cost_micros,
             currency,
             pricing_version,
@@ -367,6 +387,45 @@ impl Database {
         )?;
         Ok(changed as u64)
     }
+}
+
+fn reported_upstream_provider(
+    provider_type: Option<ProviderType>,
+    usage: Option<&Usage>,
+) -> Option<&str> {
+    usage
+        .and_then(|usage| usage.provider_raw.as_ref())
+        .and_then(|raw| {
+            ["upstream_provider", "provider_name", "provider"]
+                .into_iter()
+                .find_map(|key| raw.get(key).and_then(serde_json::Value::as_str))
+                .or_else(|| {
+                    raw.get("endpoint")
+                        .and_then(|endpoint| endpoint.get("provider_name"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .or_else(|| {
+                    raw.get("openrouterMetadata")
+                        .or_else(|| raw.get("openrouter_metadata"))
+                        .and_then(|metadata| metadata.get("endpoints"))
+                        .and_then(|endpoints| endpoints.get("available"))
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|endpoints| {
+                            endpoints.iter().find(|endpoint| {
+                                endpoint
+                                    .get("selected")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true)
+                            })
+                        })
+                        .and_then(|endpoint| endpoint.get("provider"))
+                        .and_then(serde_json::Value::as_str)
+                })
+        })
+        .or_else(|| match provider_type {
+            Some(ProviderType::OpenRouter | ProviderType::Custom) | None => None,
+            _ => Some(provider_type_id(provider_type)),
+        })
 }
 
 fn query_breakdown(
@@ -541,6 +600,9 @@ mod tests {
             usage_source: "provider",
             request_status: "success",
             latency_ms: Some(250),
+            time_to_first_token_ms: Some(80),
+            upstream_provider_id: Some("openai"),
+            cache_outcome_reason: Some("hit_reported"),
             estimated_cost_micros: None,
             currency: None,
             pricing_version: None,
@@ -618,6 +680,9 @@ mod tests {
                 None,
                 42,
                 None,
+                Some(250),
+                Some(80),
+                Some("usage_schema_unknown"),
             )
             .unwrap()
         };
@@ -633,5 +698,43 @@ mod tests {
         assert_eq!(totals.request_count, 2);
         assert_eq!(totals.estimated_cost_micros, Some(0));
         assert_eq!(totals.currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn openrouter_upstream_provider_uses_selected_router_metadata_endpoint() {
+        let usage = Usage {
+            provider_raw: Some(serde_json::json!({
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "openrouterMetadata": {
+                    "endpoints": {
+                        "available": [
+                            {"provider": "Fallback", "selected": false},
+                            {"provider": "DeepInfra", "selected": true}
+                        ]
+                    }
+                }
+            })),
+            ..Usage::default()
+        };
+
+        assert_eq!(
+            reported_upstream_provider(Some(ProviderType::OpenRouter), Some(&usage)),
+            Some("DeepInfra")
+        );
+    }
+
+    #[test]
+    fn openrouter_cache_hits_tolerate_missing_router_metadata() {
+        let usage = Usage {
+            provider_raw: Some(serde_json::json!({
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })),
+            ..Usage::default()
+        };
+
+        assert_eq!(
+            reported_upstream_provider(Some(ProviderType::OpenRouter), Some(&usage)),
+            None
+        );
     }
 }

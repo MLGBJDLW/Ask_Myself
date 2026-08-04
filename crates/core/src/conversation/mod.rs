@@ -248,6 +248,21 @@ pub struct AgentTaskRunListItem {
     pub artifact_kinds: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunPageCursor {
+    pub updated_at: String,
+    pub created_at: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunSummaryPage {
+    pub items: Vec<AgentTaskRunListItem>,
+    pub next_cursor: Option<AgentTaskRunPageCursor>,
+}
+
 /// Append-only event in an [`AgentTaskRun`] lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -487,6 +502,90 @@ fn normalize_optional_url(url: Option<&str>) -> Option<String> {
             Some(trimmed)
         }
     })
+}
+
+const TOKEN_PLAN_CN_ENDPOINT: &str =
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+const TOKEN_PLAN_GLOBAL_ENDPOINT: &str =
+    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+const ALIBABA_PAYG_CN_ENDPOINT: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const ALIBABA_PAYG_GLOBAL_ENDPOINT: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
+
+const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
+         SELECT run_id, COUNT(*) AS event_count
+         FROM agent_task_run_events
+         GROUP BY run_id
+     ), subtask_counts AS (
+         SELECT parent_run_id AS run_id,
+                COUNT(*) AS subtask_total,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS subtask_completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS subtask_failed,
+                SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS subtask_running
+         FROM agent_subtask_runs
+         GROUP BY parent_run_id
+     ), artifact_kinds AS (
+         SELECT run_id, json_group_array(DISTINCT kind) AS kinds_json
+         FROM agent_task_artifacts
+         GROUP BY run_id
+     )
+     SELECT r.id, r.conversation_id, r.turn_id, r.user_message_id, r.status, r.phase,
+            r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
+            r.created_at, r.updated_at, r.started_at, r.finished_at,
+            NULLIF(c.title, '') AS conversation_title,
+            c.project_id,
+            NULLIF(p.name, '') AS project_name,
+            COALESCE(m.content, '') AS user_message_content,
+            COALESCE(ec.event_count, 0),
+            COALESCE(sc.subtask_total, 0),
+            COALESCE(sc.subtask_completed, 0),
+            COALESCE(sc.subtask_failed, 0),
+            COALESCE(sc.subtask_running, 0),
+            ak.kinds_json
+     FROM agent_task_runs r
+     JOIN conversations c ON c.id = r.conversation_id
+     LEFT JOIN projects p ON p.id = c.project_id
+     LEFT JOIN messages m ON m.id = r.user_message_id
+     LEFT JOIN event_counts ec ON ec.run_id = r.id
+     LEFT JOIN subtask_counts sc ON sc.run_id = r.id
+     LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
+     WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
+       AND (?5 IS NULL OR r.status = ?5)
+       AND (?6 IS NULL OR c.project_id = ?6)
+     ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
+     LIMIT ?1"#;
+
+/// Enforce credential boundaries that are part of a provider product contract.
+///
+/// Token Plan subscription keys are deliberately not interchangeable with
+/// pay-as-you-go Model Studio/QwenCloud keys, even though the endpoints can
+/// expose overlapping model IDs.
+pub fn validate_agent_config_credential_contract(
+    input: &SaveAgentConfigInput,
+) -> Result<(), CoreError> {
+    let endpoint = normalize_optional_url(input.base_url.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let key = input.api_key.trim();
+    let is_token_plan_endpoint = matches!(
+        endpoint.as_str(),
+        TOKEN_PLAN_CN_ENDPOINT | TOKEN_PLAN_GLOBAL_ENDPOINT
+    );
+    let is_alibaba_payg_endpoint = matches!(
+        endpoint.as_str(),
+        ALIBABA_PAYG_CN_ENDPOINT | ALIBABA_PAYG_GLOBAL_ENDPOINT
+    );
+
+    if is_token_plan_endpoint && !key.starts_with("sk-sp") {
+        return Err(CoreError::InvalidInput(
+            "Qwen Token Plan endpoints require the dedicated subscription key beginning with 'sk-sp'; pay-as-you-go API keys are not interchangeable.".to_string(),
+        ));
+    }
+    if is_alibaba_payg_endpoint && key.starts_with("sk-sp") {
+        return Err(CoreError::InvalidInput(
+            "Token Plan 'sk-sp' keys cannot be used with the standard Model Studio/QwenCloud pay-as-you-go endpoint. Select the matching Token Plan provider instead.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn role_to_str(role: &Role) -> &'static str {
@@ -1938,6 +2037,23 @@ impl Database {
         Ok(results)
     }
 
+    pub fn conversation_has_active_agent_task_run(
+        &self,
+        conversation_id: &str,
+    ) -> Result<bool, CoreError> {
+        let conn = self.conn();
+        let active = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM agent_task_runs
+                 WHERE conversation_id = ?1
+                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+             )",
+            rusqlite::params![conversation_id],
+            |row| row.get(0),
+        )?;
+        Ok(active)
+    }
+
     pub fn list_recent_agent_task_runs(
         &self,
         limit: u32,
@@ -2008,6 +2124,89 @@ impl Database {
             results.push(row?);
         }
         Ok(results)
+    }
+
+    /// Returns a keyset-paginated, summary-only task list. This query is the
+    /// Task Center's initial-load seam: it deliberately excludes plan and
+    /// artifact payload JSON and aggregates related counts once per table.
+    pub fn list_agent_task_run_summaries(
+        &self,
+        limit: u32,
+        cursor: Option<&AgentTaskRunPageCursor>,
+        status: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<AgentTaskRunSummaryPage, CoreError> {
+        let bounded_limit = i64::from(limit.clamp(1, 100));
+        let fetch_limit = bounded_limit + 1;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(AGENT_TASK_RUN_SUMMARY_QUERY)?;
+        let cursor_updated_at = cursor.map(|value| value.updated_at.as_str());
+        let cursor_created_at = cursor.map(|value| value.created_at.as_str());
+        let cursor_id = cursor.map(|value| value.id.as_str());
+        let rows = stmt.query_map(
+            rusqlite::params![
+                fetch_limit,
+                cursor_updated_at,
+                cursor_created_at,
+                cursor_id,
+                status,
+                project_id,
+            ],
+            |row| {
+                let artifact_kinds = row
+                    .get::<_, Option<String>>(25)?
+                    .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                    .unwrap_or_default();
+                Ok(AgentTaskRunListItem {
+                    run: AgentTaskRun {
+                        id: row.get(0)?,
+                        conversation_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        user_message_id: row.get(3)?,
+                        status: row.get(4)?,
+                        phase: row.get(5)?,
+                        title: row.get(6)?,
+                        route_kind: row.get(7)?,
+                        summary: row.get(8)?,
+                        error_message: row.get(9)?,
+                        provider: row.get(10)?,
+                        model: row.get(11)?,
+                        plan: None,
+                        artifacts: None,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
+                        started_at: row.get(14)?,
+                        finished_at: row.get(15)?,
+                    },
+                    conversation_title: row.get(16)?,
+                    project_id: row.get(17)?,
+                    project_name: row.get(18)?,
+                    user_message_preview: task_message_preview(&row.get::<_, String>(19)?),
+                    event_count: row.get::<_, i64>(20)?.max(0) as u32,
+                    subtask_total: row.get::<_, i64>(21)?.max(0) as u32,
+                    subtask_completed: row.get::<_, i64>(22)?.max(0) as u32,
+                    subtask_failed: row.get::<_, i64>(23)?.max(0) as u32,
+                    subtask_running: row.get::<_, i64>(24)?.max(0) as u32,
+                    artifact_kinds,
+                })
+            },
+        )?;
+
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > bounded_limit as usize;
+        if has_more {
+            items.pop();
+        }
+        let next_cursor = has_more && !items.is_empty();
+        let next_cursor = next_cursor.then(|| {
+            let last = &items[items.len() - 1].run;
+            AgentTaskRunPageCursor {
+                updated_at: last.updated_at.clone(),
+                created_at: last.created_at.clone(),
+                id: last.id.clone(),
+            }
+        });
+        Ok(AgentTaskRunSummaryPage { items, next_cursor })
     }
 
     pub fn get_agent_task_run_event(&self, event_id: &str) -> Result<AgentTaskRunEvent, CoreError> {
@@ -2803,6 +3002,130 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Atomically replace a conversation's persisted message projection.
+    /// Compaction uses this instead of one autocommit per retained message so
+    /// large histories cannot leave a partially rewritten conversation or
+    /// monopolize the SQLite connection with repeated fsyncs.
+    pub fn replace_messages_if_unchanged(
+        &self,
+        conversation_id: &str,
+        expected_messages: &[ConversationMessage],
+        replacement_messages: &[ConversationMessage],
+        checkpoint_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if expected_messages
+            .iter()
+            .chain(replacement_messages.iter())
+            .any(|message| message.conversation_id != conversation_id)
+        {
+            return Err(CoreError::InvalidInput(
+                "Compaction messages must belong to the target conversation".to_string(),
+            ));
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let active_run = tx.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM agent_task_runs
+                 WHERE conversation_id = ?1
+                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+             )",
+            rusqlite::params![conversation_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if active_run {
+            if let Some(checkpoint_id) = checkpoint_id {
+                tx.execute(
+                    "DELETE FROM conversation_checkpoints WHERE id = ?1 AND conversation_id = ?2",
+                    rusqlite::params![checkpoint_id, conversation_id],
+                )?;
+            }
+            tx.commit()?;
+            return Err(CoreError::InvalidInput(
+                "Wait for the active response to finish before compacting this conversation"
+                    .to_string(),
+            ));
+        }
+        let current_message_ids = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let expected_message_ids = expected_messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        if current_message_ids
+            .iter()
+            .map(String::as_str)
+            .ne(expected_message_ids.iter().copied())
+        {
+            if let Some(checkpoint_id) = checkpoint_id {
+                tx.execute(
+                    "DELETE FROM conversation_checkpoints WHERE id = ?1 AND conversation_id = ?2",
+                    rusqlite::params![checkpoint_id, conversation_id],
+                )?;
+            }
+            tx.commit()?;
+            return Err(CoreError::InvalidInput(
+                "Conversation changed while compaction was in progress; retry after the active turn finishes"
+                    .to_string(),
+            ));
+        }
+        tx.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, sort_order, thinking, image_attachments_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(NULLIF(?9, ''), datetime('now')), ?10, ?11, ?12)",
+            )?;
+            for msg in replacement_messages {
+                let role = role_to_str(&msg.role);
+                let tool_calls = (!msg.tool_calls.is_empty())
+                    .then(|| serde_json::to_string(&msg.tool_calls))
+                    .transpose()?;
+                let artifacts = msg
+                    .artifacts
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                let image_attachments = msg
+                    .image_attachments
+                    .as_ref()
+                    .filter(|attachments| !attachments.is_empty())
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                stmt.execute(rusqlite::params![
+                    &msg.id,
+                    conversation_id,
+                    role,
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tool_calls,
+                    &artifacts,
+                    msg.token_count,
+                    &msg.created_at,
+                    msg.sort_order,
+                    &msg.thinking,
+                    &image_attachments,
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2810,6 +3133,70 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    /// Create a checkpoint and archive its evicted messages in one transaction.
+    /// If any archived row fails, the checkpoint is rolled back as well.
+    pub fn create_checkpoint_with_messages(
+        &self,
+        conversation_id: &str,
+        label: &str,
+        estimated_tokens: u32,
+        messages: &[ConversationMessage],
+    ) -> Result<String, CoreError> {
+        if messages
+            .iter()
+            .any(|message| message.conversation_id != conversation_id)
+        {
+            return Err(CoreError::InvalidInput(
+                "Archived messages must belong to the target conversation".to_string(),
+            ));
+        }
+
+        let id = new_id();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO conversation_checkpoints (id, conversation_id, label, message_count, estimated_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                &id,
+                conversation_id,
+                label,
+                u32::try_from(messages.len()).unwrap_or(u32::MAX),
+                estimated_tokens
+            ],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for msg in messages {
+                let tool_calls = (!msg.tool_calls.is_empty())
+                    .then(|| serde_json::to_string(&msg.tool_calls))
+                    .transpose()?;
+                let artifacts = msg
+                    .artifacts
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                stmt.execute(rusqlite::params![
+                    &new_id(),
+                    &id,
+                    conversation_id,
+                    role_to_str(&msg.role),
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tool_calls,
+                    &artifacts,
+                    msg.token_count,
+                    msg.sort_order,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Create a checkpoint (snapshot label) before compaction.
     /// Returns the new checkpoint ID.
     pub fn create_checkpoint(
@@ -2836,35 +3223,39 @@ impl Database {
         conversation_id: &str,
         messages: &[ConversationMessage],
     ) -> Result<(), CoreError> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )?;
-        for msg in messages {
-            let role_str = role_to_str(&msg.role);
-            let tc_json = if msg.tool_calls.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&msg.tool_calls)?)
-            };
-            let artifacts_json = match &msg.artifacts {
-                Some(value) => Some(serde_json::to_string(value)?),
-                None => None,
-            };
-            stmt.execute(rusqlite::params![
-                &Uuid::new_v4().to_string(),
-                checkpoint_id,
-                conversation_id,
-                role_str,
-                &msg.content,
-                &msg.tool_call_id,
-                &tc_json,
-                &artifacts_json,
-                msg.token_count,
-                msg.sort_order,
-            ])?;
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for msg in messages {
+                let role_str = role_to_str(&msg.role);
+                let tc_json = if msg.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&msg.tool_calls)?)
+                };
+                let artifacts_json = match &msg.artifacts {
+                    Some(value) => Some(serde_json::to_string(value)?),
+                    None => None,
+                };
+                stmt.execute(rusqlite::params![
+                    &Uuid::new_v4().to_string(),
+                    checkpoint_id,
+                    conversation_id,
+                    role_str,
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tc_json,
+                    &artifacts_json,
+                    msg.token_count,
+                    msg.sort_order,
+                ])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -3214,6 +3605,7 @@ impl Database {
         &self,
         input: &SaveAgentConfigInput,
     ) -> Result<AgentConfig, CoreError> {
+        validate_agent_config_credential_contract(input)?;
         let id = input.id.clone().unwrap_or_else(new_id);
         let normalized_base_url = normalize_optional_url(input.base_url.as_deref());
         let provider_endpoint_id = resolve_agent_config_endpoint_id(
@@ -3794,8 +4186,10 @@ pub async fn generate_title_with_usage(
         tools: None,
         stop: None,
         thinking_budget: None,
+        reasoning_enabled: None,
         reasoning_effort: None,
         provider_type,
+        routing_session_id: None,
         parallel_tool_calls: true,
     };
 
@@ -3918,6 +4312,63 @@ mod tests {
             thinking: None,
             image_attachments: None,
         }
+    }
+
+    fn credential_contract_input(base_url: &str, api_key: &str) -> SaveAgentConfigInput {
+        SaveAgentConfigInput {
+            id: None,
+            name: "Credential contract".into(),
+            provider: "qwen".into(),
+            api_key: api_key.into(),
+            base_url: Some(base_url.into()),
+            model: "qwen3.8-max".into(),
+            provider_endpoint_id: None,
+            model_id: None,
+            temperature: None,
+            max_tokens: None,
+            context_window: None,
+            is_default: false,
+            reasoning_enabled: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_iterations: None,
+            summarization_model: None,
+            summarization_provider: None,
+            image_generation_model: None,
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: None,
+            subagent_max_calls_per_turn: None,
+            subagent_token_budget: None,
+            delegation_limits_v2: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn token_plan_credentials_are_not_interchangeable_with_payg() {
+        for endpoint in [TOKEN_PLAN_CN_ENDPOINT, TOKEN_PLAN_GLOBAL_ENDPOINT] {
+            let valid = credential_contract_input(endpoint, "sk-sp-test");
+            assert!(validate_agent_config_credential_contract(&valid).is_ok());
+
+            let invalid = credential_contract_input(endpoint, "sk-payg-test");
+            assert!(validate_agent_config_credential_contract(&invalid)
+                .expect_err("pay-as-you-go key must be rejected")
+                .to_string()
+                .contains("sk-sp"));
+        }
+
+        for endpoint in [ALIBABA_PAYG_CN_ENDPOINT, ALIBABA_PAYG_GLOBAL_ENDPOINT] {
+            let invalid = credential_contract_input(endpoint, "sk-sp-test");
+            assert!(validate_agent_config_credential_contract(&invalid)
+                .expect_err("Token Plan key must be rejected")
+                .to_string()
+                .contains("pay-as-you-go"));
+        }
+
+        let custom = credential_contract_input("https://tenant.example.test/v1", "sk-sp-test");
+        assert!(validate_agent_config_credential_contract(&custom).is_ok());
     }
 
     #[test]
@@ -4689,6 +5140,160 @@ mod tests {
         assert_eq!(row.subtask_completed, 1);
         assert_eq!(row.subtask_failed, 1);
         assert_eq!(row.artifact_kinds, vec!["brief", "files", "verification"]);
+
+        let summary_page = db
+            .list_agent_task_run_summaries(25, None, Some("failed"), Some(&project.id))
+            .unwrap();
+        assert_eq!(summary_page.items.len(), 1);
+        assert!(summary_page.next_cursor.is_none());
+        assert_eq!(summary_page.items[0].run.id, run.id);
+        assert!(summary_page.items[0].run.plan.is_none());
+        assert!(summary_page.items[0].run.artifacts.is_none());
+        assert_eq!(summary_page.items[0].event_count, 1);
+        assert_eq!(summary_page.items[0].subtask_total, 2);
+    }
+
+    #[test]
+    fn test_task_center_summary_paginates_10k_runs_with_recency_index() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch(
+                "CREATE TEMP TABLE task_fixture_numbers(value INTEGER PRIMARY KEY);
+                 WITH digits(value) AS (
+                     VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+                 ), numbers(value) AS (
+                     SELECT ones.value
+                          + tens.value * 10
+                          + hundreds.value * 100
+                          + thousands.value * 1000
+                     FROM digits ones
+                     CROSS JOIN digits tens
+                     CROSS JOIN digits hundreds
+                     CROSS JOIN digits thousands
+                 )
+                 INSERT INTO task_fixture_numbers(value)
+                 SELECT value FROM numbers;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages
+                    (id, conversation_id, role, content, created_at, sort_order)
+                 SELECT printf('perf-message-%05d', value), ?1, 'user',
+                        printf('Task center fixture %d', value),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        value
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_turns
+                    (id, conversation_id, user_message_id, status, created_at, updated_at,
+                     finished_at)
+                 SELECT printf('perf-turn-%05d', value), ?1,
+                        printf('perf-message-%05d', value), 'completed',
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds')
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_task_runs
+                    (id, conversation_id, turn_id, user_message_id, status, phase, title,
+                     provider, model, created_at, updated_at, started_at, finished_at)
+                 SELECT printf('perf-run-%05d', value), ?1, printf('perf-turn-%05d', value),
+                        printf('perf-message-%05d', value), 'completed', 'done',
+                        printf('Task %d', value), 'openai', 'gpt-4o',
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds')
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute_batch("ANALYZE;").unwrap();
+
+            let explain_sql = format!("EXPLAIN QUERY PLAN {AGENT_TASK_RUN_SUMMARY_QUERY}");
+            let mut explain = conn.prepare(&explain_sql).unwrap();
+            let plan = explain
+                .query_map(
+                    rusqlite::params![
+                        26_i64,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                    ],
+                    |row| row.get::<_, String>(3),
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n");
+            assert!(
+                plan.contains("idx_agent_task_runs_recency"),
+                "summary query must use the recency index:\n{plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+                "summary query must not materialize a temporary sort:\n{plan}"
+            );
+        }
+
+        let first = db
+            .list_agent_task_run_summaries(25, None, None, None)
+            .unwrap();
+        assert_eq!(first.items.len(), 25);
+        assert_eq!(first.items[0].run.id, "perf-run-09999");
+        let second = db
+            .list_agent_task_run_summaries(25, first.next_cursor.as_ref(), None, None)
+            .unwrap();
+        assert_eq!(second.items.len(), 25);
+        assert_eq!(second.items[0].run.id, "perf-run-09974");
+        let first_ids = first
+            .items
+            .iter()
+            .map(|item| item.run.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            second
+                .items
+                .iter()
+                .all(|item| !first_ids.contains(item.run.id.as_str())),
+            "adjacent keyset pages must not overlap"
+        );
+
+        let mut samples = Vec::with_capacity(20);
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            let page = db
+                .list_agent_task_run_summaries(25, None, None, None)
+                .unwrap();
+            assert_eq!(page.items.len(), 25);
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let p95 = samples[18];
+        assert!(
+            p95 < std::time::Duration::from_millis(300),
+            "10,000-run summary query P95 was {p95:?}, expected less than 300ms"
+        );
     }
 
     #[test]
@@ -5520,6 +6125,167 @@ mod tests {
             restored[1].artifacts.as_ref().unwrap()["kind"],
             "verification"
         );
+    }
+
+    #[test]
+    fn replace_messages_is_atomic_and_conversation_scoped() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let target = db.create_conversation(&input).unwrap();
+        let neighbor = db.create_conversation(&input).unwrap();
+        let message = |conversation_id: &str, content: &str, sort_order| ConversationMessage {
+            id: new_id(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::User,
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        db.add_message(&message(&target.id, "old target", 0))
+            .unwrap();
+        db.add_message(&message(&neighbor.id, "neighbor", 0))
+            .unwrap();
+
+        let expected = db.get_messages(&target.id).unwrap();
+        let original_created_at = expected[0].created_at.clone();
+        let mut replacement = expected[0].clone();
+        replacement.content = "compacted target".to_string();
+        db.replace_messages_if_unchanged(
+            &target.id,
+            &expected,
+            std::slice::from_ref(&replacement),
+            None,
+        )
+        .unwrap();
+        let replaced = db.get_messages(&target.id).unwrap();
+        assert_eq!(replaced[0].content, "compacted target");
+        assert_eq!(replaced[0].created_at, original_created_at);
+        assert_eq!(
+            db.get_messages(&neighbor.id).unwrap()[0].content,
+            "neighbor"
+        );
+
+        let wrong_conversation = message(&neighbor.id, "must reject", 0);
+        assert!(db
+            .replace_messages_if_unchanged(&target.id, &replaced, &[wrong_conversation], None,)
+            .is_err());
+        assert_eq!(
+            db.get_messages(&target.id).unwrap()[0].content,
+            "compacted target"
+        );
+        assert_eq!(
+            db.get_messages(&neighbor.id).unwrap()[0].content,
+            "neighbor"
+        );
+
+        let stale_snapshot = db.get_messages(&target.id).unwrap();
+        let stale_checkpoint = db
+            .create_checkpoint_with_messages(
+                &target.id,
+                "manual",
+                stale_snapshot[0].token_count,
+                &stale_snapshot,
+            )
+            .unwrap();
+        db.add_message(&message(&target.id, "arrived during compaction", 1))
+            .unwrap();
+        assert!(db
+            .replace_messages_if_unchanged(
+                &target.id,
+                &stale_snapshot,
+                &stale_snapshot,
+                Some(&stale_checkpoint),
+            )
+            .is_err());
+        assert_eq!(db.get_messages(&target.id).unwrap().len(), 2);
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_archive_is_atomic_and_active_runs_are_detected() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let target = db.create_conversation(&input).unwrap();
+        let neighbor = db.create_conversation(&input).unwrap();
+        let message = |conversation_id: &str, content: &str| ConversationMessage {
+            id: new_id(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::User,
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let target_message = message(&target.id, "target");
+        let wrong_message = message(&neighbor.id, "neighbor");
+        assert!(db
+            .create_checkpoint_with_messages(&target.id, "manual", 4, &[wrong_message])
+            .is_err());
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
+
+        let checkpoint_id = db
+            .create_checkpoint_with_messages(
+                &target.id,
+                "manual",
+                4,
+                std::slice::from_ref(&target_message),
+            )
+            .unwrap();
+        assert_eq!(db.list_checkpoints(&target.id).unwrap().len(), 1);
+
+        assert!(!db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
+        let run = db
+            .create_agent_turn_and_run(
+                &target_message,
+                "Active run",
+                Some("openai"),
+                Some("gpt-4o"),
+                "active-run",
+            )
+            .unwrap();
+        assert!(db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
+        let expected = db.get_messages(&target.id).unwrap();
+        assert!(db
+            .replace_messages_if_unchanged(&target.id, &expected, &expected, Some(&checkpoint_id),)
+            .is_err());
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
+        assert_eq!(db.get_messages(&target.id).unwrap().len(), expected.len());
+        db.finish_agent_task_run(&run.run_id, "completed", None, None, None)
+            .unwrap();
+        assert!(!db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
     }
 
     #[test]

@@ -792,6 +792,7 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                 cache_read_tokens: u.cached_content_token_count,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             }
         })
         .unwrap_or_default();
@@ -1425,6 +1426,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"ok":true}"#, "call_0"),
         ];
@@ -1455,6 +1457,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, "plain text result", "call_0"),
         ];
@@ -1503,8 +1506,10 @@ mod tests {
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: Some(true),
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1571,8 +1576,10 @@ mod tests {
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: Some(true),
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1596,8 +1603,10 @@ mod tests {
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1622,6 +1631,7 @@ mod tests {
                     thought_signature: Some("signature".to_string()),
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "fc_123"),
         ];
@@ -1655,6 +1665,7 @@ mod tests {
                     thought_signature: Some("signed-call".to_string()),
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "call_1"),
         ];
@@ -1706,6 +1717,7 @@ mod tests {
                     },
                 ]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"a"}"#, "call_a"),
             Message::text_with_name(Role::Tool, r#"{"content":"b"}"#, "call_b"),

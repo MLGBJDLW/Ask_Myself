@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import {
   Boxes,
@@ -28,6 +28,8 @@ import {
 import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../i18n';
 import * as api from '../lib/api';
+import { useElapsedTime } from '../lib/useElapsedTime';
+import { useDeveloperMode } from '../lib/developerMode';
 import {
   taskCenterHistoryFromEvents,
   type TaskCenterHistoryItem,
@@ -38,14 +40,32 @@ import type {
   AgentTaskArtifactSummary,
   AgentTaskArtifactVersion,
   AgentTaskRunListItem,
+  AgentTaskRunPageCursor,
   ToolPermissionPolicyList,
   ToolAccessInfo,
 } from '../types/conversation';
 import type {
   InvestigationGraph,
   TaskResumeCheckpoint,
-  WorkflowAutomationSchedulerEvent,
 } from '../types/workflows';
+
+type TaskDetailPanel = 'execution' | 'investigation' | 'artifacts' | 'history' | 'memory' | 'risk' | 'checkpoint';
+
+interface TaskDetailCacheEntry {
+  loaded: Set<TaskDetailPanel>;
+  events?: TaskCenterHistoryItem[];
+  schedulerEvents?: TaskCenterHistoryItem[];
+  graph?: AgentExecutionGraph | null;
+  investigationGraph?: InvestigationGraph | null;
+  resumeCheckpoints?: TaskResumeCheckpoint[];
+  artifacts?: AgentTaskArtifactSummary[];
+  savedArtifacts?: AgentTaskArtifact[];
+  toolAccess?: ToolAccessInfo[];
+  approvalPolicies?: ToolPermissionPolicyList;
+  projectMemories?: api.ProjectMemory[];
+}
+
+const TASK_CENTER_SELECTION_KEY = 'nexa-task-center-selection';
 
 const COPY_KEYS = {
   title: 'taskCenter.title',
@@ -128,6 +148,11 @@ const COPY_KEYS = {
   stopError: 'taskCenter.stopError',
   retryHint: 'taskCenter.retryHint',
   artifactFallbackTitle: 'taskCenter.artifactFallbackTitle',
+  loadMore: 'taskCenter.loadMore',
+  loadDetails: 'taskCenter.loadDetails',
+  noEvents: 'taskCenter.noEvents',
+  noExecutionGraph: 'taskCenter.noExecutionGraph',
+  noTools: 'taskCenter.noTools',
 } as const;
 
 type Copy = Record<keyof typeof COPY_KEYS, string>;
@@ -199,6 +224,24 @@ function isActiveTask(status: string) {
   return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(status);
 }
 
+function TaskElapsed({ run }: { run: AgentTaskRunListItem['run'] }) {
+  const timing = useMemo(() => {
+    const startedAt = Date.parse(run.startedAt ?? run.createdAt);
+    const finishedAt = run.finishedAt ? Date.parse(run.finishedAt) : null;
+    if (!Number.isFinite(startedAt)) return null;
+    return {
+      startedAtEpochMs: startedAt,
+      startedAtMonotonicMs: null,
+      firstEventAtEpochMs: null,
+      firstVisibleOutputAtEpochMs: null,
+      finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+      finishedAtMonotonicMs: null,
+    };
+  }, [run.createdAt, run.finishedAt, run.startedAt]);
+  const elapsed = useElapsedTime(timing, isActiveTask(run.status));
+  return elapsed ? <RiskPill>{elapsed}</RiskPill> : null;
+}
+
 function formatTime(value?: string | null) {
   if (!value) return '';
   const date = new Date(value);
@@ -239,6 +282,38 @@ function RiskPill({ children }: { children: ReactNode }) {
     <span className="rounded-md border border-border/60 bg-surface-0/75 px-1.5 py-0.5 text-[10px] text-text-secondary">
       {children}
     </span>
+  );
+}
+
+function PanelPlaceholder({
+  loaded,
+  loading,
+  emptyLabel,
+  copy,
+  onLoad,
+}: {
+  loaded: boolean;
+  loading: boolean;
+  emptyLabel: string;
+  copy: Copy;
+  onLoad: () => void;
+}) {
+  if (!loaded && !loading) {
+    return (
+      <button
+        type="button"
+        onClick={onLoad}
+        className="flex w-full items-center justify-center rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-accent transition-colors hover:border-accent/45 hover:bg-accent/5"
+      >
+        {copy.loadDetails}
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-text-tertiary">
+      {loading ? <Loader2 className="h-4 w-4 animate-spin text-accent" /> : null}
+      {loading ? copy.loading : emptyLabel}
+    </div>
   );
 }
 
@@ -303,10 +378,12 @@ function artifactDraftFromSaved(artifact: AgentTaskArtifact): ArtifactDraft {
 
 export function TaskCenterPage() {
   const { t } = useTranslation();
+  const [developerMode] = useDeveloperMode();
   const navigate = useNavigate();
   const copy = useMemo(() => createCopy(t), [t]);
   const [tasks, setTasks] = useState<AgentTaskRunListItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(TASK_CENTER_SELECTION_KEY));
+  const [nextCursor, setNextCursor] = useState<AgentTaskRunPageCursor | null>(null);
   const [events, setEvents] = useState<TaskCenterHistoryItem[]>([]);
   const [schedulerEvents, setSchedulerEvents] = useState<TaskCenterHistoryItem[]>([]);
   const [graph, setGraph] = useState<AgentExecutionGraph | null>(null);
@@ -322,39 +399,41 @@ export function TaskCenterPage() {
   const [approvalPolicies, setApprovalPolicies] = useState<ToolPermissionPolicyList>({ persisted: [], session: [] });
   const [projectMemories, setProjectMemories] = useState<api.ProjectMemory[]>([]);
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingPanels, setLoadingPanels] = useState<Set<TaskDetailPanel>>(new Set());
+  const [loadedPanels, setLoadedPanels] = useState<Set<TaskDetailPanel>>(new Set());
   const [stoppingId, setStoppingId] = useState<string | null>(null);
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [savingMemory, setSavingMemory] = useState(false);
+  const detailGenerationRef = useRef(0);
+  const detailCacheRef = useRef<Map<string, TaskDetailCacheEntry>>(new Map());
+  const previousDeveloperModeRef = useRef(developerMode);
+  const nextCursorRef = useRef<AgentTaskRunPageCursor | null>(null);
 
   const selected = useMemo(
-    () => tasks.find((task) => task.run.id === selectedId) ?? tasks[0] ?? null,
+    () => tasks.find((task) => task.run.id === selectedId) ?? null,
     [selectedId, tasks],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (append = false) => {
+    if (append) setLoadingMore(true);
+    else setLoading(true);
     try {
-      const [recentTasks, accessMap, policies, recentSchedulerEvents] = await Promise.all([
-        api.listRecentAgentTaskRuns(80),
-        api.listToolAccessMap(),
-        api.listToolPermissionPolicies().catch(() => ({ persisted: [], session: [] })),
-        api.listWorkflowAutomationSchedulerEvents(null, 50).catch((): WorkflowAutomationSchedulerEvent[] => []),
-      ]);
-      setTasks(recentTasks);
-      setToolAccess(accessMap);
-      setApprovalPolicies(policies);
-      setSchedulerEvents(taskCenterHistoryFromEvents([], [], recentSchedulerEvents));
-      setSelectedId((current) =>
-        current && recentTasks.some((task) => task.run.id === current)
-          ? current
-          : recentTasks[0]?.run.id ?? null,
-      );
+      const page = await api.listAgentTaskRunSummaries(25, append ? nextCursorRef.current : null);
+      setTasks((current) => append
+        ? [...current, ...page.items.filter((item) => !current.some((existing) => existing.run.id === item.run.id))]
+        : page.items);
+      setNextCursor(page.nextCursor ?? null);
+      nextCursorRef.current = page.nextCursor ?? null;
+      if (!append) {
+        setSelectedId((current) => current && page.items.some((task) => task.run.id === current) ? current : null);
+      }
     } catch (error) {
       toast.error(String(error));
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, []);
 
@@ -363,83 +442,145 @@ export function TaskCenterPage() {
   }, [load]);
 
   useEffect(() => {
-    if (!selected) {
-      setEvents([]);
-      setGraph(null);
-      setInvestigationGraph(null);
-      setResumeCheckpoints([]);
-      setArtifacts([]);
-      setSavedArtifacts([]);
-      setArtifactVersions({});
-      setEditingArtifactId(null);
-      setProjectMemories([]);
-      return;
-    }
+    detailGenerationRef.current += 1;
+    setEvents([]);
+    setSchedulerEvents([]);
+    setGraph(null);
+    setInvestigationGraph(null);
+    setResumeCheckpoints([]);
+    setArtifacts([]);
+    setSavedArtifacts([]);
+    setArtifactVersions({});
+    setEditingArtifactId(null);
+    setToolAccess([]);
+    setApprovalPolicies({ persisted: [], session: [] });
+    setProjectMemories([]);
+    setLoadedPanels(new Set());
+    setLoadingPanels(new Set());
+    if (!selected) return;
 
-    let cancelled = false;
-    setDetailLoading(true);
-    void (async () => {
-      try {
-        const [
-          nextEvents,
-          nextGraph,
-          nextArtifacts,
-          nextSavedArtifacts,
-          nextMemories,
-          nextCheckpoints,
-          nextInvestigationGraph,
-          nextRunEvents,
-          nextSchedulerEvents,
-        ] = await Promise.all([
-          api.getAgentTaskRunEvents(selected.run.id),
-          api.getAgentExecutionGraph(selected.run.id),
-          api.getAgentTaskArtifacts(selected.run.id),
-          api.listPersistedAgentTaskArtifacts(selected.run.id),
-          selected.projectId ? api.listProjectMemories(selected.projectId) : Promise.resolve([]),
-          api.listTaskResumeCheckpoints(selected.run.id).catch(() => []),
-          api.getInvestigationGraph(selected.run.id).catch(() => null),
-          api.getAgentRunEvents(selected.run.id).catch(() => []),
-          api.listWorkflowAutomationSchedulerEventsForTaskRun(selected.run.id).catch(() => []),
+    const cached = detailCacheRef.current.get(selected.run.id);
+    if (!cached || isActiveTask(selected.run.status)) return;
+    setEvents(cached.events ?? []);
+    setSchedulerEvents(cached.schedulerEvents ?? []);
+    setGraph(cached.graph ?? null);
+    setInvestigationGraph(cached.investigationGraph ?? null);
+    setResumeCheckpoints(cached.resumeCheckpoints ?? []);
+    setArtifacts(cached.artifacts ?? []);
+    setSavedArtifacts(cached.savedArtifacts ?? []);
+    setToolAccess(cached.toolAccess ?? []);
+    setApprovalPolicies(cached.approvalPolicies ?? { persisted: [], session: [] });
+    setProjectMemories(cached.projectMemories ?? []);
+    setLoadedPanels(new Set(cached.loaded));
+  }, [selected?.run.id, selected?.run.status]);
+
+  useEffect(() => {
+    if (previousDeveloperModeRef.current === developerMode) return;
+    previousDeveloperModeRef.current = developerMode;
+    detailGenerationRef.current += 1;
+    for (const [runId, cached] of detailCacheRef.current.entries()) {
+      const loaded = new Set(cached.loaded);
+      loaded.delete('history');
+      detailCacheRef.current.set(runId, {
+        ...cached,
+        loaded,
+        events: undefined,
+        schedulerEvents: undefined,
+      });
+    }
+    setEvents([]);
+    setSchedulerEvents([]);
+    setLoadingPanels((current) => {
+      const next = new Set(current);
+      next.delete('history');
+      return next;
+    });
+    setLoadedPanels((current) => {
+      const next = new Set(current);
+      next.delete('history');
+      return next;
+    });
+  }, [developerMode]);
+
+  const loadDetailPanel = useCallback(async (panel: TaskDetailPanel) => {
+    if (!selected) return;
+    if (loadedPanels.has(panel) && !isActiveTask(selected.run.status)) return;
+    const generation = detailGenerationRef.current;
+    const runId = selected.run.id;
+    setLoadingPanels((current) => new Set([...current, panel]));
+    try {
+      const patch: Partial<TaskDetailCacheEntry> = {};
+      if (panel === 'execution') {
+        patch.graph = await api.getAgentExecutionGraph(runId);
+      } else if (panel === 'investigation') {
+        patch.investigationGraph = await api.getInvestigationGraph(runId).catch(() => null);
+      } else if (panel === 'artifacts') {
+        const [nextArtifacts, nextSavedArtifacts] = await Promise.all([
+          api.getAgentTaskArtifacts(runId),
+          api.listPersistedAgentTaskArtifacts(runId),
         ]);
-        const safeEvents = Array.isArray(nextEvents) ? nextEvents : [];
-        const safeArtifacts = Array.isArray(nextArtifacts) ? nextArtifacts : [];
-        const safeSavedArtifacts = Array.isArray(nextSavedArtifacts) ? nextSavedArtifacts : [];
-        const safeMemories = Array.isArray(nextMemories) ? nextMemories : [];
-        const safeCheckpoints = Array.isArray(nextCheckpoints) ? nextCheckpoints : [];
-        const safeRunEvents = Array.isArray(nextRunEvents) ? nextRunEvents : [];
-        const safeSchedulerEvents = Array.isArray(nextSchedulerEvents) ? nextSchedulerEvents : [];
-        const versionPairs = await Promise.all(
-          safeSavedArtifacts.slice(0, 12).map(async (artifact) => {
-            try {
-              const versions = await api.listAgentTaskArtifactVersions(artifact.id);
-              return [artifact.id, versions] as const;
-            } catch {
-              return [artifact.id, []] as const;
-            }
-          }),
+        patch.artifacts = Array.isArray(nextArtifacts) ? nextArtifacts : [];
+        patch.savedArtifacts = Array.isArray(nextSavedArtifacts) ? nextSavedArtifacts : [];
+      } else if (panel === 'history') {
+        const [nextEvents, nextRunEvents, nextSchedulerEvents] = await Promise.all([
+          api.getAgentTaskRunEvents(runId),
+          api.getAgentRunEvents(runId).catch(() => []),
+          api.listWorkflowAutomationSchedulerEventsForTaskRun(runId).catch(() => []),
+        ]);
+        patch.events = taskCenterHistoryFromEvents(
+          Array.isArray(nextEvents) ? nextEvents : [],
+          Array.isArray(nextRunEvents) ? nextRunEvents : [],
+          Array.isArray(nextSchedulerEvents) ? nextSchedulerEvents : [],
+          { includeDeveloper: developerMode },
         );
-        if (cancelled) return;
-        setEvents(taskCenterHistoryFromEvents(safeEvents, safeRunEvents, safeSchedulerEvents));
-        setGraph(nextGraph ?? null);
-        setInvestigationGraph(nextInvestigationGraph);
-        setResumeCheckpoints(safeCheckpoints);
-        setArtifacts(safeArtifacts);
-        setSavedArtifacts(safeSavedArtifacts);
-        setArtifactVersions(Object.fromEntries(versionPairs));
-        setEditingArtifactId((current) =>
-          current && safeSavedArtifacts.some((artifact) => artifact.id === current) ? current : null,
-        );
-        setProjectMemories(safeMemories);
-      } catch (error) {
-        if (!cancelled) toast.error(String(error));
-      } finally {
-        if (!cancelled) setDetailLoading(false);
+        patch.schedulerEvents = taskCenterHistoryFromEvents([], [], (
+          Array.isArray(nextSchedulerEvents) ? nextSchedulerEvents : []
+        ), { includeDeveloper: developerMode });
+      } else if (panel === 'memory') {
+        patch.projectMemories = selected.projectId ? await api.listProjectMemories(selected.projectId) : [];
+      } else if (panel === 'risk') {
+        const [nextToolAccess, nextPolicies] = await Promise.all([
+          api.listToolAccessMap(),
+          api.listToolPermissionPolicies().catch(() => ({ persisted: [], session: [] })),
+        ]);
+        patch.toolAccess = nextToolAccess;
+        patch.approvalPolicies = nextPolicies;
+      } else {
+        patch.resumeCheckpoints = await api.listTaskResumeCheckpoints(runId).catch(() => []);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selected]);
+      if (generation !== detailGenerationRef.current || selected.run.id !== runId) return;
+
+      const cached = detailCacheRef.current.get(runId) ?? { loaded: new Set<TaskDetailPanel>() };
+      const nextCached = { ...cached, ...patch, loaded: new Set([...cached.loaded, panel]) };
+      detailCacheRef.current.set(runId, nextCached);
+      if (patch.events) setEvents(patch.events);
+      if (patch.schedulerEvents) setSchedulerEvents(patch.schedulerEvents);
+      if ('graph' in patch) setGraph(patch.graph ?? null);
+      if ('investigationGraph' in patch) setInvestigationGraph(patch.investigationGraph ?? null);
+      if (patch.resumeCheckpoints) setResumeCheckpoints(patch.resumeCheckpoints);
+      if (patch.artifacts) setArtifacts(patch.artifacts);
+      if (patch.savedArtifacts) setSavedArtifacts(patch.savedArtifacts);
+      if (patch.toolAccess) setToolAccess(patch.toolAccess);
+      if (patch.approvalPolicies) setApprovalPolicies(patch.approvalPolicies);
+      if (patch.projectMemories) setProjectMemories(patch.projectMemories);
+      setLoadedPanels((current) => new Set([...current, panel]));
+    } catch (error) {
+      if (generation === detailGenerationRef.current) toast.error(String(error));
+    } finally {
+      if (generation === detailGenerationRef.current) {
+        setLoadingPanels((current) => {
+          const next = new Set(current);
+          next.delete(panel);
+          return next;
+        });
+      }
+    }
+  }, [developerMode, loadedPanels, selected]);
+
+  const handleSelectTask = useCallback((runId: string) => {
+    localStorage.setItem(TASK_CENTER_SELECTION_KEY, runId);
+    setSelectedId(runId);
+  }, []);
 
   const handleCancel = useCallback(async () => {
     if (!selected || !isActiveTask(selected.run.status)) return;
@@ -703,7 +844,7 @@ export function TaskCenterPage() {
                   <button
                     key={task.run.id}
                     type="button"
-                    onClick={() => setSelectedId(task.run.id)}
+                    onClick={() => handleSelectTask(task.run.id)}
                     className={`w-full rounded-lg border p-3 text-left transition-colors ${
                       active
                         ? 'border-accent/50 bg-accent-subtle/40'
@@ -729,11 +870,24 @@ export function TaskCenterPage() {
                       {task.projectName && <RiskPill>{task.projectName}</RiskPill>}
                       <RiskPill>{task.subtaskTotal} {copy.subtasks}</RiskPill>
                       <RiskPill>{task.eventCount} {copy.events}</RiskPill>
+                      <TaskElapsed run={task.run} />
                       {task.artifactKinds.slice(0, 3).map((kind) => <RiskPill key={kind}>{kind}</RiskPill>)}
                     </div>
                   </button>
                 );
               })}
+              {nextCursor ? (
+                <button
+                  type="button"
+                  data-testid="task-center-load-more"
+                  onClick={() => void load(true)}
+                  disabled={loadingMore}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border bg-surface-0 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loadingMore ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {copy.loadMore}
+                </button>
+              ) : null}
             </div>
           )}
         </aside>
@@ -763,6 +917,7 @@ export function TaskCenterPage() {
                       {selected.projectName && <span>{selected.projectName}</span>}
                       {selected.run.routeKind && <span>{selected.run.routeKind}</span>}
                       <span>{formatTime(selected.run.updatedAt)}</span>
+                      <TaskElapsed run={selected.run} />
                     </div>
                     <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
                       {selected.run.summary || selected.userMessagePreview}
@@ -833,13 +988,25 @@ export function TaskCenterPage() {
                 <div className="space-y-4">
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <button
+                        type="button"
+                        onClick={() => void loadDetailPanel('execution')}
+                        className="flex items-center gap-2 text-sm font-semibold text-text-primary"
+                      >
                         <GitBranch className="h-4 w-4 text-accent" />
                         {copy.executionGraph}
-                      </div>
-                      {detailLoading && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
+                      </button>
+                      {loadingPanels.has('execution') && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
                     </div>
-                    <div className="grid gap-3 md:grid-cols-3">
+                    {!loadedPanels.has('execution') || loadingPanels.has('execution') || visibleGraphNodes.length === 0 ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('execution')}
+                        loading={loadingPanels.has('execution')}
+                        emptyLabel={copy.noExecutionGraph}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('execution')}
+                      />
+                    ) : <div className="grid gap-3 md:grid-cols-3">
                       {visibleGraphNodes.map((node, index) => (
                         <div key={node.id} className="relative rounded-lg border border-border/70 bg-surface-0/75 p-3">
                           {index > 0 && (
@@ -869,18 +1036,26 @@ export function TaskCenterPage() {
                           )}
                         </div>
                       ))}
-                    </div>
+                    </div>}
                   </section>
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
-                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <button
+                      type="button"
+                      onClick={() => void loadDetailPanel('investigation')}
+                      className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary"
+                    >
                       <Network className="h-4 w-4 text-accent" />
                       {copy.investigationGraph}
-                    </div>
-                    {investigationNodes.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-text-tertiary">
-                        {copy.noInvestigationGraph}
-                      </div>
+                    </button>
+                    {!loadedPanels.has('investigation') || loadingPanels.has('investigation') || investigationNodes.length === 0 ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('investigation')}
+                        loading={loadingPanels.has('investigation')}
+                        emptyLabel={copy.noInvestigationGraph}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('investigation')}
+                      />
                     ) : (
                       <div className="space-y-3">
                         <div className="grid gap-2 md:grid-cols-2">
@@ -943,14 +1118,22 @@ export function TaskCenterPage() {
                   </section>
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
-                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <button
+                      type="button"
+                      onClick={() => void loadDetailPanel('artifacts')}
+                      className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary"
+                    >
                       <FileText className="h-4 w-4 text-accent" />
                       {copy.artifacts}
-                    </div>
-                    {artifactKinds.length === 0 && artifactPaths.length === 0 && savedArtifacts.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-text-tertiary">
-                        {copy.noArtifacts}
-                      </div>
+                    </button>
+                    {!loadedPanels.has('artifacts') || loadingPanels.has('artifacts') || (artifactKinds.length === 0 && artifactPaths.length === 0 && savedArtifacts.length === 0) ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('artifacts')}
+                        loading={loadingPanels.has('artifacts')}
+                        emptyLabel={copy.noArtifacts}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('artifacts')}
+                      />
                     ) : (
                       <div className="space-y-3">
                         <div className="flex flex-wrap gap-1.5">
@@ -1141,11 +1324,23 @@ export function TaskCenterPage() {
                   </section>
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
-                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <button
+                      type="button"
+                      onClick={() => void loadDetailPanel('history')}
+                      className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary"
+                    >
                       <Boxes className="h-4 w-4 text-accent" />
                       {copy.history}
-                    </div>
-                    <div className="space-y-2">
+                    </button>
+                    {!loadedPanels.has('history') || loadingPanels.has('history') || events.length === 0 ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('history')}
+                        loading={loadingPanels.has('history')}
+                        emptyLabel={copy.noEvents}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('history')}
+                      />
+                    ) : <div className="space-y-2">
                       {events.slice().reverse().map((event) => (
                         <div key={event.id} className="flex items-start gap-2 rounded-md border border-border/60 bg-surface-0/75 px-3 py-2">
                           <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
@@ -1158,24 +1353,25 @@ export function TaskCenterPage() {
                           </div>
                         </div>
                       ))}
-                      {events.length === 0 && (
-                        <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-text-tertiary">
-                          {copy.noArtifacts}
-                        </div>
-                      )}
-                    </div>
+                    </div>}
                   </section>
                 </div>
 
                 <div className="space-y-4">
-                  <SchedulerHistoryPanel events={schedulerEvents} copy={copy} />
+                  {loadedPanels.has('history') ? (
+                    <SchedulerHistoryPanel events={schedulerEvents} copy={copy} />
+                  ) : null}
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <button
+                        type="button"
+                        onClick={() => void loadDetailPanel('memory')}
+                        className="flex items-center gap-2 text-sm font-semibold text-text-primary"
+                      >
                         <Brain className="h-4 w-4 text-accent" />
                         {copy.projectMemory}
-                      </div>
+                      </button>
                       {selected.projectId && (
                         <button
                           type="button"
@@ -1192,10 +1388,14 @@ export function TaskCenterPage() {
                       <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-text-tertiary">
                         {copy.noProject}
                       </div>
-                    ) : projectMemories.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-text-tertiary">
-                        {copy.noMemory}
-                      </div>
+                    ) : !loadedPanels.has('memory') || loadingPanels.has('memory') || projectMemories.length === 0 ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('memory')}
+                        loading={loadingPanels.has('memory')}
+                        emptyLabel={copy.noMemory}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('memory')}
+                      />
                     ) : (
                       <div className="space-y-2">
                         {projectMemories.slice(0, 5).map((memory) => (
@@ -1214,15 +1414,29 @@ export function TaskCenterPage() {
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <button
+                        type="button"
+                        onClick={() => void loadDetailPanel('risk')}
+                        className="flex items-center gap-2 text-sm font-semibold text-text-primary"
+                      >
                         <ShieldAlert className="h-4 w-4 text-accent" />
                         {copy.toolRiskMap}
-                      </div>
-                      <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-1 text-[11px] text-danger">
-                        {highRiskTools.length} {copy.highRisk}
-                      </span>
+                      </button>
+                      {loadedPanels.has('risk') ? (
+                        <span className="rounded-full border border-danger/25 bg-danger/10 px-2 py-1 text-[11px] text-danger">
+                          {highRiskTools.length} {copy.highRisk}
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
+                    {!loadedPanels.has('risk') || loadingPanels.has('risk') || toolAccess.length === 0 ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('risk')}
+                        loading={loadingPanels.has('risk')}
+                        emptyLabel={copy.noTools}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('risk')}
+                      />
+                    ) : <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
                       {toolAccess.map((tool) => (
                         <div key={tool.name} className="rounded-md border border-border/60 bg-surface-0/75 p-3">
                           <div className="flex items-start justify-between gap-2">
@@ -1252,15 +1466,19 @@ export function TaskCenterPage() {
                           </p>
                         </div>
                       ))}
-                    </div>
+                    </div>}
                   </section>
 
                   <section className="rounded-lg border border-border/70 bg-surface-1/70 p-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <button
+                        type="button"
+                        onClick={() => void loadDetailPanel('checkpoint')}
+                        className="flex items-center gap-2 text-sm font-semibold text-text-primary"
+                      >
                         <History className="h-4 w-4 text-accent" />
                         {copy.resumeCheckpoint}
-                      </div>
+                      </button>
                       {canResume && (
                         <button
                           type="button"
@@ -1273,10 +1491,14 @@ export function TaskCenterPage() {
                         </button>
                       )}
                     </div>
-                    {!latestCheckpoint ? (
-                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-text-tertiary">
-                        {copy.noCheckpoint}
-                      </div>
+                    {!loadedPanels.has('checkpoint') || loadingPanels.has('checkpoint') || !latestCheckpoint ? (
+                      <PanelPlaceholder
+                        loaded={loadedPanels.has('checkpoint')}
+                        loading={loadingPanels.has('checkpoint')}
+                        emptyLabel={copy.noCheckpoint}
+                        copy={copy}
+                        onLoad={() => void loadDetailPanel('checkpoint')}
+                      />
                     ) : (
                       <div className="space-y-2">
                         <div className="flex flex-wrap gap-1 text-[10px] text-text-tertiary">

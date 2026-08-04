@@ -13,7 +13,9 @@ pub mod anthropic;
 pub mod google;
 pub mod ollama;
 pub mod openai;
-mod prompt_cache;
+pub mod prompt_cache;
+pub(crate) mod provider_boundary;
+pub mod reasoning_profile;
 pub mod streaming;
 pub(crate) mod transport;
 
@@ -29,6 +31,33 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+}
+
+/// Provider-neutral stability of a prompt segment. Wire adapters use this
+/// metadata to place supported cache boundaries without inferring intent from
+/// a message role.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptStability {
+    Stable,
+    Replayable,
+    Volatile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CacheBoundaryHint {
+    PolicyEnd,
+    StableEvidenceEnd,
+    ReplayableTurnTail,
+    LatestToolRound,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheHint {
+    pub stability: PromptStability,
+    pub boundary: CacheBoundaryHint,
 }
 
 /// A single part of a multimodal message content.
@@ -64,6 +93,10 @@ pub struct Message {
     /// multi-step tool loops (e.g. DeepSeek `reasoning_content`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Internal prompt-compiler metadata. Provider adapters consume this
+    /// sidecar and never include it in wire message content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hint: Option<PromptCacheHint>,
 }
 
 impl Message {
@@ -77,6 +110,7 @@ impl Message {
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         }
     }
 
@@ -90,7 +124,25 @@ impl Message {
             name: Some(name.into()),
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         }
+    }
+
+    pub fn with_prompt_cache_hint(
+        mut self,
+        stability: PromptStability,
+        boundary: CacheBoundaryHint,
+    ) -> Self {
+        self.prompt_cache_hint = Some(PromptCacheHint {
+            stability,
+            boundary,
+        });
+        self
+    }
+
+    pub fn prompt_cache_hint(&self) -> Option<(PromptStability, CacheBoundaryHint)> {
+        self.prompt_cache_hint
+            .map(|hint| (hint.stability, hint.boundary))
     }
 
     /// Get the combined text content from all text parts.
@@ -134,7 +186,7 @@ pub struct ToolCallRequest {
 }
 
 /// Provider-specific reasoning effort level.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     None,
@@ -181,12 +233,21 @@ pub struct CompletionRequest {
     /// Anthropic extended thinking budget (token count).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget: Option<u32>,
+    /// Explicit user intent for providers whose reasoning mode is controlled
+    /// independently from effort or budget. `None` preserves the provider's
+    /// documented default instead of inventing a cross-provider fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_enabled: Option<bool>,
     /// Provider-specific reasoning effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Provider type hint — lets providers apply model-specific logic.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_type: Option<ProviderType>,
+    /// Privacy-preserving provider routing key. It is transport metadata, not
+    /// user-visible prompt content, and is currently consumed by OpenRouter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_session_id: Option<String>,
     /// When true, hint to the provider that multiple tool_use blocks in one
     /// response are allowed. Default: true. Providers that natively support
     /// parallel function calling translate this into a wire-level flag
@@ -210,8 +271,10 @@ impl Default for CompletionRequest {
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         }
     }
@@ -263,6 +326,10 @@ pub struct Usage {
     /// Provider-side prompt-cache tokens written/created for this request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u32>,
+    /// Scrubbed provider usage and routing fragment retained beside normalized
+    /// counters. It must never contain prompt or completion content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_raw: Option<serde_json::Value>,
 }
 
 /// Why the model stopped generating.
@@ -305,7 +372,7 @@ pub struct StreamChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
-    Chunk { chunk: StreamChunk },
+    Chunk { chunk: Box<StreamChunk> },
     RecoverableError { message: String },
     Cancelled { message: String },
     TerminalError { message: String },
@@ -322,7 +389,9 @@ fn provider_stream_event_from_chunk_result(
     item: Result<StreamChunk, CoreError>,
 ) -> ProviderStreamEvent {
     match item {
-        Ok(chunk) => ProviderStreamEvent::Chunk { chunk },
+        Ok(chunk) => ProviderStreamEvent::Chunk {
+            chunk: Box::new(chunk),
+        },
         Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
             ProviderStreamEvent::RecoverableError { message }
         }
@@ -484,6 +553,17 @@ pub enum ProviderType {
 pub trait LlmProvider: Send + Sync {
     /// Human-readable provider name (e.g. "OpenAI").
     fn name(&self) -> &str;
+
+    /// Resolved cache capability for this concrete provider endpoint. Agent
+    /// diagnostics consume the same profile as the wire adapter.
+    fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
+        prompt_cache::resolve_prompt_cache_profile(
+            ProviderType::Custom,
+            None,
+            prompt_cache::PromptCacheApiStyle::Local,
+            model,
+        )
+    }
 
     /// List available models from this provider.
     async fn list_models(&self) -> Result<Vec<String>, CoreError>;

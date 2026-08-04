@@ -30,7 +30,7 @@ struct SseChoice {
 
 #[derive(serde::Deserialize, Default)]
 struct SseDelta {
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     tool_calls: Option<Vec<SseToolCallDelta>>,
     #[serde(default, alias = "reasoningContent")]
     reasoning_content: Option<serde_json::Value>,
@@ -213,6 +213,22 @@ fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
     value.as_u64().and_then(|tokens| u32::try_from(tokens).ok())
 }
 
+fn provider_observability_fragment(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    let mut fragment = serde_json::Map::new();
+    for (source, target) in [
+        ("usage", "usage"),
+        ("id", "generationId"),
+        ("model", "responseModel"),
+        ("openrouter_metadata", "openrouterMetadata"),
+    ] {
+        if let Some(value) = object.get(source) {
+            fragment.insert(target.to_string(), value.clone());
+        }
+    }
+    (!fragment.is_empty()).then_some(serde_json::Value::Object(fragment))
+}
+
 // ---------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------
@@ -295,6 +311,76 @@ fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn append_structured_content(value: &serde_json::Value, text: &mut String, reasoning: &mut String) {
+    match value {
+        serde_json::Value::String(value) => text.push_str(value),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                append_structured_content(value, text, reasoning);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let content_type = object
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if matches!(content_type.as_str(), "thinking" | "reasoning") {
+                if let Some(value) = object
+                    .get("thinking")
+                    .or_else(|| object.get("reasoning"))
+                    .or_else(|| object.get("content"))
+                    .or_else(|| object.get("text"))
+                    .and_then(json_value_to_text)
+                {
+                    reasoning.push_str(&value);
+                }
+                return;
+            }
+
+            if matches!(content_type.as_str(), "text" | "output_text") {
+                if let Some(value) = object
+                    .get("text")
+                    .or_else(|| object.get("content"))
+                    .and_then(json_value_to_text)
+                {
+                    text.push_str(&value);
+                }
+                return;
+            }
+
+            if let Some(value) = object
+                .get("thinking")
+                .or_else(|| object.get("reasoning"))
+                .and_then(json_value_to_text)
+            {
+                reasoning.push_str(&value);
+            }
+            if let Some(value) = object
+                .get("text")
+                .or_else(|| object.get("content"))
+                .and_then(json_value_to_text)
+            {
+                text.push_str(&value);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+pub(crate) fn partition_openai_content(value: &serde_json::Value) -> (String, Option<String>) {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    append_structured_content(value, &mut text, &mut reasoning);
+    (text, (!reasoning.is_empty()).then_some(reasoning))
+}
+
+pub(crate) fn partition_complete_think_tags(text: &str) -> (String, Option<String>) {
+    let mut in_think_block = false;
+    let mut tag_buffer = String::new();
+    split_think_tags(text, &mut in_think_block, &mut tag_buffer)
+}
+
 fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
     for v in [
         delta.reasoning_content.as_ref(),
@@ -320,14 +406,35 @@ fn extract_reasoning_delta(delta: &SseDelta) -> Option<String> {
 fn extract_reasoning_from_choice(choice: &SseChoice) -> Option<String> {
     extract_reasoning_delta(&choice.delta)
         .or_else(|| choice.message.as_ref().and_then(extract_reasoning_delta))
+        .or_else(|| {
+            choice
+                .delta
+                .content
+                .as_ref()
+                .and_then(|content| partition_openai_content(content).1)
+        })
+        .or_else(|| {
+            choice
+                .message
+                .as_ref()
+                .and_then(|message| message.content.as_ref())
+                .and_then(|content| partition_openai_content(content).1)
+        })
 }
 
 fn extract_text_delta_from_choice(choice: &SseChoice) -> String {
     choice
         .delta
         .content
-        .clone()
-        .or_else(|| choice.message.as_ref().and_then(|m| m.content.clone()))
+        .as_ref()
+        .map(|content| partition_openai_content(content).0)
+        .or_else(|| {
+            choice
+                .message
+                .as_ref()
+                .and_then(|message| message.content.as_ref())
+                .map(|content| partition_openai_content(content).0)
+        })
         .unwrap_or_default()
 }
 
@@ -541,6 +648,10 @@ async fn process_sse_line(
     }
 
     // Parse JSON and send through channel.
+    let provider_raw = serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .as_ref()
+        .and_then(provider_observability_fragment);
     match serde_json::from_str::<SseChunk>(data) {
         Ok(sse) => {
             let choice = sse.choices.as_ref().and_then(|c| c.first());
@@ -569,6 +680,7 @@ async fn process_sse_line(
                     cache_creation_tokens: prompt_details
                         .as_ref()
                         .and_then(SsePromptTokensDetails::cache_creation_tokens),
+                    provider_raw: provider_raw.clone(),
                 }
             });
 
@@ -891,6 +1003,28 @@ mod tests {
         .expect("deserialize choice");
 
         assert_eq!(extract_text_delta_from_choice(&choice), "assistant output");
+    }
+
+    #[test]
+    fn partitions_mistral_thinking_chunks_from_visible_text() {
+        let choice: SseChoice = serde_json::from_value(serde_json::json!({
+            "delta": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": [{"type": "text", "text": "work it out"}]
+                    },
+                    {"type": "text", "text": "final answer"}
+                ]
+            }
+        }))
+        .expect("deserialize choice");
+
+        assert_eq!(extract_text_delta_from_choice(&choice), "final answer");
+        assert_eq!(
+            extract_reasoning_from_choice(&choice).as_deref(),
+            Some("work it out")
+        );
     }
 
     #[test]

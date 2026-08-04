@@ -1,6 +1,18 @@
 export const SOFT_EASE = [0.16, 1, 0.3, 1] as const;
 export const INSTANT_TRANSITION = { duration: 0 } as const;
 
+export const MOTION_DURATION = {
+  instant: 80,
+  fast: 120,
+  normal: 160,
+  deliberate: 220,
+} as const;
+
+export const MOTION_EASING = {
+  standard: [0.2, 0, 0, 1],
+  emphasized: SOFT_EASE,
+} as const;
+
 export const SOFT_FADE_TRANSITION = {
   opacity: { duration: 0.14, ease: 'easeOut' },
   y: { duration: 0.16, ease: 'easeOut' },

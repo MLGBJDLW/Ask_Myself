@@ -9,6 +9,7 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from './protocol';
+import { formatElapsedDuration } from '../useElapsedTime';
 import {
   isPendingToolCallStatus,
   isUnsuccessfulToolCallStatus,
@@ -338,8 +339,7 @@ export function formatTurnDuration(turn: ConversationTurn): string | null {
   ) {
     return null;
   }
-  const seconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
-  return `${seconds}s`;
+  return formatElapsedDuration(finishedAt - startedAt);
 }
 
 export function turnLifecycleTimelineSections(input: {
@@ -361,7 +361,7 @@ export function turnLifecycleTimelineSections(input: {
     });
   }
 
-  if (traceItems && traceItems.length > 0) {
+  if (includeDeveloper && traceItems && traceItems.length > 0) {
     const skills = skillNamesFromTraceItems(traceItems);
     sections.push({
       kind: 'status',

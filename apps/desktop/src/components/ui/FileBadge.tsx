@@ -57,7 +57,7 @@ export function FileBadge({ path, className = '' }: FileBadgeProps) {
 
   const dir = isDirectory(safePath);
   const name = basename(safePath);
-  const { tone, Icon, iconId } = resolveFileBadgeIcon(name, dir);
+  const { tone, Icon, iconId, treatment, brandColor, accentColor } = resolveFileBadgeIcon(name, dir);
   const color = colors[tone];
 
   const handleClick = (e: MouseEvent) => {
@@ -83,17 +83,31 @@ export function FileBadge({ path, className = '' }: FileBadgeProps) {
       <button
         type="button"
         data-file-icon={iconId}
+        data-file-treatment={treatment}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         className={`
           inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium
           rounded-md border cursor-pointer transition-all duration-150
-          hover:brightness-125 hover:scale-[1.02] active:scale-[0.98]
+          file-badge-shell hover:brightness-125
           ${color.bg} ${color.text} ${color.border}
           ${className}
         `}
       >
-        <Icon size={13} aria-hidden="true" className="shrink-0" />
+        <span className="relative inline-flex h-[13px] w-[13px] shrink-0 items-center justify-center" aria-hidden="true">
+          <Icon
+            size={13}
+            className="file-badge-icon h-[13px] w-[13px]"
+            style={brandColor ? { color: brandColor } : undefined}
+          />
+          {accentColor ? (
+            <span
+              data-file-icon-accent="true"
+              className="file-badge-icon-accent absolute -bottom-px -right-px h-1.5 w-1.5 rounded-full border border-surface-0"
+              style={{ backgroundColor: accentColor }}
+            />
+          ) : null}
+        </span>
         <span className="truncate max-w-[200px]">{name}</span>
       </button>
     </Tooltip>

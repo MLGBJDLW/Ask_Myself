@@ -144,18 +144,16 @@ pub(super) fn capture_file_snapshot(root: &Path) -> FileSnapshot {
 }
 
 fn git_snapshot_paths(root: &Path) -> Option<Vec<PathBuf>> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(root).args([
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ]);
+    crate::background_process::configure_std_background(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }

@@ -604,6 +604,10 @@ test('renders dedicated SVG icons for code and document file badges', async ({ p
   await expect(page.locator('[data-file-icon="excel"]')).toContainText('budget.xlsx');
   await expect(pythonBadge.locator('svg')).toHaveCount(1);
   await expect(pdfBadge.locator('svg')).toHaveCount(1);
+  await expect(pythonBadge).toHaveAttribute('data-file-treatment', 'brand-accent');
+  await expect(pythonBadge.locator('[data-file-icon-accent="true"]')).toHaveCount(1);
+  await expect(pythonBadge.locator('svg')).toHaveCSS('color', 'rgb(55, 118, 171)');
+  await expect(pdfBadge).toHaveAttribute('data-file-treatment', 'mono');
 });
 
 test('opens file preview as a large panel and closes it from outside clicks', async ({ page }) => {

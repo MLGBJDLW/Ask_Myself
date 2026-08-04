@@ -590,6 +590,7 @@ impl AgentExecutor {
                     name: None,
                     tool_calls: Some(vec![call.clone()]),
                     reasoning_content: None,
+                    prompt_cache_hint: None,
                 };
                 messages.push(synthetic_assistant.clone());
                 self.persist_intermediate_tool_call_assistant(
@@ -867,6 +868,8 @@ impl AgentExecutor {
                 mut started_call_ids,
                 mut tool_run_started_ids,
                 prompt_cache_observation,
+                request_latency_ms,
+                time_to_first_token_ms,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart {
@@ -901,10 +904,17 @@ impl AgentExecutor {
                         last_prompt_tokens: &mut last_prompt_tokens,
                         last_context_breakdown: &mut last_context_breakdown,
                     },
-                    iteration,
-                    tool_calls.len(),
-                    last_finish_reason.clone(),
-                    chunk_usage,
+                    usage_accounting::ModelStepUsageObservation {
+                        iteration,
+                        tool_call_count: tool_calls.len(),
+                        finish_reason: last_finish_reason.clone(),
+                        chunk_usage,
+                        request_latency_ms,
+                        time_to_first_token_ms,
+                        cache_outcome_reason: prompt_cache_observation
+                            .as_ref()
+                            .map(prompt_cache::PromptCacheTraceObservation::cache_outcome_reason),
+                    },
                 )
                 .await;
             if let Some(observation) = prompt_cache_observation {
@@ -940,6 +950,7 @@ impl AgentExecutor {
                     Some(tool_calls.clone())
                 },
                 reasoning_content: assistant_reasoning_content.clone(),
+                prompt_cache_hint: None,
             };
             messages.push(assistant_msg.clone());
             let loop_guard_intervention =
@@ -957,13 +968,14 @@ impl AgentExecutor {
                         };
                         loop_recorder.record(event.clone());
                         append_persisted_trace_loop_event(&mut persisted_trace_items, event);
-                        append_persisted_trace_status(
+                        append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
                             &intervention.reason,
                             "warning",
                         );
                         let _ = tx
-                            .send(AgentEvent::Status {
+                            .send(AgentEvent::ControllerStatus {
+                                code: "loop_guard_intervention".to_string(),
                                 content: intervention.reason.clone(),
                                 tone: Some("warning".to_string()),
                             })
@@ -1091,7 +1103,7 @@ impl AgentExecutor {
                         let blockers = workflow_ir.completion_blockers();
                         let status =
                             format!("Workflow completion blocked by: {}", blockers.join(", "));
-                        append_persisted_trace_status(
+                        append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
                             &status,
                             "warning",
@@ -1141,9 +1153,14 @@ impl AgentExecutor {
                         "Goal remains active; continuing execution: {}",
                         goal.objective
                     );
-                    append_persisted_trace_status(&mut persisted_trace_items, &status, "info");
+                    append_developer_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &status,
+                        "info",
+                    );
                     let _ = tx
-                        .send(AgentEvent::Status {
+                        .send(AgentEvent::ControllerStatus {
+                            code: "goal_continuation".to_string(),
                             content: status,
                             tone: Some("info".to_string()),
                         })
@@ -1219,7 +1236,7 @@ impl AgentExecutor {
                     };
                     loop_recorder.record(event.clone());
                     append_persisted_trace_loop_event(&mut persisted_trace_items, event);
-                    append_persisted_trace_status(
+                    append_developer_persisted_trace_status(
                         &mut persisted_trace_items,
                         &intervention.reason,
                         "warning",
@@ -1228,7 +1245,8 @@ impl AgentExecutor {
                 });
             if let Some(reason) = loop_guard_block_reason.as_ref() {
                 let _ = tx
-                    .send(AgentEvent::Status {
+                    .send(AgentEvent::ControllerStatus {
+                        code: "loop_guard_intervention".to_string(),
                         content: reason.clone(),
                         tone: Some("warning".to_string()),
                     })
@@ -1329,9 +1347,14 @@ impl AgentExecutor {
                             "Resume checkpoint saved after tool round {}.",
                             iteration.saturating_add(1)
                         );
-                        append_persisted_trace_status(&mut persisted_trace_items, &summary, "info");
+                        append_developer_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &summary,
+                            "info",
+                        );
                         let _ = tx
-                            .send(AgentEvent::Status {
+                            .send(AgentEvent::ControllerStatus {
+                                code: "resume_checkpoint_saved".to_string(),
                                 content: summary,
                                 tone: Some("muted".to_string()),
                             })

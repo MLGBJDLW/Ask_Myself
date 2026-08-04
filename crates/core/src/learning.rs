@@ -132,8 +132,10 @@ pub async fn distill_text_llm(
         tools: None,
         stop: None,
         thinking_budget: None,
+        reasoning_enabled: None,
         reasoning_effort: None,
         provider_type,
+        routing_session_id: None,
         parallel_tool_calls: true,
     };
 

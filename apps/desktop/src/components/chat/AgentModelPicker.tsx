@@ -20,6 +20,12 @@ import {
 } from '../../lib/providerPresets';
 import { ProviderIcon } from '../../lib/providerIcons';
 import {
+  defaultReasoningEffort,
+  defaultThinkingBudget,
+  normalizeThinkingBudget,
+  thinkingBudgetOptions,
+} from '../../lib/reasoningControls';
+import {
   canonicalModelProviderId,
   modelEndpointId,
   projectModelDescriptor,
@@ -118,56 +124,6 @@ function reasoningForModel(
     return model.capabilities?.reasoning ?? null;
   }
   return preset?.capabilities?.reasoning ?? null;
-}
-
-function defaultReasoningEffort(
-  capability: ReasoningCapability | null,
-): ReasoningEffortLevel | null {
-  const levels = capability?.effortLevels ?? [];
-  if (levels.length === 0) return null;
-  return capability?.defaultEffort && levels.includes(capability.defaultEffort)
-    ? capability.defaultEffort
-    : levels[0];
-}
-
-function defaultThinkingBudget(capability: ReasoningCapability | null): number | null {
-  const budget = capability?.thinkingBudget;
-  if (!budget?.enabled) return null;
-  return budget.defaultTokens ?? budget.minTokens ?? 10000;
-}
-
-function clampThinkingBudget(
-  value: number | null,
-  capability: ReasoningCapability | null,
-): number | null {
-  const budget = capability?.thinkingBudget;
-  if (!budget?.enabled) return null;
-  const fallback = defaultThinkingBudget(capability) ?? 10000;
-  let next = Number.isFinite(value) && value !== null ? value : fallback;
-  if (budget.allowZero && next === 0) return 0;
-  if (budget.minTokens != null) next = Math.max(next, budget.minTokens);
-  if (budget.maxTokens != null) next = Math.min(next, budget.maxTokens);
-  return Math.round(next);
-}
-
-function thinkingBudgetOptions(capability: ReasoningCapability | null): number[] {
-  const budget = capability?.thinkingBudget;
-  if (!budget?.enabled) return [];
-  const fallback = defaultThinkingBudget(capability) ?? 10000;
-  const candidates = [
-    budget.allowZero ? 0 : undefined,
-    budget.minTokens,
-    Math.round(fallback / 2),
-    fallback,
-    budget.maxTokens ?? fallback * 2,
-  ];
-  return Array.from(
-    new Set(
-      candidates
-        .map((value) => clampThinkingBudget(value ?? null, capability))
-        .filter((value): value is number => value !== null),
-    ),
-  ).sort((a, b) => a - b);
 }
 
 function makeProviderLabel(config: AgentConfig, preset: ProviderPreset | null): string {
@@ -428,7 +384,7 @@ export function AgentModelPicker({
         model: row.model.id,
         reasoningEnabled: isCurrent
           ? selectedConfig.reasoningEnabled
-          : row.reasoning
+          : row.reasoning?.mode === 'always' || defaultEffort || defaultBudget
             ? true
             : null,
         thinkingBudget: isCurrent
@@ -469,7 +425,7 @@ export function AgentModelPicker({
 
   const applyBudget = useCallback(() => {
     const parsed = Number.parseInt(budgetDraft, 10);
-    const budget = clampThinkingBudget(
+    const budget = normalizeThinkingBudget(
       Number.isFinite(parsed) ? parsed : null,
       activeModelRow?.reasoning ?? null,
     );
@@ -812,13 +768,14 @@ export function AgentModelPicker({
                             </p>
                           ) : activeModelRow.reasoning.effortLevels?.length ? (
                             <div className="grid gap-1">
-                              {!activeModelRow.reasoning.effortLevels.includes('none') && (
+                              {activeModelRow.reasoning.mode !== 'always' &&
+                                !activeModelRow.reasoning.effortLevels.includes('none') && (
                                 <button
                                   type="button"
                                   data-testid="agent-model-reasoning-none"
                                   onClick={() =>
                                     applyReasoningSelection({
-                                      reasoningEnabled: null,
+                                      reasoningEnabled: false,
                                       thinkingBudget: null,
                                       reasoningEffort: null,
                                     })
@@ -865,6 +822,11 @@ export function AgentModelPicker({
                             </div>
                           ) : activeModelRow.reasoning.thinkingBudget?.enabled ? (
                             <div className="space-y-2">
+                              {activeModelRow.reasoning.mode === 'always' ? (
+                                <p className="text-[11px] leading-4 text-text-tertiary">
+                                  {t('settings.reasoningAlwaysOn')}
+                                </p>
+                              ) : null}
                               <div className="grid grid-cols-2 gap-1">
                                 {thinkingBudgetOptions(activeModelRow.reasoning).map((budget) => {
                                   const current =
@@ -909,6 +871,10 @@ export function AgentModelPicker({
                                 className="h-7 w-full rounded-md border border-border/60 bg-surface-1 px-2 text-xs text-text-primary outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/25"
                               />
                             </div>
+                          ) : activeModelRow.reasoning.mode === 'always' ? (
+                            <p className="text-[11px] leading-4 text-text-tertiary">
+                              {t('settings.reasoningAlwaysOn')}
+                            </p>
                           ) : (
                             <p className="text-[11px] leading-4 text-text-tertiary">
                               {t('settings.reasoningUnsupported')}
@@ -926,12 +892,12 @@ export function AgentModelPicker({
                             >
                               {t('common.save')}
                             </button>
-                            <button
+                            {activeModelRow.reasoning.mode !== 'always' ? <button
                               type="button"
                               data-testid="agent-model-reasoning-none"
                               onClick={() =>
                                 applyReasoningSelection({
-                                  reasoningEnabled: null,
+                                  reasoningEnabled: false,
                                   thinkingBudget: null,
                                   reasoningEffort: null,
                                 })
@@ -939,7 +905,7 @@ export function AgentModelPicker({
                               className="h-7 rounded-md border border-border/60 px-2 text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
                             >
                               {t('settings.reasoningNone')}
-                            </button>
+                            </button> : null}
                           </div>
                         )}
                       </>

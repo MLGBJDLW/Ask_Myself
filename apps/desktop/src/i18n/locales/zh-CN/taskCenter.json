@@ -78,5 +78,10 @@
   "stopped": "已请求停止",
   "stopError": "停止任务失败",
   "retryHint": "会在对话中用原始提示重新执行。",
-  "artifactFallbackTitle": "产物"
+  "artifactFallbackTitle": "产物",
+  "loadMore": "加载更多",
+  "loadDetails": "点击此区域加载详细信息。",
+  "noEvents": "暂无任务历史记录。",
+  "noExecutionGraph": "暂无执行图记录。",
+  "noTools": "暂无工具权限信息。"
 }

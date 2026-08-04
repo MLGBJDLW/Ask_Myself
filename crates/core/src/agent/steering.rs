@@ -169,6 +169,7 @@ impl AgentExecutor {
                 name: None,
                 tool_calls: None,
                 reasoning_content: None,
+                prompt_cache_hint: None,
             });
             steering_texts.push(text);
         }

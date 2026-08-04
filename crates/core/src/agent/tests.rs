@@ -522,6 +522,7 @@ impl LlmProvider for RecoveringStreamProvider {
                 cache_read_tokens: None,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             },
             thinking: None,
         })
@@ -689,6 +690,7 @@ impl LlmProvider for SteeringInterruptProvider {
                 cache_read_tokens: None,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             }),
             thinking_delta: None,
         })])))

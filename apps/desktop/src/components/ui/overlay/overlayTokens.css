@@ -26,6 +26,16 @@
   animation: nexa-overlay-close 90ms ease-in;
 }
 
+.nexa-overlay-content.nexa-command-overlay {
+  --overlay-blur: 0px;
+  contain: layout paint;
+  animation: nexa-command-overlay-open var(--motion-duration-fast) var(--motion-ease-emphasized);
+}
+
+.nexa-overlay-content.nexa-command-overlay[data-state='closed'] {
+  animation: nexa-command-overlay-close var(--motion-duration-instant) var(--motion-ease-standard);
+}
+
 .nexa-overlay-item {
   position: relative;
   display: flex;
@@ -85,6 +95,8 @@
 .nexa-select-label { padding: 0.5rem 0.65rem 0.25rem; color: var(--color-text-tertiary); font-size: 0.68rem; font-weight: 600; }
 .nexa-select-scroll-button { display: flex; height: 1.5rem; align-items: center; justify-content: center; color: var(--color-text-tertiary); }
 .nexa-combobox-input { width: 100%; border: 0; border-bottom: 1px solid var(--overlay-border); background: transparent; padding: 0.6rem 0.7rem; color: var(--color-text-primary); font-size: 0.75rem; outline: none; }
+.nexa-combobox-list > [cmdk-list-sizer] { pointer-events: none; }
+.nexa-combobox-list [cmdk-item] { pointer-events: auto; }
 
 @keyframes nexa-overlay-open {
   from { opacity: 0; transform: translateY(4px) scale(0.98); }
@@ -94,6 +106,16 @@
 @keyframes nexa-overlay-close {
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(2px) scale(0.985); }
+}
+
+@keyframes nexa-command-overlay-open {
+  from { opacity: 0; transform: translate3d(0, 4px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes nexa-command-overlay-close {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, 2px, 0); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -30,6 +30,16 @@ pub(super) struct ModelStepUsageReport {
     pub(super) compacted_after_step: bool,
 }
 
+pub(super) struct ModelStepUsageObservation<'a> {
+    pub(super) iteration: u32,
+    pub(super) tool_call_count: usize,
+    pub(super) finish_reason: Option<String>,
+    pub(super) chunk_usage: Option<Usage>,
+    pub(super) request_latency_ms: u64,
+    pub(super) time_to_first_token_ms: Option<u64>,
+    pub(super) cache_outcome_reason: Option<&'a str>,
+}
+
 impl AgentExecutor {
     pub(super) fn record_model_step_failure(
         &self,
@@ -83,6 +93,9 @@ impl AgentExecutor {
             usage_source: "unknown",
             request_status: "error",
             latency_ms: None,
+            time_to_first_token_ms: None,
+            upstream_provider_id: None,
+            cache_outcome_reason: None,
             estimated_cost_micros,
             currency,
             pricing_version,
@@ -95,10 +108,7 @@ impl AgentExecutor {
     pub(super) async fn record_model_step_usage(
         &self,
         ctx: UsageAccountingContext<'_>,
-        iteration: u32,
-        tool_call_count: usize,
-        finish_reason: Option<String>,
-        chunk_usage: Option<Usage>,
+        observation: ModelStepUsageObservation<'_>,
     ) -> ModelStepUsageReport {
         let UsageAccountingContext {
             db,
@@ -117,6 +127,15 @@ impl AgentExecutor {
             last_prompt_tokens,
             last_context_breakdown,
         } = ctx;
+        let ModelStepUsageObservation {
+            iteration,
+            tool_call_count,
+            finish_reason,
+            chunk_usage,
+            request_latency_ms,
+            time_to_first_token_ms,
+            cache_outcome_reason,
+        } = observation;
 
         let actual_prompt_tokens = chunk_usage.as_ref().map(|usage| usage.prompt_tokens);
         let normalized_cache_miss_tokens = chunk_usage
@@ -147,6 +166,9 @@ impl AgentExecutor {
             chunk_usage.as_ref(),
             context_breakdown.total_tokens,
             normalized_cache_miss_tokens,
+            Some(request_latency_ms),
+            time_to_first_token_ms,
+            cache_outcome_reason,
         ) {
             warn!("Failed to persist canonical AI usage: {error}");
         }

@@ -104,6 +104,17 @@ export interface UsageTotal {
   contextBreakdown?: ContextUsageBreakdown;
 }
 
+export interface TurnTiming {
+  startedAtEpochMs: number;
+  /** Monotonic page-lifecycle anchor; null for restored durable history. */
+  startedAtMonotonicMs: number | null;
+  firstEventAtEpochMs: number | null;
+  firstVisibleOutputAtEpochMs: number | null;
+  finishedAtEpochMs: number | null;
+  /** Monotonic terminal anchor when the turn finishes in this page lifecycle. */
+  finishedAtMonotonicMs: number | null;
+}
+
 export interface StreamState {
   /** Runtime-assigned identity available as soon as launch is acknowledged. */
   turnHandle: AgentTurnHandle | null;
@@ -127,4 +138,6 @@ export interface StreamState {
   taskRun: AgentTaskRun | null;
   /** Recent lifecycle events for the active task run. */
   taskEvents: AgentTaskRunEvent[];
+  /** Immutable lifecycle timestamps. Display clocks are derived locally. */
+  turnTiming: TurnTiming | null;
 }

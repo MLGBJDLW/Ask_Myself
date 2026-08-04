@@ -26,6 +26,7 @@ const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
+const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Anthropic API wire types — request
@@ -298,9 +299,10 @@ fn convert_messages(
 ) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
     let mut system_blocks: Vec<AnthropicSystemBlock> = Vec::new();
     let mut out: Vec<AnthropicMessage> = Vec::new();
-    let latest_user_index = super::prompt_cache::latest_user_message_index(messages);
-
     for (index, msg) in messages.iter().enumerate() {
+        let cache_boundary = msg
+            .prompt_cache_hint()
+            .is_some_and(|(stability, _)| stability != super::PromptStability::Volatile);
         match msg.role {
             Role::System => {
                 let text = msg.text_content();
@@ -313,13 +315,19 @@ fn convert_messages(
                         system_blocks.push(AnthropicSystemBlock {
                             r#type: "text".to_string(),
                             text,
-                            cache_control: None,
+                            cache_control: cache_boundary.then(|| CacheControl {
+                                r#type: "ephemeral".to_string(),
+                            }),
                         });
                     } else {
-                        out.push(AnthropicMessage {
+                        let mut message = AnthropicMessage {
                             role: "user".to_string(),
                             content: AnthropicContent::Text(text),
-                        });
+                        };
+                        if cache_boundary {
+                            add_cache_control_to_message_content(&mut message);
+                        }
+                        out.push(message);
                     }
                 }
             }
@@ -348,7 +356,7 @@ fn convert_messages(
                         role: "user".to_string(),
                         content: AnthropicContent::Blocks(blocks),
                     };
-                    if Some(index) == latest_user_index {
+                    if cache_boundary {
                         add_cache_control_to_message_content(&mut message);
                     }
                     out.push(message);
@@ -357,7 +365,7 @@ fn convert_messages(
                         role: "user".to_string(),
                         content: AnthropicContent::Text(msg.text_content()),
                     };
-                    if Some(index) == latest_user_index {
+                    if cache_boundary {
                         add_cache_control_to_message_content(&mut message);
                     }
                     out.push(message);
@@ -432,13 +440,6 @@ fn convert_messages(
         }
     }
 
-    // Keep the first system block as the stable cache prefix. Later system
-    // blocks carry runtime state such as dates, route plans, and loaded skills.
-    if let Some(first) = system_blocks.first_mut() {
-        first.cache_control = Some(CacheControl {
-            r#type: "ephemeral".to_string(),
-        });
-    }
     let system = (!system_blocks.is_empty()).then_some(system_blocks);
 
     (system, out)
@@ -501,6 +502,49 @@ fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTo
         .collect()
 }
 
+fn consume_cache_breakpoint(cache_control: &mut Option<CacheControl>, remaining: &mut usize) {
+    if cache_control.is_none() {
+        return;
+    }
+    if *remaining == 0 {
+        *cache_control = None;
+    } else {
+        *remaining -= 1;
+    }
+}
+
+/// Anthropic counts tool, system, and message cache controls against one
+/// request-wide limit. Keep the controls in wire-prefix order so the stable
+/// tool/policy prefixes retain their breakpoints before replayable turns.
+fn enforce_cache_breakpoint_limit(
+    system: &mut Option<Vec<AnthropicSystemBlock>>,
+    messages: &mut [AnthropicMessage],
+    reserved_tool_breakpoints: usize,
+) {
+    let mut remaining = MAX_CACHE_BREAKPOINTS.saturating_sub(reserved_tool_breakpoints);
+
+    if let Some(blocks) = system {
+        for block in blocks {
+            consume_cache_breakpoint(&mut block.cache_control, &mut remaining);
+        }
+    }
+
+    for message in messages {
+        let AnthropicContent::Blocks(blocks) = &mut message.content else {
+            continue;
+        };
+        for block in blocks {
+            match block {
+                AnthropicContentBlock::Text { cache_control, .. }
+                | AnthropicContentBlock::ToolResult { cache_control, .. } => {
+                    consume_cache_breakpoint(cache_control, &mut remaining);
+                }
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolUse { .. } => {}
+            }
+        }
+    }
+}
+
 fn uses_adaptive_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
@@ -522,8 +566,8 @@ fn anthropic_reasoning_effort(effort: Option<&ReasoningEffort>) -> Option<String
 
 fn build_request_body(
     request: &CompletionRequest,
-    system: Option<Vec<AnthropicSystemBlock>>,
-    messages: Vec<AnthropicMessage>,
+    mut system: Option<Vec<AnthropicSystemBlock>>,
+    mut messages: Vec<AnthropicMessage>,
     stream: bool,
 ) -> AnthropicRequest {
     let supports_adaptive_thinking = uses_adaptive_thinking(&request.model);
@@ -580,6 +624,13 @@ fn build_request_body(
     };
 
     let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t, true));
+    let tool_cache_breakpoints = anthropic_tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|tool| tool.cache_control.is_some())
+        .count();
+    enforce_cache_breakpoint_limit(&mut system, &mut messages, tool_cache_breakpoints);
     let tool_choice = match anthropic_tools.as_ref() {
         Some(tools) if !tools.is_empty() && request.parallel_tool_calls => {
             Some(AnthropicToolChoice {
@@ -784,6 +835,7 @@ async fn parse_anthropic_stream(
                             cache_read_tokens,
                             cache_miss_tokens: None,
                             cache_creation_tokens,
+                            provider_raw: None,
                         }
                     });
                     let chunk = StreamChunk {
@@ -886,6 +938,15 @@ impl AnthropicProvider {
 mod tests {
     use super::*;
 
+    fn cacheable_message(
+        role: Role,
+        content: impl Into<String>,
+        stability: crate::llm::PromptStability,
+        boundary: crate::llm::CacheBoundaryHint,
+    ) -> Message {
+        Message::text(role, content).with_prompt_cache_hint(stability, boundary)
+    }
+
     fn request_with_messages(
         messages: Vec<Message>,
         tools: Option<Vec<ToolDefinition>>,
@@ -898,8 +959,10 @@ mod tests {
             tools,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         }
     }
@@ -907,9 +970,19 @@ mod tests {
     #[test]
     fn system_cache_control_stays_on_stable_first_block() {
         let messages = vec![
-            Message::text(Role::System, "stable prompt"),
+            cacheable_message(
+                Role::System,
+                "stable prompt",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
             Message::text(Role::System, "runtime date"),
-            Message::text(Role::User, "hello"),
+            cacheable_message(
+                Role::User,
+                "hello",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
         ];
 
         let (system, api_messages) = convert_messages(&messages);
@@ -935,9 +1008,19 @@ mod tests {
             parameters: serde_json::json!({"type":"object"}),
         };
         let messages = vec![
-            Message::text(Role::System, "stable prompt"),
+            cacheable_message(
+                Role::System,
+                "stable prompt",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
             Message::text(Role::System, "runtime plan"),
-            Message::text(Role::User, "hello"),
+            cacheable_message(
+                Role::User,
+                "hello",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
         ];
         let (system, api_messages) = convert_messages(&messages);
         let body = build_request_body(
@@ -951,6 +1034,70 @@ mod tests {
             body_json["tools"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
+    }
+
+    #[test]
+    fn cache_breakpoints_share_one_request_wide_limit_with_tools() {
+        let tool = ToolDefinition {
+            name: "search".into(),
+            description: "Search".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        let messages = vec![
+            cacheable_message(
+                Role::System,
+                "stable policy",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn one",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn two",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn three",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+        ];
+
+        let (system, api_messages) = convert_messages(&messages);
+        let body = build_request_body(
+            &request_with_messages(messages, Some(vec![tool])),
+            system,
+            api_messages,
+            false,
+        );
+        let body_json = serde_json::to_value(body).unwrap();
+
+        fn count_cache_controls(value: &serde_json::Value) -> usize {
+            match value {
+                serde_json::Value::Array(values) => values.iter().map(count_cache_controls).sum(),
+                serde_json::Value::Object(object) => {
+                    usize::from(object.contains_key("cache_control"))
+                        + object.values().map(count_cache_controls).sum::<usize>()
+                }
+                _ => 0,
+            }
+        }
+
+        assert_eq!(count_cache_controls(&body_json), MAX_CACHE_BREAKPOINTS);
+        assert_eq!(
+            body_json["tools"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(body_json["messages"][2]["content"][0]
+            .get("cache_control")
+            .is_none());
     }
 
     #[test]
@@ -968,7 +1115,7 @@ mod tests {
         assert_eq!(system_json.as_array().expect("system blocks").len(), 1);
         assert_eq!(system_json[0]["text"], "stable prompt");
         assert_eq!(messages_json[0]["role"], "user");
-        assert_eq!(messages_json[0]["content"][0]["text"], "question");
+        assert_eq!(messages_json[0]["content"], "question");
         assert_eq!(messages_json[1]["role"], "user");
         assert_eq!(messages_json[1]["content"], "runtime tail");
     }
@@ -986,7 +1133,12 @@ mod tests {
         tool.name = Some("call-1".to_string());
         let messages = vec![
             Message::text(Role::System, "stable prompt"),
-            Message::text(Role::User, "original request"),
+            cacheable_message(
+                Role::User,
+                "original request",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
             assistant,
             tool,
         ];
@@ -1128,6 +1280,15 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn prompt_cache_profile(&self, model: &str) -> super::prompt_cache::PromptCacheProfile {
+        super::prompt_cache::resolve_prompt_cache_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            super::prompt_cache::PromptCacheApiStyle::AnthropicMessages,
+            model,
+        )
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         // Anthropic doesn't have a public list-models endpoint.
         // Return commonly available models.
@@ -1227,6 +1388,7 @@ impl LlmProvider for AnthropicProvider {
                 cache_read_tokens: u.cache_read_input_tokens,
                 cache_miss_tokens: None,
                 cache_creation_tokens: u.cache_creation_input_tokens,
+                provider_raw: None,
             })
             .unwrap_or_default();
 

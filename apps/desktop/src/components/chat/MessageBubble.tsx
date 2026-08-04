@@ -52,6 +52,8 @@ export interface MessageBubbleProps {
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
   /** Goal status shown for dedicated /goal user messages */
   goalStatus?: 'active' | 'complete' | 'set';
+  /** Fixed wall duration for the completed assistant turn. */
+  turnDurationLabel?: string | null;
 }
 
 
@@ -188,7 +190,7 @@ function GoalStatusCard({
   );
 }
 
-function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan, goalStatus = 'set' }: MessageBubbleProps) {
+function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan, goalStatus = 'set', turnDurationLabel }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = msg.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
@@ -467,6 +469,9 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             ${isUser ? 'self-end pr-1' : 'self-start pl-1'}
             ${alwaysShowTimestamp ? 'opacity-60' : 'opacity-0 group-hover:opacity-60'}`}
         >
+          {msg.role === 'assistant' && turnDurationLabel
+            ? `${t('chat.completedIn', { duration: turnDurationLabel })} · `
+            : ''}
           {timestamp}
         </span>
       </div>

@@ -533,6 +533,7 @@ async fn synthesize_sherpa_onnx(
         }
     }
     command.arg(text);
+    crate::background_process::configure_tokio_background(&mut command);
 
     let output = tokio::time::timeout(Duration::from_secs(180), command.output())
         .await

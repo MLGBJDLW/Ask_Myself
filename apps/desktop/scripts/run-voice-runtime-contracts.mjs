@@ -195,7 +195,7 @@ test('OpenAI live transcription is a distinct realtime provider', () => {
   assert.equal(openaiLive.models[0].recommended, true);
 });
 
-test('QwenCloud international catalog exposes Qwen3.7 Flash without reusing Token Plan', () => {
+test('QwenCloud and Token Plan keep distinct Qwen model catalogs', () => {
   const catalog = JSON.parse(fs.readFileSync(path.join(root, '..', '..', 'shared', 'provider-presets.json'), 'utf8'));
   const qwenCloud = catalog.find((preset) => preset.id === 'qwen-cloud-intl');
   const tokenPlan = catalog.find((preset) => preset.id === 'qwen-token-plan-cn');
@@ -203,7 +203,10 @@ test('QwenCloud international catalog exposes Qwen3.7 Flash without reusing Toke
   assert.ok(qwenCloud, 'QwenCloud international preset should exist');
   assert.equal(qwenCloud.baseUrl, 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
   assert.ok(qwenCloud.models.some((model) => model.id === 'qwen3.7-flash' && model.recommended));
-  assert.deepEqual(tokenPlan.models.map((model) => model.id), ['qwen3.8-max-preview']);
+  assert.deepEqual(tokenPlan.models.map((model) => model.id), [
+    'qwen3.8-max',
+    'qwen3.8-max-preview',
+  ]);
 });
 
 test('QwenCloud international preset uses the Qwen provider identity', () => {

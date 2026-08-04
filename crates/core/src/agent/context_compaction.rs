@@ -8,6 +8,11 @@ use crate::usage_analytics::{provider_type_id, usage_cost_metadata, AiUsageRecor
 const COMPACTION_TARGET_USAGE: f32 = 0.55;
 const MIN_RECENT_TURNS: usize = 2;
 
+pub struct ConversationCompaction {
+    pub messages: Vec<ConversationMessage>,
+    pub checkpoint_id: Option<String>,
+}
+
 struct SummarizationUsageContext<'a> {
     db: &'a Database,
     conversation_id: Option<&'a str>,
@@ -49,6 +54,16 @@ fn compaction_boundary(
         return None;
     }
 
+    // Manual compaction can receive tens of thousands of persisted messages.
+    // Re-summing every candidate tail makes boundary selection quadratic and
+    // can starve the desktop runtime. Compute each message once, then answer
+    // every candidate from the suffix table in O(1).
+    let mut suffix_tokens = vec![0_u32; messages.len() + 1];
+    for index in (prefix_end..messages.len()).rev() {
+        suffix_tokens[index] = suffix_tokens[index + 1]
+            .saturating_add(estimate_message_tokens_for_model(model, &messages[index]));
+    }
+
     let latest_allowed = user_starts[user_starts.len() - min_recent_turns];
     let mut selected = None;
     for boundary in user_starts.into_iter().skip(1) {
@@ -56,10 +71,7 @@ fn compaction_boundary(
             break;
         }
         selected = Some(boundary);
-        let tail_tokens = messages[boundary..]
-            .iter()
-            .map(|message| estimate_message_tokens_for_model(model, message))
-            .sum::<u32>();
+        let tail_tokens = suffix_tokens[boundary];
         if tail_tokens <= target_tail_tokens {
             return Some(boundary);
         }
@@ -159,6 +171,9 @@ impl AgentExecutor {
             usage_source: "provider",
             request_status: "success",
             latency_ms: None,
+            time_to_first_token_ms: None,
+            upstream_provider_id: None,
+            cache_outcome_reason: None,
             estimated_cost_micros,
             currency,
             pricing_version,
@@ -395,12 +410,15 @@ impl AgentExecutor {
     pub async fn compact_conversation(
         &self,
         conversation_id: &str,
-        messages: Vec<ConversationMessage>,
+        messages: &[ConversationMessage],
         db: Option<&Database>,
         label: &str,
-    ) -> Result<Vec<ConversationMessage>, CoreError> {
+    ) -> Result<ConversationCompaction, CoreError> {
         if messages.is_empty() {
-            return Ok(messages);
+            return Ok(ConversationCompaction {
+                messages: Vec::new(),
+                checkpoint_id: None,
+            });
         }
         let model = self.config.model.as_deref().unwrap_or("gpt-4o");
         let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
@@ -417,13 +435,19 @@ impl AgentExecutor {
             .unwrap_or_else(|| model_context_window(model));
         let budget = ctx_window.saturating_sub(max_response_tokens);
         if budget == 0 {
-            return Ok(messages);
+            return Ok(ConversationCompaction {
+                messages: messages.to_vec(),
+                checkpoint_id: None,
+            });
         }
 
         let prefix_end = system_prefix_end(&llm_msgs);
         let target = (budget as f32 * COMPACTION_TARGET_USAGE) as u32;
         let Some(evict_end) = compaction_boundary(&llm_msgs, model, target, 1) else {
-            return Ok(messages);
+            return Ok(ConversationCompaction {
+                messages: messages.to_vec(),
+                checkpoint_id: None,
+            });
         };
         let evicted = &llm_msgs[prefix_end..evict_end];
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
@@ -461,31 +485,20 @@ impl AgentExecutor {
         }
 
         // Archive evicted messages as a checkpoint before replacing.
-        if let Some(db) = db {
+        let checkpoint_id = if let Some(db) = db {
             let est_tokens: u32 = messages[prefix_end..evict_end]
                 .iter()
                 .map(|m| m.token_count)
                 .sum();
-            match db.create_checkpoint(
+            Some(db.create_checkpoint_with_messages(
                 conversation_id,
                 label,
-                (evict_end - prefix_end) as u32,
                 est_tokens,
-            ) {
-                Ok(cp_id) => {
-                    if let Err(e) = db.archive_messages(
-                        &cp_id,
-                        conversation_id,
-                        &messages[prefix_end..evict_end],
-                    ) {
-                        warn!("Failed to archive messages for checkpoint: {e}");
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to create checkpoint: {e}");
-                }
-            }
-        }
+                &messages[prefix_end..evict_end],
+            )?)
+        } else {
+            None
+        };
 
         // Build compacted ConversationMessages to persist.
         let summary_content =
@@ -519,7 +532,10 @@ impl AgentExecutor {
             compacted.push(m);
         }
 
-        Ok(compacted)
+        Ok(ConversationCompaction {
+            messages: compacted,
+            checkpoint_id,
+        })
     }
 }
 
@@ -584,6 +600,24 @@ mod tests {
             Message::text(Role::Assistant, "answer"),
         ];
         assert_eq!(compaction_boundary(&messages, "gpt-4o", 1, 2), None);
+    }
+
+    #[test]
+    fn compaction_boundary_scales_linearly_for_large_histories() {
+        let mut messages = Vec::with_capacity(8_000);
+        for index in 0..4_000 {
+            messages.push(Message::text(Role::User, format!("request {index}")));
+            messages.push(Message::text(Role::Assistant, "response"));
+        }
+
+        let started = std::time::Instant::now();
+        let boundary = compaction_boundary(&messages, "gpt-4o", 32, 2);
+
+        assert!(boundary.is_some());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "large-history boundary selection regressed beyond linear-time expectations"
+        );
     }
 
     #[test]

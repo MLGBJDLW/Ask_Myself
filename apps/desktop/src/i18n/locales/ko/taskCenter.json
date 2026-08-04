@@ -78,5 +78,10 @@
   "stopped": "Stop requested",
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
-  "artifactFallbackTitle": "Artifact"
+  "artifactFallbackTitle": "결과물",
+  "loadMore": "더 불러오기",
+  "loadDetails": "이 섹션을 선택하여 세부 정보를 불러오세요.",
+  "noEvents": "아직 작업 기록이 없습니다.",
+  "noExecutionGraph": "아직 실행 그래프가 없습니다.",
+  "noTools": "사용 가능한 도구 권한 정보가 없습니다."
 }

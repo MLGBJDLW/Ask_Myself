@@ -284,7 +284,6 @@ test('renders and submits agent-requested question cards', async ({ page }) => {
   await expect(card).toBeVisible();
   await expect(card).toContainText('Which scope should I use?');
   await card.getByRole('radio', { name: /Repository/ }).click();
-  await card.getByRole('button', { name: 'Submit answers' }).click();
   await expect(card).toContainText('Answered');
 
   await expect.poll(() => page.evaluate(() => {

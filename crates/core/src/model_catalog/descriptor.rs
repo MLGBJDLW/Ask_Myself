@@ -80,9 +80,13 @@ pub struct ThinkingBudgetCapability {
 #[serde(rename_all = "camelCase")]
 pub struct ReasoningCapability {
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub effort_levels: Vec<String>,
     #[serde(default)]
     pub default_effort: Option<String>,
+    #[serde(default)]
+    pub effort_budget_exclusive: bool,
     #[serde(default)]
     pub thinking_budget: Option<ThinkingBudgetCapability>,
 }

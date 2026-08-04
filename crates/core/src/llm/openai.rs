@@ -10,13 +10,20 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use super::prompt_cache::{resolve_prompt_cache_profile, PromptCacheApiStyle, PromptCacheProfile};
+use super::reasoning_profile::{
+    resolve_reasoning_profile, ReasoningApiStyle, ReasoningBudgetField, ReasoningEffortField,
+    ReasoningHistoryEncoding, ThinkingModeControl,
+};
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, send_stream_start_request, serialized_json_body,
     streaming::parse_sse_stream, with_request_timeout, CompletionRequest, CompletionResponse,
-    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort,
-    Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
+    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, Role,
+    StreamChunk, ToolCallRequest, ToolDefinition, Usage,
 };
+#[cfg(test)]
+use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
 use crate::error::CoreError;
 use crate::provider_catalog::model_supports_reasoning_from_catalog;
 use std::sync::Arc;
@@ -36,6 +43,8 @@ struct OaiRequest {
     model: String,
     messages: Vec<OaiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -53,6 +62,8 @@ struct OaiRequest {
     enable_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preserve_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,6 +85,8 @@ struct OaiStreamOptions {
 struct OaiThinking {
     #[serde(rename = "type")]
     thinking_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -118,6 +131,16 @@ enum OaiContentPart {
     ImageUrl {
         image_url: OaiImageUrl,
     },
+    Thinking {
+        thinking: Vec<OaiThinkingContentPart>,
+    },
+}
+
+#[derive(Serialize)]
+struct OaiThinkingContentPart {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -168,6 +191,12 @@ struct OaiCacheControl {
 struct OaiResponse {
     choices: Vec<OaiChoice>,
     usage: Option<OaiUsage>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    openrouter_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +207,7 @@ struct OaiChoice {
 
 #[derive(Deserialize)]
 struct OaiResponseMessage {
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     tool_calls: Option<Vec<OaiToolCallIn>>,
     #[serde(default, alias = "reasoningContent")]
     reasoning_content: Option<String>,
@@ -218,7 +247,7 @@ impl OaiArgumentsIn {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -231,15 +260,17 @@ struct OaiUsage {
     completion_tokens_details: Option<OaiCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<OaiPromptTokensDetails>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiCompletionTokensDetails {
     #[serde(default)]
     reasoning_tokens: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum OaiCacheCreationUsage {
     Tokens(u32),
@@ -255,7 +286,7 @@ impl OaiCacheCreationUsage {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiCacheCreationDetails {
     #[serde(
         default,
@@ -266,7 +297,7 @@ struct OaiCacheCreationDetails {
     cache_creation_input_tokens: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiPromptTokensDetails {
     #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
     cached_tokens: Option<u32>,
@@ -288,7 +319,18 @@ impl OaiPromptTokensDetails {
     }
 }
 
+#[cfg(test)]
 fn usage_from_oai_usage(u: OaiUsage) -> Usage {
+    usage_from_oai_usage_with_route(u, None, None, None)
+}
+
+fn usage_from_oai_usage_with_route(
+    u: OaiUsage,
+    generation_id: Option<String>,
+    response_model: Option<String>,
+    openrouter_metadata: Option<serde_json::Value>,
+) -> Usage {
+    let provider_usage = serde_json::to_value(&u).unwrap_or(serde_json::Value::Null);
     let prompt_details = u.prompt_tokens_details;
     let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
         prompt_details.as_ref().and_then(|d| d.cached_tokens),
@@ -305,6 +347,12 @@ fn usage_from_oai_usage(u: OaiUsage) -> Usage {
         cache_creation_tokens: prompt_details
             .as_ref()
             .and_then(OaiPromptTokensDetails::cache_creation_tokens),
+        provider_raw: Some(serde_json::json!({
+            "usage": provider_usage,
+            "generationId": generation_id,
+            "responseModel": response_model,
+            "openrouterMetadata": openrouter_metadata,
+        })),
     }
 }
 
@@ -346,36 +394,6 @@ fn is_reasoning_model(model: &str, provider_type: Option<&ProviderType>) -> bool
     m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.starts_with("gpt-5")
 }
 
-/// Check if the model is a DeepSeek reasoner.
-fn is_deepseek_reasoner(model: &str) -> bool {
-    let m = model.to_lowercase();
-    m.contains("deepseek-reasoner") || m.contains("deepseek-r1")
-}
-
-fn deepseek_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
-    // DeepSeek accepts `high` and `max`; low/medium are compatibility aliases
-    // for high, and xhigh is an alias for max.
-    match effort {
-        Some(ReasoningEffort::Max) | Some(ReasoningEffort::XHigh) => "max",
-        _ => "high",
-    }
-    .to_string()
-}
-
-fn openai_reasoning_effort(effort: Option<&ReasoningEffort>) -> String {
-    match effort {
-        Some(ReasoningEffort::None) => "none",
-        Some(ReasoningEffort::Minimal) => "minimal",
-        Some(ReasoningEffort::Low) => "low",
-        Some(ReasoningEffort::Medium) => "medium",
-        Some(ReasoningEffort::High) => "high",
-        Some(ReasoningEffort::XHigh) => "xhigh",
-        Some(ReasoningEffort::Max) => "high",
-        None => "medium",
-    }
-    .to_string()
-}
-
 fn reasoning_value_to_text(value: serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text),
@@ -408,7 +426,10 @@ fn is_openrouter_config(config: &ProviderConfig) -> bool {
         || config
             .base_url
             .as_deref()
-            .is_some_and(|url| url.to_ascii_lowercase().contains("openrouter.ai"))
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .as_deref()
+            == Some("openrouter.ai")
 }
 
 fn apply_openrouter_headers(
@@ -416,7 +437,9 @@ fn apply_openrouter_headers(
     config: &ProviderConfig,
 ) -> reqwest::RequestBuilder {
     if is_openrouter_config(config) {
-        builder.header("X-OpenRouter-Title", "Nexa")
+        builder
+            .header("X-OpenRouter-Title", "Nexa")
+            .header("X-OpenRouter-Metadata", "enabled")
     } else {
         builder
     }
@@ -523,17 +546,6 @@ fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>
     model_lower.contains("codex")
 }
 
-fn supports_anthropic_style_cache_control(
-    model: &str,
-    provider_type: Option<&ProviderType>,
-) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) || is_alibaba_hosted_qwen(model, provider_type) {
-        return true;
-    }
-    let model_lower = model.to_lowercase();
-    model_lower.contains("qwen/")
-}
-
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -601,33 +613,33 @@ fn add_cache_control_to_text_content(message: &mut OaiMessage) -> bool {
     }
 }
 
-fn should_add_latest_user_cache_control(model: &str, provider_type: Option<&ProviderType>) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) {
-        return false;
-    }
-
-    !model.to_ascii_lowercase().contains("qwen/")
-}
-
-fn add_openai_compatible_cache_control(messages: &mut [OaiMessage], mark_latest_user: bool) {
-    if let Some(system) = messages.iter_mut().find(|msg| msg.role == "system") {
-        add_cache_control_to_text_content(system);
-    }
-    if mark_latest_user {
-        if let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") {
-            add_cache_control_to_text_content(last_user);
-        }
-    }
-}
-
-fn add_openai_compatible_cache_control_for_request(
+fn add_profile_cache_control_for_request(
     request: &CompletionRequest,
     messages: &mut [OaiMessage],
+    profile: &PromptCacheProfile,
 ) {
-    add_openai_compatible_cache_control(
-        messages,
-        should_add_latest_user_cache_control(&request.model, request.provider_type.as_ref()),
-    );
+    if !profile.uses_message_breakpoints()
+        || !profile.request_is_eligible(&request.messages, request.tools.as_deref())
+    {
+        return;
+    }
+
+    let limit = usize::from(profile.max_breakpoints.unwrap_or(0));
+    let mut latest_by_boundary = std::collections::BTreeMap::new();
+    for (index, message) in request.messages.iter().enumerate() {
+        if let Some((stability, boundary)) = message.prompt_cache_hint() {
+            if stability != super::PromptStability::Volatile {
+                latest_by_boundary.insert(boundary, index);
+            }
+        }
+    }
+    let mut candidates = latest_by_boundary.into_values().collect::<Vec<_>>();
+    candidates.sort_unstable();
+    for index in candidates.into_iter().rev().take(limit).rev() {
+        if let Some(message) = messages.get_mut(index) {
+            add_cache_control_to_text_content(message);
+        }
+    }
 }
 
 fn parsed_tool_arguments(raw: &str) -> Option<serde_json::Value> {
@@ -657,6 +669,7 @@ fn convert_message(
     msg: &Message,
     wire_role: &str,
     include_reasoning_content: bool,
+    reasoning_history_encoding: ReasoningHistoryEncoding,
     synthesize_missing_reasoning_content: bool,
     raw_tool_args: bool,
 ) -> OaiMessage {
@@ -731,85 +744,123 @@ fn convert_message(
     }
 
     if include_reasoning_content && msg.role == Role::Assistant {
-        if let Some(content) = msg
+        let reasoning = msg
             .reasoning_content
             .as_deref()
             .filter(|content| !content.trim().is_empty())
-        {
-            oai.reasoning_content = Some(content.to_string());
-        } else if synthesize_missing_reasoning_content {
-            oai.reasoning_content = Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
+            .map(str::to_string)
+            .or_else(|| {
+                synthesize_missing_reasoning_content
+                    .then(|| MISSING_REASONING_CONTENT_PLACEHOLDER.to_string())
+            });
+        if let Some(reasoning) = reasoning {
+            match reasoning_history_encoding {
+                ReasoningHistoryEncoding::ReasoningContent => {
+                    oai.reasoning_content = Some(reasoning);
+                }
+                ReasoningHistoryEncoding::ThinkTags => {
+                    let answer = msg.text_content();
+                    oai.content = Some(OaiContent::Text(format!(
+                        "<think>\n{reasoning}\n</think>\n{answer}"
+                    )));
+                }
+                ReasoningHistoryEncoding::MistralContentChunks => {
+                    let mut parts = vec![OaiContentPart::Thinking {
+                        thinking: vec![OaiThinkingContentPart {
+                            content_type: "text".to_string(),
+                            text: reasoning,
+                        }],
+                    }];
+                    let answer = msg.text_content();
+                    if !answer.is_empty() {
+                        parts.push(OaiContentPart::Text {
+                            text: answer,
+                            cache_control: None,
+                        });
+                    }
+                    oai.content = Some(OaiContent::Parts(parts));
+                }
+            }
         }
     }
 
     oai
 }
 
-fn convert_tools(tools: &[ToolDefinition], add_cache_control: bool) -> Vec<OaiTool> {
-    let len = tools.len();
+fn convert_tools(tools: &[ToolDefinition]) -> Vec<OaiTool> {
     tools
         .iter()
-        .enumerate()
-        .map(|(i, t)| OaiTool {
+        .map(|t| OaiTool {
             tool_type: "function".to_string(),
             function: OaiToolFunction {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
             },
-            cache_control: (add_cache_control && i == len - 1).then(|| OaiCacheControl {
-                r#type: "ephemeral".to_string(),
-            }),
+            cache_control: None,
         })
         .collect()
 }
 
+#[cfg(test)]
 fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
-    let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
-    let is_deepseek = is_deepseek_reasoner(&request.model);
-    let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
-    let is_qwen_provider = matches!(
-        request.provider_type,
-        Some(ProviderType::Qwen | ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
+    build_request_body_with_config(request, stream, None)
+}
+
+fn build_request_body_with_config(
+    request: &CompletionRequest,
+    stream: bool,
+    config: Option<&ProviderConfig>,
+) -> OaiRequest {
+    let provider_type = request
+        .provider_type
+        .or_else(|| config.map(|config| config.provider_type))
+        .unwrap_or(ProviderType::Custom);
+    let reasoning_profile = resolve_reasoning_profile(
+        provider_type,
+        config.and_then(|config| config.base_url.as_deref()),
+        ReasoningApiStyle::OpenAiChatCompletions,
+        &request.model,
     );
-    let is_router_provider = matches!(
-        request.provider_type,
-        Some(ProviderType::AlibabaModelStudio | ProviderType::SiliconFlow)
+    let reasoning_supported = reasoning_profile.id != "openai-reasoning-v1"
+        || is_reasoning_model(&request.model, Some(&provider_type));
+    let requested_reasoning_mode = reasoning_profile.requested_mode(
+        request.reasoning_enabled,
+        request.reasoning_effort.as_ref(),
+        request.thinking_budget,
     );
-    let model_lower = request.model.to_lowercase();
-    let is_deepseek_provider = matches!(request.provider_type, Some(ProviderType::DeepSeek))
-        || (model_lower.contains("deepseek") && !is_router_provider);
-    let deepseek_thinking_requested =
-        request.thinking_budget.is_some() || request.reasoning_effort.is_some();
-    let deepseek_thinking_mode = if is_deepseek_provider {
-        Some(if deepseek_thinking_requested {
-            "enabled"
-        } else {
-            "disabled"
-        })
-    } else {
-        None
-    };
-    let deepseek_thinking_enabled = deepseek_thinking_mode == Some("enabled");
-    let qwen_thinking_enabled = is_qwen_provider
-        && (request.thinking_budget.is_some()
-            || request
-                .reasoning_effort
-                .as_ref()
-                .is_some_and(|effort| effort != &ReasoningEffort::None));
+    let effort_can_encode_disabled =
+        reasoning_profile.mode_control == ThinkingModeControl::ProviderDefault;
+    let requested_effort = request.reasoning_effort.as_ref().or_else(|| {
+        (requested_reasoning_mode == Some(true) && request.thinking_budget.is_none())
+            .then_some(reasoning_profile.default_effort.as_ref())
+            .flatten()
+    });
+    let wire_effort = (reasoning_supported
+        && (requested_reasoning_mode != Some(false) || effort_can_encode_disabled))
+        .then(|| reasoning_profile.wire_effort(requested_effort))
+        .flatten();
+    let wire_budget = (reasoning_supported && requested_reasoning_mode != Some(false))
+        .then(|| reasoning_profile.wire_budget(request.thinking_budget, wire_effort.is_some()))
+        .flatten();
     let include_reasoning_content =
-        (is_deepseek_provider && deepseek_thinking_enabled) || qwen_thinking_enabled;
-    let synthesize_missing_reasoning_content = is_deepseek_provider && deepseek_thinking_enabled;
-    let needs_completion_tokens = !is_openrouter_provider
-        && !is_qwen_provider
-        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
-    let suppress_temperature = !is_openrouter_provider
-        && !is_qwen_provider
-        && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
+        reasoning_supported && reasoning_profile.should_replay_reasoning(requested_reasoning_mode);
+    let reasoning_history_encoding = reasoning_profile.reasoning_history_encoding;
+    let synthesize_missing_reasoning_content =
+        include_reasoning_content && reasoning_profile.synthesize_missing_reasoning_history;
+    let needs_completion_tokens = reasoning_profile.use_max_completion_tokens
+        && is_reasoning_model(&request.model, Some(&provider_type));
+    let suppress_temperature = reasoning_supported
+        && reasoning_profile.omit_temperature_when_reasoning
+        && requested_reasoning_mode != Some(false);
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
-    let add_cache_control =
-        supports_anthropic_style_cache_control(&request.model, request.provider_type.as_ref());
+    let cache_profile = resolve_prompt_cache_profile(
+        provider_type,
+        config.and_then(|config| config.base_url.as_deref()),
+        PromptCacheApiStyle::OpenAiCompatible,
+        &request.model,
+    );
     let mut messages: Vec<OaiMessage> = request
         .messages
         .iter()
@@ -825,20 +876,22 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
                 m,
                 wire_role,
                 include_reasoning_content,
+                reasoning_history_encoding,
                 synthesize_missing_reasoning_content,
                 raw_tool_args,
             )
         })
         .collect();
-    if add_cache_control {
-        add_openai_compatible_cache_control_for_request(request, &mut messages);
-    }
+    add_profile_cache_control_for_request(request, &mut messages, &cache_profile);
 
     OaiRequest {
         model: request.model.clone(),
         messages,
+        session_id: (cache_profile.routing_session_affinity)
+            .then(|| request.routing_session_id.clone())
+            .flatten(),
         prompt_cache_key: super::prompt_cache::openai_prompt_cache_key(
-            request.provider_type.as_ref(),
+            &cache_profile,
             &request.model,
             &request.messages,
             request.tools.as_deref(),
@@ -858,44 +911,50 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         } else {
             None
         },
-        reasoning_effort: if deepseek_thinking_enabled {
-            Some(deepseek_reasoning_effort(request.reasoning_effort.as_ref()))
-        } else if is_reasoning && !is_openrouter_provider && !is_qwen_provider {
-            request
-                .reasoning_effort
-                .as_ref()
-                .map(|effort| openai_reasoning_effort(Some(effort)))
-        } else {
-            None
-        },
-        reasoning: if is_openrouter_provider {
-            request
-                .reasoning_effort
-                .as_ref()
-                .map(|effort| OaiReasoning {
-                    effort: Some(openai_reasoning_effort(Some(effort))),
-                    max_tokens: None,
-                })
-                .or_else(|| {
-                    request.thinking_budget.map(|budget| OaiReasoning {
-                        effort: None,
-                        max_tokens: Some(budget),
-                    })
-                })
-        } else {
-            None
-        },
-        thinking: deepseek_thinking_mode.map(|mode| OaiThinking {
-            thinking_type: mode.to_string(),
-        }),
-        enable_thinking: qwen_thinking_enabled.then_some(true),
-        thinking_budget: qwen_thinking_enabled
-            .then_some(request.thinking_budget)
+        reasoning_effort: (reasoning_profile.effort_field == ReasoningEffortField::TopLevel)
+            .then_some(wire_effort.clone())
             .flatten(),
-        tools: request
-            .tools
-            .as_ref()
-            .map(|t| convert_tools(t, add_cache_control)),
+        reasoning: if reasoning_profile.effort_field == ReasoningEffortField::NestedReasoning
+            || reasoning_profile.budget_field == ReasoningBudgetField::NestedReasoning
+        {
+            (wire_effort.is_some() || wire_budget.is_some()).then(|| OaiReasoning {
+                effort: wire_effort.clone(),
+                max_tokens: wire_budget,
+            })
+        } else {
+            None
+        },
+        thinking: match reasoning_profile.mode_control {
+            ThinkingModeControl::ThinkingType => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+                    keep: None,
+                })
+            }
+            ThinkingModeControl::ThinkingTypeWithKeep => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+                    keep: enabled.then(|| "all".to_string()),
+                })
+            }
+            ThinkingModeControl::AdaptiveThinking => {
+                requested_reasoning_mode.map(|enabled| OaiThinking {
+                    thinking_type: if enabled { "adaptive" } else { "disabled" }.to_string(),
+                    keep: None,
+                })
+            }
+            _ => None,
+        },
+        enable_thinking: (reasoning_profile.mode_control == ThinkingModeControl::EnableThinking)
+            .then_some(requested_reasoning_mode)
+            .flatten(),
+        thinking_budget: (reasoning_profile.budget_field == ReasoningBudgetField::ThinkingBudget)
+            .then_some(wire_budget)
+            .flatten(),
+        preserve_thinking: (reasoning_profile.send_preserve_thinking
+            && requested_reasoning_mode != Some(false))
+        .then_some(true),
+        tools: request.tools.as_ref().map(|t| convert_tools(t)),
         parallel_tool_calls: match request.tools.as_ref() {
             Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
             _ => None,
@@ -991,6 +1050,15 @@ impl LlmProvider for OpenAiProvider {
         "openai"
     }
 
+    fn prompt_cache_profile(&self, model: &str) -> PromptCacheProfile {
+        resolve_prompt_cache_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            PromptCacheApiStyle::OpenAiCompatible,
+            model,
+        )
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let url = format!("{}/models", self.base_url());
         let api_key = self.api_key()?;
@@ -1022,7 +1090,7 @@ impl LlmProvider for OpenAiProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
-        let body = build_request_body(request, false);
+        let body = build_request_body_with_config(request, false, Some(&self.config));
         let body_bytes = serialized_json_body(&body, "OpenAI completion request")?;
 
         let mut attempt = 1;
@@ -1116,8 +1184,25 @@ impl LlmProvider for OpenAiProvider {
             .map(parse_finish_reason)
             .unwrap_or(FinishReason::Other);
 
-        let usage = oai.usage.map(usage_from_oai_usage).unwrap_or_default();
+        let usage = oai
+            .usage
+            .map(|usage| {
+                usage_from_oai_usage_with_route(
+                    usage,
+                    oai.id.clone(),
+                    oai.model.clone(),
+                    oai.openrouter_metadata.clone(),
+                )
+            })
+            .unwrap_or_default();
 
+        let (content, content_thinking) = choice
+            .message
+            .content
+            .as_ref()
+            .map(super::streaming::partition_openai_content)
+            .unwrap_or_default();
+        let (content, tagged_thinking) = super::streaming::partition_complete_think_tags(&content);
         let thinking = choice
             .message
             .reasoning_content
@@ -1127,10 +1212,12 @@ impl LlmProvider for OpenAiProvider {
                     .message
                     .reasoning_details
                     .and_then(reasoning_value_to_text)
-            });
+            })
+            .or(content_thinking)
+            .or(tagged_thinking);
 
         Ok(CompletionResponse {
-            content: choice.message.content.unwrap_or_default(),
+            content,
             tool_calls,
             finish_reason,
             usage,
@@ -1151,7 +1238,7 @@ impl LlmProvider for OpenAiProvider {
 
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
-        let body = build_request_body(request, true);
+        let body = build_request_body_with_config(request, true, Some(&self.config));
         let body_bytes = serialized_json_body(&body, "OpenAI stream request")?;
 
         info!("OpenAI stream request to {url}, model={}", request.model);
@@ -1212,6 +1299,42 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn endpoint_config(provider_type: ProviderType, base_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider_type,
+            api_key: Some("test-key".to_string()),
+            base_url: Some(base_url.to_string()),
+            org_id: None,
+            timeout_secs: None,
+        }
+    }
+
+    fn endpoint_reasoning_request(model: &str) -> CompletionRequest {
+        CompletionRequest {
+            model: model.to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            provider_type: None,
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        }
+    }
+
+    fn cacheable_message(
+        role: Role,
+        content: impl Into<String>,
+        stability: super::PromptStability,
+        boundary: super::CacheBoundaryHint,
+    ) -> Message {
+        Message::text(role, content).with_prompt_cache_hint(stability, boundary)
+    }
 
     async fn serve_delayed_sse_response(listener: tokio::net::TcpListener) -> std::io::Result<()> {
         let (mut socket, _) = listener.accept().await?;
@@ -1287,18 +1410,274 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(1024),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["max_tokens"], 100);
         assert!(body.get("temperature").is_none());
-        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn moonshot_k3_defaults_to_max_and_never_invents_a_token_budget() {
+        let request = endpoint_reasoning_request("kimi-k3");
+        let config = endpoint_config(ProviderType::Moonshot, "https://api.moonshot.ai/v1");
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert_eq!(body["reasoning_effort"], "max");
+        assert!(body.get("thinking_budget").is_none());
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn alibaba_routed_k3_accepts_only_max_and_preserves_thinking() {
+        let mut request = endpoint_reasoning_request("kimi/kimi-k3");
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        request.thinking_budget = Some(20_000);
+        let config = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking_budget").is_none());
+        assert_eq!(body["preserve_thinking"], true);
+
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn qwen38_effort_aliases_and_budget_are_mutually_exclusive_on_token_plan() {
+        let mut request = endpoint_reasoning_request("qwen3.8-max");
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        request.thinking_budget = Some(32_768);
+        let config = endpoint_config(
+            ProviderType::Qwen,
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["enable_thinking"], true);
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(body.get("thinking_budget").is_none());
+
+        request.reasoning_effort = None;
+        request.thinking_budget = Some(300_000);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["thinking_budget"], 262_144);
+
+        request.reasoning_enabled = Some(false);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["enable_thinking"], false);
+        assert!(body.get("thinking_budget").is_none());
+
+        request.model = "qwen3.8-max-preview".to_string();
+        request.reasoning_effort = None;
+        request.thinking_budget = None;
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn provider_specific_thinking_objects_do_not_leak_between_models() {
+        let moonshot = endpoint_config(ProviderType::Moonshot, "https://api.moonshot.ai/v1");
+        let mut k26 = endpoint_reasoning_request("kimi-k2.6");
+        k26.reasoning_enabled = Some(true);
+        let body =
+            serde_json::to_value(build_request_body_with_config(&k26, false, Some(&moonshot)))
+                .unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["keep"], "all");
+
+        let alibaba = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+        let mut minimax = endpoint_reasoning_request("MiniMax/MiniMax-M3");
+        minimax.reasoning_enabled = Some(true);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax,
+            false,
+            Some(&alibaba),
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body.get("reasoning_effort").is_none());
+
+        minimax.reasoning_enabled = Some(false);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax,
+            false,
+            Some(&alibaba),
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn curated_direct_endpoints_emit_only_their_verified_reasoning_controls() {
+        let mut xai_request = endpoint_reasoning_request("grok-4.3");
+        xai_request.reasoning_effort = Some(ReasoningEffort::None);
+        let xai = endpoint_config(ProviderType::OpenAi, "https://api.x.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &xai_request,
+            false,
+            Some(&xai),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "none");
+
+        let mut mistral_request = endpoint_reasoning_request("mistral-medium-3-5");
+        mistral_request.reasoning_effort = Some(ReasoningEffort::High);
+        let mistral = endpoint_config(ProviderType::OpenAi, "https://api.mistral.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &mistral_request,
+            false,
+            Some(&mistral),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+
+        let mut multi_agent = endpoint_reasoning_request("grok-4.20-multi-agent-0309");
+        multi_agent.reasoning_effort = Some(ReasoningEffort::High);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &multi_agent,
+            false,
+            Some(&xai),
+        ))
+        .unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn direct_reasoning_history_uses_each_providers_documented_content_shape() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Text {
+                text: "final answer".to_string(),
+            }],
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("work it out".to_string()),
+            prompt_cache_hint: None,
+        };
+
+        let minimax_request = CompletionRequest {
+            messages: vec![assistant.clone()],
+            ..endpoint_reasoning_request("MiniMax-M3")
+        };
+        let minimax = endpoint_config(ProviderType::OpenAi, "https://api.minimax.io/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax_request,
+            false,
+            Some(&minimax),
+        ))
+        .unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            "<think>\nwork it out\n</think>\nfinal answer"
+        );
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+
+        let mistral_request = CompletionRequest {
+            messages: vec![assistant],
+            ..endpoint_reasoning_request("mistral-medium-3-5")
+        };
+        let mistral = endpoint_config(ProviderType::OpenAi, "https://api.mistral.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &mistral_request,
+            false,
+            Some(&mistral),
+        ))
+        .unwrap();
+        assert_eq!(body["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(
+            body["messages"][0]["content"][0]["thinking"][0]["text"],
+            "work it out"
+        );
+        assert_eq!(body["messages"][0]["content"][1]["text"], "final answer");
+    }
+
+    #[test]
+    fn unknown_endpoint_emits_no_intermediary_reasoning_fields() {
+        let mut request = endpoint_reasoning_request("kimi/kimi-k3");
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        request.thinking_budget = Some(20_000);
+        let config = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://tenant.example.test/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+        for field in [
+            "reasoning_effort",
+            "thinking_budget",
+            "enable_thinking",
+            "thinking",
+            "preserve_thinking",
+        ] {
+            assert!(body.get(field).is_none(), "unexpected field {field}");
+        }
     }
 
     #[tokio::test]
@@ -1326,8 +1705,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1352,8 +1733,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(1024),
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::Max),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1373,8 +1756,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1382,9 +1767,9 @@ data: [DONE]
 
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["max_completion_tokens"], 100);
+        assert_eq!(body["max_tokens"], 100);
         assert!(body.get("temperature").is_none());
-        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
@@ -1397,6 +1782,7 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: Some("prior reasoning".to_string()),
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "deepseek-v4-pro".to_string(),
@@ -1406,8 +1792,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1430,6 +1818,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: Some("Need to check whether python-docx is installed.".to_string()),
+            prompt_cache_hint: None,
         };
         let mut tool = Message::text(Role::Tool, "python-docx 1.2.0");
         tool.name = Some("call_1".to_string());
@@ -1441,8 +1830,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1470,6 +1861,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let mut tool = Message::text(Role::Tool, "ok");
         tool.name = Some("call_legacy".to_string());
@@ -1481,8 +1873,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1506,17 +1900,20 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: Some("prior reasoning".to_string()),
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
-            model: "deepseek-v4-chat".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             messages: vec![Message::text(Role::User, "hello"), assistant],
             temperature: Some(0.4),
             max_tokens: Some(100),
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: Some(false),
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1536,8 +1933,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1562,8 +1961,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1594,8 +1995,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1618,8 +2021,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1656,6 +2061,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3-coder".to_string(),
@@ -1665,8 +2071,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1707,8 +2115,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1722,25 +2132,38 @@ data: [DONE]
     }
 
     #[test]
-    fn router_thinking_uses_native_enable_thinking_fields() {
-        for provider_type in [ProviderType::AlibabaModelStudio, ProviderType::SiliconFlow] {
-            let request = CompletionRequest {
-                model: "deepseek-ai/DeepSeek-V3.2".to_string(),
-                messages: vec![Message::text(Role::User, "hello")],
-                temperature: Some(0.4),
-                max_tokens: Some(100),
-                tools: None,
-                stop: None,
-                thinking_budget: Some(4096),
-                reasoning_effort: None,
-                provider_type: Some(provider_type),
-                parallel_tool_calls: true,
-            };
-            let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
-            assert_eq!(body["enable_thinking"], true);
-            assert_eq!(body["thinking_budget"], 4096);
-            assert!(body.get("thinking").is_none());
-        }
+    fn intermediary_reasoning_fields_require_an_endpoint_scoped_profile() {
+        let request_for = |provider_type| CompletionRequest {
+            model: "deepseek-ai/DeepSeek-V3.2".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(4096),
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            provider_type: Some(provider_type),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let alibaba = serde_json::to_value(build_request_body(
+            &request_for(ProviderType::AlibabaModelStudio),
+            false,
+        ))
+        .unwrap();
+        assert!(alibaba.get("enable_thinking").is_none());
+        assert!(alibaba.get("thinking_budget").is_none());
+
+        let siliconflow = serde_json::to_value(build_request_body(
+            &request_for(ProviderType::SiliconFlow),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(siliconflow["enable_thinking"], true);
+        assert_eq!(siliconflow["thinking_budget"], 4096);
+        assert!(siliconflow.get("thinking").is_none());
     }
 
     #[test]
@@ -1753,8 +2176,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1781,6 +2206,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: Some("need lookup".to_string()),
+            prompt_cache_hint: None,
         };
         let assistant_without_reasoning = Message {
             role: Role::Assistant,
@@ -1788,6 +2214,7 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3.6-plus".to_string(),
@@ -1797,8 +2224,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: Some(2048),
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1813,9 +2242,24 @@ data: [DONE]
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system"),
-                Message::text(Role::System, "runtime plan"),
-                Message::text(Role::User, "hello"),
+                cacheable_message(
+                    Role::System,
+                    "stable system ".repeat(400),
+                    super::PromptStability::Stable,
+                    super::CacheBoundaryHint::PolicyEnd,
+                ),
+                cacheable_message(
+                    Role::System,
+                    "retrieved evidence",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::StableEvidenceEnd,
+                ),
+                cacheable_message(
+                    Role::User,
+                    "hello",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::ReplayableTurnTail,
+                ),
             ],
             temperature: Some(0.4),
             max_tokens: Some(100),
@@ -1826,8 +2270,10 @@ data: [DONE]
             }]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1836,19 +2282,21 @@ data: [DONE]
             body["messages"][0]["content"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
-        assert!(body["messages"][1]["content"].is_string());
-        assert!(body["messages"][2]["content"].is_string());
-        assert_eq!(
-            body["tools"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(body["messages"][1]["content"][0]["cache_control"].is_object());
+        assert!(body["messages"][2]["content"][0]["cache_control"].is_object());
+        assert!(body["tools"][0].get("cache_control").is_none());
     }
 
     #[test]
     fn alibaba_qwen_models_keep_cache_markers_without_affecting_router_models() {
         let request_for = |model: &str| CompletionRequest {
             model: model.to_string(),
-            messages: vec![Message::text(Role::System, "stable system")],
+            messages: vec![cacheable_message(
+                Role::System,
+                "stable system ".repeat(400),
+                super::PromptStability::Stable,
+                super::CacheBoundaryHint::PolicyEnd,
+            )],
             temperature: Some(0.4),
             max_tokens: Some(100),
             tools: Some(vec![ToolDefinition {
@@ -1858,8 +2306,10 @@ data: [DONE]
             }]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::AlibabaModelStudio),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1869,10 +2319,7 @@ data: [DONE]
             qwen["messages"][0]["content"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
-        assert_eq!(
-            qwen["tools"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(qwen["tools"][0].get("cache_control").is_none());
 
         let third_party =
             serde_json::to_value(build_request_body(&request_for("kimi-k2.7-code"), false))
@@ -1882,7 +2329,7 @@ data: [DONE]
     }
 
     #[test]
-    fn qwen_cache_marker_does_not_target_dynamic_latest_user() {
+    fn qwen_cache_markers_target_message_boundaries_not_tool_definitions() {
         let mut assistant = Message::text(Role::Assistant, "");
         assistant.tool_calls = Some(vec![ToolCallRequest {
             id: "call-1".to_string(),
@@ -1890,13 +2337,28 @@ data: [DONE]
             arguments: "{}".to_string(),
             thought_signature: None,
         }]);
-        let mut tool = Message::text(Role::Tool, "tool result");
+        let mut tool = cacheable_message(
+            Role::Tool,
+            "tool result",
+            super::PromptStability::Replayable,
+            super::CacheBoundaryHint::LatestToolRound,
+        );
         tool.name = Some("call-1".to_string());
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system"),
-                Message::text(Role::User, "original request"),
+                cacheable_message(
+                    Role::System,
+                    "stable system ".repeat(400),
+                    super::PromptStability::Stable,
+                    super::CacheBoundaryHint::PolicyEnd,
+                ),
+                cacheable_message(
+                    Role::User,
+                    "original request",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::ReplayableTurnTail,
+                ),
                 assistant,
                 tool,
             ],
@@ -1905,8 +2367,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1915,9 +2379,13 @@ data: [DONE]
         assert!(body["messages"][0]["content"][0]
             .get("cache_control")
             .is_some());
-        assert!(body["messages"][1]["content"].is_string());
+        assert!(body["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_some());
         assert!(body["messages"][2].get("cache_control").is_none());
-        assert!(body["messages"][3].get("cache_control").is_none());
+        assert!(body["messages"][3]["content"][0]
+            .get("cache_control")
+            .is_some());
     }
 
     #[test]
@@ -1934,8 +2402,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1966,8 +2436,10 @@ data: [DONE]
             tools: Some(vec![tool.clone()]),
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
         let second = CompletionRequest {
@@ -2001,14 +2473,100 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Custom),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn qwen_markers_require_a_trusted_endpoint_and_minimum_prompt() {
+        let request = CompletionRequest {
+            model: "qwen3.8-max".to_string(),
+            messages: vec![cacheable_message(
+                Role::System,
+                "stable system ".repeat(400),
+                super::PromptStability::Stable,
+                super::CacheBoundaryHint::PolicyEnd,
+            )],
+            provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+        let unknown = ProviderConfig {
+            provider_type: ProviderType::Qwen,
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+        let trusted = ProviderConfig {
+            provider_type: ProviderType::Qwen,
+            base_url: Some(
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            ),
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+
+        let unknown_body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&unknown),
+        ))
+        .unwrap();
+        let trusted_body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&trusted),
+        ))
+        .unwrap();
+        let short_body = serde_json::to_value(build_request_body(
+            &CompletionRequest {
+                messages: vec![Message::text(Role::System, "short")],
+                ..request.clone()
+            },
+            false,
+        ))
+        .unwrap();
+        let unhinted_body = serde_json::to_value(build_request_body_with_config(
+            &CompletionRequest {
+                messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
+                ..request.clone()
+            },
+            false,
+            Some(&trusted),
+        ))
+        .unwrap();
+
+        assert!(unknown_body["messages"][0]["content"].is_string());
+        assert!(trusted_body["messages"][0]["content"][0]["cache_control"].is_object());
+        assert!(short_body["messages"][0]["content"].is_string());
+        assert!(unhinted_body["messages"][0]["content"].is_string());
+    }
+
+    #[test]
+    fn openrouter_request_uses_privacy_preserving_session_affinity() {
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4.6".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: Some("nexa-deadbeef".to_string()),
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["session_id"], "nexa-deadbeef");
     }
 
     #[test]
@@ -2050,6 +2608,12 @@ data: [DONE]
 
         assert_eq!(normalized.cache_read_tokens, Some(48));
         assert_eq!(normalized.cache_miss_tokens, Some(52));
+        assert_eq!(
+            normalized.provider_raw.as_ref().and_then(|raw| raw
+                .pointer("/usage/prompt_cache_hit_tokens")
+                .and_then(serde_json::Value::as_u64)),
+            Some(48)
+        );
     }
 
     #[test]
@@ -2072,6 +2636,12 @@ data: [DONE]
 
         assert_eq!(normalized.cache_read_tokens, Some(64));
         assert_eq!(normalized.cache_creation_tokens, Some(24));
+        assert_eq!(
+            normalized.provider_raw.as_ref().and_then(|raw| raw
+                .pointer("/usage/prompt_tokens_details/cache_creation/cache_creation_input_tokens")
+                .and_then(serde_json::Value::as_u64)),
+            Some(24)
+        );
     }
 
     #[test]
@@ -2106,6 +2676,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3-coder".to_string(),
@@ -2115,8 +2686,10 @@ data: [DONE]
             tools: None,
             stop: None,
             thinking_budget: None,
+            reasoning_enabled: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -2195,6 +2768,7 @@ data: [DONE]
                 cache_read_tokens: None,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             },
             thinking: Some("thinking".to_string()),
         });

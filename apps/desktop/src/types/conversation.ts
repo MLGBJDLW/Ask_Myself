@@ -87,6 +87,17 @@ export interface AgentTaskRunListItem {
   artifactKinds: string[];
 }
 
+export interface AgentTaskRunPageCursor {
+  updatedAt: string;
+  createdAt: string;
+  id: string;
+}
+
+export interface AgentTaskRunSummaryPage {
+  items: AgentTaskRunListItem[];
+  nextCursor?: AgentTaskRunPageCursor | null;
+}
+
 export type AgentRunPhase =
   | 'routing'
   | 'planning'
@@ -171,6 +182,7 @@ export type TaskTimelineEventKind = 'subtask' | 'verification';
 export interface TaskTimelineEvent {
   version: number;
   kind: TaskTimelineEventKind;
+  visibility?: AgentRunEventVisibility;
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;

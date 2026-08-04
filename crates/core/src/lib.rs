@@ -18,6 +18,7 @@ pub mod agent_run;
 pub mod agent_session;
 pub mod app_settings;
 pub mod approval;
+mod background_process;
 pub mod behavioral_eval;
 pub mod browser_runtime;
 pub mod cache;

@@ -14,6 +14,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 blake3 = "1"
 sha2 = "0.10"
+hmac = "0.12"
 filetime = "0.2"
 globset = "0.4"
 ignore = "0.4"

@@ -22,6 +22,25 @@ function endpointUrl(value: string | null | undefined): URL | null {
   }
 }
 
+const TRUSTED_CREDENTIAL_ENDPOINTS: Readonly<Record<string, string>> = {
+  'https://dashscope.aliyuncs.com/compatible-mode/v1': 'alibaba-model-studio:beijing',
+  'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation': 'alibaba-model-studio:beijing',
+  'https://dashscope.aliyuncs.com/api/v1/services/audio/tts': 'alibaba-model-studio:beijing',
+  'https://dashscope-intl.aliyuncs.com/compatible-mode/v1': 'alibaba-model-studio:singapore',
+  'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation': 'alibaba-model-studio:singapore',
+  'https://dashscope-us.aliyuncs.com/compatible-mode/v1': 'alibaba-model-studio:virginia',
+  'https://api.openai.com/v1': 'openai',
+  'https://api.anthropic.com': 'anthropic',
+  'https://api.anthropic.com/v1': 'anthropic',
+  'https://generativelanguage.googleapis.com/v1beta': 'google',
+  'https://api.groq.com/openai/v1': 'groq',
+  'https://api.mistral.ai/v1': 'mistral',
+  'https://api.minimax.io/v1': 'minimax',
+  'https://api.jina.ai/v1': 'jina',
+  'https://api.siliconflow.cn/v1': 'siliconflow',
+  'https://open.bigmodel.cn/api/paas/v4': 'zhipu',
+};
+
 /**
  * Resolve the credential boundary shared by chat and capability providers.
  *
@@ -36,39 +55,22 @@ export function providerCredentialScope(
 ): string {
   const normalizedProvider = provider.trim().toLowerCase();
   const normalizedBaseUrl = normalizedUrl(baseUrl);
-  const endpoint = endpointUrl(baseUrl);
-  const host = endpoint?.hostname ?? '';
-  const usesTrustedTransport = endpoint?.protocol === 'https:' && !endpoint.port;
 
   if (normalizedBaseUrl.includes('token-plan.') || normalizedBaseUrl.includes('coding.dashscope.')) {
     return `endpoint:${normalizedBaseUrl}`;
   }
 
-  if (usesTrustedTransport && (host === 'dashscope-intl.aliyuncs.com' || host === 'ap-southeast-1.maas.aliyuncs.com')) {
-    return 'alibaba-model-studio:singapore';
-  }
-  if (usesTrustedTransport && (host === 'dashscope-us.aliyuncs.com' || host === 'us-east-1.maas.aliyuncs.com')) {
-    return 'alibaba-model-studio:virginia';
-  }
-  if (usesTrustedTransport && (host === 'dashscope.aliyuncs.com' || host === 'cn-beijing.maas.aliyuncs.com')) {
-    return 'alibaba-model-studio:beijing';
-  }
-
-  const hostScopes: Array<[string, string]> = [
-    ['api.openai.com', 'openai'],
-    ['api.anthropic.com', 'anthropic'],
-    ['generativelanguage.googleapis.com', 'google'],
-    ['api.groq.com', 'groq'],
-    ['api.mistral.ai', 'mistral'],
-    ['api.minimax.io', 'minimax'],
-    ['api.jina.ai', 'jina'],
-    ['api.siliconflow.cn', 'siliconflow'],
-    ['open.bigmodel.cn', 'zhipu'],
-  ];
-  const knownHost = usesTrustedTransport
-    ? hostScopes.find(([candidate]) => host === candidate)
-    : null;
-  if (knownHost) return knownHost[1];
+  const endpoint = endpointUrl(baseUrl);
+  const hasTrustedShape = endpoint?.protocol === 'https:'
+    && !endpoint.port
+    && !endpoint.username
+    && !endpoint.password
+    && !endpoint.search
+    && !endpoint.hash;
+  const trustedScope = hasTrustedShape
+    ? TRUSTED_CREDENTIAL_ENDPOINTS[normalizedBaseUrl]
+    : undefined;
+  if (trustedScope) return trustedScope;
 
   // Unknown or user-edited endpoints are never assumed to share credentials,
   // even when their provider label matches a known vendor.

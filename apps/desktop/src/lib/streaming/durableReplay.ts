@@ -42,6 +42,18 @@ export function projectRunEventsToStreamState(
   const state = createDefaultState();
   state.isStreaming = taskRunIsActive(taskRun);
   state.taskRun = taskRun;
+  const startedAt = Date.parse(taskRun.startedAt ?? taskRun.createdAt);
+  const finishedAt = taskRun.finishedAt ? Date.parse(taskRun.finishedAt) : null;
+  if (Number.isFinite(startedAt)) {
+    state.turnTiming = {
+      startedAtEpochMs: startedAt,
+      startedAtMonotonicMs: null,
+      firstEventAtEpochMs: null,
+      firstVisibleOutputAtEpochMs: null,
+      finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+      finishedAtMonotonicMs: null,
+    };
+  }
   state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
   applyDurableRunEventsToState(state, runEvents);
 

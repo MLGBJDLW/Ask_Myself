@@ -63,6 +63,7 @@ interface UseAgentStreamReturn {
   taskRun: StreamState['taskRun'];
   taskEvents: StreamState['taskEvents'];
   turnHandle: StreamState['turnHandle'];
+  turnTiming: StreamState['turnTiming'];
   clearPreview: () => void;
   reset: () => void;
 }
@@ -122,7 +123,8 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
           prev.autoCompacted === next.autoCompacted &&
           prev.pendingApprovals === next.pendingApprovals &&
           prev.taskRun === next.taskRun &&
-          prev.taskEvents === next.taskEvents
+          prev.taskEvents === next.taskEvents &&
+          prev.turnTiming === next.turnTiming
         ) return prev;
         return next;
       });
@@ -200,6 +202,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     send,
     stop,
     turnHandle: resolvedState?.turnHandle ?? null,
+    turnTiming: resolvedState?.turnTiming ?? null,
     isStreaming: resolvedState?.isStreaming ?? false,
     streamText: resolvedState?.streamText ?? '',
     streamRounds: resolvedState?.streamRounds ?? EMPTY_ROUNDS,

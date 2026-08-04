@@ -6,6 +6,8 @@ import {
 } from 'react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import { ProviderIcon } from '../../lib/providerIcons';
+import type { TurnTiming } from '../../lib/streaming/protocol';
+import { formatTimingLatency, useElapsedTime } from '../../lib/useElapsedTime';
 
 interface ContextUsageSegment {
   kind: string;
@@ -57,6 +59,8 @@ interface ChatRunOverviewProps {
   finishReason?: string | null;
   contextOverflow?: boolean;
   isCompacting?: boolean;
+  turnTiming?: TurnTiming | null;
+  taskPhase?: string | null;
 }
 
 const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
@@ -71,6 +75,19 @@ const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
   thinking: 'chat.contextSegmentThinking',
   estimated: 'chat.contextSegmentEstimated',
   other: 'chat.contextSegmentOther',
+};
+
+const TASK_PHASE_KEYS: Record<string, TranslationKey> = {
+  queued: 'chat.taskPhaseQueued',
+  initializing: 'chat.taskPhaseInitializing',
+  routing: 'chat.taskPhaseRouting',
+  reasoning: 'chat.taskPhaseReasoning',
+  tooling: 'chat.taskPhaseTooling',
+  approval: 'chat.taskPhaseApproval',
+  generating: 'chat.taskPhaseGenerating',
+  finalizing: 'chat.taskPhaseFinalizing',
+  cancelling: 'chat.taskPhaseCancelling',
+  done: 'chat.taskPhaseDone',
 };
 
 const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
@@ -188,6 +205,8 @@ export function ChatRunOverview({
   finishReason,
   contextOverflow = false,
   isCompacting = false,
+  turnTiming,
+  taskPhase,
 }: ChatRunOverviewProps) {
   const { t } = useTranslation();
   const overviewRef = useRef<HTMLDivElement>(null);
@@ -195,6 +214,20 @@ export function ChatRunOverview({
   const suppressHoverRef = useRef(false);
   const suppressHoverTimerRef = useRef<number | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const elapsedLabel = useElapsedTime(turnTiming, isStreaming, 3000);
+  const wallLabel = useElapsedTime(turnTiming, isStreaming);
+  const ttfeLabel = turnTiming
+    ? formatTimingLatency(turnTiming.startedAtEpochMs, turnTiming.firstEventAtEpochMs)
+    : null;
+  const ttfvLabel = turnTiming
+    ? formatTimingLatency(turnTiming.startedAtEpochMs, turnTiming.firstVisibleOutputAtEpochMs)
+    : null;
+  const phaseKey = taskPhase ? TASK_PHASE_KEYS[taskPhase] : undefined;
+  const phaseLabel = phaseKey
+    ? t(phaseKey)
+    : isCompacting
+      ? t('chat.compacting')
+      : t('chat.thinking');
 
   const usage = tokenUsage && tokenUsage.contextWindow > 0 ? tokenUsage : null;
   const cacheStats = cacheUsageStats(usage);
@@ -334,7 +367,7 @@ export function ChatRunOverview({
     }
   }, []);
 
-  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow) {
+  if (!usage && !runtimeProfile && !isStreaming && !isCompacting && !contextOverflow && !turnTiming) {
     return null;
   }
 
@@ -374,6 +407,14 @@ export function ChatRunOverview({
         if (!pointerInsideRef.current || suppressHoverRef.current) setDetailsOpen(false);
       }}
     >
+      {elapsedLabel ? (
+        <span
+          data-testid="chat-turn-elapsed"
+          className="mr-1.5 inline-flex h-6 items-center rounded-full border border-accent/25 bg-accent/8 px-2 text-[10px] font-medium tabular-nums text-text-secondary"
+        >
+          {phaseLabel} · {elapsedLabel}
+        </span>
+      ) : null}
       <button
         type="button"
         className="relative flex h-8 w-8 cursor-pointer select-none items-center justify-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35"
@@ -507,6 +548,16 @@ export function ChatRunOverview({
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2">
+          {turnTiming ? (
+            <div
+              data-testid="chat-turn-timing-metrics"
+              className="col-span-2 rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2 text-[10px] tabular-nums text-text-tertiary"
+            >
+              {t('chat.timeToFirstEvent')} {ttfeLabel ?? '—'} ·{' '}
+              {t('chat.timeToFirstVisibleOutput')} {ttfvLabel ?? '—'} ·{' '}
+              {t('chat.wallTime')} {wallLabel ?? '—'}
+            </div>
+          ) : null}
           <div className="rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2">
             <div className="text-[10px] text-text-tertiary">{t('chat.contextHudPromptUsage')}</div>
             <div className="mt-0.5 flex items-baseline gap-1.5">

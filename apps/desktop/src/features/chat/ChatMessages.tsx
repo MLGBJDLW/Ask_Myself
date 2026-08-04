@@ -64,6 +64,7 @@ import {
   skillRefsFromTraceItems,
   toolCallToTimelineSection,
   projectLiveConversationTimeline,
+  formatTurnDuration,
   turnLifecycleTimelineSections,
   type TimelineSkillRef,
   type TimelineSection,
@@ -1138,6 +1139,7 @@ export function ChatMessages(props: ChatMessagesProps) {
   }, [messages]);
 
   const liveTaskRunSkills = useMemo(() => {
+    if (!developerMode) return null;
     if (!taskRun || !isActiveTaskRunStatus(taskRun.status)) return null;
     const userIdx = messageIndexById.get(taskRun.userMessageId);
     if (userIdx == null) return null;
@@ -1148,7 +1150,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       userIdx,
       skills,
     };
-  }, [messageIndexById, taskRun]);
+  }, [developerMode, messageIndexById, taskRun]);
 
   const turnRenderMap = useMemo(() => {
     const anchors = new Map<
@@ -2018,8 +2020,9 @@ export function ChatMessages(props: ChatMessagesProps) {
               liveTaskRunSkills?.turnId === turnRender.turn.id
                 ? liveTaskRunSkills.skills
                 : [];
-            const visibleSkills =
-              traceSkills.length > 0 ? traceSkills : liveSkills;
+            const visibleSkills = developerMode
+              ? traceSkills.length > 0 ? traceSkills : liveSkills
+              : [];
             const skillsAreLive =
               traceSkills.length === 0 && liveSkills.length > 0;
 
@@ -2090,6 +2093,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                       onDeleteMessage={onDeleteMessage}
                       onEditAndResend={onEditAndResend}
                       onApprovePlan={onApprovePlan}
+                      turnDurationLabel={formatTurnDuration(turnRender.turn)}
                     />
                   )}
 
@@ -2158,7 +2162,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 : undefined}
               data-chat-turn-id={navigationItem?.id}
             >
-              {traceSkills.length > 0 && (
+              {developerMode && traceSkills.length > 0 && (
                 <TurnSkillStrip skills={traceSkills} live={false} />
               )}
 
@@ -2199,7 +2203,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 />
               )}
 
-              {liveUserSkills.length > 0 && (
+              {developerMode && liveUserSkills.length > 0 && (
                 <TurnSkillStrip skills={liveUserSkills} live />
               )}
 

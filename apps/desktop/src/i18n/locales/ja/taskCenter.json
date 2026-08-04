@@ -78,5 +78,10 @@
   "stopped": "Stop requested",
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
-  "artifactFallbackTitle": "Artifact"
+  "artifactFallbackTitle": "成果物",
+  "loadMore": "さらに読み込む",
+  "loadDetails": "このセクションを選択して詳細を読み込みます。",
+  "noEvents": "タスク履歴はまだありません。",
+  "noExecutionGraph": "実行グラフはまだありません。",
+  "noTools": "利用できるツール権限情報はありません。"
 }

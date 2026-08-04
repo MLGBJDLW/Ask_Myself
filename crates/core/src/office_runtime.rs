@@ -4,8 +4,6 @@
 //! that dependency story explicit, auditable, and local to the app.
 
 use std::ffi::OsString;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -17,8 +15,6 @@ pub const OFFICE_PYTHON_BIN_DIR_ENV: &str = "NEXA_OFFICE_PYTHON_BIN_DIR";
 
 const OFFICE_ENV_DIR: &str = "runtimes/office-python";
 const DOC_SCRIPT_SKILL: &str = "doc-script-editor";
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const SEM_FAILCRITICALERRORS: u32 = 0x0001;
 #[cfg(windows)]
@@ -48,13 +44,9 @@ fn with_suppressed_process_error_dialogs<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-#[cfg(windows)]
 fn apply_quiet_command_options(cmd: &mut Command) {
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::background_process::configure_std_background(cmd);
 }
-
-#[cfg(not(windows))]
-fn apply_quiet_command_options(_cmd: &mut Command) {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

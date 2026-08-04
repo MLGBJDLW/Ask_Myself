@@ -41,6 +41,7 @@ export function createDefaultState(): InternalStreamState {
     pendingApprovals: [],
     taskRun: null,
     taskEvents: [],
+    turnTiming: null,
     _toolCallSeq: 0,
     _roundSeq: 0,
     _traceSeq: 0,

@@ -227,6 +227,25 @@ pub async fn list_recent_agent_task_runs_cmd(
 }
 
 #[tauri::command]
+pub async fn list_agent_task_run_summaries_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+    cursor: Option<AgentTaskRunPageCursor>,
+    status: Option<String>,
+    project_id: Option<String>,
+) -> Result<AgentTaskRunSummaryPage, String> {
+    state
+        .db
+        .list_agent_task_run_summaries(
+            limit.unwrap_or(25),
+            cursor.as_ref(),
+            status.as_deref(),
+            project_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_run_events_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
@@ -858,6 +877,9 @@ pub async fn generate_title_cmd(
                                 usage_source: "provider",
                                 request_status: "success",
                                 latency_ms: None,
+                                time_to_first_token_ms: None,
+                                upstream_provider_id: None,
+                                cache_outcome_reason: None,
                                 estimated_cost_micros,
                                 currency,
                                 pricing_version,
@@ -953,6 +975,17 @@ pub async fn compact_conversation_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<CompactConversationResult, String> {
+    if state
+        .db
+        .conversation_has_active_agent_task_run(&conversation_id)
+        .map_err(|e| e.to_string())?
+    {
+        return Err(
+            "Wait for the active response to finish before compacting this conversation"
+                .to_string(),
+        );
+    }
+
     // 1. Load conversation and its messages.
     let conv = state
         .db
@@ -1050,19 +1083,24 @@ pub async fn compact_conversation_cmd(
     }
 
     // 3. Run compaction (creates a checkpoint before evicting).
-    let compacted = executor
-        .compact_conversation(&conversation_id, messages, Some(&state.db), "manual")
+    let compaction = executor
+        .compact_conversation(&conversation_id, &messages, Some(&state.db), "manual")
         .await
         .map_err(|e| e.to_string())?;
+    let checkpoint_id = compaction.checkpoint_id;
+    let compacted = compaction.messages;
 
-    // 4. Replace messages in DB: delete old, insert compacted.
+    // 4. Replace the retained projection atomically. This is a single SQLite
+    // transaction, avoiding one autocommit/fsync per retained message.
     state
         .db
-        .delete_messages(&conversation_id)
+        .replace_messages_if_unchanged(
+            &conversation_id,
+            &messages,
+            &compacted,
+            checkpoint_id.as_deref(),
+        )
         .map_err(|e| e.to_string())?;
-    for msg in &compacted {
-        state.db.add_message(msg).map_err(|e| e.to_string())?;
-    }
 
     let messages_after = compacted.len();
     let evicted_messages = if messages_after < messages_before {
@@ -1318,6 +1356,7 @@ pub async fn set_default_agent_config_cmd(
 pub async fn test_agent_connection_cmd(
     config: SaveAgentConfigInput,
 ) -> Result<ProviderModelCatalogSnapshot, String> {
+    validate_agent_config_credential_contract(&config).map_err(|error| error.to_string())?;
     let provider_config = ProviderConfig {
         provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),
@@ -1367,6 +1406,7 @@ pub async fn test_agent_connection_cmd(
 pub async fn refresh_provider_model_catalog_cmd(
     config: SaveAgentConfigInput,
 ) -> Result<ProviderModelCatalogSnapshot, String> {
+    validate_agent_config_credential_contract(&config).map_err(|error| error.to_string())?;
     let provider_config = ProviderConfig {
         provider_type: provider_type_for_input(&config),
         api_key: Some(config.api_key.clone()),

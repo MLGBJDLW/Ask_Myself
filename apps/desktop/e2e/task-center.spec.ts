@@ -13,6 +13,7 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
     let stopCount = 0;
     let openFileCount = 0;
+    const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 
     const runningTask = {
       run: {
@@ -76,9 +77,9 @@ test.beforeEach(async ({ page }) => {
       artifactKinds: ['verification'],
     };
     const events = [
-      { id: 'event-1', runId: 'run-live', eventType: 'status', label: 'Task queued', status: 'queued', payload: null, createdAt: nowIso },
+      { id: 'event-1', runId: 'run-live', eventType: 'status', label: 'Task queued', status: 'queued', payload: { eventSeq: 1, taskTimeline: { kind: 'subtask', visibility: 'user' } }, createdAt: nowIso },
       { id: 'event-2', runId: 'run-live', eventType: 'status', label: 'Researcher started', status: 'running', payload: null, createdAt: nowIso },
-      { id: 'event-3', runId: 'run-live', eventType: 'tool', label: 'record_verification', status: 'completed', payload: null, createdAt: nowIso },
+      { id: 'event-3', runId: 'run-live', eventType: 'verification', label: 'Evidence audit: passed', status: 'completed', payload: { eventSeq: 3, taskTimeline: { kind: 'verification', visibility: 'developer' } }, createdAt: nowIso },
     ];
     const subtasks = [
       { id: 'sub-1', parentRunId: 'run-live', label: 'Collect evidence', role: 'Researcher', status: 'completed', phase: 'done', input: null, output: { summary: 'Evidence collected' }, errorMessage: null, tokenBudget: 1600, createdAt: nowIso, updatedAt: nowIso, startedAt: nowIso, finishedAt: nowIso },
@@ -145,6 +146,7 @@ test.beforeEach(async ({ page }) => {
     ];
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
+      invokeCalls.push({ cmd, args: clone(args) });
       switch (cmd) {
         case 'plugin:app|version':
           return '0.2.9';
@@ -165,8 +167,8 @@ test.beforeEach(async ({ page }) => {
           return null;
         case 'get_wizard_state_cmd':
           return { completed: true };
-        case 'list_recent_agent_task_runs_cmd':
-          return [clone(runningTask), clone(failedTask)];
+        case 'list_agent_task_run_summaries_cmd':
+          return { items: [clone(runningTask), clone(failedTask)], nextCursor: null };
         case 'get_agent_task_run_events_cmd':
           return clone(events);
         case 'get_agent_subtask_runs_cmd':
@@ -318,6 +320,7 @@ test.beforeEach(async ({ page }) => {
     (window as unknown as { __taskStopCount: number }).__taskStopCount = 0;
     (window as unknown as { __openFileCount: number }).__openFileCount = 0;
     (window as unknown as { __artifactUpdateCount: number }).__artifactUpdateCount = 0;
+    (window as unknown as { __taskCenterInvokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> }).__taskCenterInvokeCalls = invokeCalls;
     (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
       unregisterListener: (_event: string, eventId: number) => {
         listeners.delete(eventId);
@@ -330,13 +333,22 @@ test('task center manages runs, graph, project memory, artifacts, and risk map',
   await page.goto('/tasks');
 
   await expect(page.getByRole('heading', { name: 'Task Center' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Prepare board brief' })).toBeVisible();
+  await expect(page.getByText('Prepare board brief')).toBeVisible();
   await expect(page.getByText('Verify market claims')).toBeVisible();
-  await expect(page.getByText('Execution Graph', { exact: true })).toBeVisible();
+  const initialCalls = await page.evaluate(() => {
+    const calls = (window as unknown as { __taskCenterInvokeCalls: Array<{ cmd: string }> }).__taskCenterInvokeCalls;
+    return calls.map((call) => call.cmd);
+  });
+  expect(initialCalls.filter((cmd) => cmd === 'list_agent_task_run_summaries_cmd').length).toBeLessThanOrEqual(2);
+  expect(initialCalls.filter((cmd) => cmd.includes('get_agent_task_run') || cmd.includes('execution_graph'))).toEqual([]);
+
+  await page.getByRole('button', { name: /Prepare board brief/ }).click();
+  await expect(page.getByRole('heading', { name: 'Prepare board brief' })).toBeVisible();
+  await page.getByRole('button', { name: 'Execution Graph' }).click();
   await expect(page.locator('body')).toContainText('Collect evidence');
   await expect(page.locator('body')).toContainText('Check citations');
   await expect(page.locator('body')).toContainText('Challenge assumptions');
-  await expect(page.getByText('Artifacts', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Artifacts' }).click();
   await expect(page.getByText('brief').first()).toBeVisible();
   await expect(page.getByText('board-brief.docx')).toBeVisible();
   await page.getByRole('button', { name: 'Open file: board-brief.docx' }).click();
@@ -357,13 +369,31 @@ test('task center manages runs, graph, project memory, artifacts, and risk map',
     { timeout: 5000 },
   );
   await expect(page.locator('body')).toContainText('v2');
-  await expect(page.getByText('Project Memory', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Project Memory' }).click();
   await expect(page.getByText('Board format')).toBeVisible();
-  await expect(page.getByText('Tool Risk Map', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Tool Risk Map' }).click();
   await expect(page.getByText('run_shell')).toBeVisible();
   await expect(page.getByText('get_document_info')).toBeVisible();
   await expect(page.locator('body')).toContainText('Policy: allow session');
   await expect(page.locator('body')).toContainText('Policy: deny forever');
+
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Task queued', { exact: true })).toBeVisible();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
+  await page.evaluate(() => {
+    localStorage.setItem('nexa-developer-mode', 'true');
+    window.dispatchEvent(new CustomEvent('nexa-developer-mode-change', { detail: true }));
+  });
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    localStorage.removeItem('nexa-developer-mode');
+    window.dispatchEvent(new CustomEvent('nexa-developer-mode-change', { detail: false }));
+  });
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Task queued', { exact: true })).toBeVisible();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Cancel task' }).click();
   await page.waitForFunction(
