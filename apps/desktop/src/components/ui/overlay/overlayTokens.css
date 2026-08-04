@@ -26,6 +26,16 @@
   animation: nexa-overlay-close 90ms ease-in;
 }
 
+.nexa-overlay-content.nexa-command-overlay {
+  --overlay-blur: 0px;
+  contain: layout paint;
+  animation: nexa-command-overlay-open var(--motion-duration-fast) var(--motion-ease-emphasized);
+}
+
+.nexa-overlay-content.nexa-command-overlay[data-state='closed'] {
+  animation: nexa-command-overlay-close var(--motion-duration-instant) var(--motion-ease-standard);
+}
+
 .nexa-overlay-item {
   position: relative;
   display: flex;
@@ -94,6 +104,16 @@
 @keyframes nexa-overlay-close {
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(2px) scale(0.985); }
+}
+
+@keyframes nexa-command-overlay-open {
+  from { opacity: 0; transform: translate3d(0, 4px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes nexa-command-overlay-close {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, 2px, 0); }
 }
 
 @media (prefers-reduced-motion: reduce) {

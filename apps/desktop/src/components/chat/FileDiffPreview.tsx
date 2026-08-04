@@ -4,6 +4,7 @@ import { useTranslation } from '../../i18n';
 import type { ArtifactPayload } from '../../types/conversation';
 import { FileBadge, isAbsoluteFileSystemPath } from '../ui/FileBadge';
 import { DiffStatsTicker } from './DiffStatsTicker';
+import { CollapsibleMotion } from '../ui/Motion';
 
 type FileDiffLineType = 'context' | 'addition' | 'deletion';
 
@@ -472,7 +473,7 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
         />
       </div>
 
-      {panelOpen && (
+      <CollapsibleMotion open={panelOpen} mode="heavy">
         <div className="divide-y divide-border/45">
           {visibleDiffs.map((diff, index) => {
             const key = diffIdentityKey(diff);
@@ -517,11 +518,11 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
                     showReplacements={false}
                   />
                 </button>
-                {expanded && (
+                <CollapsibleMotion open={expanded} mode="heavy">
                   <div className="border-t border-border/40">
                     <FileDiffBody diff={diff} compact />
                   </div>
-                )}
+                </CollapsibleMotion>
               </div>
             );
           })}
@@ -542,7 +543,7 @@ export function FileDiffSummaryPanel({ diffs }: { diffs: FileDiffArtifact[] }) {
             </button>
           ) : null}
         </div>
-      )}
+      </CollapsibleMotion>
     </div>
   );
 }
@@ -625,9 +626,9 @@ export function FileDiffPreview({
         />
       </div>
 
-      {expanded ? (
+      <CollapsibleMotion open={expanded} mode="heavy">
         <FileDiffBody diff={diff} compact={compact} live={live} />
-      ) : null}
+      </CollapsibleMotion>
     </div>
   );
 }

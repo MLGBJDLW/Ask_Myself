@@ -68,6 +68,15 @@ test.beforeEach(async ({ page }) => {
       sourcePath: null,
       resources: [],
     };
+    const extraSkills = Array.from({ length: 20 }, (_, index) => ({
+      ...frontendSkill,
+      id: `builtin-extra-${index}`,
+      name: `z-extra-${String(index).padStart(2, '0')}`,
+      interface: {
+        ...frontendSkill.interface,
+        displayName: `Z Extra ${index}`,
+      },
+    }));
 
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -94,7 +103,7 @@ test.beforeEach(async ({ page }) => {
         case 'list_workflow_templates_cmd':
           return [];
         case 'list_builtin_skills_cmd':
-          return [clone(frontendSkill)];
+          return [clone(frontendSkill), ...clone(extraSkills)];
         case 'list_skills_cmd':
           return [];
         case 'list_agent_configs_cmd':
@@ -252,11 +261,15 @@ test('slash command menu uses the shared collision-aware overlay portal', async 
   await page.setViewportSize({ width: 640, height: 520 });
   await page.goto('/chat/conv-slash');
   await page.getByTestId('chat-input-textarea').fill('/');
+  await page.waitForTimeout(180);
 
   const bounds = await page.getByTestId('slash-command-menu').evaluate((menu) => {
     const rect = menu.getBoundingClientRect();
+    const styles = getComputedStyle(menu);
     return {
       inOverlayRoot: Boolean(menu.closest('[data-nexa-overlay-root="true"]')),
+      backdropFilter: styles.backdropFilter,
+      animationName: styles.animationName,
       left: rect.left,
       right: rect.right,
       top: rect.top,
@@ -267,10 +280,21 @@ test('slash command menu uses the shared collision-aware overlay portal', async 
   });
 
   expect(bounds.inOverlayRoot).toBe(true);
+  expect(bounds.backdropFilter).toMatch(/^(none|blur\(0px\))$/);
+  expect(bounds.animationName).toContain('nexa-command-overlay');
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.top).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth);
   expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
+});
+
+test('slash command menu caps mounted rows and reports hidden matches', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+  await page.getByTestId('chat-input-textarea').fill('/');
+
+  const list = page.getByTestId('slash-command-list');
+  await expect(list.getByRole('option')).toHaveCount(16);
+  await expect(page.getByTestId('slash-command-hidden-count')).toContainText('+');
 });
 
 test('slash command keyboard selection scrolls with the active row', async ({ page }) => {

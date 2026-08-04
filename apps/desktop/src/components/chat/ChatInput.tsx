@@ -46,6 +46,7 @@ import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { EmojiPicker } from "./EmojiPicker";
 import { Modal } from "../ui/Modal";
+import { CollapsibleMotion } from "../ui/Motion";
 
 const LLM_CONTEXT_CONTENT_ARTIFACT_KEY = "llmContextContent";
 
@@ -396,6 +397,7 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const slashListRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
   const draftsRef = useRef<Record<string, ChatDraftState>>(
     initialDraftRef.current ? { [draftKey]: cloneDraftState(initialDraftRef.current) } : {},
@@ -679,6 +681,11 @@ export function ChatInput({
       : slashMatches.filter((option) => option.kind === slashActiveTab),
     [slashActiveTab, slashMatches],
   );
+  const renderedSlashMatches = useMemo(
+    () => visibleSlashMatches.slice(0, 16),
+    [visibleSlashMatches],
+  );
+  const hiddenSlashMatchCount = Math.max(0, visibleSlashMatches.length - renderedSlashMatches.length);
   const slashEnabledTabs = useMemo(
     () => SLASH_COMMAND_TABS.filter((tab) => tab === "all" || slashTabCounts[tab] > 0),
     [slashTabCounts],
@@ -688,8 +695,8 @@ export function ChatInput({
     !inputLocked &&
     dismissedSlashToken !== slashTrigger.token,
   );
-  const activeSlashIndex = Math.min(slashSelectedIndex, Math.max(0, visibleSlashMatches.length - 1));
-  const activeSlashOption = visibleSlashMatches[activeSlashIndex];
+  const activeSlashIndex = Math.min(slashSelectedIndex, Math.max(0, renderedSlashMatches.length - 1));
+  const activeSlashOption = renderedSlashMatches[activeSlashIndex];
 
   useEffect(() => {
     setSlashSelectedIndex(0);
@@ -707,13 +714,20 @@ export function ChatInput({
   }, [slashActiveTab, slashMenuOpen, slashTabCounts]);
 
   useEffect(() => {
-    slashOptionRefs.current.length = visibleSlashMatches.length;
-  }, [visibleSlashMatches.length]);
+    slashOptionRefs.current.length = renderedSlashMatches.length;
+  }, [renderedSlashMatches.length]);
 
   useEffect(() => {
     if (!slashMenuOpen) return;
-    slashOptionRefs.current[activeSlashIndex]?.scrollIntoView({ block: "nearest" });
-  }, [activeSlashIndex, slashMenuOpen, visibleSlashMatches]);
+    const option = slashOptionRefs.current[activeSlashIndex];
+    const list = slashListRef.current;
+    if (!option || !list) return;
+    const optionBounds = option.getBoundingClientRect();
+    const listBounds = list.getBoundingClientRect();
+    if (optionBounds.top < listBounds.top || optionBounds.bottom > listBounds.bottom) {
+      option.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeSlashIndex, slashMenuOpen, renderedSlashMatches]);
 
   const updateCaretFromTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -909,7 +923,7 @@ export function ChatInput({
       if (slashMenuOpen && slashTrigger) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          setSlashSelectedIndex((index) => Math.min(index + 1, Math.max(0, visibleSlashMatches.length - 1)));
+          setSlashSelectedIndex((index) => Math.min(index + 1, Math.max(0, renderedSlashMatches.length - 1)));
           return;
         }
         if (e.key === "ArrowUp") {
@@ -967,7 +981,7 @@ export function ChatInput({
       slashEnabledTabs,
       slashMenuOpen,
       slashTrigger,
-      visibleSlashMatches.length,
+      renderedSlashMatches.length,
     ],
   );
 
@@ -1375,7 +1389,7 @@ export function ChatInput({
           collisionPadding={16}
           onOpenAutoFocus={(event) => event.preventDefault()}
           onCloseAutoFocus={(event) => event.preventDefault()}
-          className="w-[min(34rem,calc(100vw-2rem))] overflow-hidden p-0"
+          className="nexa-command-overlay w-[min(34rem,calc(100vw-2rem))] overflow-hidden p-0"
         >
           <div className="border-b border-border/60 px-2.5 py-1.5">
             <div className="flex min-h-7 items-center gap-2">
@@ -1385,10 +1399,15 @@ export function ChatInput({
                 <div className="truncate text-[10px] text-text-tertiary">/{slashTrigger.query}</div>
               </div>
               <div
+                data-testid={hiddenSlashMatchCount > 0 ? "slash-command-hidden-count" : undefined}
                 className="ml-auto rounded-md border border-border/60 bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase text-text-tertiary"
                 aria-label={t("chat.slashCommandCount", { count: String(visibleSlashMatches.length) })}
               >
-                {visibleSlashMatches.length === 0 ? t("chat.slashCommandNoMatch") : visibleSlashMatches.length}
+                {visibleSlashMatches.length === 0
+                  ? t("chat.slashCommandNoMatch")
+                  : hiddenSlashMatchCount > 0
+                    ? `${renderedSlashMatches.length} +${hiddenSlashMatchCount}`
+                    : visibleSlashMatches.length}
               </div>
             </div>
 
@@ -1427,12 +1446,13 @@ export function ChatInput({
           {visibleSlashMatches.length > 0 ? (
             <>
               <div
+                ref={slashListRef}
                 data-testid="slash-command-list"
                 className="max-h-52 overflow-y-auto p-1"
                 role="listbox"
                 aria-label={t("chat.slashCommands")}
               >
-                {visibleSlashMatches.map((option, index) => {
+                {renderedSlashMatches.map((option, index) => {
                 const active = index === activeSlashIndex;
                 const Icon = option.kind === "skill" ? BrainCircuit : option.kind === "workflow" ? Workflow : Command;
                 const optionTitle = getSlashOptionTitle(option);
@@ -1521,15 +1541,15 @@ export function ChatInput({
             effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
           }`}
         >
-        <AnimatePresence initial={false}>
-          {activeSlashCommand && (
-            <motion.div
+        <CollapsibleMotion
+          open={Boolean(activeSlashCommand)}
+          testId="active-slash-command-motion"
+          contentClassName="border-b border-border/35 bg-linear-to-r from-accent/10 via-accent/4 to-transparent"
+        >
+          {activeSlashCommand ? (
+            <div
               data-testid="active-slash-command"
-              className="flex items-center border-b border-border/35 bg-linear-to-r from-accent/10 via-accent/4 to-transparent px-3 py-2"
-              initial={{ opacity: 0, height: 0, y: -6 }}
-              animate={{ opacity: 1, height: 'auto', y: 0 }}
-              exit={{ opacity: 0, height: 0, y: -5 }}
-              transition={{ type: 'spring', stiffness: 430, damping: 34 }}
+              className="flex items-center px-3 py-2"
             >
               <button
                 type="button"
@@ -1547,9 +1567,9 @@ export function ChatInput({
                   <X size={11} />
                 </span>
               </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+          ) : null}
+        </CollapsibleMotion>
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 border-b border-border/35 px-3 py-2">
             {attachments.map((att, i) => (

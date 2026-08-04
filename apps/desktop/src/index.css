@@ -74,9 +74,89 @@
   --radius-full: 9999px;
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-duration-instant: 80ms;
+  --motion-duration-fast: 120ms;
+  --motion-duration-normal: 160ms;
+  --motion-duration-deliberate: 220ms;
   --duration-fast: 150ms;
   --duration-normal: 250ms;
   --duration-slow: 400ms;
+}
+
+.nexa-collapsible-motion {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-width: 0;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--motion-duration-normal) var(--motion-ease-emphasized),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.nexa-collapsible-motion[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.nexa-collapsible-motion__content {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.nexa-collapsible-motion--heavy {
+  contain: layout paint;
+  transition-duration: var(--motion-duration-deliberate), var(--motion-duration-fast);
+}
+
+.nexa-collapsible-motion--heavy > .nexa-collapsible-motion__content {
+  clip-path: inset(0 0 100% 0);
+  opacity: 0;
+  transform: translate3d(0, -4px, 0);
+  transition:
+    clip-path var(--motion-duration-deliberate) var(--motion-ease-emphasized),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-normal) var(--motion-ease-emphasized);
+}
+
+.nexa-collapsible-motion--heavy[data-open='true'] > .nexa-collapsible-motion__content {
+  clip-path: inset(0);
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.nexa-fade-motion {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.nexa-fade-motion[data-visible='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.nexa-overlay-motion {
+  contain: layout paint;
+  animation: nexa-overlay-motion-enter var(--motion-duration-fast) var(--motion-ease-emphasized);
+}
+
+@keyframes nexa-overlay-motion-enter {
+  from { opacity: 0; transform: translate3d(0, 4px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nexa-collapsible-motion,
+  .nexa-collapsible-motion--heavy > .nexa-collapsible-motion__content,
+  .nexa-fade-motion,
+  .nexa-overlay-motion {
+    animation: none;
+    transition-duration: 1ms;
+    transform: none;
+  }
 }
 
 /* ── Light theme ──────────────────────────────────────────────────── */
