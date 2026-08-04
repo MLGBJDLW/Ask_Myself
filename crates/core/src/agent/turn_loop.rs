@@ -717,6 +717,8 @@ impl AgentExecutor {
         }
 
         let mut workflow_gate_repair_rounds = 0u8;
+        let mut final_answer_recovery_attempts = 0u8;
+        let mut force_answer_only_next_step = false;
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
@@ -824,6 +826,8 @@ impl AgentExecutor {
                 WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
 
+            let force_answer_only = force_answer_only_next_step;
+            force_answer_only_next_step = false;
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -843,6 +847,7 @@ impl AgentExecutor {
                     sort_order: &mut sort_order,
                     context_recovery_attempts: &mut context_recovery_attempts,
                     force_non_streaming_llm: &mut force_non_streaming_llm,
+                    force_answer_only,
                 })
                 .await;
             let model_step = match model_step_result {
@@ -860,11 +865,13 @@ impl AgentExecutor {
                 }
             };
             let model_step::ModelStepOutput {
-                mut full_content,
+                full_content,
                 mut tool_calls,
                 chunk_usage,
                 iteration_thinking,
-                last_finish_reason: step_finish_reason,
+                answer_delta_seen,
+                thinking_delta_seen,
+                finish_reason: step_finish_reason,
                 mut started_call_ids,
                 mut tool_run_started_ids,
                 prompt_cache_observation,
@@ -882,7 +889,11 @@ impl AgentExecutor {
             if let Some(isolation) = workspace_isolation.as_mut() {
                 isolation.rewrite_tool_calls(&mut tool_calls)?;
             }
-            last_finish_reason = step_finish_reason;
+            let step_finish_reason_kind = step_finish_reason.clone();
+            let step_finish_reason = step_finish_reason
+                .as_ref()
+                .map(|reason| format!("{reason:?}").to_lowercase());
+            last_finish_reason = step_finish_reason.clone();
             let request_was_compacted = prompt_was_compacted;
             // -- 4b. Accumulate usage ------------------------------------------
             let usage_report = self
@@ -927,15 +938,90 @@ impl AgentExecutor {
             }
             prompt_was_compacted = usage_report.compacted_after_step;
 
-            if !full_content.trim().is_empty() {
-                last_iteration_content = full_content.clone();
-            } else if !iteration_thinking.is_empty() && tool_calls.is_empty() {
-                // All content went to thinking (e.g. entire response wrapped in
-                // <think> tags). Use thinking as the visible content so the DB
-                // message is not empty.
-                full_content = iteration_thinking.clone();
-                last_iteration_content = full_content.clone();
+            let missing_final_answer = tool_calls.is_empty() && full_content.trim().is_empty();
+            if missing_final_answer {
+                if thinking_delta_seen {
+                    append_persisted_trace_thinking(
+                        &mut persisted_trace_items,
+                        &iteration_thinking,
+                    );
+                }
+
+                let finish_reason = step_finish_reason.as_deref().unwrap_or("unknown");
+                let thought_only = !answer_delta_seen && thinking_delta_seen;
+                let recovery_detail = if thought_only {
+                    format!(
+                        "The provider finished with reasoning but no final answer (finish reason: {finish_reason})."
+                    )
+                } else {
+                    format!(
+                        "The provider finished without a final answer (finish reason: {finish_reason})."
+                    )
+                };
+
+                let response_was_filtered = matches!(
+                    step_finish_reason_kind,
+                    Some(crate::llm::FinishReason::ContentFilter)
+                );
+                if !response_was_filtered
+                    && final_answer_recovery_attempts == 0
+                    && iteration + 1 < self.config.max_iterations
+                {
+                    final_answer_recovery_attempts = 1;
+                    force_answer_only_next_step = true;
+                    append_internal_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &format!("{recovery_detail} Retrying once for an answer-only response."),
+                        "warning",
+                    );
+                    let _ = tx
+                        .send(AgentEvent::ControllerStatus {
+                            code: "final_answer_recovery".to_string(),
+                            content: "The model ended before producing a final answer. Retrying once with reasoning kept separate.".to_string(),
+                            tone: Some("warning".to_string()),
+                        })
+                        .await;
+                    if let Some(message) = prompt_ir::controller_state_message(
+                        "The previous provider response ended without any answer-channel text. Do not repeat or expose hidden reasoning. Return only the concise final answer for the user's original request.",
+                    ) {
+                        messages.push(message);
+                    }
+                    continue 'react_loop;
+                }
+
+                let frontend_message = if response_was_filtered {
+                    "The provider blocked the response before producing a final answer. Its reasoning was kept separate; revise the request and try again."
+                } else if finish_reason == "length" {
+                    "The model exhausted its output budget before producing a final answer. Its reasoning was kept separate; retry the response or increase the output budget."
+                } else {
+                    "The model finished without producing a final answer. Its reasoning was kept separate; retry the response."
+                };
+                let trace_message = format!(
+                    "provider_finished_without_answer: finish_reason={finish_reason}, answer_delta_seen={answer_delta_seen}, thinking_delta_seen={thinking_delta_seen}"
+                );
+                append_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    frontend_message,
+                    "error",
+                );
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: frontend_message.to_string(),
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
             }
+
+            last_iteration_content = full_content.clone();
 
             // -- 4c. Build assistant message -----------------------------------
             let assistant_reasoning_content =
@@ -1175,7 +1261,7 @@ impl AgentExecutor {
                 }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
                 turn_state.transition_to(TurnPhase::Finalizing);
-                let assistant_msg = self
+                let finalized = self
                     .finish_successful_turn(
                         finalization::TurnFinalizationContext {
                             db,
@@ -1192,6 +1278,7 @@ impl AgentExecutor {
                         },
                         assistant_msg,
                         assistant_reasoning_content,
+                        answer_delta_seen,
                         user_query_text,
                         cache_source_filter.as_deref(),
                         total_usage,
@@ -1200,6 +1287,13 @@ impl AgentExecutor {
                         last_finish_reason,
                     )
                     .await;
+                let assistant_msg = match finalized {
+                    Ok(message) => message,
+                    Err(error) => {
+                        turn_state.finish(TurnOutcome::Failed);
+                        return Err(error);
+                    }
+                };
                 turn_state.finish(TurnOutcome::Success);
                 return Ok(assistant_msg);
             }

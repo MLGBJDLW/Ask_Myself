@@ -578,6 +578,43 @@ fn normalize_thinking_budget(model: &str, budget: u32) -> i32 {
     budget.min(i32::MAX as u32) as i32
 }
 
+/// Nexa policy: keep a bounded share of Gemini's output budget available for
+/// answer-channel text. Google reports thought tokens separately, but they are
+/// still generated within the response budget; this clamp is a client-side
+/// safety margin rather than a Gemini protocol guarantee.
+fn thinking_budget_with_answer_reserve(
+    model: &str,
+    budget: u32,
+    max_output_tokens: Option<u32>,
+) -> Option<i32> {
+    let normalized = normalize_thinking_budget(model, budget).max(0) as u32;
+    if normalized == 0 {
+        return Some(0);
+    }
+    let Some(max_output_tokens) = max_output_tokens else {
+        return Some(normalized.min(i32::MAX as u32) as i32);
+    };
+
+    let answer_reserve = (max_output_tokens / 4)
+        .clamp(128, 2_048)
+        .min(max_output_tokens);
+    let thinking_ceiling = max_output_tokens.saturating_sub(answer_reserve);
+    let model_name = normalized_model_name(model).to_ascii_lowercase();
+    let minimum_supported_budget = if model_name.starts_with("gemini-2.5-flash-lite") {
+        512
+    } else if model_name.starts_with("gemini-2.5-pro") {
+        128
+    } else {
+        0
+    };
+
+    if thinking_ceiling < minimum_supported_budget {
+        return None;
+    }
+
+    Some(normalized.min(thinking_ceiling).min(i32::MAX as u32) as i32)
+}
+
 fn build_request_body(
     request: &CompletionRequest,
     system_instruction: Option<GeminiSystemInstructionV2>,
@@ -598,13 +635,15 @@ fn build_request_body(
                     include_thoughts: Some(true),
                 })
         } else {
-            request.thinking_budget.map(|budget| {
-                GeminiThinkingConfig {
-                    thinking_budget: Some(normalize_thinking_budget(&request.model, budget)),
-                    thinking_level: None,
-                    // Required to receive `thought: true` parts in streaming/non-streaming responses.
-                    include_thoughts: Some(true),
-                }
+            request.thinking_budget.and_then(|budget| {
+                thinking_budget_with_answer_reserve(&request.model, budget, request.max_tokens).map(
+                    |thinking_budget| GeminiThinkingConfig {
+                        thinking_budget: Some(thinking_budget),
+                        thinking_level: None,
+                        // Required to receive `thought: true` parts in streaming/non-streaming responses.
+                        include_thoughts: Some(true),
+                    },
+                )
             })
         }
     } else {
@@ -1517,8 +1556,34 @@ mod tests {
         let gc = body.generation_config.expect("generation config");
         let tc = gc.thinking_config.expect("thinking config");
         assert_eq!(tc.include_thoughts, Some(true));
-        assert_eq!(tc.thinking_budget, Some(2048));
+        assert_eq!(tc.thinking_budget, Some(128));
         assert_eq!(tc.thinking_level, None);
+    }
+
+    #[test]
+    fn test_thinking_budget_reserves_output_capacity_for_final_answer() {
+        let request = CompletionRequest {
+            model: "gemini-2.5-flash".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.2),
+            max_tokens: Some(4096),
+            tools: None,
+            stop: None,
+            thinking_budget: Some(4096),
+            reasoning_enabled: Some(true),
+            reasoning_effort: None,
+            provider_type: None,
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = build_request_body(&request, None, vec![]);
+        let thinking = body
+            .generation_config
+            .and_then(|config| config.thinking_config)
+            .expect("thinking config");
+
+        assert_eq!(thinking.thinking_budget, Some(3072));
     }
 
     #[test]
@@ -1530,6 +1595,10 @@ mod tests {
         );
         assert_eq!(normalize_thinking_budget("gemini-2.5-flash", 0), 0);
         assert_eq!(normalize_thinking_budget("gemini-2.5-flash-lite", 1), 512);
+        assert_eq!(
+            thinking_budget_with_answer_reserve("gemini-2.5-flash-lite", 0, Some(256)),
+            Some(0),
+        );
     }
 
     #[test]
@@ -1547,6 +1616,27 @@ mod tests {
         ] {
             assert_eq!(parse_finish_reason(reason), FinishReason::ContentFilter);
         }
+    }
+
+    #[test]
+    fn test_thought_only_max_tokens_keeps_answer_channel_empty() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [
+                    {"text": "raw internal reasoning", "thought": true}
+                ]},
+                "finishReason": "MAX_TOKENS"
+            }]
+        }))
+        .expect("response");
+
+        let (answer, tool_calls, finish_reason, _, thinking) =
+            extract_response(&response).expect("extract response");
+
+        assert!(answer.is_empty());
+        assert!(tool_calls.is_empty());
+        assert_eq!(finish_reason, FinishReason::Length);
+        assert_eq!(thinking.as_deref(), Some("raw internal reasoning"));
     }
 
     #[test]

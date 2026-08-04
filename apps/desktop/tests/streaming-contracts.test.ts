@@ -2,7 +2,10 @@ import {
   projectRunEventsToStreamState,
   taskTimelineEventsFromReplaySource,
 } from '../src/lib/streaming/durableReplay';
-import { extractPersistedTraceItems } from '../src/lib/streaming/persistedTrace';
+import {
+  extractPersistedTraceItems,
+  isPersistedReasoningOnlyAssistant,
+} from '../src/lib/streaming/persistedTrace';
 import {
   isPendingToolCallStatus,
   normalizePersistedToolCallStatus,
@@ -41,6 +44,7 @@ import {
 } from '../src/lib/streaming/taskCenterHistory';
 import type {
   AgentFrontendEvent,
+  ConversationMessage,
   ConversationTurn,
   AgentRunEvent,
   AgentRunEventKind,
@@ -1082,6 +1086,45 @@ test('normalizes persisted trace tool calls through the shared tool status proje
   assert(items[1].kind === 'tool', 'second persisted item should be a tool');
   assertEqual(items[1].toolCall.status, 'approvalPending', 'approval status normalizes');
   assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');
+});
+
+test('identifies legacy reasoning promoted into a persisted reply without hiding real answers', () => {
+  const message: ConversationMessage = {
+    id: 'assistant-reasoning-only',
+    conversationId: 'conversation-1',
+    role: 'assistant',
+    content: 'raw internal reasoning',
+    toolCallId: null,
+    toolCalls: [],
+    artifacts: null,
+    tokenCount: 3,
+    createdAt: '2026-01-01T00:00:01.000Z',
+    sortOrder: 1,
+    thinking: 'raw internal reasoning',
+  };
+  const reasoningOnlyTrace = extractPersistedTraceItems({
+    kind: 'traceTimeline',
+    items: [{ kind: 'thinking', text: 'raw internal reasoning' }],
+  });
+
+  assert(
+    isPersistedReasoningOnlyAssistant(message, reasoningOnlyTrace),
+    'matching content/thinking without a reply trace is legacy reasoning pollution',
+  );
+  assert(
+    !isPersistedReasoningOnlyAssistant(
+      { ...message, content: 'final answer' },
+      reasoningOnlyTrace,
+    ),
+    'a distinct final answer remains visible',
+  );
+  assert(
+    !isPersistedReasoningOnlyAssistant(message, [
+      { kind: 'thinking', text: 'raw internal reasoning' },
+      { kind: 'reply', text: 'raw internal reasoning' },
+    ]),
+    'an explicit reply trace is authoritative',
+  );
 });
 
 test('timeline view model ignores skill index selections for loaded skill summaries', () => {

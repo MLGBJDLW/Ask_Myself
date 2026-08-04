@@ -166,13 +166,14 @@ impl AgentExecutor {
         ctx: TurnFinalizationContext<'_>,
         assistant_msg: Message,
         assistant_reasoning_content: Option<String>,
+        answer_delta_seen: bool,
         user_query_text: &str,
         cache_source_filter: Option<&str>,
         total_usage: Usage,
         last_prompt_tokens: u32,
         context_breakdown: Option<context::ContextUsageBreakdown>,
         last_finish_reason: Option<String>,
-    ) -> Message {
+    ) -> Result<Message, CoreError> {
         let TurnFinalizationContext {
             db,
             tx,
@@ -188,6 +189,34 @@ impl AgentExecutor {
         } = ctx;
 
         let final_text = assistant_msg.text_content();
+        let reasoning_was_promoted = !answer_delta_seen
+            && assistant_reasoning_content
+                .as_deref()
+                .is_some_and(|reasoning| {
+                    let normalized_answer = final_text.trim();
+                    let normalized_reasoning = reasoning.trim();
+                    !normalized_reasoning.is_empty() && normalized_answer == normalized_reasoning
+                });
+        if reasoning_was_promoted {
+            let frontend_message = "The model finished without producing a final answer. Its reasoning was kept separate; retry the response.";
+            let trace_message =
+                "finalization rejected reasoning content promoted into the answer channel";
+            append_persisted_trace_status(persisted_trace_items, frontend_message, "error");
+            emit_error_and_finalize_turn(
+                tx,
+                db,
+                trace,
+                turn_id,
+                route_kind,
+                persisted_trace_items,
+                TurnErrorMessages {
+                    frontend_message: frontend_message.to_string(),
+                    trace_message: trace_message.to_string(),
+                },
+            )
+            .await;
+            return Err(CoreError::Agent(trace_message.to_string()));
+        }
         let proposed_plan_artifact = self
             .config
             .execution_mode
@@ -354,7 +383,7 @@ impl AgentExecutor {
             }
         }
 
-        assistant_msg
+        Ok(assistant_msg)
     }
 
     #[allow(clippy::too_many_arguments)]

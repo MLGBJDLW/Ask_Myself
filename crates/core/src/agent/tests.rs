@@ -856,6 +856,104 @@ struct ScriptedProvider {
     final_answer: &'static str,
 }
 
+struct ThoughtOnlyProvider {
+    stream_calls: Arc<AtomicUsize>,
+    finish_reason: FinishReason,
+}
+
+#[async_trait]
+impl LlmProvider for ThoughtOnlyProvider {
+    fn name(&self) -> &str {
+        "thought-only-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+            delta: String::new(),
+            tool_call_delta: None,
+            finish_reason: Some(self.finish_reason.clone()),
+            usage: None,
+            thinking_delta: Some("raw internal reasoning".to_string()),
+        })])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+struct AnswerOnlyRecoveryProvider {
+    stream_calls: Arc<AtomicUsize>,
+    request_reasoning: Arc<Mutex<Vec<(Option<bool>, Option<u32>, Option<String>)>>>,
+}
+
+#[async_trait]
+impl LlmProvider for AnswerOnlyRecoveryProvider {
+    fn name(&self) -> &str {
+        "answer-only-recovery-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-reasoner".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.request_reasoning.lock().unwrap().push((
+            request.reasoning_enabled,
+            request.thinking_budget,
+            request.reasoning_effort.as_ref().map(ToString::to_string),
+        ));
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: Some("raw internal reasoning that must stay private".to_string()),
+            }
+        } else {
+            StreamChunk {
+                delta: "recovered final answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 struct GoalLifecycleProvider {
     stream_calls: Arc<AtomicUsize>,
 }
@@ -3334,6 +3432,248 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
     assert_eq!(
         non_loop_items[4].get("kind").and_then(|v| v.as_str()),
         Some("status")
+    );
+}
+
+#[tokio::test]
+async fn test_thought_only_length_retries_without_promoting_reasoning_to_reply() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let request_reasoning = Arc::new(Mutex::new(Vec::new()));
+    let provider = AnswerOnlyRecoveryProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        request_reasoning: Arc::clone(&request_reasoning),
+    };
+
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-reasoner".to_string()),
+            reasoning_enabled: Some(true),
+            thinking_budget: Some(2_048),
+            reasoning_effort: Some(crate::llm::ReasoningEffort::High),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-reasoner".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("thought-only length response should recover");
+
+    assert_eq!(final_msg.text_content(), "recovered final answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *request_reasoning.lock().unwrap(),
+        vec![
+            (Some(true), Some(2_048), Some("high".to_string())),
+            (Some(false), None, None),
+        ]
+    );
+
+    let messages = db
+        .get_messages(&conversation.id)
+        .expect("messages should load");
+    let assistant_messages = messages
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        assistant_messages.len(),
+        1,
+        "only the final answer should be persisted"
+    );
+    assert_eq!(assistant_messages[0].content, "recovered final answer");
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.content != "raw internal reasoning that must stay private"),
+        "reasoning must never be persisted in an ordinary message content field"
+    );
+
+    let mut text_deltas = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            text_deltas.push(delta);
+        }
+    }
+    assert_eq!(text_deltas, vec!["recovered final answer"]);
+}
+
+#[tokio::test]
+async fn test_repeated_thought_only_stop_fails_without_persisting_a_reply() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ThoughtOnlyProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        finish_reason: FinishReason::Stop,
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "google".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("a second thought-only response must fail the turn");
+
+    assert!(error
+        .to_string()
+        .contains("provider_finished_without_answer"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(db
+        .get_messages(&conversation.id)
+        .expect("messages should load")
+        .is_empty());
+
+    let mut saw_error = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => {
+                panic!("reasoning leaked into answer delta: {delta}")
+            }
+            AgentEvent::Done { message, .. } => {
+                panic!(
+                    "thought-only response was finalized: {}",
+                    message.text_content()
+                )
+            }
+            AgentEvent::Error { message } => {
+                saw_error = message.contains("without producing a final answer")
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_error,
+        "the user should receive a recoverable terminal error"
+    );
+}
+
+#[tokio::test]
+async fn test_filtered_thought_only_response_fails_without_retrying_or_leaking() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ThoughtOnlyProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        finish_reason: FinishReason::ContentFilter,
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "google".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("a filtered response must fail the turn without retrying");
+
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert!(db
+        .get_messages(&conversation.id)
+        .expect("messages should load")
+        .is_empty());
+
+    let mut saw_filtered_error = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => {
+                panic!("reasoning leaked into answer delta: {delta}")
+            }
+            AgentEvent::Done { message, .. } => {
+                panic!(
+                    "filtered response was finalized: {}",
+                    message.text_content()
+                )
+            }
+            AgentEvent::Error { message } => {
+                saw_filtered_error = message.contains("blocked the response")
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_filtered_error,
+        "the user should see a filter-specific error"
     );
 }
 

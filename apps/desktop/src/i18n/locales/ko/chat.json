@@ -39,6 +39,8 @@
   "thinking": "생각 중",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "모델이 최종 답변을 생성하기 전에 종료되었습니다. 추론 내용은 답변과 분리되어 유지됩니다.",
+  "retryFinalAnswer": "최종 답변 다시 생성",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",

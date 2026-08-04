@@ -39,6 +39,8 @@
   "thinking": "思考中",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "モデルは最終回答を生成する前に終了しました。思考内容は回答と分離されています。",
+  "retryFinalAnswer": "最終回答を再生成",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",

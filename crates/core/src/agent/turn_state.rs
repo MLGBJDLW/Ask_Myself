@@ -23,6 +23,7 @@ pub(crate) enum TurnOutcome {
     Cached,
     DirectDispatch,
     Cancelled,
+    Failed,
     MaxIterations,
 }
 
