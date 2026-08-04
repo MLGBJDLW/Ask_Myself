@@ -511,6 +511,49 @@ const TOKEN_PLAN_GLOBAL_ENDPOINT: &str =
 const ALIBABA_PAYG_CN_ENDPOINT: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const ALIBABA_PAYG_GLOBAL_ENDPOINT: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 
+const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
+         SELECT run_id, COUNT(*) AS event_count
+         FROM agent_task_run_events
+         GROUP BY run_id
+     ), subtask_counts AS (
+         SELECT parent_run_id AS run_id,
+                COUNT(*) AS subtask_total,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS subtask_completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS subtask_failed,
+                SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS subtask_running
+         FROM agent_subtask_runs
+         GROUP BY parent_run_id
+     ), artifact_kinds AS (
+         SELECT run_id, json_group_array(DISTINCT kind) AS kinds_json
+         FROM agent_task_artifacts
+         GROUP BY run_id
+     )
+     SELECT r.id, r.conversation_id, r.turn_id, r.user_message_id, r.status, r.phase,
+            r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
+            r.created_at, r.updated_at, r.started_at, r.finished_at,
+            NULLIF(c.title, '') AS conversation_title,
+            c.project_id,
+            NULLIF(p.name, '') AS project_name,
+            COALESCE(m.content, '') AS user_message_content,
+            COALESCE(ec.event_count, 0),
+            COALESCE(sc.subtask_total, 0),
+            COALESCE(sc.subtask_completed, 0),
+            COALESCE(sc.subtask_failed, 0),
+            COALESCE(sc.subtask_running, 0),
+            ak.kinds_json
+     FROM agent_task_runs r
+     JOIN conversations c ON c.id = r.conversation_id
+     LEFT JOIN projects p ON p.id = c.project_id
+     LEFT JOIN messages m ON m.id = r.user_message_id
+     LEFT JOIN event_counts ec ON ec.run_id = r.id
+     LEFT JOIN subtask_counts sc ON sc.run_id = r.id
+     LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
+     WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
+       AND (?5 IS NULL OR r.status = ?5)
+       AND (?6 IS NULL OR c.project_id = ?6)
+     ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
+     LIMIT ?1"#;
+
 /// Enforce credential boundaries that are part of a provider product contract.
 ///
 /// Token Plan subscription keys are deliberately not interchangeable with
@@ -2079,50 +2122,7 @@ impl Database {
         let bounded_limit = i64::from(limit.clamp(1, 100));
         let fetch_limit = bounded_limit + 1;
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "WITH event_counts AS (
-                 SELECT run_id, COUNT(*) AS event_count
-                 FROM agent_task_run_events
-                 GROUP BY run_id
-             ), subtask_counts AS (
-                 SELECT parent_run_id AS run_id,
-                        COUNT(*) AS subtask_total,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS subtask_completed,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS subtask_failed,
-                        SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS subtask_running
-                 FROM agent_subtask_runs
-                 GROUP BY parent_run_id
-             ), artifact_kinds AS (
-                 SELECT run_id, json_group_array(DISTINCT kind) AS kinds_json
-                 FROM agent_task_artifacts
-                 GROUP BY run_id
-             )
-             SELECT r.id, r.conversation_id, r.turn_id, r.user_message_id, r.status, r.phase,
-                    r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
-                    r.created_at, r.updated_at, r.started_at, r.finished_at,
-                    NULLIF(c.title, '') AS conversation_title,
-                    c.project_id,
-                    NULLIF(p.name, '') AS project_name,
-                    COALESCE(m.content, '') AS user_message_content,
-                    COALESCE(ec.event_count, 0),
-                    COALESCE(sc.subtask_total, 0),
-                    COALESCE(sc.subtask_completed, 0),
-                    COALESCE(sc.subtask_failed, 0),
-                    COALESCE(sc.subtask_running, 0),
-                    ak.kinds_json
-             FROM agent_task_runs r
-             JOIN conversations c ON c.id = r.conversation_id
-             LEFT JOIN projects p ON p.id = c.project_id
-             LEFT JOIN messages m ON m.id = r.user_message_id
-             LEFT JOIN event_counts ec ON ec.run_id = r.id
-             LEFT JOIN subtask_counts sc ON sc.run_id = r.id
-             LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
-             WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
-               AND (?5 IS NULL OR r.status = ?5)
-               AND (?6 IS NULL OR c.project_id = ?6)
-             ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
-             LIMIT ?1",
-        )?;
+        let mut stmt = conn.prepare(AGENT_TASK_RUN_SUMMARY_QUERY)?;
         let cursor_updated_at = cursor.map(|value| value.updated_at.as_str());
         let cursor_created_at = cursor.map(|value| value.created_at.as_str());
         let cursor_id = cursor.map(|value| value.id.as_str());
@@ -4942,6 +4942,149 @@ mod tests {
         assert!(summary_page.items[0].run.artifacts.is_none());
         assert_eq!(summary_page.items[0].event_count, 1);
         assert_eq!(summary_page.items[0].subtask_total, 2);
+    }
+
+    #[test]
+    fn test_task_center_summary_paginates_10k_runs_with_recency_index() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch(
+                "CREATE TEMP TABLE task_fixture_numbers(value INTEGER PRIMARY KEY);
+                 WITH digits(value) AS (
+                     VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+                 ), numbers(value) AS (
+                     SELECT ones.value
+                          + tens.value * 10
+                          + hundreds.value * 100
+                          + thousands.value * 1000
+                     FROM digits ones
+                     CROSS JOIN digits tens
+                     CROSS JOIN digits hundreds
+                     CROSS JOIN digits thousands
+                 )
+                 INSERT INTO task_fixture_numbers(value)
+                 SELECT value FROM numbers;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages
+                    (id, conversation_id, role, content, created_at, sort_order)
+                 SELECT printf('perf-message-%05d', value), ?1, 'user',
+                        printf('Task center fixture %d', value),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        value
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_turns
+                    (id, conversation_id, user_message_id, status, created_at, updated_at,
+                     finished_at)
+                 SELECT printf('perf-turn-%05d', value), ?1,
+                        printf('perf-message-%05d', value), 'completed',
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds')
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_task_runs
+                    (id, conversation_id, turn_id, user_message_id, status, phase, title,
+                     provider, model, created_at, updated_at, started_at, finished_at)
+                 SELECT printf('perf-run-%05d', value), ?1, printf('perf-turn-%05d', value),
+                        printf('perf-message-%05d', value), 'completed', 'done',
+                        printf('Task %d', value), 'openai', 'gpt-4o',
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds'),
+                        strftime('%Y-%m-%d %H:%M:%f', '2026-01-01', '+' || value || ' seconds')
+                 FROM task_fixture_numbers",
+                rusqlite::params![conversation.id],
+            )
+            .unwrap();
+            conn.execute_batch("ANALYZE;").unwrap();
+
+            let explain_sql = format!("EXPLAIN QUERY PLAN {AGENT_TASK_RUN_SUMMARY_QUERY}");
+            let mut explain = conn.prepare(&explain_sql).unwrap();
+            let plan = explain
+                .query_map(
+                    rusqlite::params![
+                        26_i64,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                        Option::<&str>::None,
+                    ],
+                    |row| row.get::<_, String>(3),
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n");
+            assert!(
+                plan.contains("idx_agent_task_runs_recency"),
+                "summary query must use the recency index:\n{plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+                "summary query must not materialize a temporary sort:\n{plan}"
+            );
+        }
+
+        let first = db
+            .list_agent_task_run_summaries(25, None, None, None)
+            .unwrap();
+        assert_eq!(first.items.len(), 25);
+        assert_eq!(first.items[0].run.id, "perf-run-09999");
+        let second = db
+            .list_agent_task_run_summaries(25, first.next_cursor.as_ref(), None, None)
+            .unwrap();
+        assert_eq!(second.items.len(), 25);
+        assert_eq!(second.items[0].run.id, "perf-run-09974");
+        let first_ids = first
+            .items
+            .iter()
+            .map(|item| item.run.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            second
+                .items
+                .iter()
+                .all(|item| !first_ids.contains(item.run.id.as_str())),
+            "adjacent keyset pages must not overlap"
+        );
+
+        let mut samples = Vec::with_capacity(20);
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            let page = db
+                .list_agent_task_run_summaries(25, None, None, None)
+                .unwrap();
+            assert_eq!(page.items.len(), 25);
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let p95 = samples[18];
+        assert!(
+            p95 < std::time::Duration::from_millis(300),
+            "10,000-run summary query P95 was {p95:?}, expected less than 300ms"
+        );
     }
 
     #[test]
