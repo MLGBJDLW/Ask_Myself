@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.11...nexa-monorepo-v0.11.12) (2026-08-04)
+
+
+### Bug Fixes
+
+* **agent:** continue across provider output limits ([9d2cb27](https://github.com/MLGBJDLW/Nexa/commit/9d2cb27d9995ed648a821adfe9d5854430bd1076))
+* **agent:** continue output-limited turns safely ([c8afd45](https://github.com/MLGBJDLW/Nexa/commit/c8afd4533939d57d7dfc403d1db3aa559304a7ab))
+* **providers:** default output limits to automatic ([16bfca8](https://github.com/MLGBJDLW/Nexa/commit/16bfca88f95df834029bf06e1838ab1143c3bb1c))
+
 ## [0.11.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.10...nexa-monorepo-v0.11.11) (2026-08-04)
 
 
