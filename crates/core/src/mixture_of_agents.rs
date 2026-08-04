@@ -593,6 +593,7 @@ fn usage_delta(before: &Usage, after: &Usage) -> Usage {
             after.cache_creation_tokens,
             before.cache_creation_tokens,
         ),
+        provider_raw: after.provider_raw.clone(),
     }
 }
 

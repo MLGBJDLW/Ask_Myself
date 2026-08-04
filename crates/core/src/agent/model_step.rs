@@ -88,6 +88,8 @@ impl AgentExecutor {
                 None
             },
             provider_type: self.config.provider_type,
+            routing_session_id: conversation_id
+                .and_then(crate::llm::prompt_cache::privacy_preserving_routing_session_id),
             parallel_tool_calls: true,
         };
         self.begin_prompt_cache_observation(model, messages, tool_defs);

@@ -213,6 +213,22 @@ fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
     value.as_u64().and_then(|tokens| u32::try_from(tokens).ok())
 }
 
+fn provider_observability_fragment(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    let mut fragment = serde_json::Map::new();
+    for (source, target) in [
+        ("usage", "usage"),
+        ("id", "generationId"),
+        ("model", "responseModel"),
+        ("openrouter_metadata", "openrouterMetadata"),
+    ] {
+        if let Some(value) = object.get(source) {
+            fragment.insert(target.to_string(), value.clone());
+        }
+    }
+    (!fragment.is_empty()).then_some(serde_json::Value::Object(fragment))
+}
+
 // ---------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------
@@ -541,6 +557,10 @@ async fn process_sse_line(
     }
 
     // Parse JSON and send through channel.
+    let provider_raw = serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .as_ref()
+        .and_then(provider_observability_fragment);
     match serde_json::from_str::<SseChunk>(data) {
         Ok(sse) => {
             let choice = sse.choices.as_ref().and_then(|c| c.first());
@@ -569,6 +589,7 @@ async fn process_sse_line(
                     cache_creation_tokens: prompt_details
                         .as_ref()
                         .and_then(SsePromptTokensDetails::cache_creation_tokens),
+                    provider_raw: provider_raw.clone(),
                 }
             });
 

@@ -235,7 +235,10 @@ impl Database {
                         as u64,
                     usage.cache_read_tokens.unwrap_or(0) as u64,
                     usage.cache_creation_tokens.unwrap_or(0) as u64,
-                    serde_json::to_value(usage)?,
+                    usage
+                        .provider_raw
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "usageCoverage": "notReported" })),
                 ),
                 None => (
                     "estimated",
@@ -245,7 +248,10 @@ impl Database {
                     estimated_prompt_tokens as u64,
                     0,
                     0,
-                    serde_json::json!({"estimatedPromptTokens": estimated_prompt_tokens}),
+                    serde_json::json!({
+                        "usageCoverage": "notReported",
+                        "estimatedPromptTokens": estimated_prompt_tokens
+                    }),
                 ),
             };
         let (estimated_cost_micros, currency, pricing_version) = usage_cost_metadata(provider_type);

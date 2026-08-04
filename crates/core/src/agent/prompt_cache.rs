@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use super::*;
 use crate::conversation::memory::estimate_message_tokens_for_model;
 use crate::db::Database;
+use crate::llm::prompt_cache::{PromptCacheMode, PromptCacheProfile};
 
 const MIN_CACHE_BREAK_TOKEN_DROP: u32 = 1_000;
 const MAX_STABLE_CACHE_READ_RATIO: f32 = 0.95;
@@ -31,6 +32,8 @@ pub(super) struct PromptCacheMessageFingerprint {
 pub(super) struct PromptCacheSnapshot {
     provider_type: Option<ProviderType>,
     model: String,
+    #[serde(default)]
+    cache_profile: PromptCacheProfile,
     stable_system_hash: u64,
     tool_schema_hash: u64,
     tool_count: usize,
@@ -107,6 +110,8 @@ pub(super) struct PromptCacheTraceObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     model_step_interval_ms: Option<u64>,
     fast_cache_settle_risk: bool,
+    usage_coverage: String,
+    cache_outcome_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -304,8 +309,27 @@ fn first_changed_message_index(previous: &[u64], next: &[u64]) -> Option<usize> 
     (0..max_len).find(|index| previous.get(*index) != next.get(*index))
 }
 
+#[cfg(test)]
 fn snapshot_for(
     provider_type: Option<ProviderType>,
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> PromptCacheSnapshot {
+    let provider = provider_type.unwrap_or(ProviderType::Custom);
+    let api_style = if provider == ProviderType::Anthropic {
+        crate::llm::prompt_cache::PromptCacheApiStyle::AnthropicMessages
+    } else {
+        crate::llm::prompt_cache::PromptCacheApiStyle::OpenAiCompatible
+    };
+    let profile =
+        crate::llm::prompt_cache::resolve_prompt_cache_profile(provider, None, api_style, model);
+    snapshot_for_profile(provider_type, profile, model, messages, tools)
+}
+
+fn snapshot_for_profile(
+    provider_type: Option<ProviderType>,
+    cache_profile: PromptCacheProfile,
     model: &str,
     messages: &[Message],
     tools: &[ToolDefinition],
@@ -323,6 +347,7 @@ fn snapshot_for(
     PromptCacheSnapshot {
         provider_type,
         model: model.to_string(),
+        cache_profile,
         stable_system_hash: hash_text(&stable_system_text(messages)),
         tool_schema_hash: tool_schema_hash(tools),
         tool_count: tools.len(),
@@ -564,10 +589,32 @@ fn diff_snapshots(previous: &PromptCacheSnapshot, next: &PromptCacheSnapshot) ->
 }
 
 impl PromptCacheTracker {
+    #[cfg(test)]
     fn begin(
         &mut self,
         request_kind: &str,
         provider_type: Option<ProviderType>,
+        model: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) {
+        let provider = provider_type.unwrap_or(ProviderType::Custom);
+        let api_style = if provider == ProviderType::Anthropic {
+            crate::llm::prompt_cache::PromptCacheApiStyle::AnthropicMessages
+        } else {
+            crate::llm::prompt_cache::PromptCacheApiStyle::OpenAiCompatible
+        };
+        let profile = crate::llm::prompt_cache::resolve_prompt_cache_profile(
+            provider, None, api_style, model,
+        );
+        self.begin_with_profile(request_kind, provider_type, profile, model, messages, tools);
+    }
+
+    fn begin_with_profile(
+        &mut self,
+        request_kind: &str,
+        provider_type: Option<ProviderType>,
+        cache_profile: PromptCacheProfile,
         model: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
@@ -577,7 +624,7 @@ impl PromptCacheTracker {
             u64::try_from(now.duration_since(previous).as_millis()).unwrap_or(u64::MAX)
         });
         self.previous_begin_at = Some(now);
-        let next = snapshot_for(provider_type, model, messages, tools);
+        let next = snapshot_for_profile(provider_type, cache_profile, model, messages, tools);
         let diff = self
             .previous_snapshot
             .as_ref()
@@ -636,6 +683,12 @@ impl PromptCacheTracker {
         let cache_miss_tokens = usage
             .and_then(|usage| usage_accounting::normalized_cache_miss_tokens(provider_type, usage));
         let cache_creation_tokens = usage.and_then(|usage| usage.cache_creation_tokens);
+        let usage_coverage = match usage {
+            Some(usage) if usage.provider_raw.is_some() => "providerRawAndNormalized",
+            Some(_) => "normalizedOnly",
+            None => "notReported",
+        }
+        .to_string();
         let actual_cache_hit_rate_bps = cache_read_tokens.and_then(|read| {
             let denominator = cache_miss_tokens
                 .map(|miss| read.saturating_add(miss))
@@ -687,8 +740,36 @@ impl PromptCacheTracker {
 
         self.pending_observation.take().map(|pending| {
             let diff = pending.diff;
+            let profile = &pending.snapshot.cache_profile;
+            let eligible = profile
+                .min_cacheable_tokens
+                .is_none_or(|minimum| pending.snapshot.estimated_prompt_tokens >= minimum);
+            let cache_outcome_reason = if profile.mode == PromptCacheMode::None {
+                "unsupported_profile"
+            } else if !eligible {
+                "ineligible_below_minimum"
+            } else if cache_read_tokens.is_some_and(|tokens| tokens > 0) {
+                "hit_reported"
+            } else if cache_creation_tokens.is_some_and(|tokens| tokens > 0) {
+                "cold_create_reported"
+            } else if cache_miss_tokens.is_some_and(|tokens| tokens > 0) {
+                "miss_reported"
+            } else if diff.tool_names_added.len()
+                + diff.tool_names_removed.len()
+                + diff.tool_schemas_changed.len()
+                > 0
+            {
+                "tool_surface_changed"
+            } else if diff.prefix_changed {
+                "prefix_changed"
+            } else if usage.is_none() {
+                "usage_not_reported"
+            } else {
+                "usage_schema_unknown"
+            }
+            .to_string();
             PromptCacheTraceObservation {
-                version: 2,
+                version: 3,
                 request_kind: pending.request_kind,
                 snapshot: pending.snapshot,
                 previous_snapshot_source: pending.previous_snapshot_source,
@@ -711,6 +792,8 @@ impl PromptCacheTracker {
                 was_compacted,
                 model_step_interval_ms: pending.model_step_interval_ms,
                 fast_cache_settle_risk: pending.fast_cache_settle_risk,
+                usage_coverage,
+                cache_outcome_reason,
             }
         })
     }
@@ -759,9 +842,11 @@ impl AgentExecutor {
         tools: &[ToolDefinition],
     ) {
         if let Ok(mut tracker) = self.prompt_cache_tracker.lock() {
-            tracker.begin(
+            let cache_profile = self.provider.prompt_cache_profile(model);
+            tracker.begin_with_profile(
                 self.config.request_kind.as_str(),
                 self.config.provider_type,
+                cache_profile,
                 model,
                 messages,
                 tools,
@@ -1081,6 +1166,9 @@ mod tests {
         assert_eq!(cold.sample_kind, "coldStart");
         assert_eq!(cold.cache_miss_tokens, Some(100));
         assert_eq!(cold.actual_cache_hit_rate_bps, Some(0));
+        assert_eq!(cold.snapshot.cache_profile.id, "deepseek-exact-prefix-v1");
+        assert_eq!(cold.cache_outcome_reason, "miss_reported");
+        assert_eq!(cold.usage_coverage, "normalizedOnly");
 
         tracker.begin(
             "mainAgentStep",
@@ -1107,6 +1195,7 @@ mod tests {
         assert!(!warm.prefix_changed);
         assert_eq!(warm.cache_miss_tokens, Some(25));
         assert_eq!(warm.actual_cache_hit_rate_bps, Some(8_000));
+        assert_eq!(warm.cache_outcome_reason, "hit_reported");
     }
 
     #[test]

@@ -784,6 +784,7 @@ async fn parse_anthropic_stream(
                             cache_read_tokens,
                             cache_miss_tokens: None,
                             cache_creation_tokens,
+                            provider_raw: None,
                         }
                     });
                     let chunk = StreamChunk {
@@ -900,6 +901,7 @@ mod tests {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         }
     }
@@ -1128,6 +1130,15 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn prompt_cache_profile(&self, model: &str) -> super::prompt_cache::PromptCacheProfile {
+        super::prompt_cache::resolve_prompt_cache_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            super::prompt_cache::PromptCacheApiStyle::AnthropicMessages,
+            model,
+        )
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         // Anthropic doesn't have a public list-models endpoint.
         // Return commonly available models.
@@ -1227,6 +1238,7 @@ impl LlmProvider for AnthropicProvider {
                 cache_read_tokens: u.cache_read_input_tokens,
                 cache_miss_tokens: None,
                 cache_creation_tokens: u.cache_creation_input_tokens,
+                provider_raw: None,
             })
             .unwrap_or_default();
 

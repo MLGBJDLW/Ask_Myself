@@ -746,6 +746,7 @@ pub async fn extract_memories_from_conversation(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type,
+        routing_session_id: None,
         parallel_tool_calls: true,
     };
 

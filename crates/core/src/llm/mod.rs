@@ -13,7 +13,7 @@ pub mod anthropic;
 pub mod google;
 pub mod ollama;
 pub mod openai;
-mod prompt_cache;
+pub mod prompt_cache;
 pub mod streaming;
 pub(crate) mod transport;
 
@@ -187,6 +187,10 @@ pub struct CompletionRequest {
     /// Provider type hint — lets providers apply model-specific logic.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_type: Option<ProviderType>,
+    /// Privacy-preserving provider routing key. It is transport metadata, not
+    /// user-visible prompt content, and is currently consumed by OpenRouter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_session_id: Option<String>,
     /// When true, hint to the provider that multiple tool_use blocks in one
     /// response are allowed. Default: true. Providers that natively support
     /// parallel function calling translate this into a wire-level flag
@@ -212,6 +216,7 @@ impl Default for CompletionRequest {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         }
     }
@@ -263,6 +268,10 @@ pub struct Usage {
     /// Provider-side prompt-cache tokens written/created for this request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u32>,
+    /// Scrubbed provider usage and routing fragment retained beside normalized
+    /// counters. It must never contain prompt or completion content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_raw: Option<serde_json::Value>,
 }
 
 /// Why the model stopped generating.
@@ -484,6 +493,17 @@ pub enum ProviderType {
 pub trait LlmProvider: Send + Sync {
     /// Human-readable provider name (e.g. "OpenAI").
     fn name(&self) -> &str;
+
+    /// Resolved cache capability for this concrete provider endpoint. Agent
+    /// diagnostics consume the same profile as the wire adapter.
+    fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
+        prompt_cache::resolve_prompt_cache_profile(
+            ProviderType::Custom,
+            None,
+            prompt_cache::PromptCacheApiStyle::Local,
+            model,
+        )
+    }
 
     /// List available models from this provider.
     async fn list_models(&self) -> Result<Vec<String>, CoreError>;

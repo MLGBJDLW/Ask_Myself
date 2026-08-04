@@ -326,6 +326,7 @@ pub async fn check_contradictions(
         thinking_budget: None,
         reasoning_effort: None,
         provider_type,
+        routing_session_id: None,
         parallel_tool_calls: true,
     };
 

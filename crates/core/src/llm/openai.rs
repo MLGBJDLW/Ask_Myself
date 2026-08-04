@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use super::prompt_cache::{resolve_prompt_cache_profile, PromptCacheApiStyle, PromptCacheProfile};
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, send_stream_start_request, serialized_json_body,
@@ -35,6 +36,8 @@ const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
 struct OaiRequest {
     model: String,
     messages: Vec<OaiMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,6 +171,12 @@ struct OaiCacheControl {
 struct OaiResponse {
     choices: Vec<OaiChoice>,
     usage: Option<OaiUsage>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    openrouter_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -218,7 +227,7 @@ impl OaiArgumentsIn {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -231,15 +240,17 @@ struct OaiUsage {
     completion_tokens_details: Option<OaiCompletionTokensDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<OaiPromptTokensDetails>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiCompletionTokensDetails {
     #[serde(default)]
     reasoning_tokens: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum OaiCacheCreationUsage {
     Tokens(u32),
@@ -255,7 +266,7 @@ impl OaiCacheCreationUsage {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiCacheCreationDetails {
     #[serde(
         default,
@@ -266,7 +277,7 @@ struct OaiCacheCreationDetails {
     cache_creation_input_tokens: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct OaiPromptTokensDetails {
     #[serde(default, alias = "cache_read_input_tokens", alias = "cachedTokens")]
     cached_tokens: Option<u32>,
@@ -288,7 +299,18 @@ impl OaiPromptTokensDetails {
     }
 }
 
+#[cfg(test)]
 fn usage_from_oai_usage(u: OaiUsage) -> Usage {
+    usage_from_oai_usage_with_route(u, None, None, None)
+}
+
+fn usage_from_oai_usage_with_route(
+    u: OaiUsage,
+    generation_id: Option<String>,
+    response_model: Option<String>,
+    openrouter_metadata: Option<serde_json::Value>,
+) -> Usage {
+    let provider_usage = serde_json::to_value(&u).unwrap_or(serde_json::Value::Null);
     let prompt_details = u.prompt_tokens_details;
     let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
         prompt_details.as_ref().and_then(|d| d.cached_tokens),
@@ -305,6 +327,12 @@ fn usage_from_oai_usage(u: OaiUsage) -> Usage {
         cache_creation_tokens: prompt_details
             .as_ref()
             .and_then(OaiPromptTokensDetails::cache_creation_tokens),
+        provider_raw: Some(serde_json::json!({
+            "usage": provider_usage,
+            "generationId": generation_id,
+            "responseModel": response_model,
+            "openrouterMetadata": openrouter_metadata,
+        })),
     }
 }
 
@@ -408,7 +436,10 @@ fn is_openrouter_config(config: &ProviderConfig) -> bool {
         || config
             .base_url
             .as_deref()
-            .is_some_and(|url| url.to_ascii_lowercase().contains("openrouter.ai"))
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .as_deref()
+            == Some("openrouter.ai")
 }
 
 fn apply_openrouter_headers(
@@ -416,7 +447,9 @@ fn apply_openrouter_headers(
     config: &ProviderConfig,
 ) -> reqwest::RequestBuilder {
     if is_openrouter_config(config) {
-        builder.header("X-OpenRouter-Title", "Nexa")
+        builder
+            .header("X-OpenRouter-Title", "Nexa")
+            .header("X-OpenRouter-Metadata", "enabled")
     } else {
         builder
     }
@@ -523,17 +556,6 @@ fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>
     model_lower.contains("codex")
 }
 
-fn supports_anthropic_style_cache_control(
-    model: &str,
-    provider_type: Option<&ProviderType>,
-) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) || is_alibaba_hosted_qwen(model, provider_type) {
-        return true;
-    }
-    let model_lower = model.to_lowercase();
-    model_lower.contains("qwen/")
-}
-
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -601,33 +623,59 @@ fn add_cache_control_to_text_content(message: &mut OaiMessage) -> bool {
     }
 }
 
-fn should_add_latest_user_cache_control(model: &str, provider_type: Option<&ProviderType>) -> bool {
-    if provider_type == Some(&ProviderType::Qwen) {
-        return false;
-    }
-
-    !model.to_ascii_lowercase().contains("qwen/")
-}
-
-fn add_openai_compatible_cache_control(messages: &mut [OaiMessage], mark_latest_user: bool) {
-    if let Some(system) = messages.iter_mut().find(|msg| msg.role == "system") {
-        add_cache_control_to_text_content(system);
-    }
-    if mark_latest_user {
-        if let Some(last_user) = messages.iter_mut().rev().find(|msg| msg.role == "user") {
-            add_cache_control_to_text_content(last_user);
-        }
-    }
-}
-
-fn add_openai_compatible_cache_control_for_request(
+fn add_profile_cache_control_for_request(
     request: &CompletionRequest,
     messages: &mut [OaiMessage],
+    profile: &PromptCacheProfile,
 ) {
-    add_openai_compatible_cache_control(
-        messages,
-        should_add_latest_user_cache_control(&request.model, request.provider_type.as_ref()),
-    );
+    if !profile.uses_message_breakpoints()
+        || !profile.request_is_eligible(&request.messages, request.tools.as_deref())
+    {
+        return;
+    }
+
+    let mut candidates = Vec::new();
+    let first_system_index = request
+        .messages
+        .iter()
+        .enumerate()
+        .find_map(|(index, message)| {
+            (message.role == Role::System && is_leading_system_message(&request.messages, index))
+                .then_some(index)
+        });
+    if let Some(index) = first_system_index {
+        candidates.push(index);
+    }
+    if let Some(index) = request
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| (message.role == Role::System).then_some(index))
+        .filter(|index| Some(*index) != first_system_index)
+    {
+        candidates.push(index);
+    }
+    if let Some(index) = request
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| (message.role == Role::Tool).then_some(index))
+    {
+        candidates.push(index);
+    }
+    if let Some(index) = super::prompt_cache::latest_user_message_index(&request.messages) {
+        candidates.push(index);
+    }
+
+    candidates.dedup();
+    let limit = usize::from(profile.max_breakpoints.unwrap_or(0));
+    for index in candidates.into_iter().take(limit) {
+        if let Some(message) = messages.get_mut(index) {
+            add_cache_control_to_text_content(message);
+        }
+    }
 }
 
 fn parsed_tool_arguments(raw: &str) -> Option<serde_json::Value> {
@@ -745,26 +793,31 @@ fn convert_message(
     oai
 }
 
-fn convert_tools(tools: &[ToolDefinition], add_cache_control: bool) -> Vec<OaiTool> {
-    let len = tools.len();
+fn convert_tools(tools: &[ToolDefinition]) -> Vec<OaiTool> {
     tools
         .iter()
-        .enumerate()
-        .map(|(i, t)| OaiTool {
+        .map(|t| OaiTool {
             tool_type: "function".to_string(),
             function: OaiToolFunction {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
             },
-            cache_control: (add_cache_control && i == len - 1).then(|| OaiCacheControl {
-                r#type: "ephemeral".to_string(),
-            }),
+            cache_control: None,
         })
         .collect()
 }
 
+#[cfg(test)]
 fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
+    build_request_body_with_config(request, stream, None)
+}
+
+fn build_request_body_with_config(
+    request: &CompletionRequest,
+    stream: bool,
+    config: Option<&ProviderConfig>,
+) -> OaiRequest {
     let is_reasoning = is_reasoning_model(&request.model, request.provider_type.as_ref());
     let is_deepseek = is_deepseek_reasoner(&request.model);
     let is_openrouter_provider = matches!(request.provider_type, Some(ProviderType::OpenRouter));
@@ -808,8 +861,16 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         && (is_reasoning || is_deepseek || deepseek_thinking_enabled);
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
-    let add_cache_control =
-        supports_anthropic_style_cache_control(&request.model, request.provider_type.as_ref());
+    let provider_type = request
+        .provider_type
+        .or_else(|| config.map(|config| config.provider_type))
+        .unwrap_or(ProviderType::Custom);
+    let cache_profile = resolve_prompt_cache_profile(
+        provider_type,
+        config.and_then(|config| config.base_url.as_deref()),
+        PromptCacheApiStyle::OpenAiCompatible,
+        &request.model,
+    );
     let mut messages: Vec<OaiMessage> = request
         .messages
         .iter()
@@ -830,15 +891,16 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
             )
         })
         .collect();
-    if add_cache_control {
-        add_openai_compatible_cache_control_for_request(request, &mut messages);
-    }
+    add_profile_cache_control_for_request(request, &mut messages, &cache_profile);
 
     OaiRequest {
         model: request.model.clone(),
         messages,
+        session_id: (cache_profile.routing_session_affinity)
+            .then(|| request.routing_session_id.clone())
+            .flatten(),
         prompt_cache_key: super::prompt_cache::openai_prompt_cache_key(
-            request.provider_type.as_ref(),
+            &cache_profile,
             &request.model,
             &request.messages,
             request.tools.as_deref(),
@@ -892,10 +954,7 @@ fn build_request_body(request: &CompletionRequest, stream: bool) -> OaiRequest {
         thinking_budget: qwen_thinking_enabled
             .then_some(request.thinking_budget)
             .flatten(),
-        tools: request
-            .tools
-            .as_ref()
-            .map(|t| convert_tools(t, add_cache_control)),
+        tools: request.tools.as_ref().map(|t| convert_tools(t)),
         parallel_tool_calls: match request.tools.as_ref() {
             Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
             _ => None,
@@ -991,6 +1050,15 @@ impl LlmProvider for OpenAiProvider {
         "openai"
     }
 
+    fn prompt_cache_profile(&self, model: &str) -> PromptCacheProfile {
+        resolve_prompt_cache_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            PromptCacheApiStyle::OpenAiCompatible,
+            model,
+        )
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let url = format!("{}/models", self.base_url());
         let api_key = self.api_key()?;
@@ -1022,7 +1090,7 @@ impl LlmProvider for OpenAiProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
-        let body = build_request_body(request, false);
+        let body = build_request_body_with_config(request, false, Some(&self.config));
         let body_bytes = serialized_json_body(&body, "OpenAI completion request")?;
 
         let mut attempt = 1;
@@ -1116,7 +1184,17 @@ impl LlmProvider for OpenAiProvider {
             .map(parse_finish_reason)
             .unwrap_or(FinishReason::Other);
 
-        let usage = oai.usage.map(usage_from_oai_usage).unwrap_or_default();
+        let usage = oai
+            .usage
+            .map(|usage| {
+                usage_from_oai_usage_with_route(
+                    usage,
+                    oai.id.clone(),
+                    oai.model.clone(),
+                    oai.openrouter_metadata.clone(),
+                )
+            })
+            .unwrap_or_default();
 
         let thinking = choice
             .message
@@ -1151,7 +1229,7 @@ impl LlmProvider for OpenAiProvider {
 
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
-        let body = build_request_body(request, true);
+        let body = build_request_body_with_config(request, true, Some(&self.config));
         let body_bytes = serialized_json_body(&body, "OpenAI stream request")?;
 
         info!("OpenAI stream request to {url}, model={}", request.model);
@@ -1289,6 +1367,7 @@ data: [DONE]
             thinking_budget: Some(1024),
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1328,6 +1407,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1354,6 +1434,7 @@ data: [DONE]
             thinking_budget: Some(1024),
             reasoning_effort: Some(ReasoningEffort::Max),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1375,6 +1456,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1408,6 +1490,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1443,6 +1526,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1483,6 +1567,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1517,6 +1602,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::DeepSeek),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1538,6 +1624,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1564,6 +1651,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1596,6 +1684,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1620,6 +1709,7 @@ data: [DONE]
             thinking_budget: Some(2048),
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1667,6 +1757,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1709,6 +1800,7 @@ data: [DONE]
             thinking_budget: Some(2048),
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1734,6 +1826,7 @@ data: [DONE]
                 thinking_budget: Some(4096),
                 reasoning_effort: None,
                 provider_type: Some(provider_type),
+                routing_session_id: None,
                 parallel_tool_calls: true,
             };
             let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
@@ -1755,6 +1848,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1799,6 +1893,7 @@ data: [DONE]
             thinking_budget: Some(2048),
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1813,7 +1908,7 @@ data: [DONE]
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system"),
+                Message::text(Role::System, "stable system ".repeat(400)),
                 Message::text(Role::System, "runtime plan"),
                 Message::text(Role::User, "hello"),
             ],
@@ -1828,6 +1923,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1836,19 +1932,16 @@ data: [DONE]
             body["messages"][0]["content"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
-        assert!(body["messages"][1]["content"].is_string());
-        assert!(body["messages"][2]["content"].is_string());
-        assert_eq!(
-            body["tools"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(body["messages"][1]["content"][0]["cache_control"].is_object());
+        assert!(body["messages"][2]["content"][0]["cache_control"].is_object());
+        assert!(body["tools"][0].get("cache_control").is_none());
     }
 
     #[test]
     fn alibaba_qwen_models_keep_cache_markers_without_affecting_router_models() {
         let request_for = |model: &str| CompletionRequest {
             model: model.to_string(),
-            messages: vec![Message::text(Role::System, "stable system")],
+            messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
             temperature: Some(0.4),
             max_tokens: Some(100),
             tools: Some(vec![ToolDefinition {
@@ -1860,6 +1953,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::AlibabaModelStudio),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1869,10 +1963,7 @@ data: [DONE]
             qwen["messages"][0]["content"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
-        assert_eq!(
-            qwen["tools"][0]["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
+        assert!(qwen["tools"][0].get("cache_control").is_none());
 
         let third_party =
             serde_json::to_value(build_request_body(&request_for("kimi-k2.7-code"), false))
@@ -1882,7 +1973,7 @@ data: [DONE]
     }
 
     #[test]
-    fn qwen_cache_marker_does_not_target_dynamic_latest_user() {
+    fn qwen_cache_markers_target_message_boundaries_not_tool_definitions() {
         let mut assistant = Message::text(Role::Assistant, "");
         assistant.tool_calls = Some(vec![ToolCallRequest {
             id: "call-1".to_string(),
@@ -1895,7 +1986,7 @@ data: [DONE]
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system"),
+                Message::text(Role::System, "stable system ".repeat(400)),
                 Message::text(Role::User, "original request"),
                 assistant,
                 tool,
@@ -1907,6 +1998,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1915,9 +2007,13 @@ data: [DONE]
         assert!(body["messages"][0]["content"][0]
             .get("cache_control")
             .is_some());
-        assert!(body["messages"][1]["content"].is_string());
+        assert!(body["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_some());
         assert!(body["messages"][2].get("cache_control").is_none());
-        assert!(body["messages"][3].get("cache_control").is_none());
+        assert!(body["messages"][3]["content"][0]
+            .get("cache_control")
+            .is_some());
     }
 
     #[test]
@@ -1936,6 +2032,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1968,6 +2065,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::OpenAi),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
         let second = CompletionRequest {
@@ -2003,12 +2101,82 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Custom),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn qwen_markers_require_a_trusted_endpoint_and_minimum_prompt() {
+        let request = CompletionRequest {
+            model: "qwen3.8-max".to_string(),
+            messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
+            provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+        let unknown = ProviderConfig {
+            provider_type: ProviderType::Qwen,
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+        let trusted = ProviderConfig {
+            provider_type: ProviderType::Qwen,
+            base_url: Some(
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            ),
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+        };
+
+        let unknown_body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&unknown),
+        ))
+        .unwrap();
+        let trusted_body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&trusted),
+        ))
+        .unwrap();
+        let short_body = serde_json::to_value(build_request_body(
+            &CompletionRequest {
+                messages: vec![Message::text(Role::System, "short")],
+                ..request.clone()
+            },
+            false,
+        ))
+        .unwrap();
+
+        assert!(unknown_body["messages"][0]["content"].is_string());
+        assert!(trusted_body["messages"][0]["content"][0]["cache_control"].is_object());
+        assert!(short_body["messages"][0]["content"].is_string());
+    }
+
+    #[test]
+    fn openrouter_request_uses_privacy_preserving_session_affinity() {
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4.6".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: Some("nexa-deadbeef".to_string()),
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["session_id"], "nexa-deadbeef");
     }
 
     #[test]
@@ -2050,6 +2218,12 @@ data: [DONE]
 
         assert_eq!(normalized.cache_read_tokens, Some(48));
         assert_eq!(normalized.cache_miss_tokens, Some(52));
+        assert_eq!(
+            normalized.provider_raw.as_ref().and_then(|raw| raw
+                .pointer("/usage/prompt_cache_hit_tokens")
+                .and_then(serde_json::Value::as_u64)),
+            Some(48)
+        );
     }
 
     #[test]
@@ -2072,6 +2246,12 @@ data: [DONE]
 
         assert_eq!(normalized.cache_read_tokens, Some(64));
         assert_eq!(normalized.cache_creation_tokens, Some(24));
+        assert_eq!(
+            normalized.provider_raw.as_ref().and_then(|raw| raw
+                .pointer("/usage/prompt_tokens_details/cache_creation/cache_creation_input_tokens")
+                .and_then(serde_json::Value::as_u64)),
+            Some(24)
+        );
     }
 
     #[test]
@@ -2117,6 +2297,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -2195,6 +2376,7 @@ data: [DONE]
                 cache_read_tokens: None,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             },
             thinking: Some("thinking".to_string()),
         });

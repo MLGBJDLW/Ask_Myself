@@ -792,6 +792,7 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                 cache_read_tokens: u.cached_content_token_count,
                 cache_miss_tokens: None,
                 cache_creation_tokens: None,
+                provider_raw: None,
             }
         })
         .unwrap_or_default();
@@ -1505,6 +1506,7 @@ mod tests {
             thinking_budget: Some(2048),
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1573,6 +1575,7 @@ mod tests {
             thinking_budget: None,
             reasoning_effort: Some(ReasoningEffort::High),
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 
@@ -1598,6 +1601,7 @@ mod tests {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: None,
+            routing_session_id: None,
             parallel_tool_calls: true,
         };
 

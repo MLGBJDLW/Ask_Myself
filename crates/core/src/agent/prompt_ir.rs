@@ -21,11 +21,33 @@ pub enum PromptLayer {
     ControllerState,
 }
 
+/// Provider-neutral stability of a prompt block. Wire adapters translate this
+/// semantic contract into exact-prefix ordering or supported cache markers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptStability {
+    Stable,
+    Replayable,
+    Volatile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CacheBoundaryHint {
+    PolicyEnd,
+    StableEvidenceEnd,
+    ReplayableTurnTail,
+    LatestToolRound,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptBlock {
     pub layer: PromptLayer,
     pub content: String,
+    pub stability: PromptStability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_boundary_hint: Option<CacheBoundaryHint>,
 }
 
 impl PromptBlock {
@@ -34,7 +56,43 @@ impl PromptBlock {
         if content.trim().is_empty() {
             return None;
         }
-        Some(Self { layer, content })
+        let (stability, cache_boundary_hint) = cache_semantics_for_layer(layer);
+        Some(Self {
+            layer,
+            content,
+            stability,
+            cache_boundary_hint,
+        })
+    }
+
+    pub fn with_cache_semantics(
+        mut self,
+        stability: PromptStability,
+        cache_boundary_hint: Option<CacheBoundaryHint>,
+    ) -> Self {
+        self.stability = stability;
+        self.cache_boundary_hint = cache_boundary_hint;
+        self
+    }
+}
+
+fn cache_semantics_for_layer(layer: PromptLayer) -> (PromptStability, Option<CacheBoundaryHint>) {
+    match layer {
+        PromptLayer::Policy | PromptLayer::Developer => {
+            (PromptStability::Stable, Some(CacheBoundaryHint::PolicyEnd))
+        }
+        PromptLayer::Evidence => (
+            PromptStability::Replayable,
+            Some(CacheBoundaryHint::StableEvidenceEnd),
+        ),
+        PromptLayer::Runtime | PromptLayer::Transcript => (
+            PromptStability::Replayable,
+            Some(CacheBoundaryHint::ReplayableTurnTail),
+        ),
+        PromptLayer::ControllerState => (
+            PromptStability::Volatile,
+            Some(CacheBoundaryHint::ReplayableTurnTail),
+        ),
     }
 }
 
@@ -226,5 +284,24 @@ mod tests {
         let message = evidence_message("## Retrieved Evidence\nfacts").unwrap();
         assert_eq!(message.role, Role::System);
         assert_eq!(message.text_content(), "## Retrieved Evidence\nfacts");
+    }
+
+    #[test]
+    fn prompt_blocks_express_cache_stability_without_vendor_fields() {
+        let policy = PromptBlock::new(PromptLayer::Policy, "policy").unwrap();
+        let evidence = PromptBlock::new(PromptLayer::Evidence, "evidence").unwrap();
+        let controller = PromptBlock::new(PromptLayer::ControllerState, "plan").unwrap();
+
+        assert_eq!(policy.stability, PromptStability::Stable);
+        assert_eq!(
+            policy.cache_boundary_hint,
+            Some(CacheBoundaryHint::PolicyEnd)
+        );
+        assert_eq!(evidence.stability, PromptStability::Replayable);
+        assert_eq!(
+            evidence.cache_boundary_hint,
+            Some(CacheBoundaryHint::StableEvidenceEnd)
+        );
+        assert_eq!(controller.stability, PromptStability::Volatile);
     }
 }
