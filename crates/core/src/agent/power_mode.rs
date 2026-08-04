@@ -112,27 +112,30 @@ pub fn resolve_agent_power_policy(input: AgentPowerPolicyInput<'_>) -> ResolvedA
     let mut reasoning_effort = input.reasoning_effort;
 
     if let Some(reasoning) = capabilities.and_then(|capabilities| capabilities.reasoning) {
-        if let Some(strongest) = reasoning
+        reasoning_enabled = Some(true);
+        reasoning_effort = reasoning
             .effort_levels
             .iter()
             .rev()
             .find_map(|level| parse_reasoning_effort(level))
-        {
-            reasoning_enabled = Some(true);
-            reasoning_effort = Some(strongest);
-        }
+            .filter(|effort| *effort != ReasoningEffort::None);
 
         if let Some(budget) = reasoning.thinking_budget.filter(|budget| budget.enabled) {
-            reasoning_enabled = Some(true);
-            let catalog_budget = budget.max_tokens.or(budget.default_tokens);
-            if let Some(catalog_budget) = catalog_budget {
-                thinking_budget = Some(
-                    thinking_budget
-                        .unwrap_or_default()
-                        .max(catalog_budget)
-                        .max(budget.min_tokens.unwrap_or_default()),
-                );
+            if reasoning.effort_budget_exclusive && reasoning_effort.is_some() {
+                thinking_budget = None;
+            } else {
+                let catalog_budget = budget.max_tokens.or(budget.default_tokens);
+                if let Some(catalog_budget) = catalog_budget {
+                    thinking_budget = Some(
+                        thinking_budget
+                            .unwrap_or_default()
+                            .max(catalog_budget)
+                            .max(budget.min_tokens.unwrap_or_default()),
+                    );
+                }
             }
+        } else {
+            thinking_budget = None;
         }
     }
 
@@ -224,16 +227,30 @@ mod tests {
     }
 
     #[test]
-    fn nexus_uses_declared_thinking_budget_without_inventing_an_effort_level() {
+    fn nexus_respects_exclusive_reasoning_controls() {
         let policy = resolve_agent_power_policy(input(
             AgentPowerMode::Nexus,
             ProviderType::Qwen,
             "qwen3.8-max-preview",
         ));
 
-        assert_eq!(policy.reasoning_effort, Some(ReasoningEffort::Low));
-        assert_eq!(policy.thinking_budget, Some(10_000));
+        assert_eq!(policy.reasoning_effort, Some(ReasoningEffort::Max));
+        assert_eq!(policy.thinking_budget, None);
         assert_eq!(policy.reasoning_enabled, Some(true));
+    }
+
+    #[test]
+    fn nexus_does_not_invent_effort_or_budget_for_budget_only_models() {
+        let policy = resolve_agent_power_policy(input(
+            AgentPowerMode::Nexus,
+            ProviderType::AlibabaModelStudio,
+            "kimi-k2.6",
+        ));
+
+        assert_eq!(policy.reasoning_effort, None);
+        assert_eq!(policy.thinking_budget, None);
+        assert_eq!(policy.reasoning_enabled, Some(true));
+        assert!(policy.model_capability_resolved);
     }
 
     #[test]
