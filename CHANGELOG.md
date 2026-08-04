@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.10...nexa-monorepo-v0.11.11) (2026-08-04)
+
+
+### Bug Fixes
+
+* **agent:** keep reasoning-only output out of replies ([21d8ee7](https://github.com/MLGBJDLW/Nexa/commit/21d8ee761ddfc6f11a71335793b703caf7e35d65))
+* **agent:** recover reasoning-only terminal responses ([937851f](https://github.com/MLGBJDLW/Nexa/commit/937851fd0ef299c281bc8890010cf2d26e9db625))
+* **chat:** quarantine legacy reasoning-only replies ([25dea32](https://github.com/MLGBJDLW/Nexa/commit/25dea324c597e5aafc3d8aed88e6f5c1e4c937cf))
+* **gemini:** reserve output budget for final answers ([6c02cf1](https://github.com/MLGBJDLW/Nexa/commit/6c02cf1b82e09e458af427dafe3f31d6246c3f9d))
+
 ## [0.11.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.9...nexa-monorepo-v0.11.10) (2026-08-04)
 
 
