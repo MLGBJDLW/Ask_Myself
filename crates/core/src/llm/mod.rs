@@ -14,6 +14,7 @@ pub mod google;
 pub mod ollama;
 pub mod openai;
 pub mod prompt_cache;
+pub(crate) mod provider_boundary;
 pub mod reasoning_profile;
 pub mod streaming;
 pub(crate) mod transport;
@@ -30,6 +31,33 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+}
+
+/// Provider-neutral stability of a prompt segment. Wire adapters use this
+/// metadata to place supported cache boundaries without inferring intent from
+/// a message role.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptStability {
+    Stable,
+    Replayable,
+    Volatile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum CacheBoundaryHint {
+    PolicyEnd,
+    StableEvidenceEnd,
+    ReplayableTurnTail,
+    LatestToolRound,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheHint {
+    pub stability: PromptStability,
+    pub boundary: CacheBoundaryHint,
 }
 
 /// A single part of a multimodal message content.
@@ -65,6 +93,10 @@ pub struct Message {
     /// multi-step tool loops (e.g. DeepSeek `reasoning_content`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Internal prompt-compiler metadata. Provider adapters consume this
+    /// sidecar and never include it in wire message content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hint: Option<PromptCacheHint>,
 }
 
 impl Message {
@@ -78,6 +110,7 @@ impl Message {
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         }
     }
 
@@ -91,7 +124,25 @@ impl Message {
             name: Some(name.into()),
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         }
+    }
+
+    pub fn with_prompt_cache_hint(
+        mut self,
+        stability: PromptStability,
+        boundary: CacheBoundaryHint,
+    ) -> Self {
+        self.prompt_cache_hint = Some(PromptCacheHint {
+            stability,
+            boundary,
+        });
+        self
+    }
+
+    pub fn prompt_cache_hint(&self) -> Option<(PromptStability, CacheBoundaryHint)> {
+        self.prompt_cache_hint
+            .map(|hint| (hint.stability, hint.boundary))
     }
 
     /// Get the combined text content from all text parts.

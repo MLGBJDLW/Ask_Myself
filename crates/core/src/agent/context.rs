@@ -159,6 +159,7 @@ pub fn prepare_messages_with_options(
         name: None,
         tool_calls: None,
         reasoning_content: None,
+        prompt_cache_hint: None,
     };
     let prompt = AgentPrompt {
         policy: PromptBlock::new(PromptLayer::Policy, stable_system_prompt)
@@ -1100,16 +1101,17 @@ mod tests {
             },
         );
 
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 5);
         assert_eq!(result[0].role, Role::System);
         assert_eq!(result[0].text_content(), "Stable system prompt");
         assert_eq!(result[1].role, Role::User);
         assert_eq!(result[2].role, Role::System);
-        let context_text = result[2].text_content();
-        assert!(context_text.contains("Runtime Context"));
-        assert!(context_text.contains("Retrieved Evidence"));
-        assert!(context_text.contains("Active Routing Plan"));
-        assert!(context_text.contains("Active Task Plan"));
+        assert!(result[2].text_content().contains("Runtime Context"));
+        assert_eq!(result[3].role, Role::System);
+        assert!(result[3].text_content().contains("Retrieved Evidence"));
+        assert_eq!(result[4].role, Role::System);
+        assert!(result[4].text_content().contains("Active Routing Plan"));
+        assert!(result[4].text_content().contains("Active Task Plan"));
         assert!(!result[0].text_content().contains("Retrieved Evidence"));
         assert!(!result[0].text_content().contains("Active Routing Plan"));
     }

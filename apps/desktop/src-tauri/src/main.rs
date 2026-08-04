@@ -11,6 +11,7 @@ mod desktop_agent_session;
 mod subagent_tool;
 mod terminal_agent_tool;
 
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -112,6 +113,39 @@ fn migrate_legacy_data_dir(data_dir: &Path) {
     }
 }
 
+fn load_or_create_routing_session_secret(data_dir: &Path) -> io::Result<String> {
+    let secret_path = data_dir.join("routing-session-secret");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(&secret_path) {
+        Ok(mut file) => {
+            let secret = uuid::Uuid::new_v4().to_string();
+            file.write_all(secret.as_bytes())?;
+            file.sync_all()?;
+            Ok(secret)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let mut secret = String::new();
+            std::fs::File::open(secret_path)?.read_to_string(&mut secret)?;
+            let secret = secret.trim().to_string();
+            if secret.is_empty() {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "routing session secret is empty",
+                ))
+            } else {
+                Ok(secret)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn persisted_window_state_flags() -> StateFlags {
     // Native decorations are controlled by tauri.conf.json. Restoring this flag
     // would let a pre-custom-frame state re-enable the system title bar.
@@ -180,6 +214,19 @@ fn main() {
                 .app_data_dir()
                 .expect("failed to resolve app data directory");
             std::fs::create_dir_all(&data_dir).expect("failed to create app data directory");
+
+            match load_or_create_routing_session_secret(&data_dir) {
+                Ok(secret) => {
+                    if !nexa_core::llm::prompt_cache::configure_routing_session_secret(
+                        secret.as_bytes(),
+                    ) {
+                        log::warn!("Routing session secret was already configured");
+                    }
+                }
+                Err(error) => log::warn!(
+                    "Failed to load routing session secret; using a process-local fallback: {error}"
+                ),
+            }
 
             // Migrate legacy user data (ask-myself -> nexa). Safe to call every start.
             migrate_legacy_data_dir(&data_dir);

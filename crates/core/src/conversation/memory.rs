@@ -613,6 +613,7 @@ mod tests {
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let tokens = estimate_message_tokens(&msg);
         assert!(tokens > 10, "Tool calls should contribute to token count");
@@ -895,6 +896,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, "Result: found something", "tc1"),
             msg(Role::Assistant, "Based on the search, here is the answer."),

@@ -1604,6 +1604,12 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_agent_task_runs_status_recency
              ON agent_task_runs(status, updated_at DESC, created_at DESC, id DESC);",
     ),
+    (
+        "v088_ai_usage_runtime_observability",
+        "ALTER TABLE ai_usage_records ADD COLUMN time_to_first_token_ms INTEGER;
+         ALTER TABLE ai_usage_records ADD COLUMN upstream_provider_id TEXT;
+         ALTER TABLE ai_usage_records ADD COLUMN cache_outcome_reason TEXT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

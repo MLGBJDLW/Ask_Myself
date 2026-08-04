@@ -57,6 +57,7 @@ fn visual_context_message(
         name: None,
         tool_calls: None,
         reasoning_content: None,
+        prompt_cache_hint: None,
     })
 }
 

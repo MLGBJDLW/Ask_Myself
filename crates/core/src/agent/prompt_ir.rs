@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::llm::{CacheBoundaryHint, PromptStability};
 use crate::llm::{Message, Role, ToolDefinition};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,25 +20,6 @@ pub enum PromptLayer {
     Evidence,
     Transcript,
     ControllerState,
-}
-
-/// Provider-neutral stability of a prompt block. Wire adapters translate this
-/// semantic contract into exact-prefix ordering or supported cache markers.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PromptStability {
-    Stable,
-    Replayable,
-    Volatile,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum CacheBoundaryHint {
-    PolicyEnd,
-    StableEvidenceEnd,
-    ReplayableTurnTail,
-    LatestToolRound,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,12 +80,12 @@ fn cache_semantics_for_layer(layer: PromptLayer) -> (PromptStability, Option<Cac
 
 pub fn controller_state_message(content: impl Into<String>) -> Option<Message> {
     PromptBlock::new(PromptLayer::ControllerState, content)
-        .map(|block| Message::text(Role::System, block.content))
+        .and_then(|block| message_from_blocks(Role::System, std::iter::once(&block)))
 }
 
 pub fn evidence_message(content: impl Into<String>) -> Option<Message> {
     PromptBlock::new(PromptLayer::Evidence, content)
-        .map(|block| Message::text(Role::System, block.content))
+        .and_then(|block| message_from_blocks(Role::System, std::iter::once(&block)))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -151,38 +133,43 @@ impl AgentPrompt {
                 + usize::from(self.has_context_tail()),
         );
 
-        if let Some(policy_text) = joined_blocks(self.policy.iter().chain(self.developer.iter())) {
-            messages.push(Message::text(Role::System, policy_text));
+        if let Some(message) = message_from_blocks(
+            Role::System,
+            self.policy.iter().chain(self.developer.iter()),
+        ) {
+            messages.push(message);
         }
 
         if options.runtime_placement == RuntimePlacement::AfterPolicy {
-            if let Some(context_text) = self.context_text() {
-                messages.push(Message::text(Role::System, context_text));
-            }
+            self.push_context_messages(&mut messages);
         }
 
         messages.extend(self.transcript.iter().cloned());
 
         if let Some(current_user) = &self.current_user {
-            messages.push(current_user.clone());
+            messages.push(current_user.clone().with_prompt_cache_hint(
+                PromptStability::Replayable,
+                CacheBoundaryHint::ReplayableTurnTail,
+            ));
         }
 
         if options.runtime_placement == RuntimePlacement::Tail {
-            if let Some(context_text) = self.context_text() {
-                messages.push(Message::text(Role::System, context_text));
-            }
+            self.push_context_messages(&mut messages);
         }
 
         messages
     }
 
-    fn context_text(&self) -> Option<String> {
-        joined_blocks(
-            self.runtime
-                .iter()
-                .chain(self.evidence.iter())
-                .chain(self.controller_state.iter()),
-        )
+    fn push_context_messages(&self, messages: &mut Vec<Message>) {
+        for blocks in [
+            self.runtime.as_slice(),
+            self.evidence.as_slice(),
+            self.controller_state.as_slice(),
+        ] {
+            if let Some(message) = message_from_blocks(Role::System, blocks.iter()) {
+                messages.push(message);
+            }
+        }
     }
 
     fn has_context_tail(&self) -> bool {
@@ -202,6 +189,26 @@ fn joined_blocks<'a>(blocks: impl Iterator<Item = &'a PromptBlock>) -> Option<St
     } else {
         Some(parts.join("\n\n"))
     }
+}
+
+fn message_from_blocks<'a>(
+    role: Role,
+    blocks: impl Iterator<Item = &'a PromptBlock>,
+) -> Option<Message> {
+    let blocks = blocks
+        .filter(|block| !block.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    let content = joined_blocks(blocks.iter().copied())?;
+    let cache_semantics = blocks.iter().rev().find_map(|block| {
+        block
+            .cache_boundary_hint
+            .map(|boundary| (block.stability, boundary))
+    });
+    let message = Message::text(role, content);
+    Some(match cache_semantics {
+        Some((stability, boundary)) => message.with_prompt_cache_hint(stability, boundary),
+        None => message,
+    })
 }
 
 #[cfg(test)]
@@ -265,9 +272,29 @@ mod tests {
         let messages = prompt.compile_to_messages(PromptCompileOptions::default());
 
         assert_eq!(messages[0].text_content(), "policy");
-        assert_eq!(messages[1].text_content(), "evidence\n\nplan");
+        assert_eq!(messages[1].text_content(), "evidence");
+        assert_eq!(messages[2].text_content(), "plan");
+        assert_eq!(messages[3].text_content(), "question");
         assert!(!messages[0].text_content().contains("evidence"));
         assert!(!messages[0].text_content().contains("plan"));
+        assert_eq!(
+            messages[0].prompt_cache_hint(),
+            Some((PromptStability::Stable, CacheBoundaryHint::PolicyEnd))
+        );
+        assert_eq!(
+            messages[1].prompt_cache_hint(),
+            Some((
+                PromptStability::Replayable,
+                CacheBoundaryHint::StableEvidenceEnd
+            ))
+        );
+        assert_eq!(
+            messages[2].prompt_cache_hint(),
+            Some((
+                PromptStability::Volatile,
+                CacheBoundaryHint::ReplayableTurnTail
+            ))
+        );
     }
 
     #[test]

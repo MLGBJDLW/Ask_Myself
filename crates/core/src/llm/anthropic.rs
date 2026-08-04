@@ -298,9 +298,10 @@ fn convert_messages(
 ) -> (Option<Vec<AnthropicSystemBlock>>, Vec<AnthropicMessage>) {
     let mut system_blocks: Vec<AnthropicSystemBlock> = Vec::new();
     let mut out: Vec<AnthropicMessage> = Vec::new();
-    let latest_user_index = super::prompt_cache::latest_user_message_index(messages);
-
     for (index, msg) in messages.iter().enumerate() {
+        let cache_boundary = msg
+            .prompt_cache_hint()
+            .is_some_and(|(stability, _)| stability != super::PromptStability::Volatile);
         match msg.role {
             Role::System => {
                 let text = msg.text_content();
@@ -313,13 +314,19 @@ fn convert_messages(
                         system_blocks.push(AnthropicSystemBlock {
                             r#type: "text".to_string(),
                             text,
-                            cache_control: None,
+                            cache_control: cache_boundary.then(|| CacheControl {
+                                r#type: "ephemeral".to_string(),
+                            }),
                         });
                     } else {
-                        out.push(AnthropicMessage {
+                        let mut message = AnthropicMessage {
                             role: "user".to_string(),
                             content: AnthropicContent::Text(text),
-                        });
+                        };
+                        if cache_boundary {
+                            add_cache_control_to_message_content(&mut message);
+                        }
+                        out.push(message);
                     }
                 }
             }
@@ -348,7 +355,7 @@ fn convert_messages(
                         role: "user".to_string(),
                         content: AnthropicContent::Blocks(blocks),
                     };
-                    if Some(index) == latest_user_index {
+                    if cache_boundary {
                         add_cache_control_to_message_content(&mut message);
                     }
                     out.push(message);
@@ -357,7 +364,7 @@ fn convert_messages(
                         role: "user".to_string(),
                         content: AnthropicContent::Text(msg.text_content()),
                     };
-                    if Some(index) == latest_user_index {
+                    if cache_boundary {
                         add_cache_control_to_message_content(&mut message);
                     }
                     out.push(message);
@@ -432,13 +439,6 @@ fn convert_messages(
         }
     }
 
-    // Keep the first system block as the stable cache prefix. Later system
-    // blocks carry runtime state such as dates, route plans, and loaded skills.
-    if let Some(first) = system_blocks.first_mut() {
-        first.cache_control = Some(CacheControl {
-            r#type: "ephemeral".to_string(),
-        });
-    }
     let system = (!system_blocks.is_empty()).then_some(system_blocks);
 
     (system, out)
@@ -887,6 +887,15 @@ impl AnthropicProvider {
 mod tests {
     use super::*;
 
+    fn cacheable_message(
+        role: Role,
+        content: impl Into<String>,
+        stability: crate::llm::PromptStability,
+        boundary: crate::llm::CacheBoundaryHint,
+    ) -> Message {
+        Message::text(role, content).with_prompt_cache_hint(stability, boundary)
+    }
+
     fn request_with_messages(
         messages: Vec<Message>,
         tools: Option<Vec<ToolDefinition>>,
@@ -910,9 +919,19 @@ mod tests {
     #[test]
     fn system_cache_control_stays_on_stable_first_block() {
         let messages = vec![
-            Message::text(Role::System, "stable prompt"),
+            cacheable_message(
+                Role::System,
+                "stable prompt",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
             Message::text(Role::System, "runtime date"),
-            Message::text(Role::User, "hello"),
+            cacheable_message(
+                Role::User,
+                "hello",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
         ];
 
         let (system, api_messages) = convert_messages(&messages);
@@ -938,9 +957,19 @@ mod tests {
             parameters: serde_json::json!({"type":"object"}),
         };
         let messages = vec![
-            Message::text(Role::System, "stable prompt"),
+            cacheable_message(
+                Role::System,
+                "stable prompt",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
             Message::text(Role::System, "runtime plan"),
-            Message::text(Role::User, "hello"),
+            cacheable_message(
+                Role::User,
+                "hello",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
         ];
         let (system, api_messages) = convert_messages(&messages);
         let body = build_request_body(
@@ -971,7 +1000,7 @@ mod tests {
         assert_eq!(system_json.as_array().expect("system blocks").len(), 1);
         assert_eq!(system_json[0]["text"], "stable prompt");
         assert_eq!(messages_json[0]["role"], "user");
-        assert_eq!(messages_json[0]["content"][0]["text"], "question");
+        assert_eq!(messages_json[0]["content"], "question");
         assert_eq!(messages_json[1]["role"], "user");
         assert_eq!(messages_json[1]["content"], "runtime tail");
     }
@@ -989,7 +1018,12 @@ mod tests {
         tool.name = Some("call-1".to_string());
         let messages = vec![
             Message::text(Role::System, "stable prompt"),
-            Message::text(Role::User, "original request"),
+            cacheable_message(
+                Role::User,
+                "original request",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
             assistant,
             tool,
         ];

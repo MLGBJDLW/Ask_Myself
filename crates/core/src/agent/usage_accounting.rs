@@ -83,6 +83,9 @@ impl AgentExecutor {
             usage_source: "unknown",
             request_status: "error",
             latency_ms: None,
+            time_to_first_token_ms: None,
+            upstream_provider_id: None,
+            cache_outcome_reason: None,
             estimated_cost_micros,
             currency,
             pricing_version,
@@ -99,6 +102,9 @@ impl AgentExecutor {
         tool_call_count: usize,
         finish_reason: Option<String>,
         chunk_usage: Option<Usage>,
+        request_latency_ms: u64,
+        time_to_first_token_ms: Option<u64>,
+        cache_outcome_reason: Option<&str>,
     ) -> ModelStepUsageReport {
         let UsageAccountingContext {
             db,
@@ -147,6 +153,9 @@ impl AgentExecutor {
             chunk_usage.as_ref(),
             context_breakdown.total_tokens,
             normalized_cache_miss_tokens,
+            Some(request_latency_ms),
+            time_to_first_token_ms,
+            cache_outcome_reason,
         ) {
             warn!("Failed to persist canonical AI usage: {error}");
         }

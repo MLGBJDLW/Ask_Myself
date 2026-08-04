@@ -16,14 +16,14 @@ use super::reasoning_profile::{
     ThinkingModeControl,
 };
 use super::transport::{shared_http_transport, HttpTransport};
-#[cfg(test)]
-use super::ReasoningEffort;
 use super::{
     configured_request_timeout, send_stream_start_request, serialized_json_body,
     streaming::parse_sse_stream, with_request_timeout, CompletionRequest, CompletionResponse,
     ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, Role,
     StreamChunk, ToolCallRequest, ToolDefinition, Usage,
 };
+#[cfg(test)]
+use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
 use crate::error::CoreError;
 use crate::provider_catalog::model_supports_reasoning_from_catalog;
 use std::sync::Arc;
@@ -614,44 +614,18 @@ fn add_profile_cache_control_for_request(
         return;
     }
 
-    let mut candidates = Vec::new();
-    let first_system_index = request
-        .messages
-        .iter()
-        .enumerate()
-        .find_map(|(index, message)| {
-            (message.role == Role::System && is_leading_system_message(&request.messages, index))
-                .then_some(index)
-        });
-    if let Some(index) = first_system_index {
-        candidates.push(index);
-    }
-    if let Some(index) = request
-        .messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, message)| (message.role == Role::System).then_some(index))
-        .filter(|index| Some(*index) != first_system_index)
-    {
-        candidates.push(index);
-    }
-    if let Some(index) = request
-        .messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, message)| (message.role == Role::Tool).then_some(index))
-    {
-        candidates.push(index);
-    }
-    if let Some(index) = super::prompt_cache::latest_user_message_index(&request.messages) {
-        candidates.push(index);
-    }
-
-    candidates.dedup();
     let limit = usize::from(profile.max_breakpoints.unwrap_or(0));
-    for index in candidates.into_iter().take(limit) {
+    let mut latest_by_boundary = std::collections::BTreeMap::new();
+    for (index, message) in request.messages.iter().enumerate() {
+        if let Some((stability, boundary)) = message.prompt_cache_hint() {
+            if stability != super::PromptStability::Volatile {
+                latest_by_boundary.insert(boundary, index);
+            }
+        }
+    }
+    let mut candidates = latest_by_boundary.into_values().collect::<Vec<_>>();
+    candidates.sort_unstable();
+    for index in candidates.into_iter().rev().take(limit).rev() {
         if let Some(message) = messages.get_mut(index) {
             add_cache_control_to_text_content(message);
         }
@@ -1302,6 +1276,15 @@ mod tests {
         }
     }
 
+    fn cacheable_message(
+        role: Role,
+        content: impl Into<String>,
+        stability: super::PromptStability,
+        boundary: super::CacheBoundaryHint,
+    ) -> Message {
+        Message::text(role, content).with_prompt_cache_hint(stability, boundary)
+    }
+
     async fn serve_delayed_sse_response(listener: tokio::net::TcpListener) -> std::io::Result<()> {
         let (mut socket, _) = listener.accept().await?;
         let mut request = Vec::new();
@@ -1663,6 +1646,7 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: Some("prior reasoning".to_string()),
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "deepseek-v4-pro".to_string(),
@@ -1698,6 +1682,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: Some("Need to check whether python-docx is installed.".to_string()),
+            prompt_cache_hint: None,
         };
         let mut tool = Message::text(Role::Tool, "python-docx 1.2.0");
         tool.name = Some("call_1".to_string());
@@ -1740,6 +1725,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let mut tool = Message::text(Role::Tool, "ok");
         tool.name = Some("call_legacy".to_string());
@@ -1778,6 +1764,7 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: Some("prior reasoning".to_string()),
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "deepseek-v4-pro".to_string(),
@@ -1938,6 +1925,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3-coder".to_string(),
@@ -2082,6 +2070,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: Some("need lookup".to_string()),
+            prompt_cache_hint: None,
         };
         let assistant_without_reasoning = Message {
             role: Role::Assistant,
@@ -2089,6 +2078,7 @@ data: [DONE]
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3.6-plus".to_string(),
@@ -2116,9 +2106,24 @@ data: [DONE]
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system ".repeat(400)),
-                Message::text(Role::System, "runtime plan"),
-                Message::text(Role::User, "hello"),
+                cacheable_message(
+                    Role::System,
+                    "stable system ".repeat(400),
+                    super::PromptStability::Stable,
+                    super::CacheBoundaryHint::PolicyEnd,
+                ),
+                cacheable_message(
+                    Role::System,
+                    "retrieved evidence",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::StableEvidenceEnd,
+                ),
+                cacheable_message(
+                    Role::User,
+                    "hello",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::ReplayableTurnTail,
+                ),
             ],
             temperature: Some(0.4),
             max_tokens: Some(100),
@@ -2150,7 +2155,12 @@ data: [DONE]
     fn alibaba_qwen_models_keep_cache_markers_without_affecting_router_models() {
         let request_for = |model: &str| CompletionRequest {
             model: model.to_string(),
-            messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
+            messages: vec![cacheable_message(
+                Role::System,
+                "stable system ".repeat(400),
+                super::PromptStability::Stable,
+                super::CacheBoundaryHint::PolicyEnd,
+            )],
             temperature: Some(0.4),
             max_tokens: Some(100),
             tools: Some(vec![ToolDefinition {
@@ -2191,13 +2201,28 @@ data: [DONE]
             arguments: "{}".to_string(),
             thought_signature: None,
         }]);
-        let mut tool = Message::text(Role::Tool, "tool result");
+        let mut tool = cacheable_message(
+            Role::Tool,
+            "tool result",
+            super::PromptStability::Replayable,
+            super::CacheBoundaryHint::LatestToolRound,
+        );
         tool.name = Some("call-1".to_string());
         let request = CompletionRequest {
             model: "qwen3.7-max".to_string(),
             messages: vec![
-                Message::text(Role::System, "stable system ".repeat(400)),
-                Message::text(Role::User, "original request"),
+                cacheable_message(
+                    Role::System,
+                    "stable system ".repeat(400),
+                    super::PromptStability::Stable,
+                    super::CacheBoundaryHint::PolicyEnd,
+                ),
+                cacheable_message(
+                    Role::User,
+                    "original request",
+                    super::PromptStability::Replayable,
+                    super::CacheBoundaryHint::ReplayableTurnTail,
+                ),
                 assistant,
                 tool,
             ],
@@ -2328,7 +2353,12 @@ data: [DONE]
     fn qwen_markers_require_a_trusted_endpoint_and_minimum_prompt() {
         let request = CompletionRequest {
             model: "qwen3.8-max".to_string(),
-            messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
+            messages: vec![cacheable_message(
+                Role::System,
+                "stable system ".repeat(400),
+                super::PromptStability::Stable,
+                super::CacheBoundaryHint::PolicyEnd,
+            )],
             provider_type: Some(ProviderType::Qwen),
             routing_session_id: None,
             parallel_tool_calls: true,
@@ -2371,10 +2401,20 @@ data: [DONE]
             false,
         ))
         .unwrap();
+        let unhinted_body = serde_json::to_value(build_request_body_with_config(
+            &CompletionRequest {
+                messages: vec![Message::text(Role::System, "stable system ".repeat(400))],
+                ..request.clone()
+            },
+            false,
+            Some(&trusted),
+        ))
+        .unwrap();
 
         assert!(unknown_body["messages"][0]["content"].is_string());
         assert!(trusted_body["messages"][0]["content"][0]["cache_control"].is_object());
         assert!(short_body["messages"][0]["content"].is_string());
+        assert!(unhinted_body["messages"][0]["content"].is_string());
     }
 
     #[test]
@@ -2500,6 +2540,7 @@ data: [DONE]
                 thought_signature: None,
             }]),
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let request = CompletionRequest {
             model: "qwen3-coder".to_string(),

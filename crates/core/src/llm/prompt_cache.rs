@@ -4,12 +4,22 @@
 //! being guessed independently by each wire encoder.  The endpoint is reduced
 //! to a privacy-safe identifier so diagnostics never persist a user URL.
 
-use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+use super::provider_boundary::{
+    endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
+    is_deepseek_public_endpoint, is_openai_public_endpoint, is_openrouter_public_endpoint,
+    provider_id,
+};
 use super::{Message, ProviderType, Role, ToolDefinition};
 
 const OPENAI_PROMPT_CACHE_KEY_MAX_CHARS: usize = 64;
 const ALIBABA_EXPLICIT_QWEN_PREFIXES: &[&str] = &["qwen3.5-", "qwen3.6-", "qwen3.7-", "qwen3.8-"];
+static ROUTING_SESSION_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -119,71 +129,6 @@ impl PromptCacheProfile {
     }
 }
 
-fn provider_id(provider_type: ProviderType) -> &'static str {
-    match provider_type {
-        ProviderType::OpenAi => "openai",
-        ProviderType::OpenRouter => "openrouter",
-        ProviderType::Anthropic => "anthropic",
-        ProviderType::Google => "google",
-        ProviderType::DeepSeek => "deepseek",
-        ProviderType::Ollama => "ollama",
-        ProviderType::LmStudio => "lmStudio",
-        ProviderType::AzureOpenAi => "azureOpenAi",
-        ProviderType::Zhipu => "zhipu",
-        ProviderType::Moonshot => "moonshot",
-        ProviderType::Qwen => "qwen",
-        ProviderType::AlibabaModelStudio => "alibabaModelStudio",
-        ProviderType::SiliconFlow => "siliconFlow",
-        ProviderType::Doubao => "doubao",
-        ProviderType::Yi => "yi",
-        ProviderType::Baichuan => "baichuan",
-        ProviderType::Custom => "custom",
-    }
-}
-
-fn default_endpoint(provider_type: ProviderType) -> &'static str {
-    match provider_type {
-        ProviderType::OpenAi => "https://api.openai.com/v1",
-        ProviderType::OpenRouter => "https://openrouter.ai/api/v1",
-        ProviderType::Anthropic => "https://api.anthropic.com",
-        ProviderType::DeepSeek => "https://api.deepseek.com",
-        ProviderType::Qwen | ProviderType::AlibabaModelStudio => {
-            "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        }
-        _ => "",
-    }
-}
-
-fn endpoint_host(provider_type: ProviderType, base_url: Option<&str>) -> Option<String> {
-    let endpoint = base_url.unwrap_or_else(|| default_endpoint(provider_type));
-    reqwest::Url::parse(endpoint)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
-}
-
-fn endpoint_id(provider_type: ProviderType, base_url: Option<&str>) -> String {
-    let endpoint = base_url.unwrap_or_else(|| default_endpoint(provider_type));
-    let normalized = endpoint.trim().trim_end_matches('/').to_ascii_lowercase();
-    match endpoint_host(provider_type, base_url).as_deref() {
-        Some("api.openai.com") => "openai-public".to_string(),
-        Some("openrouter.ai") => "openrouter-public".to_string(),
-        Some("api.deepseek.com") => "deepseek-public".to_string(),
-        Some(host) if host.ends_with(".aliyuncs.com") => "alibaba-model-studio".to_string(),
-        Some("api.anthropic.com") => "anthropic-public".to_string(),
-        _ if normalized.is_empty() => format!("{}-default", provider_id(provider_type)),
-        _ => {
-            let digest = blake3::hash(normalized.as_bytes()).to_hex();
-            format!("custom-{}", &digest[..16])
-        }
-    }
-}
-
-fn is_known_alibaba_endpoint(provider_type: ProviderType, base_url: Option<&str>) -> bool {
-    endpoint_host(provider_type, base_url)
-        .as_deref()
-        .is_some_and(|host| host.ends_with(".aliyuncs.com"))
-}
-
 fn is_explicit_qwen_model(model: &str) -> bool {
     let normalized = model.to_ascii_lowercase();
     ALIBABA_EXPLICIT_QWEN_PREFIXES
@@ -197,7 +142,6 @@ pub fn resolve_prompt_cache_profile(
     api_style: PromptCacheApiStyle,
     model: &str,
 ) -> PromptCacheProfile {
-    let host = endpoint_host(provider_type, base_url);
     let key = PromptCacheProfileKey {
         provider_id: provider_id(provider_type).to_string(),
         endpoint_id: endpoint_id(provider_type, base_url),
@@ -210,7 +154,10 @@ pub fn resolve_prompt_cache_profile(
             provider_type,
             ProviderType::OpenAi | ProviderType::AzureOpenAi
         )
-        && (provider_type == ProviderType::AzureOpenAi || host.as_deref() == Some("api.openai.com"))
+        && ((provider_type == ProviderType::OpenAi
+            && is_openai_public_endpoint(provider_type, base_url))
+            || (provider_type == ProviderType::AzureOpenAi
+                && is_azure_openai_endpoint(provider_type, base_url)))
     {
         return PromptCacheProfile {
             id: "openai-automatic-v1".to_string(),
@@ -232,7 +179,7 @@ pub fn resolve_prompt_cache_profile(
 
     if api_style == PromptCacheApiStyle::OpenAiCompatible
         && provider_type == ProviderType::DeepSeek
-        && host.as_deref() == Some("api.deepseek.com")
+        && is_deepseek_public_endpoint(provider_type, base_url)
     {
         return PromptCacheProfile {
             id: "deepseek-exact-prefix-v1".to_string(),
@@ -257,7 +204,7 @@ pub fn resolve_prompt_cache_profile(
             provider_type,
             ProviderType::Qwen | ProviderType::AlibabaModelStudio
         )
-        && is_known_alibaba_endpoint(provider_type, base_url)
+        && is_alibaba_chat_endpoint(provider_type, base_url)
         && is_explicit_qwen_model(model)
     {
         return PromptCacheProfile {
@@ -279,7 +226,8 @@ pub fn resolve_prompt_cache_profile(
     }
 
     if api_style == PromptCacheApiStyle::OpenAiCompatible
-        && (provider_type == ProviderType::OpenRouter || host.as_deref() == Some("openrouter.ai"))
+        && provider_type == ProviderType::OpenRouter
+        && is_openrouter_public_endpoint(provider_type, base_url)
     {
         return PromptCacheProfile {
             id: "openrouter-routing-v1".to_string(),
@@ -301,7 +249,7 @@ pub fn resolve_prompt_cache_profile(
 
     if api_style == PromptCacheApiStyle::AnthropicMessages
         && provider_type == ProviderType::Anthropic
-        && host.as_deref() == Some("api.anthropic.com")
+        && is_anthropic_public_endpoint(provider_type, base_url)
     {
         return PromptCacheProfile {
             id: "anthropic-explicit-v1".to_string(),
@@ -324,13 +272,44 @@ pub fn resolve_prompt_cache_profile(
     PromptCacheProfile::unsupported(key)
 }
 
-pub fn privacy_preserving_routing_session_id(conversation_id: &str) -> Option<String> {
+/// Configure the app-installation secret used to pseudonymize routing sessions.
+/// The first caller wins so a library consumer cannot rotate identifiers midway
+/// through a process.
+pub fn configure_routing_session_secret(secret: &[u8]) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
+    ROUTING_SESSION_SECRET
+        .set(*blake3::hash(secret).as_bytes())
+        .is_ok()
+}
+
+pub fn privacy_preserving_routing_session_id_with_secret(
+    secret: &[u8],
+    conversation_id: &str,
+) -> Option<String> {
     let trimmed = conversation_id.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || secret.is_empty() {
         return None;
     }
-    let digest = blake3::hash(format!("nexa-openrouter-session-v1\n{trimmed}").as_bytes());
-    Some(format!("nexa-{}", &digest.to_hex()[..32]))
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).ok()?;
+    mac.update(b"nexa-openrouter-session-v2\n");
+    mac.update(trimmed.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let encoded = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(format!("nexa-{encoded}"))
+}
+
+pub fn privacy_preserving_routing_session_id(conversation_id: &str) -> Option<String> {
+    let secret = ROUTING_SESSION_SECRET.get_or_init(|| {
+        // Non-desktop library consumers still get process-local unlinkability.
+        // The desktop configures a persisted installation secret during setup.
+        *blake3::hash(uuid::Uuid::new_v4().as_bytes()).as_bytes()
+    });
+    privacy_preserving_routing_session_id_with_secret(secret, conversation_id)
 }
 
 fn estimated_prompt_tokens(messages: &[Message], tools: Option<&[ToolDefinition]>) -> u32 {
@@ -343,14 +322,6 @@ fn estimated_prompt_tokens(messages: &[Message], tools: Option<&[ToolDefinition]
         .unwrap_or(0);
     u32::try_from((message_chars.saturating_add(tool_chars).saturating_add(3)) / 4)
         .unwrap_or(u32::MAX)
-}
-
-pub(crate) fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
-    messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, message)| (message.role == Role::User).then_some(index))
 }
 
 pub(crate) fn openai_prompt_cache_key(
@@ -392,20 +363,6 @@ pub(crate) fn openai_compatible_cache_read_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn latest_user_message_ignores_tool_results_after_user_turn() {
-        let mut tool = Message::text(Role::Tool, "result");
-        tool.name = Some("call-1".to_string());
-        let messages = vec![
-            Message::text(Role::System, "stable"),
-            Message::text(Role::User, "original request"),
-            Message::text(Role::Assistant, ""),
-            tool,
-        ];
-
-        assert_eq!(latest_user_message_index(&messages), Some(1));
-    }
 
     #[test]
     fn openai_cache_key_is_stable_and_short() {
@@ -469,16 +426,65 @@ mod tests {
         assert!(!direct.tool_definition_markers);
         assert_eq!(unknown_endpoint.mode, PromptCacheMode::None);
         assert_eq!(unsupported_snapshot.mode, PromptCacheMode::None);
+
+        let global = resolve_prompt_cache_profile(
+            ProviderType::Qwen,
+            Some("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"),
+            PromptCacheApiStyle::OpenAiCompatible,
+            "qwen3.8-max",
+        );
+        let payg = resolve_prompt_cache_profile(
+            ProviderType::AlibabaModelStudio,
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            PromptCacheApiStyle::OpenAiCompatible,
+            "qwen3.8-max",
+        );
+        assert_ne!(direct.key.endpoint_id, global.key.endpoint_id);
+        assert_ne!(direct.key.endpoint_id, payg.key.endpoint_id);
+        assert_ne!(global.key.endpoint_id, payg.key.endpoint_id);
+
+        for endpoint in [
+            "http://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope.aliyuncs.com:8443/compatible-mode/v1",
+            "https://dashscope.aliyuncs.com/apps/anthropic",
+        ] {
+            let profile = resolve_prompt_cache_profile(
+                ProviderType::AlibabaModelStudio,
+                Some(endpoint),
+                PromptCacheApiStyle::OpenAiCompatible,
+                "qwen3.8-max",
+            );
+            assert_eq!(profile.mode, PromptCacheMode::None);
+            assert!(profile.key.endpoint_id.starts_with("custom-"));
+        }
     }
 
     #[test]
     fn routing_session_is_stable_private_and_bounded() {
-        let first = privacy_preserving_routing_session_id("conversation-123").unwrap();
-        let second = privacy_preserving_routing_session_id("conversation-123").unwrap();
-        let other = privacy_preserving_routing_session_id("conversation-456").unwrap();
+        let first = privacy_preserving_routing_session_id_with_secret(
+            b"installation-one",
+            "conversation-123",
+        )
+        .unwrap();
+        let second = privacy_preserving_routing_session_id_with_secret(
+            b"installation-one",
+            "conversation-123",
+        )
+        .unwrap();
+        let other = privacy_preserving_routing_session_id_with_secret(
+            b"installation-one",
+            "conversation-456",
+        )
+        .unwrap();
+        let other_install = privacy_preserving_routing_session_id_with_secret(
+            b"installation-two",
+            "conversation-123",
+        )
+        .unwrap();
 
         assert_eq!(first, second);
         assert_ne!(first, other);
+        assert_ne!(first, other_install);
         assert!(!first.contains("conversation-123"));
         assert!(first.len() <= 256);
     }

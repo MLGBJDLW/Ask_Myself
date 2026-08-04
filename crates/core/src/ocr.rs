@@ -867,6 +867,7 @@ pub async fn extract_text_via_llm_vision_with_llm_provider_type(
         name: None,
         tool_calls: None,
         reasoning_content: None,
+        prompt_cache_hint: None,
     }];
 
     let request = CompletionRequest {

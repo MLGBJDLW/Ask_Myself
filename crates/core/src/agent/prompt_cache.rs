@@ -114,6 +114,12 @@ pub(super) struct PromptCacheTraceObservation {
     cache_outcome_reason: String,
 }
 
+impl PromptCacheTraceObservation {
+    pub(super) fn cache_outcome_reason(&self) -> &str {
+        &self.cache_outcome_reason
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingPromptCacheObservation {
     request_kind: String,
@@ -1033,6 +1039,7 @@ mod tests {
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         };
         let previous = snapshot_for(None, "m", &[message_with_image("first-image")], &[]);
         let next = snapshot_for(None, "m", &[message_with_image("second-image")], &[]);

@@ -1426,6 +1426,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"ok":true}"#, "call_0"),
         ];
@@ -1456,6 +1457,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, "plain text result", "call_0"),
         ];
@@ -1629,6 +1631,7 @@ mod tests {
                     thought_signature: Some("signature".to_string()),
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "fc_123"),
         ];
@@ -1662,6 +1665,7 @@ mod tests {
                     thought_signature: Some("signed-call".to_string()),
                 }]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "call_1"),
         ];
@@ -1713,6 +1717,7 @@ mod tests {
                     },
                 ]),
                 reasoning_content: None,
+                prompt_cache_hint: None,
             },
             Message::text_with_name(Role::Tool, r#"{"content":"a"}"#, "call_a"),
             Message::text_with_name(Role::Tool, r#"{"content":"b"}"#, "call_b"),

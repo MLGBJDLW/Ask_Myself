@@ -37,6 +37,8 @@ pub(super) struct ModelStepOutput {
     pub(super) started_call_ids: HashSet<String>,
     pub(super) tool_run_started_ids: HashSet<String>,
     pub(super) prompt_cache_observation: Option<prompt_cache::PromptCacheTraceObservation>,
+    pub(super) request_latency_ms: u64,
+    pub(super) time_to_first_token_ms: Option<u64>,
 }
 
 impl AgentExecutor {
@@ -94,6 +96,8 @@ impl AgentExecutor {
             parallel_tool_calls: true,
         };
         self.begin_prompt_cache_observation(model, messages, tool_defs);
+        let request_started_at = std::time::Instant::now();
+        let mut time_to_first_token_ms = None;
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut sampling_retries = 0u32;
         let mut full_content = String::new();
@@ -366,6 +370,19 @@ impl AgentExecutor {
                     StreamLoopEvent::Provider(None) => break,
                     StreamLoopEvent::Provider(Some(ProviderStreamEvent::Chunk { chunk })) => {
                         chunk_count += 1;
+                        if time_to_first_token_ms.is_none()
+                            && (!chunk.delta.is_empty()
+                                || chunk
+                                    .thinking_delta
+                                    .as_deref()
+                                    .is_some_and(|value| !value.is_empty())
+                                || chunk.tool_call_delta.is_some())
+                        {
+                            time_to_first_token_ms = Some(
+                                u64::try_from(request_started_at.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX),
+                            );
+                        }
                         // Forward thinking deltas.
                         if let Some(ref thinking) = chunk.thinking_delta {
                             if !thinking.is_empty() {
@@ -537,6 +554,7 @@ impl AgentExecutor {
                         name: None,
                         tool_calls: None,
                         reasoning_content: draft_reasoning.clone(),
+                        prompt_cache_hint: None,
                     };
                     messages.push(draft_message.clone());
                     if has_effective_steering {
@@ -651,6 +669,10 @@ impl AgentExecutor {
 
                         match self.provider.complete(&current_request).await {
                             Ok(response) => {
+                                time_to_first_token_ms.get_or_insert_with(|| {
+                                    u64::try_from(request_started_at.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX)
+                                });
                                 *force_non_streaming_llm = true;
                                 let _ = tx
                                     .send(AgentEvent::StreamReset {
@@ -726,6 +748,9 @@ impl AgentExecutor {
             started_call_ids,
             tool_run_started_ids,
             prompt_cache_observation,
+            request_latency_ms: u64::try_from(request_started_at.elapsed().as_millis())
+                .unwrap_or(u64::MAX),
+            time_to_first_token_ms,
         })))
     }
 }

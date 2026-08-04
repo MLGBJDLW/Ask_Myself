@@ -316,6 +316,7 @@ impl MoaProvider {
                 name: None,
                 tool_calls: None,
                 reasoning_content: None,
+                prompt_cache_hint: None,
             });
         }
         Ok(aggregator_request)
@@ -359,6 +360,7 @@ impl MoaProvider {
                 name: None,
                 tool_calls: None,
                 reasoning_content: None,
+                prompt_cache_hint: None,
             });
             advisor_request.tools = None;
             advisor_request.parallel_tool_calls = false;
@@ -549,6 +551,7 @@ fn deterministic_advisor_view(messages: &[Message], privacy: &MoaPrivacyFilter) 
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            prompt_cache_hint: None,
         })
         .filter(|message| !message.parts.is_empty())
         .collect()
@@ -681,6 +684,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 reasoning_content: None,
+                prompt_cache_hint: None,
             }],
             tools: Some(vec![]),
             ..Default::default()

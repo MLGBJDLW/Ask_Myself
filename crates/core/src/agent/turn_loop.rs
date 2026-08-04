@@ -590,6 +590,7 @@ impl AgentExecutor {
                     name: None,
                     tool_calls: Some(vec![call.clone()]),
                     reasoning_content: None,
+                    prompt_cache_hint: None,
                 };
                 messages.push(synthetic_assistant.clone());
                 self.persist_intermediate_tool_call_assistant(
@@ -867,6 +868,8 @@ impl AgentExecutor {
                 mut started_call_ids,
                 mut tool_run_started_ids,
                 prompt_cache_observation,
+                request_latency_ms,
+                time_to_first_token_ms,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart {
@@ -905,6 +908,11 @@ impl AgentExecutor {
                     tool_calls.len(),
                     last_finish_reason.clone(),
                     chunk_usage,
+                    request_latency_ms,
+                    time_to_first_token_ms,
+                    prompt_cache_observation
+                        .as_ref()
+                        .map(prompt_cache::PromptCacheTraceObservation::cache_outcome_reason),
                 )
                 .await;
             if let Some(observation) = prompt_cache_observation {
@@ -940,6 +948,7 @@ impl AgentExecutor {
                     Some(tool_calls.clone())
                 },
                 reasoning_content: assistant_reasoning_content.clone(),
+                prompt_cache_hint: None,
             };
             messages.push(assistant_msg.clone());
             let loop_guard_intervention =
