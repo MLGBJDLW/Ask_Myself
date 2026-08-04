@@ -222,6 +222,21 @@ test('slash command menu can pin a skill for the next send', async ({ page }) =>
   ).toBe('build a dense dashboard');
 });
 
+test('live turn timing appears after three seconds without a global elapsed state', async ({ page }) => {
+  await page.goto('/chat/conv-slash');
+  await page.getByTestId('chat-input-textarea').fill('measure this turn');
+  await page.getByTestId('chat-send').click();
+
+  const elapsed = page.getByTestId('chat-turn-elapsed');
+  await expect(elapsed).toBeVisible({ timeout: 6000 });
+  await expect(elapsed).toContainText(/Thinking · [3-9]s/);
+
+  await page.getByTestId('chat-context-trigger').hover();
+  await expect(page.getByTestId('chat-turn-timing-metrics')).toContainText('TTFE');
+  await expect(page.getByTestId('chat-turn-timing-metrics')).toContainText('TTFV');
+  await expect(page.getByTestId('chat-turn-timing-metrics')).toContainText('Wall');
+});
+
 test('an activated slash command can be cancelled without editing the prompt', async ({ page }) => {
   await page.goto('/chat/conv-slash');
 

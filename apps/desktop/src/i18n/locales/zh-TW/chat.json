@@ -375,6 +375,7 @@
   "taskRunTimedOut": "已逾時",
   "taskRunFailed": "失敗",
   "taskRunCompleted": "已完成",
+  "completedIn": "用時 {duration}",
   "taskRunUnknown": "未知",
   "taskEventQueued": "任務已排隊",
   "taskEventStarted": "Agent 已啟動",

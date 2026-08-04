@@ -64,6 +64,7 @@ import {
   skillRefsFromTraceItems,
   toolCallToTimelineSection,
   projectLiveConversationTimeline,
+  formatTurnDuration,
   turnLifecycleTimelineSections,
   type TimelineSkillRef,
   type TimelineSection,
@@ -2090,6 +2091,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                       onDeleteMessage={onDeleteMessage}
                       onEditAndResend={onEditAndResend}
                       onApprovePlan={onApprovePlan}
+                      turnDurationLabel={formatTurnDuration(turnRender.turn)}
                     />
                   )}
 

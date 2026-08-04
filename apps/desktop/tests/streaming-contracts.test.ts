@@ -16,6 +16,7 @@ import {
   buildCollapsedLiveTrace,
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
+  formatTurnDuration,
   persistedTraceItemToTimelineSections,
   projectLiveConversationTimeline,
   shouldRenderTraceToolCall,
@@ -25,6 +26,7 @@ import {
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
+import { formatElapsedDuration } from '../src/lib/useElapsedTime';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
@@ -1724,6 +1726,44 @@ test('dispatches canonical terminal errors without an active stream state', () =
   );
 
   streamStore.clearStream(conversationId);
+});
+
+test('turn timing stores lifecycle timestamps without a global elapsed counter', () => {
+  const conversationId = 'conversation-turn-timing';
+  streamStore.startStream(conversationId);
+  const started = streamStore.getStream(conversationId)?.turnTiming;
+  assert(started, 'startStream should establish timing facts');
+  assertEqual(started.firstEventAtEpochMs, null, 'first event is initially unknown');
+  assertEqual(started.finishedAtEpochMs, null, 'finish is initially unknown');
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: runEvent({ eventSeq: 1, kind: 'status', label: 'Planning' }),
+  } as AgentFrontendEvent);
+  const afterEvent = streamStore.getStream(conversationId)?.turnTiming;
+  assert(afterEvent?.firstEventAtEpochMs, 'first accepted event records TTFE timestamp');
+
+  streamStore.stopStream(conversationId);
+  const finished = streamStore.getStream(conversationId)?.turnTiming;
+  assert(finished?.finishedAtEpochMs, 'terminal projection records a fixed finish timestamp');
+  assert(!('elapsedMs' in finished), 'stream timing does not store a ticking elapsed value');
+  streamStore.clearStream(conversationId);
+});
+
+test('turn duration formatting uses compact minute and padded-second output', () => {
+  const turn: ConversationTurn = {
+    id: 'turn-duration',
+    conversationId: 'conversation-duration',
+    userMessageId: 'user-duration',
+    assistantMessageId: 'assistant-duration',
+    status: 'success',
+    trace: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:01:08.000Z',
+    finishedAt: '2026-01-01T00:01:08.000Z',
+  };
+  assertEqual(formatTurnDuration(turn), '1m08s', 'completed turn wall duration');
+  assertEqual(formatElapsedDuration(8_900), '8s', 'live elapsed duration');
 });
 
 test('dispatches canonical cancelled terminal errors without surfacing failed state', () => {

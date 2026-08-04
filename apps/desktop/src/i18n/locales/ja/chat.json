@@ -375,6 +375,7 @@
   "taskRunTimedOut": "Timed out",
   "taskRunFailed": "Failed",
   "taskRunCompleted": "Completed",
+  "completedIn": "{duration} で完了",
   "taskRunUnknown": "Unknown",
   "taskEventQueued": "Task queued",
   "taskEventStarted": "Agent started",

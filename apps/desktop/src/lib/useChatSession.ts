@@ -273,6 +273,7 @@ export interface UseChatSessionReturn {
   turns: ConversationTurn[];
   taskRun: AgentTaskRun | null;
   taskEvents: ReturnType<typeof useAgentStream>['taskEvents'];
+  turnTiming: ReturnType<typeof useAgentStream>['turnTiming'];
   conversations: Conversation[];
   runningConversationIds: ReadonlySet<string>;
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
@@ -500,6 +501,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     autoCompacted,
     taskRun: streamTaskRun,
     taskEvents: streamTaskEvents,
+    turnTiming: streamTurnTiming,
   } = useAgentStream(activeId);
   const runningConversationIds = useRunningConversationIds();
 
@@ -1345,6 +1347,21 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     ? (streamTaskRun ?? latestPersistedTaskRun)
     : latestPersistedTaskRun;
   const activeTaskEvents = shouldShowLivePreview ? streamTaskEvents : [];
+  const activeTurnTiming = shouldShowLivePreview
+    ? streamTurnTiming
+    : activeTaskRun
+      ? (() => {
+          const startedAt = Date.parse(activeTaskRun.startedAt ?? activeTaskRun.createdAt);
+          const finishedAt = activeTaskRun.finishedAt ? Date.parse(activeTaskRun.finishedAt) : null;
+          if (!Number.isFinite(startedAt)) return null;
+          return {
+            startedAtEpochMs: startedAt,
+            firstEventAtEpochMs: null,
+            firstVisibleOutputAtEpochMs: null,
+            finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+          };
+        })()
+      : null;
   const liveUsageSuppressed = activeId ? suppressedLiveUsageRef.current.has(activeId) : false;
   const scopedLastUsage = activeId && !liveUsageSuppressed ? lastUsage : null;
   const scopedLastCached = activeId && !liveUsageSuppressed ? lastCached : false;
@@ -1385,6 +1402,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     turns: activeTurns,
     taskRun: activeTaskRun,
     taskEvents: activeTaskEvents,
+    turnTiming: activeTurnTiming,
     conversations,
     runningConversationIds,
     setConversations,

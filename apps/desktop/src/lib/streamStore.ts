@@ -160,6 +160,7 @@ class StreamStoreImpl {
       pendingApprovals: s.pendingApprovals,
       taskRun: s.taskRun,
       taskEvents: s.taskEvents,
+      turnTiming: s.turnTiming,
     };
   }
 
@@ -222,6 +223,12 @@ class StreamStoreImpl {
     const state = createDefaultState();
     state.isStreaming = true;
     state._launchStartedAt = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
+    state.turnTiming = {
+      startedAtEpochMs: Date.now(),
+      firstEventAtEpochMs: null,
+      firstVisibleOutputAtEpochMs: null,
+      finishedAtEpochMs: null,
+    };
     this._streams[conversationId] = state;
     this.touch(conversationId);
     this.evictCompletedStreams(conversationId);
@@ -278,6 +285,7 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage: null,
     });
+    this.finishTurnTiming(s);
     this.touch(conversationId);
     this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
@@ -296,6 +304,7 @@ class StreamStoreImpl {
       traceTone: 'error',
       errorMessage,
     });
+    this.finishTurnTiming(s);
     this.touch(conversationId);
     this.evictCompletedStreams(conversationId);
     this.notify(conversationId);
@@ -314,6 +323,7 @@ class StreamStoreImpl {
         traceTone: 'error',
         errorMessage: 'Connection lost',
       });
+      this.finishTurnTiming(state);
       this.touch(conversationId);
       this.evictCompletedStreams(conversationId);
       this.notify(conversationId);
@@ -372,6 +382,13 @@ class StreamStoreImpl {
         if (!current || current._frontendPaintReported || !current.turnHandle) return;
         current._frontendPaintScheduled = false;
         current._frontendPaintReported = true;
+        if (current.turnTiming && current.turnTiming.firstVisibleOutputAtEpochMs == null) {
+          current.turnTiming = {
+            ...current.turnTiming,
+            firstVisibleOutputAtEpochMs: Date.now(),
+          };
+          this.scheduleNotify(conversationId);
+        }
         const elapsedMs = (globalThis.performance?.now() ?? Date.now())
           - (current._launchStartedAt ?? 0);
         void recordAgentFrontendPaint(
@@ -399,6 +416,8 @@ class StreamStoreImpl {
       }
       if (!state.isStreaming && !isTerminalEvent) return;
 
+      this.markFirstEventTiming(state);
+
       const ordering = applyStreamEventOrdering(state, runEvent.eventSeq);
       if (!ordering.accepted) return;
       if (ordering.gapDetected) {
@@ -421,6 +440,7 @@ class StreamStoreImpl {
           );
         },
       });
+      if (isTerminalEvent) this.finishTurnTiming(state);
       this.touch(conversationId);
       this.capLiveCollections(state);
       if (isTerminalEvent) this.evictCompletedStreams(conversationId);
@@ -454,6 +474,8 @@ class StreamStoreImpl {
     }
     if (!s.isStreaming && !isTaskLifecycleEvent && !isTerminalEvent) return;
 
+    this.markFirstEventTiming(s);
+
     const ordering = applyStreamEventOrdering(s, event.eventSeq ?? raw.eventSeq);
     if (!ordering.accepted) return;
     if (ordering.gapDetected) {
@@ -481,6 +503,7 @@ class StreamStoreImpl {
         );
       },
     });
+    if (isTerminalEvent) this.finishTurnTiming(s);
     this.touch(conversationId);
     this.capLiveCollections(s);
     if (isTerminalEvent) this.evictCompletedStreams(conversationId);
@@ -494,6 +517,26 @@ class StreamStoreImpl {
       this.scheduleNotify(conversationId);
     }
     this.scheduleFrontendFirstPaint(conversationId, s);
+  }
+
+  private markFirstEventTiming(state: InternalStreamState): void {
+    if (!state.turnTiming) {
+      state.turnTiming = {
+        startedAtEpochMs: Date.now(),
+        firstEventAtEpochMs: Date.now(),
+        firstVisibleOutputAtEpochMs: null,
+        finishedAtEpochMs: null,
+      };
+      return;
+    }
+    if (state.turnTiming.firstEventAtEpochMs == null) {
+      state.turnTiming = { ...state.turnTiming, firstEventAtEpochMs: Date.now() };
+    }
+  }
+
+  private finishTurnTiming(state: InternalStreamState): void {
+    if (!state.turnTiming || state.turnTiming.finishedAtEpochMs != null) return;
+    state.turnTiming = { ...state.turnTiming, finishedAtEpochMs: Date.now() };
   }
 }
 

@@ -104,6 +104,13 @@ export interface UsageTotal {
   contextBreakdown?: ContextUsageBreakdown;
 }
 
+export interface TurnTiming {
+  startedAtEpochMs: number;
+  firstEventAtEpochMs: number | null;
+  firstVisibleOutputAtEpochMs: number | null;
+  finishedAtEpochMs: number | null;
+}
+
 export interface StreamState {
   /** Runtime-assigned identity available as soon as launch is acknowledged. */
   turnHandle: AgentTurnHandle | null;
@@ -127,4 +134,6 @@ export interface StreamState {
   taskRun: AgentTaskRun | null;
   /** Recent lifecycle events for the active task run. */
   taskEvents: AgentTaskRunEvent[];
+  /** Immutable lifecycle timestamps. Display clocks are derived locally. */
+  turnTiming: TurnTiming | null;
 }

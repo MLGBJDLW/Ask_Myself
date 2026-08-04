@@ -28,6 +28,7 @@ import {
 import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../i18n';
 import * as api from '../lib/api';
+import { useElapsedTime } from '../lib/useElapsedTime';
 import {
   taskCenterHistoryFromEvents,
   type TaskCenterHistoryItem,
@@ -215,6 +216,22 @@ function statusIcon(status: string) {
 
 function isActiveTask(status: string) {
   return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(status);
+}
+
+function TaskElapsed({ run }: { run: AgentTaskRunListItem['run'] }) {
+  const timing = useMemo(() => {
+    const startedAt = Date.parse(run.startedAt ?? run.createdAt);
+    const finishedAt = run.finishedAt ? Date.parse(run.finishedAt) : null;
+    if (!Number.isFinite(startedAt)) return null;
+    return {
+      startedAtEpochMs: startedAt,
+      firstEventAtEpochMs: null,
+      firstVisibleOutputAtEpochMs: null,
+      finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+    };
+  }, [run.createdAt, run.finishedAt, run.startedAt]);
+  const elapsed = useElapsedTime(timing, isActiveTask(run.status));
+  return elapsed ? <RiskPill>{elapsed}</RiskPill> : null;
 }
 
 function formatTime(value?: string | null) {
@@ -770,6 +787,7 @@ export function TaskCenterPage() {
                       {task.projectName && <RiskPill>{task.projectName}</RiskPill>}
                       <RiskPill>{task.subtaskTotal} {copy.subtasks}</RiskPill>
                       <RiskPill>{task.eventCount} {copy.events}</RiskPill>
+                      <TaskElapsed run={task.run} />
                       {task.artifactKinds.slice(0, 3).map((kind) => <RiskPill key={kind}>{kind}</RiskPill>)}
                     </div>
                   </button>
@@ -816,6 +834,7 @@ export function TaskCenterPage() {
                       {selected.projectName && <span>{selected.projectName}</span>}
                       {selected.run.routeKind && <span>{selected.run.routeKind}</span>}
                       <span>{formatTime(selected.run.updatedAt)}</span>
+                      <TaskElapsed run={selected.run} />
                     </div>
                     <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
                       {selected.run.summary || selected.userMessagePreview}

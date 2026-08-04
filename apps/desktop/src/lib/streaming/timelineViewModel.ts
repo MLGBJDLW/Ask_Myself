@@ -9,6 +9,7 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from './protocol';
+import { formatElapsedDuration } from '../useElapsedTime';
 import {
   isPendingToolCallStatus,
   isUnsuccessfulToolCallStatus,
@@ -338,8 +339,7 @@ export function formatTurnDuration(turn: ConversationTurn): string | null {
   ) {
     return null;
   }
-  const seconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
-  return `${seconds}s`;
+  return formatElapsedDuration(finishedAt - startedAt);
 }
 
 export function turnLifecycleTimelineSections(input: {
