@@ -61,6 +61,7 @@ mod finalization;
 mod long_task;
 pub mod loop_guard;
 mod model_step;
+mod output_recovery;
 pub mod power_mode;
 mod pre_search;
 mod prompt_cache;
@@ -97,7 +98,9 @@ use self::stream_recovery::{
     StreamRecoveryPolicy,
 };
 use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
-use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
+use self::tool_scheduler::{
+    loop_guard_blocked_result, output_limit_truncated_tool_result, ToolSchedulerPolicy,
+};
 use self::trace_builder::{
     append_developer_persisted_trace_status, append_internal_persisted_trace_status,
     append_persisted_trace_loaded_skills, append_persisted_trace_loop_event,
@@ -374,7 +377,10 @@ impl Default for AgentConfig {
             volatile_system_sections: Vec::new(),
             model: None,
             temperature: Some(0.3),
-            max_tokens: Some(4096),
+            // `None` lets providers use their native per-request output limit.
+            // Context planning keeps its own conservative response reserve, so
+            // this wire-level option does not need to impose a global cap.
+            max_tokens: None,
             context_window: None,
             reasoning_enabled: None,
             thinking_budget: None,

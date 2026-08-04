@@ -212,7 +212,7 @@ fn test_default_config() {
     assert_eq!(cfg.max_iterations, u32::MAX);
     assert!(cfg.system_prompt.contains("local-first workspace agent"));
     assert_eq!(cfg.temperature, Some(0.3));
-    assert_eq!(cfg.max_tokens, Some(4096));
+    assert_eq!(cfg.max_tokens, None);
 }
 
 #[test]
@@ -703,6 +703,10 @@ impl LlmProvider for SteeringInterruptProvider {
 
 struct MockTool;
 
+struct RecordingTool {
+    executions: Arc<AtomicUsize>,
+}
+
 struct NamedMockTool(&'static str);
 
 #[async_trait]
@@ -738,6 +742,39 @@ impl Tool for MockTool {
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "tool-ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for RecordingTool {
+    fn name(&self) -> &str {
+        "recording_tool"
+    }
+
+    fn description(&self) -> &str {
+        "Records whether it was executed"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string" }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "recording-tool-executed".to_string(),
             is_error: false,
             artifacts: None,
         })
@@ -902,6 +939,21 @@ struct AnswerOnlyRecoveryProvider {
     request_reasoning: Arc<Mutex<Vec<(Option<bool>, Option<u32>, Option<String>)>>>,
 }
 
+struct ToolingAnswerRecoveryProvider {
+    stream_calls: Arc<AtomicUsize>,
+    request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
+}
+
+struct LengthContinuationProvider {
+    stream_calls: Arc<AtomicUsize>,
+    request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
+}
+
+struct TruncatedToolCallProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_output_limit_tool_error: Arc<Mutex<bool>>,
+}
+
 #[async_trait]
 impl LlmProvider for AnswerOnlyRecoveryProvider {
     fn name(&self) -> &str {
@@ -940,6 +992,186 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
         } else {
             StreamChunk {
                 delta: "recovered final answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ToolingAnswerRecoveryProvider {
+    fn name(&self) -> &str {
+        "tooling-answer-recovery-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.request_reasoning
+            .lock()
+            .unwrap()
+            .push(request.reasoning_enabled);
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: Some("initial reasoning filled the response budget".to_string()),
+            },
+            1 => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "recovery-tool-call".to_string(),
+                    name: Some("mock_tool".to_string()),
+                    arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            },
+            _ if request.reasoning_enabled == Some(false) => StreamChunk {
+                delta: "recovered final answer after tool use".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+            _ => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: Some("reasoning was incorrectly re-enabled".to_string()),
+            },
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LengthContinuationProvider {
+    fn name(&self) -> &str {
+        "length-continuation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.request_reasoning
+            .lock()
+            .unwrap()
+            .push(request.reasoning_enabled);
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: "first half, ".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: Some("private reasoning".to_string()),
+            }
+        } else {
+            StreamChunk {
+                delta: "second half".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for TruncatedToolCallProvider {
+    fn name(&self) -> &str {
+        "truncated-tool-call-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "truncated-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    // This is valid JSON, but the provider may have cut a longer
+                    // string at the output boundary. It is unsafe to execute.
+                    arguments_delta: r#"{"value":"apparently-valid"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            let saw_error = request.messages.iter().any(|message| {
+                message.role == Role::Tool && message.text_content().contains("output token limit")
+            });
+            *self.saw_output_limit_tool_error.lock().unwrap() = saw_error;
+            StreamChunk {
+                delta: "final answer after re-planning".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -3522,6 +3754,183 @@ async fn test_thought_only_length_retries_without_promoting_reasoning_to_reply()
         }
     }
     assert_eq!(text_deltas, vec!["recovered final answer"]);
+}
+
+#[tokio::test]
+async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let request_reasoning = Arc::new(Mutex::new(Vec::new()));
+    let provider = ToolingAnswerRecoveryProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        request_reasoning: Arc::clone(&request_reasoning),
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            reasoning_enabled: Some(true),
+            thinking_budget: Some(2_048),
+            reasoning_effort: Some(crate::llm::ReasoningEffort::High),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "finish a long tool-using task".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("answer-only recovery should remain active through tool use");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "recovered final answer after tool use"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        *request_reasoning.lock().unwrap(),
+        vec![Some(true), Some(false), Some(false)],
+        "the recovery phase must keep reasoning disabled until a visible answer terminates it"
+    );
+
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            assert_ne!(delta, "initial reasoning filled the response budget");
+            assert_ne!(delta, "reasoning was incorrectly re-enabled");
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_length_truncated_visible_answer_continues_and_persists_as_one_reply() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let request_reasoning = Arc::new(Mutex::new(Vec::new()));
+    let provider = LengthContinuationProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        request_reasoning: Arc::clone(&request_reasoning),
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "reasoning-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "write an answer longer than one provider response".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("length truncation should transparently continue");
+
+    assert_eq!(final_msg.text_content(), "first half, second half");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *request_reasoning.lock().unwrap(),
+        vec![Some(true), Some(false)]
+    );
+    let messages = db
+        .get_messages(&conversation.id)
+        .expect("messages should load");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "first half, second half");
+
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, "first half, second half");
+}
+
+#[tokio::test]
+async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execution() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_output_limit_tool_error = Arc::new(Mutex::new(false));
+    let provider = TruncatedToolCallProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        saw_output_limit_tool_error: Arc::clone(&saw_output_limit_tool_error),
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "use a tool safely".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("truncated tool call should be rejected and replanned");
+
+    assert_eq!(final_msg.text_content(), "final answer after re-planning");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "a length-truncated tool call must never execute"
+    );
+    assert!(
+        *saw_output_limit_tool_error.lock().unwrap(),
+        "the next model step must receive a synthetic tool error and re-plan"
+    );
 }
 
 #[tokio::test]

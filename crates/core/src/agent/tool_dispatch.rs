@@ -89,12 +89,34 @@ pub(super) struct ToolDispatchSummary {
     pub(super) artifacts: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum ToolDispatchBlock {
+    LoopGuard(String),
+    OutputLimit,
+}
+
+impl ToolDispatchBlock {
+    fn policy_label(&self) -> &'static str {
+        match self {
+            Self::LoopGuard(_) => "blockedByLoopGuard",
+            Self::OutputLimit => "blockedByOutputLimit",
+        }
+    }
+
+    fn result(&self, call: &ToolCallRequest) -> crate::tools::ToolResult {
+        match self {
+            Self::LoopGuard(reason) => loop_guard_blocked_result(call, reason),
+            Self::OutputLimit => output_limit_truncated_tool_result(call),
+        }
+    }
+}
+
 impl AgentExecutor {
     pub(super) async fn dispatch_tool_calls(
         &self,
         ctx: ToolDispatchContext<'_>,
         tool_calls: &[ToolCallRequest],
-        loop_guard_block_reason: Option<String>,
+        tool_dispatch_block: Option<ToolDispatchBlock>,
         started_call_ids: &mut HashSet<String>,
         tool_run_started_ids: &mut HashSet<String>,
     ) -> Vec<ToolDispatchSummary> {
@@ -189,11 +211,10 @@ impl AgentExecutor {
         );
         for tc in tool_calls {
             let decision = tool_policy.decision_for(&self.tools, tc);
-            let policy_label = if loop_guard_block_reason.is_some() {
-                "blockedByLoopGuard"
-            } else {
-                decision.policy_label
-            };
+            let policy_label = tool_dispatch_block
+                .as_ref()
+                .map(ToolDispatchBlock::policy_label)
+                .unwrap_or(decision.policy_label);
             loop_recorder.tool_scheduled(
                 iteration,
                 &tc.id,
@@ -253,7 +274,7 @@ impl AgentExecutor {
                 let progress_call_id = tc.id.clone();
                 let progress_tool_name = tc.name.clone();
                 let tool_policy = &tool_policy;
-                let loop_guard_block_reason = loop_guard_block_reason.clone();
+                let tool_dispatch_block = tool_dispatch_block.clone();
                 tool_futures.push(
                     async move {
                         let scheduling = tool_policy.decision_for(&self.tools, &tc);
@@ -263,8 +284,8 @@ impl AgentExecutor {
                         let parsed_args = invocation.arguments.clone();
                         let tool_timeout = scheduling.timeout;
                         let capabilities = invocation.capabilities.clone();
-                        if let Some(reason) = loop_guard_block_reason.as_deref() {
-                            let blocked = loop_guard_blocked_result(&tc, reason);
+                        if let Some(block) = tool_dispatch_block.as_ref() {
+                            let blocked = block.result(&tc);
                             return FinishedToolExecution {
                                 index,
                                 call: tc,
