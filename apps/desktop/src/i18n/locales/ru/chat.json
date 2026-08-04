@@ -39,6 +39,8 @@
   "thinking": "Думает",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "Модель завершила работу до создания окончательного ответа. Рассуждение осталось отделено от ответа.",
+  "retryFinalAnswer": "Создать окончательный ответ",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",

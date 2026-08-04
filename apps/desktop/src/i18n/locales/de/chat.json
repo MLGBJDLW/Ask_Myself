@@ -39,6 +39,8 @@
   "thinking": "Denkt nach",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "Das Modell wurde beendet, bevor eine endgültige Antwort erstellt wurde. Die Überlegungen bleiben getrennt.",
+  "retryFinalAnswer": "Endgültige Antwort erzeugen",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",

@@ -76,6 +76,34 @@ test.beforeEach(async ({ page }) => {
         thinking: null,
         imageAttachments: null,
       },
+      {
+        id: 'm-user-reasoning-only',
+        conversationId: 'conv-turn-trace',
+        role: 'user',
+        content: 'Give me the final summary.',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 2,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-assistant-reasoning-only',
+        conversationId: 'conv-turn-trace',
+        role: 'assistant',
+        content: 'private reasoning accidentally copied into reply',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 3,
+        thinking: 'private reasoning accidentally copied into reply',
+        imageAttachments: null,
+      },
     ];
 
     const turns = [
@@ -123,6 +151,24 @@ test.beforeEach(async ({ page }) => {
                 artifacts: null,
               },
             },
+          ],
+        },
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        finishedAt: nowIso,
+      },
+      {
+        id: 'turn-2',
+        conversationId: 'conv-turn-trace',
+        userMessageId: 'm-user-reasoning-only',
+        assistantMessageId: 'm-assistant-reasoning-only',
+        status: 'success',
+        routeKind: 'Direct',
+        trace: {
+          kind: 'turnTrace',
+          routeKind: 'Direct',
+          items: [
+            { kind: 'thinking', text: 'private reasoning accidentally copied into reply' },
           ],
         },
         createdAt: nowIso,
@@ -254,10 +300,26 @@ test('renders persisted turn traces from conversation_turns data', async ({ page
   await expect(page.getByText('Skills loaded this turn')).toBeVisible();
   await expect(page.getByText('Diagnose')).toBeVisible();
 
-  await page.getByRole('button', { name: /Thinking completed/ }).click();
+  await page.getByRole('button', { name: /Thinking completed/ }).first().click();
   await expect(page.getByText('Route: Knowledge Retrieval')).toBeVisible();
   await expect(page.getByText('Loaded skills: Diagnose')).toBeVisible();
   await expect(page.getByText('Checking the retry path through the saved evidence first.')).toBeVisible();
   await expect(page.getByRole('button', { name: /Search .*retry guard.*done/ })).toBeVisible();
   await expect(page.getByText('The retry guard was bypassed because the timeout branch did not return early.')).toBeVisible();
+});
+
+test('quarantines a legacy reasoning-only reply after persistence reload', async ({ page }) => {
+  await page.goto('/chat/conv-turn-trace');
+
+  const leakedReasoning = page.getByText('private reasoning accidentally copied into reply', {
+    exact: true,
+  });
+  await expect(leakedReasoning).toHaveCount(0);
+  await expect(
+    page.getByText('The model ended before producing a final answer. Its reasoning was kept separate.'),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Generate final answer' })).toBeVisible();
+
+  await page.getByRole('button', { name: /Thinking completed/ }).last().click();
+  await expect(leakedReasoning).toHaveCount(1);
 });

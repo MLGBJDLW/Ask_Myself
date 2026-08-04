@@ -39,6 +39,8 @@
   "thinking": "思考中",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "模型在產生最終回答前結束。思考內容已保持獨立，不會作為回覆顯示。",
+  "retryFinalAnswer": "重新產生最終回答",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",

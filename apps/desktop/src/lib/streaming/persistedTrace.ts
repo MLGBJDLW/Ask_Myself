@@ -40,6 +40,36 @@ export interface TurnTraceProjection {
   items: PersistedTraceItem[];
 }
 
+function normalizedSemanticText(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\r\n/g, '\n');
+}
+
+export function isPersistedReasoningOnlyAssistant(
+  message: ConversationMessage,
+  traceItems: PersistedTraceItem[] | null | undefined,
+): boolean {
+  if (
+    message.role !== 'assistant'
+    || message.toolCalls.length > 0
+    || !traceItems
+  ) {
+    return false;
+  }
+
+  const content = normalizedSemanticText(message.content);
+  const thinking = normalizedSemanticText(message.thinking);
+  if (!content || !thinking || content !== thinking) return false;
+
+  const traceHasThinking = traceItems.some(
+    (item) => item.kind === 'thinking' && normalizedSemanticText(item.text).length > 0,
+  );
+  const traceHasReply = traceItems.some(
+    (item) => item.kind === 'reply' && normalizedSemanticText(item.text).length > 0,
+  );
+
+  return traceHasThinking && !traceHasReply;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>

@@ -54,6 +54,7 @@ import type {
 import {
   extractPersistedTraceItems,
   extractTurnTrace,
+  isPersistedReasoningOnlyAssistant,
 } from "../../lib/streaming/persistedTrace";
 import {
   buildRoundTimelineSections,
@@ -1138,6 +1139,33 @@ export function ChatMessages(props: ChatMessagesProps) {
     return map;
   }, [messages]);
 
+  const reasoningOnlyAssistantIndexes = useMemo(() => {
+    const indexes = new Set<number>();
+    for (const turn of turns) {
+      if (!turn.assistantMessageId) continue;
+      const assistantIdx = messageIndexById.get(turn.assistantMessageId);
+      if (assistantIdx == null) continue;
+      const message = messages[assistantIdx];
+      const traceItems = extractTurnTrace(turn.trace)?.items
+        ?? extractPersistedTraceItems(message.artifacts);
+      if (isPersistedReasoningOnlyAssistant(message, traceItems)) {
+        indexes.add(assistantIdx);
+      }
+    }
+    messages.forEach((message, index) => {
+      if (indexes.has(index)) return;
+      if (
+        isPersistedReasoningOnlyAssistant(
+          message,
+          extractPersistedTraceItems(message.artifacts),
+        )
+      ) {
+        indexes.add(index);
+      }
+    });
+    return indexes;
+  }, [messageIndexById, messages, turns]);
+
   const liveTaskRunSkills = useMemo(() => {
     if (!developerMode) return null;
     if (!taskRun || !isActiveTaskRunStatus(taskRun.status)) return null;
@@ -1239,7 +1267,9 @@ export function ChatMessages(props: ChatMessagesProps) {
         .reverse()
         .find((idx) => {
           const message = messages[idx];
-          return message.content.trim().length > 0 && message.toolCalls.length === 0;
+          return message.content.trim().length > 0
+            && message.toolCalls.length === 0
+            && !reasoningOnlyAssistantIndexes.has(idx);
         });
       const anchorIdx = finalAssistantIdx
         ?? finalContentAssistantIdx
@@ -1314,6 +1344,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
         const shouldRenderInlineReply =
           msg.content.trim().length > 0 &&
+          !reasoningOnlyAssistantIndexes.has(idx) &&
           !(idx === anchorIdx && msg.toolCalls.length === 0);
         if (shouldRenderInlineReply) {
           traceSections.push({
@@ -1363,12 +1394,40 @@ export function ChatMessages(props: ChatMessagesProps) {
         }
       }
 
+      if (reasoningOnlyAssistantIndexes.has(anchorIdx)) {
+        nodes.push(
+          <div
+            key={`missing-final-answer-${messages[anchorIdx].id}`}
+            className="mb-3 flex justify-start"
+            role="status"
+          >
+            <div className="flex max-w-[80%] items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200/90">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+              <div className="min-w-0 flex-1">
+                <p>{t("chat.finalAnswerMissing")}</p>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={() => onRetry()}
+                    className="mt-2 rounded-md border border-amber-400/30 px-2 py-1 text-amber-100 transition-colors hover:bg-amber-400/10"
+                  >
+                    {t("chat.retryFinalAnswer")}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>,
+        );
+      }
+
       if (nodes.length > 0 || traceSkills.length > 0) {
         map.set(anchorIdx, {
           type: "anchor",
           nodes,
           skills: traceSkills,
-          hideMessageBubble: messages[anchorIdx].toolCalls.length > 0,
+          hideMessageBubble:
+            messages[anchorIdx].toolCalls.length > 0
+            || reasoningOnlyAssistantIndexes.has(anchorIdx),
           memberIndexes: [...currentGroup],
         });
       }
@@ -1400,6 +1459,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     messageThinkingText,
     messageToolCalls,
     messages,
+    onRetry,
+    reasoningOnlyAssistantIndexes,
     renderTimelineTraceNode,
     renderTraceReplyNode,
     t,
@@ -2067,7 +2128,8 @@ export function ChatMessages(props: ChatMessagesProps) {
 
                 {assistantMsg &&
                   assistantMsg.role === "assistant" &&
-                  assistantMsg.content.trim().length > 0 && (
+                  assistantMsg.content.trim().length > 0 &&
+                  !(traceGroup?.type === "anchor" && traceGroup.hideMessageBubble) && (
                     <MessageBubble
                       msg={assistantMsg}
                       chunkIds={chunkIds}

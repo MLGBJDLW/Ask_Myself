@@ -39,6 +39,8 @@
   "thinking": "Réflexion",
   "stop": "Stop",
   "retry": "Retry",
+  "finalAnswerMissing": "Le modèle s’est arrêté avant de produire une réponse finale. Le raisonnement est resté séparé.",
+  "retryFinalAnswer": "Générer la réponse finale",
   "copyMessage": "Copy message",
   "copyCode": "Copy",
   "copied": "Copied!",
