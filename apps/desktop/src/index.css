@@ -26,6 +26,22 @@
   }
 }
 
+@media (forced-colors: active) {
+  .file-badge-shell {
+    border-color: ButtonText;
+    color: ButtonText;
+    forced-color-adjust: auto;
+  }
+
+  .file-badge-icon {
+    color: ButtonText !important;
+  }
+
+  .file-badge-icon-accent {
+    display: none;
+  }
+}
+
 /* ── Default theme (Dark) — Tailwind class generation base ────────── */
 @theme {
   --font-sans: 'Inter Variable', system-ui, -apple-system, sans-serif;

@@ -103,10 +103,44 @@ export interface FileBadgeIconStyle {
   tone: FileBadgeTone;
   Icon: ElementType;
   iconId: string;
+  treatment: FileBadgeTreatment;
+  brandColor?: string;
+  accentColor?: string;
 }
 
+export type FileBadgeTreatment = 'mono' | 'brand-accent' | 'duotone';
+
+interface FileBadgeBrandVisual {
+  treatment: Exclude<FileBadgeTreatment, 'mono'>;
+  brandColor: string;
+  accentColor?: string;
+}
+
+const BRAND_VISUALS: Record<string, FileBadgeBrandVisual> = {
+  python: { treatment: 'duotone', brandColor: '#3776AB', accentColor: '#FFD43B' },
+  typescript: { treatment: 'brand-accent', brandColor: '#3178C6' },
+  'typescript-config': { treatment: 'brand-accent', brandColor: '#3178C6' },
+  javascript: { treatment: 'brand-accent', brandColor: '#F7DF1E' },
+  'javascript-module': { treatment: 'brand-accent', brandColor: '#F7DF1E' },
+  'javascript-commonjs': { treatment: 'brand-accent', brandColor: '#F7DF1E' },
+  'react-typescript': { treatment: 'duotone', brandColor: '#61DAFB', accentColor: '#3178C6' },
+  'react-javascript': { treatment: 'duotone', brandColor: '#61DAFB', accentColor: '#F7DF1E' },
+  rust: { treatment: 'duotone', brandColor: '#B7410E', accentColor: '#111827' },
+  go: { treatment: 'brand-accent', brandColor: '#00ADD8' },
+  java: { treatment: 'duotone', brandColor: '#E76F00', accentColor: '#5382A1' },
+  'java-archive': { treatment: 'duotone', brandColor: '#E76F00', accentColor: '#5382A1' },
+  kotlin: { treatment: 'duotone', brandColor: '#7F52FF', accentColor: '#FF7A00' },
+  'kotlin-script': { treatment: 'duotone', brandColor: '#7F52FF', accentColor: '#FF7A00' },
+  swift: { treatment: 'brand-accent', brandColor: '#F05138' },
+  docker: { treatment: 'brand-accent', brandColor: '#2496ED' },
+  'docker-compose': { treatment: 'brand-accent', brandColor: '#2496ED' },
+};
+
 function style(tone: FileBadgeTone, Icon: ElementType, iconId: string): FileBadgeIconStyle {
-  return { tone, Icon, iconId };
+  const visual = BRAND_VISUALS[iconId];
+  return visual
+    ? { tone, Icon, iconId, ...visual }
+    : { tone, Icon, iconId, treatment: 'mono' };
 }
 
 const extStyles: Record<string, FileBadgeIconStyle> = {
