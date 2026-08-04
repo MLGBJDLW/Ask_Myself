@@ -78,6 +78,10 @@
   "stopped": "Stop requested",
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
-  "artifactFallbackTitle": "Artifact",
-  "loadMore": "Загрузить ещё"
+  "artifactFallbackTitle": "Артефакт",
+  "loadMore": "Загрузить ещё",
+  "loadDetails": "Выберите этот раздел, чтобы загрузить подробности.",
+  "noEvents": "История задачи пока пуста.",
+  "noExecutionGraph": "Граф выполнения пока отсутствует.",
+  "noTools": "Данные о доступе к инструментам отсутствуют."
 }

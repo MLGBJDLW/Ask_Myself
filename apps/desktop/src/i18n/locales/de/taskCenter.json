@@ -78,6 +78,10 @@
   "stopped": "Stop requested",
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
-  "artifactFallbackTitle": "Artifact",
-  "loadMore": "Mehr laden"
+  "artifactFallbackTitle": "Artefakt",
+  "loadMore": "Mehr laden",
+  "loadDetails": "Diesen Bereich auswählen, um Details zu laden.",
+  "noEvents": "Noch kein Aufgabenverlauf vorhanden.",
+  "noExecutionGraph": "Noch kein Ausführungsdiagramm vorhanden.",
+  "noTools": "Keine Werkzeugzugriffe verfügbar."
 }

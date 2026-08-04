@@ -182,6 +182,7 @@ export type TaskTimelineEventKind = 'subtask' | 'verification';
 export interface TaskTimelineEvent {
   version: number;
   kind: TaskTimelineEventKind;
+  visibility?: AgentRunEventVisibility;
   label: string;
   status?: string | null;
   payload: ArtifactPayload | null;

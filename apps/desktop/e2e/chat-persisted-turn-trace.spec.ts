@@ -246,6 +246,10 @@ test.beforeEach(async ({ page }) => {
 test('renders persisted turn traces from conversation_turns data', async ({ page }) => {
   await page.goto('/chat/conv-turn-trace');
 
+  await expect(page.getByTestId('turn-skill-strip')).toHaveCount(0);
+  await page.evaluate(() => localStorage.setItem('nexa-developer-mode', 'true'));
+  await page.reload();
+
   await expect(page.getByTestId('turn-skill-strip')).toBeVisible();
   await expect(page.getByText('Skills loaded this turn')).toBeVisible();
   await expect(page.getByText('Diagnose')).toBeVisible();

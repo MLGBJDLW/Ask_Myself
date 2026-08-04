@@ -77,9 +77,9 @@ test.beforeEach(async ({ page }) => {
       artifactKinds: ['verification'],
     };
     const events = [
-      { id: 'event-1', runId: 'run-live', eventType: 'status', label: 'Task queued', status: 'queued', payload: null, createdAt: nowIso },
+      { id: 'event-1', runId: 'run-live', eventType: 'status', label: 'Task queued', status: 'queued', payload: { eventSeq: 1, taskTimeline: { kind: 'subtask', visibility: 'user' } }, createdAt: nowIso },
       { id: 'event-2', runId: 'run-live', eventType: 'status', label: 'Researcher started', status: 'running', payload: null, createdAt: nowIso },
-      { id: 'event-3', runId: 'run-live', eventType: 'tool', label: 'record_verification', status: 'completed', payload: null, createdAt: nowIso },
+      { id: 'event-3', runId: 'run-live', eventType: 'verification', label: 'Evidence audit: passed', status: 'completed', payload: { eventSeq: 3, taskTimeline: { kind: 'verification', visibility: 'developer' } }, createdAt: nowIso },
     ];
     const subtasks = [
       { id: 'sub-1', parentRunId: 'run-live', label: 'Collect evidence', role: 'Researcher', status: 'completed', phase: 'done', input: null, output: { summary: 'Evidence collected' }, errorMessage: null, tokenBudget: 1600, createdAt: nowIso, updatedAt: nowIso, startedAt: nowIso, finishedAt: nowIso },
@@ -376,6 +376,24 @@ test('task center manages runs, graph, project memory, artifacts, and risk map',
   await expect(page.getByText('get_document_info')).toBeVisible();
   await expect(page.locator('body')).toContainText('Policy: allow session');
   await expect(page.locator('body')).toContainText('Policy: deny forever');
+
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Task queued', { exact: true })).toBeVisible();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
+  await page.evaluate(() => {
+    localStorage.setItem('nexa-developer-mode', 'true');
+    window.dispatchEvent(new CustomEvent('nexa-developer-mode-change', { detail: true }));
+  });
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    localStorage.removeItem('nexa-developer-mode');
+    window.dispatchEvent(new CustomEvent('nexa-developer-mode-change', { detail: false }));
+  });
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.getByText('Task queued', { exact: true })).toBeVisible();
+  await expect(page.getByText('Evidence audit: passed', { exact: true })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Cancel task' }).click();
   await page.waitForFunction(

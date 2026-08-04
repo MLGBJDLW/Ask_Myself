@@ -79,5 +79,9 @@
   "stopError": "停止任务失败",
   "retryHint": "会在对话中用原始提示重新执行。",
   "artifactFallbackTitle": "產物",
-  "loadMore": "載入更多"
+  "loadMore": "載入更多",
+  "loadDetails": "點選此區域載入詳細資訊。",
+  "noEvents": "暫無任務歷史記錄。",
+  "noExecutionGraph": "暫無執行圖記錄。",
+  "noTools": "暫無工具權限資訊。"
 }

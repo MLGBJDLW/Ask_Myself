@@ -79,5 +79,9 @@
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
   "artifactFallbackTitle": "Artifact",
-  "loadMore": "Load more"
+  "loadMore": "Load more",
+  "loadDetails": "Select this section to load details.",
+  "noEvents": "No task history recorded yet.",
+  "noExecutionGraph": "No execution graph recorded yet.",
+  "noTools": "No tool access entries available."
 }

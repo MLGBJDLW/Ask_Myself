@@ -1,6 +1,6 @@
 import type { AgentRunEvent, AgentTaskRunEvent } from '../../types/conversation';
 import type { WorkflowAutomationSchedulerEvent } from '../../types/workflows';
-import { isTaskTimelineEvent } from './taskTimeline';
+import { isTaskTimelineEvent, taskTimelinePayloadFromTaskEvent } from './taskTimeline';
 
 export interface TaskCenterHistoryItem {
   id: string;
@@ -18,6 +18,10 @@ const HIDDEN_RUN_EVENT_KINDS = new Set<AgentRunEvent['kind']>([
   'thinking',
   'usageUpdated',
 ]);
+
+export interface TaskCenterHistoryOptions {
+  includeDeveloper?: boolean;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -57,8 +61,20 @@ function statusForRunEvent(event: AgentRunEvent): string | null {
   return null;
 }
 
-function itemFromRunEvent(event: AgentRunEvent): TaskCenterHistoryItem | null {
+function visibilityIsIncluded(
+  visibility: 'user' | 'developer' | 'internal' | undefined,
+  includeDeveloper: boolean,
+): boolean {
+  if (visibility === 'internal') return false;
+  return visibility !== 'developer' || includeDeveloper;
+}
+
+function itemFromRunEvent(
+  event: AgentRunEvent,
+  includeDeveloper: boolean,
+): TaskCenterHistoryItem | null {
   if (HIDDEN_RUN_EVENT_KINDS.has(event.kind)) return null;
+  if (!visibilityIsIncluded(event.visibility, includeDeveloper)) return null;
   return {
     id: `${event.runId}:${event.eventSeq}`,
     runId: event.runId,
@@ -71,7 +87,14 @@ function itemFromRunEvent(event: AgentRunEvent): TaskCenterHistoryItem | null {
   };
 }
 
-function itemFromTaskEvent(event: AgentTaskRunEvent): TaskCenterHistoryItem {
+function itemFromTaskEvent(
+  event: AgentTaskRunEvent,
+  includeDeveloper: boolean,
+): TaskCenterHistoryItem | null {
+  const timeline = taskTimelinePayloadFromTaskEvent(event);
+  const visibility = timeline?.visibility
+    ?? (timeline?.kind === 'verification' ? 'developer' : 'user');
+  if (!visibilityIsIncluded(visibility, includeDeveloper)) return null;
   return {
     id: event.id,
     runId: event.runId,
@@ -100,21 +123,25 @@ export function taskCenterHistoryFromEvents(
   taskEvents: AgentTaskRunEvent[],
   runEvents: AgentRunEvent[],
   schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
+  options: TaskCenterHistoryOptions = {},
 ): TaskCenterHistoryItem[] {
-  return taskCenterHistoryFromRunEvents(runEvents, taskEvents, schedulerEvents);
+  return taskCenterHistoryFromRunEvents(runEvents, taskEvents, schedulerEvents, options);
 }
 
 export function taskCenterHistoryFromRunEvents(
   runEvents: AgentRunEvent[],
   taskEvents: AgentTaskRunEvent[] = [],
   schedulerEvents: WorkflowAutomationSchedulerEvent[] = [],
+  options: TaskCenterHistoryOptions = {},
 ): TaskCenterHistoryItem[] {
+  const includeDeveloper = options.includeDeveloper === true;
   const canonicalItems = runEvents
-    .map(itemFromRunEvent)
+    .map((event) => itemFromRunEvent(event, includeDeveloper))
     .filter((item): item is TaskCenterHistoryItem => Boolean(item));
   const timelineItems = taskEvents
     .filter(isTaskTimelineEvent)
-    .map(itemFromTaskEvent);
+    .map((event) => itemFromTaskEvent(event, includeDeveloper))
+    .filter((item): item is TaskCenterHistoryItem => Boolean(item));
   const schedulerItems = schedulerEvents.map(itemFromSchedulerEvent);
   return [...canonicalItems, ...timelineItems, ...schedulerItems].sort(compareHistory).slice(-50);
 }

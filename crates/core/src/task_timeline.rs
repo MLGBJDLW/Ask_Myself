@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_run::AgentRunEventVisibility;
+
 pub const TASK_TIMELINE_EVENT_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +31,8 @@ impl TaskTimelineEventKind {
 pub struct TaskTimelineEvent {
     pub version: u16,
     pub kind: TaskTimelineEventKind,
+    #[serde(default)]
+    pub visibility: AgentRunEventVisibility,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -45,6 +49,7 @@ impl TaskTimelineEvent {
         Self {
             version: TASK_TIMELINE_EVENT_VERSION,
             kind,
+            visibility: AgentRunEventVisibility::User,
             label: label.to_string(),
             status: status.map(str::to_string),
             payload: payload.cloned().unwrap_or_else(|| serde_json::json!({})),
@@ -60,7 +65,9 @@ impl TaskTimelineEvent {
         status: Option<&str>,
         payload: Option<&serde_json::Value>,
     ) -> Self {
-        Self::new(TaskTimelineEventKind::Verification, label, status, payload)
+        let mut event = Self::new(TaskTimelineEventKind::Verification, label, status, payload);
+        event.visibility = AgentRunEventVisibility::Developer;
+        event
     }
 
     pub fn event_type(&self) -> &'static str {
@@ -89,6 +96,19 @@ mod tests {
         assert_eq!(event.event_type(), "subtask");
         assert_eq!(payload["taskTimeline"]["version"], 1);
         assert_eq!(payload["taskTimeline"]["kind"], "subtask");
+        assert_eq!(payload["taskTimeline"]["visibility"], "user");
         assert!(payload.get("agentRun").is_none());
+    }
+
+    #[test]
+    fn verification_timeline_events_are_developer_diagnostics() {
+        let event =
+            TaskTimelineEvent::verification("Evidence audit completed", Some("passed"), None);
+
+        assert_eq!(event.visibility, AgentRunEventVisibility::Developer);
+        assert_eq!(
+            event.task_event_payload()["taskTimeline"]["visibility"],
+            "developer"
+        );
     }
 }

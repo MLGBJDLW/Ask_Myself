@@ -26,7 +26,7 @@ import {
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
-import { formatElapsedDuration } from '../src/lib/useElapsedTime';
+import { formatElapsedDuration, resolveElapsedDurationMs } from '../src/lib/useElapsedTime';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
@@ -81,6 +81,7 @@ function runEvent(input: {
   phase?: AgentRunPhase;
   label?: string;
   status?: string | null;
+  visibility?: AgentRunEvent['visibility'];
 }): AgentRunEvent {
   return {
     version: 2,
@@ -91,6 +92,7 @@ function runEvent(input: {
     phase: input.phase ?? 'responding',
     label: input.label ?? input.kind,
     status: input.status ?? 'running',
+    visibility: input.visibility,
     payload: input.payload ?? null,
     createdAt: `2026-01-01T00:00:${String(input.eventSeq).padStart(2, '0')}.000Z`,
   };
@@ -394,6 +396,14 @@ test('task center history consumes canonical run events and hides stream-only no
       }),
       runEvent({
         eventSeq: 6,
+        kind: 'status',
+        phase: 'accounting',
+        label: 'Resume checkpoint saved after tool round 6.',
+        status: 'completed',
+        visibility: 'developer',
+      }),
+      runEvent({
+        eventSeq: 7,
         kind: 'done',
         phase: 'done',
         label: 'Final answer produced',
@@ -425,6 +435,23 @@ test('task center history consumes canonical run events and hides stream-only no
           },
         },
       }),
+      taskEvent({
+        id: 'verification',
+        eventType: 'verification',
+        eventSeq: 6,
+        label: 'Evidence audit completed',
+        status: 'passed',
+        payload: {
+          taskTimeline: {
+            version: 1,
+            kind: 'verification',
+            visibility: 'developer',
+            label: 'Evidence audit completed',
+            status: 'passed',
+            payload: { overallStatus: 'passed' },
+          },
+        },
+      }),
     ],
   );
 
@@ -434,6 +461,36 @@ test('task center history consumes canonical run events and hides stream-only no
   assertEqual(history[1].label, 'search_knowledge_base', 'tool history is visible');
   assertEqual(history[2].source, 'taskEvent', 'task timeline is preserved');
   assertEqual(history[3].eventType, 'done', 'terminal history is visible');
+
+  const developerHistory = taskCenterHistoryFromRunEvents(
+    [
+      runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        label: 'Resume checkpoint saved after tool round 6.',
+        visibility: 'developer',
+      }),
+    ],
+    [
+      taskEvent({
+        id: 'verification-developer',
+        eventType: 'verification',
+        payload: {
+          taskTimeline: {
+            version: 1,
+            kind: 'verification',
+            visibility: 'developer',
+            label: 'Evidence audit completed',
+            status: 'passed',
+            payload: {},
+          },
+        },
+      }),
+    ],
+    [],
+    { includeDeveloper: true },
+  );
+  assertEqual(developerHistory.length, 2, 'developer history includes diagnostics');
 });
 
 test('task center history surfaces scheduler events beside run and timeline events', () => {
@@ -1783,6 +1840,7 @@ test('turn timing stores lifecycle timestamps without a global elapsed counter',
   streamStore.startStream(conversationId);
   const started = streamStore.getStream(conversationId)?.turnTiming;
   assert(started, 'startStream should establish timing facts');
+  assert(started.startedAtMonotonicMs != null, 'live timing keeps a monotonic start anchor');
   assertEqual(started.firstEventAtEpochMs, null, 'first event is initially unknown');
   assertEqual(started.finishedAtEpochMs, null, 'finish is initially unknown');
 
@@ -1796,11 +1854,28 @@ test('turn timing stores lifecycle timestamps without a global elapsed counter',
   streamStore.stopStream(conversationId);
   const finished = streamStore.getStream(conversationId)?.turnTiming;
   assert(finished?.finishedAtEpochMs, 'terminal projection records a fixed finish timestamp');
+  assert(finished?.finishedAtMonotonicMs != null, 'same-page completion freezes a monotonic finish anchor');
   assert(!('elapsedMs' in finished), 'stream timing does not store a ticking elapsed value');
   streamStore.clearStream(conversationId);
 });
 
-test('turn duration formatting uses compact minute and padded-second output', () => {
+test('live elapsed timing ignores wall-clock jumps', () => {
+  const elapsed = resolveElapsedDurationMs({
+    startedAtEpochMs: 100_000,
+    startedAtMonotonicMs: 1_000,
+    firstEventAtEpochMs: null,
+    firstVisibleOutputAtEpochMs: null,
+    finishedAtEpochMs: null,
+    finishedAtMonotonicMs: null,
+  }, true, {
+    epochMs: 10_000,
+    monotonicMs: 5_250,
+  });
+
+  assertEqual(elapsed, 4_250, 'monotonic live duration survives a backward wall-clock jump');
+});
+
+test('turn duration formatting uses locale-neutral clock output', () => {
   const turn: ConversationTurn = {
     id: 'turn-duration',
     conversationId: 'conversation-duration',
@@ -1812,8 +1887,8 @@ test('turn duration formatting uses compact minute and padded-second output', ()
     updatedAt: '2026-01-01T00:01:08.000Z',
     finishedAt: '2026-01-01T00:01:08.000Z',
   };
-  assertEqual(formatTurnDuration(turn), '1m08s', 'completed turn wall duration');
-  assertEqual(formatElapsedDuration(8_900), '8s', 'live elapsed duration');
+  assertEqual(formatTurnDuration(turn), '1:08', 'completed turn wall duration');
+  assertEqual(formatElapsedDuration(8_900), '0:08', 'live elapsed duration');
 });
 
 test('dispatches canonical cancelled terminal errors without surfacing failed state', () => {
