@@ -426,6 +426,8 @@
   "modelSearchNoResults": "Подходящих моделей нет",
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
+  "maxTokensAutoPlaceholder": "Авто (по умолчанию провайдера)",
+  "maxTokensHelp": "Оставьте поле пустым, чтобы использовать собственный лимит провайдера. Укажите значение только для ограничения одного запроса.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

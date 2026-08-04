@@ -426,6 +426,8 @@
   "modelSearchNoResults": "一致するモデルはありません",
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
+  "maxTokensAutoPlaceholder": "自動（プロバイダー既定）",
+  "maxTokensHelp": "空欄の場合はプロバイダー標準の出力上限を使用します。リクエスト単位で制限する場合のみ値を設定してください。",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

@@ -3,6 +3,9 @@
 use super::assistant_turn;
 use super::finalization;
 use super::model_step;
+use super::output_recovery::{
+    OutputRecovery, OutputRecoveryCause, OutputRecoveryDecision, OutputRecoveryFailure,
+};
 use super::steering::SteeringDrainContext;
 use super::tool_dispatch;
 use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
@@ -717,8 +720,7 @@ impl AgentExecutor {
         }
 
         let mut workflow_gate_repair_rounds = 0u8;
-        let mut final_answer_recovery_attempts = 0u8;
-        let mut force_answer_only_next_step = false;
+        let mut output_recovery = OutputRecovery::default();
         'react_loop: for iteration in 0..self.config.max_iterations {
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
@@ -826,8 +828,7 @@ impl AgentExecutor {
                 WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
 
-            let force_answer_only = force_answer_only_next_step;
-            force_answer_only_next_step = false;
+            let force_answer_only = output_recovery.reserves_answer_channel();
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -865,7 +866,7 @@ impl AgentExecutor {
                 }
             };
             let model_step::ModelStepOutput {
-                full_content,
+                mut full_content,
                 mut tool_calls,
                 chunk_usage,
                 iteration_thinking,
@@ -938,63 +939,98 @@ impl AgentExecutor {
             }
             prompt_was_compacted = usage_report.compacted_after_step;
 
-            let missing_final_answer = tool_calls.is_empty() && full_content.trim().is_empty();
-            if missing_final_answer {
-                if thinking_delta_seen {
+            let recovery_decision = output_recovery.observe(
+                step_finish_reason_kind.as_ref(),
+                &full_content,
+                !tool_calls.is_empty(),
+            );
+            let mut tool_calls_truncated_by_output_limit = false;
+            let recovery_failure = match recovery_decision {
+                OutputRecoveryDecision::Continue {
+                    cause,
+                    had_visible_content,
+                } => {
                     append_persisted_trace_thinking(
                         &mut persisted_trace_items,
                         &iteration_thinking,
                     );
+                    if iteration + 1 < self.config.max_iterations {
+                        if had_visible_content {
+                            messages.push(Message {
+                                role: Role::Assistant,
+                                parts: vec![ContentPart::Text {
+                                    text: full_content.clone(),
+                                }],
+                                name: None,
+                                tool_calls: None,
+                                reasoning_content: self
+                                    .reasoning_content_for_iteration(&iteration_thinking, false),
+                                prompt_cache_hint: None,
+                            });
+                        }
+
+                        let (code, status) = match cause {
+                            OutputRecoveryCause::OutputLimit => (
+                                "output_limit_continuation",
+                                "The provider reached its per-request output limit. Continuing the same turn with answer space reserved.",
+                            ),
+                            OutputRecoveryCause::EmptyTerminal => (
+                                "final_answer_recovery",
+                                "The provider ended without answer text. Continuing once with answer space reserved.",
+                            ),
+                        };
+                        append_internal_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            status,
+                            "warning",
+                        );
+                        let _ = tx
+                            .send(AgentEvent::ControllerStatus {
+                                code: code.to_string(),
+                                content: status.to_string(),
+                                tone: Some("warning".to_string()),
+                            })
+                            .await;
+                        if let Some(message) = prompt_ir::controller_state_message(
+                            cause.controller_prompt(had_visible_content),
+                        ) {
+                            messages.push(message);
+                        }
+                        continue 'react_loop;
+                    }
+
+                    Some(match cause {
+                        OutputRecoveryCause::OutputLimit => OutputRecoveryFailure::OutputLimit,
+                        OutputRecoveryCause::EmptyTerminal => OutputRecoveryFailure::EmptyTerminal,
+                    })
                 }
-
-                let finish_reason = step_finish_reason.as_deref().unwrap_or("unknown");
-                let thought_only = !answer_delta_seen && thinking_delta_seen;
-                let recovery_detail = if thought_only {
-                    format!(
-                        "The provider finished with reasoning but no final answer (finish reason: {finish_reason})."
-                    )
-                } else {
-                    format!(
-                        "The provider finished without a final answer (finish reason: {finish_reason})."
-                    )
-                };
-
-                let response_was_filtered = matches!(
-                    step_finish_reason_kind,
-                    Some(crate::llm::FinishReason::ContentFilter)
-                );
-                if !response_was_filtered
-                    && final_answer_recovery_attempts == 0
-                    && iteration + 1 < self.config.max_iterations
-                {
-                    final_answer_recovery_attempts = 1;
-                    force_answer_only_next_step = true;
+                OutputRecoveryDecision::TruncatedToolRound => {
+                    tool_calls_truncated_by_output_limit = true;
                     append_internal_persisted_trace_status(
                         &mut persisted_trace_items,
-                        &format!("{recovery_detail} Retrying once for an answer-only response."),
+                        "The provider output limit interrupted a tool-call response. The incomplete calls will be rejected and re-planned without execution.",
                         "warning",
                     );
-                    let _ = tx
-                        .send(AgentEvent::ControllerStatus {
-                            code: "final_answer_recovery".to_string(),
-                            content: "The model ended before producing a final answer. Retrying once with reasoning kept separate.".to_string(),
-                            tone: Some("warning".to_string()),
-                        })
-                        .await;
-                    if let Some(message) = prompt_ir::controller_state_message(
-                        "The previous provider response ended without any answer-channel text. Do not repeat or expose hidden reasoning. Return only the concise final answer for the user's original request.",
-                    ) {
-                        messages.push(message);
-                    }
-                    continue 'react_loop;
+                    None
                 }
+                OutputRecoveryDecision::ToolRound => None,
+                OutputRecoveryDecision::Final(final_content) => {
+                    full_content = final_content;
+                    None
+                }
+                OutputRecoveryDecision::Reject(failure) => Some(failure),
+            };
 
+            if let Some(recovery_failure) = recovery_failure {
+                let finish_reason = step_finish_reason.as_deref().unwrap_or("unknown");
+                let response_was_filtered =
+                    recovery_failure == OutputRecoveryFailure::ContentFiltered;
                 let frontend_message = if response_was_filtered {
                     "The provider blocked the response before producing a final answer. Its reasoning was kept separate; revise the request and try again."
                 } else if finish_reason == "length" {
-                    "The model exhausted its output budget before producing a final answer. Its reasoning was kept separate; retry the response or increase the output budget."
+                    "The provider reached its output limit at the configured final iteration before it could finish the answer. Increase the turn iteration limit or continue the task."
                 } else {
-                    "The model finished without producing a final answer. Its reasoning was kept separate; retry the response."
+                    "The provider repeatedly finished without producing a final answer in the answer channel. Its reasoning was kept separate; retry the response or choose another model."
                 };
                 let trace_message = format!(
                     "provider_finished_without_answer: finish_reason={finish_reason}, answer_delta_seen={answer_delta_seen}, thinking_delta_seen={thinking_delta_seen}"
@@ -1346,6 +1382,21 @@ impl AgentExecutor {
                     })
                     .await;
             }
+            if tool_calls_truncated_by_output_limit {
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "truncated_tool_calls_rejected".to_string(),
+                        content: "The provider output limit interrupted tool-call arguments. Nexa rejected them safely and will ask the model to re-plan.".to_string(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+            }
+
+            let tool_dispatch_block = if tool_calls_truncated_by_output_limit {
+                Some(tool_dispatch::ToolDispatchBlock::OutputLimit)
+            } else {
+                loop_guard_block_reason.map(tool_dispatch::ToolDispatchBlock::LoopGuard)
+            };
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             turn_state.transition_to(TurnPhase::ToolDispatch);
@@ -1371,7 +1422,7 @@ impl AgentExecutor {
                         sort_order: &mut sort_order,
                     },
                     &tool_calls,
-                    loop_guard_block_reason,
+                    tool_dispatch_block,
                     &mut started_call_ids,
                     &mut tool_run_started_ids,
                 )

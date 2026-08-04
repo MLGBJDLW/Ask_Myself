@@ -199,6 +199,11 @@ test.beforeEach(async ({ page }) => {
           return clone(embedderConfig);
         case "get_app_config_cmd":
           return clone(appConfig);
+        case "save_agent_config_cmd":
+          (window as unknown as { __savedAgentConfig?: unknown }).__savedAgentConfig = clone(
+            _args.config,
+          );
+          return null;
         case "save_app_config_cmd":
           (window as unknown as { __savedAppConfig?: unknown }).__savedAppConfig = clone(
             _args.config,
@@ -479,6 +484,30 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
   ]);
+});
+
+test("provider output limit is automatic when the explicit cap is cleared", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByTitle("Edit").first().click();
+
+  const maxTokensField = page
+    .locator("label")
+    .filter({ hasText: "Max Tokens" })
+    .locator("xpath=..");
+  const input = maxTokensField.getByRole("spinbutton");
+  await expect(input).toHaveValue("4096");
+  await input.fill("");
+  await expect(input).toHaveAttribute("placeholder", "Auto (provider default)");
+  await expect(maxTokensField).toContainText("provider's native output limit");
+
+  await maxTokensField
+    .locator("xpath=ancestor::form")
+    .getByRole("button", { name: "Save", exact: true })
+    .click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAgentConfig?: { maxTokens?: number | null } }
+  ).__savedAgentConfig?.maxTokens)).toBeNull();
 });
 
 test("catalog model picker stays compact and searchable in a narrow settings column", async ({ page }) => {

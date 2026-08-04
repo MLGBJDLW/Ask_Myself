@@ -442,6 +442,8 @@
   "modelSearchNoResults": "No models match this search",
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
+  "maxTokensAutoPlaceholder": "Auto (provider default)",
+  "maxTokensHelp": "Leave blank to use the provider's native output limit. Set a value only when you need an explicit per-request cap.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

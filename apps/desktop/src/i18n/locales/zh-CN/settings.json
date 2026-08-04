@@ -442,6 +442,8 @@
   "modelSearchNoResults": "没有匹配的模型",
   "temperature": "温度",
   "maxTokens": "最大令牌数",
+  "maxTokensAutoPlaceholder": "自动（提供商默认值）",
+  "maxTokensHelp": "留空以使用提供商原生输出上限；仅在需要限制单次请求时填写。",
   "testConnection": "测试连接",
   "connectionSuccess": "连接成功",
   "connectionFailed": "连接失败",

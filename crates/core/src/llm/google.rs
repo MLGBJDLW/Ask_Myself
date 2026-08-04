@@ -19,10 +19,12 @@ use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
-    FinishReason, LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk,
-    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role,
+    StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
+use crate::provider_catalog::model_limits_from_catalog;
 use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -615,6 +617,14 @@ fn thinking_budget_with_answer_reserve(
     Some(normalized.min(thinking_ceiling).min(i32::MAX as u32) as i32)
 }
 
+fn answer_budget_basis(request: &CompletionRequest) -> Option<u32> {
+    request.max_tokens.or_else(|| {
+        model_limits_from_catalog(ProviderType::Google, &request.model)
+            .and_then(|limits| limits.max_output_tokens)
+            .and_then(|limit| u32::try_from(limit).ok())
+    })
+}
+
 fn build_request_body(
     request: &CompletionRequest,
     system_instruction: Option<GeminiSystemInstructionV2>,
@@ -636,14 +646,17 @@ fn build_request_body(
                 })
         } else {
             request.thinking_budget.and_then(|budget| {
-                thinking_budget_with_answer_reserve(&request.model, budget, request.max_tokens).map(
-                    |thinking_budget| GeminiThinkingConfig {
-                        thinking_budget: Some(thinking_budget),
-                        thinking_level: None,
-                        // Required to receive `thought: true` parts in streaming/non-streaming responses.
-                        include_thoughts: Some(true),
-                    },
+                thinking_budget_with_answer_reserve(
+                    &request.model,
+                    budget,
+                    answer_budget_basis(request),
                 )
+                .map(|thinking_budget| GeminiThinkingConfig {
+                    thinking_budget: Some(thinking_budget),
+                    thinking_level: None,
+                    // Required to receive `thought: true` parts in streaming/non-streaming responses.
+                    include_thoughts: Some(true),
+                })
             })
         }
     } else {
@@ -1584,6 +1597,35 @@ mod tests {
             .expect("thinking config");
 
         assert_eq!(thinking.thinking_budget, Some(3072));
+    }
+
+    #[test]
+    fn test_automatic_output_limit_still_reserves_gemini_answer_capacity() {
+        let request = CompletionRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.2),
+            max_tokens: None,
+            tools: None,
+            stop: None,
+            thinking_budget: Some(65_536),
+            reasoning_enabled: Some(true),
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Google),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = build_request_body(&request, None, vec![]);
+        let generation = body.generation_config.expect("generation config");
+        assert_eq!(generation.max_output_tokens, None);
+        assert_eq!(
+            generation
+                .thinking_config
+                .expect("thinking config")
+                .thinking_budget,
+            Some(32_768),
+        );
     }
 
     #[test]
