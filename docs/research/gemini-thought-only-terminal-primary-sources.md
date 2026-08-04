@@ -1,8 +1,8 @@
-# Reasoning-only terminal responses across Gemini and DeepSeek: primary-source notes
+# Provider-neutral output exhaustion and reasoning-only terminals: primary-source notes
 
 Date: 2026-08-04
 
-This note validates the hotfix request in `D:\Nexa.txt`, including the supplementary DeepSeek report, against the synchronized Nexa baseline, Google and DeepSeek primary sources, and fixed source snapshots from leading open-source LLM integrations. It is an engineering input, not an implementation record. Statements labeled **Nexa inference** are design conclusions, not claims made by the providers or upstream projects.
+This note validates the hotfix request in `D:\Nexa.txt`, including the Gemini and DeepSeek reports, against the synchronized Nexa baseline, provider primary sources, and fixed snapshots of OpenAI Codex and Pi Agent as the main runtime references. Provider SDKs supply adapter-level evidence; OpenCode and Goose are secondary cross-checks only. It is an engineering input, not an implementation record. Statements labeled **Nexa inference** are design conclusions, not claims made by the providers or upstream projects.
 
 ## Executive decision
 
@@ -11,6 +11,7 @@ This note validates the hotfix request in `D:\Nexa.txt`, including the supplemen
 3. **A terminal chunk may validly carry no answer text.** Both protocols permit nullable/absent visible content, and DeepSeek's official streaming example accumulates `reasoning_content` and `content` independently. Reducers must preserve an empty answer together with reasoning, finish reason, usage, and tools; storage/UI must represent incomplete/error without changing channels. [DeepSeek streaming example](https://api-docs.deepseek.com/guides/thinking_mode/#multi-turn-conversation), [LiteLLM content-less chunk handling](https://github.com/BerriAI/litellm/blob/a79f598f692e66ce49790bfda699b7f4dccb3ca0/litellm/llms/vertex_ai/gemini/vertex_and_google_ai_studio_gemini.py#L3168-L3192), [LangChain Google empty-message handling](https://github.com/langchain-ai/langchain-google/blob/942b7cc4bc0abe750b6350379e5df870db19d9ee/libs/genai/langchain_google_genai/chat_models.py#L1431-L1456)
 4. **The visible leak has one provider-agnostic root cause in Nexa.** Both Gemini and the OpenAI-compatible/DeepSeek stream parser already separate ordinary text from reasoning and retain terminal metadata. Later, the agent loop copies `iteration_thinking` into `full_content` whenever visible content is empty and there are no tool calls. That shared fallback explains both reports. [Nexa OpenAI-compatible separation](https://github.com/MLGBJDLW/Nexa/blob/6023b4bda4a60dd46289a1c94219e2fae9813124/crates/core/src/llm/streaming.rs#L31-L48), [stream emission](https://github.com/MLGBJDLW/Nexa/blob/6023b4bda4a60dd46289a1c94219e2fae9813124/crates/core/src/llm/streaming.rs#L660-L716), [promotion fallback](https://github.com/MLGBJDLW/Nexa/blob/6023b4bda4a60dd46289a1c94219e2fae9813124/crates/core/src/agent/turn_loop.rs#L930-L938)
 5. **DeepSeek also has an independent tool-replay contract.** When a request carries tools, official docs require the full `reasoning_content` to be passed back in all subsequent requests or the API returns HTTP 400. A valid tool subturn can have `content: ""`, non-empty reasoning, and tool calls. The shared terminal hotfix must keep tools higher priority than empty-answer handling, and the adapter must preserve exact reasoning history rather than inventing a visible answer. [DeepSeek tool-call contract and examples](https://api-docs.deepseek.com/guides/thinking_mode/#tool-calls)
+6. **The primary agent-runtime references support a typed, multi-step lifecycle, but neither is a complete answer to output exhaustion.** OpenAI Codex persists completed response items, executes tools, and follows up until no tool or server continuation remains; Pi Agent preserves `stopReason`, refuses to execute token-truncated tool calls, and asks the model to re-issue them. Yet Codex maps `response.incomplete` to a generic stream error, and Pi stops after a no-tool `length` message without regenerating visible text. Nexa should borrow their separation and continuation mechanics, not copy those terminal gaps. [Codex turn loop](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L135-L147), [Codex incomplete mapping](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/codex-api/src/sse/responses.rs#L426-L445), [Pi truncated-tool handling](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L202-L224)
 
 The required hotfix invariant is:
 
@@ -152,7 +153,95 @@ The outbound parent converter serializes content, tool calls/function calls, and
 
 **Nexa inference from those fixed sources:** this snapshot can read DeepSeek reasoning yet can omit it when serializing a later tool request, violating the current V4 contract and risking HTTP 400. It is a useful warning that correct display separation does not prove correct request replay.
 
-## 4. Verified Nexa baseline and exact failure chain
+## 4. Fixed-source agent-runtime comparison
+
+Provider adapters answer only whether a chunk is text, reasoning, a tool call, usage, or terminal metadata. Coding agents add a second layer: repeated model turns, tool execution, loop/budget limits, context compaction, persistence, and user-visible completion. OpenAI Codex and Pi Agent are the primary implementation references below; OpenCode and Goose are secondary cross-checks. The question is whether each runtime actually recovers a final answer after truncation, not merely whether it preserves metadata or shows a warning.
+
+### 4.1 OpenAI Codex: authoritative rollout lifecycle, structured continuation, incomplete-output gap
+
+Official repository: `openai/codex`; fixed commit `49b0aebd6fba2fc590abbe16882cefd048524228` (2026-08-04); Apache-2.0. [LICENSE](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/LICENSE#L1-L18)
+
+Codex documents its core turn as repeated sampling: tool requests are executed and their outputs go into the next model request, while an assistant-only response is recorded and completes the turn. The live loop preserves one turn-scoped model client across steps, records pending inputs before the next sample, and decides continuation from locally observed tool work, pending user input, or a server `end_turn: false`. [Turn contract](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L135-L157), [multi-step loop](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L260-L383), [server continuation flag](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L2505-L2549)
+
+Completed tool items are recorded before execution; tool futures return protocol outputs that are also recorded, and `needs_follow_up` forces another sampling step. This is the right separation between a model response boundary and an agent turn boundary. [Tool dispatch and follow-up](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/stream_events_utils.rs#L288-L359), [tool-result persistence](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L2101-L2125)
+
+Visible final text is derived only from a completed agent-message turn item. Whitespace-only text produces no `last_agent_message`; nevertheless, if there are no tools, pending inputs, or server continuation, the outer loop exits. Reasoning is a separate response item, so the cited path does not promote it, but it also does not regenerate a missing visible final. [Final-message extraction](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/stream_events_utils.rs#L236-L284), [completion decision](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L460-L511)
+
+For output exhaustion, the Responses SSE reducer extracts `incomplete_details.reason` but converts every `response.incomplete` into a generic stream error string. The typed `ResponseEvent` exposes `Completed` with usage and `end_turn`, but no structured incomplete reason. Thus `max_output_tokens` is surfaced as failure, not mistaken for an answer, yet the cited runtime does not preserve a normalized `length` state or run a concise final-answer recovery step. [Response event contract](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/codex-api/src/common.rs#L75-L105), [incomplete/completed parsing](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/codex-api/src/sse/responses.rs#L390-L445)
+
+Codex proactively and mid-turn compacts when its active context reaches the configured threshold, then resumes the interrupted model/tool continuation before accepting new steering input. It also has a shared rollout-token budget that persists weighted usage, injects remaining-budget reminders, and raises `SessionBudgetExceeded` once the limit is crossed. The core `run_turn` loop has no independent generic step counter; its hard boundaries are no-follow-up, cancellation/error, context handling, stop hooks, and the optional rollout budget. [Context rollover and resume](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/turn.rs#L371-L457), [rollout budget accounting](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/rollout_budget.rs#L34-L64), [budget stop](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/session/rollout_budget.rs#L8-L35)
+
+Local compaction retries transport failures and progressively removes oldest input on context-window failure. After a completed summary response it takes the last non-empty assistant message, builds replacement history, persists compaction metadata, and warns the user about accuracy loss. The limitation is transactional validation: streamed summary items are recorded into the live conversation before `response.completed`; the accepted summary is not separately checked for output exhaustion because that became a generic stream error, and an absent visible assistant message becomes an empty summary suffix. [Compaction retry](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/compact.rs#L241-L345), [replacement commit](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/compact.rs#L348-L393), [stream item recording](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/codex-rs/core/src/compact.rs#L698-L755)
+
+**Borrow:** response-item persistence; tool-result-driven continuation; explicit server continuation; turn-scoped client reuse; context rollover before the next step; durable weighted budget and explicit budget error.
+
+**Do not copy:** collapsing all incomplete reasons to an untyped stream error; treating “no follow-up” as sufficient completion when no visible final exists; recording compaction output into live history before completeness validation.
+
+### 4.2 Pi Agent: safest truncated-tool recovery, but no no-tool final recovery
+
+Official repository: `badlogic/pi-mono`; fixed commit `f119b01cb122ea55e17905caff62d4523f6cce1d` (2026-08-04); MIT. [LICENSE](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/LICENSE#L1-L20)
+
+Pi Agent's core loop streams a typed `AssistantMessage`, persists its final version in context, and treats `stopReason` as distinct metadata. It continues while tool calls or queued steering/follow-up messages exist; hosts can optionally stop after a turn through `shouldStopAfterTurn`, but the core loop itself has no built-in step counter. [Agent loop](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L153-L200), [continuation and host stop hook](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L202-L274), [stream finalization](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L282-L371)
+
+The provider-neutral assistant type preserves `pending`, `stop`, `length`, `toolUse`, `error`, `aborted`, and `deferred` together with `rawStopReason`. Its OpenAI-compatible adapters normalize Chat Completions `length` and Responses `incomplete/max_output_tokens` into that typed `length` state, while retaining unknown provider reasons for diagnostics. [Assistant stop contract](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/ai/src/types.ts#L387-L422), [Chat Completions mapping](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/ai/src/api/openai-completions.ts#L1386-L1408), [Responses incomplete mapping](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/ai/src/api/openai-responses-shared.ts#L742-L769)
+
+Its strongest pattern is output-length handling for tools. If a `length` response contains tool calls, Pi refuses to execute any possibly truncated arguments, creates an error tool result asking the model to re-issue complete calls, and leaves the tool loop active for another sampling step. This is safer than either executing salvaged JSON or terminating the turn. [Length-aware tool branch](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L202-L224), [synthetic error results](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L375-L405)
+
+The no-tool case is different. A no-tool `length` is not `error` or `aborted`, leaves `hasMoreToolCalls` false, and exits after `turn_end`; there is no core tools-disabled request for a concise visible final. The coding-agent layer permits one compact-and-retry only for a recoverable overflow shape, including the condition that reported output is below the model maximum; a genuine output-budget exhaustion therefore does not qualify. [No-tool exit path](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L193-L224), [output-overflow classification](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/ai/src/utils/overflow.ts#L165-L173), [single compaction retry](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/agent-session.ts#L1985-L2018)
+
+Final visibility and durability are not one atomic boundary across Pi's surfaces. The core replaces the streamed partial with the final assistant object before `message_end`; the newer harness appends that event before notifying its own listeners, while the production coding-agent path notifies extensions/UI before appending the session entry. A retry can remove the failed assistant only from active model context while leaving the historical entry present. Consequently a later successful answer can visually cover a persisted truncated response; UI success alone does not prove clean recovery. [Core finalization](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/agent-loop.ts#L314-L370), [harness append order](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/agent-harness.ts#L580-L604), [coding-agent append order](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/agent-session.ts#L633-L657), [retry history gap](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/agent-session.ts#L2011-L2018)
+
+Pi's compaction path selects a retained tail, summarizes older history, and appends a compaction entry only after the compaction function returns success. The coding-agent defaults reserve 16,384 tokens and retain 20,000 recent tokens, triggering before the context-window remainder is exhausted. The newer harness additionally caps summary output at 80% of `reserveTokens` and keeps explicit file-operation facts beside the summary. [Production trigger defaults](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/compaction/compaction.ts#L126-L136), [production trigger](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/compaction/compaction.ts#L232-L238), [cut point and retained tail](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/compaction/compaction.ts#L639-L713), [summary budget](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/compaction/compaction.ts#L551-L599), [durable compaction append](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/agent-harness.ts#L783-L833)
+
+The summary validator still has a critical gap: it rejects only `aborted`/`error` (or only `error` in the production path). A `length` summary, including empty visible content with only thinking, is returned as success and then can be appended as the authoritative compaction checkpoint. Split-turn summaries have the same omission. [Harness summary handling](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/compaction/compaction.ts#L592-L614), [split-turn handling](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/agent/src/harness/compaction/compaction.ts#L827-L879), [production summary handling](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/packages/coding-agent/src/core/compaction/compaction.ts#L637-L685)
+
+**Borrow:** typed `stopReason`; never execute token-truncated tool arguments; feed a safe error tool result back so the model can re-issue the call; append durable messages/compaction entries at explicit lifecycle points; reserve summary output budget.
+
+**Do not copy:** allowing a no-tool `length` turn to settle without a visible-final recovery/status; relying on an optional host hook as the only loop bound; accepting summary text without rejecting `length` or empty-visible output.
+
+### 4.3 OpenCode cross-check: strong tool/compaction loop, no output-length final recovery
+
+Official repository: `anomalyco/opencode`; fixed commit `f0afb6750e63ee0a60b052914531bde0afb9bc2b` (2026-08-04); MIT. [LICENSE](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/LICENSE#L1-L20)
+
+OpenCode stores reasoning parts and visible text parts independently. On step completion it persists the normalized provider finish reason and usage, while context overflow is tracked separately. [Reasoning events](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/processor.ts#L278-L313), [text events](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/processor.ts#L486-L531), [finish and overflow](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/processor.ts#L435-L483)
+
+Its outer loop correctly gives tool parts precedence over an unreliable provider finish reason: even when a provider says `stop`, locally present tool calls keep the loop running so results can be sent back. It stops only after a finished assistant has no remaining tool parts. [Tool-aware exit condition](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/prompt.ts#L1096-L1130)
+
+However, the normal completion path treats every finish other than `tool-calls` and `unknown` as finished, special-casing only `content-filter`. A no-tool `length` response therefore reaches the next loop iteration and exits whether or not visible text exists. There is no branch that requests a final answer or labels reasoning-only `length` as incomplete. [Completion branch](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/prompt.ts#L1288-L1335), [next-iteration exit](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/prompt.ts#L1100-L1130)
+
+OpenCode does have an explicit long-turn step-limit prompt: tools are disabled and the model must return a text-only progress summary, remaining tasks, and next steps. This is a good safe-status pattern, but the resulting summary call still has no second guard if it itself terminates with `length`. [Maximum-step final prompt](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/core/src/session/runner/max-steps.ts#L1-L16), [injection at the last step](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/prompt.ts#L1178-L1286)
+
+For context pressure, OpenCode reserves output headroom, detects context overflow independently of finish reason, selects recent tail turns, generates a no-tool compaction assistant, then replays the interrupted user turn or injects a hidden continuation instruction. [Headroom calculation](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/overflow.ts#L8-L34), [tail selection](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/compaction.ts#L188-L239), [overflow replay and auto-continue](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/compaction.ts#L289-L348), [continuation](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/compaction.ts#L404-L510)
+
+The gap is summary validation: a completed compaction accepts any truthy finish reason, including `length`, and allows extracted summary text to be absent. [Completed-compaction selection](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/packages/opencode/src/session/compaction.ts#L46-L77) Thus OpenCode solves context continuation and tool precedence, but it does not solve reasoning-only output exhaustion or prove that a truncated compaction summary is usable.
+
+**Borrow:** separate context overflow from output truncation; tools override provider `stop`; replay the interrupted user work after successful compaction; use an explicit safe status at a step cap.
+
+**Do not copy:** treating `length` as ordinary completion, or accepting a summary solely because the summarizer emitted some finish reason.
+
+### 4.4 Goose limitation cross-check: warning is not final recovery
+
+Official repository: `aaif-goose/goose`; fixed commit `fe49eb389e62e0dcedf0f138f2295c10fc762c06` (2026-08-04); Apache-2.0. [LICENSE](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/LICENSE#L1-L18)
+
+Goose maps OpenAI-compatible `finish_reason: "length"` into message metadata while keeping `reasoning_content` as a thinking block and cleaned `content` as visible text. [OpenAI response conversion](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose-provider-types/src/formats/openai.rs#L682-L730), [metadata preservation](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose-provider-types/src/formats/openai.rs#L769-L844)
+
+The agent loop tracks provider content, tool calls, and the output-limit flag separately. A terminal metadata-only message is emitted rather than dropped, and tool requests make the loop continue. [Per-turn state](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2226-L2242), [content and terminal emission](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2259-L2339), [tool completion resumes work](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2680-L2719)
+
+Goose deliberately excludes output-limit responses from its bounded empty-turn retry. With no tools, that path falls through to normal exit rather than requesting a visible final. The CLI renders a warning that the response may be incomplete. [Empty-turn classification](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2869-L2887), [retry/exit branch](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2889-L3011), [CLI warning](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose-cli/src/session/output.rs#L29-L30), [warning rendering](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose-cli/src/session/output.rs#L385-L400)
+
+This is honest status preservation, not final-answer recovery. It avoids channel promotion and a silent blank UI, but reasoning-only `length` still ends without a user-facing answer. The warning must not be mistaken for a recovered model final.
+
+Goose's long-turn cap similarly emits “Would you like me to continue?” after a configurable maximum. In this path the status is yielded as a UI event and assigned to telemetry text, but it is not added to the session conversation in the cited branch; reload durability should not be inferred. [Turn cap](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2067-L2183), [post-loop handling](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L3130-L3149)
+
+For context-length failure, Goose compacts and retries, with a bounded second failure. Compaction progressively removes tool responses, generates a summary, hides old messages from the agent, adds an agent-only continuation instruction, and resumes either natural conversation or tool work. [Proactive compaction](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L1874-L1959), [recovery compaction](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/agents/agent.rs#L2723-L2781), [summary and continuation layout](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/context_mgmt/mod.rs#L36-L49), [history replacement](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/context_mgmt/mod.rs#L78-L177)
+
+Its structured-summary parser intentionally refuses to repair cut-off JSON and falls back to raw response text so late continuation-critical content is not silently discarded. That is safer than inventing missing fields, but `do_compact` does not reject output-limit metadata or an empty visible summary before replacing history. [Lossless structured fallback](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/context_mgmt/structured.rs#L128-L207), [summarizer result handling](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/crates/goose/src/context_mgmt/mod.rs#L319-L418)
+
+**Borrow:** persist an explicit output-limit bit through adapters and UI; keep thinking/text distinct; bounded context-error compaction; lossless fallback instead of repairing truncated structured summaries.
+
+**Do not copy:** using a warning as the only resolution for reasoning-only `length`, accepting truncated/empty compaction output as usable context, or relying on an unpersisted turn-cap event.
+
+## 5. Verified Nexa baseline and exact failure chain
 
 The observations below refer to synchronized baseline commit `6023b4bda4a60dd46289a1c94219e2fae9813124`.
 
@@ -165,11 +254,11 @@ The observations below refer to synchronized baseline commit `6023b4bda4a60dd462
 
 This confirms two findings. The user-visible reasoning leak is caused by one shared agent fallback after correct provider separation. Independently, real DeepSeek tool reasoning is already replayed when present, but synthetic placeholder replay does not satisfy the documented semantic requirement to pass back the full chain and should remain a migration/error case rather than normal operation.
 
-## 5. Hotfix semantics for Nexa
+## 6. Hotfix semantics for Nexa
 
 The following is **Nexa design inference**, derived from the verified contracts above.
 
-### 5.1 Terminal decision table
+### 6.1 Terminal decision table
 
 | Provider shape | Ordinary answer | Reasoning | Tools | Finish reason | Runtime result |
 | --- | --- | --- | --- | --- | --- |
@@ -182,7 +271,47 @@ The following is **Nexa design inference**, derived from the verified contracts 
 | DeepSeek | Empty | Any | None | `insufficient_system_resource` | Explicit retryable provider failure under bounded policy; never treat reasoning as completion. |
 | Any | Empty | Empty | None | Other/unknown | Explicit incomplete/error with provider metadata; never fabricate content. |
 
-### 5.2 Minimal hotfix versus follow-up hardening
+### 6.2 Cross-provider turn state machine
+
+The runtime should persist completion state explicitly rather than infer it from whether a string exists. The minimum state carried across provider, agent, persistence, and UI boundaries is:
+
+```text
+visible_answer       ordinary answer text only
+reasoning            native reasoning/thought or parsed tags, with provenance
+tool_calls           pending/completed calls plus provider replay metadata
+finish_reason_raw    immutable provider value
+finish_reason        normalized value
+usage                including output/reasoning counts when available
+context_state        within_limit | overflow | compacting | compacted
+completion_state     streaming | tool_pending | output_continuation |
+                     complete | incomplete_length | provider_empty |
+                     filtered | retryable_provider_error | needs_user_continue
+recovery_progress    visible prefix plus bounded anomaly counters by class
+```
+
+The transition order matters:
+
+1. **Tool calls first.** If executable tool calls exist, persist the assistant subturn and exact provider replay state, execute tools, append results, and start the next model step. A provider `stop` must not override locally observed calls, following the primary Codex/Pi continuation pattern. If the same assistant subturn ended with `length`, do not execute possibly truncated arguments; append a safe error tool result and let the model re-issue the call, as Pi does.
+2. **Context failure second.** Context overflow may trigger one transactional compaction/retry. Do not confuse it with output `length` merely because both mention tokens.
+3. **Visible natural final.** With no tools, non-empty visible answer plus natural stop becomes `complete`.
+4. **Output limit.** Any `length` response enters `output_continuation`; it does not end the user turn. Preserve partial answer and reasoning separately, reserve the answer channel on every later model step, and join visible continuation fragments into one durable reply. Do not impose an output-limit-specific retry count: cancellation, the user-configured turn iteration boundary, context handling, and verified forward progress remain the enclosing safety controls. Tools may still be used while the task is unfinished, but a tool call emitted by the same `length` response is untrusted and must be rejected so the model can re-issue complete arguments.
+5. **Empty natural stop.** No answer plus `stop` is `provider_empty`, eligible for one bounded retry. Reasoning does not change that classification.
+6. **Filters/resources.** Content filters are terminal safe errors. Resource exhaustion is a separately bounded retryable provider failure.
+7. **Step cap.** Persist a runtime-owned `needs_user_continue` status containing accomplished work, remaining work, and a continue action. It must be durable and typed, not a transient UI event or model reasoning copied into content.
+
+Compaction needs its own two-phase commit:
+
+```text
+summarize old context
+  -> validate: visible summary non-empty, no tools, no error,
+               finish is natural stop, output_limit is false
+  -> commit: hide/archive old context and install summary
+  -> inject hidden continuation/replay original interrupted request
+```
+
+If validation fails, keep the original history authoritative and surface a compaction failure. Codex and Pi both provide useful compaction/continuation mechanics, while OpenCode and Goose corroborate the pattern; none of the cited paths imposes all of these summary-completeness and atomic-commit checks.
+
+### 6.3 Minimal hotfix versus follow-up hardening
 
 For the immediate hotfix, the current accumulators already prove the critical boundary:
 
@@ -193,11 +322,11 @@ tools_present = !tool_calls.is_empty()
 finish_reason = last_finish_reason
 ```
 
-Remove the reasoning-to-answer assignment and route a no-tool terminal reasoning-only result to an incomplete/error path. If database/UI contracts cannot represent an empty assistant message today, emit a typed safe status or synthetic explanation that contains no model reasoning; do not write reasoning into `content`. Keep `tools_present` as the earlier branch so valid DeepSeek `content: "" + reasoning_content + tool_calls` subturns continue normally.
+Remove the reasoning-to-answer assignment and route an output-limited response into a provider-neutral continuation state. Keep that state active across later tool rounds until a non-empty ordinary answer reaches a natural terminal; partial answer fragments must stream and persist as one reply. If the configured turn boundary is reached first, emit a typed safe status containing no model reasoning. Normal DeepSeek `content: "" + reasoning_content + tool_calls` subturns continue, while tool calls attached to a `length` terminal are rejected as potentially truncated.
 
 Longer-term hardening should carry explicit provenance such as `answer_delta_seen`, `reasoning_delta_seen`, and `reasoning_source` (`native`, parsed tags, or none) through finalization. DeepSeek tool subturns should additionally track whether exact replay-required reasoning is available; a synthetic placeholder should be observable and should not silently qualify as complete protocol history. These additions make tests and migration of already-polluted history unambiguous, but they are not prerequisites for stopping the visible leak.
 
-### 5.3 Executable cross-provider regression matrix
+### 6.4 Executable cross-provider regression matrix
 
 Fixtures should run at adapter/reducer, agent state, request replay, persistence, and UI boundaries. The wire snippets below are intentionally small enough for deterministic mock-SSE or deserialization tests.
 
@@ -220,6 +349,19 @@ Fixtures should run at adapter/reducer, agent state, request replay, persistence
 | X1 | Any provider emits finish/usage metadata with no text and no reasoning. | Reducer retains metadata without `choices[0]`/empty-array failure and without fabricating reply text. |
 | X2 | Local or OpenAI-compatible `<think>r</think>` with no ordinary final and no tools. | Parsed reasoning follows the same shared no-promotion rule, while provenance records that it came from tags rather than a native field. |
 | X3 | Live reasoning block -> terminal event -> persistence -> reload/UI. | Reasoning never becomes ordinary reply content, TTS input, quote text, copy target, or duplicated transcript content. |
+| A1 | No-tool turn returns partial visible answer plus `length`, then a second response returns the remainder with natural stop. | Continue the same turn, stream both fragments once, and persist their concatenation as one complete reply. |
+| A2 | No-tool turn returns reasoning only plus `length`, then uses a tool before returning a visible natural-stop answer. | Neither reasoning value is promoted; answer-channel reservation stays active through the tool round and ends only when the visible final arrives. |
+| A3 | Provider reports `stop`, but the same assistant turn contains executable tool parts. | Tool parts take precedence over finish metadata; the exact assistant/tool history is persisted and execution continues. |
+| A4 | One or more tool subturns are followed by non-empty visible text and natural stop. | Only the last visible text is a complete final; earlier reasoning/tool protocol state remains non-visible and replayable. |
+| A5 | Agent reaches its configured step cap. | Persist a runtime-owned `needs_user_continue` status with accomplished and remaining work; reload preserves the status; no reasoning or transient UI toast is treated as the final. |
+| A6 | Assistant contains tool calls but terminates with `length`. | Do not execute any possibly truncated arguments; append one error result per call, preserve IDs/order, and let the next model step re-issue complete calls. |
+| A7 | Responses-style provider emits `response.incomplete` with `reason: max_output_tokens`. | Preserve the raw reason and normalize to `incomplete_length`; do not collapse it to a generic transport error or mark the turn complete. |
+| C1 | Context overflow; compactor returns non-empty visible summary, no tools, natural stop, and no output-limit metadata. | Commit the summary transactionally, retain an audit link to archived history, inject hidden continuation, and replay the interrupted work exactly once. |
+| C2 | Compactor returns visible text with `length`/output-limit metadata. | Reject the summary as authoritative; the original history stays active and no hidden continuation is injected. |
+| C3 | Compactor returns reasoning-only, empty visible text, or a tool request. | Reject compaction; never promote reasoning or execute summarizer tools. |
+| C4 | Context retry/compaction fails again after the configured bound. | Persist an explicit compaction failure and stop; do not loop or silently drop old turns. |
+| C5 | Structured compaction JSON is cut off mid-object. | Raw text may be retained for diagnostics, but it cannot replace history unless the enclosing response also passes the completeness checks. |
+| R1 | Process exits during `tool_pending`, `output_continuation`, or `needs_user_continue`, then reloads. | The same typed state, visible prefix, and anomaly counters resume without duplicate tool execution, duplicate continuation, or loss of the user-visible status. |
 
 For D6, the request-history assertion should compare a structured object, not just string containment:
 
@@ -234,7 +376,7 @@ For D6, the request-history assertion should compare a structured object, not ju
 
 The final tool-flow success fixture should then return a later assistant message with non-empty `content` and no tool calls, proving that the shared hotfix does not prematurely terminate a valid DeepSeek chain.
 
-## 6. License and integration boundary
+## 7. License and integration boundary
 
 | Source | Fixed revision | License verified | How it is used here |
 | --- | --- | --- | --- |
@@ -247,10 +389,14 @@ The final tool-flow success fixture should then return a later assistant message
 | LangChain Google | `942b7cc4bc0abe750b6350379e5df870db19d9ee` | MIT [LICENSE](https://github.com/langchain-ai/langchain-google/blob/942b7cc4bc0abe750b6350379e5df870db19d9ee/LICENSE#L1-L18) | Structured empty/thinking-message precedent; no source copied. |
 | LangChain DeepSeek | `1a43a6e14ab2c8ff6e4fac250941e9568926e1b4` | MIT [LICENSE](https://github.com/langchain-ai/langchain/blob/1a43a6e14ab2c8ff6e4fac250941e9568926e1b4/LICENSE#L1-L18) | Ingestion precedent and outbound replay-gap analysis; no source copied. |
 | Continue | `5522c6f44ca0ac3528b37244818fbfa39b5af470` | Apache-2.0 [LICENSE](https://github.com/continuedev/continue/blob/5522c6f44ca0ac3528b37244818fbfa39b5af470/LICENSE#L1-L7) | Counterexample only; do not copy its current Gemini terminal behavior. |
+| OpenAI Codex | `49b0aebd6fba2fc590abbe16882cefd048524228` | Apache-2.0 [LICENSE](https://github.com/openai/codex/blob/49b0aebd6fba2fc590abbe16882cefd048524228/LICENSE#L1-L18) | Primary rollout, tool continuation, persistence, compaction, and token-budget reference; no source copied. |
+| Pi Agent (`badlogic/pi-mono`) | `f119b01cb122ea55e17905caff62d4523f6cce1d` | MIT [LICENSE](https://github.com/badlogic/pi-mono/blob/f119b01cb122ea55e17905caff62d4523f6cce1d/LICENSE#L1-L20) | Primary typed stop-reason, truncated-tool recovery, session, and compaction reference; no source copied. |
+| OpenCode | `f0afb6750e63ee0a60b052914531bde0afb9bc2b` | MIT [LICENSE](https://github.com/anomalyco/opencode/blob/f0afb6750e63ee0a60b052914531bde0afb9bc2b/LICENSE#L1-L20) | Agent-loop, tool precedence, step-cap, and context-compaction precedent; no source copied. |
+| Goose | `fe49eb389e62e0dcedf0f138f2295c10fc762c06` | Apache-2.0 [LICENSE](https://github.com/aaif-goose/goose/blob/fe49eb389e62e0dcedf0f138f2295c10fc762c06/LICENSE#L1-L18) | Output-limit metadata, warning, turn-cap, and compaction comparison; no source copied. |
 
 All cited integration code is under permissive licenses for the referenced non-enterprise files, but this note recommends semantic reimplementation against Nexa's own provider/runtime types, not vendoring source. The DeepSeek model-weight license is a distinct boundary and irrelevant to this adapter hotfix. If code is later copied rather than independently implemented, preserve the upstream copyright and license notices required by the relevant license.
 
-## 7. Confidence and limits
+## 8. Confidence and limits
 
 - **Confirmed:** Google's channel marker and official SDK exclude thought parts from answer extraction.
 - **Confirmed from the live official contract:** DeepSeek V4 returns nullable `content` separately from `reasoning_content`; `length` means the requested maximum was reached; tool flows require full reasoning replay or return 400.
@@ -259,6 +405,12 @@ All cited integration code is under permissive licenses for the referenced non-e
 - **Confirmed:** DeepSeek `insufficient_system_resource` currently normalizes to generic `Other`, so a provider-specific retry policy needs an enum/metadata follow-up even after the leak is fixed.
 - **Confirmed:** Nexa replays real DeepSeek reasoning when it exists; its legacy placeholder prevents a missing field but is not an exact replay of the provider chain.
 - **Confirmed by fixed-source inspection:** LiteLLM keeps the channels separate but uses a lossy replay fallback; LangChain keeps inbound channels separate but its cited DeepSeek path does not serialize `additional_kwargs.reasoning_content` back out.
+- **Confirmed by fixed-source inspection:** Codex records response/tool items and continues on tool or server follow-up, but maps `response.incomplete` to an untyped stream error and can end with no non-empty `last_agent_message`; it does not promote reasoning or recover a visible final in the cited paths.
+- **Confirmed by fixed-source inspection:** Pi preserves typed and raw stop reasons and safely re-issues length-truncated tool calls, but a genuine no-tool output-budget exhaustion does not qualify for its one compaction retry and settles without final regeneration.
+- **Confirmed lifecycle limitation:** Pi's production coding-agent path may notify extensions/UI before the assistant message is durably appended, and its retry path can leave a truncated historical entry even when active model context removes it.
+- **Confirmed by secondary fixed-source inspection:** OpenCode and Goose separate thinking, ordinary text, tools, and terminal/context metadata, but neither cited runtime automatically regenerates a visible final after a no-tool output-limit response.
+- **Confirmed, but only UI/status behavior:** Goose warns that the response may be incomplete; that warning is not a recovered model final. Its cited maximum-turn prompt is emitted to the active UI path, not persisted as a conversation message.
+- **Confirmed compaction gap across all four agents:** Codex, Pi, OpenCode, and Goose have useful resume/retained-tail mechanics, but their cited paths do not reject every `length`, output-limited, empty-visible, or pre-commit partial summary before accepting or recording continuation context.
 - **Highly plausible, not confirmed from the original screenshots alone:** the reported production turns exhausted output budget. Verify provider trace/persisted finish reason for each incident.
 - **Time-sensitive:** DeepSeek hosted docs have no public commit-pinned server/SDK source and can change. Re-check them when provider catalog models or endpoint semantics change.
 - **Not established by primary sources:** that a fixed arithmetic answer reserve is valid for every Gemini model, or that one particular recent Nexa change first caused the incident.
