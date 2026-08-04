@@ -253,7 +253,7 @@ fn account_enablement_is_never_an_implicit_default() {
 fn builtin_presets_project_every_surface_into_catalog_v2() {
     let catalog = load_builtin_catalog().expect("all built-in preset files should project");
 
-    assert_eq!(catalog.endpoints.len(), 47);
+    assert_eq!(catalog.endpoints.len(), 48);
     assert!(catalog.models.iter().all(|model| model.schema_version == 2));
     assert!(catalog
         .models
@@ -274,6 +274,10 @@ fn builtin_presets_project_every_surface_into_catalog_v2() {
             "missing {expected} endpoint projection"
         );
     }
+    assert!(catalog
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.id == "text:qwen-token-plan-global"));
 
     let qwen_image = catalog
         .models
