@@ -426,6 +426,8 @@
   "modelSearchNoResults": "Keine passenden Modelle",
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
+  "maxTokensAutoPlaceholder": "Automatisch (Anbieterstandard)",
+  "maxTokensHelp": "Leer lassen, um das native Ausgabelimit des Anbieters zu verwenden. Nur für ein explizites Limit pro Anfrage ausfüllen.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

@@ -168,7 +168,9 @@ export function AgentConfigForm({
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [model, setModel] = useState(initialModel);
   const [temperature, setTemperature] = useState(config?.temperature ?? 0.3);
-  const [maxTokens, setMaxTokens] = useState(config?.maxTokens ?? 4096);
+  const [maxTokens, setMaxTokens] = useState<number | null>(
+    config?.maxTokens ?? null,
+  );
   const [contextWindow, setContextWindow] = useState<number | null>(
     config?.contextWindow ?? null,
   );
@@ -269,7 +271,7 @@ export function AgentConfigForm({
     }),
     modelId: initialPresetModel?.descriptor.id ?? config?.modelId ?? initialModel,
     temperature: config?.temperature ?? 0.3,
-    maxTokens: config?.maxTokens ?? 4096,
+    maxTokens: config?.maxTokens ?? null,
     contextWindow: config?.contextWindow ?? null,
     isDefault: config?.isDefault ?? false,
     reasoningEnabled: config?.reasoningEnabled ?? null,
@@ -1044,12 +1046,20 @@ export function AgentConfigForm({
               </label>
               <Input
                 type="number"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(parseInt(e.target.value) || 4096)}
+                value={maxTokens ?? ""}
+                onChange={(e) => {
+                  const value = e.target.value.trim();
+                  const parsed = Number.parseInt(value, 10);
+                  setMaxTokens(value === "" || Number.isNaN(parsed) ? null : parsed);
+                }}
+                placeholder={t("settings.maxTokensAutoPlaceholder")}
                 min={1}
-                max={128000}
-                step={256}
+                max={4294967295}
+                step={1}
               />
+              <p className="text-xs text-text-tertiary">
+                {t("settings.maxTokensHelp")}
+              </p>
             </div>
           </div>
 
@@ -1067,7 +1077,7 @@ export function AgentConfigForm({
               }}
               placeholder={t("settings.contextWindowPlaceholder")}
               min={1024}
-              step={1024}
+              step={1}
             />
             <p className="text-xs text-text-tertiary">
               {t("settings.contextWindowHelp")}

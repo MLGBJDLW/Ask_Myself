@@ -426,6 +426,8 @@
   "modelSearchNoResults": "沒有符合的模型",
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
+  "maxTokensAutoPlaceholder": "自動（供應商預設值）",
+  "maxTokensHelp": "留空以使用供應商原生輸出上限；僅在需要限制單次請求時填寫。",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",
