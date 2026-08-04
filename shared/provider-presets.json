@@ -6814,33 +6814,7 @@
         "capabilities": {
           "vision": true,
           "reasoning": {
-            "effortLevels": [
-              "none",
-              "low",
-              "medium",
-              "high"
-            ],
-            "defaultEffort": "medium",
-            "thinkingBudget": {
-              "enabled": false
-            }
-          }
-        }
-      },
-      {
-        "id": "grok-4.20-multi-agent-0309",
-        "name": "Grok 4.20 Multi-Agent",
-        "tagKey": "providers.tagReasoning",
-        "capabilities": {
-          "vision": true,
-          "reasoning": {
-            "effortLevels": [
-              "none",
-              "low",
-              "medium",
-              "high"
-            ],
-            "defaultEffort": "medium",
+            "effortLevels": [],
             "thinkingBudget": {
               "enabled": false
             }
@@ -6854,13 +6828,7 @@
         "capabilities": {
           "vision": true,
           "reasoning": {
-            "effortLevels": [
-              "none",
-              "low",
-              "medium",
-              "high"
-            ],
-            "defaultEffort": "medium",
+            "effortLevels": [],
             "thinkingBudget": {
               "enabled": false
             }
@@ -7016,9 +6984,12 @@
           "vision": true,
           "reasoning": {
             "effortLevels": [
+              "none",
+              "minimal",
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh"
             ],
             "defaultEffort": "medium",
             "thinkingBudget": {
@@ -7080,19 +7051,11 @@
         "id": "magistral-medium-2509",
         "name": "Magistral Medium",
         "tagKey": "providers.tagReasoning",
-        "capabilities": {
-          "reasoning": {
-            "effortLevels": [
-              "low",
-              "medium",
-              "high"
-            ],
-            "defaultEffort": "medium",
-            "thinkingBudget": {
-              "enabled": false
-            }
-          }
-        }
+        "source": "official",
+        "status": "removed",
+        "deprecationDate": "2026-05-22",
+        "replacementModelId": "mistral-medium-3-5",
+        "lastVerifiedAt": "2026-08-04"
       }
     ]
   },

@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use super::prompt_cache::{resolve_prompt_cache_profile, PromptCacheApiStyle, PromptCacheProfile};
 use super::reasoning_profile::{
     resolve_reasoning_profile, ReasoningApiStyle, ReasoningBudgetField, ReasoningEffortField,
-    ThinkingModeControl,
+    ReasoningHistoryEncoding, ThinkingModeControl,
 };
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
@@ -131,6 +131,16 @@ enum OaiContentPart {
     ImageUrl {
         image_url: OaiImageUrl,
     },
+    Thinking {
+        thinking: Vec<OaiThinkingContentPart>,
+    },
+}
+
+#[derive(Serialize)]
+struct OaiThinkingContentPart {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -197,7 +207,7 @@ struct OaiChoice {
 
 #[derive(Deserialize)]
 struct OaiResponseMessage {
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     tool_calls: Option<Vec<OaiToolCallIn>>,
     #[serde(default, alias = "reasoningContent")]
     reasoning_content: Option<String>,
@@ -659,6 +669,7 @@ fn convert_message(
     msg: &Message,
     wire_role: &str,
     include_reasoning_content: bool,
+    reasoning_history_encoding: ReasoningHistoryEncoding,
     synthesize_missing_reasoning_content: bool,
     raw_tool_args: bool,
 ) -> OaiMessage {
@@ -733,14 +744,43 @@ fn convert_message(
     }
 
     if include_reasoning_content && msg.role == Role::Assistant {
-        if let Some(content) = msg
+        let reasoning = msg
             .reasoning_content
             .as_deref()
             .filter(|content| !content.trim().is_empty())
-        {
-            oai.reasoning_content = Some(content.to_string());
-        } else if synthesize_missing_reasoning_content {
-            oai.reasoning_content = Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
+            .map(str::to_string)
+            .or_else(|| {
+                synthesize_missing_reasoning_content
+                    .then(|| MISSING_REASONING_CONTENT_PLACEHOLDER.to_string())
+            });
+        if let Some(reasoning) = reasoning {
+            match reasoning_history_encoding {
+                ReasoningHistoryEncoding::ReasoningContent => {
+                    oai.reasoning_content = Some(reasoning);
+                }
+                ReasoningHistoryEncoding::ThinkTags => {
+                    let answer = msg.text_content();
+                    oai.content = Some(OaiContent::Text(format!(
+                        "<think>\n{reasoning}\n</think>\n{answer}"
+                    )));
+                }
+                ReasoningHistoryEncoding::MistralContentChunks => {
+                    let mut parts = vec![OaiContentPart::Thinking {
+                        thinking: vec![OaiThinkingContentPart {
+                            content_type: "text".to_string(),
+                            text: reasoning,
+                        }],
+                    }];
+                    let answer = msg.text_content();
+                    if !answer.is_empty() {
+                        parts.push(OaiContentPart::Text {
+                            text: answer,
+                            cache_control: None,
+                        });
+                    }
+                    oai.content = Some(OaiContent::Parts(parts));
+                }
+            }
         }
     }
 
@@ -805,6 +845,7 @@ fn build_request_body_with_config(
         .flatten();
     let include_reasoning_content =
         reasoning_supported && reasoning_profile.should_replay_reasoning(requested_reasoning_mode);
+    let reasoning_history_encoding = reasoning_profile.reasoning_history_encoding;
     let synthesize_missing_reasoning_content =
         include_reasoning_content && reasoning_profile.synthesize_missing_reasoning_history;
     let needs_completion_tokens = reasoning_profile.use_max_completion_tokens
@@ -835,6 +876,7 @@ fn build_request_body_with_config(
                 m,
                 wire_role,
                 include_reasoning_content,
+                reasoning_history_encoding,
                 synthesize_missing_reasoning_content,
                 raw_tool_args,
             )
@@ -1154,6 +1196,13 @@ impl LlmProvider for OpenAiProvider {
             })
             .unwrap_or_default();
 
+        let (content, content_thinking) = choice
+            .message
+            .content
+            .as_ref()
+            .map(super::streaming::partition_openai_content)
+            .unwrap_or_default();
+        let (content, tagged_thinking) = super::streaming::partition_complete_think_tags(&content);
         let thinking = choice
             .message
             .reasoning_content
@@ -1163,10 +1212,12 @@ impl LlmProvider for OpenAiProvider {
                     .message
                     .reasoning_details
                     .and_then(reasoning_value_to_text)
-            });
+            })
+            .or(content_thinking)
+            .or(tagged_thinking);
 
         Ok(CompletionResponse {
-            content: choice.message.content.unwrap_or_default(),
+            content,
             tool_calls,
             finish_reason,
             usage,
@@ -1514,6 +1565,91 @@ data: [DONE]
         ))
         .unwrap();
         assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn curated_direct_endpoints_emit_only_their_verified_reasoning_controls() {
+        let mut xai_request = endpoint_reasoning_request("grok-4.3");
+        xai_request.reasoning_effort = Some(ReasoningEffort::None);
+        let xai = endpoint_config(ProviderType::OpenAi, "https://api.x.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &xai_request,
+            false,
+            Some(&xai),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "none");
+
+        let mut mistral_request = endpoint_reasoning_request("mistral-medium-3-5");
+        mistral_request.reasoning_effort = Some(ReasoningEffort::High);
+        let mistral = endpoint_config(ProviderType::OpenAi, "https://api.mistral.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &mistral_request,
+            false,
+            Some(&mistral),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+
+        let mut multi_agent = endpoint_reasoning_request("grok-4.20-multi-agent-0309");
+        multi_agent.reasoning_effort = Some(ReasoningEffort::High);
+        let body = serde_json::to_value(build_request_body_with_config(
+            &multi_agent,
+            false,
+            Some(&xai),
+        ))
+        .unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn direct_reasoning_history_uses_each_providers_documented_content_shape() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Text {
+                text: "final answer".to_string(),
+            }],
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("work it out".to_string()),
+            prompt_cache_hint: None,
+        };
+
+        let minimax_request = CompletionRequest {
+            messages: vec![assistant.clone()],
+            ..endpoint_reasoning_request("MiniMax-M3")
+        };
+        let minimax = endpoint_config(ProviderType::OpenAi, "https://api.minimax.io/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &minimax_request,
+            false,
+            Some(&minimax),
+        ))
+        .unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            "<think>\nwork it out\n</think>\nfinal answer"
+        );
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+
+        let mistral_request = CompletionRequest {
+            messages: vec![assistant],
+            ..endpoint_reasoning_request("mistral-medium-3-5")
+        };
+        let mistral = endpoint_config(ProviderType::OpenAi, "https://api.mistral.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &mistral_request,
+            false,
+            Some(&mistral),
+        ))
+        .unwrap();
+        assert_eq!(body["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(
+            body["messages"][0]["content"][0]["thinking"][0]["text"],
+            "work it out"
+        );
+        assert_eq!(body["messages"][0]["content"][1]["text"], "final answer");
     }
 
     #[test]

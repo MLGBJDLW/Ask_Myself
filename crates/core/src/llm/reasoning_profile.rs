@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_azure_openai_endpoint, is_deepseek_public_endpoint,
-    is_moonshot_public_endpoint, is_openai_public_endpoint, is_openrouter_public_endpoint,
-    is_siliconflow_public_endpoint, provider_id,
+    is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
+    is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
+    is_xai_public_endpoint, provider_id,
 };
 use super::{ProviderType, ReasoningEffort};
 
@@ -67,6 +68,14 @@ pub enum CapabilityConfidence {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningHistoryEncoding {
+    ReasoningContent,
+    ThinkTags,
+    MistralContentChunks,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReasoningProfileKey {
@@ -92,6 +101,7 @@ pub struct ReasoningProfile {
     pub max_budget_tokens: Option<u32>,
     pub effort_budget_exclusive: bool,
     pub preserve_reasoning_history: bool,
+    pub reasoning_history_encoding: ReasoningHistoryEncoding,
     pub synthesize_missing_reasoning_history: bool,
     pub send_preserve_thinking: bool,
     pub omit_temperature_when_reasoning: bool,
@@ -115,6 +125,7 @@ impl ReasoningProfile {
             max_budget_tokens: None,
             effort_budget_exclusive: false,
             preserve_reasoning_history: false,
+            reasoning_history_encoding: ReasoningHistoryEncoding::ReasoningContent,
             synthesize_missing_reasoning_history: false,
             send_preserve_thinking: false,
             omit_temperature_when_reasoning: false,
@@ -202,6 +213,7 @@ fn profile(
         max_budget_tokens: None,
         effort_budget_exclusive: false,
         preserve_reasoning_history: false,
+        reasoning_history_encoding: ReasoningHistoryEncoding::ReasoningContent,
         synthesize_missing_reasoning_history: false,
         send_preserve_thinking: false,
         omit_temperature_when_reasoning: false,
@@ -252,6 +264,108 @@ pub fn resolve_reasoning_profile(
         );
         value.omit_temperature_when_reasoning = true;
         value.use_max_completion_tokens = true;
+        return value;
+    }
+
+    if is_xai_public_endpoint(provider, base_url) {
+        return match model.as_str() {
+            "grok-4.5" => profile(
+                key,
+                "xai-grok-4.5-reasoning-v1",
+                ThinkingModeControl::AlwaysOn,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::High,
+                    ],
+                    Some(ReasoningEffort::High),
+                ),
+                ReasoningBudgetField::None,
+            ),
+            "grok-4.3" => profile(
+                key,
+                "xai-grok-4.3-reasoning-v1",
+                ThinkingModeControl::ProviderDefault,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (
+                    &[
+                        ReasoningEffort::None,
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::High,
+                    ],
+                    Some(ReasoningEffort::Medium),
+                ),
+                ReasoningBudgetField::None,
+            ),
+            "grok-build-0.1" | "grok-4.20-0309-reasoning" => profile(
+                key,
+                "xai-native-reasoning-v1",
+                ThinkingModeControl::AlwaysOn,
+                ReasoningEffortField::None,
+                ReasoningEffortMapping::Exact,
+                (&[], None),
+                ReasoningBudgetField::None,
+            ),
+            // The direct multi-agent model is Responses-only. This Chat
+            // Completions adapter must not translate its nested control.
+            _ => ReasoningProfile::unsupported(key),
+        };
+    }
+
+    if is_minimax_public_endpoint(provider, base_url) && model.starts_with("minimax-m") {
+        let mut value = profile(
+            key,
+            "minimax-native-reasoning-v1",
+            ThinkingModeControl::AlwaysOn,
+            ReasoningEffortField::None,
+            ReasoningEffortMapping::Exact,
+            (&[], None),
+            ReasoningBudgetField::None,
+        );
+        value.preserve_reasoning_history = true;
+        value.reasoning_history_encoding = ReasoningHistoryEncoding::ThinkTags;
+        return value;
+    }
+
+    if is_mistral_public_endpoint(provider, base_url) {
+        let mut value = match model.as_str() {
+            "mistral-medium-3-5" => profile(
+                key,
+                "mistral-adjustable-reasoning-v1",
+                ThinkingModeControl::ProviderDefault,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (
+                    &[
+                        ReasoningEffort::None,
+                        ReasoningEffort::Minimal,
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::High,
+                        ReasoningEffort::XHigh,
+                    ],
+                    Some(ReasoningEffort::Medium),
+                ),
+                ReasoningBudgetField::None,
+            ),
+            "magistral-medium-2509" => profile(
+                key,
+                "mistral-native-reasoning-v1",
+                ThinkingModeControl::AlwaysOn,
+                ReasoningEffortField::None,
+                ReasoningEffortMapping::Exact,
+                (&[], None),
+                ReasoningBudgetField::None,
+            ),
+            _ => return ReasoningProfile::unsupported(key),
+        };
+        value.preserve_reasoning_history = true;
+        value.reasoning_history_encoding = ReasoningHistoryEncoding::MistralContentChunks;
         return value;
     }
 
@@ -643,5 +757,68 @@ mod tests {
             );
             assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
         }
+    }
+
+    #[test]
+    fn curated_openai_compatible_endpoints_keep_only_their_exact_controls() {
+        let xai = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.x.ai/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "grok-4.3",
+        );
+        assert_eq!(xai.key.endpoint_id, "xai-public");
+        assert_eq!(
+            xai.wire_effort(Some(&ReasoningEffort::None)).as_deref(),
+            Some("none")
+        );
+
+        let minimax = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.minimax.io/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "MiniMax-M3",
+        );
+        assert_eq!(minimax.mode_control, ThinkingModeControl::AlwaysOn);
+        assert_eq!(
+            minimax.reasoning_history_encoding,
+            ReasoningHistoryEncoding::ThinkTags
+        );
+
+        let mistral = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.mistral.ai/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "mistral-medium-3-5",
+        );
+        assert_eq!(
+            mistral.wire_effort(Some(&ReasoningEffort::High)).as_deref(),
+            Some("high")
+        );
+
+        for endpoint in [
+            "https://api.x.ai/v2",
+            "http://api.minimax.io/v1",
+            "https://api.mistral.ai:8443/v1",
+        ] {
+            let value = resolve_reasoning_profile(
+                ProviderType::OpenAi,
+                Some(endpoint),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                "grok-4.3",
+            );
+            assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+        }
+    }
+
+    #[test]
+    fn responses_only_xai_multi_agent_is_not_encoded_as_chat_completions() {
+        let value = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.x.ai/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "grok-4.20-multi-agent-0309",
+        );
+        assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
     }
 }
