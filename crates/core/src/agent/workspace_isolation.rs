@@ -530,10 +530,16 @@ fn canonicalize_git_path(stdout: &[u8]) -> Result<PathBuf, CoreError> {
     std::fs::canonicalize(path).map_err(CoreError::Io)
 }
 
+fn run_background_output(command: &mut Command) -> std::io::Result<Output> {
+    crate::background_process::configure_std_background(command);
+    command.output()
+}
+
 fn ensure_process_sandbox_available() -> Result<(), CoreError> {
     #[cfg(target_os = "windows")]
-    let output = Command::new("wsl.exe")
-        .args([
+    let output = {
+        let mut command = Command::new("wsl.exe");
+        command.args([
             "--exec",
             "bwrap",
             "--ro-bind",
@@ -541,16 +547,21 @@ fn ensure_process_sandbox_available() -> Result<(), CoreError> {
             "/",
             "--",
             "/usr/bin/true",
-        ])
-        .output();
+        ]);
+        run_background_output(&mut command)
+    };
     #[cfg(target_os = "linux")]
-    let output = Command::new("bwrap")
-        .args(["--ro-bind", "/", "/", "--", "/usr/bin/true"])
-        .output();
+    let output = {
+        let mut command = Command::new("bwrap");
+        command.args(["--ro-bind", "/", "/", "--", "/usr/bin/true"]);
+        run_background_output(&mut command)
+    };
     #[cfg(target_os = "macos")]
-    let output = Command::new("sandbox-exec")
-        .args(["-p", "(version 1) (allow default)", "/usr/bin/true"])
-        .output();
+    let output = {
+        let mut command = Command::new("sandbox-exec");
+        command.args(["-p", "(version 1) (allow default)", "/usr/bin/true"]);
+        run_background_output(&mut command)
+    };
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     let output: std::io::Result<Output> = Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -570,19 +581,23 @@ fn ensure_process_sandbox_available() -> Result<(), CoreError> {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, CoreError> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args(args);
+    let output = run_background_output(&mut command)?;
     ensure_git_success(output, args)
 }
 
 fn run_git_with_input(cwd: &Path, args: &[&str], input: &[u8]) -> Result<Output, CoreError> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(cwd)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    crate::background_process::configure_std_background(&mut command);
+    let mut child = command.spawn()?;
     child
         .stdin
         .as_mut()

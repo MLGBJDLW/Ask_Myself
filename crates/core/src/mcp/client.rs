@@ -674,6 +674,7 @@ impl McpClient {
         if !has_port {
             process.env("PORT", "0");
         }
+        crate::background_process::configure_tokio_background(&mut process);
 
         let mut child = process.spawn().map_err(|e| {
             CoreError::Mcp(format!(

@@ -608,14 +608,7 @@ impl McpManager {
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
 
-        // On Windows, create process in a new process group and hide the console window
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-        }
+        crate::background_process::configure_std_background_process_group(&mut cmd);
 
         let child = cmd.spawn().map_err(|e| {
             CoreError::Mcp(format!(

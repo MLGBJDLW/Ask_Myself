@@ -402,6 +402,7 @@ pub fn transcribe_sherpa_wav(
             .arg("--sense-voice-use-itn=1");
     }
     command.arg(wav_path);
+    crate::background_process::configure_std_background(&mut command);
 
     let output = command.output().map_err(CoreError::Io)?;
     if !output.status.success() {

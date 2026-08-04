@@ -376,11 +376,7 @@ pub(super) fn bytes_to_clamped_string(bytes: &[u8], max: usize) -> (String, bool
 
 #[cfg(windows)]
 fn apply_os_options(cmd: &mut tokio::process::Command) {
-    // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-    // `tokio::process::Command` re-exposes `creation_flags` directly on
-    // Windows, so no `CommandExt` import is needed.
-    const FLAGS: u32 = 0x0800_0000 | 0x0000_0200;
-    cmd.creation_flags(FLAGS);
+    crate::background_process::configure_tokio_background_process_group(cmd);
 }
 
 #[cfg(not(windows))]

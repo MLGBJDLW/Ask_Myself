@@ -391,10 +391,13 @@ fn run_ffmpeg_command(
     use std::io::Read;
     use std::process::Stdio;
 
-    let mut child = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::background_process::configure_std_background(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| CoreError::Video(format!("Failed to run {program}: {e}")))?;
 
@@ -467,12 +470,13 @@ fn run_ffmpeg_command(
 /// Check if FFmpeg is available on the system.
 pub fn check_ffmpeg(config: &VideoConfig) -> Result<bool, CoreError> {
     let ffmpeg = config.ffmpeg_path.as_deref().unwrap_or("ffmpeg");
-    match std::process::Command::new(ffmpeg)
+    let mut command = std::process::Command::new(ffmpeg);
+    command
         .arg("-version")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
+        .stderr(std::process::Stdio::null());
+    crate::background_process::configure_std_background(&mut command);
+    match command.status() {
         Ok(status) => Ok(status.success()),
         Err(_) => Ok(false),
     }
