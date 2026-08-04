@@ -924,6 +924,36 @@ pub async fn parse_sse_stream(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn deepseek_reasoning_only_length_chunk_keeps_answer_empty() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut in_think_block = false;
+        let mut think_tag_buffer = String::new();
+        let line = r#"data: {"choices":[{"delta":{"content":null,"reasoning_content":"raw internal reasoning"},"finish_reason":"length"}]}"#;
+
+        let done = process_sse_line(
+            line.to_string(),
+            &tx,
+            &mut in_think_block,
+            &mut think_tag_buffer,
+        )
+        .await
+        .expect("DeepSeek-compatible SSE chunk should parse");
+        assert!(!done);
+
+        let chunk = rx
+            .recv()
+            .await
+            .expect("chunk should be emitted")
+            .expect("chunk should be valid");
+        assert!(chunk.delta.is_empty());
+        assert_eq!(
+            chunk.thinking_delta.as_deref(),
+            Some("raw internal reasoning")
+        );
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Length));
+    }
+
     #[test]
     fn extracts_reasoning_from_delta_reasoning_content() {
         let choice: SseChoice = serde_json::from_value(serde_json::json!({

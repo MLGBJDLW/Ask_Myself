@@ -2,6 +2,7 @@
 
 use super::steering::SteeringDrainContext;
 use super::*;
+use crate::llm::FinishReason;
 
 pub(super) struct ModelStepContext<'a> {
     pub(super) db: &'a Database,
@@ -21,6 +22,7 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) sort_order: &'a mut i64,
     pub(super) context_recovery_attempts: &'a mut u32,
     pub(super) force_non_streaming_llm: &'a mut bool,
+    pub(super) force_answer_only: bool,
 }
 
 pub(super) enum ModelStepOutcome {
@@ -33,7 +35,9 @@ pub(super) struct ModelStepOutput {
     pub(super) tool_calls: Vec<ToolCallRequest>,
     pub(super) chunk_usage: Option<Usage>,
     pub(super) iteration_thinking: String,
-    pub(super) last_finish_reason: Option<String>,
+    pub(super) answer_delta_seen: bool,
+    pub(super) thinking_delta_seen: bool,
+    pub(super) finish_reason: Option<FinishReason>,
     pub(super) started_call_ids: HashSet<String>,
     pub(super) tool_run_started_ids: HashSet<String>,
     pub(super) prompt_cache_observation: Option<prompt_cache::PromptCacheTraceObservation>,
@@ -64,6 +68,7 @@ impl AgentExecutor {
             sort_order,
             context_recovery_attempts,
             force_non_streaming_llm,
+            force_answer_only,
         } = ctx;
 
         // -- 4a. Stream LLM response (with rate-limit retry) ----------------
@@ -79,13 +84,20 @@ impl AgentExecutor {
                 Some((*tool_defs).clone())
             },
             stop: None,
-            thinking_budget: if self.config.reasoning_enabled.unwrap_or(false) {
+            thinking_budget: if !force_answer_only && self.config.reasoning_enabled.unwrap_or(false)
+            {
                 self.config.thinking_budget
             } else {
                 None
             },
-            reasoning_enabled: self.config.reasoning_enabled,
-            reasoning_effort: if self.config.reasoning_enabled.unwrap_or(false) {
+            reasoning_enabled: if force_answer_only {
+                Some(false)
+            } else {
+                self.config.reasoning_enabled
+            },
+            reasoning_effort: if !force_answer_only
+                && self.config.reasoning_enabled.unwrap_or(false)
+            {
                 self.config.reasoning_effort.clone()
             } else {
                 None
@@ -104,7 +116,9 @@ impl AgentExecutor {
         let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
         let mut chunk_usage: Option<Usage> = None;
         let mut iteration_thinking = String::new();
-        let mut last_finish_reason: Option<String>;
+        let mut answer_delta_seen: bool;
+        let mut thinking_delta_seen: bool;
+        let mut finish_reason: Option<FinishReason>;
         let mut preparing_call_ids: HashSet<String> = HashSet::new();
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
@@ -337,7 +351,9 @@ impl AgentExecutor {
                 chunk_usage = None;
             }
             iteration_thinking.clear();
-            last_finish_reason = None;
+            answer_delta_seen = false;
+            thinking_delta_seen = false;
+            finish_reason = None;
             preparing_call_ids.clear();
             started_call_ids.clear();
             tool_run_started_ids.clear();
@@ -386,6 +402,7 @@ impl AgentExecutor {
                         // Forward thinking deltas.
                         if let Some(ref thinking) = chunk.thinking_delta {
                             if !thinking.is_empty() {
+                                thinking_delta_seen = true;
                                 iteration_thinking.push_str(thinking);
                                 let _ = tx
                                     .send(AgentEvent::Thinking {
@@ -396,6 +413,7 @@ impl AgentExecutor {
                         }
                         // Forward text deltas.
                         if !chunk.delta.is_empty() {
+                            answer_delta_seen = true;
                             full_content.push_str(&chunk.delta);
                             accumulated_content.push_str(&chunk.delta);
                             let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
@@ -476,7 +494,7 @@ impl AgentExecutor {
                             }
                         }
                         if let Some(ref fr) = chunk.finish_reason {
-                            last_finish_reason = Some(format!("{:?}", fr).to_lowercase());
+                            finish_reason = Some(fr.clone());
                         }
                         if let Some(u) = chunk.usage {
                             chunk_usage = Some(u);
@@ -682,15 +700,16 @@ impl AgentExecutor {
 
                                 accumulated_content.truncate(accumulated_len_before_iteration);
                                 full_content = response.content;
+                                answer_delta_seen = !full_content.is_empty();
                                 accumulated_content.push_str(&full_content);
                                 iteration_thinking = response.thinking.unwrap_or_default();
+                                thinking_delta_seen = !iteration_thinking.is_empty();
                                 tool_calls = response.tool_calls.unwrap_or_default();
                                 preparing_call_ids.clear();
                                 started_call_ids.clear();
                                 tool_run_started_ids.clear();
                                 chunk_usage = Some(response.usage);
-                                last_finish_reason =
-                                    Some(format!("{:?}", response.finish_reason).to_lowercase());
+                                finish_reason = Some(response.finish_reason);
 
                                 if !iteration_thinking.is_empty() {
                                     let _ = tx
@@ -744,7 +763,9 @@ impl AgentExecutor {
             tool_calls,
             chunk_usage,
             iteration_thinking,
-            last_finish_reason,
+            answer_delta_seen,
+            thinking_delta_seen,
+            finish_reason,
             started_call_ids,
             tool_run_started_ids,
             prompt_cache_observation,
