@@ -95,6 +95,8 @@
 .nexa-select-label { padding: 0.5rem 0.65rem 0.25rem; color: var(--color-text-tertiary); font-size: 0.68rem; font-weight: 600; }
 .nexa-select-scroll-button { display: flex; height: 1.5rem; align-items: center; justify-content: center; color: var(--color-text-tertiary); }
 .nexa-combobox-input { width: 100%; border: 0; border-bottom: 1px solid var(--overlay-border); background: transparent; padding: 0.6rem 0.7rem; color: var(--color-text-primary); font-size: 0.75rem; outline: none; }
+.nexa-combobox-list > [cmdk-list-sizer] { pointer-events: none; }
+.nexa-combobox-list [cmdk-item] { pointer-events: auto; }
 
 @keyframes nexa-overlay-open {
   from { opacity: 0; transform: translateY(4px) scale(0.98); }

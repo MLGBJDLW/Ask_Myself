@@ -222,12 +222,15 @@ class StreamStoreImpl {
 
     const state = createDefaultState();
     state.isStreaming = true;
-    state._launchStartedAt = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
+    const startedAtMonotonicMs = launchStartedAt ?? globalThis.performance?.now() ?? Date.now();
+    state._launchStartedAt = startedAtMonotonicMs;
     state.turnTiming = {
       startedAtEpochMs: Date.now(),
+      startedAtMonotonicMs,
       firstEventAtEpochMs: null,
       firstVisibleOutputAtEpochMs: null,
       finishedAtEpochMs: null,
+      finishedAtMonotonicMs: null,
     };
     this._streams[conversationId] = state;
     this.touch(conversationId);
@@ -523,9 +526,11 @@ class StreamStoreImpl {
     if (!state.turnTiming) {
       state.turnTiming = {
         startedAtEpochMs: Date.now(),
+        startedAtMonotonicMs: globalThis.performance?.now() ?? Date.now(),
         firstEventAtEpochMs: Date.now(),
         firstVisibleOutputAtEpochMs: null,
         finishedAtEpochMs: null,
+        finishedAtMonotonicMs: null,
       };
       return;
     }
@@ -536,7 +541,11 @@ class StreamStoreImpl {
 
   private finishTurnTiming(state: InternalStreamState): void {
     if (!state.turnTiming || state.turnTiming.finishedAtEpochMs != null) return;
-    state.turnTiming = { ...state.turnTiming, finishedAtEpochMs: Date.now() };
+    state.turnTiming = {
+      ...state.turnTiming,
+      finishedAtEpochMs: Date.now(),
+      finishedAtMonotonicMs: globalThis.performance?.now() ?? Date.now(),
+    };
   }
 }
 

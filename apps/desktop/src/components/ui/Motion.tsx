@@ -14,8 +14,8 @@ interface CollapsibleMotionProps {
 
 /**
  * Shared disclosure seam for chat UI. Compact content uses a grid-track
- * transition; heavy content also clips and translates while retaining its own
- * scroll container. No measured or spring-driven `height: auto` is involved.
+ * transition. Heavy content never animates layout height: it clips/translates
+ * a mounted, bounded scroll container and removes it after the exit motion.
  */
 export function CollapsibleMotion({
   open,

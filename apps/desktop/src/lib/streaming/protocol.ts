@@ -106,9 +106,13 @@ export interface UsageTotal {
 
 export interface TurnTiming {
   startedAtEpochMs: number;
+  /** Monotonic page-lifecycle anchor; null for restored durable history. */
+  startedAtMonotonicMs: number | null;
   firstEventAtEpochMs: number | null;
   firstVisibleOutputAtEpochMs: number | null;
   finishedAtEpochMs: number | null;
+  /** Monotonic terminal anchor when the turn finishes in this page lifecycle. */
+  finishedAtMonotonicMs: number | null;
 }
 
 export interface StreamState {

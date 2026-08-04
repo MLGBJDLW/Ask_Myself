@@ -7,14 +7,14 @@ function equal(actual: unknown, expected: unknown, label: string): void {
 }
 
 const expectedTreatments: Record<string, string> = {
-  'server.py': 'duotone',
+  'server.py': 'brand-accent',
   'main.ts': 'brand-accent',
-  'component.tsx': 'duotone',
+  'component.tsx': 'brand-accent',
   'index.js': 'brand-accent',
-  'lib.rs': 'duotone',
+  'lib.rs': 'brand-accent',
   'main.go': 'brand-accent',
-  'Main.java': 'duotone',
-  'Main.kt': 'duotone',
+  'Main.java': 'brand-accent',
+  'Main.kt': 'brand-accent',
   'App.swift': 'brand-accent',
   Dockerfile: 'brand-accent',
 };

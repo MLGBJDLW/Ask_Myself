@@ -59,7 +59,7 @@ export function NexaCombobox({
       <NexaPopoverContent className="min-w-[var(--radix-popover-trigger-width)] p-1">
         <Command loop>
           <Command.Input className="nexa-combobox-input" placeholder={searchPlaceholder} />
-          <Command.List className="max-h-72 overflow-y-auto p-1">
+          <Command.List className="nexa-combobox-list max-h-72 overflow-y-auto p-1">
             <Command.Empty className="px-2 py-6 text-center text-xs text-text-tertiary">{emptyLabel}</Command.Empty>
             {options.map(option => (
               <Command.Item
@@ -69,7 +69,9 @@ export function NexaCombobox({
                 disabled={option.disabled}
                 onSelect={() => {
                   onValueChange(option.value);
-                  setOpen(false);
+                  // Let the pointer/keyboard activation finish before the
+                  // controlled value update unmounts the popover contents.
+                  window.requestAnimationFrame(() => setOpen(false));
                 }}
                 className="nexa-overlay-item"
               >

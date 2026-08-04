@@ -124,7 +124,12 @@
 
 .nexa-collapsible-motion--heavy {
   contain: layout paint;
-  transition-duration: var(--motion-duration-deliberate), var(--motion-duration-fast);
+  transition: none;
+}
+
+.nexa-collapsible-motion--heavy,
+.nexa-collapsible-motion--heavy[data-open='true'] {
+  grid-template-rows: 1fr;
 }
 
 .nexa-collapsible-motion--heavy > .nexa-collapsible-motion__content {

@@ -47,9 +47,11 @@ export function projectRunEventsToStreamState(
   if (Number.isFinite(startedAt)) {
     state.turnTiming = {
       startedAtEpochMs: startedAt,
+      startedAtMonotonicMs: null,
       firstEventAtEpochMs: null,
       firstVisibleOutputAtEpochMs: null,
       finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
+      finishedAtMonotonicMs: null,
     };
   }
   state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);

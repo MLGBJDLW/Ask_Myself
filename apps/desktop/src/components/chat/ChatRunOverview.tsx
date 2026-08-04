@@ -77,6 +77,19 @@ const SEGMENT_LABEL_KEYS: Record<string, TranslationKey> = {
   other: 'chat.contextSegmentOther',
 };
 
+const TASK_PHASE_KEYS: Record<string, TranslationKey> = {
+  queued: 'chat.taskPhaseQueued',
+  initializing: 'chat.taskPhaseInitializing',
+  routing: 'chat.taskPhaseRouting',
+  reasoning: 'chat.taskPhaseReasoning',
+  tooling: 'chat.taskPhaseTooling',
+  approval: 'chat.taskPhaseApproval',
+  generating: 'chat.taskPhaseGenerating',
+  finalizing: 'chat.taskPhaseFinalizing',
+  cancelling: 'chat.taskPhaseCancelling',
+  done: 'chat.taskPhaseDone',
+};
+
 const CONTEXT_SEGMENT_COLOR: Record<string, string> = {
   prompts: 'bg-[var(--context-prompts)]',
   conversation: 'bg-[var(--context-conversation)]',
@@ -209,8 +222,9 @@ export function ChatRunOverview({
   const ttfvLabel = turnTiming
     ? formatTimingLatency(turnTiming.startedAtEpochMs, turnTiming.firstVisibleOutputAtEpochMs)
     : null;
-  const phaseLabel = taskPhase
-    ? taskPhase.replace(/_/g, ' ').replace(/^./, (value) => value.toUpperCase())
+  const phaseKey = taskPhase ? TASK_PHASE_KEYS[taskPhase] : undefined;
+  const phaseLabel = phaseKey
+    ? t(phaseKey)
     : isCompacting
       ? t('chat.compacting')
       : t('chat.thinking');
@@ -539,7 +553,9 @@ export function ChatRunOverview({
               data-testid="chat-turn-timing-metrics"
               className="col-span-2 rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2 text-[10px] tabular-nums text-text-tertiary"
             >
-              TTFE {ttfeLabel ?? '—'} · TTFV {ttfvLabel ?? '—'} · Wall {wallLabel ?? '—'}
+              {t('chat.timeToFirstEvent')} {ttfeLabel ?? '—'} ·{' '}
+              {t('chat.timeToFirstVisibleOutput')} {ttfvLabel ?? '—'} ·{' '}
+              {t('chat.wallTime')} {wallLabel ?? '—'}
             </div>
           ) : null}
           <div className="rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2">
