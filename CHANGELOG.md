@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.11.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.9...nexa-monorepo-v0.11.10) (2026-08-04)
+
+
+### Features
+
+* **cache:** resolve provider-aware prompt profiles ([a559a8a](https://github.com/MLGBJDLW/Nexa/commit/a559a8afe58ee1cdde0b99c8cc747eeae219b3c7))
+* **chat:** surface turn latency and elapsed time ([32c5358](https://github.com/MLGBJDLW/Nexa/commit/32c5358b9698a7bdd8e2c2421b39fb205309652a))
+* **files:** add brand-aware badge visuals ([177bb9c](https://github.com/MLGBJDLW/Nexa/commit/177bb9c4593286ba0013785d62b4b573140b4ff9))
+* **motion:** unify command and diff transitions ([5bc4c5b](https://github.com/MLGBJDLW/Nexa/commit/5bc4c5b1cdfada3d7eb55acd9d9c82f5919ffe3d))
+* **reasoning:** scope model controls by provider endpoint ([734b58c](https://github.com/MLGBJDLW/Nexa/commit/734b58cf40207eb06698146acc03975a20972171))
+* **tasks:** paginate summaries and lazy-load details ([b4b624a](https://github.com/MLGBJDLW/Nexa/commit/b4b624a8c1934d60f9724826926f8bb699ecd138))
+* upgrade runtime observability, provider reasoning, and compaction ([4b6d9b2](https://github.com/MLGBJDLW/Nexa/commit/4b6d9b299f08f15f0d7373a7a2ecc0bc662ba80c))
+
+
+### Bug Fixes
+
+* **cache:** cap anthropic request breakpoints ([6daa328](https://github.com/MLGBJDLW/Nexa/commit/6daa328f8279c4cfc436fb8e05a10b8d32ecb323))
+* **cache:** preserve prompt and routing metadata ([96bbbba](https://github.com/MLGBJDLW/Nexa/commit/96bbbba1efd842425ef5f0fefc9f50feb1204e9b))
+* **chat:** clean rejected compaction checkpoints ([c4a8503](https://github.com/MLGBJDLW/Nexa/commit/c4a850364ecef2cf3598b6eed08ecd5e47bd8750))
+* **chat:** hide runtime diagnostics outside developer mode ([d512f0f](https://github.com/MLGBJDLW/Nexa/commit/d512f0ff41155bf0f726d4e5dbe4b9aa925b09cf))
+* **chat:** prevent compaction data loss during active runs ([066f6a1](https://github.com/MLGBJDLW/Nexa/commit/066f6a1692d5dd558154edf599b0cc443b17feb5))
+* **chat:** scope and accelerate conversation compaction ([01b331d](https://github.com/MLGBJDLW/Nexa/commit/01b331dfbf0dd9779e9f230845edd873eb383a60))
+* **ci:** satisfy strict clippy gates ([590e04f](https://github.com/MLGBJDLW/Nexa/commit/590e04ff48ee751c1ffef33438ad196f5afeeadb))
+* **deps:** update postcss security patch ([d911292](https://github.com/MLGBJDLW/Nexa/commit/d91129236bc57895e3bd40a3eec013d965bf4528))
+* **desktop:** complete usage telemetry records ([83b96b1](https://github.com/MLGBJDLW/Nexa/commit/83b96b1728296533740c113c824f9ffd7c85c19f))
+* **process:** suppress background console windows ([f0340b5](https://github.com/MLGBJDLW/Nexa/commit/f0340b5b1394645d61537b16b42d993c7058ec5a))
+* **providers:** enforce endpoint capability boundaries ([61fd2db](https://github.com/MLGBJDLW/Nexa/commit/61fd2dbda4c6be0410eb41dbd157fec42e232bb7))
+* **reasoning:** preserve curated endpoint controls ([3e0bdaf](https://github.com/MLGBJDLW/Nexa/commit/3e0bdaff61ed6fc46fb9703decbb01d2d773fc68))
+* **reasoning:** preserve exclusive nexus controls ([ee338b9](https://github.com/MLGBJDLW/Nexa/commit/ee338b9f1c1e896a3192e93059915bab62e27570))
+* **tasks:** isolate developer timeline state ([983dad5](https://github.com/MLGBJDLW/Nexa/commit/983dad567442ca22f4bb970742d1db1e2076bcf1))
+* **ui:** harden timing and interaction details ([e42effd](https://github.com/MLGBJDLW/Nexa/commit/e42effd50ab06b3dad36a466e2f55b0548a15711))
+
 ## [0.11.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.8...nexa-monorepo-v0.11.9) (2026-08-03)
 
 
