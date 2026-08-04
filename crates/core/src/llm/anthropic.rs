@@ -26,6 +26,7 @@ const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
+const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Anthropic API wire types — request
@@ -501,6 +502,49 @@ fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTo
         .collect()
 }
 
+fn consume_cache_breakpoint(cache_control: &mut Option<CacheControl>, remaining: &mut usize) {
+    if cache_control.is_none() {
+        return;
+    }
+    if *remaining == 0 {
+        *cache_control = None;
+    } else {
+        *remaining -= 1;
+    }
+}
+
+/// Anthropic counts tool, system, and message cache controls against one
+/// request-wide limit. Keep the controls in wire-prefix order so the stable
+/// tool/policy prefixes retain their breakpoints before replayable turns.
+fn enforce_cache_breakpoint_limit(
+    system: &mut Option<Vec<AnthropicSystemBlock>>,
+    messages: &mut [AnthropicMessage],
+    reserved_tool_breakpoints: usize,
+) {
+    let mut remaining = MAX_CACHE_BREAKPOINTS.saturating_sub(reserved_tool_breakpoints);
+
+    if let Some(blocks) = system {
+        for block in blocks {
+            consume_cache_breakpoint(&mut block.cache_control, &mut remaining);
+        }
+    }
+
+    for message in messages {
+        let AnthropicContent::Blocks(blocks) = &mut message.content else {
+            continue;
+        };
+        for block in blocks {
+            match block {
+                AnthropicContentBlock::Text { cache_control, .. }
+                | AnthropicContentBlock::ToolResult { cache_control, .. } => {
+                    consume_cache_breakpoint(cache_control, &mut remaining);
+                }
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolUse { .. } => {}
+            }
+        }
+    }
+}
+
 fn uses_adaptive_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
@@ -522,8 +566,8 @@ fn anthropic_reasoning_effort(effort: Option<&ReasoningEffort>) -> Option<String
 
 fn build_request_body(
     request: &CompletionRequest,
-    system: Option<Vec<AnthropicSystemBlock>>,
-    messages: Vec<AnthropicMessage>,
+    mut system: Option<Vec<AnthropicSystemBlock>>,
+    mut messages: Vec<AnthropicMessage>,
     stream: bool,
 ) -> AnthropicRequest {
     let supports_adaptive_thinking = uses_adaptive_thinking(&request.model);
@@ -580,6 +624,13 @@ fn build_request_body(
     };
 
     let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t, true));
+    let tool_cache_breakpoints = anthropic_tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|tool| tool.cache_control.is_some())
+        .count();
+    enforce_cache_breakpoint_limit(&mut system, &mut messages, tool_cache_breakpoints);
     let tool_choice = match anthropic_tools.as_ref() {
         Some(tools) if !tools.is_empty() && request.parallel_tool_calls => {
             Some(AnthropicToolChoice {
@@ -983,6 +1034,70 @@ mod tests {
             body_json["tools"][0]["cache_control"],
             serde_json::json!({"type": "ephemeral"})
         );
+    }
+
+    #[test]
+    fn cache_breakpoints_share_one_request_wide_limit_with_tools() {
+        let tool = ToolDefinition {
+            name: "search".into(),
+            description: "Search".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        let messages = vec![
+            cacheable_message(
+                Role::System,
+                "stable policy",
+                crate::llm::PromptStability::Stable,
+                crate::llm::CacheBoundaryHint::PolicyEnd,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn one",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn two",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+            cacheable_message(
+                Role::User,
+                "turn three",
+                crate::llm::PromptStability::Replayable,
+                crate::llm::CacheBoundaryHint::ReplayableTurnTail,
+            ),
+        ];
+
+        let (system, api_messages) = convert_messages(&messages);
+        let body = build_request_body(
+            &request_with_messages(messages, Some(vec![tool])),
+            system,
+            api_messages,
+            false,
+        );
+        let body_json = serde_json::to_value(body).unwrap();
+
+        fn count_cache_controls(value: &serde_json::Value) -> usize {
+            match value {
+                serde_json::Value::Array(values) => values.iter().map(count_cache_controls).sum(),
+                serde_json::Value::Object(object) => {
+                    usize::from(object.contains_key("cache_control"))
+                        + object.values().map(count_cache_controls).sum::<usize>()
+                }
+                _ => 0,
+            }
+        }
+
+        assert_eq!(count_cache_controls(&body_json), MAX_CACHE_BREAKPOINTS);
+        assert_eq!(
+            body_json["tools"][0]["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert!(body_json["messages"][2]["content"][0]
+            .get("cache_control")
+            .is_none());
     }
 
     #[test]
