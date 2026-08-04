@@ -854,6 +854,10 @@ export function ChatInput({
       return;
     }
     if (slashResolution?.localAction === "compact") {
+      if (isStreaming) {
+        toast.error(t("chat.compactWhileRunning"));
+        return;
+      }
       if (attachments.length === 0 && onCompact && slashResolution.message.length === 0) {
         onCompact();
         clearDraft();

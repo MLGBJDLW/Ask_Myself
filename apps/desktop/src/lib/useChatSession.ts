@@ -1387,7 +1387,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   // prefer the backend conversation snapshot so cache and token totals remain
   // aggregated across completed turns instead of falling back to only the
   // latest run kept by the stream store.
-  const isUsingLiveUsage = (activeIsStreaming || usageSnapshot == null) && scopedLastUsage != null;
+  const isUsingLiveUsage = (shouldShowLivePreview || usageSnapshot == null) && scopedLastUsage != null;
   const usageForView = isUsingLiveUsage ? scopedLastUsage : usageSnapshot ?? scopedLastUsage;
 
   const tokenUsage = contextWindow > 0

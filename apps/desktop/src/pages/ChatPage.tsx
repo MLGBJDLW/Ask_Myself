@@ -1176,7 +1176,12 @@ export function ChatPage() {
   const compactCompleteVisible = activeCompactionStatus === 'complete';
   const handleCompactConversation = useCallback(async () => {
     const conversationId = chat.activeId;
-    if (!conversationId || compactionStatusByConversation[conversationId] === 'compacting') return;
+    if (!conversationId) return;
+    if (chat.isStreaming) {
+      toast.error(t('chat.compactWhileRunning'));
+      return;
+    }
+    if (compactionStatusByConversation[conversationId] === 'compacting') return;
     setCompactionStatusByConversation((current) => ({
       ...current,
       [conversationId]: 'compacting',
@@ -1196,13 +1201,13 @@ export function ChatPage() {
       });
       toast.error(formatUserError(t('chat.compact'), e));
     }
-  }, [chat.activeId, chat.reloadMessages, compactionStatusByConversation, t]);
+  }, [chat.activeId, chat.isStreaming, chat.reloadMessages, compactionStatusByConversation, t]);
 
   useEffect(() => {
     const conversationId = chat.activeId;
     if (!conversationId || !chat.isStreaming) return;
     setCompactionStatusByConversation((current) => {
-      if (!(conversationId in current)) return current;
+      if (current[conversationId] !== 'complete') return current;
       const next = { ...current };
       delete next[conversationId];
       return next;

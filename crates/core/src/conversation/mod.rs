@@ -2037,6 +2037,23 @@ impl Database {
         Ok(results)
     }
 
+    pub fn conversation_has_active_agent_task_run(
+        &self,
+        conversation_id: &str,
+    ) -> Result<bool, CoreError> {
+        let conn = self.conn();
+        let active = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM agent_task_runs
+                 WHERE conversation_id = ?1
+                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+             )",
+            rusqlite::params![conversation_id],
+            |row| row.get(0),
+        )?;
+        Ok(active)
+    }
+
     pub fn list_recent_agent_task_runs(
         &self,
         limit: u32,
@@ -2990,32 +3007,57 @@ impl Database {
     /// Compaction uses this instead of one autocommit per retained message so
     /// large histories cannot leave a partially rewritten conversation or
     /// monopolize the SQLite connection with repeated fsyncs.
-    pub fn replace_messages(
+    pub fn replace_messages_if_unchanged(
         &self,
         conversation_id: &str,
-        messages: &[ConversationMessage],
+        expected_messages: &[ConversationMessage],
+        replacement_messages: &[ConversationMessage],
     ) -> Result<(), CoreError> {
-        if messages
+        if expected_messages
             .iter()
+            .chain(replacement_messages.iter())
             .any(|message| message.conversation_id != conversation_id)
         {
             return Err(CoreError::InvalidInput(
-                "Replacement messages must belong to the target conversation".to_string(),
+                "Compaction messages must belong to the target conversation".to_string(),
             ));
         }
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let current_message_ids = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let expected_message_ids = expected_messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        if current_message_ids
+            .iter()
+            .map(String::as_str)
+            .ne(expected_message_ids.iter().copied())
+        {
+            return Err(CoreError::InvalidInput(
+                "Conversation changed while compaction was in progress; retry after the active turn finishes"
+                    .to_string(),
+            ));
+        }
         tx.execute(
             "DELETE FROM messages WHERE conversation_id = ?1",
             rusqlite::params![conversation_id],
         )?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, created_at, sort_order, thinking, image_attachments_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(NULLIF(?9, ''), datetime('now')), ?10, ?11, ?12)",
             )?;
-            for msg in messages {
+            for msg in replacement_messages {
                 let role = role_to_str(&msg.role);
                 let tool_calls = (!msg.tool_calls.is_empty())
                     .then(|| serde_json::to_string(&msg.tool_calls))
@@ -3040,6 +3082,7 @@ impl Database {
                     &tool_calls,
                     &artifacts,
                     msg.token_count,
+                    &msg.created_at,
                     msg.sort_order,
                     &msg.thinking,
                     &image_attachments,
@@ -3060,6 +3103,70 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    /// Create a checkpoint and archive its evicted messages in one transaction.
+    /// If any archived row fails, the checkpoint is rolled back as well.
+    pub fn create_checkpoint_with_messages(
+        &self,
+        conversation_id: &str,
+        label: &str,
+        estimated_tokens: u32,
+        messages: &[ConversationMessage],
+    ) -> Result<String, CoreError> {
+        if messages
+            .iter()
+            .any(|message| message.conversation_id != conversation_id)
+        {
+            return Err(CoreError::InvalidInput(
+                "Archived messages must belong to the target conversation".to_string(),
+            ));
+        }
+
+        let id = new_id();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO conversation_checkpoints (id, conversation_id, label, message_count, estimated_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                &id,
+                conversation_id,
+                label,
+                u32::try_from(messages.len()).unwrap_or(u32::MAX),
+                estimated_tokens
+            ],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO archived_messages (id, checkpoint_id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, original_sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for msg in messages {
+                let tool_calls = (!msg.tool_calls.is_empty())
+                    .then(|| serde_json::to_string(&msg.tool_calls))
+                    .transpose()?;
+                let artifacts = msg
+                    .artifacts
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                stmt.execute(rusqlite::params![
+                    &new_id(),
+                    &id,
+                    conversation_id,
+                    role_to_str(&msg.role),
+                    &msg.content,
+                    &msg.tool_call_id,
+                    &tool_calls,
+                    &artifacts,
+                    msg.token_count,
+                    msg.sort_order,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Create a checkpoint (snapshot label) before compaction.
     /// Returns the new checkpoint ID.
     pub fn create_checkpoint(
@@ -6023,13 +6130,15 @@ mod tests {
         db.add_message(&message(&neighbor.id, "neighbor", 0))
             .unwrap();
 
-        let replacement = message(&target.id, "compacted target", 0);
-        db.replace_messages(&target.id, std::slice::from_ref(&replacement))
+        let expected = db.get_messages(&target.id).unwrap();
+        let original_created_at = expected[0].created_at.clone();
+        let mut replacement = expected[0].clone();
+        replacement.content = "compacted target".to_string();
+        db.replace_messages_if_unchanged(&target.id, &expected, std::slice::from_ref(&replacement))
             .unwrap();
-        assert_eq!(
-            db.get_messages(&target.id).unwrap()[0].content,
-            "compacted target"
-        );
+        let replaced = db.get_messages(&target.id).unwrap();
+        assert_eq!(replaced[0].content, "compacted target");
+        assert_eq!(replaced[0].created_at, original_created_at);
         assert_eq!(
             db.get_messages(&neighbor.id).unwrap()[0].content,
             "neighbor"
@@ -6037,7 +6146,7 @@ mod tests {
 
         let wrong_conversation = message(&neighbor.id, "must reject", 0);
         assert!(db
-            .replace_messages(&target.id, &[wrong_conversation])
+            .replace_messages_if_unchanged(&target.id, &replaced, &[wrong_conversation])
             .is_err());
         assert_eq!(
             db.get_messages(&target.id).unwrap()[0].content,
@@ -6047,6 +6156,80 @@ mod tests {
             db.get_messages(&neighbor.id).unwrap()[0].content,
             "neighbor"
         );
+
+        let stale_snapshot = db.get_messages(&target.id).unwrap();
+        db.add_message(&message(&target.id, "arrived during compaction", 1))
+            .unwrap();
+        assert!(db
+            .replace_messages_if_unchanged(&target.id, &stale_snapshot, &stale_snapshot)
+            .is_err());
+        assert_eq!(db.get_messages(&target.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn checkpoint_archive_is_atomic_and_active_runs_are_detected() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let target = db.create_conversation(&input).unwrap();
+        let neighbor = db.create_conversation(&input).unwrap();
+        let message = |conversation_id: &str, content: &str| ConversationMessage {
+            id: new_id(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::User,
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+
+        let target_message = message(&target.id, "target");
+        let wrong_message = message(&neighbor.id, "neighbor");
+        assert!(db
+            .create_checkpoint_with_messages(&target.id, "manual", 4, &[wrong_message])
+            .is_err());
+        assert!(db.list_checkpoints(&target.id).unwrap().is_empty());
+
+        db.create_checkpoint_with_messages(
+            &target.id,
+            "manual",
+            4,
+            std::slice::from_ref(&target_message),
+        )
+        .unwrap();
+        assert_eq!(db.list_checkpoints(&target.id).unwrap().len(), 1);
+
+        assert!(!db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
+        let run = db
+            .create_agent_turn_and_run(
+                &target_message,
+                "Active run",
+                Some("openai"),
+                Some("gpt-4o"),
+                "active-run",
+            )
+            .unwrap();
+        assert!(db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
+        db.finish_agent_task_run(&run.run_id, "completed", None, None, None)
+            .unwrap();
+        assert!(!db
+            .conversation_has_active_agent_task_run(&target.id)
+            .unwrap());
     }
 
     #[test]

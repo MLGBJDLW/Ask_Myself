@@ -292,6 +292,7 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const userText = String(args.message ?? '');
           const lowerCacheSample = /lower cache/i.test(userText);
+          const responseDelay = /keep streaming/i.test(userText) ? 1200 : 60;
           const streamUsage = {
             promptTokens: 74000,
             completionTokens: 1400,
@@ -368,7 +369,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 60);
+          }, responseDelay);
 
           return null;
         }
@@ -557,4 +558,18 @@ test('manual compact status and completion stay scoped to the target conversatio
 
   await page.getByTestId('conversation-item-conv-e2e').click();
   await expect(page.getByText('Compaction complete').first()).toBeVisible();
+});
+
+test('manual compact is rejected while the target conversation is streaming', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  await page.getByTestId('chat-input-textarea').fill('Keep streaming while I inspect the controls.');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-send')).toHaveAttribute('aria-label', 'Steering message');
+  await expect(page.getByTestId('chat-compact')).toBeDisabled();
+
+  await page.getByTestId('chat-input-textarea').fill('/compact');
+  await page.getByTestId('chat-send').click();
+
+  await expect(page.getByText('Wait for the current response to finish before compacting.')).toBeVisible();
+  await expect(page.getByTestId('chat-compact-status')).toHaveCount(0);
 });

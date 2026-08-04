@@ -405,12 +405,12 @@ impl AgentExecutor {
     pub async fn compact_conversation(
         &self,
         conversation_id: &str,
-        messages: Vec<ConversationMessage>,
+        messages: &[ConversationMessage],
         db: Option<&Database>,
         label: &str,
     ) -> Result<Vec<ConversationMessage>, CoreError> {
         if messages.is_empty() {
-            return Ok(messages);
+            return Ok(Vec::new());
         }
         let model = self.config.model.as_deref().unwrap_or("gpt-4o");
         let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
@@ -427,13 +427,13 @@ impl AgentExecutor {
             .unwrap_or_else(|| model_context_window(model));
         let budget = ctx_window.saturating_sub(max_response_tokens);
         if budget == 0 {
-            return Ok(messages);
+            return Ok(messages.to_vec());
         }
 
         let prefix_end = system_prefix_end(&llm_msgs);
         let target = (budget as f32 * COMPACTION_TARGET_USAGE) as u32;
         let Some(evict_end) = compaction_boundary(&llm_msgs, model, target, 1) else {
-            return Ok(messages);
+            return Ok(messages.to_vec());
         };
         let evicted = &llm_msgs[prefix_end..evict_end];
         let extractive_fallback = context::build_evicted_recap_from_messages(evicted);
@@ -476,25 +476,12 @@ impl AgentExecutor {
                 .iter()
                 .map(|m| m.token_count)
                 .sum();
-            match db.create_checkpoint(
+            db.create_checkpoint_with_messages(
                 conversation_id,
                 label,
-                (evict_end - prefix_end) as u32,
                 est_tokens,
-            ) {
-                Ok(cp_id) => {
-                    if let Err(e) = db.archive_messages(
-                        &cp_id,
-                        conversation_id,
-                        &messages[prefix_end..evict_end],
-                    ) {
-                        warn!("Failed to archive messages for checkpoint: {e}");
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to create checkpoint: {e}");
-                }
-            }
+                &messages[prefix_end..evict_end],
+            )?;
         }
 
         // Build compacted ConversationMessages to persist.

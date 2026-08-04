@@ -972,6 +972,17 @@ pub async fn compact_conversation_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<CompactConversationResult, String> {
+    if state
+        .db
+        .conversation_has_active_agent_task_run(&conversation_id)
+        .map_err(|e| e.to_string())?
+    {
+        return Err(
+            "Wait for the active response to finish before compacting this conversation"
+                .to_string(),
+        );
+    }
+
     // 1. Load conversation and its messages.
     let conv = state
         .db
@@ -1070,7 +1081,7 @@ pub async fn compact_conversation_cmd(
 
     // 3. Run compaction (creates a checkpoint before evicting).
     let compacted = executor
-        .compact_conversation(&conversation_id, messages, Some(&state.db), "manual")
+        .compact_conversation(&conversation_id, &messages, Some(&state.db), "manual")
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1078,7 +1089,7 @@ pub async fn compact_conversation_cmd(
     // transaction, avoiding one autocommit/fsync per retained message.
     state
         .db
-        .replace_messages(&conversation_id, &compacted)
+        .replace_messages_if_unchanged(&conversation_id, &messages, &compacted)
         .map_err(|e| e.to_string())?;
 
     let messages_after = compacted.len();
