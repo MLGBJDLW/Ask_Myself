@@ -33,6 +33,8 @@ import type {
   ConversationTurn,
   AgentTaskRun,
   AgentTaskRunListItem,
+  AgentTaskRunPageCursor,
+  AgentTaskRunSummaryPage,
   AgentTaskRunEvent,
   AgentRunEvent,
   UsageSnapshot,
@@ -1001,6 +1003,18 @@ export const getAgentTaskRuns = (conversationId: string) =>
 
 export const listRecentAgentTaskRuns = (limit = 50) =>
   invoke<AgentTaskRunListItem[]>('list_recent_agent_task_runs_cmd', { limit });
+
+export const listAgentTaskRunSummaries = (
+  limit = 25,
+  cursor: AgentTaskRunPageCursor | null = null,
+  status: string | null = null,
+  projectId: string | null = null,
+) => invoke<AgentTaskRunSummaryPage>('list_agent_task_run_summaries_cmd', {
+  limit,
+  cursor,
+  status,
+  projectId,
+});
 
 export const getAgentTaskRunEvents = (runId: string) =>
   invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });

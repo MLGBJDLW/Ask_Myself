@@ -1597,6 +1597,13 @@ Every answer that uses knowledge base search results.
         "v086_delegation_limits_v2",
         "ALTER TABLE agent_configs ADD COLUMN delegation_limits_v2_json TEXT;",
     ),
+    (
+        "v087_task_center_summary_indexes",
+        "CREATE INDEX IF NOT EXISTS idx_agent_task_runs_recency
+             ON agent_task_runs(updated_at DESC, created_at DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_agent_task_runs_status_recency
+             ON agent_task_runs(status, updated_at DESC, created_at DESC, id DESC);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

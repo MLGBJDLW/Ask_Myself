@@ -35,10 +35,10 @@ use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, AgentConfig as DbAgentConfig, AgentExecutionGraph,
     AgentSubtaskRun, AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskArtifactVersion,
-    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, CheckpointBranch, CollectionContext,
-    Conversation, ConversationMessage, ConversationStats, ConversationTurn,
-    CreateAgentTaskArtifactInput, CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
-    UpdateAgentTaskArtifactInput,
+    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, AgentTaskRunPageCursor,
+    AgentTaskRunSummaryPage, CheckpointBranch, CollectionContext, Conversation,
+    ConversationMessage, ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput,
+    CreateConversationInput, ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};

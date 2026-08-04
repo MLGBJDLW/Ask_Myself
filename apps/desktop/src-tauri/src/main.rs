@@ -344,6 +344,7 @@ fn main() {
             commands::get_conversation_turns_cmd,
             commands::get_agent_task_runs_cmd,
             commands::list_recent_agent_task_runs_cmd,
+            commands::list_agent_task_run_summaries_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_run_events_cmd,
             commands::get_run_usage_snapshot_cmd,

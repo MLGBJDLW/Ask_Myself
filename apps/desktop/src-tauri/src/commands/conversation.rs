@@ -227,6 +227,25 @@ pub async fn list_recent_agent_task_runs_cmd(
 }
 
 #[tauri::command]
+pub async fn list_agent_task_run_summaries_cmd(
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+    cursor: Option<AgentTaskRunPageCursor>,
+    status: Option<String>,
+    project_id: Option<String>,
+) -> Result<AgentTaskRunSummaryPage, String> {
+    state
+        .db
+        .list_agent_task_run_summaries(
+            limit.unwrap_or(25),
+            cursor.as_ref(),
+            status.as_deref(),
+            project_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_run_events_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,

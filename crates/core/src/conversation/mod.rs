@@ -248,6 +248,21 @@ pub struct AgentTaskRunListItem {
     pub artifact_kinds: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunPageCursor {
+    pub updated_at: String,
+    pub created_at: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskRunSummaryPage {
+    pub items: Vec<AgentTaskRunListItem>,
+    pub next_cursor: Option<AgentTaskRunPageCursor>,
+}
+
 /// Append-only event in an [`AgentTaskRun`] lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2008,6 +2023,132 @@ impl Database {
             results.push(row?);
         }
         Ok(results)
+    }
+
+    /// Returns a keyset-paginated, summary-only task list. This query is the
+    /// Task Center's initial-load seam: it deliberately excludes plan and
+    /// artifact payload JSON and aggregates related counts once per table.
+    pub fn list_agent_task_run_summaries(
+        &self,
+        limit: u32,
+        cursor: Option<&AgentTaskRunPageCursor>,
+        status: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<AgentTaskRunSummaryPage, CoreError> {
+        let bounded_limit = i64::from(limit.clamp(1, 100));
+        let fetch_limit = bounded_limit + 1;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "WITH event_counts AS (
+                 SELECT run_id, COUNT(*) AS event_count
+                 FROM agent_task_run_events
+                 GROUP BY run_id
+             ), subtask_counts AS (
+                 SELECT parent_run_id AS run_id,
+                        COUNT(*) AS subtask_total,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS subtask_completed,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS subtask_failed,
+                        SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS subtask_running
+                 FROM agent_subtask_runs
+                 GROUP BY parent_run_id
+             ), artifact_kinds AS (
+                 SELECT run_id, json_group_array(DISTINCT kind) AS kinds_json
+                 FROM agent_task_artifacts
+                 GROUP BY run_id
+             )
+             SELECT r.id, r.conversation_id, r.turn_id, r.user_message_id, r.status, r.phase,
+                    r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
+                    r.created_at, r.updated_at, r.started_at, r.finished_at,
+                    NULLIF(c.title, '') AS conversation_title,
+                    c.project_id,
+                    NULLIF(p.name, '') AS project_name,
+                    COALESCE(m.content, '') AS user_message_content,
+                    COALESCE(ec.event_count, 0),
+                    COALESCE(sc.subtask_total, 0),
+                    COALESCE(sc.subtask_completed, 0),
+                    COALESCE(sc.subtask_failed, 0),
+                    COALESCE(sc.subtask_running, 0),
+                    ak.kinds_json
+             FROM agent_task_runs r
+             JOIN conversations c ON c.id = r.conversation_id
+             LEFT JOIN projects p ON p.id = c.project_id
+             LEFT JOIN messages m ON m.id = r.user_message_id
+             LEFT JOIN event_counts ec ON ec.run_id = r.id
+             LEFT JOIN subtask_counts sc ON sc.run_id = r.id
+             LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
+             WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
+               AND (?5 IS NULL OR r.status = ?5)
+               AND (?6 IS NULL OR c.project_id = ?6)
+             ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
+             LIMIT ?1",
+        )?;
+        let cursor_updated_at = cursor.map(|value| value.updated_at.as_str());
+        let cursor_created_at = cursor.map(|value| value.created_at.as_str());
+        let cursor_id = cursor.map(|value| value.id.as_str());
+        let rows = stmt.query_map(
+            rusqlite::params![
+                fetch_limit,
+                cursor_updated_at,
+                cursor_created_at,
+                cursor_id,
+                status,
+                project_id,
+            ],
+            |row| {
+                let artifact_kinds = row
+                    .get::<_, Option<String>>(25)?
+                    .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                    .unwrap_or_default();
+                Ok(AgentTaskRunListItem {
+                    run: AgentTaskRun {
+                        id: row.get(0)?,
+                        conversation_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        user_message_id: row.get(3)?,
+                        status: row.get(4)?,
+                        phase: row.get(5)?,
+                        title: row.get(6)?,
+                        route_kind: row.get(7)?,
+                        summary: row.get(8)?,
+                        error_message: row.get(9)?,
+                        provider: row.get(10)?,
+                        model: row.get(11)?,
+                        plan: None,
+                        artifacts: None,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
+                        started_at: row.get(14)?,
+                        finished_at: row.get(15)?,
+                    },
+                    conversation_title: row.get(16)?,
+                    project_id: row.get(17)?,
+                    project_name: row.get(18)?,
+                    user_message_preview: task_message_preview(&row.get::<_, String>(19)?),
+                    event_count: row.get::<_, i64>(20)?.max(0) as u32,
+                    subtask_total: row.get::<_, i64>(21)?.max(0) as u32,
+                    subtask_completed: row.get::<_, i64>(22)?.max(0) as u32,
+                    subtask_failed: row.get::<_, i64>(23)?.max(0) as u32,
+                    subtask_running: row.get::<_, i64>(24)?.max(0) as u32,
+                    artifact_kinds,
+                })
+            },
+        )?;
+
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > bounded_limit as usize;
+        if has_more {
+            items.pop();
+        }
+        let next_cursor = has_more && !items.is_empty();
+        let next_cursor = next_cursor.then(|| {
+            let last = &items[items.len() - 1].run;
+            AgentTaskRunPageCursor {
+                updated_at: last.updated_at.clone(),
+                created_at: last.created_at.clone(),
+                id: last.id.clone(),
+            }
+        });
+        Ok(AgentTaskRunSummaryPage { items, next_cursor })
     }
 
     pub fn get_agent_task_run_event(&self, event_id: &str) -> Result<AgentTaskRunEvent, CoreError> {
@@ -4689,6 +4830,17 @@ mod tests {
         assert_eq!(row.subtask_completed, 1);
         assert_eq!(row.subtask_failed, 1);
         assert_eq!(row.artifact_kinds, vec!["brief", "files", "verification"]);
+
+        let summary_page = db
+            .list_agent_task_run_summaries(25, None, Some("failed"), Some(&project.id))
+            .unwrap();
+        assert_eq!(summary_page.items.len(), 1);
+        assert!(summary_page.next_cursor.is_none());
+        assert_eq!(summary_page.items[0].run.id, run.id);
+        assert!(summary_page.items[0].run.plan.is_none());
+        assert!(summary_page.items[0].run.artifacts.is_none());
+        assert_eq!(summary_page.items[0].event_count, 1);
+        assert_eq!(summary_page.items[0].subtask_total, 2);
     }
 
     #[test]

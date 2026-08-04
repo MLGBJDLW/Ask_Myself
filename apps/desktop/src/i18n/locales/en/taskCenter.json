@@ -78,5 +78,6 @@
   "stopped": "Stop requested",
   "stopError": "Failed to stop task",
   "retryHint": "Retrying from the original prompt in chat.",
-  "artifactFallbackTitle": "Artifact"
+  "artifactFallbackTitle": "Artifact",
+  "loadMore": "Load more"
 }
