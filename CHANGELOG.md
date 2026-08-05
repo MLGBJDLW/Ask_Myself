@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.13...nexa-monorepo-v0.11.14) (2026-08-05)
+
+
+### Bug Fixes
+
+* **desktop:** hydrate image catalog model descriptors ([0c05597](https://github.com/MLGBJDLW/Nexa/commit/0c055979b77a5587d1eb2f9ed638d5d245beb901))
+* **desktop:** hydrate image catalog model descriptors ([7d8d797](https://github.com/MLGBJDLW/Nexa/commit/7d8d7971f6956d8df28ef1d483dcfd1acca6df9c))
+
 ## [0.11.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.12...nexa-monorepo-v0.11.13) (2026-08-05)
 
 
