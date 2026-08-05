@@ -36,6 +36,79 @@ import {
   type GraphAgentContext,
 } from '../lib/knowledgeGraphAgent';
 
+type CompactionUiPhase = api.ContextCompactionPhase | 'cancelling';
+
+interface CompactionUiState {
+  operationId: string;
+  status: 'running' | 'complete' | 'failed';
+  phase: CompactionUiPhase;
+  startedAt: number;
+  cursor: number;
+  result?: api.ContextCompactionResult;
+  detail?: string;
+}
+
+const COMPACTION_STORAGE_PREFIX = 'nexa.context-compaction.v1.';
+const TERMINAL_ACTIVITY_STATES = new Set<api.ActivityState>([
+  'completed',
+  'failed',
+  'cancelled',
+  'orphaned',
+  'superseded',
+  'timed_out',
+]);
+
+function compactionStorageKey(conversationId: string): string {
+  return `${COMPACTION_STORAGE_PREFIX}${conversationId}`;
+}
+
+function readPersistedCompaction(conversationId: string): CompactionUiState | null {
+  try {
+    const value = localStorage.getItem(compactionStorageKey(conversationId));
+    return value ? JSON.parse(value) as CompactionUiState : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCompaction(conversationId: string, state: CompactionUiState | null): void {
+  try {
+    if (state) {
+      localStorage.setItem(compactionStorageKey(conversationId), JSON.stringify(state));
+    } else {
+      localStorage.removeItem(compactionStorageKey(conversationId));
+    }
+  } catch {
+    // Runtime observation remains authoritative when local storage is unavailable.
+  }
+}
+
+function eventPhase(events: api.ActivityEvent[]): api.ContextCompactionPhase | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const phase = events[index]?.payload.phase;
+    if (
+      phase === 'queued'
+      || phase === 'planning'
+      || phase === 'summarizing'
+      || phase === 'validating'
+      || phase === 'committing'
+    ) {
+      return phase;
+    }
+  }
+  return null;
+}
+
+function terminalEventDetail(events: api.ActivityEvent[]): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const detail = events[index]?.payload.detail;
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      return detail as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
 function restoreConversationItems(
   current: Conversation[],
   previous: Conversation[],
@@ -1167,13 +1240,83 @@ export function ChatPage() {
   }, [handleSuggestionClick]);
 
   const [compactionStatusByConversation, setCompactionStatusByConversation] = useState<
-    Record<string, 'compacting' | 'complete'>
+    Record<string, CompactionUiState>
   >({});
+  const compactionObserversRef = useRef<Set<string>>(new Set());
+  const [compactionClock, setCompactionClock] = useState(() => Date.now());
   const activeCompactionStatus = chat.activeId
     ? compactionStatusByConversation[chat.activeId]
     : undefined;
-  const isCompacting = activeCompactionStatus === 'compacting';
-  const compactCompleteVisible = activeCompactionStatus === 'complete';
+  const isCompacting = activeCompactionStatus?.status === 'running';
+  const compactCompleteVisible = activeCompactionStatus?.status === 'complete'
+    || activeCompactionStatus?.status === 'failed';
+
+  const observeCompaction = useCallback(async (
+    conversationId: string,
+    initial: CompactionUiState,
+  ) => {
+    if (!initial.operationId || compactionObserversRef.current.has(initial.operationId)) return;
+    compactionObserversRef.current.add(initial.operationId);
+    let cursor = initial.cursor;
+    let phase = initial.phase;
+    let failures = 0;
+    try {
+      while (true) {
+        let observation: api.ActivityObservation;
+        try {
+          observation = await api.observeContextCompaction(initial.operationId, cursor);
+          failures = 0;
+        } catch (error) {
+          failures += 1;
+          if (failures >= 3) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, 500 * failures));
+          continue;
+        }
+        cursor = observation.cursor;
+        phase = observation.record.state === 'cancelling'
+          ? 'cancelling'
+          : eventPhase(observation.events) ?? phase;
+        const terminal = TERMINAL_ACTIVITY_STATES.has(observation.record.state);
+        const detail = terminalEventDetail(observation.events);
+        const result = observation.record.state === 'completed'
+          && detail?.result
+          && typeof detail.result === 'object'
+          ? detail.result as api.ContextCompactionResult
+          : undefined;
+        const failureDetail = observation.record.state === 'completed'
+          ? undefined
+          : String(detail?.error ?? detail?.reason ?? observation.record.state);
+        const next: CompactionUiState = {
+          operationId: initial.operationId,
+          status: terminal
+            ? (observation.record.state === 'completed' ? 'complete' : 'failed')
+            : 'running',
+          phase,
+          startedAt: initial.startedAt,
+          cursor,
+          result,
+          detail: failureDetail,
+        };
+        setCompactionStatusByConversation((current) => ({
+          ...current,
+          [conversationId]: next,
+        }));
+        persistCompaction(conversationId, next);
+        if (!terminal) continue;
+        if (result) {
+          chat.applyCompactionUsage(conversationId, result.tokensAfter);
+        } else {
+          toast.error(`${t('chat.compactFailed')}: ${failureDetail}`);
+        }
+        break;
+      }
+    } catch (error) {
+      toast.error(formatUserError(t('chat.compactObserveFailed'), error));
+    } finally {
+      compactionObserversRef.current.delete(initial.operationId);
+    }
+  }, [chat.applyCompactionUsage, t]);
+
   const handleCompactConversation = useCallback(async () => {
     const conversationId = chat.activeId;
     if (!conversationId) return;
@@ -1181,18 +1324,33 @@ export function ChatPage() {
       toast.error(t('chat.compactWhileRunning'));
       return;
     }
-    if (compactionStatusByConversation[conversationId] === 'compacting') return;
+    if (compactionStatusByConversation[conversationId]?.status === 'running') return;
+    const startedAt = Date.now();
     setCompactionStatusByConversation((current) => ({
       ...current,
-      [conversationId]: 'compacting',
+      [conversationId]: {
+        operationId: '',
+        status: 'running',
+        phase: 'queued',
+        startedAt,
+        cursor: 0,
+      },
     }));
     try {
-      await api.compactConversation(conversationId);
-      await chat.reloadMessages({ resetUsage: true, conversationId });
+      const handle = await api.startContextCompaction(conversationId, crypto.randomUUID());
+      const state: CompactionUiState = {
+        operationId: handle.operationId,
+        status: 'running',
+        phase: handle.phase,
+        startedAt,
+        cursor: 0,
+      };
       setCompactionStatusByConversation((current) => ({
         ...current,
-        [conversationId]: 'complete',
+        [conversationId]: state,
       }));
+      persistCompaction(conversationId, state);
+      void observeCompaction(conversationId, state);
     } catch (e) {
       setCompactionStatusByConversation((current) => {
         const next = { ...current };
@@ -1201,18 +1359,76 @@ export function ChatPage() {
       });
       toast.error(formatUserError(t('chat.compact'), e));
     }
-  }, [chat.activeId, chat.isStreaming, chat.reloadMessages, compactionStatusByConversation, t]);
+  }, [chat.activeId, chat.isStreaming, compactionStatusByConversation, observeCompaction, t]);
+
+  const handleCancelCompaction = useCallback(async () => {
+    const conversationId = chat.activeId;
+    const status = conversationId ? compactionStatusByConversation[conversationId] : undefined;
+    if (!conversationId || !status?.operationId || status.status !== 'running') return;
+    const cancelling = { ...status, phase: 'cancelling' as const };
+    setCompactionStatusByConversation((current) => ({
+      ...current,
+      [conversationId]: cancelling,
+    }));
+    persistCompaction(conversationId, cancelling);
+    try {
+      await api.cancelContextCompaction(status.operationId);
+    } catch (error) {
+      toast.error(formatUserError(t('chat.compactCancelFailed'), error));
+    }
+  }, [chat.activeId, compactionStatusByConversation, t]);
+
+  useEffect(() => {
+    const conversationId = chat.activeId;
+    if (!conversationId) return;
+    const persisted = readPersistedCompaction(conversationId);
+    if (!persisted) return;
+    setCompactionStatusByConversation((current) => ({
+      ...current,
+      [conversationId]: current[conversationId] ?? persisted,
+    }));
+    if (persisted.status === 'running') {
+      void observeCompaction(conversationId, persisted);
+    } else if (persisted.status === 'complete' && persisted.result) {
+      chat.applyCompactionUsage(conversationId, persisted.result.tokensAfter);
+    }
+  }, [chat.activeId, chat.applyCompactionUsage, observeCompaction]);
+
+  useEffect(() => {
+    if (!isCompacting) return;
+    setCompactionClock(Date.now());
+    const timer = window.setInterval(() => setCompactionClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [isCompacting]);
 
   useEffect(() => {
     const conversationId = chat.activeId;
     if (!conversationId || !chat.isStreaming) return;
     setCompactionStatusByConversation((current) => {
-      if (current[conversationId] !== 'complete') return current;
+      if (!current[conversationId] || current[conversationId].status === 'running') return current;
       const next = { ...current };
       delete next[conversationId];
+      persistCompaction(conversationId, null);
       return next;
     });
   }, [chat.activeId, chat.isStreaming]);
+
+  const compactionPhaseLabel = activeCompactionStatus?.status === 'running'
+    ? t(({
+        queued: 'chat.compactPhaseQueued',
+        planning: 'chat.compactPhasePlanning',
+        summarizing: 'chat.compactPhaseSummarizing',
+        validating: 'chat.compactPhaseValidating',
+        committing: 'chat.compactPhaseCommitting',
+        cancelling: 'chat.compactPhaseCancelling',
+      } as const)[activeCompactionStatus.phase])
+    : undefined;
+  const compactionElapsedSeconds = activeCompactionStatus?.status === 'running'
+    ? Math.max(0, Math.floor((compactionClock - activeCompactionStatus.startedAt) / 1_000))
+    : undefined;
+  const compactionTerminalText = activeCompactionStatus?.status === 'failed'
+    ? `${t('chat.compactFailed')}: ${activeCompactionStatus.detail ?? t('chat.compactFailed')}`
+    : undefined;
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null
@@ -1482,6 +1698,12 @@ export function ChatPage() {
               onSuggestionClick={isArchivedConversation ? undefined : handleSuggestionClick}
               isCompacting={isCompacting}
               compactCompleteVisible={compactCompleteVisible}
+              compactionPhaseLabel={compactionPhaseLabel}
+              compactionElapsedSeconds={compactionElapsedSeconds}
+              compactionTerminalText={compactionTerminalText}
+              onCancelCompaction={isCompacting && activeCompactionStatus?.operationId
+                ? handleCancelCompaction
+                : undefined}
             />
             <TaskBoard
               messages={chat.messages}

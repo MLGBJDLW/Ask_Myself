@@ -124,6 +124,10 @@ interface ChatMessagesProps {
   onSuggestionClick?: (text: string) => void;
   isCompacting?: boolean;
   compactCompleteVisible?: boolean;
+  compactionPhaseLabel?: string;
+  compactionElapsedSeconds?: number;
+  compactionTerminalText?: string;
+  onCancelCompaction?: () => void;
 }
 
 const SUGGESTIONS: {
@@ -674,6 +678,10 @@ export function ChatMessages(props: ChatMessagesProps) {
     onSuggestionClick,
     isCompacting = false,
     compactCompleteVisible = false,
+    compactionPhaseLabel,
+    compactionElapsedSeconds,
+    compactionTerminalText,
+    onCancelCompaction,
   } = props;
   const [developerMode] = useDeveloperMode();
   const streamingVisibility = useMemo(
@@ -1911,7 +1919,11 @@ export function ChatMessages(props: ChatMessagesProps) {
   const shouldRenderInlineError = Boolean(
     error && !isStreaming && traceEvents.length === 0,
   );
-  const renderCompactStatus = useCallback((active: boolean, key: string) => (
+  const renderCompactStatus = useCallback((active: boolean, key: string) => {
+    const statusText = active
+      ? `${compactionPhaseLabel ?? t("chat.compacting")}${compactionElapsedSeconds != null ? ` · ${compactionElapsedSeconds}s` : ""}`
+      : compactionTerminalText ?? t("chat.compactComplete");
+    return (
     <motion.div
       key={key}
       initial={shouldReduceMotion ? false : { opacity: 0, y: 6 }}
@@ -1924,17 +1936,28 @@ export function ChatMessages(props: ChatMessagesProps) {
         data-reduce-motion={shouldReduceMotion ? "true" : "false"}
         className="chat-compact-status-line"
         role="status"
-        aria-label={active ? t("chat.compacting") : t("chat.compactComplete")}
+        aria-label={statusText}
       >
         <span className="chat-compact-status-rule" aria-hidden="true" />
         <span className="chat-compact-status-text">
-          {active ? t("chat.compacting") : t("chat.compactComplete")}{" "}
+          {statusText}{" "}
           <span className="font-mono">{active ? "(>_<)" : "(｡•̀ᴗ-)✧"}</span>
         </span>
+        {active && onCancelCompaction && (
+          <button
+            type="button"
+            data-testid="chat-compact-cancel"
+            onClick={onCancelCompaction}
+            className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:border-danger/50 hover:text-danger"
+          >
+            {t("chat.cancel")}
+          </button>
+        )}
         <span className="chat-compact-status-rule" aria-hidden="true" />
       </div>
     </motion.div>
-  ), [shouldReduceMotion, t]);
+    );
+  }, [compactionElapsedSeconds, compactionPhaseLabel, compactionTerminalText, onCancelCompaction, shouldReduceMotion, t]);
 
   if (
     messages.length === 0 &&

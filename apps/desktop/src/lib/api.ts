@@ -1374,6 +1374,79 @@ export interface CompactConversationResult {
   evictedMessages: number;
 }
 
+export type ContextCompactionPhase =
+  | 'queued'
+  | 'planning'
+  | 'summarizing'
+  | 'validating'
+  | 'committing';
+
+export type ActivityState =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'ready'
+  | 'waiting_input'
+  | 'quiet'
+  | 'suspended'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'orphaned'
+  | 'superseded'
+  | 'timed_out';
+
+export interface ContextCompactionHandle {
+  operationId: string;
+  conversationId: string;
+  snapshotVersion: string;
+  state: ActivityState;
+  phase: ContextCompactionPhase;
+}
+
+export interface ContextCompactionResult extends CompactConversationResult {
+  checkpointId: string | null;
+  summaryKind: string;
+  fallbackReason: string | null;
+}
+
+export interface ActivityEvent {
+  activityId: string;
+  seq: number;
+  timestamp: string;
+  kind: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ActivityObservation {
+  record: {
+    activityId: string;
+    state: ActivityState;
+    startedAt: string;
+    updatedAt: string;
+    completedAt?: string | null;
+    lastEventSeq: number;
+  };
+  cursor: number;
+  events: ActivityEvent[];
+  timedOut: boolean;
+}
+
+export const startContextCompaction = (
+  conversationId: string,
+  idempotencyKey: string,
+) => invoke<ContextCompactionHandle>('start_context_compaction_cmd', {
+  request: { conversationId, idempotencyKey },
+});
+
+export const observeContextCompaction = (operationId: string, afterSeq: number) =>
+  invoke<ActivityObservation>('observe_context_compaction_cmd', { operationId, afterSeq });
+
+export const cancelContextCompaction = (operationId: string) =>
+  invoke<void>('cancel_context_compaction_cmd', { operationId });
+
+/** @deprecated Compatibility adapter for pre-operation-protocol callers. */
 export const compactConversation = (conversationId: string) =>
   invoke<CompactConversationResult>('compact_conversation_cmd', { conversationId });
 
