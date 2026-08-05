@@ -16,6 +16,7 @@ import {
   IMAGE_PROVIDER_PRESETS,
   type ImageProviderPreset,
 } from "../../lib/imageProviderPresets";
+import { extractImageProviderPresets } from "../../lib/imageProviderCapabilityCatalog";
 import { ProviderIcon } from "../../lib/providerIcons";
 import {
   findSharedProviderCredential,
@@ -88,28 +89,6 @@ function configFromPreset(
     outputFormat: firstOption(preset.outputFormats),
     apiKey: preservesCredential ? current.apiKey : "",
   };
-}
-
-function isImageProviderPreset(value: unknown): value is ImageProviderPreset {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.id === "string" &&
-    typeof record.name === "string" &&
-    typeof record.provider === "string" &&
-    typeof record.apiStyle === "string" &&
-    typeof record.baseUrl === "string" &&
-    Array.isArray(record.models) &&
-    Array.isArray(record.sizeOptions) &&
-    Array.isArray(record.qualityOptions) &&
-    Array.isArray(record.outputFormats)
-  );
-}
-
-function extractImageProviderPresets(capabilityPackage: CapabilityPackageView | null): ImageProviderPreset[] {
-  const catalog = capabilityPackage?.providerCatalogs?.find((item) => item.id === "imageProviders");
-  const presets = (catalog?.items ?? []).filter(isImageProviderPreset);
-  return presets.length > 0 ? presets : IMAGE_PROVIDER_PRESETS;
 }
 
 function fallbackPresetForConfig(
@@ -190,7 +169,7 @@ export function ImageGenerationSettingsPanel({
   }, [loadPlugin]);
 
   const providerPresets = useMemo(
-    () => extractImageProviderPresets(capabilityPackage),
+    () => extractImageProviderPresets(capabilityPackage, IMAGE_PROVIDER_PRESETS),
     [capabilityPackage],
   );
   const preferredAgentPreset = useMemo(() => {

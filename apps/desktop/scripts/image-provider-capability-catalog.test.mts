@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { extractImageProviderPresets } from '../src/lib/imageProviderCapabilityCatalog.ts';
+import type { CapabilityPackageView } from '../src/types/conversation.ts';
+
+const rawRuntimePreset = {
+  id: 'openai',
+  name: 'OpenAI Images',
+  provider: 'open_ai',
+  apiStyle: 'openai_images',
+  baseUrl: 'https://api.openai.com/v1',
+  requiresApiKey: true,
+  description: 'Runtime capability catalog fixture',
+  models: [
+    {
+      id: 'gpt-image-2',
+      name: 'GPT Image 2',
+      recommended: true,
+    },
+  ],
+  sizeOptions: [{ value: '1024x1024', label: '1024 x 1024' }],
+  qualityOptions: ['high'],
+  outputFormats: ['png'],
+};
+
+test('runtime image provider models are hydrated before the catalog picker reads modalities', () => {
+  const capabilityPackage = {
+    providerCatalogs: [
+      {
+        id: 'imageProviders',
+        label: 'Image providers',
+        itemKind: 'imageProviderPreset',
+        items: [rawRuntimePreset],
+      },
+    ],
+  } as unknown as CapabilityPackageView;
+
+  const presets = extractImageProviderPresets(capabilityPackage, []);
+  const descriptor = presets[0].models[0].descriptor;
+
+  assert.deepEqual(descriptor.inputModalities, ['text']);
+  assert.deepEqual(descriptor.outputModalities, ['image']);
+  assert.equal(descriptor.providerId, 'openai');
+  assert.deepEqual(descriptor.endpointIds, ['image:openai']);
+  assert.deepEqual(descriptor.regions, ['global']);
+  assert.deepEqual(descriptor.limits.supportedSizes, ['1024x1024']);
+  assert.deepEqual(descriptor.limits.outputFormats, ['png']);
+});
+
+test('malformed runtime descriptors are reprojected instead of reaching the picker', () => {
+  const capabilityPackage = {
+    providerCatalogs: [
+      {
+        id: 'imageProviders',
+        label: 'Image providers',
+        itemKind: 'imageProviderPreset',
+        items: [
+          {
+            ...rawRuntimePreset,
+            models: [{ ...rawRuntimePreset.models[0], descriptor: {} }],
+          },
+        ],
+      },
+    ],
+  } as unknown as CapabilityPackageView;
+
+  const presets = extractImageProviderPresets(capabilityPackage, []);
+  const descriptor = presets[0].models[0].descriptor;
+
+  assert.deepEqual(descriptor.inputModalities, ['text']);
+  assert.deepEqual(descriptor.outputModalities, ['image']);
+});
