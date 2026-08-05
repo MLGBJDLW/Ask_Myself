@@ -1,4 +1,9 @@
 import { expect, type Locator, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+const imageProviderPresets = JSON.parse(
+  readFileSync(new URL("../../../shared/image-provider-presets.json", import.meta.url), "utf8"),
+) as unknown[];
 
 async function selectNexaOption(trigger: Locator, value: string) {
   await trigger.click();
@@ -43,7 +48,7 @@ async function expectNexaOption(
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+  await page.addInitScript((runtimeImageProviderPresets) => {
     localStorage.setItem("nexa-locale", "en");
 
     const nowIso = new Date().toISOString();
@@ -180,6 +185,7 @@ test.beforeEach(async ({ page }) => {
         case "list_conversations_cmd":
           return [];
         case "list_sources":
+        case "list_projects_cmd":
         case "get_conversation_sources_cmd":
         case "list_checkpoints_cmd":
         case "list_user_memories_cmd":
@@ -221,7 +227,14 @@ test.beforeEach(async ({ page }) => {
               settingsSurfaces: ["image-generation"],
               workflows: ["generate-image"],
               settingsSchema: null,
-              providerCatalogs: [],
+              providerCatalogs: [
+                {
+                  id: "imageProviders",
+                  label: "Image providers",
+                  itemKind: "imageProviderPreset",
+                  items: runtimeImageProviderPresets,
+                },
+              ],
               runtimeChecks: [],
             },
           ];
@@ -380,7 +393,7 @@ test.beforeEach(async ({ page }) => {
         listeners.delete(eventId);
       },
     };
-  });
+  }, imageProviderPresets);
 });
 
 test("settings provider form shows updated preset models for add and edit flows", async ({
@@ -695,6 +708,9 @@ test("settings exposes Alibaba Model Studio and SiliconFlow as router presets", 
 test("settings exposes image generation model config under AI providers", async ({
   page,
 }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
+
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
 
@@ -734,6 +750,7 @@ test("settings exposes image generation model config under AI providers", async 
     return saved?.imageGeneration?.provider === "qwen" &&
       saved.imageGeneration.apiKey === "sk-qwen-demo";
   });
+  expect(pageErrors).toEqual([]);
 });
 
 test("settings promotes low-latency speech providers with their own logos", async ({ page }) => {

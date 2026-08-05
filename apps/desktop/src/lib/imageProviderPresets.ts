@@ -1,14 +1,13 @@
 import imageProviderPresets from "../../../../shared/image-provider-presets.json";
 import {
-  attachModelDescriptors,
-  canonicalModelProviderId,
-  inferModelCatalogRegion,
-  modelEndpointId,
   normalizeModelEndpointUrl,
   selectImplicitDefault,
-  type LegacyCatalogModel,
   type ModelDescriptor,
 } from './modelCatalog';
+import {
+  hydrateImageProviderPreset,
+  type RuntimeImageProviderPreset,
+} from './imageProviderCatalogHydration';
 
 export type ImageApiStyle =
   | "openai_images"
@@ -41,23 +40,8 @@ export interface ImageProviderPreset {
   outputFormats: string[];
 }
 
-type RawImageProviderPreset = Omit<ImageProviderPreset, 'models'> & {
-  models: LegacyCatalogModel[];
-};
-
 export const IMAGE_PROVIDER_PRESETS: ImageProviderPreset[] =
-  (imageProviderPresets as RawImageProviderPreset[]).map((preset) => ({
-    ...preset,
-    models: attachModelDescriptors(preset.models, {
-      surface: 'image',
-      providerId: canonicalModelProviderId(preset.id, preset.provider),
-      endpointId: modelEndpointId('image', preset.id),
-      region: inferModelCatalogRegion(preset.baseUrl),
-      apiStyle: preset.apiStyle,
-      supportedSizes: preset.sizeOptions.map((option) => option.value),
-      outputFormats: preset.outputFormats,
-    }) as ImageModelPreset[],
-  }));
+  (imageProviderPresets as RuntimeImageProviderPreset[]).map(hydrateImageProviderPreset);
 
 function normalize(value: string | null | undefined): string {
   return normalizeModelEndpointUrl(value);
