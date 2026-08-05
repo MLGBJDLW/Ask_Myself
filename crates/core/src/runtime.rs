@@ -14,6 +14,7 @@ use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
 use crate::agent_run::{AgentRunEvent, AGENT_RUN_EVENT_VERSION};
 use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
+use crate::context_maintenance::StartContextCompactionRequest;
 use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
 use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
@@ -593,6 +594,13 @@ pub enum RuntimeOperation {
     },
     CloseSession {
         session_id: String,
+    },
+    StartContextCompaction {
+        request: StartContextCompactionRequest,
+    },
+    CancelOperation {
+        operation_id: String,
+        reason: String,
     },
 }
 

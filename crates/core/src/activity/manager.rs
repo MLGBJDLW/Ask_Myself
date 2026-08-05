@@ -225,6 +225,8 @@ impl ActivityRuntime {
                 ActivityState::Completed => ActivityEventKind::Completed,
                 ActivityState::Failed => ActivityEventKind::Failed,
                 ActivityState::Cancelled => ActivityEventKind::Cancelled,
+                ActivityState::Superseded => ActivityEventKind::Superseded,
+                ActivityState::TimedOut => ActivityEventKind::TimedOut,
                 _ => ActivityEventKind::StateChanged,
             };
             let event = ActivityEvent {

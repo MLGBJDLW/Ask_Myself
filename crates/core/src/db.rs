@@ -1,6 +1,6 @@
 //! Database module — manages SQLite connections and schema migrations.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -50,6 +50,33 @@ impl Database {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: None,
+        })
+    }
+
+    /// Build the connection used by the bounded read lane. File-backed
+    /// databases receive a separate query-only WAL reader; in-memory tests
+    /// share the original connection because independent `:memory:` handles do
+    /// not share state.
+    pub(crate) fn read_only_lane(&self) -> Result<Self, CoreError> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(self.clone());
+        };
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        for pragma in [
+            "PRAGMA busy_timeout = 5000",
+            "PRAGMA foreign_keys = ON",
+            "PRAGMA query_only = ON",
+            "PRAGMA cache_size = -32000",
+            "PRAGMA mmap_size = 268435456",
+        ] {
+            let _ = conn.prepare(pragma)?.query([])?;
+        }
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: Some(path.clone()),
         })
     }
 

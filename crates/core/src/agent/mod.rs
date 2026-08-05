@@ -52,7 +52,6 @@ mod answer_cache;
 mod assistant_turn;
 pub mod context;
 mod context_compaction;
-pub use context_compaction::ConversationCompaction;
 pub mod context_pipeline;
 mod direct_dispatch;
 mod direct_dispatch_runner;

@@ -132,6 +132,61 @@ fn context_hud_uses_theme_tokens_instead_of_tailwind_palette_colors() {
 }
 
 #[test]
+fn manual_context_compaction_has_one_tool_free_service_path() {
+    let root = repository_root();
+    let command =
+        fs::read_to_string(root.join("apps/desktop/src-tauri/src/commands/conversation.rs"))
+            .expect("read conversation commands");
+    let service = fs::read_to_string(root.join("crates/core/src/context_maintenance/service.rs"))
+        .expect("read context maintenance service");
+
+    for required in [
+        "start_context_compaction_cmd",
+        "observe_context_compaction_cmd",
+        "cancel_context_compaction_cmd",
+        ".context_compaction",
+        ".db_executor",
+    ] {
+        assert!(
+            command.contains(required),
+            "desktop compaction protocol must include {required}"
+        );
+    }
+    for forbidden in [
+        "AgentExecutor::new",
+        "ToolRegistry::new",
+        "replace_messages_if_unchanged",
+        "create_checkpoint_with_messages",
+    ] {
+        assert!(
+            !service.contains(forbidden),
+            "context maintenance must not depend on {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn agent_history_uses_non_destructive_projection_on_database_lane() {
+    let root = repository_root();
+    let agent_chat =
+        fs::read_to_string(root.join("apps/desktop/src-tauri/src/commands/agent_chat.rs"))
+            .expect("read agent chat command");
+    assert!(agent_chat.contains("load_context_projection"));
+    assert!(agent_chat.contains("let projection = db_executor"));
+
+    let chat_page = fs::read_to_string(root.join("apps/desktop/src/pages/ChatPage.tsx"))
+        .expect("read chat page");
+    assert!(chat_page.contains("startContextCompaction"));
+    assert!(chat_page.contains("observeContextCompaction"));
+    assert!(chat_page.contains("cancelContextCompaction"));
+    assert!(chat_page.contains("COMPACTION_STORAGE_PREFIX"));
+    assert!(
+        !chat_page.contains("api.compactConversation("),
+        "product UI must not use the blocking compatibility adapter"
+    );
+}
+
+#[test]
 fn readme_frontend_versions_match_the_manifest() {
     let root = repository_root();
     let package: serde_json::Value = serde_json::from_str(
