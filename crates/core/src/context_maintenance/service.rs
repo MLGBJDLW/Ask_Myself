@@ -343,13 +343,9 @@ impl ContextCompactionService {
             tokens_before: plan.tokens_before,
             tokens_after,
             provider: job.provider_label,
+            provider_type: job.provider_type,
             model: job.model,
-            usage: summary
-                .usage
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(CoreError::from)?,
+            usage: summary.usage,
         };
         let expected_ids = plan.expected_message_ids;
         let commit_cancellation = cancellation.clone();

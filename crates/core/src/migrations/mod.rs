@@ -1612,8 +1612,11 @@ Every answer that uses knowledge base search results.
     ),
     (
         "v089_non_destructive_context_compactions",
-        "ALTER TABLE conversations ADD COLUMN active_context_compaction_id TEXT;
-         CREATE TABLE IF NOT EXISTS context_compactions (
+        "ALTER TABLE conversations ADD COLUMN active_context_compaction_id TEXT;",
+    ),
+    (
+        "v090_context_compaction_checkpoints",
+        "CREATE TABLE IF NOT EXISTS context_compactions (
              id TEXT PRIMARY KEY NOT NULL,
              operation_id TEXT NOT NULL UNIQUE,
              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -2557,5 +2560,46 @@ mod tests {
                 .unwrap();
             assert!(exists, "context_compactions.{column} should exist");
         }
+    }
+
+    #[test]
+    fn test_context_compaction_migration_recovers_after_column_only_partial_apply() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        conn.execute_batch(
+            "DROP TABLE context_compactions;
+             DELETE FROM _migrations
+             WHERE name IN (
+                 'v089_non_destructive_context_compactions',
+                 'v090_context_compaction_checkpoints'
+             );",
+        )
+        .expect("simulate interruption after the pointer column was added");
+
+        run_migrations(&conn).expect("partial compaction migration should recover");
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'context_compactions'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists);
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _migrations
+                 WHERE name IN (
+                     'v089_non_destructive_context_compactions',
+                     'v090_context_compaction_checkpoints'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 2);
     }
 }

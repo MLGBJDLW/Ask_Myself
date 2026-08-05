@@ -8,6 +8,9 @@ use crate::conversation::{ConversationMessage, ImageAttachment};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{Role, ToolCallRequest};
+use crate::usage_analytics::{
+    provider_type_id, record_ai_usage_on_connection, usage_cost_metadata, AiUsageRecordInput,
+};
 
 use super::model::{ContextCheckpointInput, ContextProjection};
 use super::planner::hash_field;
@@ -79,6 +82,52 @@ pub(crate) fn commit_context_checkpoint(
             usage_json,
         ],
     )?;
+    if let Some(usage) = input.usage.as_ref() {
+        let invocation_id = format!("{}:summarization:{}", input.operation_id, input.model);
+        let provider_id = provider_type_id(input.provider_type);
+        let provider_raw = serde_json::to_value(usage)?;
+        let (estimated_cost_micros, currency, pricing_version) =
+            usage_cost_metadata(input.provider_type);
+        record_ai_usage_on_connection(
+            &tx,
+            &AiUsageRecordInput {
+                invocation_id: &invocation_id,
+                occurred_at: None,
+                provider_id,
+                provider_type: provider_id,
+                model_id: &input.model,
+                raw_model_id: Some(&input.model),
+                modality: "language_model",
+                operation_kind: "compaction",
+                conversation_id: Some(&input.conversation_id),
+                turn_id: None,
+                run_id: None,
+                subtask_run_id: None,
+                project_id: None,
+                prompt_tokens: u64::from(usage.prompt_tokens),
+                completion_tokens: u64::from(usage.completion_tokens),
+                thinking_tokens: u64::from(usage.thinking_tokens.unwrap_or(0)),
+                total_tokens: u64::from(
+                    usage
+                        .total_tokens
+                        .max(usage.prompt_tokens.saturating_add(usage.completion_tokens)),
+                ),
+                cache_read_tokens: u64::from(usage.cache_read_tokens.unwrap_or(0)),
+                cache_miss_tokens: u64::from(usage.cache_miss_tokens.unwrap_or(0)),
+                cache_creation_tokens: u64::from(usage.cache_creation_tokens.unwrap_or(0)),
+                usage_source: "provider",
+                request_status: "success",
+                latency_ms: None,
+                time_to_first_token_ms: None,
+                upstream_provider_id: None,
+                cache_outcome_reason: None,
+                estimated_cost_micros,
+                currency,
+                pricing_version,
+                provider_raw: &provider_raw,
+            },
+        )?;
+    }
     tx.execute(
         "UPDATE conversations
          SET active_context_compaction_id = ?2, updated_at = datetime('now')
@@ -410,14 +459,36 @@ mod tests {
                 tokens_before: 40,
                 tokens_after: 24,
                 provider: "test".to_string(),
+                provider_type: Some(crate::llm::ProviderType::OpenAi),
                 model: "test".to_string(),
-                usage: None,
+                usage: Some(crate::llm::Usage {
+                    prompt_tokens: 120,
+                    completion_tokens: 30,
+                    total_tokens: 150,
+                    ..Default::default()
+                }),
             },
             &expected_ids,
             &CancellationToken::new(),
         )
         .expect("commit checkpoint");
         assert_eq!(outcome, CommitOutcome::Committed);
+        let recorded_usage = database
+            .conn()
+            .query_row(
+                "SELECT operation_kind, prompt_tokens, completion_tokens
+                 FROM ai_usage_records WHERE conversation_id = ?1",
+                [&conversation.id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .expect("load compaction usage");
+        assert_eq!(recorded_usage, ("compaction".to_string(), 120, 30));
 
         let canonical_after = database
             .get_messages(&conversation.id)
@@ -485,6 +556,7 @@ mod tests {
                 tokens_before: 10,
                 tokens_after: 10,
                 provider: "test".to_string(),
+                provider_type: None,
                 model: "test".to_string(),
                 usage: None,
             },
@@ -541,6 +613,7 @@ mod tests {
                 tokens_before: 10,
                 tokens_after: 10,
                 provider: "test".to_string(),
+                provider_type: None,
                 model: "test".to_string(),
                 usage: None,
             },

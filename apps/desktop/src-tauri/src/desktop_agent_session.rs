@@ -490,6 +490,19 @@ fn provider_type_for_config(config: &DbAgentConfig) -> ProviderType {
     provider_type_for_parts(&config.provider, config.base_url.as_deref())
 }
 
+fn desktop_provider_config(config: &DbAgentConfig) -> ProviderConfig {
+    ProviderConfig {
+        provider_type: provider_type_for_config(config),
+        api_key: Some(config.api_key.clone()),
+        base_url: config.base_url.as_deref().and_then(|value| {
+            let normalized = value.trim().trim_end_matches('/');
+            (!normalized.is_empty()).then(|| normalized.to_string())
+        }),
+        org_id: None,
+        timeout_secs: None,
+    }
+}
+
 fn build_selected_skills_artifact(skills: &[Skill]) -> serde_json::Value {
     serde_json::json!({
         "kind": "selectedSkills",
@@ -556,9 +569,10 @@ pub fn resolve_desktop_summarization_provider_config(
         return Ok(None);
     };
 
-    if provider_name.eq_ignore_ascii_case(db_config.provider.trim()) {
+    let requested_type = provider_type_for_parts(provider_name, None);
+    if requested_type == provider_type_for_config(db_config) {
         return Ok(Some((
-            db_config_to_provider_config(db_config, None),
+            desktop_provider_config(db_config),
             db_config.name.clone(),
             db_config
                 .summarization_model
@@ -567,7 +581,6 @@ pub fn resolve_desktop_summarization_provider_config(
         )));
     }
 
-    let requested_type = provider_type_for_parts(provider_name, None);
     let mut candidates = database
         .list_agent_configs()
         .map_err(|error| error.to_string())?
@@ -615,7 +628,7 @@ pub fn resolve_desktop_summarization_provider_config(
         .clone()
         .unwrap_or_else(|| selected.model.clone());
     Ok(Some((
-        db_config_to_provider_config(&selected, None),
+        desktop_provider_config(&selected),
         selected.name,
         summary_model,
     )))
@@ -2379,6 +2392,7 @@ mod tests {
         );
 
         let mut with_provider = db_config;
+        with_provider.provider = "openai".to_string();
         with_provider.summarization_provider = Some("open_ai".to_string());
         with_provider.base_url = Some("https://example.test/v1".to_string());
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::activity::ActivityState;
 use crate::conversation::ConversationMessage;
-use crate::llm::{LlmProvider, ProviderType};
+use crate::llm::{LlmProvider, ProviderType, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +109,7 @@ pub(crate) struct ContextCheckpointInput {
     pub tokens_before: u32,
     pub tokens_after: u32,
     pub provider: String,
+    pub provider_type: Option<ProviderType>,
     pub model: String,
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<Usage>,
 }
