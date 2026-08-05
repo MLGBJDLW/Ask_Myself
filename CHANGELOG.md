@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.12...nexa-monorepo-v0.11.13) (2026-08-05)
+
+
+### Features
+
+* **chat:** recover compaction progress across reloads ([bdf04c1](https://github.com/MLGBJDLW/Nexa/commit/bdf04c1bed8ecbb1d65b00f9f7eaeeefdb775daa))
+* **core:** add durable context maintenance runtime ([aa52f00](https://github.com/MLGBJDLW/Nexa/commit/aa52f005fdb5a8e148390d48d71641667262e5a2))
+* **desktop:** expose cancellable compaction operations ([3d3c934](https://github.com/MLGBJDLW/Nexa/commit/3d3c93496f9c0e23d5009fd25f6eda5a5a9e2037))
+* upgrade context compaction runtime ([54b69e6](https://github.com/MLGBJDLW/Nexa/commit/54b69e6a0f476ac73bf66b97e81f031e1fe0ce49))
+
+
+### Bug Fixes
+
+* **context:** harden compaction persistence and routing ([2bf0286](https://github.com/MLGBJDLW/Nexa/commit/2bf028632a24a030d10369c402190d6177b95e31))
+
 ## [0.11.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.11...nexa-monorepo-v0.11.12) (2026-08-04)
 
 
