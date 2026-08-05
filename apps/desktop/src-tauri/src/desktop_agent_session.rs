@@ -543,23 +543,82 @@ fn emit_user_content_event(
     }
 }
 
-pub fn desktop_summarization_provider_config(db_config: &DbAgentConfig) -> Option<ProviderConfig> {
-    db_config
-        .summarization_provider
-        .as_ref()
-        .map(|provider_name| ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
-            api_key: Some(db_config.api_key.clone()),
-            base_url: db_config.base_url.clone(),
-            org_id: None,
-            timeout_secs: None,
-        })
-}
-
-pub fn build_desktop_summarization_provider(
+pub fn resolve_desktop_summarization_provider_config(
+    database: &Database,
     db_config: &DbAgentConfig,
-) -> Option<Box<dyn LlmProvider>> {
-    desktop_summarization_provider_config(db_config).and_then(|config| create_provider(config).ok())
+) -> Result<Option<(ProviderConfig, String, String)>, String> {
+    let Some(provider_name) = db_config
+        .summarization_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if provider_name.eq_ignore_ascii_case(db_config.provider.trim()) {
+        return Ok(Some((
+            db_config_to_provider_config(db_config, None),
+            db_config.name.clone(),
+            db_config
+                .summarization_model
+                .clone()
+                .unwrap_or_else(|| db_config.model.clone()),
+        )));
+    }
+
+    let requested_type = provider_type_for_parts(provider_name, None);
+    let mut candidates = database
+        .list_agent_configs()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|candidate| provider_type_for_config(candidate) == requested_type)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(format!(
+            "Summarization provider '{provider_name}' needs its own saved provider configuration; main-agent credentials are never reused across providers"
+        ));
+    }
+    if let Some(model) = db_config
+        .summarization_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        let model_matches = candidates
+            .iter()
+            .filter(|candidate| candidate.model == model)
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        if model_matches.len() == 1 {
+            candidates.retain(|candidate| candidate.id == model_matches[0]);
+        }
+    }
+    if candidates.len() > 1 {
+        let defaults = candidates
+            .iter()
+            .filter(|candidate| candidate.is_default)
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        if defaults.len() == 1 {
+            candidates.retain(|candidate| candidate.id == defaults[0]);
+        }
+    }
+    if candidates.len() != 1 {
+        return Err(format!(
+            "Summarization provider '{provider_name}' matches multiple saved configurations; select a unique summarization model or keep summarization on the main provider"
+        ));
+    }
+    let selected = candidates.pop().expect("one summarization candidate");
+    let summary_model = db_config
+        .summarization_model
+        .clone()
+        .unwrap_or_else(|| selected.model.clone());
+    Ok(Some((
+        db_config_to_provider_config(&selected, None),
+        selected.name,
+        summary_model,
+    )))
 }
 
 pub fn desktop_memory_extraction_model(db_config: &DbAgentConfig) -> &str {
@@ -570,22 +629,12 @@ pub fn desktop_memory_extraction_model(db_config: &DbAgentConfig) -> &str {
 }
 
 pub fn desktop_memory_extraction_provider_config(db_config: &DbAgentConfig) -> ProviderConfig {
-    if let Some(ref provider_name) = db_config.summarization_provider {
-        ProviderConfig {
-            provider_type: provider_type_for_parts(provider_name, db_config.base_url.as_deref()),
-            api_key: Some(db_config.api_key.clone()),
-            base_url: db_config.base_url.clone(),
-            org_id: None,
-            timeout_secs: None,
-        }
-    } else {
-        ProviderConfig {
-            provider_type: provider_type_for_config(db_config),
-            api_key: Some(db_config.api_key.clone()),
-            base_url: db_config.base_url.clone(),
-            org_id: None,
-            timeout_secs: None,
-        }
+    ProviderConfig {
+        provider_type: provider_type_for_config(db_config),
+        api_key: Some(db_config.api_key.clone()),
+        base_url: db_config.base_url.clone(),
+        org_id: None,
+        timeout_secs: None,
     }
 }
 
@@ -600,26 +649,45 @@ pub async fn run_desktop_agent_post_success_learning(
 
     let app_cfg = db.load_app_config().unwrap_or_default();
     if app_cfg.auto_memory_extraction {
-        let extract_model = desktop_memory_extraction_model(&db_config).to_string();
-        let extract_provider_config = desktop_memory_extraction_provider_config(&db_config);
-        let extract_provider_type = extract_provider_config.provider_type;
-        if let Ok(extract_llm) = create_provider(extract_provider_config) {
-            match nexa_core::personalization::auto_extract_and_save(
-                &db,
-                &conversation_id,
-                extract_llm.as_ref(),
-                &extract_model,
-                Some(extract_provider_type),
-            )
-            .await
-            {
-                Ok(n) if n > 0 => {
-                    info!("Auto-extracted {n} memories from conversation {conversation_id}");
+        let extraction_route = match resolve_desktop_summarization_provider_config(&db, &db_config)
+        {
+            Ok(Some((config, _, model))) => Some((config, model)),
+            Ok(None) => Some((
+                desktop_memory_extraction_provider_config(&db_config),
+                desktop_memory_extraction_model(&db_config).to_string(),
+            )),
+            Err(error) => {
+                warn!("Auto memory extraction skipped for {conversation_id}: {error}");
+                None
+            }
+        };
+        if let Some((extract_provider_config, extract_model)) = extraction_route {
+            let extract_provider_type = extract_provider_config.provider_type;
+            match create_provider(extract_provider_config) {
+                Ok(extract_llm) => {
+                    match nexa_core::personalization::auto_extract_and_save(
+                        &db,
+                        &conversation_id,
+                        extract_llm.as_ref(),
+                        &extract_model,
+                        Some(extract_provider_type),
+                    )
+                    .await
+                    {
+                        Ok(n) if n > 0 => {
+                            info!(
+                                "Auto-extracted {n} memories from conversation {conversation_id}"
+                            );
+                        }
+                        Err(error) => {
+                            warn!("Auto memory extraction failed for {conversation_id}: {error}");
+                        }
+                        _ => {}
+                    }
                 }
-                Err(e) => {
-                    warn!("Auto memory extraction failed for {conversation_id}: {e}");
+                Err(error) => {
+                    warn!("Auto memory extraction provider failed for {conversation_id}: {error}");
                 }
-                _ => {}
             }
         }
     }
@@ -1298,8 +1366,10 @@ pub fn build_desktop_agent_turn_config(
         provider_type: Some(provider_type),
         request_kind: AgentRequestKind::MainAgentStep,
         summarization_model: db_config.summarization_model.clone(),
-        summarization_provider_type: desktop_summarization_provider_config(db_config)
-            .map(|config| config.provider_type),
+        summarization_provider_type: db_config
+            .summarization_provider
+            .as_deref()
+            .map(|provider| provider_type_for_parts(provider, None)),
         subagent_max_parallel,
         subagent_max_calls_per_turn,
         subagent_token_budget,
@@ -2299,32 +2369,43 @@ mod tests {
 
     #[test]
     fn desktop_summarization_provider_config_requires_provider_override() {
+        let db = Database::open_memory().expect("open memory db");
         let db_config = test_agent_config();
 
-        assert!(desktop_summarization_provider_config(&db_config).is_none());
+        assert!(
+            resolve_desktop_summarization_provider_config(&db, &db_config)
+                .expect("resolve no override")
+                .is_none()
+        );
 
         let mut with_provider = db_config;
         with_provider.summarization_provider = Some("open_ai".to_string());
         with_provider.base_url = Some("https://example.test/v1".to_string());
 
-        let config =
-            desktop_summarization_provider_config(&with_provider).expect("provider override");
+        let (config, name, model) =
+            resolve_desktop_summarization_provider_config(&db, &with_provider)
+                .expect("resolve provider override")
+                .expect("provider override");
 
         assert_eq!(config.provider_type, ProviderType::OpenAi);
         assert_eq!(config.api_key.as_deref(), Some("test-key"));
         assert_eq!(config.base_url.as_deref(), Some("https://example.test/v1"));
         assert_eq!(config.timeout_secs, None);
+        assert_eq!(name, "Primary");
+        assert_eq!(model, "gpt-summary");
     }
 
     #[test]
-    fn desktop_summarization_provider_config_sniffs_actual_base_url() {
+    fn desktop_summarization_provider_config_rejects_cross_provider_credential_reuse() {
+        let db = Database::open_memory().expect("open memory db");
         let mut db_config = test_agent_config();
-        db_config.summarization_provider = Some("open_ai".to_string());
-        db_config.base_url = Some("https://api.deepseek.com".to_string());
+        db_config.summarization_provider = Some("deepseek".to_string());
 
-        let config = desktop_summarization_provider_config(&db_config).expect("provider override");
+        let error = resolve_desktop_summarization_provider_config(&db, &db_config)
+            .expect_err("cross-provider summary needs independent saved credentials");
 
-        assert_eq!(config.provider_type, ProviderType::DeepSeek);
+        assert!(error.contains("own saved provider configuration"));
+        assert!(error.contains("never reused across providers"));
     }
 
     #[test]
@@ -2341,7 +2422,7 @@ mod tests {
         db_config.summarization_provider = Some("open_ai".to_string());
         let override_config = desktop_memory_extraction_provider_config(&db_config);
 
-        assert_eq!(override_config.provider_type, ProviderType::OpenAi);
+        assert_eq!(override_config.provider_type, ProviderType::Ollama);
         assert_eq!(override_config.api_key.as_deref(), Some("test-key"));
 
         db_config.base_url = Some("https://api.deepseek.com/v1".to_string());

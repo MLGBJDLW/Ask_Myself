@@ -4,8 +4,8 @@ use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
     build_desktop_agent_turn_config, build_desktop_agent_user_content_parts,
-    build_desktop_summarization_provider, finalize_desktop_agent_turn,
-    request_desktop_running_agent_stop, run_desktop_agent_post_success_learning,
+    finalize_desktop_agent_turn, request_desktop_running_agent_stop,
+    resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
     run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
     DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
     DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
@@ -375,6 +375,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let cancel_token_clone = cancel_token.clone();
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
     let db = state.db.clone();
+    let db_executor = state.db_executor.clone();
     let conv_id = conversation_id.clone();
     let turn_id = launch_record.turn_id.clone();
     let task_run_id = launch_record.run_id.clone();
@@ -434,9 +435,19 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             };
 
             let history_started = Instant::now();
-            let history = db
-                .get_messages(&conv_id)
+            let history_conversation_id = conv_id.clone();
+            let projection = db_executor
+                .read(move |database| {
+                    nexa_core::context_maintenance::load_context_projection(
+                        database,
+                        &history_conversation_id,
+                    )
+                })
+                .await
                 .map_err(|error| error.to_string())?
+                .value;
+            let history = projection
+                .messages
                 .into_iter()
                 .filter(|entry| {
                     entry.id != user_message_id && entry.sort_order < user_message_sort_order
@@ -486,7 +497,17 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             let source_scope_ids = desktop_turn_config.source_scope_ids;
             let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
             let context_pack = desktop_turn_config.context_pack;
-            let executor_config = desktop_turn_config.executor_config;
+            let mut executor_config = desktop_turn_config.executor_config;
+            let summarization_provider =
+                match resolve_desktop_summarization_provider_config(db.as_ref(), &db_config)? {
+                    Some((summary_config, _, summary_model)) => {
+                        executor_config.summarization_model = Some(summary_model);
+                        executor_config.summarization_provider_type =
+                            Some(summary_config.provider_type);
+                        Some(create_provider(summary_config).map_err(|error| error.to_string())?)
+                    }
+                    None => None,
+                };
 
             let session_dependencies =
                 build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
@@ -606,7 +627,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 elapsed_millis(attachment_started),
             );
 
-            let summarization_provider = build_desktop_summarization_provider(&db_config);
             let approval_runtime = DesktopAgentApprovalRuntime {
                 pending: approval_pending,
                 session_store: approval_session_store,

@@ -1,5 +1,7 @@
 use super::*;
-use crate::desktop_agent_session::filter_desktop_tool_names_by_package_host;
+use crate::desktop_agent_session::{
+    filter_desktop_tool_names_by_package_host, resolve_desktop_summarization_provider_config,
+};
 use nexa_core::package_host::{
     database_backed_builtin_package_host_snapshot, PackageHealthState, PackageHostSnapshot,
 };
@@ -971,154 +973,138 @@ pub async fn cleanup_empty_conversations_cmd(
 }
 
 #[tauri::command]
+pub async fn start_context_compaction_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::context_maintenance::StartContextCompactionRequest,
+) -> Result<nexa_core::context_maintenance::ContextCompactionHandle, String> {
+    let conversation_id = request.conversation_id.clone();
+    let prepared = state
+        .db_executor
+        .read(move |database| {
+            let conversation = database.get_conversation(&conversation_id)?;
+            let config = select_agent_config_for_conversation(database, &conversation, None)
+                .map_err(nexa_core::error::CoreError::InvalidInput)?;
+            let summary_provider = resolve_desktop_summarization_provider_config(database, &config)
+                .map_err(nexa_core::error::CoreError::InvalidInput)?;
+            Ok((conversation, config, summary_provider))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .value;
+    let (conversation, config, summary_provider) = prepared;
+    let (provider_config, provider_label, model) = summary_provider.unwrap_or_else(|| {
+        (
+            db_config_to_provider_config(&config, None),
+            config.name.clone(),
+            config
+                .summarization_model
+                .clone()
+                .unwrap_or_else(|| config.model.clone()),
+        )
+    });
+    let provider_type = provider_config.provider_type;
+    let provider = create_provider(provider_config).map_err(|error| error.to_string())?;
+    let job = nexa_core::context_maintenance::ContextCompactionJob {
+        request,
+        snapshot_version: conversation.updated_at,
+        model,
+        context_window: config
+            .context_window
+            .and_then(|value| u32::try_from(value).ok()),
+        max_response_tokens: config
+            .max_tokens
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(4_096),
+        provider_type: Some(provider_type),
+        provider_label,
+        summarizer: Arc::from(provider),
+    };
+    state
+        .context_compaction
+        .start(job)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn observe_context_compaction_cmd(
+    state: tauri::State<'_, AppState>,
+    operation_id: String,
+    after_seq: u64,
+) -> Result<nexa_core::activity::ActivityObservation, String> {
+    state
+        .context_compaction
+        .observe(&operation_id, after_seq, Duration::from_millis(2_000))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_context_compaction_cmd(
+    state: tauri::State<'_, AppState>,
+    operation_id: String,
+) -> Result<(), String> {
+    state
+        .context_compaction
+        .cancel(&operation_id, "user_requested")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Compatibility adapter for older clients. Product UI uses the immediate
+/// start/observe/cancel protocol above; no compaction implementation lives in
+/// this command.
+#[tauri::command]
 pub async fn compact_conversation_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
 ) -> Result<CompactConversationResult, String> {
-    if state
-        .db
-        .conversation_has_active_agent_task_run(&conversation_id)
-        .map_err(|e| e.to_string())?
-    {
-        return Err(
-            "Wait for the active response to finish before compacting this conversation"
-                .to_string(),
-        );
-    }
-
-    // 1. Load conversation and its messages.
-    let conv = state
-        .db
-        .get_conversation(&conversation_id)
-        .map_err(|e| e.to_string())?;
-    let messages = state
-        .db
-        .get_messages(&conversation_id)
-        .map_err(|e| e.to_string())?;
-    let messages_before = messages.len();
-    let tokens_before = estimate_conversation_message_tokens(&messages);
-    if messages.is_empty() {
-        return Ok(CompactConversationResult {
+    let handle = start_context_compaction_cmd(
+        state.clone(),
+        nexa_core::context_maintenance::StartContextCompactionRequest {
             conversation_id,
-            messages_before: 0,
-            messages_after: 0,
-            tokens_before: 0,
-            tokens_after: 0,
-            evicted_messages: 0,
-        });
+            idempotency_key: Uuid::new_v4().to_string(),
+            policy: Default::default(),
+        },
+    )
+    .await?;
+    let mut cursor = 0;
+    loop {
+        let observation = state
+            .context_compaction
+            .observe(&handle.operation_id, cursor, Duration::from_millis(2_500))
+            .await
+            .map_err(|error| error.to_string())?;
+        cursor = observation.cursor;
+        if !observation.record.state.is_terminal() {
+            continue;
+        }
+        let detail = observation
+            .events
+            .last()
+            .and_then(|event| event.payload.get("detail"));
+        if observation.record.state == nexa_core::activity::ActivityState::Completed {
+            let result = detail
+                .and_then(|detail| detail.get("result"))
+                .cloned()
+                .ok_or_else(|| "Context compaction completed without a result".to_string())?;
+            let result: nexa_core::context_maintenance::ContextCompactionResult =
+                serde_json::from_value(result).map_err(|error| error.to_string())?;
+            return Ok(CompactConversationResult {
+                conversation_id: result.conversation_id,
+                messages_before: result.messages_before,
+                messages_after: result.messages_after,
+                tokens_before: result.tokens_before,
+                tokens_after: result.tokens_after,
+                evicted_messages: result.evicted_messages,
+            });
+        }
+        return Err(detail
+            .and_then(|detail| detail.get("error").or_else(|| detail.get("reason")))
+            .and_then(|value| value.as_str())
+            .unwrap_or("Context compaction did not complete")
+            .to_string());
     }
-
-    // 2. Load the config that matches this conversation's provider/model.
-    let db_config = select_agent_config_for_conversation(&state.db, &conv, None)?;
-
-    let app_cfg = state.db.load_app_config().unwrap_or_default();
-    let provider_config = db_config_to_provider_config(&db_config, None);
-    let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
-    let summarization_provider_type = db_config
-        .summarization_provider
-        .as_deref()
-        .map(|name| provider_type_for_parts(name, db_config.base_url.as_deref()));
-
-    let executor_config = ExecutorConfig {
-        max_iterations: 1,
-        system_prompt: build_system_prompt(Some(&conv.system_prompt), &[]),
-        volatile_system_sections: Vec::new(),
-        model: Some(db_config.model.clone()),
-        temperature: db_config.temperature.map(|t| t as f32),
-        max_tokens: db_config.max_tokens.map(|t| t as u32),
-        context_window: db_config.context_window.map(|w| w as u32),
-        reasoning_enabled: None,
-        thinking_budget: None,
-        reasoning_effort: None,
-        provider_type: Some(provider_type_for_config(&db_config)),
-        request_kind: AgentRequestKind::MainAgentStep,
-        summarization_model: db_config.summarization_model.clone(),
-        summarization_provider_type,
-        subagent_max_parallel: db_config.subagent_max_parallel.map(|v| v as u32),
-        subagent_max_calls_per_turn: db_config.subagent_max_calls_per_turn.map(|v| v as u32),
-        subagent_token_budget: db_config.subagent_token_budget.map(|v| v as u32),
-        subagent_verification_reserve_percent: None,
-        delegation_limits_v2: db_config.delegation_limits_v2.clone(),
-        tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
-        agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
-        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
-        dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
-        trace_enabled: app_cfg.trace_enabled,
-        require_tool_confirmation: false,
-        shell_access_mode: ShellAccessMode::Restricted,
-        tool_approval_mode: app_cfg.tool_approval_mode,
-        execution_mode: AgentExecutionMode::Normal,
-        power_mode: AgentPowerMode::Standard,
-        collaboration_mode: nexa_core::mixture_of_agents::AgentCollaborationMode::Direct,
-        moa_preset: nexa_core::mixture_of_agents::MoaPresetId::FastReview,
-        orchestration_profile: nexa_core::quality_profile::OrchestrationProfile::Balanced,
-        custom_orchestration: None,
-    };
-
-    let summarization_provider: Option<Box<dyn nexa_core::llm::LlmProvider>> =
-        if let Some(ref summ_provider_name) = db_config.summarization_provider {
-            let summ_config = ProviderConfig {
-                provider_type: provider_type_for_parts(
-                    summ_provider_name,
-                    db_config.base_url.as_deref(),
-                ),
-                api_key: Some(db_config.api_key.clone()),
-                base_url: db_config.base_url.clone(),
-                org_id: None,
-                timeout_secs: None,
-            };
-            create_provider(summ_config).ok()
-        } else {
-            None
-        };
-
-    let tools =
-        nexa_core::package_host::PackageRuntimeAssembler::database_builtin(state.db.as_ref())
-            .and_then(|assembler| assembler.assemble_builtin_capabilities())
-            .map_err(|error| error.to_string())?
-            .tools;
-    let mut executor = AgentExecutor::new(provider, tools, executor_config);
-    if let Some(summ_provider) = summarization_provider {
-        executor = executor.with_summarization_provider(summ_provider);
-    }
-
-    // 3. Run compaction (creates a checkpoint before evicting).
-    let compaction = executor
-        .compact_conversation(&conversation_id, &messages, Some(&state.db), "manual")
-        .await
-        .map_err(|e| e.to_string())?;
-    let checkpoint_id = compaction.checkpoint_id;
-    let compacted = compaction.messages;
-
-    // 4. Replace the retained projection atomically. This is a single SQLite
-    // transaction, avoiding one autocommit/fsync per retained message.
-    state
-        .db
-        .replace_messages_if_unchanged(
-            &conversation_id,
-            &messages,
-            &compacted,
-            checkpoint_id.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let messages_after = compacted.len();
-    let evicted_messages = if messages_after < messages_before {
-        messages_before
-            .saturating_add(1)
-            .saturating_sub(messages_after)
-    } else {
-        0
-    };
-
-    Ok(CompactConversationResult {
-        conversation_id,
-        messages_before,
-        messages_after,
-        tokens_before,
-        tokens_after: estimate_conversation_message_tokens(&compacted),
-        evicted_messages,
-    })
 }
 
 #[tauri::command]

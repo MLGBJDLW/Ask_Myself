@@ -42,6 +42,7 @@ use nexa_core::conversation::{
     UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
+use nexa_core::db_executor::DatabaseExecutor;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
 use nexa_core::error::CoreError;
 use nexa_core::evolution::{
@@ -127,6 +128,8 @@ const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 /// Application state holding the database connection.
 pub struct AppState {
     pub db: Arc<Database>,
+    pub db_executor: DatabaseExecutor,
+    pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
     /// Guard: true while whisper transcription is in progress.
     #[cfg(feature = "video")]
     pub whisper_busy: Arc<AtomicBool>,
