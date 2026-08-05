@@ -9,6 +9,7 @@ pub enum ActivitySurface {
     Terminal,
     Browser,
     Desktop,
+    Maintenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,17 +22,25 @@ pub enum ActivityState {
     WaitingInput,
     Quiet,
     Suspended,
+    Cancelling,
     Completed,
     Failed,
     Cancelled,
     Orphaned,
+    Superseded,
+    TimedOut,
 }
 
 impl ActivityState {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed | Self::Cancelled | Self::Orphaned
+            Self::Completed
+                | Self::Failed
+                | Self::Cancelled
+                | Self::Orphaned
+                | Self::Superseded
+                | Self::TimedOut
         )
     }
 }

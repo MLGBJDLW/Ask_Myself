@@ -1610,6 +1610,36 @@ Every answer that uses knowledge base search results.
          ALTER TABLE ai_usage_records ADD COLUMN upstream_provider_id TEXT;
          ALTER TABLE ai_usage_records ADD COLUMN cache_outcome_reason TEXT;",
     ),
+    (
+        "v089_non_destructive_context_compactions",
+        "ALTER TABLE conversations ADD COLUMN active_context_compaction_id TEXT;",
+    ),
+    (
+        "v090_context_compaction_checkpoints",
+        "CREATE TABLE IF NOT EXISTS context_compactions (
+             id TEXT PRIMARY KEY NOT NULL,
+             operation_id TEXT NOT NULL UNIQUE,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+             idempotency_key TEXT NOT NULL,
+             snapshot_high_watermark INTEGER NOT NULL,
+             snapshot_hash TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             retained_tail_json TEXT NOT NULL,
+             retained_start_sort_order INTEGER NOT NULL,
+             tokens_before INTEGER NOT NULL,
+             tokens_after INTEGER NOT NULL,
+             provider TEXT NOT NULL,
+             model TEXT NOT NULL,
+             usage_json TEXT,
+             status TEXT NOT NULL CHECK(status IN ('completed', 'invalidated')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(conversation_id, idempotency_key)
+         );
+         CREATE INDEX IF NOT EXISTS idx_context_compactions_conversation
+             ON context_compactions(conversation_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_context_compactions_snapshot
+             ON context_compactions(conversation_id, snapshot_high_watermark);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2493,5 +2523,83 @@ mod tests {
             )
             .unwrap();
         assert!(model_id_exists);
+    }
+
+    #[test]
+    fn test_non_destructive_context_compaction_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+
+        let pointer_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('conversations')
+                 WHERE name = 'active_context_compaction_id'",
+                [],
+                |row| row.get::<_, i64>(0).map(|count| count > 0),
+            )
+            .unwrap();
+        assert!(pointer_exists);
+
+        for column in [
+            "operation_id",
+            "conversation_id",
+            "idempotency_key",
+            "snapshot_high_watermark",
+            "snapshot_hash",
+            "summary",
+            "retained_tail_json",
+            "retained_start_sort_order",
+            "status",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('context_compactions') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0).map(|count| count > 0),
+                )
+                .unwrap();
+            assert!(exists, "context_compactions.{column} should exist");
+        }
+    }
+
+    #[test]
+    fn test_context_compaction_migration_recovers_after_column_only_partial_apply() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        conn.execute_batch(
+            "DROP TABLE context_compactions;
+             DELETE FROM _migrations
+             WHERE name IN (
+                 'v089_non_destructive_context_compactions',
+                 'v090_context_compaction_checkpoints'
+             );",
+        )
+        .expect("simulate interruption after the pointer column was added");
+
+        run_migrations(&conn).expect("partial compaction migration should recover");
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'context_compactions'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists);
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _migrations
+                 WHERE name IN (
+                     'v089_non_destructive_context_compactions',
+                     'v090_context_compaction_checkpoints'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 2);
     }
 }

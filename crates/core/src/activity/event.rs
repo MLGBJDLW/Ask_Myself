@@ -20,6 +20,8 @@ pub enum ActivityEventKind {
     Completed,
     Failed,
     Cancelled,
+    Superseded,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

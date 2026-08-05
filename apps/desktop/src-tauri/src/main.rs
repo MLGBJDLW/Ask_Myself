@@ -263,9 +263,19 @@ fn main() {
                 Err(e) => log::warn!("Failed to materialize user skills: {e}"),
             }
             let db = Arc::new(db);
+            let db_executor = nexa_core::db_executor::DatabaseExecutor::new((*db).clone(), 64)
+                .expect("failed to initialize bounded database executor");
+            let activity_runtime = nexa_core::activity::ActivityRuntime::with_database((*db).clone())
+                .expect("failed to initialize durable activity runtime");
+            let context_compaction = nexa_core::context_maintenance::ContextCompactionService::new(
+                db_executor.clone(),
+                activity_runtime,
+            );
 
             app.manage(AppState {
                 db: db.clone(),
+                db_executor,
+                context_compaction,
                 #[cfg(feature = "video")]
                 whisper_busy: Arc::new(AtomicBool::new(false)),
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
@@ -431,6 +441,9 @@ fn main() {
             commands::get_conversation_stats_cmd,
             commands::cleanup_empty_conversations_cmd,
             commands::compact_conversation_cmd,
+            commands::start_context_compaction_cmd,
+            commands::observe_context_compaction_cmd,
+            commands::cancel_context_compaction_cmd,
             commands::search_conversations_cmd,
             // Conversation checkpoints
             commands::list_checkpoints_cmd,

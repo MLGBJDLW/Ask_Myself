@@ -115,12 +115,13 @@ pub struct UsageAnalytics {
     pub time_series: Vec<UsageTimeSeriesPoint>,
 }
 
-impl Database {
-    pub fn record_ai_usage(&self, input: &AiUsageRecordInput<'_>) -> Result<bool, CoreError> {
-        let provider_raw_json = serde_json::to_string(input.provider_raw)?;
-        let conn = self.conn();
-        let changed = conn.execute(
-            "INSERT OR IGNORE INTO ai_usage_records (
+pub(crate) fn record_ai_usage_on_connection(
+    conn: &rusqlite::Connection,
+    input: &AiUsageRecordInput<'_>,
+) -> Result<bool, CoreError> {
+    let provider_raw_json = serde_json::to_string(input.provider_raw)?;
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO ai_usage_records (
                 id, invocation_id, occurred_at, provider_id, provider_type,
                 model_id, raw_model_id, modality, operation_kind,
                 conversation_id, turn_id, run_id, subtask_run_id, project_id,
@@ -135,41 +136,47 @@ impl Database {
                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31
              )",
-            params![
-                Uuid::new_v4().to_string(),
-                input.invocation_id,
-                input.occurred_at,
-                input.provider_id,
-                input.provider_type,
-                input.model_id,
-                input.raw_model_id,
-                input.modality,
-                input.operation_kind,
-                input.conversation_id,
-                input.turn_id,
-                input.run_id,
-                input.subtask_run_id,
-                input.project_id,
-                to_i64(input.prompt_tokens),
-                to_i64(input.completion_tokens),
-                to_i64(input.thinking_tokens),
-                to_i64(input.total_tokens),
-                to_i64(input.cache_read_tokens),
-                to_i64(input.cache_miss_tokens),
-                to_i64(input.cache_creation_tokens),
-                input.usage_source,
-                input.request_status,
-                input.latency_ms.map(to_i64),
-                input.time_to_first_token_ms.map(to_i64),
-                input.upstream_provider_id,
-                input.cache_outcome_reason,
-                input.estimated_cost_micros.map(to_i64),
-                input.currency,
-                input.pricing_version,
-                provider_raw_json,
-            ],
-        )?;
-        Ok(changed > 0)
+        params![
+            Uuid::new_v4().to_string(),
+            input.invocation_id,
+            input.occurred_at,
+            input.provider_id,
+            input.provider_type,
+            input.model_id,
+            input.raw_model_id,
+            input.modality,
+            input.operation_kind,
+            input.conversation_id,
+            input.turn_id,
+            input.run_id,
+            input.subtask_run_id,
+            input.project_id,
+            to_i64(input.prompt_tokens),
+            to_i64(input.completion_tokens),
+            to_i64(input.thinking_tokens),
+            to_i64(input.total_tokens),
+            to_i64(input.cache_read_tokens),
+            to_i64(input.cache_miss_tokens),
+            to_i64(input.cache_creation_tokens),
+            input.usage_source,
+            input.request_status,
+            input.latency_ms.map(to_i64),
+            input.time_to_first_token_ms.map(to_i64),
+            input.upstream_provider_id,
+            input.cache_outcome_reason,
+            input.estimated_cost_micros.map(to_i64),
+            input.currency,
+            input.pricing_version,
+            provider_raw_json,
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+impl Database {
+    pub fn record_ai_usage(&self, input: &AiUsageRecordInput<'_>) -> Result<bool, CoreError> {
+        let conn = self.conn();
+        record_ai_usage_on_connection(&conn, input)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -332,6 +332,7 @@ export interface UseChatSessionReturn {
     resetUsage?: boolean;
     conversationId?: string;
   }) => Promise<void>;
+  applyCompactionUsage: (conversationId: string, promptTokens: number) => void;
   deleteMessage: (messageId: string) => void;
   editAndResend: (messageId: string, newContent: string) => Promise<void>;
   switchAgentConfig: (config: AgentConfig) => Promise<void>;
@@ -394,6 +395,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   } | null>(null);
   const knownStreamConversationsRef = useRef<Set<string>>(new Set());
   const suppressedLiveUsageRef = useRef<Set<string>>(new Set());
+  const compactionUsageRef = useRef<Map<string, UsageSnapshot>>(new Map());
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
@@ -638,7 +640,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setMessagesForConversation(activeId, (prev) => mergeLocalMessageState(prev, msgs));
         setTurnsForConversation(activeId, conversationTurns);
         setTaskRunsForConversation(activeId, agentTaskRuns);
-        setUsageSnapshot(durableUsage);
+        setUsageSnapshot(compactionUsageRef.current.get(activeId) ?? durableUsage);
         const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
         if (resumableRun && !streamHasVisiblePreview(activeId)) {
           Promise.all([
@@ -728,7 +730,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setTaskRunsForConversation(completedConversationId, agentTaskRuns);
           if (activeId === completedConversationId) {
             setOpenedConversation(conv);
-            setUsageSnapshot(durableUsage);
+            setUsageSnapshot(
+              compactionUsageRef.current.get(completedConversationId) ?? durableUsage,
+            );
           }
           setConversations((prev) => {
             if (conv.archivedAt) {
@@ -1134,6 +1138,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setMessagesForConversation(convId, (prev) => [...prev, optimisticMsg]);
       knownStreamConversationsRef.current.add(convId);
       suppressedLiveUsageRef.current.delete(convId);
+      compactionUsageRef.current.delete(convId);
 
       await streamSend(
         convId,
@@ -1242,6 +1247,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
+    compactionUsageRef.current.delete(activeId);
 
     await streamSend(
       activeId,
@@ -1299,6 +1305,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
+    compactionUsageRef.current.delete(activeId);
 
     await streamSend(activeId, newContent, undefined, activeAgentConfigRef.current?.id ?? null);
   }, [activeId, messages, setMessagesForConversation, streamSend]);
@@ -1329,10 +1336,36 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setTurnsForConversation(targetConversationId, conversationTurns);
       setTaskRunsForConversation(targetConversationId, agentTaskRuns);
       if (activeIdRef.current === targetConversationId) {
-        setUsageSnapshot(durableUsage);
+        setUsageSnapshot(
+          compactionUsageRef.current.get(targetConversationId) ?? durableUsage,
+        );
       }
     } catch { /* ignore */ }
   }, [activeId, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+
+  const applyCompactionUsage = useCallback((
+    conversationId: string,
+    promptTokens: number,
+  ) => {
+    suppressedLiveUsageRef.current.add(conversationId);
+    if (activeIdRef.current !== conversationId) return;
+    const snapshot: UsageSnapshot = {
+      source: 'estimated',
+      promptTokens,
+      completionTokens: 0,
+      totalTokens: promptTokens,
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheMissTokens: promptTokens,
+      cacheCreationTokens: 0,
+      lastPromptTokens: promptTokens,
+      providerRaw: {
+        kind: 'contextCompactionProjection',
+      },
+    };
+    compactionUsageRef.current.set(conversationId, snapshot);
+    setUsageSnapshot(snapshot);
+  }, []);
 
   /* ── Computed ────────────────────────────────────────────────────── */
 
@@ -1459,6 +1492,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     clearError: () => setChatError(null),
     loadConversations,
     reloadMessages,
+    applyCompactionUsage,
     deleteMessage,
     editAndResend,
     switchAgentConfig,

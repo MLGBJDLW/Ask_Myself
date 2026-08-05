@@ -6,6 +6,8 @@ test.beforeEach(async ({ page }) => {
     if (!sessionStorage.getItem('__e2e_initialized__')) {
       localStorage.removeItem('chat-token-usage-v1');
       localStorage.removeItem('__e2e_usage_samples__');
+      localStorage.removeItem('nexa.context-compaction.v1.conv-e2e');
+      localStorage.removeItem('nexa.context-compaction.v1.conv-empty');
       sessionStorage.setItem('__e2e_initialized__', '1');
     }
 
@@ -238,6 +240,99 @@ test.beforeEach(async ({ page }) => {
         }
         case 'list_checkpoints_cmd':
           return [];
+        case 'start_context_compaction_cmd': {
+          const request = (args.request ?? {}) as Record<string, unknown>;
+          const conversationId = String(request.conversationId ?? '');
+          const operationId = `ctx-${String(request.idempotencyKey ?? nextId('operation'))}`;
+          localStorage.setItem(`__e2e_compaction_${operationId}`, JSON.stringify({
+            conversationId,
+            startedAt: Date.now(),
+            state: 'running',
+          }));
+          return {
+            operationId,
+            conversationId,
+            snapshotVersion: conversations[conversationId]?.updatedAt ?? nowIso,
+            state: 'running',
+            phase: 'queued',
+          };
+        }
+        case 'observe_context_compaction_cmd': {
+          const operationId = String(args.operationId ?? '');
+          const raw = localStorage.getItem(`__e2e_compaction_${operationId}`);
+          if (!raw) throw new Error(`Unknown compaction operation ${operationId}`);
+          const operation = JSON.parse(raw) as {
+            conversationId: string;
+            startedAt: number;
+            state: 'running' | 'cancelled';
+          };
+          const remaining = Math.max(0, 1200 - (Date.now() - operation.startedAt));
+          if (operation.state === 'running' && remaining > 0) {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 250)));
+          }
+          const completed = operation.state === 'running'
+            && Date.now() - operation.startedAt >= 1200;
+          const state = operation.state === 'cancelled'
+            ? 'cancelled'
+            : completed ? 'completed' : 'running';
+          const before = messagesByConversation[operation.conversationId] ?? [];
+          const result = {
+            conversationId: operation.conversationId,
+            checkpointId: completed ? operationId : null,
+            messagesBefore: before.length,
+            messagesAfter: before.length,
+            tokensBefore: 74000,
+            tokensAfter: 1300,
+            evictedMessages: Math.max(0, before.length - 2),
+            summaryKind: 'abstractive',
+            fallbackReason: null,
+          };
+          const cursor = completed || state === 'cancelled' ? 3 : 2;
+          return {
+            record: {
+              activityId: operationId,
+              state,
+              startedAt: new Date(operation.startedAt).toISOString(),
+              updatedAt: new Date().toISOString(),
+              completedAt: state === 'running' ? null : new Date().toISOString(),
+              lastEventSeq: cursor,
+            },
+            cursor,
+            events: state === 'running'
+              ? [{
+                  activityId: operationId,
+                  seq: 2,
+                  timestamp: new Date().toISOString(),
+                  kind: 'progress',
+                  payload: { phase: 'summarizing', progress: 0.45 },
+                }]
+              : [{
+                  activityId: operationId,
+                  seq: 3,
+                  timestamp: new Date().toISOString(),
+                  kind: state,
+                  payload: {
+                    state,
+                    detail: state === 'completed'
+                      ? { eventKind: 'operationCompleted', result }
+                      : { eventKind: 'operationCancelled', reason: 'user_requested' },
+                  },
+                }],
+            timedOut: state === 'running',
+          };
+        }
+        case 'cancel_context_compaction_cmd': {
+          const operationId = String(args.operationId ?? '');
+          const raw = localStorage.getItem(`__e2e_compaction_${operationId}`);
+          if (raw) {
+            const operation = JSON.parse(raw) as Record<string, unknown>;
+            localStorage.setItem(`__e2e_compaction_${operationId}`, JSON.stringify({
+              ...operation,
+              state: 'cancelled',
+            }));
+          }
+          return null;
+        }
         case 'compact_conversation_cmd': {
           const conversationId = String(args.conversationId ?? '');
           const before = messagesByConversation[conversationId] ?? [];
@@ -521,7 +616,7 @@ test('active goal owns the top-right task capsule and stays out of context detai
   await expect(panel).not.toHaveAttribute('data-dragging');
 });
 
-test('manual compact keeps the draft editable, locks send, and refreshes context usage', async ({ page }) => {
+test('manual compact keeps canonical messages and updates only projected context usage', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
 
   await page.getByTestId('chat-input-textarea').fill('Generate usage before compacting.');
@@ -541,7 +636,29 @@ test('manual compact keeps the draft editable, locks send, and refreshes context
   await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
   await expect(page.getByText('Compaction complete').first()).toBeVisible();
   await expect(page.getByTestId('chat-context-trigger')).not.toHaveAttribute('aria-label', /7% context used/);
-  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /No usage data yet/);
+  await expect(page.getByTestId('chat-context-trigger')).toHaveAttribute('aria-label', /0% context used/);
+  await expect(page.getByText('Hello', { exact: true }).last()).toBeVisible();
+});
+
+test('manual compact resumes observation after a page reload', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  await page.getByTestId('chat-compact').click();
+  await expect(page.getByTestId('chat-compact-status').first()).toContainText('Queued');
+
+  await page.reload();
+
+  await expect(page.getByTestId('chat-compact-status').first()).toBeVisible();
+  await expect(page.getByText('Compaction complete').first()).toBeVisible();
+  await expect(page.getByText('Hello', { exact: true }).last()).toBeVisible();
+});
+
+test('manual compact exposes cancellation and keeps the canonical transcript', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  await page.getByTestId('chat-compact').click();
+  await page.getByTestId('chat-compact-cancel').click();
+
+  await expect(page.getByTestId('chat-compact-status').first()).toContainText('user_requested');
+  await expect(page.getByText('Hello', { exact: true }).last()).toBeVisible();
 });
 
 test('manual compact status and completion stay scoped to the target conversation', async ({ page }) => {
