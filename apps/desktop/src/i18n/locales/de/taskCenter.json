@@ -8,6 +8,7 @@
   "running": "Running",
   "queued": "Queued",
   "waitingApproval": "Waiting approval",
+  "waitingUser": "Wartet auf Sie",
   "cancelling": "Cancelling",
   "paused": "Paused",
   "cancelled": "Cancelled",
