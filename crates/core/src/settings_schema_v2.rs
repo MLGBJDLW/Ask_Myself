@@ -6,7 +6,7 @@
 //! lets later registry work adopt the schema incrementally and makes rollback
 //! a metadata operation instead of a lossy reverse transformation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -260,7 +260,17 @@ impl SettingsProfileV2 {
                         "Connection references require id and providerId".to_string(),
                     ));
                 }
+                if let Some(reference) = &value.credential_ref {
+                    validate_credential_reference(reference)?;
+                }
             }
+        }
+        if let Some(reference) = self
+            .legacy_source
+            .as_ref()
+            .and_then(|source| source.credential_ref.as_deref())
+        {
+            validate_credential_reference(reference)?;
         }
         for value in self.overrides.models.values() {
             if let SettingOverrideV2::Set { value } = value {
@@ -294,6 +304,25 @@ fn validate_model_reference(value: &ModelReferenceV2) -> Result<(), CoreError> {
     if value.provider_id.trim().is_empty() || value.model_id.trim().is_empty() {
         return Err(CoreError::InvalidInput(
             "Model references require providerId and modelId".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_credential_reference(reference: &str) -> Result<(), CoreError> {
+    let Some((namespace, identifier)) = reference.split_once(':') else {
+        return Err(CoreError::InvalidInput(
+            "credentialRef must be a namespaced reference, not secret material".to_string(),
+        ));
+    };
+    if !matches!(namespace, "legacy-agent-config" | "legacy-app-config")
+        || identifier.trim().is_empty()
+        || identifier.len() > 256
+        || identifier.chars().any(char::is_whitespace)
+        || identifier.chars().any(char::is_control)
+    {
+        return Err(CoreError::InvalidInput(
+            "credentialRef must identify an existing supported credential store".to_string(),
         ));
     }
     Ok(())
@@ -563,6 +592,7 @@ pub fn resolve_settings_v2(
     let mut previous_rank = None;
     let mut resolved = ResolvedSettingsV2::default();
     let presets = builtin_settings_presets_v2();
+    let mut application_policy_keys = BTreeSet::new();
     for profile in profiles {
         profile.validate()?;
         let rank = profile.scope.kind.rank();
@@ -579,7 +609,7 @@ pub fn resolve_settings_v2(
             revision: profile.revision,
             preset: profile.preset.clone(),
         });
-        if let Some(selection) = &profile.preset {
+        let preset_patch = if let Some(selection) = &profile.preset {
             let definition = presets.iter().find(|definition| {
                 definition.id == selection.id
                     && definition.version == selection.version
@@ -591,9 +621,30 @@ pub fn resolve_settings_v2(
                     selection.id, selection.version
                 )));
             };
+            Some((&definition.patch, selection))
+        } else {
+            None
+        };
+        let policy_keys = preset_patch
+            .iter()
+            .flat_map(|(patch, _)| patch.permissions.keys())
+            .chain(profile.overrides.permissions.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if profile.scope.kind == SettingsScopeKindV2::Application {
+            application_policy_keys.extend(policy_keys);
+        } else if let Some(missing_key) = policy_keys
+            .iter()
+            .find(|key| !application_policy_keys.contains(*key))
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "Permission {missing_key} requires an Application policy baseline"
+            )));
+        }
+        if let Some((patch, selection)) = preset_patch {
             apply_profile_overrides(
                 &mut resolved,
-                &definition.patch,
+                patch,
                 &profile.scope,
                 profile.revision,
                 Some(selection),
@@ -693,6 +744,7 @@ pub struct SettingsMigrationReportV2 {
     pub migrated: usize,
     pub unchanged: usize,
     pub skipped_rolled_back: usize,
+    pub removed_orphans: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1106,6 +1158,13 @@ fn is_secret_field(key: &str) -> bool {
             | "authtoken"
             | "bearertoken"
             | "clientsecret"
+            | "secretkey"
+            | "sessiontoken"
+            | "signingkey"
+            | "encryptionkey"
+            | "webhooksecret"
+            | "credential"
+            | "credentials"
             | "password"
             | "privatekey"
             | "sessionkey"
@@ -1579,34 +1638,6 @@ fn read_legacy_app_config(
     .map_err(CoreError::Database)
 }
 
-fn refresh_rollback_snapshot<T: Serialize>(
-    transaction: &Transaction<'_>,
-    source_kind: &str,
-    source_id: &str,
-    fingerprint: &str,
-    source: &T,
-) -> Result<(), CoreError> {
-    let source_hash = sha256_json(source)?;
-    let source_snapshot_json = serde_json::to_string(source)?;
-    let source_snapshot_ciphertext = crate::crypto::encrypt_api_key(&source_snapshot_json)?;
-    transaction.execute(
-        "UPDATE settings_schema_migration_journal
-         SET source_snapshot_ciphertext = ?5, source_hash = ?6
-         WHERE migration_key = ?1 AND source_kind = ?2
-           AND source_id = ?3 AND source_fingerprint = ?4
-           AND status = 'applied'",
-        params![
-            LEGACY_SETTINGS_MIGRATION_KEY,
-            source_kind,
-            source_id,
-            fingerprint,
-            source_snapshot_ciphertext,
-            source_hash,
-        ],
-    )?;
-    Ok(())
-}
-
 fn sync_legacy_agent_configs(
     conn: &mut Connection,
     source_id: Option<&str>,
@@ -1619,8 +1650,13 @@ fn sync_legacy_agent_configs(
         None
     };
     let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let report =
-        sync_legacy_sources_in_transaction(&transaction, sources, app_source, force_rolled_back)?;
+    let report = sync_legacy_sources_in_transaction(
+        &transaction,
+        sources,
+        app_source,
+        force_rolled_back,
+        source_id.is_none(),
+    )?;
     transaction.commit()?;
     Ok(report)
 }
@@ -1630,9 +1666,33 @@ fn sync_legacy_sources_in_transaction(
     sources: Vec<RawLegacyAgentConfigSnapshot>,
     app_source: Option<RawLegacyAppConfigSnapshot>,
     force_rolled_back: bool,
+    remove_agent_orphans: bool,
 ) -> Result<SettingsMigrationReportV2, CoreError> {
     let mut report = SettingsMigrationReportV2::default();
     let migration_run_id = Uuid::new_v4().to_string();
+
+    if remove_agent_orphans {
+        transaction.execute(
+            "UPDATE settings_schema_migration_journal
+             SET status = 'superseded'
+             WHERE migration_key = ?1 AND source_kind = 'agent_config'
+               AND status = 'applied'
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_configs
+                   WHERE agent_configs.id = settings_schema_migration_journal.source_id
+               )",
+            params![LEGACY_SETTINGS_MIGRATION_KEY],
+        )?;
+        report.removed_orphans = transaction.execute(
+            "DELETE FROM settings_profiles_v2
+             WHERE managed_by = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_configs
+                   WHERE agent_configs.id = settings_profiles_v2.legacy_source_id
+               )",
+            params![LEGACY_AGENT_CONFIG_MANAGER],
+        )?;
+    }
 
     for source in sources {
         let snapshot = &source.config;
@@ -1652,7 +1712,9 @@ fn sync_legacy_sources_in_transaction(
                 "SELECT status
                  FROM settings_schema_migration_journal
                  WHERE migration_key = ?1 AND source_kind = 'agent_config'
-                   AND source_id = ?2 AND source_fingerprint = ?3",
+                   AND source_id = ?2 AND source_fingerprint = ?3
+                 ORDER BY applied_at DESC, rowid DESC
+                 LIMIT 1",
                 params![LEGACY_SETTINGS_MIGRATION_KEY, &snapshot.id, &fingerprint],
                 |row| row.get(0),
             )
@@ -1671,13 +1733,6 @@ fn sync_legacy_sources_in_transaction(
             continue;
         }
         if existing_status.as_deref() == Some("applied") && profile_exists {
-            refresh_rollback_snapshot(
-                transaction,
-                "agent_config",
-                &snapshot.id,
-                &fingerprint,
-                &source,
-            )?;
             report.unchanged += 1;
             continue;
         }
@@ -1733,18 +1788,7 @@ fn sync_legacy_sources_in_transaction(
                  source_fingerprint, target_profile_id, status,
                  source_snapshot_ciphertext, source_hash, target_hash,
                  round_trip_verified
-             ) VALUES (?1, ?2, ?3, 'agent_config', ?4, ?5, ?6, 'applied', ?7, ?8, ?9, 1)
-             ON CONFLICT(migration_key, source_kind, source_id, source_fingerprint)
-             DO UPDATE SET
-                 migration_run_id = excluded.migration_run_id,
-                 target_profile_id = excluded.target_profile_id,
-                 status = 'applied',
-                 source_snapshot_ciphertext = excluded.source_snapshot_ciphertext,
-                 source_hash = excluded.source_hash,
-                 target_hash = excluded.target_hash,
-                 round_trip_verified = 1,
-                 applied_at = datetime('now'),
-                 rolled_back_at = NULL",
+             ) VALUES (?1, ?2, ?3, 'agent_config', ?4, ?5, ?6, 'applied', ?7, ?8, ?9, 1)",
             params![
                 Uuid::new_v4().to_string(),
                 &migration_run_id,
@@ -1779,7 +1823,9 @@ fn sync_legacy_sources_in_transaction(
                 "SELECT status
                  FROM settings_schema_migration_journal
                  WHERE migration_key = ?1 AND source_kind = 'app_config'
-                   AND source_id = ?2 AND source_fingerprint = ?3",
+                   AND source_id = ?2 AND source_fingerprint = ?3
+                 ORDER BY applied_at DESC, rowid DESC
+                 LIMIT 1",
                 params![LEGACY_SETTINGS_MIGRATION_KEY, &source.key, &fingerprint],
                 |row| row.get(0),
             )
@@ -1795,13 +1841,6 @@ fn sync_legacy_sources_in_transaction(
         if existing_status.as_deref() == Some("rolled_back") && !force_rolled_back {
             report.skipped_rolled_back += 1;
         } else if existing_status.as_deref() == Some("applied") && profile_exists {
-            refresh_rollback_snapshot(
-                transaction,
-                "app_config",
-                &source.key,
-                &fingerprint,
-                &source,
-            )?;
             report.unchanged += 1;
         } else {
             verify_legacy_app_profile(&profile, &source)?;
@@ -1854,18 +1893,7 @@ fn sync_legacy_sources_in_transaction(
                      source_fingerprint, target_profile_id, status,
                      source_snapshot_ciphertext, source_hash, target_hash,
                      round_trip_verified
-                 ) VALUES (?1, ?2, ?3, 'app_config', ?4, ?5, ?6, 'applied', ?7, ?8, ?9, 1)
-                 ON CONFLICT(migration_key, source_kind, source_id, source_fingerprint)
-                 DO UPDATE SET
-                     migration_run_id = excluded.migration_run_id,
-                     target_profile_id = excluded.target_profile_id,
-                     status = 'applied',
-                     source_snapshot_ciphertext = excluded.source_snapshot_ciphertext,
-                     source_hash = excluded.source_hash,
-                     target_hash = excluded.target_hash,
-                     round_trip_verified = 1,
-                     applied_at = datetime('now'),
-                     rolled_back_at = NULL",
+                 ) VALUES (?1, ?2, ?3, 'app_config', ?4, ?5, ?6, 'applied', ?7, ?8, ?9, 1)",
                 params![
                     Uuid::new_v4().to_string(),
                     &migration_run_id,
@@ -1928,7 +1956,7 @@ pub(crate) fn sync_legacy_agent_config_in_transaction(
         return Ok(SettingsMigrationReportV2::default());
     }
     let sources = read_legacy_agent_configs(transaction, Some(source_id))?;
-    sync_legacy_sources_in_transaction(transaction, sources, None, false)
+    sync_legacy_sources_in_transaction(transaction, sources, None, false, false)
 }
 
 pub(crate) fn sync_all_legacy_agent_configs_in_transaction(
@@ -1938,7 +1966,7 @@ pub(crate) fn sync_all_legacy_agent_configs_in_transaction(
         return Ok(SettingsMigrationReportV2::default());
     }
     let sources = read_legacy_agent_configs(transaction, None)?;
-    sync_legacy_sources_in_transaction(transaction, sources, None, false)
+    sync_legacy_sources_in_transaction(transaction, sources, None, false, true)
 }
 
 pub(crate) fn sync_legacy_app_config_in_transaction(
@@ -1948,7 +1976,7 @@ pub(crate) fn sync_legacy_app_config_in_transaction(
         return Ok(SettingsMigrationReportV2::default());
     }
     let app_source = read_legacy_app_config(transaction)?;
-    sync_legacy_sources_in_transaction(transaction, Vec::new(), app_source, false)
+    sync_legacy_sources_in_transaction(transaction, Vec::new(), app_source, false, false)
 }
 
 fn settings_schema_v2_is_active(transaction: &Transaction<'_>) -> Result<bool, CoreError> {
@@ -1975,8 +2003,32 @@ pub(crate) fn remove_legacy_agent_config_projection(
              WHERE managed_by = ?1 AND legacy_source_id = ?2",
             params![LEGACY_AGENT_CONFIG_MANAGER, source_id],
         )?;
+        conn.execute(
+            "UPDATE settings_schema_migration_journal
+             SET status = 'superseded'
+             WHERE migration_key = ?1 AND source_kind = 'agent_config'
+               AND source_id = ?2 AND status = 'applied'",
+            params![LEGACY_SETTINGS_MIGRATION_KEY, source_id],
+        )?;
     }
     Ok(())
+}
+
+fn expected_rollback_sources(
+    transaction: &Transaction<'_>,
+) -> Result<BTreeSet<(String, String)>, CoreError> {
+    let mut expected = BTreeSet::new();
+    {
+        let mut statement = transaction.prepare("SELECT id FROM agent_configs ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        for source_id in rows {
+            expected.insert(("agent_config".to_string(), source_id?));
+        }
+    }
+    if let Some(source) = read_legacy_app_config(transaction)? {
+        expected.insert(("app_config".to_string(), source.key));
+    }
+    Ok(expected)
 }
 
 impl Database {
@@ -2007,17 +2059,27 @@ impl Database {
     pub fn rollback_settings_schema_v2(&self) -> Result<bool, CoreError> {
         let mut conn = self.conn();
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let active_version: u32 = transaction.query_row(
-            "SELECT active_version FROM settings_schema_state WHERE singleton_id = 1",
+        let (active_version, migration_id): (u32, Option<String>) = transaction.query_row(
+            "SELECT active_version, migration_id
+             FROM settings_schema_state WHERE singleton_id = 1",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         if active_version != SETTINGS_SCHEMA_VERSION_V2 {
             return Ok(false);
         }
+        if migration_id
+            .as_deref()
+            .is_none_or(|migration_id| migration_id.trim().is_empty())
+        {
+            return Err(CoreError::InvalidInput(
+                "Active Settings V2 state has no migration id".to_string(),
+            ));
+        }
         let snapshots = {
             let mut statement = transaction.prepare(
-                "SELECT id, source_kind, source_snapshot_ciphertext, source_hash
+                "SELECT id, source_kind, source_id,
+                        source_snapshot_ciphertext, source_hash
                  FROM settings_schema_migration_journal
                  WHERE migration_key = ?1 AND status = 'applied'
                  ORDER BY source_kind, source_id",
@@ -2028,11 +2090,22 @@ impl Database {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        for (_journal_id, source_kind, ciphertext, expected_hash) in &snapshots {
+        let actual_sources = snapshots
+            .iter()
+            .map(|(_, source_kind, source_id, _, _)| (source_kind.clone(), source_id.clone()))
+            .collect::<BTreeSet<_>>();
+        let expected_sources = expected_rollback_sources(&transaction)?;
+        if snapshots.len() != actual_sources.len() || actual_sources != expected_sources {
+            return Err(CoreError::InvalidInput(
+                "Settings rollback snapshot set is incomplete or inconsistent".to_string(),
+            ));
+        }
+        for (_journal_id, source_kind, _source_id, ciphertext, expected_hash) in &snapshots {
             let snapshot_json = crate::crypto::decrypt_api_key(ciphertext)?;
             match source_kind.as_str() {
                 "agent_config" => {
@@ -2110,6 +2183,24 @@ impl Database {
         }
         let scope_id = profile.scope.id.as_deref().unwrap_or("");
         let conn = self.conn();
+        let scope_occupant: Option<String> = conn
+            .query_row(
+                "SELECT id FROM settings_profiles_v2
+                 WHERE scope_kind = ?1 AND scope_id = ?2",
+                params![profile.scope.kind.as_str(), scope_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if scope_occupant
+            .as_deref()
+            .is_some_and(|occupant| occupant != profile.id)
+        {
+            return Err(CoreError::Conflict(format!(
+                "Settings scope {}:{} is already owned by another profile",
+                profile.scope.kind.as_str(),
+                scope_id
+            )));
+        }
         let existing: Option<(u64, Option<String>)> = conn
             .query_row(
                 "SELECT revision, managed_by FROM settings_profiles_v2 WHERE id = ?1",
@@ -2335,6 +2426,13 @@ mod tests {
                 value: Value::from(0.2),
             },
         );
+        application.overrides.permissions.insert(
+            "shell".to_string(),
+            PolicyRuleV2 {
+                id: "app-shell".to_string(),
+                effect: PermissionLevelV2::Allow,
+            },
+        );
         let mut workspace = profile("workspace", SettingsScopeKindV2::Workspace, Some("w1"));
         workspace
             .overrides
@@ -2364,9 +2462,9 @@ mod tests {
         assert_eq!(temperature.source_revision, 1);
         let shell = resolved.permissions.get("shell").unwrap();
         assert_eq!(shell.effect, PermissionLevelV2::RequireApproval);
-        assert_eq!(shell.matched_rules.len(), 2);
+        assert_eq!(shell.matched_rules.len(), 3);
         assert_eq!(
-            shell.matched_rules[1].source.kind,
+            shell.matched_rules[2].source.kind,
             SettingsScopeKindV2::Task
         );
     }
@@ -2389,6 +2487,17 @@ mod tests {
             },
         );
         assert!(resolve_settings_v2(&[task_only]).is_err());
+
+        let application = profile("app-empty-policy", SettingsScopeKindV2::Application, None);
+        let mut task = profile("task-policy", SettingsScopeKindV2::Task, Some("t1"));
+        task.overrides.permissions.insert(
+            "shell".to_string(),
+            PolicyRuleV2 {
+                id: "unsafe-without-key-baseline".to_string(),
+                effect: PermissionLevelV2::Allow,
+            },
+        );
+        assert!(resolve_settings_v2(&[application, task]).is_err());
     }
 
     #[test]
@@ -2486,12 +2595,16 @@ mod tests {
         let sanitized = sanitize_app_config_value(serde_json::json!({
             "futureProvider": {
                 "apiKey": "future-secret",
+                "sessionToken": "session-secret",
+                "secretKey": "key-secret",
                 "endpoint": "https://user:password@example.test/v1",
                 "nested": [{ "access_token": "token-secret" }]
             }
         }));
         let json = serde_json::to_string(&sanitized).unwrap();
         assert!(!json.contains("future-secret"));
+        assert!(!json.contains("session-secret"));
+        assert!(!json.contains("key-secret"));
         assert!(!json.contains("password@example"));
         assert!(!json.contains("token-secret"));
         assert!(json.contains("credentialRef"));
@@ -2647,17 +2760,27 @@ mod tests {
         assert_eq!(saved.revision, 2);
         let error = db.save_settings_profile_v2(&changed, Some(1)).unwrap_err();
         assert!(matches!(error, CoreError::Conflict(_)));
+
+        let duplicate_scope = profile(
+            "native-other-id",
+            SettingsScopeKindV2::Workspace,
+            Some("workspace"),
+        );
+        let error = db
+            .save_settings_profile_v2(&duplicate_scope, None)
+            .unwrap_err();
+        assert!(matches!(error, CoreError::Conflict(_)));
     }
 
     #[test]
     fn native_profile_writes_reject_inline_secrets() {
         let db = Database::open_memory().unwrap();
-        let mut native = profile(
+        let mut inline_secret = profile(
             "native-secret",
             SettingsScopeKindV2::Workspace,
             Some("workspace"),
         );
-        native.extensions.insert(
+        inline_secret.extensions.insert(
             "provider".to_string(),
             serde_json::json!({
                 "authorization": {
@@ -2667,20 +2790,59 @@ mod tests {
             }),
         );
 
-        assert!(db.save_settings_profile_v2(&native, None).is_err());
+        assert!(db.save_settings_profile_v2(&inline_secret, None).is_err());
+        let mut raw_reference = profile(
+            "native-raw-reference",
+            SettingsScopeKindV2::Workspace,
+            Some("workspace"),
+        );
+        raw_reference.overrides.connections.insert(
+            "default".to_string(),
+            SettingOverrideV2::Set {
+                value: ConnectionReferenceV2 {
+                    id: "connection-1".to_string(),
+                    provider_id: "openai".to_string(),
+                    endpoint_id: None,
+                    base_url: None,
+                    credential_ref: Some("sk-live-secret".to_string()),
+                },
+            },
+        );
+        assert!(db.save_settings_profile_v2(&raw_reference, None).is_err());
         assert!(db.list_settings_profiles_v2().unwrap().is_empty());
     }
 
     #[test]
-    fn semantic_idempotency_keeps_revision_and_refreshes_exact_rollback_snapshot() {
+    fn semantic_idempotency_keeps_revision_and_original_rollback_snapshot() {
         let db = Database::open_memory().unwrap();
         db.save_agent_config(&legacy_input("first-secret")).unwrap();
         let first = db.list_settings_profiles_v2().unwrap().remove(0);
+        let original_snapshot: String = db
+            .conn()
+            .query_row(
+                "SELECT source_snapshot_ciphertext
+                 FROM settings_schema_migration_journal
+                 WHERE source_kind = 'agent_config' AND status = 'applied'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         db.save_agent_config(&legacy_input("replacement-secret"))
             .unwrap();
         let second = db.list_settings_profiles_v2().unwrap().remove(0);
         assert_eq!(second.revision, first.revision);
+        let preserved_snapshot: String = db
+            .conn()
+            .query_row(
+                "SELECT source_snapshot_ciphertext
+                 FROM settings_schema_migration_journal
+                 WHERE source_kind = 'agent_config' AND status = 'applied'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_snapshot, original_snapshot);
         let journal_count: u32 = db
             .conn()
             .query_row(
@@ -2695,8 +2857,47 @@ mod tests {
         assert!(db.rollback_settings_schema_v2().unwrap());
         assert_eq!(
             db.get_agent_config("legacy-agent").unwrap().api_key,
-            "replacement-secret"
+            "first-secret"
         );
+    }
+
+    #[test]
+    fn missing_snapshot_blocks_rollback_without_flipping_active_version() {
+        let db = Database::open_memory().unwrap();
+        db.save_agent_config(&legacy_input("secret")).unwrap();
+        db.conn()
+            .execute(
+                "DELETE FROM settings_schema_migration_journal
+                 WHERE source_kind = 'agent_config'",
+                [],
+            )
+            .unwrap();
+
+        assert!(db.rollback_settings_schema_v2().is_err());
+        assert_eq!(db.settings_schema_state_v2().unwrap().active_version, 2);
+        assert_eq!(
+            db.get_agent_config("legacy-agent").unwrap().api_key,
+            "secret"
+        );
+    }
+
+    #[test]
+    fn deleted_agent_is_not_resurrected_by_rollback_or_remigration() {
+        let db = Database::open_memory().unwrap();
+        db.save_agent_config(&legacy_input("secret")).unwrap();
+        db.delete_agent_config("legacy-agent").unwrap();
+        assert!(db.rollback_settings_schema_v2().unwrap());
+        assert!(db.get_agent_config("legacy-agent").is_err());
+
+        db.save_agent_config(&legacy_input("replacement")).unwrap();
+        db.migrate_settings_schema_v2().unwrap();
+        assert!(db.rollback_settings_schema_v2().unwrap());
+        db.delete_agent_config("legacy-agent").unwrap();
+        assert_eq!(db.list_settings_profiles_v2().unwrap().len(), 1);
+        let report = db.migrate_settings_schema_v2().unwrap();
+        assert_eq!(report.removed_orphans, 1);
+        assert!(db.list_settings_profiles_v2().unwrap().is_empty());
+        assert!(db.get_agent_config("legacy-agent").is_err());
     }
 
     #[test]

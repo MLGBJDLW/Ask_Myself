@@ -527,9 +527,10 @@ The Nexa implementation keeps the public seam in
   explicit migration, and rollback. Provider execution continues through the
   V1 compatibility reader until PR 9 installs the normalized registries; V1
   writes and their migration-managed V2 projection commit atomically while V2
-  is active. Projection fingerprints ignore encryption/timestamp churn, while
-  the exact encrypted rollback snapshot and its independent hash are refreshed
-  on semantically unchanged writes.
+  is active. Projection fingerprints ignore encryption/timestamp churn without
+  mutating the original encrypted rollback snapshot or its independent hash.
+  Deletions supersede their journal entry, and full migration removes orphaned
+  managed profiles so rollback cannot resurrect an intentionally deleted row.
 
 ## License and integration boundaries
 

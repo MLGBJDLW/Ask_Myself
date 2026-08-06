@@ -80,4 +80,5 @@ export interface SettingsMigrationReportV2 {
   migrated: number;
   unchanged: number;
   skippedRolledBack: number;
+  removedOrphans: number;
 }

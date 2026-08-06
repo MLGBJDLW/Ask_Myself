@@ -1781,8 +1781,7 @@ Every answer that uses knowledge base search results.
              round_trip_verified INTEGER NOT NULL DEFAULT 0
                  CHECK (round_trip_verified IN (0, 1)),
              applied_at TEXT NOT NULL DEFAULT (datetime('now')),
-             rolled_back_at TEXT,
-             UNIQUE(migration_key, source_kind, source_id, source_fingerprint)
+             rolled_back_at TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_settings_schema_migration_source
              ON settings_schema_migration_journal(
