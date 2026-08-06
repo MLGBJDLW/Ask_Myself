@@ -207,6 +207,87 @@ pub async fn get_conversation_turns_cmd(
 }
 
 #[tauri::command]
+pub async fn list_interaction_requests_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: Option<String>,
+    include_terminal: Option<bool>,
+) -> Result<Vec<InteractionRequest>, String> {
+    state
+        .db
+        .list_interaction_requests(
+            conversation_id.as_deref(),
+            include_terminal.unwrap_or(false),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_interaction_request_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .get_interaction_request(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mark_interaction_presented_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .mark_interaction_presented(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mark_interaction_partially_answered_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .mark_interaction_partially_answered(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_interaction_response_cmd(
+    state: tauri::State<'_, AppState>,
+    input: SubmitInteractionResponse,
+) -> Result<InteractionResponse, String> {
+    state
+        .db
+        .submit_interaction_response(&input)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn acknowledge_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .acknowledge_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .cancel_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_runs_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,

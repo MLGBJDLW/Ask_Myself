@@ -52,6 +52,88 @@ export interface ConversationTurn {
   finishedAt?: string | null;
 }
 
+export type InteractionKind =
+  | 'user_input'
+  | 'high_risk_confirmation'
+  | 'credential_request'
+  | 'conflict_resolution';
+
+export type InteractionStatus =
+  | 'pending'
+  | 'presented'
+  | 'partially_answered'
+  | 'submitted'
+  | 'acknowledged'
+  | 'cancelled'
+  | 'expired'
+  | 'superseded'
+  | 'failed';
+
+export type InteractionQuestionKind =
+  | 'short'
+  | 'long'
+  | 'single_choice'
+  | 'multi_choice'
+  | 'confirm';
+
+export interface InteractionQuestionOption {
+  label: string;
+  description?: string | null;
+}
+
+export interface InteractionQuestion {
+  id: string;
+  header: string;
+  question: string;
+  type: InteractionQuestionKind;
+  options?: InteractionQuestionOption[];
+  placeholder?: string | null;
+  why?: string | null;
+}
+
+export type InteractionAnswers = Record<string, string[]>;
+
+export interface InteractionRequest {
+  schemaVersion: 1;
+  interactionId: string;
+  conversationId: string;
+  turnId: string;
+  toolCallId?: string | null;
+  kind: InteractionKind;
+  title: string;
+  description?: string | null;
+  questions: InteractionQuestion[];
+  required: boolean;
+  status: InteractionStatus;
+  riskPriority: number;
+  queueSequence: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string | null;
+  resumeToken: string;
+}
+
+export interface InteractionDraft {
+  schemaVersion: 1;
+  interactionId: string;
+  answers: InteractionAnswers;
+  currentQuestionIndex: number;
+  updatedAt: string;
+}
+
+export interface SubmitInteractionResponse {
+  interactionId: string;
+  resumeToken: string;
+  answers: InteractionAnswers;
+}
+
+export interface InteractionResponse {
+  schemaVersion: 1;
+  interactionId: string;
+  answers: InteractionAnswers;
+  submittedAt: string;
+}
+
 export interface AgentTaskRun {
   id: string;
   conversationId: string;

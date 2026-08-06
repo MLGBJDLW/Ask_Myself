@@ -31,8 +31,9 @@ const request = extractQuestionRequest(
   }),
   {
     kind: 'questionRequest',
-    version: 1,
+    version: 2,
     callId: 'call-question-1',
+    interactionId: 'interaction-1',
     status: 'pending',
   },
 );
@@ -45,3 +46,5 @@ assert(response.message.includes('Which scope?'), 'response includes question te
 assert(response.message.includes('Repo'), 'response includes selected answer');
 assertEqual(response.artifact.kind, 'questionResponse', 'response carries a typed artifact');
 assertEqual(response.artifact.requestCallId, 'call-question-1', 'response links to the tool call');
+assertEqual(response.artifact.interactionId, 'interaction-1', 'response links to the durable interaction');
+assertEqual(response.artifact.resumeToken, undefined, 'response does not persist the resume token');

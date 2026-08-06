@@ -50,6 +50,9 @@ use nexa_core::evolution::{
 use nexa_core::feedback::{Feedback, FeedbackAction};
 use nexa_core::index::IndexStats;
 use nexa_core::ingest::{self, EmbedResult, IngestResult};
+use nexa_core::interaction::{
+    InteractionAnswers, InteractionRequest, InteractionResponse, SubmitInteractionResponse,
+};
 use nexa_core::llm::{
     create_provider, CompletionRequest, ContentPart, Message, ProviderConfig, ProviderType, Role,
 };

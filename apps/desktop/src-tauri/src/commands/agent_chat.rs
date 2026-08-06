@@ -111,6 +111,91 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub idempotency_key: String,
 }
 
+struct InteractionSubmissionArtifact {
+    interaction_id: String,
+    answers: InteractionAnswers,
+}
+
+fn interaction_submission_from_artifacts(
+    artifacts: Option<&serde_json::Value>,
+) -> Result<Option<InteractionSubmissionArtifact>, String> {
+    let Some(artifact) = artifacts.and_then(serde_json::Value::as_object) else {
+        return Ok(None);
+    };
+    if artifact.get("kind").and_then(serde_json::Value::as_str) != Some("questionResponse") {
+        return Ok(None);
+    }
+    let Some(interaction_id) = artifact
+        .get("interactionId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        // Version 1 question responses intentionally remain on the legacy path.
+        return Ok(None);
+    };
+    let raw_answers = artifact
+        .get("answers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Durable question response is missing its answers.".to_string())?;
+    let mut answers = InteractionAnswers::new();
+    for raw_answer in raw_answers {
+        let answer = raw_answer
+            .as_object()
+            .ok_or_else(|| "Durable question response contains an invalid answer.".to_string())?;
+        let id = answer
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Durable question response contains an answer without an id.".to_string()
+            })?;
+        let values = answer
+            .get("answers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("Durable question response `{id}` has invalid values."))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("Durable question response `{id}` must contain text."))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if answers.insert(id.to_string(), values).is_some() {
+            return Err(format!(
+                "Durable question response contains duplicate answer id `{id}`."
+            ));
+        }
+    }
+    Ok(Some(InteractionSubmissionArtifact {
+        interaction_id: interaction_id.to_string(),
+        answers,
+    }))
+}
+
+fn interaction_response_from_user_artifacts(
+    db: &Database,
+    conversation_id: &str,
+    artifacts: Option<&serde_json::Value>,
+) -> Result<Option<SubmitInteractionResponse>, String> {
+    let Some(submission) = interaction_submission_from_artifacts(artifacts)? else {
+        return Ok(None);
+    };
+    let request = db
+        .get_interaction_request(&submission.interaction_id)
+        .map_err(|error| error.to_string())?;
+    if request.conversation_id != conversation_id {
+        return Err("Interaction response belongs to a different conversation.".to_string());
+    }
+    Ok(Some(SubmitInteractionResponse {
+        interaction_id: submission.interaction_id,
+        resume_token: request.resume_token,
+        answers: submission.answers,
+    }))
+}
+
 #[tauri::command]
 pub async fn agent_chat_cmd(
     state: tauri::State<'_, AppState>,
@@ -296,6 +381,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         )?;
     }
 
+    let interaction_response = interaction_response_from_user_artifacts(
+        state.db.as_ref(),
+        &conversation_id,
+        user_artifacts.as_ref(),
+    )?;
+
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
     // full history read and a concurrent MAX(sort_order) race on the hot path.
@@ -329,12 +420,13 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     };
     let launch_record = state
         .db
-        .create_agent_turn_and_run(
+        .create_agent_turn_and_run_with_interaction_response(
             &user_msg,
             &task_title_from_message(&message),
             Some(&db_config.provider),
             Some(&db_config.model),
             &idempotency_key,
+            interaction_response.as_ref(),
         )
         .map_err(|e| e.to_string())?;
     if launch_record.reused {

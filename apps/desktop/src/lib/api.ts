@@ -31,6 +31,9 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationTurn,
+  InteractionRequest,
+  InteractionResponse,
+  SubmitInteractionResponse,
   AgentTaskRun,
   AgentTaskRunListItem,
   AgentTaskRunPageCursor,
@@ -997,6 +1000,32 @@ export const getConversation = (id: string) =>
 
 export const getConversationTurns = (conversationId: string) =>
   invoke<ConversationTurn[]>('get_conversation_turns_cmd', { conversationId });
+
+export const listInteractionRequests = (
+  conversationId: string | null = null,
+  includeTerminal = false,
+) => invoke<InteractionRequest[]>('list_interaction_requests_cmd', {
+  conversationId,
+  includeTerminal,
+});
+
+export const getInteractionRequest = (interactionId: string) =>
+  invoke<InteractionRequest>('get_interaction_request_cmd', { interactionId });
+
+export const markInteractionPresented = (interactionId: string) =>
+  invoke<InteractionRequest>('mark_interaction_presented_cmd', { interactionId });
+
+export const markInteractionPartiallyAnswered = (interactionId: string) =>
+  invoke<InteractionRequest>('mark_interaction_partially_answered_cmd', { interactionId });
+
+export const submitInteractionResponse = (input: SubmitInteractionResponse) =>
+  invoke<InteractionResponse>('submit_interaction_response_cmd', { input });
+
+export const acknowledgeInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('acknowledge_interaction_cmd', { interactionId });
+
+export const cancelInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('cancel_interaction_cmd', { interactionId });
 
 export const getAgentTaskRuns = (conversationId: string) =>
   invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId });
