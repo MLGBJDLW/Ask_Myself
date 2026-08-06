@@ -1,4 +1,9 @@
-import type { InteractionAnswers, InteractionDraft, InteractionRequest } from '../types/conversation';
+import type {
+  InteractionAnswers,
+  InteractionDraft,
+  InteractionRequest,
+  InteractionStatus,
+} from '../types/conversation';
 
 const DRAFT_STORAGE_KEY = 'nexa.interaction-drafts.v1';
 
@@ -17,7 +22,11 @@ export interface InteractionDraftStorage {
   removeItem(key: string): void;
 }
 
-const ACTIVE_STATUSES = new Set(['pending', 'presented', 'partially_answered']);
+const ACTIVE_STATUSES: ReadonlySet<InteractionStatus> = new Set([
+  'pending',
+  'presented',
+  'partially_answered',
+]);
 
 function defaultStorage(): InteractionDraftStorage | null {
   if (typeof window === 'undefined') return null;
@@ -93,12 +102,17 @@ export class InteractionStore {
 
   replaceRequests(conversationId: string | null, requests: InteractionRequest[]): void {
     const requestsById = { ...this.state.requestsById };
+    const removedRequestIds: string[] = [];
     if (conversationId) {
       for (const [id, request] of Object.entries(requestsById)) {
-        if (request.conversationId === conversationId) delete requestsById[id];
+        if (request.conversationId === conversationId) {
+          removedRequestIds.push(id);
+          delete requestsById[id];
+        }
       }
     } else {
-      for (const id of Object.keys(requestsById)) delete requestsById[id];
+      removedRequestIds.push(...Object.keys(requestsById));
+      for (const id of removedRequestIds) delete requestsById[id];
     }
     for (const request of requests) requestsById[request.interactionId] = request;
     this.state = {
@@ -109,7 +123,11 @@ export class InteractionStore {
         : this.state.hydratedConversationIds,
       hydratedAll: conversationId ? this.state.hydratedAll : true,
     };
-    this.removeNonPersistableDrafts(requests);
+    const returnedIds = new Set(requests.map((request) => request.interactionId));
+    const disappearedIds = conversationId
+      ? removedRequestIds.filter((id) => !returnedIds.has(id))
+      : Object.keys(this.state.draftsById).filter((id) => !returnedIds.has(id));
+    this.removeNonPersistableDrafts(requests, disappearedIds);
     this.notify();
   }
 
@@ -131,7 +149,10 @@ export class InteractionStore {
     currentQuestionIndex: number,
   ): InteractionDraft {
     const request = this.state.requestsById[interactionId];
-    if (request?.kind === 'credential_request') {
+    if (!request) {
+      throw new Error(`Cannot edit unknown interaction ${interactionId}`);
+    }
+    if (request.kind === 'credential_request') {
       throw new Error('Credential interactions cannot persist inline answers');
     }
     if (request && !ACTIVE_STATUSES.has(request.status)) {
@@ -177,13 +198,19 @@ export class InteractionStore {
       ));
   }
 
-  private removeNonPersistableDrafts(requests: InteractionRequest[]): void {
+  private removeNonPersistableDrafts(
+    requests: InteractionRequest[],
+    disappearedIds: string[] = [],
+  ): void {
     const resolvedIds = requests
       .filter((request) => (
         !ACTIVE_STATUSES.has(request.status) || request.kind === 'credential_request'
       ))
       .map((request) => request.interactionId)
       .filter((id) => Boolean(this.state.draftsById[id]));
+    for (const id of disappearedIds) {
+      if (this.state.draftsById[id]) resolvedIds.push(id);
+    }
     if (resolvedIds.length === 0) return;
     const draftsById = { ...this.state.draftsById };
     for (const id of resolvedIds) delete draftsById[id];

@@ -117,3 +117,20 @@ try {
   rejectedCredentialDraft = true;
 }
 assert(rejectedCredentialDraft, 'credential requests never persist inline answers');
+
+let rejectedUnknownDraft = false;
+try {
+  remountedStore.setDraft('not-hydrated', { scope: ['Repo'] }, 0);
+} catch {
+  rejectedUnknownDraft = true;
+}
+assert(rejectedUnknownDraft, 'unknown requests cannot write persisted drafts');
+
+const removalStore = new InteractionStore(new MemoryStorage());
+removalStore.replaceRequests('conversation-1', [lowSecond]);
+removalStore.setDraft('low-second', { scope: ['App'] }, 0);
+removalStore.replaceRequests('conversation-1', []);
+assert(
+  !removalStore.getState().draftsById['low-second'],
+  'a request omitted after terminal filtering clears its persisted draft',
+);
