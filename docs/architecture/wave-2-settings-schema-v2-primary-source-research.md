@@ -501,27 +501,35 @@ The Nexa implementation keeps the public seam in
   namespaces, bounded compatibility extensions, and legacy-source metadata.
 - Ordinary values resolve Application -> Workspace -> Agent -> Task with the
   winning scope, revision, and preset origin. Policies compose independently
-  through `Deny > RequireApproval > Allow`; an exact, unexpired task grant can
-  satisfy approval but cannot relax Deny.
+  through `Deny > RequireApproval > Allow`; resolution fails closed without an
+  Application policy ceiling. An exact, unexpired task/resource grant can
+  satisfy approval but cannot relax Deny, and consumed one-shot grants are
+  rejected.
 - Built-in presets are credential-free versioned patches. Their SHA-256 hash is
   part of the saved selection, and a missing or changed pinned definition
   fails closed.
-- Startup performs preflight and V1 -> V2 -> sanitized-V1 projection checks,
-  then writes agent and application profiles, outer-encrypted exact V1
-  snapshots, hashes, journal rows, and the active-version pointer in one
-  immediate SQLite transaction. A failed preflight leaves V1 active.
+- Startup performs preflight plus explicit field-by-field verification of every
+  V1 -> V2 structured connection, model, capability, advanced-setting, and
+  compatibility mapping. It then writes agent and application profiles,
+  outer-encrypted exact V1 snapshots, hashes, journal rows, and the
+  active-version pointer in one immediate SQLite transaction. A failed
+  verification leaves V1 active.
 - V2 documents contain credential references only. Known and unknown secret
   fields and credential-bearing endpoints are removed from compatibility
-  projections; exact raw values exist only inside the outer-encrypted rollback
-  snapshot and the unchanged V1 store.
+  projections, and native V2 writes recursively reject inline secrets; exact
+  raw values exist only inside the outer-encrypted rollback snapshot and the
+  unchanged V1 store.
 - Explicit global rollback verifies every snapshot hash, restores exact V1
-  rows, flips the pointer last, and retains V2 sidecars. Repeated rollback is
-  idempotent, and startup does not silently reactivate a deliberately rolled
-  back schema.
+  agent and application rows, flips the pointer last, and retains V2 sidecars.
+  Repeated rollback is idempotent, and startup does not silently reactivate a
+  deliberately rolled back schema.
 - The desktop bridge exposes migration state, profile listing/CAS saves,
   explicit migration, and rollback. Provider execution continues through the
   V1 compatibility reader until PR 9 installs the normalized registries; V1
-  writes refresh their migration-managed V2 projection while V2 is active.
+  writes and their migration-managed V2 projection commit atomically while V2
+  is active. Projection fingerprints ignore encryption/timestamp churn, while
+  the exact encrypted rollback snapshot and its independent hash are refreshed
+  on semantically unchanged writes.
 
 ## License and integration boundaries
 

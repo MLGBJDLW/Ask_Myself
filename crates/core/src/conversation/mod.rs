@@ -3575,7 +3575,8 @@ impl Database {
                 CoreError::InvalidInput(format!("Invalid delegation limits v2: {error}"))
             })?;
         let mut conn = self.conn();
-        conn.execute(
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
              ON CONFLICT(id) DO UPDATE SET
@@ -3636,7 +3637,8 @@ impl Database {
                 &delegation_limits_v2_json,
             ],
         )?;
-        crate::settings_schema_v2::sync_legacy_agent_config(&mut conn, &id)?;
+        crate::settings_schema_v2::sync_legacy_agent_config_in_transaction(&transaction, &id)?;
+        transaction.commit()?;
         drop(conn);
         self.get_agent_config(&id)
     }
@@ -3752,23 +3754,26 @@ impl Database {
 
     /// Delete an agent config by id.
     pub fn delete_agent_config(&self, id: &str) -> Result<(), CoreError> {
-        let conn = self.conn();
-        let affected = conn.execute(
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
             "DELETE FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("AgentConfig {id}")));
         }
-        crate::settings_schema_v2::remove_legacy_agent_config_projection(&conn, id)?;
+        crate::settings_schema_v2::remove_legacy_agent_config_projection(&transaction, id)?;
+        transaction.commit()?;
         Ok(())
     }
 
     /// Set one config as default (clears all others).
     pub fn set_default_agent_config(&self, id: &str) -> Result<(), CoreError> {
         let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Verify it exists first.
-        let exists: bool = conn.query_row(
+        let exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_configs WHERE id = ?1)",
             rusqlite::params![id],
             |row| row.get(0),
@@ -3776,12 +3781,13 @@ impl Database {
         if !exists {
             return Err(CoreError::NotFound(format!("AgentConfig {id}")));
         }
-        conn.execute("UPDATE agent_configs SET is_default = 0", [])?;
-        conn.execute(
+        transaction.execute("UPDATE agent_configs SET is_default = 0", [])?;
+        transaction.execute(
             "UPDATE agent_configs SET is_default = 1 WHERE id = ?1",
             rusqlite::params![id],
         )?;
-        crate::settings_schema_v2::migrate_legacy_agent_configs_on_open(&mut conn)?;
+        crate::settings_schema_v2::sync_all_legacy_agent_configs_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 

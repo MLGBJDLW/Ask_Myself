@@ -43,11 +43,11 @@ export interface PolicyRuleV2 {
 }
 
 export interface SettingsOverridesV2 {
-  connections: Record<string, SettingOverrideV2<ConnectionReferenceV2>>;
-  models: Record<string, SettingOverrideV2<ModelReferenceV2>>;
-  capabilities: Record<string, SettingOverrideV2<CapabilityBindingV2>>;
-  permissions: Record<string, PolicyRuleV2>;
-  advanced: Record<string, SettingOverrideV2<unknown>>;
+  connections?: Record<string, SettingOverrideV2<ConnectionReferenceV2>>;
+  models?: Record<string, SettingOverrideV2<ModelReferenceV2>>;
+  capabilities?: Record<string, SettingOverrideV2<CapabilityBindingV2>>;
+  permissions?: Record<string, PolicyRuleV2>;
+  advanced?: Record<string, SettingOverrideV2<unknown>>;
 }
 
 export interface LegacySettingsSourceV2 {
@@ -80,5 +80,4 @@ export interface SettingsMigrationReportV2 {
   migrated: number;
   unchanged: number;
   skippedRolledBack: number;
-  removedOrphans: number;
 }
