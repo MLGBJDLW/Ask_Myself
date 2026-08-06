@@ -1747,7 +1747,11 @@ mod tests {
             .expect("request_user_input should be registered");
         let schema = tool.parameters_schema();
         assert_eq!(schema["properties"]["questions"]["minItems"], 1);
-        assert_eq!(schema["properties"]["questions"]["maxItems"], 3);
+        assert_eq!(schema["properties"]["questions"]["maxItems"], 6);
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            serde_json::json!(["user_input", "high_risk_confirmation"])
+        );
     }
 
     #[test]

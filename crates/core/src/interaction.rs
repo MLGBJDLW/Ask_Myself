@@ -292,9 +292,9 @@ fn normalize_expiry(value: Option<&str>) -> Result<Option<String>, CoreError> {
 pub fn normalize_questions(
     questions: &[InteractionQuestion],
 ) -> Result<Vec<InteractionQuestion>, CoreError> {
-    if !(1..=3).contains(&questions.len()) {
+    if !(1..=6).contains(&questions.len()) {
         return Err(CoreError::InvalidInput(
-            "An interaction requires one to three questions".to_string(),
+            "An interaction requires one to six questions".to_string(),
         ));
     }
     let mut ids = HashSet::new();
@@ -1142,6 +1142,36 @@ impl Database {
             None,
         );
         Ok(Some(run_id))
+    }
+
+    /// Mark every resumable interaction owned by an intentionally stopped run
+    /// as cancelled. A cancelled task run otherwise looks identical to a run
+    /// interrupted between response acknowledgement and continuation startup,
+    /// which would incorrectly offer the saved response as crash recovery.
+    pub fn cancel_interactions_for_stopped_run(&self, run_id: &str) -> Result<usize, CoreError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO interaction_events (interaction_id, from_status, to_status, reason)
+             SELECT id, status, 'cancelled', 'task_cancelled'
+             FROM interaction_requests
+             WHERE run_id = ?1
+               AND status IN (
+                 'pending', 'presented', 'partially_answered', 'submitted', 'acknowledged'
+               )",
+            rusqlite::params![run_id],
+        )?;
+        let updated = tx.execute(
+            "UPDATE interaction_requests
+             SET status = 'cancelled', updated_at = datetime('now')
+             WHERE run_id = ?1
+               AND status IN (
+                 'pending', 'presented', 'partially_answered', 'submitted', 'acknowledged'
+               )",
+            rusqlite::params![run_id],
+        )?;
+        tx.commit()?;
+        Ok(updated)
     }
 
     pub fn create_interaction_request(
@@ -2224,6 +2254,63 @@ mod tests {
                 .status,
             InteractionStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn intentionally_stopped_continuation_does_not_reenter_recovery_queue() {
+        let fixture = fixture();
+        let created = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-stop-after-answer"))
+            .unwrap();
+        let run_id = {
+            let conn = fixture.db.conn();
+            conn.query_row(
+                "SELECT run_id FROM interaction_requests WHERE id = ?1",
+                rusqlite::params![&created.request.interaction_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        let mut answers = InteractionAnswers::new();
+        answers.insert("scope".into(), vec!["Repo".into()]);
+        fixture
+            .db
+            .mark_interaction_presented(&created.request.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .submit_interaction_response(&SubmitInteractionResponse {
+                interaction_id: created.request.interaction_id.clone(),
+                resume_token: created.request.resume_token,
+                answers,
+            })
+            .unwrap();
+        fixture
+            .db
+            .acknowledge_interaction(&created.request.interaction_id)
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .db
+                .cancel_interactions_for_stopped_run(&run_id)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            fixture
+                .db
+                .get_interaction_request(&created.request.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Cancelled
+        );
+        assert!(fixture
+            .db
+            .list_interaction_requests(Some(&fixture.conversation_id), false)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

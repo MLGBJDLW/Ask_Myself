@@ -24,6 +24,9 @@ test.beforeEach(async ({ page }) => {
       createdAt: now,
       updatedAt: now,
     };
+    const requestKind = testParams.get('risk') === 'high'
+      ? 'high_risk_confirmation'
+      : 'user_input';
     const questionArtifact = {
       kind: 'questionRequest',
       version: 2,
@@ -48,8 +51,29 @@ test.beforeEach(async ({ page }) => {
           type: 'short',
           placeholder: 'Describe the constraint',
         },
-      ].slice(0, testParams.get('single') === '1' ? 1 : 2),
+        {
+          id: 'verification',
+          header: 'Verification',
+          question: 'Which verification depth should be used?',
+          type: 'single_choice',
+          options: [
+            { label: 'Focused and full', description: 'Run focused checks and the full suite.' },
+            { label: 'Focused only', description: 'Run only directly affected checks.' },
+          ],
+        },
+        {
+          id: 'delivery',
+          header: 'Delivery',
+          question: 'Which delivery constraint should be preserved?',
+          type: 'short',
+          placeholder: 'Describe the delivery constraint',
+        },
+      ].slice(0, testParams.get('single') === '1' ? 1 : testParams.get('long') === '1' ? 4 : 2),
     };
+    const requestArguments = JSON.stringify({
+      questions: questionArtifact.questions,
+      kind: requestKind,
+    });
     const messages: Array<Record<string, unknown>> = [
       {
         id: 'message-user-1',
@@ -74,7 +98,7 @@ test.beforeEach(async ({ page }) => {
         toolCalls: [{
           id: 'call-decision-1',
           name: 'request_user_input',
-          arguments: JSON.stringify({ questions: questionArtifact.questions }),
+          arguments: requestArguments,
         }],
         artifacts: null,
         tokenCount: 0,
@@ -113,7 +137,7 @@ test.beforeEach(async ({ page }) => {
           toolCall: {
             callId: 'call-decision-1',
             toolName: 'request_user_input',
-            arguments: JSON.stringify({ questions: questionArtifact.questions }),
+            arguments: requestArguments,
             status: 'done',
             content: 'Waiting for the user.',
             isError: false,
@@ -151,7 +175,7 @@ test.beforeEach(async ({ page }) => {
       conversationId: conversation.id,
       turnId: turn.id,
       toolCallId: 'call-decision-1',
-      kind: testParams.get('risk') === 'high' ? 'high_risk_confirmation' : 'user_input',
+      kind: requestKind,
       title: 'Input required',
       description: null,
       questions: questionArtifact.questions,
@@ -463,6 +487,16 @@ test('single-choice questions advance to review before submission', async ({ pag
 
   await expect(page.getByTestId('decision-tray-review')).toBeVisible();
   await expect(tray.getByRole('button', { name: 'Submit answers' })).toBeVisible();
+});
+
+test('four-question requests remain a progressive wizard', async ({ page }) => {
+  await page.goto('/chat/conv-decision-tray?long=1');
+
+  const tray = page.getByTestId('decision-tray');
+  await expect(tray).toContainText('Question 1 of 4');
+  await tray.getByRole('radio', { name: /Architectural refactor/ }).click();
+  await expect(tray).toContainText('Question 2 of 4');
+  await expect(tray.getByPlaceholder('Describe the constraint')).toBeVisible();
 });
 
 test('high-risk requests block the chat in an accessible modal', async ({ page }) => {

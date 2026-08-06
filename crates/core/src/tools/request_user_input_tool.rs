@@ -21,6 +21,8 @@ pub struct RequestUserInputTool;
 #[serde(rename_all = "camelCase")]
 struct RequestArgs {
     questions: Vec<InteractionQuestion>,
+    #[serde(default)]
+    kind: Option<InteractionKind>,
 }
 
 #[async_trait]
@@ -58,6 +60,15 @@ impl Tool for RequestUserInputTool {
             CoreError::InvalidInput(format!("Invalid request_user_input arguments: {error}"))
         })?;
         let questions = normalize_questions(&args.questions)?;
+        let kind = match args.kind.unwrap_or(InteractionKind::UserInput) {
+            kind @ (InteractionKind::UserInput | InteractionKind::HighRiskConfirmation) => kind,
+            _ => {
+                return Err(CoreError::InvalidInput(
+                    "request_user_input kind must be user_input or high_risk_confirmation"
+                        .to_string(),
+                ));
+            }
+        };
         let conversation_id = conversation_id.ok_or_else(|| {
             CoreError::InvalidInput(
                 "request_user_input requires an active conversation".to_string(),
@@ -76,7 +87,7 @@ impl Tool for RequestUserInputTool {
             turn_id: turn_id.to_string(),
             tool_call_id: Some(call_id.to_string()),
             idempotency_key: format!("request_user_input:{call_id}"),
-            kind: InteractionKind::UserInput,
+            kind,
             title,
             description: None,
             questions,
@@ -200,5 +211,39 @@ mod tests {
             db.get_conversation_turn(&turn_id).unwrap().status,
             "awaiting_user_input"
         );
+    }
+
+    #[tokio::test]
+    async fn supports_six_question_high_risk_wizards() {
+        let (db, conversation_id, turn_id) = runtime_fixture();
+        let arguments = serde_json::json!({
+            "kind": "high_risk_confirmation",
+            "questions": (1..=6).map(|index| serde_json::json!({
+                "id": format!("question_{index}"),
+                "header": format!("Question {index}"),
+                "question": format!("Confirm item {index}?"),
+                "type": "confirm"
+            })).collect::<Vec<_>>()
+        })
+        .to_string();
+        let result = RequestUserInputTool
+            .execute(
+                crate::tools::ToolExecutionContext::new("call-high-risk", &arguments, &db, &[])
+                    .with_conversation_id(Some(&conversation_id))
+                    .with_turn_id(Some(&turn_id)),
+            )
+            .await
+            .unwrap();
+
+        let artifacts = result.artifacts.unwrap();
+        assert_eq!(
+            artifacts["interactionRequest"]["kind"],
+            "high_risk_confirmation"
+        );
+        let requests = db
+            .list_interaction_requests(Some(&conversation_id), false)
+            .unwrap();
+        assert_eq!(requests[0].kind, InteractionKind::HighRiskConfirmation);
+        assert_eq!(requests[0].questions.len(), 6);
     }
 }

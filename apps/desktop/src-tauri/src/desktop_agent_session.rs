@@ -338,6 +338,9 @@ pub fn request_desktop_running_agent_stop(
     let task_orchestrator_run_id = task_state.orchestrator_run_id.clone();
     let turn_id = task_state.handle.turn_id.clone();
     let stream_event_seq = Arc::clone(&task_state.event_sequencer);
+    if let Err(error) = db.cancel_interactions_for_stopped_run(&task_run_id) {
+        warn!("Failed to cancel interactions for stopped run {task_run_id}: {error}");
+    }
     let _ = db.update_agent_task_run_progress(
         &task_run_id,
         Some("cancelling"),

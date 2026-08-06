@@ -1,13 +1,13 @@
 {
   "name": "request_user_input",
-  "description": "Ask the user one to three concise, structured questions when their input is genuinely needed. The app renders these as interactive cards. Call this tool instead of writing a questionnaire in prose. After calling it, stop and wait for the user's next message; never guess their answers.",
+  "description": "Ask the user one to six concise, structured questions when their input is genuinely needed. The app renders these as a progressive wizard. Call this tool instead of writing a questionnaire in prose. After calling it, stop and wait for the user's next message; never guess their answers.",
   "parameters": {
     "type": "object",
     "properties": {
       "questions": {
         "type": "array",
         "minItems": 1,
-        "maxItems": 3,
+        "maxItems": 6,
         "items": {
           "type": "object",
           "properties": {
@@ -55,6 +55,11 @@
           },
           "required": ["id", "header", "question", "type"]
         }
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["user_input", "high_risk_confirmation"],
+        "description": "Use high_risk_confirmation only for destructive, payment, credential, or external-submission decisions that must block the chat in a modal."
       }
     },
     "required": ["questions"]
