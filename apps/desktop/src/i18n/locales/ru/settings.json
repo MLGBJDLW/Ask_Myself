@@ -873,7 +873,6 @@
   ,"visionFallbackModel": "Fallback model"
   ,"visionFallbackMode": "Failure fallback"
   ,"visionFallbackDisabled": "Disabled"
-  ,"visionFallbackAsk": "Ask before switching"
   ,"visionFallbackAutomatic": "Automatic"
   ,"visionFallbackRequired": "Choose a distinct fallback model for this fallback mode."
   ,"visionAllowCrossProvider": "Allow cross-provider or connection fallback"

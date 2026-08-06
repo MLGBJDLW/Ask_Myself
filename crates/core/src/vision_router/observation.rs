@@ -39,6 +39,7 @@ pub struct VisionExecutionInput<'a> {
     pub decision: VisionRouteDecision,
     pub ocr_config: &'a OcrConfig,
     pub vision: &'a [VisionProviderInput<'a>],
+    pub route_primary_fallback_index: usize,
     pub primary_egress_id: &'a str,
     pub primary_is_local: bool,
     pub cancellation: &'a CancellationToken,
@@ -215,7 +216,7 @@ async fn run_ocr(
         }
         .to_string(),
     });
-    build_ocr_observation(
+    let mut observation = build_ocr_observation(
         input.attachment_id,
         input.attachment_hash,
         input.profile_hash,
@@ -223,7 +224,22 @@ async fn run_ocr(
         result,
         dimensions,
         trace.clone(),
-    )
+    )?;
+    observation.privacy_scope =
+        ocr_route_privacy_scope(observation.privacy_scope, input.primary_is_local);
+    Ok(observation)
+}
+
+fn ocr_route_privacy_scope(
+    processor_scope: VisionPrivacyScope,
+    primary_is_local: bool,
+) -> VisionPrivacyScope {
+    match (processor_scope, primary_is_local) {
+        (VisionPrivacyScope::Local, true) => VisionPrivacyScope::Local,
+        (VisionPrivacyScope::Local, false) => VisionPrivacyScope::SingleProvider,
+        (VisionPrivacyScope::SingleProvider, true) => VisionPrivacyScope::SingleProvider,
+        _ => VisionPrivacyScope::MultiProvider,
+    }
 }
 
 async fn run_vision(
@@ -245,7 +261,7 @@ async fn run_vision(
         ));
     }
 
-    let first_fallback_index = input.vision[0].fallback_index;
+    let route_primary_fallback_index = input.route_primary_fallback_index;
     let mut last_reason = "vision_provider_failed".to_string();
     let mut attempted_egresses = HashSet::new();
     let mut attempted_routes_local = true;
@@ -340,14 +356,14 @@ async fn run_vision(
         trace.attempts.push(VisionRouteAttempt {
             processor: format!("vision:{}", vision.target_id),
             status: VisionAttemptStatus::Succeeded,
-            reason_code: if vision.fallback_index > first_fallback_index {
+            reason_code: if vision.fallback_index > route_primary_fallback_index {
                 "vision_fallback_complete"
             } else {
                 "vision_complete"
             }
             .to_string(),
         });
-        if vision.fallback_index > first_fallback_index {
+        if vision.fallback_index > route_primary_fallback_index {
             observation.fallback_used = true;
             observation.fallback_reason =
                 Some("vision_target_failed_automatic_fallback".to_string());
@@ -778,6 +794,18 @@ mod tests {
         .is_err());
     }
 
+    #[test]
+    fn local_ocr_sent_to_remote_primary_is_single_provider_not_local() {
+        assert_eq!(
+            ocr_route_privacy_scope(VisionPrivacyScope::Local, false),
+            VisionPrivacyScope::SingleProvider
+        );
+        assert_eq!(
+            ocr_route_privacy_scope(VisionPrivacyScope::Local, true),
+            VisionPrivacyScope::Local
+        );
+    }
+
     #[tokio::test]
     async fn invalid_primary_observation_advances_to_frozen_secondary() {
         let primary = StaticVisionProvider {
@@ -828,6 +856,7 @@ mod tests {
                 ..OcrConfig::default()
             },
             vision: &providers,
+            route_primary_fallback_index: 0,
             primary_egress_id: "registry:text",
             primary_is_local: false,
             cancellation: &cancellation,
@@ -875,6 +904,7 @@ mod tests {
                 ..OcrConfig::default()
             },
             vision: &providers,
+            route_primary_fallback_index: 0,
             primary_egress_id: "registry:text",
             primary_is_local: false,
             cancellation: &cancellation,

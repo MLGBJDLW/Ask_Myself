@@ -873,7 +873,6 @@
   ,"visionFallbackModel": "回退模型"
   ,"visionFallbackMode": "失败回退"
   ,"visionFallbackDisabled": "禁用"
-  ,"visionFallbackAsk": "切换前询问"
   ,"visionFallbackAutomatic": "自动"
   ,"visionFallbackRequired": "此回退模式需要选择一个不同的回退模型。"
   ,"visionAllowCrossProvider": "允许跨 Provider 或连接回退"

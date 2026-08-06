@@ -465,6 +465,16 @@ fn resolve_binding(
         .collect::<Result<Vec<_>, _>>()?;
     for candidate in primary.iter_mut().chain(fallbacks.iter_mut()) {
         apply_intrinsic_binding_constraints(candidate, &binding.constraints);
+        if capability_id == "vision"
+            && binding
+                .options
+                .get("localOnly")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            && !is_local_connection(&candidate.connection)
+        {
+            mark_ineligible(candidate, "local_only_requires_loopback_connection");
+        }
     }
     if let Some(primary) = primary.as_ref() {
         for fallback in &mut fallbacks {
@@ -602,12 +612,16 @@ fn cost_class_rank(value: &str) -> u8 {
 }
 
 fn is_local_connection(connection: &ConnectionRecord) -> bool {
-    matches!(
-        connection.adapter_provider_id.as_str(),
-        "ollama" | "lm_studio" | "lmstudio"
-    ) || connection.base_url.starts_with("http://localhost")
-        || connection.base_url.starts_with("http://127.")
-        || connection.base_url.starts_with("http://[::1]")
+    let Ok(url) = reqwest::Url::parse(&connection.base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn mark_ineligible(candidate: &mut ResolvedCapabilityRouteTarget, reason: &str) {
@@ -981,6 +995,20 @@ mod tests {
             sanitize_endpoint_url(Some("https://EXAMPLE.com/v1/")).unwrap(),
             "https://example.com/v1"
         );
+    }
+
+    #[test]
+    fn local_connection_detection_rejects_loopback_lookalikes() {
+        let lookalike = route_candidate(
+            "lookalike",
+            "http://127.example.com:11434",
+            "model",
+            &[],
+            None,
+        );
+        let loopback = route_candidate("loopback", "http://127.0.0.1:11434", "model", &[], None);
+        assert!(!is_local_connection(&lookalike.connection));
+        assert!(is_local_connection(&loopback.connection));
     }
 
     #[test]

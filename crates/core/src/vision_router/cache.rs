@@ -27,11 +27,8 @@ impl Database {
         profile_hash: &str,
         now_epoch: i64,
     ) -> Result<Option<VisionObservationCacheEntry>, CoreError> {
+        self.purge_expired_vision_observation_cache(now_epoch)?;
         let conn = self.conn();
-        conn.execute(
-            "DELETE FROM vision_observation_cache WHERE expires_at_epoch <= ?1",
-            [now_epoch],
-        )?;
         let row: Option<(String, i64, i64, i64)> = conn
             .query_row(
                 "SELECT observation_json, created_at_epoch, expires_at_epoch,
@@ -162,10 +159,33 @@ impl Database {
         &self,
         now_epoch: i64,
     ) -> Result<usize, CoreError> {
-        Ok(self.conn().execute(
+        let mut conn = self.conn();
+        let transaction = conn.transaction()?;
+        let expired = {
+            let mut statement = transaction.prepare(
+                "SELECT attachment_hash, profile_hash FROM vision_observation_cache
+                 WHERE expires_at_epoch <= ?1",
+            )?;
+            let rows = statement
+                .query_map([now_epoch], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let removed = transaction.execute(
             "DELETE FROM vision_observation_cache WHERE expires_at_epoch <= ?1",
             [now_epoch],
-        )?)
+        )?;
+        for (attachment_hash, profile_hash) in expired {
+            clear_persisted_observation_references(
+                &transaction,
+                Some(&attachment_hash),
+                Some(&profile_hash),
+            )?;
+        }
+        transaction.commit()?;
+        Ok(removed)
     }
 }
 
@@ -358,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_delete_also_removes_durable_message_observation_and_replay_text() {
+    fn cache_expiry_also_removes_durable_message_observation_and_replay_text() {
         let db = Database::open_memory().unwrap();
         let conversation = db
             .create_conversation(&CreateConversationInput {
@@ -404,14 +424,14 @@ mod tests {
         db.save_vision_observation_cache(&observation, 10, 20)
             .unwrap();
 
-        assert_eq!(
-            db.delete_vision_observation_cache(
+        assert!(db
+            .get_vision_observation_cache(
                 &observation.attachment_hash,
-                Some(&observation.profile_hash),
+                &observation.profile_hash,
+                20,
             )
-            .unwrap(),
-            1
-        );
+            .unwrap()
+            .is_none());
         let message = db.get_messages(&conversation.id).unwrap().remove(0);
         let attachment = &message.image_attachments.unwrap()[0];
         assert!(attachment.vision_analysis.is_none());

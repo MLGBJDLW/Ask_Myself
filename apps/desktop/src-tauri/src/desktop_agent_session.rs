@@ -1232,6 +1232,7 @@ pub async fn build_desktop_agent_vision_user_content(
                         .unwrap_or_default()
                         .iter()
                         .filter(|route| route.fallback_index >= selected_fallback_index)
+                        .filter(|route| !policy.local_only || route.local)
                         .map(|route| VisionProviderInput {
                             provider: route.provider.as_ref(),
                             provider_type: route.provider_type,
@@ -1253,6 +1254,9 @@ pub async fn build_desktop_agent_vision_user_content(
                         decision,
                         ocr_config: &ocr_config,
                         vision: &vision,
+                        route_primary_fallback_index: vision_resolution
+                            .map(|resolution| resolution.snapshot.fallback_index)
+                            .unwrap_or_default(),
                         primary_egress_id,
                         primary_is_local,
                         cancellation,

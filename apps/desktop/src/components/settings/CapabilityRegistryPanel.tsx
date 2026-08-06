@@ -52,7 +52,7 @@ function routeActivation(
 }
 
 type VisionMode = 'off' | 'ask' | 'auto' | 'always_auxiliary';
-type VisionFallbackMode = 'disabled' | 'ask' | 'automatic';
+type VisionFallbackMode = 'disabled' | 'automatic';
 
 function optionBoolean(route: ResolvedCapabilityRoute, key: string, fallback: boolean): boolean {
   return typeof route.options[key] === 'boolean' ? route.options[key] as boolean : fallback;
@@ -73,7 +73,9 @@ function VisionCapabilityEditor({
   ));
   const [primaryTargetId, setPrimaryTargetId] = useState(route.primary?.target.id ?? '');
   const [fallbackTargetId, setFallbackTargetId] = useState(route.fallbacks[0]?.target.id ?? '');
-  const [fallbackMode, setFallbackMode] = useState<VisionFallbackMode>(route.fallbackMode);
+  const [fallbackMode, setFallbackMode] = useState<VisionFallbackMode>(
+    route.fallbackMode === 'automatic' ? 'automatic' : 'disabled',
+  );
   const [allowCrossProvider, setAllowCrossProvider] = useState(route.constraints.allowCrossProvider);
   const [preferLocal, setPreferLocal] = useState(() => optionBoolean(route, 'preferLocalProcessing', true));
   const [localOnly, setLocalOnly] = useState(() => optionBoolean(route, 'localOnly', false));
@@ -200,7 +202,6 @@ function VisionCapabilityEditor({
           <span>{t('settings.visionFallbackMode')}</span>
           <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 text-xs" value={fallbackMode} onChange={(event) => setFallbackMode(event.target.value as VisionFallbackMode)}>
             <option value="disabled">{t('settings.visionFallbackDisabled')}</option>
-            <option value="ask">{t('settings.visionFallbackAsk')}</option>
             <option value="automatic">{t('settings.visionFallbackAutomatic')}</option>
           </select>
         </label>

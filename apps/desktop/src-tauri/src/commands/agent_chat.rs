@@ -6,12 +6,11 @@ use crate::desktop_agent_session::{
     build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
     finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
     request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
-    run_desktop_agent_post_success_learning,
-    run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
-    DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
-    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
-    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
-    DesktopRunningAgentStopRequest,
+    run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
+    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
+    DesktopAgentSessionDependencyRequest, DesktopAgentTurnConfigRequest,
+    DesktopAgentTurnFinalization, DesktopAgentTurnRequest, DesktopAgentTurnRuntime,
+    DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest, DesktopRunningAgentStopRequest,
 };
 use nexa_core::llm::ReasoningEffort;
 use nexa_core::mixture_of_agents::{
