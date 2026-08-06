@@ -4129,6 +4129,7 @@ async fn test_stream_incomplete_replays_stream_before_non_streaming_fallback() {
 
     let mut saw_reset = false;
     let mut saw_error = false;
+    let mut connection_states = Vec::new();
     let mut visible_text = String::new();
     while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
         match event {
@@ -4136,6 +4137,9 @@ async fn test_stream_incomplete_replays_stream_before_non_streaming_fallback() {
             Some(AgentEvent::StreamReset { .. }) => {
                 saw_reset = true;
                 visible_text.clear();
+            }
+            Some(AgentEvent::ConnectionState { state }) => {
+                connection_states.push(state.state);
             }
             Some(AgentEvent::Error { .. }) => saw_error = true,
             Some(AgentEvent::Done { .. }) => break,
@@ -4146,6 +4150,14 @@ async fn test_stream_incomplete_replays_stream_before_non_streaming_fallback() {
 
     assert!(saw_reset, "expected partial stream reset before replay");
     assert!(!saw_error, "stream replay should not surface an error");
+    assert_eq!(
+        connection_states,
+        vec![
+            ConnectionStateKind::Reconnecting,
+            ConnectionStateKind::Recovered,
+        ],
+        "a successful replay must close the reconnecting state"
+    );
     assert_eq!(visible_text, "stream answer");
 }
 

@@ -155,6 +155,11 @@ impl AgentExecutor {
         let mut preparing_call_ids: HashSet<String> = HashSet::new();
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
+        // A successful stream reconnect is established in the next sampling
+        // pass, where the connect-local retry counter starts at zero again.
+        // Preserve the disconnect attempt across that boundary so the UI can
+        // always close a previously emitted `Reconnecting` state.
+        let mut pending_stream_recovery_attempt = None;
 
         loop {
             let mut retry_count = 0u32;
@@ -205,15 +210,26 @@ impl AgentExecutor {
                                         tone: None,
                                     })
                                     .await;
-                                if retry_count > 0 {
+                                let recovered_attempt = pending_stream_recovery_attempt
+                                    .take()
+                                    .map(|attempt| {
+                                        (attempt, stream_recovery_policy.max_disconnect_retries())
+                                    })
+                                    .or_else(|| {
+                                        (retry_count > 0).then_some((
+                                            retry_count,
+                                            stream_recovery_policy.max_connect_retries(),
+                                        ))
+                                    });
+                                if let Some((attempt, max_attempts)) = recovered_attempt {
                                     let _ = tx
                                         .send(connection_state_event(
                                             self.provider.name(),
                                             model,
                                             ConnectionStateKind::Recovered,
                                             None,
-                                            retry_count,
-                                            stream_recovery_policy.max_connect_retries(),
+                                            attempt,
+                                            max_attempts,
                                             None,
                                             false,
                                         ))
@@ -744,6 +760,7 @@ impl AgentExecutor {
                         delay,
                     } => {
                         sampling_retries = attempt;
+                        pending_stream_recovery_attempt = Some(attempt);
                         let _ = tx
                             .send(connection_state_event(
                                 self.provider.name(),
@@ -820,7 +837,6 @@ impl AgentExecutor {
                                         false,
                                     ))
                                     .await;
-
                                 if !iteration_thinking.is_empty() {
                                     let _ = tx
                                         .send(AgentEvent::Thinking {
