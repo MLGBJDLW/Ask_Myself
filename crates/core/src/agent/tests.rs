@@ -2411,6 +2411,136 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
 }
 
 #[tokio::test]
+async fn request_user_input_defers_every_later_tool_call() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(
+        crate::tools::request_user_input_tool::RequestUserInputTool,
+    ));
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let provider = ScriptedProvider {
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+        final_answer: "must not continue",
+        first_chunks: vec![
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "question-call".to_string(),
+                    name: Some("request_user_input".to_string()),
+                    arguments_delta: serde_json::json!({
+                        "questions": [{
+                            "id": "scope",
+                            "header": "Scope",
+                            "question": "Which scope should be changed?",
+                            "type": "short"
+                        }]
+                    })
+                    .to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            },
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "later-write".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"unsafe without answer"}"#.to_string(),
+                    index: Some(1),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+        ],
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().unwrap();
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".into(),
+            model: "mock-model".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "Change the requested scope.".into(),
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+        artifacts: None,
+        token_count: 5,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .unwrap();
+    db.create_agent_task_run(
+        &conversation.id,
+        &turn.id,
+        &user_message.id,
+        "Change the requested scope",
+        Some("mock"),
+        Some("mock-model"),
+    )
+    .unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let result = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: user_message.content,
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await;
+
+    assert!(matches!(result, Err(CoreError::AwaitingUserInput { .. })));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    let mut deferred = false;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        if let AgentEvent::ToolCallResult {
+            call_id, artifacts, ..
+        } = event
+        {
+            if call_id == "later-write" {
+                deferred = artifacts.as_ref().is_some_and(|artifact| {
+                    artifact.get("kind").and_then(serde_json::Value::as_str) == Some("toolDeferred")
+                });
+            }
+        }
+    }
+    assert!(deferred, "later tool should be closed as deferred");
+}
+
+#[tokio::test]
 async fn active_goal_continues_until_the_model_explicitly_completes_it() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(

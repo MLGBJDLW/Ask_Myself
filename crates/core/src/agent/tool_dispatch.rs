@@ -4,6 +4,15 @@ use super::*;
 
 const MAX_EPHEMERAL_TOOL_IMAGE_BASE64_BYTES: usize = 16 * 1024 * 1024;
 
+fn is_pending_user_input_artifact(artifacts: Option<&serde_json::Value>) -> bool {
+    let Some(artifact) = artifacts.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    artifact.get("kind").and_then(serde_json::Value::as_str) == Some("questionRequest")
+        && artifact.get("version").and_then(serde_json::Value::as_u64) == Some(2)
+        && artifact.get("status").and_then(serde_json::Value::as_str) == Some("pending")
+}
+
 /// Remove large, current-turn-only attachments before tool artifacts are sent
 /// to the UI, trace, or conversation database. A vetted image can still be
 /// forwarded to a vision model for the immediately following model step.
@@ -262,10 +271,11 @@ impl AgentExecutor {
         let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
             vec![None; tool_calls.len()];
         let mut post_tool_loop_guard_prompt: Option<String> = None;
+        let mut interaction_barrier_reached = false;
 
         for tool_batch in tool_batches {
             let mut tool_futures = FuturesUnordered::new();
-            for index in tool_batch {
+            for &index in &tool_batch {
                 let tc = tool_calls[index].clone();
                 let tool_span = info_span!("tool_execution", tool = %tc.name);
                 let progress_tx = tx.clone();
@@ -944,6 +954,89 @@ impl AgentExecutor {
                     is_error: tool_is_error,
                 });
             }
+
+            if tool_batch.iter().any(|index| {
+                completed_for_context[*index]
+                    .as_ref()
+                    .is_some_and(|completed| {
+                        !completed.is_error
+                            && is_pending_user_input_artifact(completed.artifacts.as_ref())
+                    })
+            }) {
+                interaction_barrier_reached = true;
+                break;
+            }
+        }
+
+        if interaction_barrier_reached {
+            for (index, completed) in completed_for_context.iter_mut().enumerate() {
+                if completed.is_some() {
+                    continue;
+                }
+                let tc = tool_calls[index].clone();
+                let content = format!(
+                    "Tool '{}' was deferred because request_user_input paused this turn. Reconsider it after the user responds.",
+                    tc.name
+                );
+                let artifacts = Some(serde_json::json!({
+                    "kind": "toolDeferred",
+                    "reason": "awaiting_user_input",
+                    "retryable": true,
+                }));
+                let _ = tx
+                    .send(AgentEvent::ToolCallResult {
+                        call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        content: content.clone(),
+                        is_error: true,
+                        artifacts: artifacts.clone(),
+                    })
+                    .await;
+                let _ = tx
+                    .send(AgentEvent::ToolRunCompleted {
+                        run: build_tool_run_item(
+                            &self.tools,
+                            &tc.id,
+                            &tc.name,
+                            ToolRunStatus::Cancelled,
+                            Some(&tc.arguments),
+                            Some(content.clone()),
+                            Some(true),
+                            artifacts.clone(),
+                            Some("deferred by user-input barrier".to_string()),
+                            Some(0),
+                        ),
+                    })
+                    .await;
+                append_persisted_trace_tool(
+                    persisted_trace_items,
+                    &self.tools,
+                    &tc.name,
+                    &tc.arguments,
+                    &tc.id,
+                    "cancelled",
+                    Some(content.clone()),
+                    Some(true),
+                    artifacts.clone(),
+                );
+                let finished = TurnLoopEvent::ToolFinished {
+                    iteration,
+                    call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    duration_ms: 0,
+                    is_error: true,
+                };
+                loop_recorder.record(finished.clone());
+                append_persisted_trace_loop_event(persisted_trace_items, finished);
+                *completed = Some(CompletedToolForContext {
+                    call: tc,
+                    content,
+                    duration_ms: 0,
+                    artifacts,
+                    attachments: Vec::new(),
+                    is_error: true,
+                });
+            }
         }
 
         let mut summaries = Vec::with_capacity(completed_for_context.len());
@@ -1063,5 +1156,25 @@ mod visual_attachment_tests {
             }],
         )
         .is_none());
+    }
+
+    #[test]
+    fn only_pending_v2_question_artifacts_raise_the_execution_barrier() {
+        let pending = serde_json::json!({
+            "kind": "questionRequest",
+            "version": 2,
+            "status": "pending",
+        });
+        assert!(is_pending_user_input_artifact(Some(&pending)));
+        assert!(!is_pending_user_input_artifact(Some(&serde_json::json!({
+            "kind": "questionRequest",
+            "version": 2,
+            "status": "answered",
+        }))));
+        assert!(!is_pending_user_input_artifact(Some(&serde_json::json!({
+            "kind": "questionRequest",
+            "version": 1,
+            "status": "pending",
+        }))));
     }
 }
