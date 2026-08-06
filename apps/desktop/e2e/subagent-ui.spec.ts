@@ -136,11 +136,22 @@ test.beforeEach(async ({ page }) => {
             modelDefinitions: [],
             modelTargets: [],
             capabilities: [{
+              bindingId: 'binding:subagent',
+              bindingRevision: 1,
               capabilityId: 'text_generation',
               source: { kind: 'agent', id: 'cfg-subagent' },
               sourceRevision: 1,
               primary: null,
               fallbacks: [],
+              fallbackMode: 'disabled',
+              constraints: {
+                requireSameConnection: true,
+                allowCrossProvider: false,
+                allowCrossRegion: false,
+                requiresStreaming: false,
+                allowedRegions: [],
+                dataClasses: [],
+              },
             }],
             activations: [],
           };
@@ -508,7 +519,15 @@ test('shows subagent cards in chat and tool permissions in settings', async ({ p
   await page.getByRole('button', { name: 'Add Provider' }).click();
   await page.getByRole('button', { name: 'Custom / Manual' }).click();
   await page.getByRole('button', { name: /Advanced Settings/ }).click();
-  await expect(page.getByRole('heading', { name: 'Subagents' })).toHaveCount(0);
-  await expect(page.getByText('Max parallel workers')).toHaveCount(0);
-  await expect(page.getByText('Token budget / turn')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Subagents' })).toBeVisible();
+  await expect(page.getByText('Max parallel workers')).toBeVisible();
+  await expect(page.getByText('Max worker calls / turn')).toBeVisible();
+  await expect(page.getByText('Token budget / turn')).toBeVisible();
+  await page.getByRole('button', { name: /^Research/ }).click();
+  await page.getByRole('button', { name: /^Workflow Plans/ }).click();
+  await page.getByRole('button', { name: /^Delegated skills/ }).click();
+  await expect(page.getByText('Knowledge Search', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Record Verification', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Web Search', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Critic Format')).toBeVisible();
 });

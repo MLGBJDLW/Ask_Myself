@@ -111,11 +111,6 @@ const BASE_URL_PLACEHOLDERS: Record<ProviderType, string> = {
 
 const LOCAL_PROVIDERS: ProviderType[] = ["ollama", "lm_studio"];
 
-// Delegation policy is moving to the registry-owned Permissions surface. Keep
-// the dormant controls during the staged migration so provider saves preserve
-// their serialized values without presenting two competing owners in the UI.
-const SHOW_LEGACY_PROVIDER_DELEGATION_CONTROLS = false;
-
 const REASONING_EFFORT_LABEL_KEYS: Record<
   ReasoningEffortLevel,
   TranslationKey
@@ -242,8 +237,8 @@ export function AgentConfigForm({
   const [subagentRunDeadlineMs, setSubagentRunDeadlineMs] = useState<number | null>(
     config?.delegationLimitsV2?.runDeadlineMs ?? 180000,
   );
-  const [enabledSkills] = useState<Skill[]>([]);
-  const [mcpToolDescriptors] = useState<
+  const [enabledSkills, setEnabledSkills] = useState<Skill[]>([]);
+  const [mcpToolDescriptors, setMcpToolDescriptors] = useState<
     ReturnType<typeof buildMcpSubagentToolDescriptors>
   >([]);
   const [showKey, setShowKey] = useState(false);
@@ -516,6 +511,55 @@ export function AgentConfigForm({
     setContextWindow(null);
     previousProviderRef.current = provider;
   }, [baseUrl, provider, preset, useCustomModel]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const [servers, skills] = await Promise.all([
+          api.listMcpServers(),
+          api.listActiveSkills(),
+        ]);
+
+        const enabledServerTools = await Promise.all(
+          servers
+            .filter((server) => server.enabled)
+            .map(async (server) => {
+              try {
+                const tools = await api.listMcpTools(server.id);
+                return tools.map((tool) => ({
+                  name: tool.name,
+                  description: tool.description,
+                  serverName: server.name,
+                }));
+              } catch {
+                return [];
+              }
+            }),
+        );
+
+        if (cancelled) return;
+        setMcpToolDescriptors(
+          buildMcpSubagentToolDescriptors(enabledServerTools.flat()),
+        );
+        setEnabledSkills(skills);
+      } catch {
+        if (cancelled) return;
+        setMcpToolDescriptors([]);
+        setEnabledSkills([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (config?.subagentAllowedSkillIds != null) return;
+    setSubagentAllowedSkillIds(orderSkillSelection(availableSkillIds));
+  }, [availableSkillIds, config?.subagentAllowedSkillIds, orderSkillSelection]);
 
   useEffect(() => {
     if (useCustomModel || !activePreset || !activePresetDefaultModel) {
@@ -1215,7 +1259,7 @@ export function AgentConfigForm({
         </div>
       )}
 
-      {SHOW_LEGACY_PROVIDER_DELEGATION_CONTROLS && showAdvanced && (
+      {showAdvanced && (
         <div className="space-y-3 border-t border-border pt-4">
           <div className="flex items-center justify-between gap-3">
             <div>
