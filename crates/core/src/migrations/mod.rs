@@ -1708,10 +1708,16 @@ Every answer that uses knowledge base search results.
          );",
     ),
     (
-        "v092_interaction_turn_resume",
-        "ALTER TABLE interaction_responses ADD COLUMN launch_idempotency_key TEXT;
-         ALTER TABLE interaction_responses ADD COLUMN response_message_id TEXT REFERENCES messages(id);
-         CREATE INDEX IF NOT EXISTS idx_interaction_responses_launch_key
+        "v092_interaction_response_launch_key",
+        "ALTER TABLE interaction_responses ADD COLUMN launch_idempotency_key TEXT;",
+    ),
+    (
+        "v093_interaction_response_message",
+        "ALTER TABLE interaction_responses ADD COLUMN response_message_id TEXT REFERENCES messages(id);",
+    ),
+    (
+        "v094_interaction_response_resume_indexes",
+        "CREATE INDEX IF NOT EXISTS idx_interaction_responses_launch_key
              ON interaction_responses(launch_idempotency_key)
              WHERE launch_idempotency_key IS NOT NULL;
          CREATE UNIQUE INDEX IF NOT EXISTS idx_interaction_responses_message
@@ -1881,6 +1887,52 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn interaction_resume_migrations_recover_after_first_column_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DROP INDEX idx_interaction_responses_message;
+             DROP INDEX idx_interaction_responses_launch_key;
+             ALTER TABLE interaction_responses DROP COLUMN response_message_id;
+             DELETE FROM _migrations
+             WHERE name IN (
+                 'v092_interaction_response_launch_key',
+                 'v093_interaction_response_message',
+                 'v094_interaction_response_resume_indexes'
+             );",
+        )
+        .expect("simulate interruption after the first response column");
+
+        run_migrations(&conn).expect("partial interaction resume migration should recover");
+
+        for column in ["launch_idempotency_key", "response_message_id"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM pragma_table_info('interaction_responses')
+                         WHERE name = ?1
+                     )",
+                    [column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "interaction_responses.{column} should exist");
+        }
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name IN (
+                     'idx_interaction_responses_launch_key',
+                     'idx_interaction_responses_message'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 2);
     }
 
     #[test]

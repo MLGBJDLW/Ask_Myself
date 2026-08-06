@@ -391,6 +391,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         &conversation_id,
         user_artifacts.as_ref(),
     )?;
+    let resumes_interaction = interaction_response.is_some();
 
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
@@ -434,23 +435,46 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             interaction_response.as_ref(),
         )
         .map_err(|e| e.to_string())?;
-    let resumed_interaction_id = interaction_response
-        .as_ref()
-        .map(|response| response.interaction_id.clone());
     if launch_record.reused {
         return Ok(desktop_agent_chat_launch(
             &launch_record,
             task_orchestrator_run_id,
         ));
     }
-    let task_run_id_for_command = launch_record.run_id.clone();
-    if let Some(run_id) = task_orchestrator_run_id.as_deref() {
+    if resumes_interaction {
+        // Validate and persist the response before touching a live session.
+        // A forged or stale response artifact must never abort unrelated work.
+        if let Some(previous) = agent_state.sessions.take(&conversation_id).await {
+            previous.cancel_token.cancel();
+            previous.task.abort();
+            let _ = previous.task.await;
+        }
+    }
+    let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
+        task_orchestrator_run_id
+    } else if resumes_interaction {
         state
             .db
-            .start_workflow_automation_run(run_id, &launch_record.run_id, None)
-            .map_err(|err| err.to_string())?;
+            .get_workflow_automation_run_for_task_run(&launch_record.run_id)
+            .map_err(|error| error.to_string())?
+            .map(|run| run.id)
+    } else {
+        None
+    };
+    let task_run_id_for_command = launch_record.run_id.clone();
+    if !resumes_interaction {
+        if let Some(run_id) = task_orchestrator_run_id.as_deref() {
+            state
+                .db
+                .start_workflow_automation_run(run_id, &launch_record.run_id, None)
+                .map_err(|err| err.to_string())?;
+        }
     }
-    let stream_event_seq = Arc::new(AgentRunEventSequencer::default());
+    let last_event_sequence = state
+        .db
+        .latest_agent_run_event_sequence(&launch_record.run_id)
+        .map_err(|error| error.to_string())?;
+    let stream_event_seq = Arc::new(AgentRunEventSequencer::new(last_event_sequence));
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,
@@ -484,7 +508,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let handle = app_handle.clone();
     let db_config_for_post_success = db_config.clone();
     let task_orchestrator_run_id_for_task = task_orchestrator_run_id.clone();
-    let resumed_interaction_id_for_task = resumed_interaction_id.clone();
+    let resumes_interaction_for_task = resumes_interaction;
     let approval_pending = approval_state.pending.clone();
     let approval_session_store = approval_state.session_store.clone();
     let mcp_manager = Arc::clone(&mcp_state.manager);
@@ -508,10 +532,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         let initialization = async {
             db.mark_agent_task_run_started(&task_run_id, "initializing")
                 .map_err(|error| error.to_string())?;
-            if let Some(interaction_id) = resumed_interaction_id_for_task.as_deref() {
-                db.acknowledge_interaction(interaction_id)
-                    .map_err(|error| error.to_string())?;
-            }
             emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             record_internal_agent_run_status_event(
                 &db,
@@ -777,6 +797,22 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 return;
             }
         };
+        if resumes_interaction_for_task {
+            if let Err(error) = db.acknowledge_submitted_interactions_for_run(&task_run_id) {
+                finalize_desktop_agent_initialization_failure(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    task_orchestrator_run_id_for_task.as_deref(),
+                    &turn_id,
+                    &stream_event_seq_for_task,
+                    &terminal_emitted,
+                    &error.to_string(),
+                );
+                return;
+            }
+        }
 
         let outcome = run_desktop_agent_turn(DesktopAgentTurnRequest {
             provider,

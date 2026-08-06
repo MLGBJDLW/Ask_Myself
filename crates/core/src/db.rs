@@ -379,6 +379,20 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    pub fn latest_agent_run_event_sequence(&self, run_id: &str) -> Result<u64, CoreError> {
+        let conn = self.conn();
+        let sequence: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(event_seq), 0) FROM agent_run_events WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |row| row.get(0),
+        )?;
+        u64::try_from(sequence).map_err(|_| {
+            CoreError::Internal(format!(
+                "Agent run {run_id} has an invalid negative event sequence"
+            ))
+        })
+    }
+
     /// Persist one durable agent run event after validating the protocol contract.
     pub fn save_agent_run_event(
         &self,

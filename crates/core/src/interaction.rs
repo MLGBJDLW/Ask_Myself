@@ -847,7 +847,7 @@ impl Database {
                     "Interaction response was already launched with different input".to_string(),
                 ));
             }
-            let (run_id, run_status) = tx.query_row(
+            let (run_id, mut run_status) = tx.query_row(
                 "SELECT i.run_id, r.status
                  FROM interaction_requests i
                  JOIN agent_task_runs r ON r.id = i.run_id
@@ -860,6 +860,31 @@ impl Database {
                 rusqlite::params![response_message_id],
                 |row| row.get::<_, i64>(0),
             )?;
+            let recovering_unacknowledged_launch = request.status == InteractionStatus::Submitted
+                && matches!(run_status.as_str(), "cancelled" | "failed");
+            if recovering_unacknowledged_launch {
+                tx.execute(
+                    "UPDATE conversation_turns
+                     SET status = 'running', finished_at = NULL, updated_at = datetime('now')
+                     WHERE id = ?1 AND status IN ('cancelled', 'error')",
+                    rusqlite::params![&request.turn_id],
+                )?;
+                let requeued = tx.execute(
+                    "UPDATE agent_task_runs
+                     SET status = 'queued', phase = 'queued', summary = 'Recovering user input',
+                         error_message = NULL, provider = COALESCE(?2, provider),
+                         model = COALESCE(?3, model), finished_at = NULL,
+                         updated_at = datetime('now')
+                     WHERE id = ?1 AND status IN ('cancelled', 'failed')",
+                    rusqlite::params![&run_id, provider, model],
+                )?;
+                if requeued != 1 {
+                    return Err(CoreError::InvalidInput(
+                        "Interrupted interaction continuation could not be re-queued".to_string(),
+                    ));
+                }
+                run_status = "queued".to_string();
+            }
             tx.commit()?;
             return Ok(AgentTurnLaunchRecord {
                 conversation_id: message.conversation_id.clone(),
@@ -868,7 +893,7 @@ impl Database {
                 turn_id: request.turn_id,
                 run_id,
                 status: run_status,
-                reused: true,
+                reused: !recovering_unacknowledged_launch,
             });
         }
 
@@ -944,6 +969,38 @@ impl Database {
              WHERE id = ?1",
             rusqlite::params![&response_id, &idempotency_key, &message.id],
         )?;
+        let run_id: String = tx.query_row(
+            "SELECT run_id FROM interaction_requests WHERE id = ?1",
+            rusqlite::params![&input.interaction_id],
+            |row| row.get(0),
+        )?;
+        let active_siblings: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM interaction_requests
+             WHERE run_id = ?1 AND id != ?2
+               AND status IN ('pending', 'presented', 'partially_answered')",
+            rusqlite::params![&run_id, &input.interaction_id],
+            |row| row.get(0),
+        )?;
+        if active_siblings > 0 {
+            tx.execute(
+                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![&message.conversation_id],
+            )?;
+            tx.commit()?;
+            drop(conn);
+            if let Some(consumed) = newly_consumed.as_ref() {
+                self.record_interaction_submitted_event(consumed);
+            }
+            return Ok(AgentTurnLaunchRecord {
+                conversation_id: message.conversation_id.clone(),
+                user_message_id: message.id.clone(),
+                user_message_sort_order,
+                turn_id: request.turn_id,
+                run_id,
+                status: "awaiting_user_input".to_string(),
+                reused: true,
+            });
+        }
         let turn_updated = tx.execute(
             "UPDATE conversation_turns
              SET status = 'running', finished_at = NULL, updated_at = datetime('now')
@@ -955,11 +1012,6 @@ impl Database {
                 "Interaction turn changed while its response was being resumed".to_string(),
             ));
         }
-        let run_id: String = tx.query_row(
-            "SELECT run_id FROM interaction_requests WHERE id = ?1",
-            rusqlite::params![&input.interaction_id],
-            |row| row.get(0),
-        )?;
         let run_updated = tx.execute(
             "UPDATE agent_task_runs
              SET status = 'queued', phase = 'queued',
@@ -1268,6 +1320,32 @@ impl Database {
             InteractionStatus::Acknowledged,
             &[],
         )
+    }
+
+    /// A continuation may collect more than one queued interaction before the
+    /// shared run is eligible to restart. Once it does restart, acknowledge
+    /// every submitted response attached to that run in one transaction.
+    pub fn acknowledge_submitted_interactions_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<usize, CoreError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO interaction_events (interaction_id, from_status, to_status, reason)
+             SELECT id, status, 'acknowledged', 'turn_resumed'
+             FROM interaction_requests
+             WHERE run_id = ?1 AND status = 'submitted'",
+            rusqlite::params![run_id],
+        )?;
+        let updated = tx.execute(
+            "UPDATE interaction_requests
+             SET status = 'acknowledged', updated_at = datetime('now')
+             WHERE run_id = ?1 AND status = 'submitted'",
+            rusqlite::params![run_id],
+        )?;
+        tx.commit()?;
+        Ok(updated)
     }
 
     pub fn cancel_interaction(
@@ -1634,6 +1712,10 @@ mod tests {
         fixture
             .db
             .mark_interaction_presented(&created.request.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .suspend_agent_turn_for_interaction(&created.request.interaction_id)
             .unwrap();
         let mut follow_up = ConversationMessage {
             id: fixture.user_message_id.clone(),
@@ -2052,5 +2134,223 @@ mod tests {
                 .status,
             InteractionStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn multiple_interactions_resume_only_after_the_last_response() {
+        let fixture = fixture();
+        let first = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-first-gate"))
+            .unwrap()
+            .request;
+        let second = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-second-gate"))
+            .unwrap()
+            .request;
+        fixture
+            .db
+            .suspend_agent_turn_for_interaction(&first.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .mark_interaction_presented(&first.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .mark_interaction_presented(&second.interaction_id)
+            .unwrap();
+
+        let response_for = |request: &InteractionRequest, call_id: &str| {
+            let mut answers = InteractionAnswers::new();
+            answers.insert("scope".into(), vec!["Repo".into()]);
+            let input = SubmitInteractionResponse {
+                interaction_id: request.interaction_id.clone(),
+                resume_token: request.resume_token.clone(),
+                answers,
+            };
+            let message = ConversationMessage {
+                id: Uuid::new_v4().to_string(),
+                conversation_id: fixture.conversation_id.clone(),
+                role: Role::User,
+                content: "Which scope?\nRepo".into(),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+                artifacts: Some(serde_json::json!({
+                    "kind": "questionResponse",
+                    "version": 2,
+                    "interactionId": request.interaction_id.clone(),
+                    "requestCallId": call_id,
+                    "answers": [{ "id": "scope", "question": "Which scope?", "answers": ["Repo"] }],
+                })),
+                token_count: 4,
+                created_at: String::new(),
+                sort_order: 0,
+                thinking: None,
+                image_attachments: None,
+            };
+            (message, input)
+        };
+
+        let (first_message, first_input) = response_for(&first, "call-first-gate");
+        let first_launch = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &first_message,
+                None,
+                None,
+                "first-gate-launch",
+                &first_input,
+            )
+            .unwrap();
+        assert_eq!(first_launch.status, "awaiting_user_input");
+        assert!(first_launch.reused);
+        assert_eq!(
+            fixture
+                .db
+                .get_agent_task_run(&first_launch.run_id)
+                .unwrap()
+                .status,
+            "awaiting_user_input"
+        );
+
+        let (second_message, second_input) = response_for(&second, "call-second-gate");
+        let final_launch = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &second_message,
+                None,
+                None,
+                "second-gate-launch",
+                &second_input,
+            )
+            .unwrap();
+        assert_eq!(final_launch.status, "queued");
+        assert!(!final_launch.reused);
+        assert_eq!(
+            fixture
+                .db
+                .acknowledge_submitted_interactions_for_run(&final_launch.run_id)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            fixture
+                .db
+                .get_interaction_request(&first.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Acknowledged
+        );
+        assert_eq!(
+            fixture
+                .db
+                .get_interaction_request(&second.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Acknowledged
+        );
+    }
+
+    #[test]
+    fn interrupted_submitted_response_can_requeue_its_original_turn() {
+        let fixture = fixture();
+        let request = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-recover-launch"))
+            .unwrap()
+            .request;
+        fixture
+            .db
+            .suspend_agent_turn_for_interaction(&request.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .mark_interaction_presented(&request.interaction_id)
+            .unwrap();
+        let mut answers = InteractionAnswers::new();
+        answers.insert("scope".into(), vec!["Repo".into()]);
+        let input = SubmitInteractionResponse {
+            interaction_id: request.interaction_id.clone(),
+            resume_token: request.resume_token,
+            answers,
+        };
+        let message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: fixture.conversation_id.clone(),
+            role: Role::User,
+            content: "Which scope?\nRepo".into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: Some(serde_json::json!({
+                "kind": "questionResponse",
+                "version": 2,
+                "interactionId": request.interaction_id,
+                "requestCallId": "call-recover-launch",
+                "answers": [{ "id": "scope", "question": "Which scope?", "answers": ["Repo"] }],
+            })),
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        let first_launch = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &message,
+                None,
+                None,
+                "recover-launch",
+                &input,
+            )
+            .unwrap();
+        assert_eq!(first_launch.status, "queued");
+        assert_eq!(fixture.db.mark_interrupted_agent_task_runs().unwrap(), 1);
+
+        let recovered = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &message,
+                None,
+                None,
+                "recover-launch",
+                &input,
+            )
+            .unwrap();
+        assert_eq!(recovered.run_id, first_launch.run_id);
+        assert_eq!(recovered.turn_id, first_launch.turn_id);
+        assert_eq!(recovered.status, "queued");
+        assert!(!recovered.reused);
+
+        fixture
+            .db
+            .finalize_conversation_turn(&recovered.turn_id, "error", None, None)
+            .unwrap();
+        fixture
+            .db
+            .finish_agent_task_run(
+                &recovered.run_id,
+                "failed",
+                Some("Initialization failed"),
+                Some("provider unavailable"),
+                None,
+            )
+            .unwrap();
+        let recovered_after_failure = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &message,
+                None,
+                None,
+                "recover-launch",
+                &input,
+            )
+            .unwrap();
+        assert_eq!(recovered_after_failure.run_id, first_launch.run_id);
+        assert_eq!(recovered_after_failure.turn_id, first_launch.turn_id);
+        assert_eq!(recovered_after_failure.status, "queued");
+        assert!(!recovered_after_failure.reused);
     }
 }

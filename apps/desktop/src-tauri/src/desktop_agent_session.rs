@@ -2032,16 +2032,26 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         .get_agent_task_run(task_run_id)
         .ok()
         .map(|run| run.status);
-    if current_task_status.as_deref() == Some("awaiting_user_input") {
-        let _ = db.update_agent_task_run_progress(
-            task_run_id,
-            Some("awaiting_user_input"),
-            Some("awaiting_user_input"),
-            None,
-            Some("Waiting for user input"),
-            None,
-            Some(&task_artifacts),
-        );
+    if current_task_status.as_deref() == Some("awaiting_user_input")
+        || matches!(
+            &outcome.result,
+            Some(Err(CoreError::AwaitingUserInput { .. }))
+        )
+    {
+        if current_task_status.as_deref() == Some("awaiting_user_input") {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("awaiting_user_input"),
+                Some("awaiting_user_input"),
+                None,
+                Some("Waiting for user input"),
+                None,
+                Some(&task_artifacts),
+            );
+        }
+        // A fast response can re-queue this same durable run before the
+        // suspended executor reaches finalization. Never let that stale
+        // executor overwrite the resumed or explicitly cancelled state.
         emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
         return;
     }
