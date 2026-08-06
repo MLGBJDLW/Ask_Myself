@@ -1158,6 +1158,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.customOrchestration,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
+        options?.interactionContinuation === true,
       );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],

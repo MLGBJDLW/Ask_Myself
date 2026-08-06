@@ -43,6 +43,7 @@ interface UseAgentStreamReturn {
     customOrchestration?: CustomOrchestrationOptions | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    propagateErrors?: boolean,
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
@@ -148,6 +149,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     customOrchestration?: CustomOrchestrationOptions | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    propagateErrors = false,
   ) => {
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
@@ -175,6 +177,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
       }
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
+      if (propagateErrors) throw err;
     }
   }, []);
 

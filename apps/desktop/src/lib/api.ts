@@ -1024,6 +1024,9 @@ export const appendInteractionSupplement = (interactionId: string, content: stri
 export const submitInteractionResponse = (input: SubmitInteractionResponse) =>
   invoke<InteractionResponse>('submit_interaction_response_cmd', { input });
 
+export const getInteractionResponse = (interactionId: string) =>
+  invoke<InteractionResponse>('get_interaction_response_cmd', { interactionId });
+
 export const acknowledgeInteraction = (interactionId: string) =>
   invoke<InteractionRequest>('acknowledge_interaction_cmd', { interactionId });
 
@@ -1352,9 +1355,18 @@ export const agentChat = (
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) => {
+  const interactionId = userArtifacts
+    && !Array.isArray(userArtifacts)
+    && userArtifacts.kind === 'questionResponse'
+    && userArtifacts.version === 2
+    && typeof userArtifacts.interactionId === 'string'
+    ? userArtifacts.interactionId.trim()
+    : '';
   const request = {
     version: 1,
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: interactionId
+      ? `interaction-response:${interactionId}`
+      : crypto.randomUUID(),
     conversationId,
     message,
     attachments: attachments ?? [],

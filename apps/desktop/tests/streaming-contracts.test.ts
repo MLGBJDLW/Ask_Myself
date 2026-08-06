@@ -2176,6 +2176,47 @@ test('live ordering ignores duplicate and late events while marking gaps', () =>
   streamStore.clearStream(conversationId);
 });
 
+test('a newer launch status reopens a stream settled by awaiting user input', () => {
+  const conversationId = 'conversation-fast-interaction-resume';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'awaiting_user_input',
+    status: 'awaiting_user_input',
+    label: 'Waiting for your response',
+  })));
+  assertEqual(
+    streamStore.getStream(conversationId)?.isStreaming,
+    false,
+    'awaiting status settles the suspended stream',
+  );
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'routing',
+    status: 'running',
+    label: 'Agent started',
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 3,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'resumed-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Continued',
+    },
+  })));
+
+  const resumed = streamStore.getStream(conversationId);
+  assert(resumed, 'resumed stream state should exist');
+  assertEqual(resumed.isStreaming, true, 'new running status reopens the continuation');
+  assertEqual(resumed.streamText, 'Continued', 'resumed nonterminal events are accepted');
+  streamStore.clearStream(conversationId);
+});
+
 test('stream registry keeps concurrent conversations independently addressable', () => {
   const firstId = 'concurrent-stream-first';
   const secondId = 'concurrent-stream-second';

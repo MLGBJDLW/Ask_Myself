@@ -661,12 +661,6 @@ function collectQuestionResponses(
   Object.values(record).forEach((item) => collectQuestionResponses(item, output, depth + 1));
 }
 
-function isInteractionControlArtifact(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const kind = (value as Record<string, unknown>).kind;
-  return kind === 'questionResponse' || kind === 'interactionSupplement';
-}
-
 export function ChatMessages(props: ChatMessagesProps) {
   const {
     turns,
@@ -723,49 +717,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     props.messages.forEach((message) => collectQuestionResponses(message.artifacts, responses));
     return responses;
   }, [props.messages]);
-  const answeredQuestionRecords = useMemo(() => {
-    const toolResults = new Map(
-      props.messages
-        .filter((message) => message.role === 'tool' && message.toolCallId)
-        .map((message) => [message.toolCallId!, message]),
-    );
-    const seen = new Set<string>();
-    return props.messages.flatMap((message, messageIndex) => {
-      if (message.role !== 'assistant') return [];
-      return message.toolCalls.flatMap((toolCall) => {
-        if (toolCall.name !== 'request_user_input' || seen.has(toolCall.id)) return [];
-        const result = toolResults.get(toolCall.id);
-        const request = extractQuestionRequest(
-          toolCall.id,
-          toolCall.arguments,
-          result?.artifacts,
-        );
-        const response = request ? questionResponses.get(request.callId) : undefined;
-        if (!request?.interactionId || !response) return [];
-        const anchorMessage = props.messages
-          .slice(0, messageIndex)
-          .reverse()
-          .find((candidate) => candidate.role === 'user'
-            && !isInteractionControlArtifact(candidate.artifacts));
-        if (!anchorMessage) return [];
-        seen.add(toolCall.id);
-        return [{ request, response, anchorMessageId: anchorMessage.id }];
-      });
-    });
-  }, [props.messages, questionResponses]);
-  const answeredQuestionCallIds = useMemo(
-    () => new Set(answeredQuestionRecords.map(({ request }) => request.callId)),
-    [answeredQuestionRecords],
-  );
-  const answeredQuestionRecordsByMessageId = useMemo(() => {
-    const records = new Map<string, typeof answeredQuestionRecords>();
-    answeredQuestionRecords.forEach((record) => {
-      const existing = records.get(record.anchorMessageId) ?? [];
-      records.set(record.anchorMessageId, [...existing, record]);
-    });
-    return records;
-  }, [answeredQuestionRecords]);
-
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1134,36 +1085,85 @@ export function ChatMessages(props: ChatMessagesProps) {
 
   const renderTimelineTraceNode = useCallback(
     (key: string, sections: TimelineSection[], isStreaming = false) => {
-      const traceSections = sections.filter((section) => !(
-        section.kind === 'tool'
-        && section.toolCall.toolName === 'request_user_input'
-        && answeredQuestionCallIds.has(section.toolCall.callId)
-      ));
-      if (traceSections.length === 0) return <Fragment key={key} />;
-      return renderThinkingTraceNode(
-        key,
-        renderTimelineSections(traceSections),
-        isStreaming,
+      if (sections.length === 0) return <Fragment key={key} />;
+      const ordered: Array<
+        | { kind: 'trace'; id: string; sections: TimelineSection[] }
+        | {
+            kind: 'answeredQuestion';
+            id: string;
+            request: NonNullable<ReturnType<typeof extractQuestionRequest>>;
+            response: Record<string, unknown>;
+          }
+      > = [];
+      const seenQuestions = new Set<string>();
+      let traceSegment: TimelineSection[] = [];
+      const flushTrace = () => {
+        if (traceSegment.length === 0) return;
+        ordered.push({
+          kind: 'trace',
+          id: `${key}-trace-${ordered.length}`,
+          sections: traceSegment,
+        });
+        traceSegment = [];
+      };
+
+      for (const section of sections) {
+        if (section.kind !== 'tool' || section.toolCall.toolName !== 'request_user_input') {
+          traceSegment.push(section);
+          continue;
+        }
+        const response = questionResponses.get(section.toolCall.callId);
+        const request = response
+          ? extractQuestionRequest(
+              section.toolCall.callId,
+              section.toolCall.arguments,
+              section.toolCall.artifacts,
+            )
+          : null;
+        if (!request?.interactionId || !response) {
+          traceSegment.push(section);
+          continue;
+        }
+        if (seenQuestions.has(request.callId)) continue;
+        seenQuestions.add(request.callId);
+        flushTrace();
+        ordered.push({
+          kind: 'answeredQuestion',
+          id: `${key}-answered-${request.interactionId}`,
+          request,
+          response,
+        });
+      }
+      flushTrace();
+      let lastTraceIndex = -1;
+      ordered.forEach((item, index) => {
+        if (item.kind === 'trace') lastTraceIndex = index;
+      });
+
+      return (
+        <Fragment key={key}>
+          {ordered.map((item, index) => item.kind === 'trace'
+            ? renderThinkingTraceNode(
+                item.id,
+                renderTimelineSections(item.sections),
+                isStreaming && index === lastTraceIndex,
+              )
+            : (
+                <div key={item.id} className="mb-1 flex justify-start">
+                  <div className="w-full min-w-0">
+                    <QuestionRequestTimelineRecord
+                      request={item.request}
+                      answered
+                      response={item.response}
+                    />
+                  </div>
+                </div>
+              ))}
+        </Fragment>
       );
     },
-    [answeredQuestionCallIds, renderThinkingTraceNode, renderTimelineSections],
+    [questionResponses, renderThinkingTraceNode, renderTimelineSections],
   );
-  const renderAnsweredQuestionRecords = useCallback((messageId: string) => (
-    answeredQuestionRecordsByMessageId.get(messageId)?.map(({ request, response }) => (
-      <div
-        key={`answered-question-${request.interactionId ?? request.callId}`}
-        className="flex justify-start mb-1"
-      >
-        <div className="w-full min-w-0">
-          <QuestionRequestTimelineRecord
-            request={request}
-            answered
-            response={response}
-          />
-        </div>
-      </div>
-    )) ?? null
-  ), [answeredQuestionRecordsByMessageId]);
 
   const messageThinkingText = useMemo(() => {
     const map = new Map<number, string>();
@@ -2218,8 +2218,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                   <>{traceGroup.nodes}</>
                 )}
 
-                {renderAnsweredQuestionRecords(msg.id)}
-
                 {renderGeneratedImagePreviews(assistantImagePreviews)}
 
                 {assistantMsg &&
@@ -2360,8 +2358,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                   }
                 />
               )}
-
-              {msg.role === 'user' && renderAnsweredQuestionRecords(msg.id)}
 
               {developerMode && liveUserSkills.length > 0 && (
                 <TurnSkillStrip skills={liveUserSkills} live />

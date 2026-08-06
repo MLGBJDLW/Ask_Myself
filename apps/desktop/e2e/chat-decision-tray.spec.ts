@@ -8,6 +8,8 @@ test.beforeEach(async ({ page }) => {
     const testParams = new URLSearchParams(window.location.search);
     let callbackId = 1;
     let listenerId = 1;
+    let recoveryVisible = testParams.get('recovery') === '1';
+    let failNextLaunch = testParams.get('failure') === '1';
     const callbacks = new Map<number, (event: unknown) => void>();
     const conversation = {
       id: 'conv-decision-tray',
@@ -162,6 +164,40 @@ test.beforeEach(async ({ page }) => {
       expiresAt: null,
       resumeToken: 'private-resume-token',
     };
+    const savedAnswers = Object.fromEntries(questionArtifact.questions.map((question) => [
+      question.id,
+      [question.id === 'strategy' ? 'Architectural refactor' : 'Preserve legacy configuration'],
+    ]));
+    if (recoveryVisible) {
+      interaction.status = 'submitted';
+      taskRun.status = 'failed';
+      taskRun.phase = 'done';
+      turn.status = 'error';
+      messages.push({
+        id: 'message-recoverable-response',
+        conversationId: conversation.id,
+        role: 'user',
+        content: 'Saved response',
+        toolCallId: null,
+        toolCalls: [],
+        artifacts: {
+          kind: 'questionResponse',
+          version: 2,
+          interactionId: interaction.interactionId,
+          requestCallId: interaction.toolCallId,
+          answers: questionArtifact.questions.map((question) => ({
+            id: question.id,
+            question: question.question,
+            answers: savedAnswers[question.id],
+          })),
+        },
+        tokenCount: 5,
+        createdAt: now,
+        sortOrder: messages.length,
+        thinking: null,
+        imageAttachments: null,
+      });
+    }
     const agentConfig = {
       id: 'cfg-decision',
       name: 'Decision Config',
@@ -197,9 +233,19 @@ test.beforeEach(async ({ page }) => {
         case 'get_agent_task_runs_cmd': return [clone(taskRun)];
         case 'get_agent_task_run_events_cmd': return [];
         case 'list_interaction_requests_cmd':
-          return ['pending', 'presented', 'partially_answered', 'submitted'].includes(interaction.status)
+          return (
+            ['pending', 'presented', 'partially_answered'].includes(interaction.status)
+            || (recoveryVisible && ['submitted', 'acknowledged'].includes(interaction.status))
+          )
             ? [clone(interaction)]
             : [];
+        case 'get_interaction_response_cmd':
+          return {
+            schemaVersion: 1,
+            interactionId: interaction.interactionId,
+            answers: clone(savedAnswers),
+            submittedAt: now,
+          };
         case 'mark_interaction_presented_cmd':
           if (interaction.status === 'pending') interaction.status = 'presented';
           return clone(interaction);
@@ -225,8 +271,13 @@ test.beforeEach(async ({ page }) => {
           return clone(message);
         }
         case 'agent_chat_cmd': {
+          if (failNextLaunch) {
+            failNextLaunch = false;
+            throw new Error('Injected continuation launch failure');
+          }
           const request = args.request as { message?: string; userArtifacts?: Record<string, unknown> } | undefined;
           const artifact = request?.userArtifacts ?? {};
+          recoveryVisible = false;
           interaction.status = 'submitted';
           taskRun.status = 'queued';
           taskRun.phase = 'queued';
@@ -239,6 +290,52 @@ test.beforeEach(async ({ page }) => {
             toolCalls: [],
             artifacts: clone(artifact),
             tokenCount: 5,
+            createdAt: new Date().toISOString(),
+            sortOrder: messages.length,
+            thinking: null,
+            imageAttachments: null,
+          });
+          messages.push({
+            id: `message-follow-up-tool-${messages.length}`,
+            conversationId: conversation.id,
+            role: 'assistant',
+            content: '',
+            toolCallId: null,
+            toolCalls: [{
+              id: 'call-follow-up-1',
+              name: 'run_shell',
+              arguments: JSON.stringify({ command: 'verify' }),
+            }],
+            artifacts: null,
+            tokenCount: 0,
+            createdAt: new Date().toISOString(),
+            sortOrder: messages.length,
+            thinking: null,
+            imageAttachments: null,
+          });
+          messages.push({
+            id: `message-follow-up-result-${messages.length}`,
+            conversationId: conversation.id,
+            role: 'tool',
+            content: 'Follow-up tool completed',
+            toolCallId: 'call-follow-up-1',
+            toolCalls: [],
+            artifacts: null,
+            tokenCount: 1,
+            createdAt: new Date().toISOString(),
+            sortOrder: messages.length,
+            thinking: null,
+            imageAttachments: null,
+          });
+          messages.push({
+            id: `message-final-${messages.length}`,
+            conversationId: conversation.id,
+            role: 'assistant',
+            content: 'Continuation completed.',
+            toolCallId: null,
+            toolCalls: [],
+            artifacts: null,
+            tokenCount: 2,
             createdAt: new Date().toISOString(),
             sortOrder: messages.length,
             thinking: null,
@@ -329,6 +426,32 @@ test('restores a per-question draft, distinguishes supplements, and collapses af
   await summary.click();
   await expect(summary).toContainText('Architectural refactor');
   await expect(summary).toContainText('Preserve legacy configuration');
+  const finalReply = page.getByText('Continuation completed.');
+  await expect(finalReply).toBeVisible();
+  await expect.poll(async () => summary.evaluate((node, finalNode) => (
+    Boolean(node.compareDocumentPosition(finalNode as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
+  ), await finalReply.elementHandle())).toBe(true);
+});
+
+test('an interrupted saved response can be retried without re-entering answers', async ({ page }) => {
+  await page.goto('/chat/conv-decision-tray?recovery=1');
+
+  const recovery = page.getByTestId('decision-tray-recovery');
+  await expect(recovery).toContainText('Architectural refactor');
+  await expect(recovery).toContainText('Preserve legacy configuration');
+  await page.getByTestId('decision-tray').getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByTestId('decision-tray')).toBeHidden();
+});
+
+test('a rejected continuation keeps the decision tray retryable', async ({ page }) => {
+  await page.goto('/chat/conv-decision-tray?single=1&failure=1');
+
+  const tray = page.getByTestId('decision-tray');
+  await tray.getByRole('radio', { name: /Architectural refactor/ }).click();
+  const submit = tray.getByRole('button', { name: 'Submit answers' });
+  await submit.click();
+  await expect(tray).toBeVisible();
+  await expect(submit).toBeEnabled();
 });
 
 test('single-choice questions advance to review before submission', async ({ page }) => {

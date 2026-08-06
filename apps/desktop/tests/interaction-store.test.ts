@@ -90,6 +90,24 @@ assert(
   !remountedStore.getState().draftsById['low-first'],
   'submitted request clears the persisted draft',
 );
+assertEqual(
+  remountedStore.queue()[0].status,
+  'submitted',
+  'a backend-filtered submitted recovery request remains actionable',
+);
+remountedStore.upsertRequest({ ...lowFirst, status: 'acknowledged' });
+assertEqual(
+  remountedStore.queue()[0].status,
+  'acknowledged',
+  'an interrupted acknowledged response remains actionable',
+);
+let rejectedRecoveryDraft = false;
+try {
+  remountedStore.setDraft('low-first', { scope: ['App'] }, 0);
+} catch {
+  rejectedRecoveryDraft = true;
+}
+assert(rejectedRecoveryDraft, 'saved recovery responses cannot be edited into different input');
 
 const otherConversation = request(
   'other',

@@ -22,10 +22,15 @@ export interface InteractionDraftStorage {
   removeItem(key: string): void;
 }
 
-const ACTIVE_STATUSES: ReadonlySet<InteractionStatus> = new Set([
+const EDITABLE_STATUSES: ReadonlySet<InteractionStatus> = new Set([
   'pending',
   'presented',
   'partially_answered',
+]);
+const QUEUED_STATUSES: ReadonlySet<InteractionStatus> = new Set([
+  ...EDITABLE_STATUSES,
+  'submitted',
+  'acknowledged',
 ]);
 
 function defaultStorage(): InteractionDraftStorage | null {
@@ -161,7 +166,7 @@ export class InteractionStore {
     if (request.kind === 'credential_request') {
       throw new Error('Credential interactions cannot persist inline answers');
     }
-    if (request && !ACTIVE_STATUSES.has(request.status)) {
+    if (request && !EDITABLE_STATUSES.has(request.status)) {
       throw new Error(`Cannot edit interaction ${interactionId} in status ${request.status}`);
     }
     const draft: InteractionDraft = {
@@ -195,7 +200,7 @@ export class InteractionStore {
   queue(conversationId?: string): InteractionRequest[] {
     return Object.values(this.state.requestsById)
       .filter((request) => (
-        ACTIVE_STATUSES.has(request.status)
+        QUEUED_STATUSES.has(request.status)
         && (!conversationId || request.conversationId === conversationId)
       ))
       .sort((left, right) => (
@@ -211,7 +216,7 @@ export class InteractionStore {
   ): void {
     const resolvedIds = requests
       .filter((request) => (
-        !ACTIVE_STATUSES.has(request.status) || request.kind === 'credential_request'
+        !EDITABLE_STATUSES.has(request.status) || request.kind === 'credential_request'
       ))
       .map((request) => request.interactionId)
       .filter((id) => Boolean(this.state.draftsById[id]));

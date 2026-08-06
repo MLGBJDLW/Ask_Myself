@@ -81,11 +81,14 @@ export function DecisionTray({
   const currentIndex = Math.min(rawIndex, questionCount);
   const reviewing = currentIndex >= questionCount;
   const currentQuestion = request.questions[Math.min(currentIndex, questionCount - 1)];
+  const recoveryPending = request.status === 'submitted' || request.status === 'acknowledged';
   const highRisk = request.kind === 'high_risk_confirmation';
   const modalRef = useRef<HTMLElement>(null);
   const [showAll, setShowAll] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [savedAnswers, setSavedAnswers] = useState<InteractionAnswers | null>(null);
+  const [loadingSavedAnswers, setLoadingSavedAnswers] = useState(false);
   const submittedRef = useRef(false);
 
   useEffect(() => {
@@ -129,6 +132,24 @@ export function DecisionTray({
   const partialMarkedRef = useRef(false);
 
   useEffect(() => {
+    let disposed = false;
+    setSavedAnswers(null);
+    if (!recoveryPending) return () => { disposed = true; };
+    setLoadingSavedAnswers(true);
+    void api.getInteractionResponse(request.interactionId)
+      .then((response) => {
+        if (!disposed) setSavedAnswers(response.answers);
+      })
+      .catch((error) => {
+        if (!disposed) toast.error(formatUserError(t('chat.retry'), error));
+      })
+      .finally(() => {
+        if (!disposed) setLoadingSavedAnswers(false);
+      });
+    return () => { disposed = true; };
+  }, [recoveryPending, request.interactionId, t]);
+
+  useEffect(() => {
     submittedRef.current = false;
     partialMarkedRef.current = request.status === 'partially_answered';
     setSubmitting(false);
@@ -166,6 +187,24 @@ export function DecisionTray({
       setSubmitting(false);
       toast.error(formatUserError(t('chat.questionSubmit'), error));
     }
+  };
+
+  const retrySavedResponse = async () => {
+    if (submittedRef.current || submitting || loadingSavedAnswers) return;
+    let nextAnswers = savedAnswers;
+    if (!nextAnswers) {
+      setLoadingSavedAnswers(true);
+      try {
+        nextAnswers = (await api.getInteractionResponse(request.interactionId)).answers;
+        setSavedAnswers(nextAnswers);
+      } catch (error) {
+        toast.error(formatUserError(t('chat.retry'), error));
+        return;
+      } finally {
+        setLoadingSavedAnswers(false);
+      }
+    }
+    await submit(nextAnswers);
   };
 
   const advance = (nextAnswers = answers) => {
@@ -262,20 +301,22 @@ export function DecisionTray({
               )}
             </div>
             <p className="mt-0.5 text-[11px] text-text-tertiary">
-              {reviewing
+              {recoveryPending
+                ? t('chat.questionResponseHint')
+                : reviewing
                 ? t('chat.decisionTrayReview')
                 : t('chat.decisionTrayProgress', { current: currentIndex + 1, total: questionCount })}
             </p>
           </div>
         </div>
-        <button
+        {!recoveryPending && <button
           type="button"
           onClick={() => setShowAll((value) => !value)}
           className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
         >
           {showAll ? <EyeOff size={12} /> : <Eye size={12} />}
           {t(showAll ? 'chat.decisionTrayHideAll' : 'chat.decisionTrayShowAll')}
-        </button>
+        </button>}
       </header>
 
       {showAll && !reviewing && (
@@ -300,7 +341,26 @@ export function DecisionTray({
       )}
 
       <div className="px-4 py-3.5">
-        {reviewing ? (
+        {recoveryPending ? (
+          <div data-testid="decision-tray-recovery" className="space-y-2">
+            {request.questions.map((question) => (
+              <div
+                key={question.id}
+                className="flex w-full items-start gap-3 rounded-xl border border-border/70 bg-surface-0/65 px-3 py-2.5"
+              >
+                <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-success/12 text-success">
+                  <Check size={11} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[10px] font-semibold uppercase tracking-[0.11em] text-text-tertiary">{question.header}</span>
+                  <span className="mt-0.5 block text-xs text-text-primary">
+                    {savedAnswers ? (savedAnswers[question.id] ?? []).join(', ') : t('common.loading')}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : reviewing ? (
           <div data-testid="decision-tray-review" className="space-y-2">
             {request.questions.map((question, index) => (
               <button
@@ -406,7 +466,7 @@ export function DecisionTray({
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 bg-surface-2/55 px-4 py-3">
         <div className="flex items-center gap-2">
-          <Button
+          {!recoveryPending && <Button
             size="sm"
             variant="ghost"
             icon={<Square size={12} />}
@@ -414,11 +474,23 @@ export function DecisionTray({
             onClick={() => void cancelTask()}
           >
             {t('chat.decisionTrayCancelTask')}
-          </Button>
-          <span className="hidden text-[11px] text-text-tertiary sm:inline">{t('chat.decisionTraySupplementHint')}</span>
+          </Button>}
+          <span className="hidden text-[11px] text-text-tertiary sm:inline">
+            {recoveryPending ? t('chat.questionResponseHint') : t('chat.decisionTraySupplementHint')}
+          </span>
         </div>
         <div className="flex items-center gap-2">
-          {currentIndex > 0 && (
+          {recoveryPending ? (
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<Send size={13} />}
+              disabled={submitting || loadingSavedAnswers}
+              onClick={() => void retrySavedResponse()}
+            >
+              {t('chat.retry')}
+            </Button>
+          ) : currentIndex > 0 && (
             <Button
               size="sm"
               variant="ghost"
@@ -429,29 +501,29 @@ export function DecisionTray({
               {t('common.edit')}
             </Button>
           )}
-          {reviewing ? (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<Send size={13} />}
-              disabled={!requestIsComplete(request, answers) || submitting}
-              onClick={() => void submit()}
-            >
-              {t('chat.questionSubmit')}
-            </Button>
-          ) : currentQuestion && !['single_choice', 'confirm'].includes(currentQuestion.type) ? (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<ChevronRight size={13} />}
-              disabled={!questionIsComplete(currentQuestion, answers) || submitting}
-              onClick={() => advance()}
-            >
-              {currentIndex === questionCount - 1
-                  ? t('chat.decisionTrayReview')
-                  : t('chat.decisionTrayContinue')}
-            </Button>
-          ) : null}
+          {!recoveryPending && (reviewing ? (
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<Send size={13} />}
+                disabled={!requestIsComplete(request, answers) || submitting}
+                onClick={() => void submit()}
+              >
+                {t('chat.questionSubmit')}
+              </Button>
+            ) : currentQuestion && !['single_choice', 'confirm'].includes(currentQuestion.type) ? (
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<ChevronRight size={13} />}
+                disabled={!questionIsComplete(currentQuestion, answers) || submitting}
+                onClick={() => advance()}
+              >
+                {currentIndex === questionCount - 1
+                    ? t('chat.decisionTrayReview')
+                    : t('chat.decisionTrayContinue')}
+              </Button>
+            ) : null)}
         </div>
       </footer>
     </section>
