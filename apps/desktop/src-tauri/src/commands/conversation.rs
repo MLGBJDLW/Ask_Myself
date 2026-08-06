@@ -1464,6 +1464,62 @@ pub async fn set_default_agent_config_cmd(
         .map_err(|e| e.to_string())
 }
 
+// Settings Schema V2 remains compatible with AgentConfig during PR 8. These
+// commands expose migration state and explicit rollback without coupling the
+// future Settings UI to the legacy provider form.
+
+#[tauri::command]
+pub async fn get_settings_schema_state_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<SettingsSchemaStateV2, String> {
+    state
+        .db
+        .settings_schema_state_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_settings_profiles_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SettingsProfileV2>, String> {
+    state
+        .db
+        .list_settings_profiles_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_settings_profile_v2_cmd(
+    state: tauri::State<'_, AppState>,
+    profile: SettingsProfileV2,
+    expected_revision: Option<u64>,
+) -> Result<SettingsProfileV2, String> {
+    state
+        .db
+        .save_settings_profile_v2(&profile, expected_revision)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn migrate_settings_schema_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<SettingsMigrationReportV2, String> {
+    state
+        .db
+        .migrate_settings_schema_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn rollback_settings_schema_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    state
+        .db
+        .rollback_settings_schema_v2()
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn test_agent_connection_cmd(
     config: SaveAgentConfigInput,

@@ -25,6 +25,11 @@ import type {
   VisualEvent,
 } from "../types/video";
 import type {
+  SettingsMigrationReportV2,
+  SettingsProfileV2,
+  SettingsSchemaStateV2,
+} from "../types/settingsSchemaV2";
+import type {
   AgentConfig,
   AppConfig,
   SaveAgentConfigInput,
@@ -840,6 +845,27 @@ export const deleteAgentConfig = (id: string) =>
 
 export const setDefaultAgentConfig = (id: string) =>
   invoke<void>('set_default_agent_config_cmd', { id });
+
+export const getSettingsSchemaStateV2 = () =>
+  invoke<SettingsSchemaStateV2>('get_settings_schema_state_v2_cmd');
+
+export const listSettingsProfilesV2 = () =>
+  invoke<SettingsProfileV2[]>('list_settings_profiles_v2_cmd');
+
+export const saveSettingsProfileV2 = (
+  profile: SettingsProfileV2,
+  expectedRevision?: number | null,
+) =>
+  invoke<SettingsProfileV2>('save_settings_profile_v2_cmd', {
+    profile,
+    expectedRevision: expectedRevision ?? null,
+  });
+
+export const migrateSettingsSchemaV2 = () =>
+  invoke<SettingsMigrationReportV2>('migrate_settings_schema_v2_cmd');
+
+export const rollbackSettingsSchemaV2 = () =>
+  invoke<boolean>('rollback_settings_schema_v2_cmd');
 
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
   invoke<ProviderModelCatalogSnapshot>('test_agent_connection_cmd', { config });
