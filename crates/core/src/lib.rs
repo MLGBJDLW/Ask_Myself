@@ -104,6 +104,7 @@ pub mod usage_analytics;
 pub mod usage_snapshot;
 #[cfg(feature = "video")]
 pub mod video;
+pub mod vision_router;
 pub mod visual_document;
 pub mod watcher;
 pub mod web_search;
