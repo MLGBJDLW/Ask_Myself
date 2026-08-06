@@ -3676,6 +3676,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "strsim",
+ "subtle",
  "tar",
  "tempfile",
  "thiserror 2.0.19",

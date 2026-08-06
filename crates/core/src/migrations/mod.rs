@@ -1640,6 +1640,61 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_context_compactions_snapshot
              ON context_compactions(conversation_id, snapshot_high_watermark);",
     ),
+    (
+        "v091_interaction_requests",
+        "CREATE TABLE IF NOT EXISTS interaction_queue_clock (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+
+         CREATE TABLE IF NOT EXISTS interaction_requests (
+             id TEXT PRIMARY KEY NOT NULL,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+             turn_id TEXT NOT NULL REFERENCES conversation_turns(id) ON DELETE CASCADE,
+             run_id TEXT NOT NULL REFERENCES agent_task_runs(id) ON DELETE CASCADE,
+             tool_call_id TEXT,
+             idempotency_key TEXT NOT NULL,
+             kind TEXT NOT NULL CHECK(kind IN (
+                 'user_input',
+                 'high_risk_confirmation',
+                 'credential_request',
+                 'conflict_resolution'
+             )),
+             title TEXT NOT NULL,
+             description TEXT,
+             questions_json TEXT NOT NULL,
+             required INTEGER NOT NULL DEFAULT 1 CHECK(required IN (0, 1)),
+             status TEXT NOT NULL CHECK(status IN (
+                 'pending',
+                 'presented',
+                 'partially_answered',
+                 'submitted',
+                 'acknowledged',
+                 'cancelled',
+                 'expired',
+                 'superseded',
+                 'failed'
+             )),
+             risk_priority INTEGER NOT NULL DEFAULT 0,
+             queue_sequence INTEGER NOT NULL UNIQUE,
+             resume_token TEXT NOT NULL UNIQUE,
+             expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(conversation_id, turn_id, idempotency_key)
+         );
+         CREATE INDEX IF NOT EXISTS idx_interaction_requests_queue
+             ON interaction_requests(status, risk_priority DESC, queue_sequence);
+         CREATE INDEX IF NOT EXISTS idx_interaction_requests_conversation
+             ON interaction_requests(conversation_id, status, risk_priority DESC, queue_sequence);
+
+         CREATE TABLE IF NOT EXISTS interaction_responses (
+             id TEXT PRIMARY KEY NOT NULL,
+             interaction_id TEXT NOT NULL UNIQUE REFERENCES interaction_requests(id) ON DELETE CASCADE,
+             answers_json TEXT NOT NULL,
+             submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1763,6 +1818,9 @@ mod tests {
         assert!(tables.contains(&"agent_evolution_events".to_string()));
         assert!(tables.contains(&"agent_task_runs".to_string()));
         assert!(tables.contains(&"agent_task_run_events".to_string()));
+        assert!(tables.contains(&"interaction_queue_clock".to_string()));
+        assert!(tables.contains(&"interaction_requests".to_string()));
+        assert!(tables.contains(&"interaction_responses".to_string()));
         assert!(tables.contains(&"agent_subtask_runs".to_string()));
         assert!(tables.contains(&"agent_task_artifacts".to_string()));
         assert!(tables.contains(&"agent_task_artifact_versions".to_string()));

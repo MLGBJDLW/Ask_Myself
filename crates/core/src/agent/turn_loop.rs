@@ -525,6 +525,7 @@ impl AgentExecutor {
             &source_scope,
             &tx,
             conversation_id,
+            turn_id,
             model,
             &mut sort_order,
             &mut persisted_replayable_system_contents,

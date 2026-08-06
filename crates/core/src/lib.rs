@@ -47,6 +47,7 @@ pub mod image_provider_catalog;
 pub mod index;
 pub mod ingest;
 pub mod intelligence;
+pub mod interaction;
 pub mod knowledge_graph;
 pub mod knowledge_loop;
 pub mod learning;

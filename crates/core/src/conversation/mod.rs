@@ -8,12 +8,13 @@ pub use goal::{ConversationGoal, ConversationGoalStatus};
 
 use std::collections::{BTreeSet, HashSet};
 
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::interaction::{consume_interaction_response_in_transaction, SubmitInteractionResponse};
 use crate::llm::{Role, ToolCallRequest};
 
 // ---------------------------------------------------------------------------
@@ -1522,6 +1523,28 @@ impl Database {
         model: Option<&str>,
         idempotency_key: &str,
     ) -> Result<AgentTurnLaunchRecord, CoreError> {
+        self.create_agent_turn_and_run_with_interaction_response(
+            message,
+            title,
+            provider,
+            model,
+            idempotency_key,
+            None,
+        )
+    }
+
+    /// Atomically consumes an optional interaction response with turn launch.
+    /// A launch rollback therefore leaves its one-shot response available for
+    /// a safe retry, and an idempotent launch retry does not consume it twice.
+    pub fn create_agent_turn_and_run_with_interaction_response(
+        &self,
+        message: &ConversationMessage,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        idempotency_key: &str,
+        interaction_response: Option<&SubmitInteractionResponse>,
+    ) -> Result<AgentTurnLaunchRecord, CoreError> {
         let idempotency_key = idempotency_key.trim();
         if idempotency_key.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -1560,7 +1583,7 @@ impl Database {
         let turn_id = new_id();
         let run_id = new_id();
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let existing = tx
             .query_row(
@@ -1622,6 +1645,16 @@ impl Database {
             });
         }
 
+        let consumed_interaction = interaction_response
+            .map(|response| {
+                consume_interaction_response_in_transaction(
+                    &tx,
+                    response,
+                    Some(&message.conversation_id),
+                )
+            })
+            .transpose()?;
+
         let user_message_sort_order = tx.query_row(
             "SELECT COALESCE(MAX(sort_order), -1) + 1
              FROM messages WHERE conversation_id = ?1",
@@ -1671,6 +1704,10 @@ impl Database {
             ],
         )?;
         tx.commit()?;
+        drop(conn);
+        if let Some(consumed) = consumed_interaction.as_ref() {
+            self.record_interaction_submitted_event(consumed);
+        }
 
         Ok(AgentTurnLaunchRecord {
             conversation_id: message.conversation_id.clone(),
