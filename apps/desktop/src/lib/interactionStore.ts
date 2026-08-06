@@ -56,6 +56,8 @@ function parseDrafts(storage: InteractionDraftStorage | null): Record<string, In
       if (
         draft.schemaVersion !== 1
         || draft.interactionId !== interactionId
+        || typeof draft.conversationId !== 'string'
+        || draft.conversationId.length === 0
         || !isStringArrayRecord(draft.answers)
         || typeof draft.currentQuestionIndex !== 'number'
         || !Number.isInteger(draft.currentQuestionIndex)
@@ -67,6 +69,7 @@ function parseDrafts(storage: InteractionDraftStorage | null): Record<string, In
       drafts[interactionId] = {
         schemaVersion: 1,
         interactionId,
+        conversationId: draft.conversationId,
         answers: draft.answers,
         currentQuestionIndex: draft.currentQuestionIndex,
         updatedAt: draft.updatedAt,
@@ -124,9 +127,12 @@ export class InteractionStore {
       hydratedAll: conversationId ? this.state.hydratedAll : true,
     };
     const returnedIds = new Set(requests.map((request) => request.interactionId));
-    const disappearedIds = conversationId
-      ? removedRequestIds.filter((id) => !returnedIds.has(id))
-      : Object.keys(this.state.draftsById).filter((id) => !returnedIds.has(id));
+    const disappearedIds = Object.values(this.state.draftsById)
+      .filter((draft) => (
+        (!conversationId || draft.conversationId === conversationId)
+        && !returnedIds.has(draft.interactionId)
+      ))
+      .map((draft) => draft.interactionId);
     this.removeNonPersistableDrafts(requests, disappearedIds);
     this.notify();
   }
@@ -161,6 +167,7 @@ export class InteractionStore {
     const draft: InteractionDraft = {
       schemaVersion: 1,
       interactionId,
+      conversationId: request.conversationId,
       answers: Object.fromEntries(
         Object.entries(answers).map(([id, values]) => [id, [...values]]),
       ),

@@ -126,11 +126,13 @@ try {
 }
 assert(rejectedUnknownDraft, 'unknown requests cannot write persisted drafts');
 
-const removalStore = new InteractionStore(new MemoryStorage());
+const removalStorage = new MemoryStorage();
+const removalStore = new InteractionStore(removalStorage);
 removalStore.replaceRequests('conversation-1', [lowSecond]);
 removalStore.setDraft('low-second', { scope: ['App'] }, 0);
-removalStore.replaceRequests('conversation-1', []);
+const removalStoreAfterRestart = new InteractionStore(removalStorage);
+removalStoreAfterRestart.replaceRequests('conversation-1', []);
 assert(
-  !removalStore.getState().draftsById['low-second'],
-  'a request omitted after terminal filtering clears its persisted draft',
+  !removalStoreAfterRestart.getState().draftsById['low-second'],
+  'a terminal-filtered request clears its persisted draft after restart',
 );

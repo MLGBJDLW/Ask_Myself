@@ -189,6 +189,7 @@ pub struct InteractionRequest {
 pub struct InteractionDraft {
     pub schema_version: u16,
     pub interaction_id: String,
+    pub conversation_id: String,
     pub answers: InteractionAnswers,
     pub current_question_index: usize,
     pub updated_at: String,
@@ -534,24 +535,26 @@ pub(crate) fn consume_interaction_response_in_transaction(
     }
     let answers = validate_answers(&request, &input.answers)?;
     let answers_json = serde_json::to_string(&answers)?;
+    let affected = tx.execute(
+        "UPDATE interaction_requests
+         SET status = 'submitted', updated_at = datetime('now')
+         WHERE id = ?1
+           AND status IN ('presented', 'partially_answered')
+           AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
+        rusqlite::params![&input.interaction_id],
+    )?;
+    if affected != 1 {
+        return Err(CoreError::InvalidInput(format!(
+            "Interaction {} changed or expired while it was being submitted",
+            input.interaction_id
+        )));
+    }
     let response_id = Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO interaction_responses (id, interaction_id, answers_json)
          VALUES (?1, ?2, ?3)",
         rusqlite::params![&response_id, &input.interaction_id, &answers_json],
     )?;
-    let affected = tx.execute(
-        "UPDATE interaction_requests
-         SET status = 'submitted', updated_at = datetime('now')
-         WHERE id = ?1 AND status IN ('pending', 'presented', 'partially_answered')",
-        rusqlite::params![&input.interaction_id],
-    )?;
-    if affected != 1 {
-        return Err(CoreError::InvalidInput(format!(
-            "Interaction {} changed while it was being submitted",
-            input.interaction_id
-        )));
-    }
     tx.execute(
         "INSERT INTO interaction_events (interaction_id, from_status, to_status)
          VALUES (?1, ?2, 'submitted')",
@@ -1361,6 +1364,46 @@ mod tests {
                 resume_token: expired.resume_token,
                 answers,
             })
+            .is_err());
+    }
+
+    #[test]
+    fn transactional_submission_rechecks_the_deadline() {
+        let fixture = fixture();
+        let created = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-deadline"))
+            .unwrap();
+        fixture
+            .db
+            .mark_interaction_presented(&created.request.interaction_id)
+            .unwrap();
+        fixture
+            .db
+            .conn()
+            .execute(
+                "UPDATE interaction_requests SET expires_at = '2000-01-01T00:00:00Z'
+                 WHERE id = ?1",
+                rusqlite::params![&created.request.interaction_id],
+            )
+            .unwrap();
+        let mut answers = InteractionAnswers::new();
+        answers.insert("scope".into(), vec!["Repo".into()]);
+        let submission = SubmitInteractionResponse {
+            interaction_id: created.request.interaction_id.clone(),
+            resume_token: created.request.resume_token,
+            answers,
+        };
+        let mut conn = fixture.db.conn();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(consume_interaction_response_in_transaction(&tx, &submission, None).is_err());
+        tx.rollback().unwrap();
+        drop(conn);
+        assert!(fixture
+            .db
+            .get_interaction_response(&created.request.interaction_id)
             .is_err());
     }
 

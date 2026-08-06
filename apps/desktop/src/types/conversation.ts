@@ -117,6 +117,7 @@ export interface InteractionRequest {
 export interface InteractionDraft {
   schemaVersion: 1;
   interactionId: string;
+  conversationId: string;
   answers: InteractionAnswers;
   currentQuestionIndex: number;
   updatedAt: string;
