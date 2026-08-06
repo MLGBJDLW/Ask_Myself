@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::interaction::{consume_interaction_response_in_transaction, SubmitInteractionResponse};
+use crate::interaction::{
+    consume_interaction_response_in_transaction, expire_due_requests, SubmitInteractionResponse,
+};
 use crate::llm::{Role, ToolCallRequest};
 
 // ---------------------------------------------------------------------------
@@ -1583,6 +1585,9 @@ impl Database {
         let turn_id = new_id();
         let run_id = new_id();
         let mut conn = self.conn();
+        if interaction_response.is_some() {
+            expire_due_requests(&mut conn)?;
+        }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let existing = tx

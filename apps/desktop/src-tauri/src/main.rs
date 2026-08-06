@@ -406,6 +406,8 @@ fn main() {
             commands::submit_interaction_response_cmd,
             commands::acknowledge_interaction_cmd,
             commands::cancel_interaction_cmd,
+            commands::supersede_interaction_cmd,
+            commands::fail_interaction_cmd,
             commands::get_agent_task_runs_cmd,
             commands::list_recent_agent_task_runs_cmd,
             commands::list_agent_task_run_summaries_cmd,

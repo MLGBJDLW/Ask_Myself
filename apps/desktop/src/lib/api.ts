@@ -1027,6 +1027,12 @@ export const acknowledgeInteraction = (interactionId: string) =>
 export const cancelInteraction = (interactionId: string) =>
   invoke<InteractionRequest>('cancel_interaction_cmd', { interactionId });
 
+export const supersedeInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('supersede_interaction_cmd', { interactionId });
+
+export const failInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('fail_interaction_cmd', { interactionId });
+
 export const getAgentTaskRuns = (conversationId: string) =>
   invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId });
 

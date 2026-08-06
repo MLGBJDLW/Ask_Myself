@@ -183,11 +183,16 @@ fn interaction_response_from_user_artifacts(
     let Some(submission) = interaction_submission_from_artifacts(artifacts)? else {
         return Ok(None);
     };
-    let request = db
+    let mut request = db
         .get_interaction_request(&submission.interaction_id)
         .map_err(|error| error.to_string())?;
     if request.conversation_id != conversation_id {
         return Err("Interaction response belongs to a different conversation.".to_string());
+    }
+    if request.status == InteractionStatus::Pending {
+        request = db
+            .mark_interaction_presented(&request.interaction_id)
+            .map_err(|error| error.to_string())?;
     }
     Ok(Some(SubmitInteractionResponse {
         interaction_id: submission.interaction_id,

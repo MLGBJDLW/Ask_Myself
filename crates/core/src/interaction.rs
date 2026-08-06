@@ -21,6 +21,7 @@ pub const INTERACTION_PROTOCOL_VERSION: u16 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum InteractionKind {
     UserInput,
+    Approval,
     HighRiskConfirmation,
     CredentialRequest,
     ConflictResolution,
@@ -30,6 +31,7 @@ impl InteractionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::UserInput => "user_input",
+            Self::Approval => "approval",
             Self::HighRiskConfirmation => "high_risk_confirmation",
             Self::CredentialRequest => "credential_request",
             Self::ConflictResolution => "conflict_resolution",
@@ -39,6 +41,7 @@ impl InteractionKind {
     fn from_db(value: &str) -> Result<Self, CoreError> {
         match value {
             "user_input" => Ok(Self::UserInput),
+            "approval" => Ok(Self::Approval),
             "high_risk_confirmation" => Ok(Self::HighRiskConfirmation),
             "credential_request" => Ok(Self::CredentialRequest),
             "conflict_resolution" => Ok(Self::ConflictResolution),
@@ -51,6 +54,7 @@ impl InteractionKind {
     pub fn risk_priority(self) -> i64 {
         match self {
             Self::HighRiskConfirmation => 400,
+            Self::Approval => 350,
             Self::CredentialRequest => 300,
             Self::ConflictResolution => 200,
             Self::UserInput => 100,
@@ -465,8 +469,18 @@ fn request_from_row(row: &Row<'_>) -> rusqlite::Result<InteractionRequest> {
     })
 }
 
-fn expire_due_requests(conn: &rusqlite::Connection) -> Result<(), CoreError> {
-    conn.execute(
+pub(crate) fn expire_due_requests(conn: &mut rusqlite::Connection) -> Result<(), CoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO interaction_events (interaction_id, from_status, to_status, reason)
+         SELECT id, status, 'expired', 'deadline_elapsed'
+         FROM interaction_requests
+         WHERE status IN ('pending', 'presented', 'partially_answered')
+           AND expires_at IS NOT NULL
+           AND datetime(expires_at) <= datetime('now')",
+        [],
+    )?;
+    tx.execute(
         "UPDATE interaction_requests
          SET status = 'expired', updated_at = datetime('now')
          WHERE status IN ('pending', 'presented', 'partially_answered')
@@ -474,6 +488,7 @@ fn expire_due_requests(conn: &rusqlite::Connection) -> Result<(), CoreError> {
            AND datetime(expires_at) <= datetime('now')",
         [],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -482,7 +497,6 @@ pub(crate) fn consume_interaction_response_in_transaction(
     input: &SubmitInteractionResponse,
     expected_conversation_id: Option<&str>,
 ) -> Result<ConsumedInteractionResponse, CoreError> {
-    expire_due_requests(tx)?;
     let request = tx
         .query_row(
             &format!("SELECT {REQUEST_COLUMNS} FROM interaction_requests WHERE id = ?1"),
@@ -508,7 +522,10 @@ pub(crate) fn consume_interaction_response_in_transaction(
             "Interaction resume token is invalid or stale".to_string(),
         ));
     }
-    if !request.status.is_active() {
+    if !matches!(
+        request.status,
+        InteractionStatus::Presented | InteractionStatus::PartiallyAnswered
+    ) {
         return Err(CoreError::InvalidInput(format!(
             "Interaction {} cannot be submitted from status {}",
             input.interaction_id,
@@ -535,6 +552,11 @@ pub(crate) fn consume_interaction_response_in_transaction(
             input.interaction_id
         )));
     }
+    tx.execute(
+        "INSERT INTO interaction_events (interaction_id, from_status, to_status)
+         VALUES (?1, ?2, 'submitted')",
+        rusqlite::params![&input.interaction_id, request.status.as_str()],
+    )?;
     let submitted_at: String = tx.query_row(
         "SELECT submitted_at FROM interaction_responses WHERE id = ?1",
         rusqlite::params![&response_id],
@@ -573,8 +595,8 @@ impl Database {
             normalize_optional_text(input.tool_call_id.as_deref(), "tool call id", 256)?;
 
         let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        expire_due_requests(&tx)?;
         let run_id = tx
             .query_row(
                 "SELECT id FROM agent_task_runs WHERE conversation_id = ?1 AND turn_id = ?2",
@@ -647,6 +669,11 @@ impl Database {
                 &expires_at,
             ],
         )?;
+        tx.execute(
+            "INSERT INTO interaction_events (interaction_id, from_status, to_status)
+             VALUES (?1, NULL, 'pending')",
+            rusqlite::params![&interaction_id],
+        )?;
         tx.commit()?;
         drop(conn);
         let request = self.get_interaction_request(&interaction_id)?;
@@ -671,8 +698,8 @@ impl Database {
         &self,
         interaction_id: &str,
     ) -> Result<InteractionRequest, CoreError> {
-        let conn = self.conn();
-        expire_due_requests(&conn)?;
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
         conn.query_row(
             &format!("SELECT {REQUEST_COLUMNS} FROM interaction_requests WHERE id = ?1"),
             rusqlite::params![interaction_id],
@@ -691,8 +718,8 @@ impl Database {
         conversation_id: Option<&str>,
         include_terminal: bool,
     ) -> Result<Vec<InteractionRequest>, CoreError> {
-        let conn = self.conn();
-        expire_due_requests(&conn)?;
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
         let status_filter = if include_terminal {
             String::new()
         } else {
@@ -727,20 +754,15 @@ impl Database {
         &self,
         interaction_id: &str,
     ) -> Result<InteractionRequest, CoreError> {
-        let current = self.get_interaction_request(interaction_id)?;
-        if matches!(
-            current.status,
-            InteractionStatus::Presented
-                | InteractionStatus::PartiallyAnswered
-                | InteractionStatus::Submitted
-                | InteractionStatus::Acknowledged
-        ) {
-            return Ok(current);
-        }
         self.transition_interaction_status(
             interaction_id,
             &[InteractionStatus::Pending],
             InteractionStatus::Presented,
+            &[
+                InteractionStatus::PartiallyAnswered,
+                InteractionStatus::Submitted,
+                InteractionStatus::Acknowledged,
+            ],
         )
     }
 
@@ -748,19 +770,14 @@ impl Database {
         &self,
         interaction_id: &str,
     ) -> Result<InteractionRequest, CoreError> {
-        let current = self.get_interaction_request(interaction_id)?;
-        if matches!(
-            current.status,
-            InteractionStatus::PartiallyAnswered
-                | InteractionStatus::Submitted
-                | InteractionStatus::Acknowledged
-        ) {
-            return Ok(current);
-        }
         self.transition_interaction_status(
             interaction_id,
-            &[InteractionStatus::Pending, InteractionStatus::Presented],
+            &[InteractionStatus::Presented],
             InteractionStatus::PartiallyAnswered,
+            &[
+                InteractionStatus::Submitted,
+                InteractionStatus::Acknowledged,
+            ],
         )
     }
 
@@ -772,6 +789,7 @@ impl Database {
             interaction_id,
             &[InteractionStatus::Submitted],
             InteractionStatus::Acknowledged,
+            &[],
         )
     }
 
@@ -787,6 +805,37 @@ impl Database {
                 InteractionStatus::PartiallyAnswered,
             ],
             InteractionStatus::Cancelled,
+            &[],
+        )
+    }
+
+    pub fn supersede_interaction(
+        &self,
+        interaction_id: &str,
+    ) -> Result<InteractionRequest, CoreError> {
+        self.transition_interaction_status(
+            interaction_id,
+            &[
+                InteractionStatus::Pending,
+                InteractionStatus::Presented,
+                InteractionStatus::PartiallyAnswered,
+            ],
+            InteractionStatus::Superseded,
+            &[],
+        )
+    }
+
+    pub fn fail_interaction(&self, interaction_id: &str) -> Result<InteractionRequest, CoreError> {
+        self.transition_interaction_status(
+            interaction_id,
+            &[
+                InteractionStatus::Pending,
+                InteractionStatus::Presented,
+                InteractionStatus::PartiallyAnswered,
+                InteractionStatus::Submitted,
+            ],
+            InteractionStatus::Failed,
+            &[],
         )
     }
 
@@ -795,9 +844,20 @@ impl Database {
         interaction_id: &str,
         from: &[InteractionStatus],
         to: InteractionStatus,
+        accept_if_advanced_to: &[InteractionStatus],
     ) -> Result<InteractionRequest, CoreError> {
-        let current = self.get_interaction_request(interaction_id)?;
-        if current.status == to {
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = tx
+            .query_row(
+                &format!("SELECT {REQUEST_COLUMNS} FROM interaction_requests WHERE id = ?1"),
+                rusqlite::params![interaction_id],
+                request_from_row,
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Interaction request {interaction_id}")))?;
+        if current.status == to || accept_if_advanced_to.contains(&current.status) {
             return Ok(current);
         }
         if !from.contains(&current.status) {
@@ -807,8 +867,7 @@ impl Database {
                 to.as_str()
             )));
         }
-        let conn = self.conn();
-        let affected = conn.execute(
+        let affected = tx.execute(
             "UPDATE interaction_requests
              SET status = ?2, updated_at = datetime('now')
              WHERE id = ?1 AND status = ?3",
@@ -819,6 +878,12 @@ impl Database {
                 "Interaction {interaction_id} changed while it was being updated"
             )));
         }
+        tx.execute(
+            "INSERT INTO interaction_events (interaction_id, from_status, to_status)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![interaction_id, current.status.as_str(), to.as_str()],
+        )?;
+        tx.commit()?;
         drop(conn);
         self.get_interaction_request(interaction_id)
     }
@@ -828,6 +893,7 @@ impl Database {
         input: &SubmitInteractionResponse,
     ) -> Result<InteractionResponse, CoreError> {
         let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let consumed = consume_interaction_response_in_transaction(&tx, input, None)?;
         tx.commit()?;
@@ -998,12 +1064,20 @@ mod tests {
         high_input.kind = InteractionKind::HighRiskConfirmation;
         high_input.title = "Confirm write".into();
         let high = fixture.db.create_interaction_request(&high_input).unwrap();
+        let mut approval_input = request_input(&fixture, "call-approval");
+        approval_input.kind = InteractionKind::Approval;
+        approval_input.title = "Approve change".into();
+        let approval = fixture
+            .db
+            .create_interaction_request(&approval_input)
+            .unwrap();
         let queue = fixture
             .db
             .list_interaction_requests(Some(&fixture.conversation_id), false)
             .unwrap();
         assert_eq!(queue[0].interaction_id, high.request.interaction_id);
-        assert_eq!(queue[1].interaction_id, low.request.interaction_id);
+        assert_eq!(queue[1].interaction_id, approval.request.interaction_id);
+        assert_eq!(queue[2].interaction_id, low.request.interaction_id);
     }
 
     #[test]
@@ -1034,6 +1108,10 @@ mod tests {
         let created = fixture
             .db
             .create_interaction_request(&request_input(&fixture, "call-1"))
+            .unwrap();
+        fixture
+            .db
+            .mark_interaction_presented(&created.request.interaction_id)
             .unwrap();
         let mut answers = InteractionAnswers::new();
         answers.insert("scope".into(), vec!["Repo".into()]);
@@ -1076,6 +1154,10 @@ mod tests {
             resume_token: created.request.resume_token,
             answers,
         };
+        fixture
+            .db
+            .mark_interaction_presented(&created.request.interaction_id)
+            .unwrap();
         let mut follow_up = ConversationMessage {
             id: fixture.user_message_id.clone(),
             conversation_id: fixture.conversation_id.clone(),
@@ -1107,7 +1189,7 @@ mod tests {
                 .get_interaction_request(&created.request.interaction_id)
                 .unwrap()
                 .status,
-            InteractionStatus::Pending
+            InteractionStatus::Presented
         );
         assert!(fixture
             .db
@@ -1143,6 +1225,10 @@ mod tests {
             .db
             .create_interaction_request(&request_input(&fixture, "call-1"))
             .unwrap();
+        assert!(fixture
+            .db
+            .mark_interaction_partially_answered(&created.request.interaction_id)
+            .is_err());
         assert_eq!(
             fixture
                 .db
@@ -1197,6 +1283,62 @@ mod tests {
             .db
             .cancel_interaction(&created.request.interaction_id)
             .is_err());
+        let transitions = {
+            let conn = fixture.db.conn();
+            let mut statement = conn
+                .prepare(
+                    "SELECT to_status FROM interaction_events
+                     WHERE interaction_id = ?1 ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map(rusqlite::params![&created.request.interaction_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            transitions,
+            vec![
+                "pending",
+                "presented",
+                "partially_answered",
+                "submitted",
+                "acknowledged",
+            ]
+        );
+    }
+
+    #[test]
+    fn superseded_and_failed_are_reachable_terminal_states() {
+        let fixture = fixture();
+        let superseded = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-superseded"))
+            .unwrap();
+        assert_eq!(
+            fixture
+                .db
+                .supersede_interaction(&superseded.request.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Superseded
+        );
+
+        let failed = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-failed"))
+            .unwrap();
+        assert_eq!(
+            fixture
+                .db
+                .fail_interaction(&failed.request.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Failed
+        );
     }
 
     #[test]

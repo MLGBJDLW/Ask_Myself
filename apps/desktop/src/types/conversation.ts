@@ -54,6 +54,7 @@ export interface ConversationTurn {
 
 export type InteractionKind =
   | 'user_input'
+  | 'approval'
   | 'high_risk_confirmation'
   | 'credential_request'
   | 'conflict_resolution';

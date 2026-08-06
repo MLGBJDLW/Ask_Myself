@@ -288,6 +288,28 @@ pub async fn cancel_interaction_cmd(
 }
 
 #[tauri::command]
+pub async fn supersede_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .supersede_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn fail_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .fail_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_runs_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,

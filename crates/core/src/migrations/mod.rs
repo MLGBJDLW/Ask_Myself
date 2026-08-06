@@ -1656,6 +1656,7 @@ Every answer that uses knowledge base search results.
              idempotency_key TEXT NOT NULL,
              kind TEXT NOT NULL CHECK(kind IN (
                  'user_input',
+                 'approval',
                  'high_risk_confirmation',
                  'credential_request',
                  'conflict_resolution'
@@ -1687,6 +1688,17 @@ Every answer that uses knowledge base search results.
              ON interaction_requests(status, risk_priority DESC, queue_sequence);
          CREATE INDEX IF NOT EXISTS idx_interaction_requests_conversation
              ON interaction_requests(conversation_id, status, risk_priority DESC, queue_sequence);
+
+         CREATE TABLE IF NOT EXISTS interaction_events (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             interaction_id TEXT NOT NULL REFERENCES interaction_requests(id) ON DELETE CASCADE,
+             from_status TEXT,
+             to_status TEXT NOT NULL,
+             reason TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_interaction_events_request
+             ON interaction_events(interaction_id, id);
 
          CREATE TABLE IF NOT EXISTS interaction_responses (
              id TEXT PRIMARY KEY NOT NULL,
@@ -1820,6 +1832,7 @@ mod tests {
         assert!(tables.contains(&"agent_task_run_events".to_string()));
         assert!(tables.contains(&"interaction_queue_clock".to_string()));
         assert!(tables.contains(&"interaction_requests".to_string()));
+        assert!(tables.contains(&"interaction_events".to_string()));
         assert!(tables.contains(&"interaction_responses".to_string()));
         assert!(tables.contains(&"agent_subtask_runs".to_string()));
         assert!(tables.contains(&"agent_task_artifacts".to_string()));
