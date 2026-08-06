@@ -1847,6 +1847,29 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_model_targets_connection
              ON model_targets(connection_id, availability);
 
+         CREATE TABLE IF NOT EXISTS capability_bindings (
+             id TEXT PRIMARY KEY NOT NULL,
+             capability_id TEXT NOT NULL,
+             scope_kind TEXT NOT NULL CHECK (
+                 scope_kind IN ('application', 'workspace', 'agent', 'task')
+             ),
+             scope_id TEXT NOT NULL DEFAULT '',
+             revision INTEGER NOT NULL CHECK (revision > 0),
+             primary_target_id TEXT REFERENCES model_targets(id),
+             fallback_target_ids_json TEXT NOT NULL DEFAULT '[]'
+                 CHECK (json_valid(fallback_target_ids_json)),
+             fallback_mode TEXT NOT NULL DEFAULT 'disabled' CHECK (
+                 fallback_mode IN ('disabled', 'ask', 'automatic')
+             ),
+             route_json TEXT NOT NULL CHECK (json_valid(route_json)),
+             route_hash TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(capability_id, scope_kind, scope_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_capability_bindings_scope
+             ON capability_bindings(scope_kind, scope_id, capability_id);
+
          CREATE TABLE IF NOT EXISTS model_catalog_snapshots (
              id TEXT PRIMARY KEY NOT NULL,
              source_id TEXT NOT NULL,
@@ -2013,6 +2036,7 @@ mod tests {
         assert!(tables.contains(&"provider_connections".to_string()));
         assert!(tables.contains(&"model_definitions".to_string()));
         assert!(tables.contains(&"model_targets".to_string()));
+        assert!(tables.contains(&"capability_bindings".to_string()));
         assert!(tables.contains(&"model_catalog_snapshots".to_string()));
         assert!(tables.contains(&"registry_activation_state".to_string()));
         assert!(tables.contains(&"agent_task_registry_snapshots".to_string()));

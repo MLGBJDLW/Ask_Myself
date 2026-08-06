@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model_catalog::ModelDescriptor;
-use crate::settings_schema_v2::{SettingsRevisionV2, SettingsScopeV2};
+use crate::settings_schema_v2::{
+    CapabilityBindingConstraintsV2, CapabilityFallbackModeV2, SettingsRevisionV2, SettingsScopeV2,
+};
 
 pub const CAPABILITY_REGISTRY_SCHEMA_VERSION: u16 = 1;
 
@@ -194,6 +196,8 @@ pub struct ResolvedCapabilityRouteTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedCapabilityRoute {
+    pub binding_id: String,
+    pub binding_revision: u64,
     pub capability_id: String,
     pub source: SettingsScopeV2,
     pub source_revision: u64,
@@ -201,6 +205,8 @@ pub struct ResolvedCapabilityRoute {
     pub primary: Option<ResolvedCapabilityRouteTarget>,
     #[serde(default)]
     pub fallbacks: Vec<ResolvedCapabilityRouteTarget>,
+    pub fallback_mode: CapabilityFallbackModeV2,
+    pub constraints: CapabilityBindingConstraintsV2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +226,8 @@ pub struct CapabilityRegistryProjection {
 pub struct RuntimeRegistrySnapshot {
     pub schema_version: u16,
     pub settings_revisions: Vec<SettingsRevisionV2>,
+    pub binding_id: String,
+    pub binding_revision: u64,
     pub capability_id: String,
     pub target_id: String,
     pub target_revision: u64,
@@ -230,6 +238,16 @@ pub struct RuntimeRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_hash: Option<String>,
     pub fallback_index: usize,
+    pub fallback_mode: CapabilityFallbackModeV2,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    pub adapter_provider_id: String,
+    pub provider_id: String,
+    pub endpoint_id: String,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    pub model_id: String,
 }
 
 /// Secret-bearing runtime value. It is intentionally not serializable; only

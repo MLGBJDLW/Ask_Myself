@@ -8,8 +8,9 @@ use crate::model_catalog::{
     ProductReadiness,
 };
 use crate::settings_schema_v2::{
-    resolve_settings_v2, CapabilityBindingV2, ConnectionReferenceV2, ModelReferenceV2,
-    ResolvedSettingV2, SettingOverrideV2, SettingsProfileV2, SettingsScopeKindV2, SettingsScopeV2,
+    resolve_settings_v2, CapabilityBindingConstraintsV2, CapabilityBindingV2,
+    CapabilityFallbackModeV2, ConnectionReferenceV2, ModelReferenceV2, ResolvedSettingV2,
+    SettingOverrideV2, SettingsProfileV2, SettingsScopeKindV2, SettingsScopeV2,
 };
 
 use super::types::{
@@ -65,6 +66,10 @@ pub fn build_registry_projection(
 
     let mut aliases = HashMap::<String, String>::new();
     let mut connections = BTreeMap::<String, ConnectionRecord>::new();
+    let selected_profile_ids = selected_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<BTreeSet<_>>();
     for profile in all_profiles {
         for (connection_key, value) in &profile.overrides.connections {
             let SettingOverrideV2::Set { value } = value else {
@@ -78,14 +83,16 @@ pub fn build_registry_projection(
                 credential_health,
                 &catalog,
             )?;
-            let alias = value.id.trim().to_string();
-            if aliases
-                .insert(alias.clone(), record.id.clone())
-                .is_some_and(|existing| existing != record.id)
-            {
-                return Err(CoreError::Conflict(format!(
-                    "Connection alias {alias} resolves to multiple endpoint identities"
-                )));
+            if selected_profile_ids.contains(profile.id.as_str()) {
+                let alias = value.id.trim().to_string();
+                if aliases
+                    .insert(alias.clone(), record.id.clone())
+                    .is_some_and(|existing| existing != record.id)
+                {
+                    return Err(CoreError::Conflict(format!(
+                        "Connection alias {alias} resolves to multiple identities in the selected scope chain"
+                    )));
+                }
             }
             match connections.get(&record.id) {
                 Some(existing) if !same_connection_identity(existing, &record) => {
@@ -141,6 +148,8 @@ pub fn build_registry_projection(
                     value: model.value.clone().map(|primary| CapabilityBindingV2 {
                         primary: Some(primary),
                         fallbacks: Vec::new(),
+                        fallback_mode: CapabilityFallbackModeV2::Disabled,
+                        constraints: CapabilityBindingConstraintsV2::default(),
                         options: BTreeMap::new(),
                     }),
                     source: model.source.clone(),
@@ -317,6 +326,14 @@ fn connection_surface(connection_key: &str) -> &'static str {
     }
 }
 
+fn scope_key(scope: &SettingsScopeV2) -> String {
+    format!(
+        "{}:{}",
+        scope.kind.as_str(),
+        scope.id.as_deref().unwrap_or("")
+    )
+}
+
 struct BindingResolutionContext<'a> {
     connections: &'a BTreeMap<String, ConnectionRecord>,
     aliases: &'a HashMap<String, String>,
@@ -390,17 +407,42 @@ fn resolve_binding(
     };
 
     let primary = binding.primary.as_ref().map(&mut resolve).transpose()?;
-    let fallbacks = binding
+    let mut fallbacks = binding
         .fallbacks
         .iter()
         .map(&mut resolve)
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(primary) = primary.as_ref() {
+        for fallback in &mut fallbacks {
+            if binding.constraints.require_same_connection
+                && fallback.connection.id != primary.connection.id
+            {
+                fallback.eligibility.eligible = false;
+                fallback
+                    .eligibility
+                    .reason_codes
+                    .push("cross_connection_fallback_requires_consent".to_string());
+            } else if !binding.constraints.allow_cross_provider
+                && fallback.connection.provider_id != primary.connection.provider_id
+            {
+                fallback.eligibility.eligible = false;
+                fallback
+                    .eligibility
+                    .reason_codes
+                    .push("cross_provider_fallback_requires_consent".to_string());
+            }
+        }
+    }
     Ok(ResolvedCapabilityRoute {
+        binding_id: stable_id("binding", &format!("{capability_id}|{}", scope_key(source))),
+        binding_revision: source_revision,
         capability_id: capability_id.to_string(),
         source: source.clone(),
         source_revision,
         primary,
         fallbacks,
+        fallback_mode: binding.fallback_mode,
+        constraints: binding.constraints.clone(),
     })
 }
 

@@ -7,7 +7,10 @@ use crate::error::CoreError;
 use crate::llm::ProviderConfig;
 use crate::model_catalog::{load_builtin_catalog, normalize_endpoint_url};
 use crate::provider_registry::provider_type_for_parts;
-use crate::settings_schema_v2::{SettingsProfileV2, SettingsScopeKindV2, SettingsScopeV2};
+use crate::settings_schema_v2::{
+    resolve_settings_v2, CapabilityFallbackModeV2, SettingsProfileV2, SettingsScopeKindV2,
+    SettingsScopeV2,
+};
 
 use super::resolver::{build_registry_projection, selected_profile_chain, stable_id};
 use super::types::{
@@ -45,13 +48,14 @@ pub(crate) fn sync_registry_in_transaction(
         persist_projection(transaction, &projection)?;
         for capability in &projection.capabilities {
             let scope = capability.source.clone();
-            let parity = serde_json::json!({
-                "status": "matched",
-                "primaryTargetId": capability.primary.as_ref().map(|value| &value.target.id),
-                "fallbackTargetIds": capability.fallbacks.iter().map(|value| &value.target.id).collect::<Vec<_>>(),
-                "sourceRevision": capability.source_revision,
-            });
-            let read_mode = if registry_runtime_supported(&capability.capability_id) {
+            let (parity_status, parity) = legacy_shadow_parity(transaction, capability)?;
+            let read_mode = if registry_runtime_supported(&capability.capability_id)
+                && parity_status == "matched"
+                && capability
+                    .primary
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.eligibility.eligible)
+            {
                 RegistryReadMode::Registry
             } else {
                 RegistryReadMode::Legacy
@@ -62,7 +66,7 @@ pub(crate) fn sync_registry_in_transaction(
                 &scope,
                 read_mode,
                 capability.source_revision,
-                "matched",
+                parity_status,
                 &parity,
             )?;
             merged_capabilities.insert(
@@ -123,86 +127,58 @@ impl Database {
         scope: &RegistryScope,
         capability_id: &str,
     ) -> Result<Option<RuntimeCapabilityResolution>, CoreError> {
-        let projection = self.capability_registry_projection(scope)?;
-        let Some(route) = projection
-            .capabilities
-            .iter()
-            .find(|route| route.capability_id == capability_id)
-        else {
-            return Ok(None);
-        };
-        let activation = projection.activations.iter().find(|activation| {
-            activation.capability_id == capability_id && activation.scope == route.source
-        });
-        if activation.is_none_or(|activation| activation.read_mode != RegistryReadMode::Registry) {
-            return Ok(None);
+        let conn = self.conn();
+        resolve_current_runtime_capability(&conn, scope, capability_id)
+    }
+
+    /// Atomically loads an immutable task pin or resolves the durable registry
+    /// binding, materializes its credential, and pins that exact route.
+    pub fn resolve_or_pin_task_runtime_capability(
+        &self,
+        scope: &RegistryScope,
+        capability_id: &str,
+        run_id: &str,
+    ) -> Result<Option<RuntimeCapabilityResolution>, CoreError> {
+        let mut conn = self.conn();
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT snapshot_json FROM agent_task_registry_snapshots
+                 WHERE run_id = ?1 AND capability_id = ?2",
+                params![run_id, capability_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(existing) = existing {
+            let snapshot: RuntimeRegistrySnapshot = serde_json::from_str(&existing)?;
+            let resolution = materialize_pinned_resolution(&transaction, snapshot)?;
+            transaction.commit()?;
+            return Ok(Some(resolution));
         }
-        let candidates = route
-            .primary
-            .iter()
-            .chain(route.fallbacks.iter())
-            .collect::<Vec<_>>();
-        let primary_boundary = candidates
-            .first()
-            .map(|candidate| candidate.connection.id.as_str());
-        let (fallback_index, selected) = candidates
-            .iter()
-            .enumerate()
-            .find(|(index, candidate)| {
-                candidate.eligibility.eligible
-                    && (*index == 0
-                        || primary_boundary
-                            .is_some_and(|connection_id| connection_id == candidate.connection.id))
-            })
-            .ok_or_else(|| {
-                let reasons = candidates
-                    .iter()
-                    .flat_map(|candidate| candidate.eligibility.reason_codes.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                CoreError::InvalidInput(format!(
-                    "Capability {capability_id} has no eligible same-boundary target: {reasons}"
-                ))
-            })?;
-        let credential = {
-            let conn = self.conn();
-            resolve_connection_credential(&conn, &selected.connection)?
+
+        let Some(resolution) =
+            resolve_current_runtime_capability(&transaction, scope, capability_id)?
+        else {
+            transaction.commit()?;
+            return Ok(None);
         };
-        let provider_config = ProviderConfig {
-            provider_type: provider_type_for_parts(
-                &selected.connection.adapter_provider_id,
-                (!selected.connection.base_url.is_empty())
-                    .then_some(selected.connection.base_url.as_str()),
-            ),
-            base_url: (!selected.connection.base_url.is_empty())
-                .then(|| selected.connection.base_url.clone()),
-            api_key: credential,
-            org_id: None,
-            timeout_secs: None,
-        };
-        let snapshot = RuntimeRegistrySnapshot {
-            schema_version: CAPABILITY_REGISTRY_SCHEMA_VERSION,
-            settings_revisions: projection.settings_revisions,
-            capability_id: capability_id.to_string(),
-            target_id: selected.target.id.clone(),
-            target_revision: selected.target.revision,
-            connection_id: selected.connection.id.clone(),
-            connection_revision: selected.connection.revision,
-            model_definition_id: selected.target.model_definition_id.clone(),
-            descriptor_hash: selected
-                .definition
-                .as_ref()
-                .map(|definition| definition.descriptor_hash.clone()),
-            fallback_index,
-        };
-        Ok(Some(RuntimeCapabilityResolution {
-            provider_id: selected.connection.adapter_provider_id.clone(),
-            endpoint_id: selected.connection.endpoint_id.clone(),
-            provider_config,
-            model_id: selected.target.upstream_model_id.clone(),
-            snapshot,
-        }))
+        let snapshot_json = serde_json::to_string(&resolution.snapshot)?;
+        let snapshot_hash = blake3::hash(snapshot_json.as_bytes()).to_hex().to_string();
+        transaction.execute(
+            "INSERT INTO agent_task_registry_snapshots
+             (run_id, capability_id, schema_version, snapshot_hash, snapshot_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                run_id,
+                capability_id,
+                CAPABILITY_REGISTRY_SCHEMA_VERSION,
+                snapshot_hash,
+                snapshot_json,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(Some(resolution))
     }
 
     pub fn pin_task_registry_snapshot(
@@ -282,6 +258,28 @@ impl Database {
                 scope_key(scope)
             ))
         })?;
+        if mode == RegistryReadMode::Registry && current.parity_status != "matched" {
+            return Err(CoreError::InvalidInput(format!(
+                "Capability {capability_id} cannot activate until shadow parity is matched"
+            )));
+        }
+        if mode == RegistryReadMode::Registry {
+            let route = read_persisted_binding(&conn, capability_id, scope)?.ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "Persisted capability binding {capability_id}:{}",
+                    scope_key(scope)
+                ))
+            })?;
+            if route
+                .primary
+                .as_ref()
+                .is_none_or(|candidate| !candidate.eligibility.eligible)
+            {
+                return Err(CoreError::InvalidInput(format!(
+                    "Capability {capability_id} has no eligible primary target"
+                )));
+            }
+        }
         if current.registry_revision != expected_revision {
             return Err(CoreError::Conflict(format!(
                 "Registry activation revision changed from {expected_revision} to {}",
@@ -313,6 +311,268 @@ impl Database {
         read_activation(&conn, capability_id, scope)?.ok_or_else(|| {
             CoreError::Internal("Registry activation disappeared after update".to_string())
         })
+    }
+}
+
+fn resolve_current_runtime_capability(
+    conn: &Connection,
+    scope: &RegistryScope,
+    capability_id: &str,
+) -> Result<Option<RuntimeCapabilityResolution>, CoreError> {
+    if !settings_v2_active(conn)? {
+        return Ok(None);
+    }
+    let activation = applicable_activations(conn, scope)?
+        .into_iter()
+        .filter(|activation| activation.capability_id == capability_id)
+        .max_by_key(|activation| settings_scope_rank(activation.scope.kind));
+    let Some(activation) = activation else {
+        return Ok(None);
+    };
+    if activation.read_mode != RegistryReadMode::Registry || activation.parity_status != "matched" {
+        return Ok(None);
+    }
+    let route =
+        read_persisted_binding(conn, capability_id, &activation.scope)?.ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "Persisted capability binding {capability_id}:{}",
+                scope_key(&activation.scope)
+            ))
+        })?;
+    let activated_binding_revision = activation
+        .parity
+        .get("bindingRevision")
+        .and_then(serde_json::Value::as_u64);
+    if activated_binding_revision != Some(route.binding_revision) {
+        return Err(CoreError::Conflict(format!(
+            "Capability {capability_id} activation does not match binding revision {}",
+            route.binding_revision
+        )));
+    }
+    let profiles = read_profiles(conn)?;
+    let selected_profiles = selected_profile_chain(&profiles, scope);
+    let settings_revisions = resolve_settings_v2(&selected_profiles)?.revisions;
+    let (fallback_index, selected, fallback_reason) = select_runtime_target(&route)?;
+    materialize_route_resolution(
+        conn,
+        &route,
+        selected,
+        fallback_index,
+        fallback_reason,
+        settings_revisions,
+    )
+    .map(Some)
+}
+
+fn select_runtime_target(
+    route: &super::types::ResolvedCapabilityRoute,
+) -> Result<
+    (
+        usize,
+        &super::types::ResolvedCapabilityRouteTarget,
+        Option<String>,
+    ),
+    CoreError,
+> {
+    if let Some(primary) = route
+        .primary
+        .as_ref()
+        .filter(|candidate| candidate.eligibility.eligible)
+    {
+        return Ok((0, primary, None));
+    }
+    match route.fallback_mode {
+        CapabilityFallbackModeV2::Disabled => Err(CoreError::InvalidInput(format!(
+            "Capability {} primary is unavailable and fallback is disabled",
+            route.capability_id
+        ))),
+        CapabilityFallbackModeV2::Ask => Err(CoreError::InvalidInput(format!(
+            "Capability {} requires user consent before fallback",
+            route.capability_id
+        ))),
+        CapabilityFallbackModeV2::Automatic => route
+            .fallbacks
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.eligibility.eligible)
+            .map(|(index, candidate)| {
+                (
+                    index + 1,
+                    candidate,
+                    Some("primary_ineligible_automatic_fallback".to_string()),
+                )
+            })
+            .ok_or_else(|| {
+                let reasons = route
+                    .primary
+                    .iter()
+                    .chain(route.fallbacks.iter())
+                    .flat_map(|candidate| candidate.eligibility.reason_codes.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                CoreError::InvalidInput(format!(
+                    "Capability {} has no policy-eligible fallback target: {reasons}",
+                    route.capability_id
+                ))
+            }),
+    }
+}
+
+fn materialize_route_resolution(
+    conn: &Connection,
+    route: &super::types::ResolvedCapabilityRoute,
+    selected: &super::types::ResolvedCapabilityRouteTarget,
+    fallback_index: usize,
+    fallback_reason: Option<String>,
+    settings_revisions: Vec<crate::settings_schema_v2::SettingsRevisionV2>,
+) -> Result<RuntimeCapabilityResolution, CoreError> {
+    let (connection_revision, target_revision) = validate_persisted_candidate(conn, selected)?;
+    let credential = resolve_connection_credential(conn, &selected.connection)?;
+    let provider_config = ProviderConfig {
+        provider_type: provider_type_for_parts(
+            &selected.connection.adapter_provider_id,
+            (!selected.connection.base_url.is_empty())
+                .then_some(selected.connection.base_url.as_str()),
+        ),
+        base_url: (!selected.connection.base_url.is_empty())
+            .then(|| selected.connection.base_url.clone()),
+        api_key: credential,
+        org_id: None,
+        timeout_secs: None,
+    };
+    let snapshot = RuntimeRegistrySnapshot {
+        schema_version: CAPABILITY_REGISTRY_SCHEMA_VERSION,
+        settings_revisions,
+        binding_id: route.binding_id.clone(),
+        binding_revision: route.binding_revision,
+        capability_id: route.capability_id.clone(),
+        target_id: selected.target.id.clone(),
+        target_revision,
+        connection_id: selected.connection.id.clone(),
+        connection_revision,
+        model_definition_id: selected.target.model_definition_id.clone(),
+        descriptor_hash: selected
+            .definition
+            .as_ref()
+            .map(|definition| definition.descriptor_hash.clone()),
+        fallback_index,
+        fallback_mode: route.fallback_mode,
+        fallback_reason,
+        adapter_provider_id: selected.connection.adapter_provider_id.clone(),
+        provider_id: selected.connection.provider_id.clone(),
+        endpoint_id: selected.connection.endpoint_id.clone(),
+        base_url: selected.connection.base_url.clone(),
+        credential_ref: selected.connection.credential_ref.clone(),
+        model_id: selected.target.upstream_model_id.clone(),
+    };
+    Ok(RuntimeCapabilityResolution {
+        provider_id: selected.connection.adapter_provider_id.clone(),
+        endpoint_id: selected.connection.endpoint_id.clone(),
+        provider_config,
+        model_id: selected.target.upstream_model_id.clone(),
+        snapshot,
+    })
+}
+
+fn validate_persisted_candidate(
+    conn: &Connection,
+    candidate: &super::types::ResolvedCapabilityRouteTarget,
+) -> Result<(u64, u64), CoreError> {
+    let connection_revision: Option<u64> = conn
+        .query_row(
+            "SELECT revision FROM provider_connections
+         WHERE id = ?1 AND enabled = 1
+           AND adapter_provider_id = ?2 AND provider_id = ?3
+           AND endpoint_id = ?4 AND base_url = ?5
+           AND credential_ref IS ?6",
+            params![
+                &candidate.connection.id,
+                &candidate.connection.adapter_provider_id,
+                &candidate.connection.provider_id,
+                &candidate.connection.endpoint_id,
+                &candidate.connection.base_url,
+                &candidate.connection.credential_ref,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let connection_revision = connection_revision.ok_or_else(|| {
+        CoreError::Conflict(format!(
+            "Capability target {} references a stale or disabled connection revision",
+            candidate.target.id
+        ))
+    })?;
+    let target_revision: Option<u64> = conn
+        .query_row(
+            "SELECT revision FROM model_targets
+         WHERE id = ?1 AND connection_id = ?2 AND upstream_model_id = ?3
+           AND availability <> 'unavailable'",
+            params![
+                &candidate.target.id,
+                &candidate.target.connection_id,
+                &candidate.target.upstream_model_id,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let target_revision = target_revision.ok_or_else(|| {
+        CoreError::Conflict(format!(
+            "Capability target {} references a stale model-target revision",
+            candidate.target.id
+        ))
+    })?;
+    Ok((connection_revision, target_revision))
+}
+
+fn materialize_pinned_resolution(
+    conn: &Connection,
+    snapshot: RuntimeRegistrySnapshot,
+) -> Result<RuntimeCapabilityResolution, CoreError> {
+    let frozen_connection = ConnectionRecord {
+        schema_version: snapshot.schema_version,
+        id: snapshot.connection_id.clone(),
+        revision: snapshot.connection_revision,
+        adapter_provider_id: snapshot.adapter_provider_id.clone(),
+        provider_id: snapshot.provider_id.clone(),
+        endpoint_id: snapshot.endpoint_id.clone(),
+        base_url: snapshot.base_url.clone(),
+        endpoint_fingerprint: String::new(),
+        credential_ref: snapshot.credential_ref.clone(),
+        enabled: true,
+        health: ConnectionHealth::Configured,
+        source: SettingsScopeV2 {
+            kind: SettingsScopeKindV2::Task,
+            id: None,
+        },
+        source_revision: snapshot.connection_revision,
+    };
+    let credential = resolve_connection_credential(conn, &frozen_connection)?;
+    let provider_config = ProviderConfig {
+        provider_type: provider_type_for_parts(
+            &snapshot.adapter_provider_id,
+            (!snapshot.base_url.is_empty()).then_some(snapshot.base_url.as_str()),
+        ),
+        base_url: (!snapshot.base_url.is_empty()).then(|| snapshot.base_url.clone()),
+        api_key: credential,
+        org_id: None,
+        timeout_secs: None,
+    };
+    Ok(RuntimeCapabilityResolution {
+        provider_id: snapshot.adapter_provider_id.clone(),
+        endpoint_id: snapshot.endpoint_id.clone(),
+        provider_config,
+        model_id: snapshot.model_id.clone(),
+        snapshot,
+    })
+}
+
+fn settings_scope_rank(kind: SettingsScopeKindV2) -> u8 {
+    match kind {
+        SettingsScopeKindV2::Application => 0,
+        SettingsScopeKindV2::Workspace => 1,
+        SettingsScopeKindV2::Agent => 2,
+        SettingsScopeKindV2::Task => 3,
     }
 }
 
@@ -423,6 +683,48 @@ fn persist_projection(
             ],
         )?;
     }
+    for binding in &projection.capabilities {
+        let route_json = serde_json::to_string(binding)?;
+        let route_hash = blake3::hash(route_json.as_bytes()).to_hex().to_string();
+        let fallback_target_ids = serde_json::to_string(
+            &binding
+                .fallbacks
+                .iter()
+                .map(|candidate| candidate.target.id.as_str())
+                .collect::<Vec<_>>(),
+        )?;
+        transaction.execute(
+            "INSERT INTO capability_bindings (
+                 id, capability_id, scope_kind, scope_id, revision,
+                 primary_target_id, fallback_target_ids_json, fallback_mode,
+                 route_json, route_hash
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(capability_id, scope_kind, scope_id) DO UPDATE SET
+                 id = excluded.id,
+                 revision = excluded.revision,
+                 primary_target_id = excluded.primary_target_id,
+                 fallback_target_ids_json = excluded.fallback_target_ids_json,
+                 fallback_mode = excluded.fallback_mode,
+                 route_json = excluded.route_json,
+                 route_hash = excluded.route_hash,
+                 updated_at = datetime('now')",
+            params![
+                &binding.binding_id,
+                &binding.capability_id,
+                binding.source.kind.as_str(),
+                binding.source.id.as_deref().unwrap_or(""),
+                binding.binding_revision,
+                binding
+                    .primary
+                    .as_ref()
+                    .map(|candidate| &candidate.target.id),
+                fallback_target_ids,
+                binding.fallback_mode.as_str(),
+                route_json,
+                route_hash,
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -482,6 +784,114 @@ fn upsert_activation(
 
 fn registry_runtime_supported(capability_id: &str) -> bool {
     capability_id == "text_generation"
+}
+
+fn legacy_shadow_parity(
+    conn: &Connection,
+    route: &super::types::ResolvedCapabilityRoute,
+) -> Result<(&'static str, serde_json::Value), CoreError> {
+    let Some(primary) = route.primary.as_ref() else {
+        return Ok((
+            "blocked",
+            serde_json::json!({
+                "status": "blocked",
+                "reasonCodes": ["missing_primary_target"],
+                "bindingId": route.binding_id,
+                "bindingRevision": route.binding_revision,
+            }),
+        ));
+    };
+    if route.capability_id != "text_generation" || route.source.kind != SettingsScopeKindV2::Agent {
+        return Ok((
+            "pending",
+            serde_json::json!({
+                "status": "pending",
+                "reasonCodes": ["runtime_not_declared_for_shadow_activation"],
+                "bindingId": route.binding_id,
+                "bindingRevision": route.binding_revision,
+            }),
+        ));
+    }
+    let Some(agent_id) = route.source.id.as_deref() else {
+        return Ok((
+            "blocked",
+            serde_json::json!({
+                "status": "blocked",
+                "reasonCodes": ["missing_legacy_agent_identity"],
+            }),
+        ));
+    };
+    let legacy = conn
+        .query_row(
+            "SELECT provider, COALESCE(base_url, ''), model,
+                    COALESCE(provider_endpoint_id, ''), api_key
+             FROM agent_configs WHERE id = ?1",
+            [agent_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((provider, base_url, model, endpoint_id, api_key_ciphertext)) = legacy else {
+        return Ok((
+            "blocked",
+            serde_json::json!({
+                "status": "blocked",
+                "reasonCodes": ["legacy_agent_missing"],
+                "bindingId": route.binding_id,
+                "bindingRevision": route.binding_revision,
+            }),
+        ));
+    };
+    let provider_matches = normalize_provider(&provider)
+        == normalize_provider(&primary.connection.adapter_provider_id);
+    let endpoint_matches =
+        endpoint_id.is_empty() || endpoint_id.eq_ignore_ascii_case(&primary.connection.endpoint_id);
+    let base_url_matches = normalize_endpoint_url(Some(&base_url)) == primary.connection.base_url;
+    let model_matches = model.eq_ignore_ascii_case(&primary.target.upstream_model_id);
+    let credential_ref_matches = primary.connection.credential_ref.as_deref()
+        == Some(format!("legacy-agent-config:{agent_id}").as_str());
+    let credential_healthy = crate::crypto::decrypt_api_key(&api_key_ciphertext)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let fallback_contract_matches = route.fallbacks.is_empty();
+    let eligible = primary.eligibility.eligible;
+    let matched = provider_matches
+        && endpoint_matches
+        && base_url_matches
+        && model_matches
+        && credential_ref_matches
+        && credential_healthy
+        && fallback_contract_matches
+        && eligible;
+    let status = if matched { "matched" } else { "mismatched" };
+    Ok((
+        status,
+        serde_json::json!({
+            "status": status,
+            "bindingId": route.binding_id,
+            "bindingRevision": route.binding_revision,
+            "primaryTargetId": primary.target.id,
+            "sourceRevision": route.source_revision,
+            "checks": {
+                "provider": provider_matches,
+                "endpoint": endpoint_matches,
+                "baseUrl": base_url_matches,
+                "credentialReference": credential_ref_matches,
+                "credentialHealth": credential_healthy,
+                "model": model_matches,
+                "advancedDefaultsPreserved": true,
+                "fallbackContract": fallback_contract_matches,
+                "runtimeEligibility": eligible,
+            },
+        }),
+    ))
 }
 
 fn read_profiles(conn: &Connection) -> Result<Vec<SettingsProfileV2>, CoreError> {
@@ -548,6 +958,29 @@ fn read_activation(
     )
     .optional()
     .map_err(CoreError::Database)
+}
+
+fn read_persisted_binding(
+    conn: &Connection,
+    capability_id: &str,
+    scope: &SettingsScopeV2,
+) -> Result<Option<super::types::ResolvedCapabilityRoute>, CoreError> {
+    let route_json: Option<String> = conn
+        .query_row(
+            "SELECT route_json FROM capability_bindings
+             WHERE capability_id = ?1 AND scope_kind = ?2 AND scope_id = ?3",
+            params![
+                capability_id,
+                scope.kind.as_str(),
+                scope.id.as_deref().unwrap_or("")
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    route_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(CoreError::Serialization)
 }
 
 fn activation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryActivationRecord> {
@@ -826,8 +1259,9 @@ mod tests {
     use super::*;
     use crate::conversation::SaveAgentConfigInput;
     use crate::settings_schema_v2::{
-        CapabilityBindingV2, ConnectionReferenceV2, ModelReferenceV2, SettingOverrideV2,
-        SettingsOverridesV2, SETTINGS_SCHEMA_VERSION_V2,
+        CapabilityBindingConstraintsV2, CapabilityBindingV2, CapabilityFallbackModeV2,
+        ConnectionReferenceV2, ModelReferenceV2, SettingOverrideV2, SettingsOverridesV2,
+        SETTINGS_SCHEMA_VERSION_V2,
     };
 
     fn agent(provider: &str, base_url: &str, model: &str, key: &str) -> SaveAgentConfigInput {
@@ -912,6 +1346,74 @@ mod tests {
     }
 
     #[test]
+    fn shadow_mismatch_blocks_registry_activation() {
+        let db = Database::open_memory().unwrap();
+        let saved = db
+            .save_agent_config(&agent(
+                "open_ai",
+                "https://api.openai.com/v1",
+                "gpt-4.1",
+                "sk-registry-secret",
+            ))
+            .unwrap();
+        let mut profile = db
+            .list_settings_profiles_v2()
+            .unwrap()
+            .into_iter()
+            .find(|profile| {
+                profile.scope.kind == SettingsScopeKindV2::Agent
+                    && profile.scope.id.as_deref() == Some(saved.id.as_str())
+            })
+            .expect("migrated agent profile");
+        let previous_revision = profile.revision;
+        let Some(SettingOverrideV2::Set { value }) = profile.overrides.models.get_mut("text")
+        else {
+            panic!("migrated text model");
+        };
+        value.model_id = "gpt-4.1-mini".to_string();
+        profile.revision += 1;
+        {
+            let mut conn = db.conn();
+            let transaction = conn.transaction().unwrap();
+            transaction
+                .execute(
+                    "UPDATE settings_profiles_v2
+                     SET revision = ?2, document_json = ?3, updated_at = datetime('now')
+                     WHERE id = ?1 AND revision = ?4",
+                    params![
+                        &profile.id,
+                        profile.revision,
+                        serde_json::to_string(&profile).unwrap(),
+                        previous_revision,
+                    ],
+                )
+                .unwrap();
+            sync_registry_in_transaction(&transaction).unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let scope = RegistryScope {
+            agent_id: Some(saved.id),
+            ..RegistryScope::default()
+        };
+        let projection = db.capability_registry_projection(&scope).unwrap();
+        let activation = projection
+            .activations
+            .iter()
+            .find(|activation| {
+                activation.capability_id == "text_generation"
+                    && activation.scope.kind == SettingsScopeKindV2::Agent
+            })
+            .expect("text activation");
+        assert_eq!(activation.parity_status, "mismatched");
+        assert_eq!(activation.read_mode, RegistryReadMode::Legacy);
+        assert!(db
+            .resolve_runtime_capability(&scope, "text_generation")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn task_snapshot_is_immutable() {
         let db = Database::open_memory().unwrap();
         let conversation = db
@@ -955,6 +1457,8 @@ mod tests {
         let snapshot = RuntimeRegistrySnapshot {
             schema_version: 1,
             settings_revisions: Vec::new(),
+            binding_id: "binding:a".to_string(),
+            binding_revision: 1,
             capability_id: "text_generation".to_string(),
             target_id: "target:a".to_string(),
             target_revision: 1,
@@ -963,6 +1467,14 @@ mod tests {
             model_definition_id: None,
             descriptor_hash: None,
             fallback_index: 0,
+            fallback_mode: CapabilityFallbackModeV2::Disabled,
+            fallback_reason: None,
+            adapter_provider_id: "open_ai".to_string(),
+            provider_id: "openai".to_string(),
+            endpoint_id: "text:openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            credential_ref: None,
+            model_id: "gpt-4.1".to_string(),
         };
         db.pin_task_registry_snapshot(&run.id, &snapshot).unwrap();
         db.pin_task_registry_snapshot(&run.id, &snapshot).unwrap();
@@ -972,6 +1484,16 @@ mod tests {
             db.pin_task_registry_snapshot(&run.id, &changed),
             Err(CoreError::Conflict(_))
         ));
+        let resumed = db
+            .resolve_or_pin_task_runtime_capability(
+                &RegistryScope::default(),
+                "text_generation",
+                &run.id,
+            )
+            .unwrap()
+            .expect("existing task pin");
+        assert_eq!(resumed.model_id, "gpt-4.1");
+        assert_eq!(resumed.snapshot, snapshot);
     }
 
     #[test]
@@ -1025,6 +1547,8 @@ mod tests {
                         endpoint_id: None,
                         model_id: "custom-text-model".to_string(),
                     }],
+                    fallback_mode: CapabilityFallbackModeV2::Automatic,
+                    constraints: CapabilityBindingConstraintsV2::default(),
                     options: BTreeMap::new(),
                 },
             },
@@ -1045,6 +1569,19 @@ mod tests {
         };
         db.save_settings_profile_v2(&profile, None).unwrap();
 
+        {
+            let conn = db.conn();
+            conn.execute(
+                "UPDATE registry_activation_state
+                 SET read_mode = 'registry', parity_status = 'matched',
+                     parity_json = json_object('bindingRevision', 1)
+                 WHERE capability_id = 'text_generation'
+                   AND scope_kind = 'workspace' AND scope_id = 'workspace-a'",
+                [],
+            )
+            .unwrap();
+        }
+
         let error = db
             .resolve_runtime_capability(
                 &RegistryScope {
@@ -1054,7 +1591,128 @@ mod tests {
                 "text_generation",
             )
             .unwrap_err();
-        assert!(error.to_string().contains("same-boundary target"));
+        assert!(error
+            .to_string()
+            .contains("no policy-eligible fallback target"));
+    }
+
+    #[test]
+    fn automatic_fallback_records_same_connection_selection_reason() {
+        let db = Database::open_memory().unwrap();
+        let saved = db
+            .save_agent_config(&agent(
+                "open_ai",
+                "https://api.openai.com/v1",
+                "gpt-4.1",
+                "sk-one-account",
+            ))
+            .unwrap();
+        let credential_ref = format!("legacy-agent-config:{}", saved.id);
+        let mut overrides = SettingsOverridesV2::default();
+        overrides.connections.insert(
+            "primary".to_string(),
+            SettingOverrideV2::Set {
+                value: ConnectionReferenceV2 {
+                    id: "primary".to_string(),
+                    provider_id: "open_ai".to_string(),
+                    endpoint_id: None,
+                    base_url: Some("https://api.openai.com/v1".to_string()),
+                    credential_ref: Some(credential_ref),
+                },
+            },
+        );
+        overrides.capabilities.insert(
+            "text_generation".to_string(),
+            SettingOverrideV2::Set {
+                value: CapabilityBindingV2 {
+                    primary: Some(ModelReferenceV2 {
+                        connection_id: Some("primary".to_string()),
+                        provider_id: "open_ai".to_string(),
+                        endpoint_id: None,
+                        model_id: "gpt-4.1".to_string(),
+                    }),
+                    fallbacks: vec![ModelReferenceV2 {
+                        connection_id: Some("primary".to_string()),
+                        provider_id: "open_ai".to_string(),
+                        endpoint_id: None,
+                        model_id: "gpt-4.1-mini".to_string(),
+                    }],
+                    fallback_mode: CapabilityFallbackModeV2::Automatic,
+                    constraints: CapabilityBindingConstraintsV2::default(),
+                    options: BTreeMap::new(),
+                },
+            },
+        );
+        let profile = SettingsProfileV2 {
+            schema_version: SETTINGS_SCHEMA_VERSION_V2,
+            revision: 1,
+            id: "workspace-same-account-fallback".to_string(),
+            name: "Same-account fallback fixture".to_string(),
+            scope: SettingsScopeV2 {
+                kind: SettingsScopeKindV2::Workspace,
+                id: Some("workspace-b".to_string()),
+            },
+            preset: None,
+            overrides,
+            legacy_source: None,
+            extensions: BTreeMap::new(),
+        };
+        db.save_settings_profile_v2(&profile, None).unwrap();
+        {
+            let conn = db.conn();
+            let route_json: String = conn
+                .query_row(
+                    "SELECT route_json FROM capability_bindings
+                     WHERE capability_id = 'text_generation'
+                       AND scope_kind = 'workspace' AND scope_id = 'workspace-b'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut route: super::super::types::ResolvedCapabilityRoute =
+                serde_json::from_str(&route_json).unwrap();
+            route.primary.as_mut().unwrap().eligibility.eligible = false;
+            route
+                .primary
+                .as_mut()
+                .unwrap()
+                .eligibility
+                .reason_codes
+                .push("simulated_primary_outage".to_string());
+            conn.execute(
+                "UPDATE capability_bindings SET route_json = ?1
+                 WHERE capability_id = 'text_generation'
+                   AND scope_kind = 'workspace' AND scope_id = 'workspace-b'",
+                [serde_json::to_string(&route).unwrap()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE registry_activation_state
+                 SET read_mode = 'registry', parity_status = 'matched',
+                     parity_json = json_object('bindingRevision', 1)
+                 WHERE capability_id = 'text_generation'
+                   AND scope_kind = 'workspace' AND scope_id = 'workspace-b'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let resolution = db
+            .resolve_runtime_capability(
+                &RegistryScope {
+                    workspace_id: Some("workspace-b".to_string()),
+                    ..RegistryScope::default()
+                },
+                "text_generation",
+            )
+            .unwrap()
+            .expect("automatic fallback resolution");
+        assert_eq!(resolution.model_id, "gpt-4.1-mini");
+        assert_eq!(resolution.snapshot.fallback_index, 1);
+        assert_eq!(
+            resolution.snapshot.fallback_reason.as_deref(),
+            Some("primary_ineligible_automatic_fallback")
+        );
     }
 
     #[test]

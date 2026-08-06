@@ -58,11 +58,23 @@ export interface ResolvedCapabilityRouteTarget {
 }
 
 export interface ResolvedCapabilityRoute {
+  bindingId: string;
+  bindingRevision: number;
   capabilityId: string;
   source: SettingsScopeV2;
   sourceRevision: number;
   primary?: ResolvedCapabilityRouteTarget;
   fallbacks: ResolvedCapabilityRouteTarget[];
+  fallbackMode: 'disabled' | 'ask' | 'automatic';
+  constraints: {
+    requireSameConnection: boolean;
+    allowCrossProvider: boolean;
+    allowCrossRegion: boolean;
+    requiresStreaming: boolean;
+    allowedRegions: string[];
+    dataClasses: string[];
+    maxCostClass?: string;
+  };
 }
 
 export interface RegistryActivationRecord {

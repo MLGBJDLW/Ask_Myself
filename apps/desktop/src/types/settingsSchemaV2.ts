@@ -33,6 +33,16 @@ export interface ModelReferenceV2 {
 export interface CapabilityBindingV2 {
   primary?: ModelReferenceV2 | null;
   fallbacks?: ModelReferenceV2[];
+  fallbackMode?: 'disabled' | 'ask' | 'automatic';
+  constraints?: {
+    requireSameConnection?: boolean;
+    allowCrossProvider?: boolean;
+    allowCrossRegion?: boolean;
+    requiresStreaming?: boolean;
+    allowedRegions?: string[];
+    dataClasses?: string[];
+    maxCostClass?: string | null;
+  };
   options?: Record<string, unknown>;
 }
 

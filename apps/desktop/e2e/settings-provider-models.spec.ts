@@ -197,6 +197,8 @@ test.beforeEach(async ({ page }) => {
         sourceRevision: 3,
       }],
       capabilities: [{
+        bindingId: "binding:qwen",
+        bindingRevision: 3,
         capabilityId: "text_generation",
         source: { kind: "agent", id: "cfg-qwen" },
         sourceRevision: 3,
@@ -228,6 +230,15 @@ test.beforeEach(async ({ page }) => {
           eligibility: { eligible: true, reasonCodes: [] },
         },
         fallbacks: [],
+        fallbackMode: "disabled",
+        constraints: {
+          requireSameConnection: true,
+          allowCrossProvider: false,
+          allowCrossRegion: false,
+          requiresStreaming: false,
+          allowedRegions: [],
+          dataClasses: [],
+        },
       }],
       activations: [{
         capabilityId: "text_generation",

@@ -21,6 +21,10 @@ pub const LEGACY_SETTINGS_MIGRATION_KEY: &str = "settings_v1_to_v2";
 const LEGACY_AGENT_CONFIG_MANAGER: &str = "legacy_agent_config_v1";
 const LEGACY_APP_CONFIG_MANAGER: &str = "legacy_app_config_v1";
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsScopeKindV2 {
@@ -112,6 +116,58 @@ pub struct ModelReferenceV2 {
     pub model_id: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityFallbackModeV2 {
+    #[default]
+    Disabled,
+    Ask,
+    Automatic,
+}
+
+impl CapabilityFallbackModeV2 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Ask => "ask",
+            Self::Automatic => "automatic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityBindingConstraintsV2 {
+    #[serde(default = "default_true")]
+    pub require_same_connection: bool,
+    #[serde(default)]
+    pub allow_cross_provider: bool,
+    #[serde(default)]
+    pub allow_cross_region: bool,
+    #[serde(default)]
+    pub requires_streaming: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_regions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_classes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_class: Option<String>,
+}
+
+impl Default for CapabilityBindingConstraintsV2 {
+    fn default() -> Self {
+        Self {
+            require_same_connection: true,
+            allow_cross_provider: false,
+            allow_cross_region: false,
+            requires_streaming: false,
+            allowed_regions: Vec::new(),
+            data_classes: Vec::new(),
+            max_cost_class: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityBindingV2 {
@@ -119,6 +175,10 @@ pub struct CapabilityBindingV2 {
     pub primary: Option<ModelReferenceV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<ModelReferenceV2>,
+    #[serde(default)]
+    pub fallback_mode: CapabilityFallbackModeV2,
+    #[serde(default)]
+    pub constraints: CapabilityBindingConstraintsV2,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, Value>,
 }
@@ -891,6 +951,8 @@ impl RawLegacyAppConfigSnapshot {
                             model_id: model_id.to_string(),
                         }),
                         fallbacks: Vec::new(),
+                        fallback_mode: CapabilityFallbackModeV2::Disabled,
+                        constraints: CapabilityBindingConstraintsV2::default(),
                         options: BTreeMap::new(),
                     },
                 },
@@ -989,6 +1051,8 @@ impl LegacyAgentConfigSnapshot {
                             model_id: image_model.to_string(),
                         }),
                         fallbacks: Vec::new(),
+                        fallback_mode: CapabilityFallbackModeV2::Disabled,
+                        constraints: CapabilityBindingConstraintsV2::default(),
                         options: BTreeMap::new(),
                     },
                 },
@@ -1012,6 +1076,8 @@ impl LegacyAgentConfigSnapshot {
                             model_id: summary_model.to_string(),
                         }),
                         fallbacks: Vec::new(),
+                        fallback_mode: CapabilityFallbackModeV2::Disabled,
+                        constraints: CapabilityBindingConstraintsV2::default(),
                         options: BTreeMap::new(),
                     },
                 },

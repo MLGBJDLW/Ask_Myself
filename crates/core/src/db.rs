@@ -45,6 +45,7 @@ impl Database {
             );
         }
         if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            disable_registry_reads(&conn, &error);
             tracing::error!(
                 error = %error,
                 "Capability Registry import failed; keeping legacy runtime reads available"
@@ -70,6 +71,7 @@ impl Database {
             );
         }
         if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            disable_registry_reads(&conn, &error);
             tracing::error!(
                 error = %error,
                 "Capability Registry import failed; keeping legacy runtime reads available"
@@ -208,6 +210,25 @@ impl Database {
             let _ = conn.prepare(pragma)?.query([])?;
         }
         Ok(())
+    }
+}
+
+fn disable_registry_reads(conn: &Connection, _error: &CoreError) {
+    let parity = serde_json::json!({
+        "status": "blocked",
+        "reasonCodes": ["registry_import_failed"],
+        "errorCategory": "import_error",
+    });
+    if let Err(update_error) = conn.execute(
+        "UPDATE registry_activation_state
+         SET read_mode = 'legacy', parity_status = 'blocked', parity_json = ?1,
+             rolled_back_at = datetime('now'), updated_at = datetime('now')",
+        [parity.to_string()],
+    ) {
+        tracing::error!(
+            error = %update_error,
+            "Failed to force Capability Registry reads back to legacy mode"
+        );
     }
 }
 

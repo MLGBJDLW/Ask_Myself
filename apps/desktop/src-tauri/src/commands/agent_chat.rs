@@ -557,13 +557,23 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 task_id: Some(task_run_id.clone()),
             };
             let mut effective_db_config = db_config.clone();
-            let provider_config = match db
-                .resolve_runtime_capability(&registry_scope, "text_generation")
-                .map_err(|error| error.to_string())?
+            let registry_resolution = match db
+                .resolve_or_pin_task_runtime_capability(
+                    &registry_scope,
+                    "text_generation",
+                    &task_run_id,
+                )
             {
+                Ok(resolution) => resolution,
+                Err(error) => {
+                    warn!(
+                        "Capability Registry resolution failed for run {task_run_id}; using the legacy route: {error}"
+                    );
+                    None
+                }
+            };
+            let provider_config = match registry_resolution {
                 Some(resolution) => {
-                    db.pin_task_registry_snapshot(&task_run_id, &resolution.snapshot)
-                        .map_err(|error| error.to_string())?;
                     effective_db_config.provider = resolution.provider_id;
                     effective_db_config.provider_endpoint_id = Some(resolution.endpoint_id);
                     effective_db_config.base_url = resolution.provider_config.base_url.clone();

@@ -270,6 +270,9 @@ export function CapabilityRegistryPanel({ agentId, refreshToken }: CapabilityReg
                       <Badge variant="default" className={`text-[10px] ${mode === 'registry' ? 'border-success/20 bg-success/10 text-success' : ''}`}>
                         {displayToken(mode)}
                       </Badge>
+                      <Badge variant="default" className="text-[10px]">
+                        {displayToken(route.fallbackMode)} fallback
+                      </Badge>
                       <span className="text-[10px] text-text-tertiary">
                         {displayToken(route.source.kind)} · r{route.sourceRevision}
                       </span>
