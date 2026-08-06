@@ -1,0 +1,593 @@
+//! Safe, policy-authorized provider fallback.
+//!
+//! A route may advance only on a retryable provider failure and only before
+//! any response chunk is exposed. The selection callback commits durable run
+//! provenance before the first fallback chunk leaves this wrapper.
+
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use async_trait::async_trait;
+use futures::{stream, stream::BoxStream, StreamExt};
+
+use super::{
+    CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderType,
+    StreamChunk,
+};
+use crate::error::CoreError;
+
+pub type FallbackSelectionCallback =
+    Arc<dyn Fn(usize, usize, &str) -> Result<(), CoreError> + Send + Sync>;
+
+pub struct AutomaticFallbackCandidate {
+    pub fallback_index: usize,
+    pub provider: Box<dyn LlmProvider>,
+    pub model: String,
+    pub provider_type: ProviderType,
+}
+
+struct Route {
+    fallback_index: usize,
+    provider: Box<dyn LlmProvider>,
+    model: String,
+    provider_type: ProviderType,
+}
+
+/// Provider chain for an already validated `automatic` Capability Binding.
+/// It never invents targets and never crosses an unapproved route boundary;
+/// callers supply only the frozen, policy-eligible candidates.
+pub struct AutomaticFallbackProvider {
+    routes: Vec<Route>,
+    active_position: AtomicUsize,
+    on_selected: FallbackSelectionCallback,
+}
+
+impl AutomaticFallbackProvider {
+    pub fn new(
+        primary_fallback_index: usize,
+        primary: Box<dyn LlmProvider>,
+        primary_model: String,
+        primary_provider_type: ProviderType,
+        fallbacks: Vec<AutomaticFallbackCandidate>,
+        on_selected: FallbackSelectionCallback,
+    ) -> Result<Self, CoreError> {
+        let mut routes = vec![Route {
+            fallback_index: primary_fallback_index,
+            provider: primary,
+            model: primary_model,
+            provider_type: primary_provider_type,
+        }];
+        for fallback in fallbacks {
+            if fallback.fallback_index <= routes.last().map_or(0, |route| route.fallback_index) {
+                return Err(CoreError::InvalidInput(
+                    "Automatic fallback candidates must be strictly ordered".to_string(),
+                ));
+            }
+            routes.push(Route {
+                fallback_index: fallback.fallback_index,
+                provider: fallback.provider,
+                model: fallback.model,
+                provider_type: fallback.provider_type,
+            });
+        }
+        Ok(Self {
+            routes,
+            active_position: AtomicUsize::new(0),
+            on_selected,
+        })
+    }
+
+    fn active_position(&self) -> usize {
+        self.active_position
+            .load(Ordering::Acquire)
+            .min(self.routes.len().saturating_sub(1))
+    }
+
+    fn request_for_route(&self, request: &CompletionRequest, position: usize) -> CompletionRequest {
+        let mut request = request.clone();
+        request.model = self.routes[position].model.clone();
+        request.provider_type = Some(self.routes[position].provider_type);
+        request
+    }
+
+    fn fallback_reason(&self, from_position: usize) -> &'static str {
+        if self.routes[from_position].fallback_index == 0 {
+            "primary_invocation_failed_automatic_fallback"
+        } else {
+            "fallback_invocation_failed_automatic_fallback"
+        }
+    }
+
+    fn select_route(&self, from_position: usize, to_position: usize) -> Result<(), CoreError> {
+        if from_position == to_position {
+            return Ok(());
+        }
+        self.active_position
+            .compare_exchange(
+                from_position,
+                to_position,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|actual| {
+                CoreError::Conflict(format!(
+                    "Automatic fallback route changed concurrently from {from_position} to {actual}"
+                ))
+            })?;
+        let result = (self.on_selected)(
+            self.routes[from_position].fallback_index,
+            self.routes[to_position].fallback_index,
+            self.fallback_reason(from_position),
+        );
+        if result.is_err() {
+            let _ = self.active_position.compare_exchange(
+                to_position,
+                from_position,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        result
+    }
+
+    async fn open_stream_from<'a>(
+        &'a self,
+        request: &CompletionRequest,
+        start_position: usize,
+    ) -> Result<(usize, BoxStream<'a, ProviderStreamEvent>), CoreError> {
+        let mut last_retryable = None;
+        for position in start_position..self.routes.len() {
+            let route_request = self.request_for_route(request, position);
+            match self.routes[position]
+                .provider
+                .stream_events(&route_request)
+                .await
+            {
+                Ok(stream) => return Ok((position, stream)),
+                Err(error) if automatic_fallback_error(&error) => last_retryable = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_retryable.unwrap_or_else(|| {
+            CoreError::TransientLlm("Automatic fallback chain is exhausted".to_string())
+        }))
+    }
+}
+
+struct FallbackStreamState<'a> {
+    owner: &'a AutomaticFallbackProvider,
+    request: CompletionRequest,
+    selected_position: usize,
+    current_position: usize,
+    current: BoxStream<'a, ProviderStreamEvent>,
+    emitted_output: bool,
+}
+
+#[async_trait]
+impl LlmProvider for AutomaticFallbackProvider {
+    fn name(&self) -> &str {
+        self.routes[self.active_position()].provider.name()
+    }
+
+    fn prompt_cache_profile(&self, _model: &str) -> super::prompt_cache::PromptCacheProfile {
+        let position = self.active_position();
+        self.routes[position]
+            .provider
+            .prompt_cache_profile(&self.routes[position].model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        self.routes[self.active_position()]
+            .provider
+            .list_models()
+            .await
+    }
+
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let selected_position = self.active_position();
+        let mut last_retryable = None;
+        for position in selected_position..self.routes.len() {
+            let route_request = self.request_for_route(request, position);
+            match self.routes[position]
+                .provider
+                .complete(&route_request)
+                .await
+            {
+                Ok(response) => {
+                    self.select_route(selected_position, position)?;
+                    return Ok(response);
+                }
+                Err(error) if automatic_fallback_error(&error) => last_retryable = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_retryable.unwrap_or_else(|| {
+            CoreError::TransientLlm("Automatic fallback chain is exhausted".to_string())
+        }))
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let events = self.stream_events(request).await?;
+        Ok(Box::pin(events.map(|event| match event {
+            ProviderStreamEvent::Chunk { chunk } => Ok(*chunk),
+            ProviderStreamEvent::RecoverableError { message } => {
+                Err(CoreError::StreamIncomplete(message))
+            }
+            ProviderStreamEvent::Cancelled { message } => Err(CoreError::Cancelled(message)),
+            ProviderStreamEvent::TerminalError { message } => Err(CoreError::Llm(message)),
+        })))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let selected_position = self.active_position();
+        let (current_position, current) = self.open_stream_from(request, selected_position).await?;
+        let state = FallbackStreamState {
+            owner: self,
+            request: request.clone(),
+            selected_position,
+            current_position,
+            current,
+            emitted_output: false,
+        };
+        Ok(Box::pin(stream::unfold(Some(state), |state| async move {
+            let mut state = state?;
+            loop {
+                match state.current.next().await {
+                    Some(ProviderStreamEvent::Chunk { chunk }) => {
+                        if !state.emitted_output {
+                            if let Err(error) = state
+                                .owner
+                                .select_route(state.selected_position, state.current_position)
+                            {
+                                return Some((
+                                    ProviderStreamEvent::TerminalError {
+                                        message: error.to_string(),
+                                    },
+                                    None,
+                                ));
+                            }
+                            state.selected_position = state.current_position;
+                        }
+                        state.emitted_output = true;
+                        return Some((ProviderStreamEvent::Chunk { chunk }, Some(state)));
+                    }
+                    Some(ProviderStreamEvent::RecoverableError { message })
+                        if !state.emitted_output
+                            && state.current_position + 1 < state.owner.routes.len() =>
+                    {
+                        match state
+                            .owner
+                            .open_stream_from(&state.request, state.current_position + 1)
+                            .await
+                        {
+                            Ok((position, stream)) => {
+                                state.current_position = position;
+                                state.current = stream;
+                            }
+                            Err(error) => {
+                                return Some((
+                                    ProviderStreamEvent::TerminalError {
+                                        message: format!("{message}; fallback failed: {error}"),
+                                    },
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+                    Some(event) => return Some((event, Some(state))),
+                    None if !state.emitted_output
+                        && state.current_position + 1 < state.owner.routes.len() =>
+                    {
+                        match state
+                            .owner
+                            .open_stream_from(&state.request, state.current_position + 1)
+                            .await
+                        {
+                            Ok((position, stream)) => {
+                                state.current_position = position;
+                                state.current = stream;
+                            }
+                            Err(error) => {
+                                return Some((
+                                    ProviderStreamEvent::TerminalError {
+                                        message: format!(
+                                            "Provider stream ended before output; fallback failed: {error}"
+                                        ),
+                                    },
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+                    None if !state.emitted_output => {
+                        return Some((
+                            ProviderStreamEvent::RecoverableError {
+                                message: "Provider stream ended before producing output"
+                                    .to_string(),
+                            },
+                            None,
+                        ));
+                    }
+                    None => return None,
+                }
+            }
+        })))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        self.routes[self.active_position()]
+            .provider
+            .health_check()
+            .await
+    }
+
+    async fn runtime_metadata(&self) -> Option<serde_json::Value> {
+        let position = self.active_position();
+        Some(serde_json::json!({
+            "capabilityRegistryFallbackIndex": self.routes[position].fallback_index,
+            "provider": self.routes[position].provider.name(),
+            "model": self.routes[position].model,
+            "providerMetadata": self.routes[position].provider.runtime_metadata().await,
+        }))
+    }
+}
+
+fn automatic_fallback_error(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::RateLimited { .. } | CoreError::TransientLlm(_) | CoreError::StreamIncomplete(_)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use futures::stream;
+
+    use super::*;
+    use crate::llm::{FinishReason, Usage};
+
+    #[derive(Clone)]
+    enum Behavior {
+        Stream(Vec<ProviderStreamEvent>),
+        CompleteTransient,
+        CompleteSuccess,
+    }
+
+    struct MockProvider {
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn complete(
+            &self,
+            request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            self.models.lock().unwrap().push(request.model.clone());
+            match self.behavior {
+                Behavior::CompleteTransient => {
+                    Err(CoreError::TransientLlm("temporary outage".to_string()))
+                }
+                Behavior::CompleteSuccess => Ok(CompletionResponse {
+                    content: request.model.clone(),
+                    tool_calls: None,
+                    finish_reason: FinishReason::Stop,
+                    usage: Usage::default(),
+                    thinking: None,
+                }),
+                Behavior::Stream(_) => unreachable!("stream fixture used for completion"),
+            }
+        }
+
+        async fn stream(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        async fn stream_events(
+            &self,
+            request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+            self.models.lock().unwrap().push(request.model.clone());
+            let Behavior::Stream(events) = &self.behavior else {
+                unreachable!("completion fixture used for stream")
+            };
+            Ok(Box::pin(stream::iter(events.clone())))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn chunk(text: &str) -> ProviderStreamEvent {
+        ProviderStreamEvent::Chunk {
+            chunk: Box::new(StreamChunk {
+                delta: text.to_string(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            }),
+        }
+    }
+
+    fn provider(
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+    ) -> Box<dyn LlmProvider> {
+        Box::new(MockProvider {
+            name,
+            behavior,
+            models,
+        })
+    }
+
+    fn request() -> CompletionRequest {
+        CompletionRequest {
+            model: "primary-model".to_string(),
+            ..CompletionRequest::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn recoverable_failure_before_output_advances_and_records_fallback() {
+        let primary_models = Arc::new(Mutex::new(Vec::new()));
+        let fallback_models = Arc::new(Mutex::new(Vec::new()));
+        let selections = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&selections);
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    message: "connection reset".to_string(),
+                }]),
+                Arc::clone(&primary_models),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::Stream(vec![chunk("fallback answer")]),
+                    Arc::clone(&fallback_models),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(move |from, to, reason| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((from, to, reason.to_string()));
+                Ok(())
+            }),
+        )
+        .unwrap();
+
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [ProviderStreamEvent::Chunk { chunk }] if chunk.delta == "fallback answer"
+        ));
+        assert_eq!(*primary_models.lock().unwrap(), vec!["primary-model"]);
+        assert_eq!(*fallback_models.lock().unwrap(), vec!["fallback-model"]);
+        assert_eq!(
+            *selections.lock().unwrap(),
+            vec![(
+                0,
+                1,
+                "primary_invocation_failed_automatic_fallback".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn failure_after_output_never_mixes_a_fallback_stream() {
+        let primary_models = Arc::new(Mutex::new(Vec::new()));
+        let fallback_models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::Stream(vec![
+                    chunk("visible"),
+                    ProviderStreamEvent::RecoverableError {
+                        message: "late reset".to_string(),
+                    },
+                ]),
+                primary_models,
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::Stream(vec![chunk("must not appear")]),
+                    Arc::clone(&fallback_models),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| panic!("fallback must not be selected after output")),
+        )
+        .unwrap();
+
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[1],
+            ProviderStreamEvent::RecoverableError { message } if message == "late reset"
+        ));
+        assert!(fallback_models.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_streaming_retryable_failure_uses_the_frozen_model() {
+        let primary_models = Arc::new(Mutex::new(Vec::new()));
+        let fallback_models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::CompleteTransient,
+                Arc::clone(&primary_models),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::CompleteSuccess,
+                    Arc::clone(&fallback_models),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        let response = wrapper.complete(&request()).await.unwrap();
+        assert_eq!(response.content, "fallback-model");
+        assert_eq!(*primary_models.lock().unwrap(), vec!["primary-model"]);
+        assert_eq!(*fallback_models.lock().unwrap(), vec!["fallback-model"]);
+    }
+}

@@ -110,6 +110,14 @@ pub struct ModelReferenceV2 {
     /// once and emits a canonical target reference for runtime use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
+    /// Canonical Model Target identity used once a binding has been resolved.
+    /// Provider/model strings remain migration and display data only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    /// Optimistic revision expected for `target_id`. A resolved target reference
+    /// must carry both fields so catalog refreshes cannot silently retarget it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_revision: Option<u64>,
     pub provider_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_id: Option<String>,
@@ -350,10 +358,44 @@ impl SettingsProfileV2 {
                 for fallback in &value.fallbacks {
                     validate_model_reference(fallback)?;
                 }
+                validate_binding_constraints(&value.constraints)?;
             }
         }
         Ok(())
     }
+}
+
+fn validate_binding_constraints(value: &CapabilityBindingConstraintsV2) -> Result<(), CoreError> {
+    const DATA_CLASSES: &[&str] = &["public", "internal", "confidential", "restricted"];
+    const COST_CLASSES: &[&str] = &["free", "low", "medium", "high"];
+    if value
+        .allowed_regions
+        .iter()
+        .any(|region| region.trim().is_empty())
+    {
+        return Err(CoreError::InvalidInput(
+            "Capability allowedRegions must not contain empty values".to_string(),
+        ));
+    }
+    if let Some(unknown) = value
+        .data_classes
+        .iter()
+        .map(|class| class.trim().to_ascii_lowercase())
+        .find(|class| !DATA_CLASSES.contains(&class.as_str()))
+    {
+        return Err(CoreError::InvalidInput(format!(
+            "Unknown capability data class {unknown}"
+        )));
+    }
+    if let Some(cost_class) = value.max_cost_class.as_deref() {
+        let normalized = cost_class.trim().to_ascii_lowercase();
+        if !COST_CLASSES.contains(&normalized.as_str()) {
+            return Err(CoreError::InvalidInput(format!(
+                "Unknown capability cost class {cost_class}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_keys<T>(kind: &str, values: &BTreeMap<String, T>) -> Result<(), CoreError> {
@@ -379,6 +421,15 @@ fn validate_model_reference(value: &ModelReferenceV2) -> Result<(), CoreError> {
         return Err(CoreError::InvalidInput(
             "Model references require providerId and modelId".to_string(),
         ));
+    }
+    match (value.target_id.as_deref(), value.target_revision) {
+        (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {}
+        (None, None) => {}
+        _ => {
+            return Err(CoreError::InvalidInput(
+                "Model targetId and positive targetRevision must be provided together".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -946,6 +997,8 @@ impl RawLegacyAppConfigSnapshot {
                     value: CapabilityBindingV2 {
                         primary: Some(ModelReferenceV2 {
                             connection_id: Some(credential_ref.clone()),
+                            target_id: None,
+                            target_revision: None,
                             provider_id: provider_id.to_string(),
                             endpoint_id: None,
                             model_id: model_id.to_string(),
@@ -1010,6 +1063,8 @@ impl LegacyAgentConfigSnapshot {
             .unwrap_or_else(|| self.model.clone());
         let text_model = ModelReferenceV2 {
             connection_id: Some(credential_ref.clone()),
+            target_id: None,
+            target_revision: None,
             provider_id: self.provider.clone(),
             endpoint_id: endpoint_id.clone(),
             model_id,
@@ -1046,6 +1101,8 @@ impl LegacyAgentConfigSnapshot {
                     value: CapabilityBindingV2 {
                         primary: Some(ModelReferenceV2 {
                             connection_id: Some(credential_ref.clone()),
+                            target_id: None,
+                            target_revision: None,
                             provider_id: self.provider.clone(),
                             endpoint_id: endpoint_id.clone(),
                             model_id: image_model.to_string(),
@@ -1069,6 +1126,8 @@ impl LegacyAgentConfigSnapshot {
                                 || non_empty(self.summarization_provider.as_deref())
                                     == Some(self.provider.as_str()))
                             .then(|| credential_ref.clone()),
+                            target_id: None,
+                            target_revision: None,
                             provider_id: non_empty(self.summarization_provider.as_deref())
                                 .unwrap_or(&self.provider)
                                 .to_string(),

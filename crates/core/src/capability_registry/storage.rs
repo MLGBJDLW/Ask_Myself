@@ -15,8 +15,9 @@ use crate::settings_schema_v2::{
 use super::resolver::{build_registry_projection, selected_profile_chain, stable_id};
 use super::types::{
     CapabilityRegistryProjection, ConnectionHealth, ConnectionRecord, ModelDefinitionRecord,
-    RegistryActivationRecord, RegistryReadMode, RegistryScope, RuntimeCapabilityResolution,
-    RuntimeRegistrySnapshot, CAPABILITY_REGISTRY_SCHEMA_VERSION,
+    RegistryActivationRecord, RegistryReadMode, RegistryScope, RuntimeCapabilityFallback,
+    RuntimeCapabilityResolution, RuntimeRegistrySnapshot, RuntimeRouteTargetSnapshot,
+    CAPABILITY_REGISTRY_SCHEMA_VERSION,
 };
 
 pub(crate) fn migrate_registry_on_open(
@@ -44,8 +45,8 @@ pub(crate) fn sync_registry_in_transaction(
     transaction.execute("UPDATE provider_connections SET enabled = 0", [])?;
     for scope in scopes {
         let selected = selected_profile_chain(&profiles, &scope);
-        let projection = build_registry_projection(&profiles, &selected, &health, Vec::new())?;
-        persist_projection(transaction, &projection)?;
+        let mut projection = build_registry_projection(&profiles, &selected, &health, Vec::new())?;
+        persist_projection(transaction, &mut projection)?;
         for capability in &projection.capabilities {
             let scope = capability.source.clone();
             let (parity_status, parity) = legacy_shadow_parity(transaction, capability)?;
@@ -239,6 +240,85 @@ impl Database {
             .map_err(CoreError::Serialization)
     }
 
+    /// Advances a pinned automatic route to one of the fallback targets that
+    /// was frozen with the run. This is the only permitted task-pin mutation:
+    /// it is forward-only, compare-and-swap, and must happen before the
+    /// provider wrapper exposes response output.
+    pub fn advance_task_runtime_fallback(
+        &self,
+        run_id: &str,
+        capability_id: &str,
+        expected_fallback_index: usize,
+        fallback_index: usize,
+        reason: &str,
+    ) -> Result<RuntimeRegistrySnapshot, CoreError> {
+        let mut conn = self.conn();
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let existing_json: String = transaction
+            .query_row(
+                "SELECT snapshot_json FROM agent_task_registry_snapshots
+                 WHERE run_id = ?1 AND capability_id = ?2",
+                params![run_id, capability_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "Agent task run {run_id} has no pinned {capability_id} route"
+                ))
+            })?;
+        let mut snapshot: RuntimeRegistrySnapshot = serde_json::from_str(&existing_json)?;
+        if snapshot.fallback_index != expected_fallback_index {
+            return Err(CoreError::Conflict(format!(
+                "Agent task run {run_id} already advanced from fallback index {expected_fallback_index}"
+            )));
+        }
+        if snapshot.fallback_mode != CapabilityFallbackModeV2::Automatic {
+            return Err(CoreError::InvalidInput(format!(
+                "Capability {capability_id} does not permit automatic fallback"
+            )));
+        }
+        if fallback_index <= snapshot.fallback_index {
+            return Err(CoreError::Conflict(format!(
+                "Capability {capability_id} fallback must advance beyond index {}",
+                snapshot.fallback_index
+            )));
+        }
+        let target = snapshot
+            .fallback_targets
+            .iter()
+            .find(|target| target.fallback_index == fallback_index)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::InvalidInput(format!(
+                    "Capability {capability_id} fallback index {fallback_index} was not frozen for this run"
+                ))
+            })?;
+        apply_selected_route_target(&mut snapshot, &target, reason);
+        let updated_json = serde_json::to_string(&snapshot)?;
+        let updated_hash = blake3::hash(updated_json.as_bytes()).to_hex().to_string();
+        let affected = transaction.execute(
+            "UPDATE agent_task_registry_snapshots
+             SET snapshot_json = ?3, snapshot_hash = ?4
+             WHERE run_id = ?1 AND capability_id = ?2 AND snapshot_json = ?5",
+            params![
+                run_id,
+                capability_id,
+                updated_json,
+                updated_hash,
+                existing_json
+            ],
+        )?;
+        if affected != 1 {
+            return Err(CoreError::Conflict(format!(
+                "Agent task run {run_id} registry fallback changed concurrently"
+            )));
+        }
+        transaction.commit()?;
+        Ok(snapshot)
+    }
+
     pub fn set_registry_read_mode(
         &self,
         capability_id: &str,
@@ -427,65 +507,145 @@ fn materialize_route_resolution(
     fallback_reason: Option<String>,
     settings_revisions: Vec<crate::settings_schema_v2::SettingsRevisionV2>,
 ) -> Result<RuntimeCapabilityResolution, CoreError> {
-    let (connection_revision, target_revision) = validate_persisted_candidate(conn, selected)?;
-    let credential = resolve_connection_credential(conn, &selected.connection)?;
-    let provider_config = ProviderConfig {
-        provider_type: provider_type_for_parts(
-            &selected.connection.adapter_provider_id,
-            (!selected.connection.base_url.is_empty())
-                .then_some(selected.connection.base_url.as_str()),
-        ),
-        base_url: (!selected.connection.base_url.is_empty())
-            .then(|| selected.connection.base_url.clone()),
-        api_key: credential,
-        org_id: None,
-        timeout_secs: None,
+    let selected_target = snapshot_route_target(conn, selected, fallback_index)?;
+    let fallback_targets = if route.fallback_mode == CapabilityFallbackModeV2::Automatic {
+        route
+            .fallbacks
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.eligibility.eligible)
+            .map(|(index, candidate)| snapshot_route_target(conn, candidate, index + 1))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
     };
+    let provider_config = provider_config_for_route_target(conn, &selected_target)?;
+    let fallbacks = fallback_targets
+        .iter()
+        .filter(|candidate| candidate.fallback_index > fallback_index)
+        .map(|candidate| materialize_runtime_fallback(conn, candidate))
+        .collect::<Result<Vec<_>, _>>()?;
     let snapshot = RuntimeRegistrySnapshot {
         schema_version: CAPABILITY_REGISTRY_SCHEMA_VERSION,
         settings_revisions,
         binding_id: route.binding_id.clone(),
         binding_revision: route.binding_revision,
         capability_id: route.capability_id.clone(),
-        target_id: selected.target.id.clone(),
-        target_revision,
-        connection_id: selected.connection.id.clone(),
-        connection_revision,
-        model_definition_id: selected.target.model_definition_id.clone(),
-        descriptor_hash: selected
-            .definition
-            .as_ref()
-            .map(|definition| definition.descriptor_hash.clone()),
+        target_id: selected_target.target_id.clone(),
+        target_revision: selected_target.target_revision,
+        connection_id: selected_target.connection_id.clone(),
+        connection_revision: selected_target.connection_revision,
+        model_definition_id: selected_target.model_definition_id.clone(),
+        model_definition_revision: selected_target.model_definition_revision,
+        descriptor_hash: selected_target.descriptor_hash.clone(),
         fallback_index,
         fallback_mode: route.fallback_mode,
         fallback_reason,
-        adapter_provider_id: selected.connection.adapter_provider_id.clone(),
-        provider_id: selected.connection.provider_id.clone(),
-        endpoint_id: selected.connection.endpoint_id.clone(),
-        base_url: selected.connection.base_url.clone(),
-        credential_ref: selected.connection.credential_ref.clone(),
-        model_id: selected.target.upstream_model_id.clone(),
+        adapter_provider_id: selected_target.adapter_provider_id.clone(),
+        provider_id: selected_target.provider_id.clone(),
+        endpoint_id: selected_target.endpoint_id.clone(),
+        base_url: selected_target.base_url.clone(),
+        credential_ref: selected_target.credential_ref.clone(),
+        model_id: selected_target.model_id.clone(),
+        fallback_targets,
     };
     Ok(RuntimeCapabilityResolution {
-        provider_id: selected.connection.adapter_provider_id.clone(),
-        endpoint_id: selected.connection.endpoint_id.clone(),
+        provider_id: selected_target.adapter_provider_id,
+        endpoint_id: selected_target.endpoint_id,
         provider_config,
-        model_id: selected.target.upstream_model_id.clone(),
+        model_id: selected_target.model_id,
         snapshot,
+        fallbacks,
+    })
+}
+
+fn snapshot_route_target(
+    conn: &Connection,
+    candidate: &super::types::ResolvedCapabilityRouteTarget,
+    fallback_index: usize,
+) -> Result<RuntimeRouteTargetSnapshot, CoreError> {
+    let (connection_revision, target_revision, model_definition_revision) =
+        validate_persisted_candidate(conn, candidate)?;
+    Ok(RuntimeRouteTargetSnapshot {
+        fallback_index,
+        target_id: candidate.target.id.clone(),
+        target_revision,
+        connection_id: candidate.connection.id.clone(),
+        connection_revision,
+        model_definition_id: candidate.target.model_definition_id.clone(),
+        model_definition_revision,
+        descriptor_hash: candidate
+            .definition
+            .as_ref()
+            .map(|definition| definition.descriptor_hash.clone()),
+        adapter_provider_id: candidate.connection.adapter_provider_id.clone(),
+        provider_id: candidate.connection.provider_id.clone(),
+        endpoint_id: candidate.connection.endpoint_id.clone(),
+        base_url: candidate.connection.base_url.clone(),
+        credential_ref: candidate.connection.credential_ref.clone(),
+        model_id: candidate.target.upstream_model_id.clone(),
+    })
+}
+
+fn provider_config_for_route_target(
+    conn: &Connection,
+    target: &RuntimeRouteTargetSnapshot,
+) -> Result<ProviderConfig, CoreError> {
+    let frozen_connection = ConnectionRecord {
+        schema_version: CAPABILITY_REGISTRY_SCHEMA_VERSION,
+        id: target.connection_id.clone(),
+        revision: target.connection_revision,
+        adapter_provider_id: target.adapter_provider_id.clone(),
+        provider_id: target.provider_id.clone(),
+        endpoint_id: target.endpoint_id.clone(),
+        base_url: target.base_url.clone(),
+        endpoint_fingerprint: String::new(),
+        credential_ref: target.credential_ref.clone(),
+        enabled: true,
+        health: ConnectionHealth::Configured,
+        source: SettingsScopeV2 {
+            kind: SettingsScopeKindV2::Task,
+            id: None,
+        },
+        source_revision: target.connection_revision,
+    };
+    let credential = resolve_connection_credential(conn, &frozen_connection)?;
+    Ok(ProviderConfig {
+        provider_type: provider_type_for_parts(
+            &target.adapter_provider_id,
+            (!target.base_url.is_empty()).then_some(target.base_url.as_str()),
+        ),
+        base_url: (!target.base_url.is_empty()).then(|| target.base_url.clone()),
+        api_key: credential,
+        org_id: None,
+        timeout_secs: None,
+    })
+}
+
+fn materialize_runtime_fallback(
+    conn: &Connection,
+    target: &RuntimeRouteTargetSnapshot,
+) -> Result<RuntimeCapabilityFallback, CoreError> {
+    Ok(RuntimeCapabilityFallback {
+        fallback_index: target.fallback_index,
+        provider_id: target.adapter_provider_id.clone(),
+        endpoint_id: target.endpoint_id.clone(),
+        provider_config: provider_config_for_route_target(conn, target)?,
+        model_id: target.model_id.clone(),
     })
 }
 
 fn validate_persisted_candidate(
     conn: &Connection,
     candidate: &super::types::ResolvedCapabilityRouteTarget,
-) -> Result<(u64, u64), CoreError> {
+) -> Result<(u64, u64, Option<u64>), CoreError> {
     let connection_revision: Option<u64> = conn
         .query_row(
             "SELECT revision FROM provider_connections
          WHERE id = ?1 AND enabled = 1
            AND adapter_provider_id = ?2 AND provider_id = ?3
            AND endpoint_id = ?4 AND base_url = ?5
-           AND credential_ref IS ?6",
+           AND credential_ref IS ?6 AND revision = ?7",
             params![
                 &candidate.connection.id,
                 &candidate.connection.adapter_provider_id,
@@ -493,6 +653,7 @@ fn validate_persisted_candidate(
                 &candidate.connection.endpoint_id,
                 &candidate.connection.base_url,
                 &candidate.connection.credential_ref,
+                candidate.connection.revision,
             ],
             |row| row.get(0),
         )
@@ -507,11 +668,12 @@ fn validate_persisted_candidate(
         .query_row(
             "SELECT revision FROM model_targets
          WHERE id = ?1 AND connection_id = ?2 AND upstream_model_id = ?3
-           AND availability <> 'unavailable'",
+           AND availability <> 'unavailable' AND revision = ?4",
             params![
                 &candidate.target.id,
                 &candidate.target.connection_id,
                 &candidate.target.upstream_model_id,
+                candidate.target.revision,
             ],
             |row| row.get(0),
         )
@@ -522,49 +684,101 @@ fn validate_persisted_candidate(
             candidate.target.id
         ))
     })?;
-    Ok((connection_revision, target_revision))
+    let model_definition_revision = match (
+        candidate.target.model_definition_id.as_deref(),
+        candidate.definition.as_ref(),
+    ) {
+        (Some(definition_id), Some(definition)) => Some(
+            conn.query_row(
+                "SELECT revision FROM model_definitions
+                 WHERE id = ?1 AND revision = ?2 AND descriptor_hash = ?3",
+                params![
+                    definition_id,
+                    definition.revision,
+                    &definition.descriptor_hash
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::Conflict(format!(
+                    "Capability target {} references a stale model-definition revision",
+                    candidate.target.id
+                ))
+            })?,
+        ),
+        (None, None) => None,
+        _ => {
+            return Err(CoreError::Conflict(format!(
+                "Capability target {} has inconsistent model-definition provenance",
+                candidate.target.id
+            )));
+        }
+    };
+    Ok((
+        connection_revision,
+        target_revision,
+        model_definition_revision,
+    ))
 }
 
 fn materialize_pinned_resolution(
     conn: &Connection,
     snapshot: RuntimeRegistrySnapshot,
 ) -> Result<RuntimeCapabilityResolution, CoreError> {
-    let frozen_connection = ConnectionRecord {
-        schema_version: snapshot.schema_version,
-        id: snapshot.connection_id.clone(),
-        revision: snapshot.connection_revision,
+    let selected = RuntimeRouteTargetSnapshot {
+        fallback_index: snapshot.fallback_index,
+        target_id: snapshot.target_id.clone(),
+        target_revision: snapshot.target_revision,
+        connection_id: snapshot.connection_id.clone(),
+        connection_revision: snapshot.connection_revision,
+        model_definition_id: snapshot.model_definition_id.clone(),
+        model_definition_revision: snapshot.model_definition_revision,
+        descriptor_hash: snapshot.descriptor_hash.clone(),
         adapter_provider_id: snapshot.adapter_provider_id.clone(),
         provider_id: snapshot.provider_id.clone(),
         endpoint_id: snapshot.endpoint_id.clone(),
         base_url: snapshot.base_url.clone(),
-        endpoint_fingerprint: String::new(),
         credential_ref: snapshot.credential_ref.clone(),
-        enabled: true,
-        health: ConnectionHealth::Configured,
-        source: SettingsScopeV2 {
-            kind: SettingsScopeKindV2::Task,
-            id: None,
-        },
-        source_revision: snapshot.connection_revision,
+        model_id: snapshot.model_id.clone(),
     };
-    let credential = resolve_connection_credential(conn, &frozen_connection)?;
-    let provider_config = ProviderConfig {
-        provider_type: provider_type_for_parts(
-            &snapshot.adapter_provider_id,
-            (!snapshot.base_url.is_empty()).then_some(snapshot.base_url.as_str()),
-        ),
-        base_url: (!snapshot.base_url.is_empty()).then(|| snapshot.base_url.clone()),
-        api_key: credential,
-        org_id: None,
-        timeout_secs: None,
-    };
+    let provider_config = provider_config_for_route_target(conn, &selected)?;
+    let fallbacks = snapshot
+        .fallback_targets
+        .iter()
+        .filter(|candidate| candidate.fallback_index > snapshot.fallback_index)
+        .map(|candidate| materialize_runtime_fallback(conn, candidate))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(RuntimeCapabilityResolution {
         provider_id: snapshot.adapter_provider_id.clone(),
         endpoint_id: snapshot.endpoint_id.clone(),
         provider_config,
         model_id: snapshot.model_id.clone(),
         snapshot,
+        fallbacks,
     })
+}
+
+fn apply_selected_route_target(
+    snapshot: &mut RuntimeRegistrySnapshot,
+    target: &RuntimeRouteTargetSnapshot,
+    reason: &str,
+) {
+    snapshot.target_id = target.target_id.clone();
+    snapshot.target_revision = target.target_revision;
+    snapshot.connection_id = target.connection_id.clone();
+    snapshot.connection_revision = target.connection_revision;
+    snapshot.model_definition_id = target.model_definition_id.clone();
+    snapshot.model_definition_revision = target.model_definition_revision;
+    snapshot.descriptor_hash = target.descriptor_hash.clone();
+    snapshot.fallback_index = target.fallback_index;
+    snapshot.fallback_reason = Some(reason.to_string());
+    snapshot.adapter_provider_id = target.adapter_provider_id.clone();
+    snapshot.provider_id = target.provider_id.clone();
+    snapshot.endpoint_id = target.endpoint_id.clone();
+    snapshot.base_url = target.base_url.clone();
+    snapshot.credential_ref = target.credential_ref.clone();
+    snapshot.model_id = target.model_id.clone();
 }
 
 fn settings_scope_rank(kind: SettingsScopeKindV2) -> u8 {
@@ -578,7 +792,7 @@ fn settings_scope_rank(kind: SettingsScopeKindV2) -> u8 {
 
 fn persist_projection(
     transaction: &Transaction<'_>,
-    projection: &CapabilityRegistryProjection,
+    projection: &mut CapabilityRegistryProjection,
 ) -> Result<(), CoreError> {
     for connection in &projection.connections {
         transaction.execute(
@@ -683,6 +897,7 @@ fn persist_projection(
             ],
         )?;
     }
+    hydrate_persisted_projection_revisions(transaction, projection)?;
     for binding in &projection.capabilities {
         let route_json = serde_json::to_string(binding)?;
         let route_hash = blake3::hash(route_json.as_bytes()).to_hex().to_string();
@@ -724,6 +939,72 @@ fn persist_projection(
                 route_hash,
             ],
         )?;
+    }
+    Ok(())
+}
+
+fn hydrate_persisted_projection_revisions(
+    transaction: &Transaction<'_>,
+    projection: &mut CapabilityRegistryProjection,
+) -> Result<(), CoreError> {
+    let mut connection_revisions = HashMap::new();
+    for connection in &mut projection.connections {
+        connection.revision = transaction.query_row(
+            "SELECT revision FROM provider_connections WHERE id = ?1",
+            [&connection.id],
+            |row| row.get(0),
+        )?;
+        connection_revisions.insert(connection.id.clone(), connection.revision);
+    }
+
+    let mut definition_revisions = HashMap::new();
+    for definition in &mut projection.model_definitions {
+        definition.revision = transaction.query_row(
+            "SELECT revision FROM model_definitions WHERE id = ?1",
+            [&definition.id],
+            |row| row.get(0),
+        )?;
+        definition_revisions.insert(definition.id.clone(), definition.revision);
+    }
+
+    let mut target_revisions = HashMap::new();
+    for target in &mut projection.model_targets {
+        target.revision = transaction.query_row(
+            "SELECT revision FROM model_targets WHERE id = ?1",
+            [&target.id],
+            |row| row.get(0),
+        )?;
+        target_revisions.insert(target.id.clone(), target.revision);
+    }
+
+    for candidate in projection
+        .capabilities
+        .iter_mut()
+        .flat_map(|route| route.primary.iter_mut().chain(route.fallbacks.iter_mut()))
+    {
+        candidate.connection.revision = *connection_revisions
+            .get(&candidate.connection.id)
+            .ok_or_else(|| {
+                CoreError::Conflict(format!(
+                    "Capability target {} lost connection {} during persistence",
+                    candidate.target.id, candidate.connection.id
+                ))
+            })?;
+        candidate.target.revision =
+            *target_revisions.get(&candidate.target.id).ok_or_else(|| {
+                CoreError::Conflict(format!(
+                    "Capability target {} disappeared during persistence",
+                    candidate.target.id
+                ))
+            })?;
+        if let Some(definition) = candidate.definition.as_mut() {
+            definition.revision = *definition_revisions.get(&definition.id).ok_or_else(|| {
+                CoreError::Conflict(format!(
+                    "Capability target {} lost model definition {} during persistence",
+                    candidate.target.id, definition.id
+                ))
+            })?;
+        }
     }
     Ok(())
 }
@@ -1416,6 +1697,14 @@ mod tests {
     #[test]
     fn task_snapshot_is_immutable() {
         let db = Database::open_memory().unwrap();
+        let saved = db
+            .save_agent_config(&agent(
+                "open_ai",
+                "https://api.openai.com/v1",
+                "gpt-4.1",
+                "sk-pinned-secret",
+            ))
+            .unwrap();
         let conversation = db
             .create_conversation(&crate::conversation::CreateConversationInput {
                 provider: "open_ai".to_string(),
@@ -1465,16 +1754,33 @@ mod tests {
             connection_id: "connection:a".to_string(),
             connection_revision: 1,
             model_definition_id: None,
+            model_definition_revision: None,
             descriptor_hash: None,
             fallback_index: 0,
-            fallback_mode: CapabilityFallbackModeV2::Disabled,
+            fallback_mode: CapabilityFallbackModeV2::Automatic,
             fallback_reason: None,
             adapter_provider_id: "open_ai".to_string(),
             provider_id: "openai".to_string(),
             endpoint_id: "text:openai".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
-            credential_ref: None,
+            credential_ref: Some(format!("legacy-agent-config:{}", saved.id)),
             model_id: "gpt-4.1".to_string(),
+            fallback_targets: vec![RuntimeRouteTargetSnapshot {
+                fallback_index: 1,
+                target_id: "target:fallback".to_string(),
+                target_revision: 1,
+                connection_id: "connection:a".to_string(),
+                connection_revision: 1,
+                model_definition_id: None,
+                model_definition_revision: None,
+                descriptor_hash: None,
+                adapter_provider_id: "open_ai".to_string(),
+                provider_id: "openai".to_string(),
+                endpoint_id: "text:openai".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                credential_ref: Some(format!("legacy-agent-config:{}", saved.id)),
+                model_id: "gpt-4.1-mini".to_string(),
+            }],
         };
         db.pin_task_registry_snapshot(&run.id, &snapshot).unwrap();
         db.pin_task_registry_snapshot(&run.id, &snapshot).unwrap();
@@ -1494,6 +1800,52 @@ mod tests {
             .expect("existing task pin");
         assert_eq!(resumed.model_id, "gpt-4.1");
         assert_eq!(resumed.snapshot, snapshot);
+
+        let advanced = db
+            .advance_task_runtime_fallback(
+                &run.id,
+                "text_generation",
+                0,
+                1,
+                "primary_invocation_failed_automatic_fallback",
+            )
+            .unwrap();
+        assert_eq!(advanced.target_id, "target:fallback");
+        assert_eq!(advanced.model_id, "gpt-4.1-mini");
+        assert_eq!(advanced.fallback_index, 1);
+        assert_eq!(
+            advanced.fallback_reason.as_deref(),
+            Some("primary_invocation_failed_automatic_fallback")
+        );
+        let resumed = db
+            .resolve_or_pin_task_runtime_capability(
+                &RegistryScope::default(),
+                "text_generation",
+                &run.id,
+            )
+            .unwrap()
+            .expect("advanced task pin");
+        assert_eq!(resumed.model_id, "gpt-4.1-mini");
+        assert!(resumed.fallbacks.is_empty());
+
+        {
+            let conn = db.conn();
+            conn.execute(
+                "UPDATE agent_configs SET base_url = 'https://api.deepseek.com' WHERE id = ?1",
+                [&saved.id],
+            )
+            .unwrap();
+        }
+        let error = db
+            .resolve_or_pin_task_runtime_capability(
+                &RegistryScope::default(),
+                "text_generation",
+                &run.id,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match connection endpoint identity"));
     }
 
     #[test]
@@ -1537,12 +1889,16 @@ mod tests {
                 value: CapabilityBindingV2 {
                     primary: Some(ModelReferenceV2 {
                         connection_id: Some("primary".to_string()),
+                        target_id: None,
+                        target_revision: None,
                         provider_id: "open_ai".to_string(),
                         endpoint_id: None,
                         model_id: "gpt-4.1".to_string(),
                     }),
                     fallbacks: vec![ModelReferenceV2 {
                         connection_id: Some("fallback".to_string()),
+                        target_id: None,
+                        target_revision: None,
                         provider_id: "open_ai".to_string(),
                         endpoint_id: None,
                         model_id: "custom-text-model".to_string(),
@@ -1627,12 +1983,16 @@ mod tests {
                 value: CapabilityBindingV2 {
                     primary: Some(ModelReferenceV2 {
                         connection_id: Some("primary".to_string()),
+                        target_id: None,
+                        target_revision: None,
                         provider_id: "open_ai".to_string(),
                         endpoint_id: None,
                         model_id: "gpt-4.1".to_string(),
                     }),
                     fallbacks: vec![ModelReferenceV2 {
                         connection_id: Some("primary".to_string()),
+                        target_id: None,
+                        target_revision: None,
                         provider_id: "open_ai".to_string(),
                         endpoint_id: None,
                         model_id: "gpt-4.1-mini".to_string(),

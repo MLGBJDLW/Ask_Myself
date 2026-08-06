@@ -10,6 +10,7 @@ use crate::provider_catalog::model_supports_vision_from_catalog;
 use crate::provider_registry::{provider_adapter_for_type, ProviderAdapterKind};
 
 pub mod anthropic;
+pub mod fallback;
 pub mod google;
 pub mod message_validation;
 pub mod ollama;

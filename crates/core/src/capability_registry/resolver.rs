@@ -7,6 +7,7 @@ use crate::model_catalog::{
     load_builtin_catalog, normalize_endpoint_url, ModelDescriptor, ModelLifecycle, ModelModality,
     ProductReadiness,
 };
+use crate::provider_registry::provider_type_for_parts;
 use crate::settings_schema_v2::{
     resolve_settings_v2, CapabilityBindingConstraintsV2, CapabilityBindingV2,
     CapabilityFallbackModeV2, ConnectionReferenceV2, ModelReferenceV2, ResolvedSettingV2,
@@ -381,6 +382,28 @@ fn resolve_binding(
             *stored_target = explicit_target;
         }
         let target = stored_target.clone();
+        if reference
+            .target_id
+            .as_deref()
+            .is_some_and(|expected| expected != target.id)
+        {
+            return Err(CoreError::Conflict(format!(
+                "Model reference expected target {} but resolved {}",
+                reference.target_id.as_deref().unwrap_or_default(),
+                target.id
+            )));
+        }
+        if reference
+            .target_revision
+            .is_some_and(|expected| expected != target.revision)
+        {
+            return Err(CoreError::Conflict(format!(
+                "Model target {} revision changed from {} to {}",
+                target.id,
+                reference.target_revision.unwrap_or_default(),
+                target.revision
+            )));
+        }
         if !seen.insert(target.id.clone()) {
             return Err(CoreError::InvalidInput(format!(
                 "Capability {capability_id} repeats model target {}",
@@ -406,31 +429,18 @@ fn resolve_binding(
         })
     };
 
-    let primary = binding.primary.as_ref().map(&mut resolve).transpose()?;
+    let mut primary = binding.primary.as_ref().map(&mut resolve).transpose()?;
     let mut fallbacks = binding
         .fallbacks
         .iter()
         .map(&mut resolve)
         .collect::<Result<Vec<_>, _>>()?;
+    for candidate in primary.iter_mut().chain(fallbacks.iter_mut()) {
+        apply_intrinsic_binding_constraints(candidate, &binding.constraints);
+    }
     if let Some(primary) = primary.as_ref() {
         for fallback in &mut fallbacks {
-            if binding.constraints.require_same_connection
-                && fallback.connection.id != primary.connection.id
-            {
-                fallback.eligibility.eligible = false;
-                fallback
-                    .eligibility
-                    .reason_codes
-                    .push("cross_connection_fallback_requires_consent".to_string());
-            } else if !binding.constraints.allow_cross_provider
-                && fallback.connection.provider_id != primary.connection.provider_id
-            {
-                fallback.eligibility.eligible = false;
-                fallback
-                    .eligibility
-                    .reason_codes
-                    .push("cross_provider_fallback_requires_consent".to_string());
-            }
+            apply_fallback_boundary_constraints(primary, fallback, binding);
         }
     }
     Ok(ResolvedCapabilityRoute {
@@ -444,6 +454,143 @@ fn resolve_binding(
         fallback_mode: binding.fallback_mode,
         constraints: binding.constraints.clone(),
     })
+}
+
+fn apply_fallback_boundary_constraints(
+    primary: &ResolvedCapabilityRouteTarget,
+    fallback: &mut ResolvedCapabilityRouteTarget,
+    binding: &CapabilityBindingV2,
+) {
+    if binding.constraints.require_same_connection
+        && fallback.connection.id != primary.connection.id
+    {
+        mark_ineligible(fallback, "cross_connection_fallback_requires_consent");
+    } else if !binding.constraints.allow_cross_provider
+        && fallback.connection.provider_id != primary.connection.provider_id
+    {
+        mark_ineligible(fallback, "cross_provider_fallback_requires_consent");
+    }
+    if fallback.eligibility.eligible
+        && !binding.constraints.allow_cross_region
+        && fallback.connection.id != primary.connection.id
+    {
+        let primary_regions = candidate_regions(primary);
+        let fallback_regions = candidate_regions(fallback);
+        if primary_regions.is_empty()
+            || fallback_regions.is_empty()
+            || primary_regions.is_disjoint(&fallback_regions)
+        {
+            mark_ineligible(fallback, "cross_region_fallback_requires_consent");
+        }
+    }
+    if fallback.eligibility.eligible
+        && fallback.connection.id != primary.connection.id
+        && binding.fallback_mode == CapabilityFallbackModeV2::Automatic
+        && binding.constraints.data_classes.iter().any(|class| {
+            matches!(
+                class.trim().to_ascii_lowercase().as_str(),
+                "confidential" | "restricted"
+            )
+        })
+    {
+        mark_ineligible(fallback, "sensitive_data_cross_connection_requires_consent");
+    }
+    if fallback.eligibility.eligible
+        && fallback.connection.id != primary.connection.id
+        && is_local_connection(&fallback.connection) != is_local_connection(&primary.connection)
+    {
+        mark_ineligible(fallback, "local_cloud_boundary_requires_consent");
+    }
+}
+
+fn apply_intrinsic_binding_constraints(
+    candidate: &mut ResolvedCapabilityRouteTarget,
+    constraints: &CapabilityBindingConstraintsV2,
+) {
+    if constraints.requires_streaming
+        && crate::llm::provider_uses_non_streaming_fallback(
+            provider_type_for_parts(
+                &candidate.connection.adapter_provider_id,
+                (!candidate.connection.base_url.is_empty())
+                    .then_some(candidate.connection.base_url.as_str()),
+            ),
+            &candidate.target.upstream_model_id,
+        )
+    {
+        mark_ineligible(candidate, "streaming_required_but_unsupported");
+    }
+
+    if !constraints.allowed_regions.is_empty() {
+        let allowed = constraints
+            .allowed_regions
+            .iter()
+            .map(|region| region.trim().to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let candidate_regions = candidate_regions(candidate);
+        if candidate_regions.is_empty() || candidate_regions.is_disjoint(&allowed) {
+            mark_ineligible(candidate, "region_not_allowed");
+        }
+    }
+
+    if let Some(maximum) = constraints.max_cost_class.as_deref() {
+        let actual = candidate
+            .definition
+            .as_ref()
+            .and_then(|definition| definition.descriptor.pricing_ref.as_deref())
+            .and_then(cost_class_from_pricing_ref);
+        if actual.is_none_or(|actual| cost_class_rank(actual) > cost_class_rank(maximum)) {
+            mark_ineligible(candidate, "cost_class_unverified_or_exceeded");
+        }
+    }
+}
+
+fn candidate_regions(candidate: &ResolvedCapabilityRouteTarget) -> BTreeSet<String> {
+    candidate
+        .definition
+        .as_ref()
+        .into_iter()
+        .flat_map(|definition| definition.descriptor.regions.iter())
+        .map(|region| region.trim().to_ascii_lowercase())
+        .filter(|region| !region.is_empty())
+        .collect()
+}
+
+fn cost_class_from_pricing_ref(value: &str) -> Option<&'static str> {
+    let normalized = value.trim().to_ascii_lowercase();
+    ["free", "low", "medium", "high"]
+        .into_iter()
+        .find(|class| normalized == *class || normalized.starts_with(&format!("{class}:")))
+}
+
+fn cost_class_rank(value: &str) -> u8 {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "free" => 0,
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        _ => u8::MAX,
+    }
+}
+
+fn is_local_connection(connection: &ConnectionRecord) -> bool {
+    matches!(
+        connection.adapter_provider_id.as_str(),
+        "ollama" | "lm_studio" | "lmstudio"
+    ) || connection.base_url.starts_with("http://localhost")
+        || connection.base_url.starts_with("http://127.")
+        || connection.base_url.starts_with("http://[::1]")
+}
+
+fn mark_ineligible(candidate: &mut ResolvedCapabilityRouteTarget, reason: &str) {
+    candidate.eligibility.eligible = false;
+    if !candidate
+        .eligibility
+        .reason_codes
+        .iter()
+        .any(|existing| existing == reason)
+    {
+        candidate.eligibility.reason_codes.push(reason.to_string());
+    }
 }
 
 fn select_connection(
@@ -744,6 +891,53 @@ pub(crate) fn selected_profile_chain(
 mod tests {
     use super::*;
 
+    fn route_candidate(
+        connection_id: &str,
+        base_url: &str,
+        model: &str,
+        regions: &[&str],
+        pricing_ref: Option<&str>,
+    ) -> ResolvedCapabilityRouteTarget {
+        let mut descriptor = ModelDescriptor::new(model, "openai", model);
+        descriptor.regions = regions.iter().map(|region| (*region).to_string()).collect();
+        descriptor.pricing_ref = pricing_ref.map(str::to_string);
+        let definition = model_definition(&descriptor).unwrap();
+        let connection = ConnectionRecord {
+            schema_version: 1,
+            id: connection_id.to_string(),
+            revision: 1,
+            adapter_provider_id: "open_ai".to_string(),
+            provider_id: "openai".to_string(),
+            endpoint_id: format!("text:{connection_id}"),
+            base_url: base_url.to_string(),
+            endpoint_fingerprint: format!("endpoint:{connection_id}"),
+            credential_ref: Some(format!("legacy-agent-config:{connection_id}")),
+            enabled: true,
+            health: ConnectionHealth::Configured,
+            source: SettingsScopeV2 {
+                kind: SettingsScopeKindV2::Agent,
+                id: Some(connection_id.to_string()),
+            },
+            source_revision: 1,
+        };
+        let target = model_target(
+            &connection,
+            model,
+            Some(&definition),
+            &connection.source,
+            1,
+            true,
+        );
+        let eligibility =
+            target_eligibility("text_generation", &connection, &target, Some(&definition));
+        ResolvedCapabilityRouteTarget {
+            target,
+            connection,
+            definition: Some(definition),
+            eligibility,
+        }
+    }
+
     #[test]
     fn endpoint_sanitization_rejects_secret_bearing_components() {
         for value in [
@@ -814,5 +1008,115 @@ mod tests {
         assert!(eligibility
             .reason_codes
             .contains(&"target_not_callable".to_string()));
+    }
+
+    #[test]
+    fn intrinsic_constraints_fail_closed_on_region_streaming_and_cost() {
+        let mut candidate = route_candidate(
+            "primary",
+            "https://api.openai.com/v1",
+            "gpt-5.5-pro-test",
+            &["cn-beijing"],
+            Some("high:official"),
+        );
+        let constraints = CapabilityBindingConstraintsV2 {
+            requires_streaming: true,
+            allowed_regions: vec!["us-east-1".to_string()],
+            max_cost_class: Some("low".to_string()),
+            ..CapabilityBindingConstraintsV2::default()
+        };
+
+        apply_intrinsic_binding_constraints(&mut candidate, &constraints);
+
+        for reason in [
+            "streaming_required_but_unsupported",
+            "region_not_allowed",
+            "cost_class_unverified_or_exceeded",
+        ] {
+            assert!(candidate
+                .eligibility
+                .reason_codes
+                .contains(&reason.to_string()));
+        }
+    }
+
+    #[test]
+    fn fallback_constraints_recheck_region_data_and_local_cloud_boundaries() {
+        let primary = route_candidate(
+            "primary",
+            "https://api.openai.com/v1",
+            "gpt-4.1",
+            &["us-east-1"],
+            None,
+        );
+        let fallback = route_candidate(
+            "fallback",
+            "https://api.openai.com/v1",
+            "gpt-4.1-mini",
+            &["cn-beijing"],
+            None,
+        );
+        let binding = |constraints| CapabilityBindingV2 {
+            primary: None,
+            fallbacks: Vec::new(),
+            fallback_mode: CapabilityFallbackModeV2::Automatic,
+            constraints,
+            options: BTreeMap::new(),
+        };
+
+        let mut region_blocked = fallback.clone();
+        apply_fallback_boundary_constraints(
+            &primary,
+            &mut region_blocked,
+            &binding(CapabilityBindingConstraintsV2 {
+                require_same_connection: false,
+                allow_cross_provider: true,
+                allow_cross_region: false,
+                ..CapabilityBindingConstraintsV2::default()
+            }),
+        );
+        assert!(region_blocked
+            .eligibility
+            .reason_codes
+            .contains(&"cross_region_fallback_requires_consent".to_string()));
+
+        let mut data_blocked = fallback.clone();
+        apply_fallback_boundary_constraints(
+            &primary,
+            &mut data_blocked,
+            &binding(CapabilityBindingConstraintsV2 {
+                require_same_connection: false,
+                allow_cross_provider: true,
+                allow_cross_region: true,
+                data_classes: vec!["confidential".to_string()],
+                ..CapabilityBindingConstraintsV2::default()
+            }),
+        );
+        assert!(data_blocked
+            .eligibility
+            .reason_codes
+            .contains(&"sensitive_data_cross_connection_requires_consent".to_string()));
+
+        let mut local = route_candidate(
+            "local",
+            "http://localhost:11434/v1",
+            "gpt-4.1-mini",
+            &["us-east-1"],
+            None,
+        );
+        apply_fallback_boundary_constraints(
+            &primary,
+            &mut local,
+            &binding(CapabilityBindingConstraintsV2 {
+                require_same_connection: false,
+                allow_cross_provider: true,
+                allow_cross_region: true,
+                ..CapabilityBindingConstraintsV2::default()
+            }),
+        );
+        assert!(local
+            .eligibility
+            .reason_codes
+            .contains(&"local_cloud_boundary_requires_consent".to_string()));
     }
 }

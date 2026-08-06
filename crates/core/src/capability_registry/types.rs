@@ -223,6 +223,29 @@ pub struct CapabilityRegistryProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeRouteTargetSnapshot {
+    pub fallback_index: usize,
+    pub target_id: String,
+    pub target_revision: u64,
+    pub connection_id: String,
+    pub connection_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_definition_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_hash: Option<String>,
+    pub adapter_provider_id: String,
+    pub provider_id: String,
+    pub endpoint_id: String,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeRegistrySnapshot {
     pub schema_version: u16,
     pub settings_revisions: Vec<SettingsRevisionV2>,
@@ -236,6 +259,8 @@ pub struct RuntimeRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_definition_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_definition_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_hash: Option<String>,
     pub fallback_index: usize,
     pub fallback_mode: CapabilityFallbackModeV2,
@@ -248,6 +273,20 @@ pub struct RuntimeRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
     pub model_id: String,
+    /// Frozen, policy-eligible automatic fallback plan. The selected target
+    /// may advance only forward through this exact list and only before any
+    /// response output is exposed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_targets: Vec<RuntimeRouteTargetSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeCapabilityFallback {
+    pub fallback_index: usize,
+    pub provider_id: String,
+    pub endpoint_id: String,
+    pub provider_config: crate::llm::ProviderConfig,
+    pub model_id: String,
 }
 
 /// Secret-bearing runtime value. It is intentionally not serializable; only
@@ -259,4 +298,5 @@ pub struct RuntimeCapabilityResolution {
     pub provider_config: crate::llm::ProviderConfig,
     pub model_id: String,
     pub snapshot: RuntimeRegistrySnapshot,
+    pub fallbacks: Vec<RuntimeCapabilityFallback>,
 }

@@ -25,6 +25,8 @@ export interface ConnectionReferenceV2 {
 
 export interface ModelReferenceV2 {
   connectionId?: string | null;
+  targetId?: string | null;
+  targetRevision?: number | null;
   providerId: string;
   endpointId?: string | null;
   modelId: string;

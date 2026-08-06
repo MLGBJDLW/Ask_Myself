@@ -16,6 +16,6 @@ pub use types::{
     CapabilityEligibility, CapabilityRegistryProjection, CapabilityRequirement, ConnectionHealth,
     ConnectionRecord, ModelDefinitionRecord, ModelTargetRecord, RegistryActivationRecord,
     RegistryReadMode, RegistryScope, ResolvedCapabilityRoute, ResolvedCapabilityRouteTarget,
-    RuntimeCapabilityResolution, RuntimeRegistrySnapshot, TargetAvailability,
-    CAPABILITY_REGISTRY_SCHEMA_VERSION,
+    RuntimeCapabilityFallback, RuntimeCapabilityResolution, RuntimeRegistrySnapshot,
+    RuntimeRouteTargetSnapshot, TargetAvailability, CAPABILITY_REGISTRY_SCHEMA_VERSION,
 };

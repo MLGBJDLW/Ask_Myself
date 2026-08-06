@@ -557,22 +557,18 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 task_id: Some(task_run_id.clone()),
             };
             let mut effective_db_config = db_config.clone();
-            let registry_resolution = match db
+            let registry_resolution = db
                 .resolve_or_pin_task_runtime_capability(
                     &registry_scope,
                     "text_generation",
                     &task_run_id,
                 )
-            {
-                Ok(resolution) => resolution,
-                Err(error) => {
-                    warn!(
-                        "Capability Registry resolution failed for run {task_run_id}; using the legacy route: {error}"
-                    );
-                    None
-                }
-            };
-            let provider_config = match registry_resolution {
+                .map_err(|error| {
+                    format!(
+                        "Capability Registry resolution failed for run {task_run_id}; explicitly roll back the durable read mode before retrying: {error}"
+                    )
+                })?;
+            let (provider_config, registry_fallback_plan) = match registry_resolution {
                 Some(resolution) => {
                     effective_db_config.provider = resolution.provider_id;
                     effective_db_config.provider_endpoint_id = Some(resolution.endpoint_id);
@@ -583,12 +579,61 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                         .clone()
                         .unwrap_or_default();
                     effective_db_config.model = resolution.model_id.clone();
-                    effective_db_config.model_id = Some(resolution.model_id);
-                    resolution.provider_config
+                    effective_db_config.model_id = Some(resolution.model_id.clone());
+                    let plan = Some((
+                        resolution.snapshot.fallback_index,
+                        resolution.model_id,
+                        resolution.fallbacks,
+                    ));
+                    (resolution.provider_config, plan)
                 }
-                None => db_config_to_provider_config(&db_config, None),
+                None => (db_config_to_provider_config(&db_config, None), None),
             };
-            let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+            let mut provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+            if let Some((primary_fallback_index, primary_model, fallbacks)) =
+                registry_fallback_plan
+            {
+                if !fallbacks.is_empty() {
+                    let candidates = fallbacks
+                        .into_iter()
+                        .map(|fallback| {
+                            let provider_type = fallback.provider_config.provider_type;
+                            let provider = create_provider(fallback.provider_config)
+                                .map_err(|error| error.to_string())?;
+                            Ok(nexa_core::llm::fallback::AutomaticFallbackCandidate {
+                                fallback_index: fallback.fallback_index,
+                                provider,
+                                model: fallback.model_id,
+                                provider_type,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let fallback_db = Arc::clone(&db);
+                    let fallback_run_id = task_run_id.clone();
+                    let on_selected = Arc::new(move |from_index, to_index, reason: &str| {
+                        fallback_db
+                            .advance_task_runtime_fallback(
+                                &fallback_run_id,
+                                "text_generation",
+                                from_index,
+                                to_index,
+                                reason,
+                            )
+                            .map(|_| ())
+                    });
+                    provider = Box::new(
+                        nexa_core::llm::fallback::AutomaticFallbackProvider::new(
+                            primary_fallback_index,
+                            provider,
+                            primary_model,
+                            provider_config.provider_type,
+                            candidates,
+                            on_selected,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                }
+            }
             let provider = if collaboration_mode.is_moa() {
                 build_moa_provider(db.as_ref(), &effective_db_config, provider, moa_preset)?
             } else {
