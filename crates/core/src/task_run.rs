@@ -225,6 +225,15 @@ impl<'a> AgentTaskRuntime<'a> {
         run_id: &str,
         event: &AgentRunEvent,
     ) -> Result<(), CoreError> {
+        if event.kind == AgentRunEventKind::Status
+            && event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput
+            && !self.db.agent_run_has_unresolved_interactions(run_id)?
+        {
+            // A response can atomically re-queue the run while the suspended
+            // executor is still draining its buffered status event. That old
+            // event must not move the resumed run back behind the barrier.
+            return Ok(());
+        }
         let preserves_awaiting_status = !matches!(
             event.kind,
             AgentRunEventKind::Done | AgentRunEventKind::Error

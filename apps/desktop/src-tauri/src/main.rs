@@ -405,6 +405,7 @@ fn main() {
             commands::mark_interaction_partially_answered_cmd,
             commands::append_interaction_supplement_cmd,
             commands::submit_interaction_response_cmd,
+            commands::get_interaction_response_cmd,
             commands::acknowledge_interaction_cmd,
             commands::cancel_interaction_cmd,
             commands::supersede_interaction_cmd,

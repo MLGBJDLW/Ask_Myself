@@ -278,6 +278,17 @@ pub async fn submit_interaction_response_cmd(
 }
 
 #[tauri::command]
+pub async fn get_interaction_response_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionResponse, String> {
+    state
+        .db
+        .get_interaction_response(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn acknowledge_interaction_cmd(
     state: tauri::State<'_, AppState>,
     interaction_id: String,
