@@ -41,6 +41,11 @@ export function ConnectionStatusBanner({ connection }: ConnectionStatusBannerPro
   const detail = connection.turnPreserved
     ? t('chat.connectionTurnPreserved', { defaultValue: 'Your current turn is preserved.' })
     : t('chat.connectionTurnNotPreserved', { defaultValue: 'This turn could not be preserved.' });
+  const nextAction = failed
+    ? t('chat.connectionNextAction', {
+        defaultValue: 'Check provider settings, then resend when the connection is available.',
+      })
+    : null;
 
   return (
     <div className="shrink-0 px-4 pb-2" role={failed ? 'alert' : 'status'} aria-live="polite">
@@ -62,6 +67,7 @@ export function ConnectionStatusBanner({ connection }: ConnectionStatusBannerPro
               ? ` · ${connection.attempt}/${connection.maxAttempts}`
               : ''}
             {` · ${detail}`}
+            {nextAction ? ` ${nextAction}` : ''}
           </div>
         </div>
       </div>

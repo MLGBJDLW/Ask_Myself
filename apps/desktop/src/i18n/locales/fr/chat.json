@@ -618,5 +618,8 @@
   "connectionOffline": "Le fournisseur est hors ligne",
   "connectionFailed": "Échec de la connexion au fournisseur",
   "connectionTurnPreserved": "Le tour actuel est conservé.",
-  "connectionTurnNotPreserved": "Ce tour n'a pas pu être conservé."
+  "connectionTurnNotPreserved": "Ce tour n'a pas pu être conservé.",
+  "connectionNextAction": "Vérifiez les réglages du fournisseur, puis renvoyez le message une fois la connexion disponible.",
+  "toolInputRedacted": "[Masqué]",
+  "toolInputInvalid": "[Arguments illisibles masqués]"
 }

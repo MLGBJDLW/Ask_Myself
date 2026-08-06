@@ -618,5 +618,8 @@
   "connectionOffline": "模型服務目前離線",
   "connectionFailed": "模型服務連線失敗",
   "connectionTurnPreserved": "目前對話輪次已保留。",
-  "connectionTurnNotPreserved": "目前對話輪次無法保留。"
+  "connectionTurnNotPreserved": "目前對話輪次無法保留。",
+  "connectionNextAction": "請檢查模型服務設定，待連線恢復後重新傳送。",
+  "toolInputRedacted": "[已隱藏敏感資訊]",
+  "toolInputInvalid": "[無法解析的參數已隱藏]"
 }

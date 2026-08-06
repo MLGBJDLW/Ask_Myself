@@ -1411,17 +1411,25 @@ test('generic tool input policy hides partial JSON and redacts completed secrets
     'live_diff',
     'file edits retain semantic live diff rendering',
   );
-  const formatted = formatToolArgumentsForDisplay(JSON.stringify({
-    url: 'https://example.com',
-    authorization: 'Bearer secret',
-    headers: { 'x-client': 'should-stay-hidden-with-the-header-map' },
-    nested: { apiKey: 'sk-secret', sessionToken: 'session-secret', query: 'status' },
-  }));
+  const formatted = formatToolArgumentsForDisplay(
+    JSON.stringify({
+      url: 'https://example.com',
+      authorization: 'Bearer secret',
+      headers: { 'x-client': 'should-stay-hidden-with-the-header-map' },
+      nested: { apiKey: 'sk-secret', sessionToken: 'session-secret', query: 'status' },
+    }),
+    { redacted: '[REDACTED]', invalid: '[INVALID]' },
+  );
   assert(!formatted.includes('Bearer secret'), 'authorization value should be redacted');
   assert(!formatted.includes('sk-secret'), 'nested API key should be redacted');
   assert(!formatted.includes('session-secret'), 'token suffix should be redacted');
   assert(!formatted.includes('should-stay-hidden'), 'header maps should be redacted');
   assert(formatted.includes('[REDACTED]'), 'redaction marker should remain auditable');
+  assertEqual(
+    formatToolArgumentsForDisplay('{invalid', { redacted: '[REDACTED]', invalid: '[INVALID]' }),
+    '[INVALID]',
+    'invalid argument copy is supplied by the translated presentation layer',
+  );
 });
 
 test('structured connection recovery updates state without becoming reasoning', () => {
@@ -1452,6 +1460,39 @@ test('structured connection recovery updates state without becoming reasoning', 
   assertEqual(projected.connectionState?.state, 'reconnecting', 'connection state');
   assertEqual(projected.connectionState?.attempt, 1, 'connection retry attempt');
   assertEqual(projected.thinkingText, '', 'retry status must not enter reasoning');
+});
+
+test('terminal completion clears a stale reconnecting state', () => {
+  const projected = projectRunEventsToStreamState(taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'recoveryAttempt',
+      label: 'Reconnecting to provider',
+      status: 'reconnecting',
+      payload: {
+        type: 'connectionState',
+        state: {
+          state: 'reconnecting',
+          providerId: 'openai',
+          modelId: 'gpt-test',
+          errorCategory: 'network',
+          attempt: 1,
+          maxAttempts: 3,
+          recoverable: true,
+          queuedUserInputs: 0,
+          turnPreserved: true,
+        },
+      },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'done',
+      status: 'completed',
+      payload: { type: 'done', message: { role: 'assistant', content: 'Recovered answer' } },
+    }),
+  ]);
+
+  assertEqual(projected.connectionState, null, 'terminal state must not retain reconnecting');
 });
 
 test('command tool cards do not stream partial arguments into the title target', () => {

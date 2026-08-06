@@ -1511,7 +1511,10 @@ export function ToolCallCard({
     ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
     : null;
   const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
-  const formattedArgs = formatToolArgumentsForDisplay(args);
+  const formattedArgs = formatToolArgumentsForDisplay(args, {
+    redacted: t('chat.toolInputRedacted'),
+    invalid: t('chat.toolInputInvalid'),
+  });
   const briefLabel = skillActivationName
     ? (
         skillActivation

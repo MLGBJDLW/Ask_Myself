@@ -180,6 +180,12 @@ export function applyDoneEvent(
   const finishReason = raw.finishReason ?? raw.finish_reason ?? null;
   state.finishReason = typeof finishReason === 'string' ? finishReason : null;
   state.isStreaming = false;
+  if (
+    state.connectionState?.state === 'reconnecting'
+    || state.connectionState?.state === 'degraded'
+  ) {
+    state.connectionState = null;
+  }
   if (terminalStatus === 'cancelled') state.error = null;
   state._activeRoundId = null;
   state._activeRoundAcceptingStarts = false;

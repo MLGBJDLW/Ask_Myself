@@ -23,6 +23,11 @@ export interface ToolInputPresentationInput {
   status?: string | null;
 }
 
+export interface ToolArgumentDisplayLabels {
+  redacted: string;
+  invalid: string;
+}
+
 export interface ToolCardTitleTargetInput {
   toolName?: string | null;
   renderKind?: string | null;
@@ -84,20 +89,25 @@ function isSecretArgumentKey(key: string): boolean {
     || normalized.endsWith('privatekey');
 }
 
-function redactToolArgumentValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactToolArgumentValue);
+function redactToolArgumentValue(value: unknown, redactedLabel: string): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactToolArgumentValue(item, redactedLabel));
+  }
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
     key,
-    isSecretArgumentKey(key) ? '[REDACTED]' : redactToolArgumentValue(item),
+    isSecretArgumentKey(key) ? redactedLabel : redactToolArgumentValue(item, redactedLabel),
   ]));
 }
 
-export function formatToolArgumentsForDisplay(raw?: string): string {
+export function formatToolArgumentsForDisplay(
+  raw: string | undefined,
+  labels: ToolArgumentDisplayLabels,
+): string {
   if (!raw) return '';
   try {
     const parsed = JSON.parse(raw);
-    const redacted = redactToolArgumentValue(parsed);
+    const redacted = redactToolArgumentValue(parsed, labels.redacted);
     if (!redacted || typeof redacted !== 'object' || Array.isArray(redacted)) {
       return JSON.stringify(redacted);
     }
@@ -105,7 +115,7 @@ export function formatToolArgumentsForDisplay(raw?: string): string {
       .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
       .join(', ');
   } catch {
-    return '[Unparseable arguments hidden]';
+    return labels.invalid;
   }
 }
 
