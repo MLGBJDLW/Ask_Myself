@@ -24,7 +24,7 @@ pub(super) enum StreamConnectRetryDecision {
     Retry {
         attempt: u32,
         delay: Duration,
-        thinking_message: String,
+        status_message: String,
     },
     GiveUp {
         user_message: String,
@@ -61,6 +61,14 @@ impl Default for StreamRecoveryPolicy {
 }
 
 impl StreamRecoveryPolicy {
+    pub(super) fn max_connect_retries(self) -> u32 {
+        self.max_connect_retries
+    }
+
+    pub(super) fn max_disconnect_retries(self) -> u32 {
+        self.max_disconnect_retries
+    }
+
     pub(super) fn is_context_overflow_error(error: &CoreError) -> bool {
         match error {
             CoreError::ContextOverflow(..) => true,
@@ -124,7 +132,7 @@ impl StreamRecoveryPolicy {
         StreamConnectRetryDecision::Retry {
             attempt,
             delay: Duration::from_secs(wait),
-            thinking_message: format!("Rate limited. Retrying in {wait}s..."),
+            status_message: format!("Rate limited. Retrying in {wait}s..."),
         }
     }
 
@@ -149,7 +157,7 @@ impl StreamRecoveryPolicy {
         StreamConnectRetryDecision::Retry {
             attempt,
             delay: Duration::from_secs(wait),
-            thinking_message: format!("Connection error. Retrying in {wait}s..."),
+            status_message: format!("Connection error. Retrying in {wait}s..."),
         }
     }
 
@@ -256,7 +264,7 @@ mod tests {
             StreamConnectRetryDecision::Retry {
                 attempt: 1,
                 delay: Duration::from_secs(7),
-                thinking_message: "Rate limited. Retrying in 7s...".to_string(),
+                status_message: "Rate limited. Retrying in 7s...".to_string(),
             }
         );
         assert_eq!(
@@ -278,7 +286,7 @@ mod tests {
             StreamConnectRetryDecision::Retry {
                 attempt: 2,
                 delay: Duration::from_secs(2),
-                thinking_message: "Connection error. Retrying in 2s...".to_string(),
+                status_message: "Connection error. Retrying in 2s...".to_string(),
             }
         );
         assert_eq!(

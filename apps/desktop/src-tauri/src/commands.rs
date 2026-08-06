@@ -610,11 +610,10 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
                         );
                         messages[i].tool_calls = None;
 
-                        // Add placeholder if content is empty
+                        // Preserve real assistant text, but never invent user-visible
+                        // assistant content merely to make an invalid record serializable.
                         if messages[i].text_content().trim().is_empty() {
-                            messages[i].parts = vec![ContentPart::Text {
-                                text: "[Tool calls interrupted before completion]".to_string(),
-                            }];
+                            indices_to_remove.insert(i);
                         }
 
                         // Mark ALL following Tool messages for removal
@@ -658,17 +657,16 @@ fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
             .collect();
     }
 
-    // Final pass: fix any assistant messages with neither content nor tool_calls
-    for msg in &mut messages {
-        if msg.role == Role::Assistant
-            && msg.tool_calls.as_ref().is_none_or(|tc| tc.is_empty())
-            && msg.text_content().trim().is_empty()
-        {
-            msg.parts = vec![ContentPart::Text {
-                text: "[Empty assistant message]".to_string(),
-            }];
-        }
-    }
+    // Final pass: quarantine legacy-invalid empty assistant records. Reasoning
+    // is intentionally not promoted into visible content.
+    messages.retain(|message| {
+        message.role != Role::Assistant
+            || !message.text_content().trim().is_empty()
+            || message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tool_calls| !tool_calls.is_empty())
+    });
 
     messages
 }
@@ -698,6 +696,38 @@ mod tests {
         filter_desktop_tool_names_by_package_host, runtime_session_config_artifact,
         DesktopAgentSessionConfigInput,
     };
+
+    #[test]
+    fn history_sanitization_drops_empty_and_interrupted_assistant_records() {
+        let mut interrupted = Message::text(Role::Assistant, "");
+        interrupted.reasoning_content = Some("private reasoning".to_string());
+        interrupted.tool_calls = Some(vec![nexa_core::llm::ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"rust"}"#.to_string(),
+            thought_signature: None,
+        }]);
+        let reasoning_only = Message {
+            role: Role::Assistant,
+            parts: Vec::new(),
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("private reasoning".to_string()),
+            prompt_cache_hint: None,
+        };
+
+        let sanitized = sanitize_tool_call_history(vec![
+            Message::text(Role::User, "question"),
+            interrupted,
+            reasoning_only,
+        ]);
+
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role, Role::User);
+        assert!(!sanitized
+            .iter()
+            .any(|message| message.text_content().contains("Empty assistant")));
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nexa-{label}-{}", Uuid::new_v4()));

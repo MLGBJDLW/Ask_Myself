@@ -112,7 +112,10 @@ use self::trace_builder::{
 use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
 use self::workspace_isolation::WorkspaceIsolationRuntime;
 
-pub use self::events::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatus};
+pub use self::events::{
+    AgentEvent, ConnectionErrorCategory, ConnectionStateEvent, ConnectionStateKind,
+    StreamBlockChannel, ToolRunItem, ToolRunStatus,
+};
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;

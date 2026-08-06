@@ -4,6 +4,39 @@ use super::steering::SteeringDrainContext;
 use super::*;
 use crate::llm::FinishReason;
 
+fn next_retry_at(delay: Duration) -> Option<String> {
+    chrono::Duration::from_std(delay)
+        .ok()
+        .map(|delay| (chrono::Utc::now() + delay).to_rfc3339())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn connection_state_event(
+    provider_id: &str,
+    model_id: &str,
+    state: ConnectionStateKind,
+    error_category: Option<ConnectionErrorCategory>,
+    attempt: u32,
+    max_attempts: u32,
+    delay: Option<Duration>,
+    recoverable: bool,
+) -> AgentEvent {
+    AgentEvent::ConnectionState {
+        state: ConnectionStateEvent {
+            state,
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            error_category,
+            attempt,
+            max_attempts,
+            next_retry_at: delay.and_then(next_retry_at),
+            recoverable,
+            queued_user_inputs: 0,
+            turn_preserved: true,
+        },
+    }
+}
+
 pub(super) struct ModelStepContext<'a> {
     pub(super) db: &'a Database,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
@@ -172,6 +205,20 @@ impl AgentExecutor {
                                         tone: None,
                                     })
                                     .await;
+                                if retry_count > 0 {
+                                    let _ = tx
+                                        .send(connection_state_event(
+                                            self.provider.name(),
+                                            model,
+                                            ConnectionStateKind::Recovered,
+                                            None,
+                                            retry_count,
+                                            stream_recovery_policy.max_connect_retries(),
+                                            None,
+                                            false,
+                                        ))
+                                        .await;
+                                }
                                 *context_recovery_attempts = 0;
                                 break s;
                             }
@@ -182,7 +229,7 @@ impl AgentExecutor {
                                     StreamConnectRetryDecision::Retry {
                                         attempt,
                                         delay,
-                                        thinking_message,
+                                        status_message: _,
                                     } => {
                                         retry_count = attempt;
                                         warn!(
@@ -191,9 +238,16 @@ impl AgentExecutor {
                                             delay.as_secs()
                                         );
                                         let _ = tx
-                                            .send(AgentEvent::Thinking {
-                                                content: thinking_message,
-                                            })
+                                            .send(connection_state_event(
+                                                self.provider.name(),
+                                                model,
+                                                ConnectionStateKind::Reconnecting,
+                                                Some(ConnectionErrorCategory::RateLimit),
+                                                retry_count,
+                                                stream_recovery_policy.max_connect_retries(),
+                                                Some(delay),
+                                                true,
+                                            ))
                                             .await;
                                         tokio::time::sleep(delay).await;
                                     }
@@ -201,6 +255,18 @@ impl AgentExecutor {
                                         user_message,
                                         trace_message,
                                     } => {
+                                        let _ = tx
+                                            .send(connection_state_event(
+                                                self.provider.name(),
+                                                model,
+                                                ConnectionStateKind::Failed,
+                                                Some(ConnectionErrorCategory::RateLimit),
+                                                retry_count,
+                                                stream_recovery_policy.max_connect_retries(),
+                                                None,
+                                                false,
+                                            ))
+                                            .await;
                                         emit_error_and_finalize_turn(
                                             tx,
                                             db,
@@ -225,7 +291,7 @@ impl AgentExecutor {
                                     StreamConnectRetryDecision::Retry {
                                         attempt,
                                         delay,
-                                        thinking_message,
+                                        status_message: _,
                                     } => {
                                         retry_count = attempt;
                                         warn!(
@@ -235,9 +301,16 @@ impl AgentExecutor {
                                             delay.as_secs()
                                         );
                                         let _ = tx
-                                            .send(AgentEvent::Thinking {
-                                                content: thinking_message,
-                                            })
+                                            .send(connection_state_event(
+                                                self.provider.name(),
+                                                model,
+                                                ConnectionStateKind::Reconnecting,
+                                                Some(ConnectionErrorCategory::Network),
+                                                retry_count,
+                                                stream_recovery_policy.max_connect_retries(),
+                                                Some(delay),
+                                                true,
+                                            ))
                                             .await;
                                         tokio::time::sleep(delay).await;
                                     }
@@ -245,6 +318,18 @@ impl AgentExecutor {
                                         user_message,
                                         trace_message,
                                     } => {
+                                        let _ = tx
+                                            .send(connection_state_event(
+                                                self.provider.name(),
+                                                model,
+                                                ConnectionStateKind::Failed,
+                                                Some(ConnectionErrorCategory::Network),
+                                                retry_count,
+                                                stream_recovery_policy.max_connect_retries(),
+                                                None,
+                                                false,
+                                            ))
+                                            .await;
                                         emit_error_and_finalize_turn(
                                             tx,
                                             db,
@@ -654,16 +739,22 @@ impl AgentExecutor {
                 ) {
                     StreamRecoveryDecision::Reconnect {
                         attempt,
-                        status_message,
+                        status_message: _,
                         reset_reason,
                         delay,
                     } => {
                         sampling_retries = attempt;
                         let _ = tx
-                            .send(AgentEvent::Status {
-                                content: status_message,
-                                tone: Some("muted".to_string()),
-                            })
+                            .send(connection_state_event(
+                                self.provider.name(),
+                                model,
+                                ConnectionStateKind::Reconnecting,
+                                Some(ConnectionErrorCategory::Network),
+                                attempt,
+                                stream_recovery_policy.max_disconnect_retries(),
+                                Some(delay),
+                                true,
+                            ))
                             .await;
                         let _ = tx
                             .send(AgentEvent::StreamReset {
@@ -675,14 +766,20 @@ impl AgentExecutor {
                         continue;
                     }
                     StreamRecoveryDecision::NonStreamingFallback {
-                        status_message,
+                        status_message: _,
                         reset_reason,
                     } => {
                         let _ = tx
-                            .send(AgentEvent::Status {
-                                content: status_message,
-                                tone: Some("muted".to_string()),
-                            })
+                            .send(connection_state_event(
+                                self.provider.name(),
+                                model,
+                                ConnectionStateKind::Degraded,
+                                Some(ConnectionErrorCategory::Network),
+                                sampling_retries,
+                                stream_recovery_policy.max_disconnect_retries(),
+                                None,
+                                true,
+                            ))
                             .await;
 
                         match self.provider.complete(&current_request).await {
@@ -711,6 +808,19 @@ impl AgentExecutor {
                                 chunk_usage = Some(response.usage);
                                 finish_reason = Some(response.finish_reason);
 
+                                let _ = tx
+                                    .send(connection_state_event(
+                                        self.provider.name(),
+                                        model,
+                                        ConnectionStateKind::Recovered,
+                                        None,
+                                        sampling_retries,
+                                        stream_recovery_policy.max_disconnect_retries(),
+                                        None,
+                                        false,
+                                    ))
+                                    .await;
+
                                 if !iteration_thinking.is_empty() {
                                     let _ = tx
                                         .send(AgentEvent::Thinking {
@@ -727,6 +837,18 @@ impl AgentExecutor {
                                 }
                             }
                             Err(err) => {
+                                let _ = tx
+                                    .send(connection_state_event(
+                                        self.provider.name(),
+                                        model,
+                                        ConnectionStateKind::Failed,
+                                        Some(ConnectionErrorCategory::Network),
+                                        sampling_retries,
+                                        stream_recovery_policy.max_disconnect_retries(),
+                                        None,
+                                        false,
+                                    ))
+                                    .await;
                                 let message = format!(
                                     "Stream interrupted and non-streaming retry failed: {err}"
                                 );
