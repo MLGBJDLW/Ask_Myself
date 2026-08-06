@@ -483,6 +483,7 @@ pub enum AgentTurnState {
     Starting,
     Running,
     WaitingApproval,
+    AwaitingUserInput,
     Terminal(RuntimeTerminalStatus),
 }
 

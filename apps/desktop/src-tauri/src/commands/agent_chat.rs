@@ -434,6 +434,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             interaction_response.as_ref(),
         )
         .map_err(|e| e.to_string())?;
+    let resumed_interaction_id = interaction_response
+        .as_ref()
+        .map(|response| response.interaction_id.clone());
     if launch_record.reused {
         return Ok(desktop_agent_chat_launch(
             &launch_record,
@@ -481,6 +484,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let handle = app_handle.clone();
     let db_config_for_post_success = db_config.clone();
     let task_orchestrator_run_id_for_task = task_orchestrator_run_id.clone();
+    let resumed_interaction_id_for_task = resumed_interaction_id.clone();
     let approval_pending = approval_state.pending.clone();
     let approval_session_store = approval_state.session_store.clone();
     let mcp_manager = Arc::clone(&mcp_state.manager);
@@ -504,6 +508,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         let initialization = async {
             db.mark_agent_task_run_started(&task_run_id, "initializing")
                 .map_err(|error| error.to_string())?;
+            if let Some(interaction_id) = resumed_interaction_id_for_task.as_deref() {
+                db.acknowledge_interaction(interaction_id)
+                    .map_err(|error| error.to_string())?;
+            }
             emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             record_internal_agent_run_status_event(
                 &db,
@@ -801,6 +809,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
         match result {
             Some(Ok(_)) => {}
+            Some(Err(CoreError::AwaitingUserInput { interaction_id })) => {
+                log::info!("Agent turn {turn_id} is waiting for interaction {interaction_id}");
+            }
             Some(Err(CoreError::Cancelled(message))) => {
                 warn!("Agent execution cancelled for conversation {conv_id}: {message}");
                 let payload = serde_json::json!({ "reason": message });
@@ -1002,6 +1013,7 @@ fn desktop_agent_chat_launch(
         "queued" => AgentTurnState::Starting,
         "running" | "cancelling" => AgentTurnState::Running,
         "waiting_approval" => AgentTurnState::WaitingApproval,
+        "awaiting_user_input" => AgentTurnState::AwaitingUserInput,
         "completed" | "success" | "cached" => {
             AgentTurnState::Terminal(RuntimeTerminalStatus::Completed)
         }
@@ -1111,6 +1123,18 @@ pub async fn agent_stop_cmd(
     app_handle: AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
+    if let Some(run_id) = state
+        .db
+        .cancel_awaiting_interactions_for_conversation(&conversation_id)
+        .map_err(|error| error.to_string())?
+    {
+        if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
+            turn.cancel_token.cancel();
+        }
+        emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &run_id);
+        return Ok(());
+    }
+
     if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
         request_desktop_running_agent_stop(
             turn,

@@ -188,6 +188,7 @@ export type AgentRunPhase =
   | 'responding'
   | 'tooling'
   | 'approval'
+  | 'awaiting_user_input'
   | 'compacting'
   | 'accounting'
   | 'done';
@@ -251,6 +252,7 @@ export type AgentTurnState =
   | 'starting'
   | 'running'
   | 'waitingApproval'
+  | 'awaitingUserInput'
   | { terminal: RuntimeTerminalStatus };
 
 /** Immediate runtime acknowledgement returned by `agent_chat_cmd`. */

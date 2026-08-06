@@ -22,6 +22,27 @@ struct ReplayableSystemPersistenceContext<'a> {
     persisted_contents: &'a mut Vec<String>,
 }
 
+fn awaiting_user_input_interaction_id(
+    summaries: &[tool_dispatch::ToolDispatchSummary],
+) -> Option<String> {
+    summaries.iter().find_map(|summary| {
+        if summary.is_error {
+            return None;
+        }
+        let artifact = summary.artifacts.as_ref()?.as_object()?;
+        (artifact.get("kind").and_then(serde_json::Value::as_str) == Some("questionRequest")
+            && artifact.get("version").and_then(serde_json::Value::as_u64) == Some(2)
+            && artifact.get("status").and_then(serde_json::Value::as_str) == Some("pending"))
+        .then(|| {
+            artifact
+                .get("interactionId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten()
+    })
+}
+
 impl AgentExecutor {
     /// Run the agent loop for a single user turn.
     ///
@@ -1442,6 +1463,7 @@ impl AgentExecutor {
                     );
                 }
             }
+            let awaiting_interaction_id = awaiting_user_input_interaction_id(&dispatch_summaries);
             workflow_ir.sync_from_task_plan(&task_plan);
             if let Some(ref mut agent_trace) = trace {
                 agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
@@ -1449,16 +1471,55 @@ impl AgentExecutor {
             if let Some(tid) = turn_id {
                 if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
                     let checkpoint = workflow_ir.task_plan_checkpoint(&task_plan);
+                    let (status, phase, summary) = if awaiting_interaction_id.is_some() {
+                        (
+                            "awaiting_user_input",
+                            "awaiting_user_input",
+                            "Workflow checkpoint saved while waiting for user input",
+                        )
+                    } else {
+                        (
+                            "running",
+                            "tooling",
+                            "Workflow IR checkpoint updated after tool dispatch",
+                        )
+                    };
                     let _ = db.update_agent_task_run_progress(
                         &task_run.id,
-                        Some("running"),
-                        Some("tooling"),
+                        Some(status),
+                        Some(phase),
                         Some(route_plan.kind.as_str()),
-                        Some("Workflow IR checkpoint updated after tool dispatch"),
+                        Some(summary),
                         Some(&checkpoint),
                         None,
                     );
                 }
+            }
+            if let Some(interaction_id) = awaiting_interaction_id {
+                let live_state = long_task_state.checkpoint_live_state(
+                    &task_plan,
+                    Some(&workflow_ir),
+                    iteration,
+                    self.config.max_iterations,
+                    &loop_recorder,
+                );
+                if let Err(error) = create_task_checkpoint_for_turn_with_state(
+                    db,
+                    turn_id,
+                    &format!("awaiting_user_input:{interaction_id}"),
+                    Some(&live_state),
+                ) {
+                    warn!("Failed to save awaiting-user-input checkpoint: {error}");
+                }
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "awaiting_user_input".to_string(),
+                        content: "Waiting for your response".to_string(),
+                        tone: Some("attention".to_string()),
+                    })
+                    .await;
+                turn_state.finish(TurnOutcome::AwaitingUserInput);
+                return Err(CoreError::AwaitingUserInput { interaction_id });
             }
             last_tool_calls = None;
 
@@ -1574,6 +1635,43 @@ impl AgentExecutor {
             .await;
         turn_state.finish(TurnOutcome::MaxIterations);
         Ok(final_msg)
+    }
+}
+
+#[cfg(test)]
+mod awaiting_user_input_tests {
+    use super::*;
+
+    #[test]
+    fn only_pending_v2_question_artifacts_suspend_the_loop() {
+        let pending = tool_dispatch::ToolDispatchSummary {
+            call_id: "call-1".into(),
+            content: "wait".into(),
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "kind": "questionRequest",
+                "version": 2,
+                "status": "pending",
+                "interactionId": "interaction-1",
+            })),
+        };
+        assert_eq!(
+            awaiting_user_input_interaction_id(&[pending]),
+            Some("interaction-1".into())
+        );
+
+        let answered = tool_dispatch::ToolDispatchSummary {
+            call_id: "call-2".into(),
+            content: "already answered".into(),
+            is_error: false,
+            artifacts: Some(serde_json::json!({
+                "kind": "questionRequest",
+                "version": 2,
+                "status": "answered",
+                "interactionId": "interaction-2",
+            })),
+        };
+        assert_eq!(awaiting_user_input_interaction_id(&[answered]), None);
     }
 }
 

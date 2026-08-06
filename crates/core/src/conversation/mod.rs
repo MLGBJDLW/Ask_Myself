@@ -14,9 +14,7 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::interaction::{
-    consume_interaction_response_in_transaction, expire_due_requests, SubmitInteractionResponse,
-};
+use crate::interaction::SubmitInteractionResponse;
 use crate::llm::{Role, ToolCallRequest};
 
 // ---------------------------------------------------------------------------
@@ -1564,6 +1562,20 @@ impl Database {
             ));
         }
 
+        // A durable interaction response resumes the exact turn/run that
+        // created the request. It must never allocate a second user-facing
+        // turn, even though the response is represented by a hidden user
+        // transcript message for provider context reconstruction.
+        if let Some(response) = interaction_response {
+            return self.resume_agent_turn_with_interaction_response(
+                message,
+                provider,
+                model,
+                idempotency_key,
+                response,
+            );
+        }
+
         let role = role_to_str(&message.role);
         let tool_calls_json = if message.tool_calls.is_empty() {
             None
@@ -1585,9 +1597,6 @@ impl Database {
         let turn_id = new_id();
         let run_id = new_id();
         let mut conn = self.conn();
-        if interaction_response.is_some() {
-            expire_due_requests(&mut conn)?;
-        }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let existing = tx
@@ -1650,16 +1659,6 @@ impl Database {
             });
         }
 
-        let consumed_interaction = interaction_response
-            .map(|response| {
-                consume_interaction_response_in_transaction(
-                    &tx,
-                    response,
-                    Some(&message.conversation_id),
-                )
-            })
-            .transpose()?;
-
         let user_message_sort_order = tx.query_row(
             "SELECT COALESCE(MAX(sort_order), -1) + 1
              FROM messages WHERE conversation_id = ?1",
@@ -1709,10 +1708,6 @@ impl Database {
             ],
         )?;
         tx.commit()?;
-        drop(conn);
-        if let Some(consumed) = consumed_interaction.as_ref() {
-            self.record_interaction_submitted_event(consumed);
-        }
 
         Ok(AgentTurnLaunchRecord {
             conversation_id: message.conversation_id.clone(),
@@ -2088,7 +2083,7 @@ impl Database {
             "SELECT EXISTS(
                  SELECT 1 FROM agent_task_runs
                  WHERE conversation_id = ?1
-                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+                   AND status IN ('queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling')
              )",
             rusqlite::params![conversation_id],
             |row| row.get(0),

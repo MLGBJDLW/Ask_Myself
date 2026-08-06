@@ -17,6 +17,7 @@ pub enum AgentRunPhase {
     Responding,
     Tooling,
     Approval,
+    AwaitingUserInput,
     Compacting,
     Accounting,
     Done,
@@ -30,6 +31,7 @@ impl AgentRunPhase {
             Self::Responding => "responding",
             Self::Tooling => "tooling",
             Self::Approval => "approval",
+            Self::AwaitingUserInput => "awaiting_user_input",
             Self::Compacting => "compacting",
             Self::Accounting => "accounting",
             Self::Done => "done",
@@ -43,6 +45,7 @@ impl AgentRunPhase {
             "responding" => Some(Self::Responding),
             "tooling" => Some(Self::Tooling),
             "approval" => Some(Self::Approval),
+            "awaiting_user_input" => Some(Self::AwaitingUserInput),
             "compacting" => Some(Self::Compacting),
             "accounting" => Some(Self::Accounting),
             "done" => Some(Self::Done),
@@ -1107,6 +1110,7 @@ fn controller_status_phase(code: &str) -> AgentRunPhase {
     match code {
         "route_selected" => AgentRunPhase::Routing,
         "prefetch_started" | "prefetch_completed" => AgentRunPhase::Planning,
+        "awaiting_user_input" => AgentRunPhase::AwaitingUserInput,
         _ => AgentRunPhase::Responding,
     }
 }
@@ -1116,6 +1120,7 @@ fn plan_phase(phase: &str) -> AgentRunPhase {
         "routing" => AgentRunPhase::Routing,
         "tooling" => AgentRunPhase::Tooling,
         "approval" => AgentRunPhase::Approval,
+        "awaiting_user_input" => AgentRunPhase::AwaitingUserInput,
         "compacting" => AgentRunPhase::Compacting,
         "done" => AgentRunPhase::Done,
         _ => AgentRunPhase::Planning,
@@ -1343,6 +1348,7 @@ mod tests {
             AgentRunPhase::Responding,
             AgentRunPhase::Tooling,
             AgentRunPhase::Approval,
+            AgentRunPhase::AwaitingUserInput,
             AgentRunPhase::Compacting,
             AgentRunPhase::Accounting,
             AgentRunPhase::Done,

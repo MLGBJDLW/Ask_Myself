@@ -84,6 +84,9 @@ impl Tool for RequestUserInputTool {
             expires_at: None,
         })?;
         let request = created.request;
+        if request.status.is_active() {
+            db.suspend_agent_turn_for_interaction(&request.interaction_id)?;
+        }
         let mut artifact_request = serde_json::to_value(&request)?;
         if let Some(object) = artifact_request.as_object_mut() {
             object.remove("resumeToken");
@@ -185,6 +188,17 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            db.get_agent_task_run_by_turn(&turn_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "awaiting_user_input"
+        );
+        assert_eq!(
+            db.get_conversation_turn(&turn_id).unwrap().status,
+            "awaiting_user_input"
         );
     }
 }

@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use crate::conversation::{AgentTurnLaunchRecord, ConversationMessage};
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::llm::Role;
 
 pub const INTERACTION_PROTOCOL_VERSION: u16 = 1;
 
@@ -582,6 +584,478 @@ pub(crate) fn consume_interaction_response_in_transaction(
 }
 
 impl Database {
+    /// Move the owning turn/run into a durable waiting state before the
+    /// interaction artifact is exposed to the frontend. Doing this inside the
+    /// tool execution closes the race where a fast answer could arrive while
+    /// the executor still looked runnable.
+    pub fn suspend_agent_turn_for_interaction(
+        &self,
+        interaction_id: &str,
+    ) -> Result<bool, CoreError> {
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (turn_id, run_id, interaction_status, turn_status, run_status) = tx
+            .query_row(
+                "SELECT i.turn_id, i.run_id, i.status, t.status, r.status
+                 FROM interaction_requests i
+                 JOIN conversation_turns t ON t.id = i.turn_id
+                 JOIN agent_task_runs r ON r.id = i.run_id
+                 WHERE i.id = ?1",
+                rusqlite::params![interaction_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Interaction request {interaction_id}")))?;
+        let status = InteractionStatus::from_db(&interaction_status)?;
+        if !status.is_active() {
+            tx.commit()?;
+            return Ok(false);
+        }
+        if turn_status == "awaiting_user_input" && run_status == "awaiting_user_input" {
+            tx.commit()?;
+            return Ok(true);
+        }
+        if !matches!(run_status.as_str(), "queued" | "running") {
+            return Err(CoreError::InvalidInput(format!(
+                "Interaction {interaction_id} cannot suspend task run {run_id} from status {run_status}"
+            )));
+        }
+        tx.execute(
+            "UPDATE conversation_turns
+             SET status = 'awaiting_user_input', finished_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![&turn_id],
+        )?;
+        tx.execute(
+            "UPDATE agent_task_runs
+             SET status = 'awaiting_user_input',
+                 phase = 'awaiting_user_input',
+                 summary = 'Waiting for user input',
+                 error_message = NULL,
+                 finished_at = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![&run_id],
+        )?;
+        tx.commit()?;
+        drop(conn);
+        let _ = self.record_agent_task_run_event(
+            &run_id,
+            "interaction_waiting",
+            "Waiting for user input",
+            Some("awaiting_user_input"),
+            Some(&serde_json::json!({ "interactionId": interaction_id })),
+        );
+        Ok(true)
+    }
+
+    /// Append ordinary user context to a suspended turn without consuming its
+    /// one-shot response or allocating a second conversation turn.
+    pub fn append_interaction_supplement(
+        &self,
+        interaction_id: &str,
+        content: &str,
+    ) -> Result<ConversationMessage, CoreError> {
+        let content = normalize_required_text(content, "supplement", 40_000)?;
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (conversation_id, run_id, request_status, run_status) = tx
+            .query_row(
+                "SELECT i.conversation_id, i.run_id, i.status, r.status
+                 FROM interaction_requests i
+                 JOIN agent_task_runs r ON r.id = i.run_id
+                 WHERE i.id = ?1",
+                rusqlite::params![interaction_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Interaction request {interaction_id}")))?;
+        if !InteractionStatus::from_db(&request_status)?.is_active()
+            || run_status != "awaiting_user_input"
+        {
+            return Err(CoreError::InvalidInput(
+                "Supplementary text can only be added while the task is waiting for this interaction"
+                    .to_string(),
+            ));
+        }
+        let message_id = Uuid::new_v4().to_string();
+        let sort_order = tx.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![&conversation_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let artifacts = serde_json::json!({
+            "kind": "interactionSupplement",
+            "version": 1,
+            "interactionId": interaction_id,
+        });
+        let artifacts_json = serde_json::to_string(&artifacts)?;
+        tx.execute(
+            "INSERT INTO messages
+             (id, conversation_id, role, content, tool_call_id, tool_calls_json,
+              artifacts_json, token_count, sort_order, thinking, image_attachments_json)
+             VALUES (?1, ?2, 'user', ?3, NULL, NULL, ?4, ?5, ?6, NULL, NULL)",
+            rusqlite::params![
+                &message_id,
+                &conversation_id,
+                &content,
+                &artifacts_json,
+                crate::conversation::memory::estimate_tokens(&content),
+                sort_order,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&conversation_id],
+        )?;
+        let created_at: String = tx.query_row(
+            "SELECT created_at FROM messages WHERE id = ?1",
+            rusqlite::params![&message_id],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        drop(conn);
+        let token_count = crate::conversation::memory::estimate_tokens(&content);
+        let _ = self.record_agent_task_run_event(
+            &run_id,
+            "interaction_supplemented",
+            "User added supplementary context",
+            Some("awaiting_user_input"),
+            Some(&serde_json::json!({ "interactionId": interaction_id })),
+        );
+        Ok(ConversationMessage {
+            id: message_id,
+            conversation_id,
+            role: Role::User,
+            content,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: Some(artifacts),
+            token_count,
+            created_at,
+            sort_order,
+            thinking: None,
+            image_attachments: None,
+        })
+    }
+
+    /// Atomically consume an interaction answer, append its hidden transcript
+    /// message, and re-queue the original turn/run. Replays with the same
+    /// launch key return the same tuple and never append a second response.
+    pub fn resume_agent_turn_with_interaction_response(
+        &self,
+        message: &ConversationMessage,
+        provider: Option<&str>,
+        model: Option<&str>,
+        idempotency_key: &str,
+        input: &SubmitInteractionResponse,
+    ) -> Result<AgentTurnLaunchRecord, CoreError> {
+        let idempotency_key =
+            normalize_required_text(idempotency_key, "response launch idempotency key", 256)?;
+        if message.role != Role::User {
+            return Err(CoreError::InvalidInput(
+                "Interaction response message must have the user role".to_string(),
+            ));
+        }
+        let tool_calls_json = if message.tool_calls.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&message.tool_calls)?)
+        };
+        let artifacts_json = message
+            .artifacts
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let image_attachments_json = message
+            .image_attachments
+            .as_ref()
+            .filter(|attachments| !attachments.is_empty())
+            .map(serde_json::to_string)
+            .transpose()?;
+
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let request = tx
+            .query_row(
+                &format!("SELECT {REQUEST_COLUMNS} FROM interaction_requests WHERE id = ?1"),
+                rusqlite::params![&input.interaction_id],
+                request_from_row,
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!("Interaction request {}", input.interaction_id))
+            })?;
+        if request.conversation_id != message.conversation_id {
+            return Err(CoreError::InvalidInput(
+                "Interaction response belongs to a different conversation".to_string(),
+            ));
+        }
+        if !bool::from(
+            request
+                .resume_token
+                .as_bytes()
+                .ct_eq(input.resume_token.as_bytes()),
+        ) {
+            return Err(CoreError::InvalidInput(
+                "Interaction resume token is invalid or stale".to_string(),
+            ));
+        }
+        let answers = validate_answers(&request, &input.answers)?;
+        let answers_json = serde_json::to_string(&answers)?;
+        let existing_response = tx
+            .query_row(
+                "SELECT id, answers_json, launch_idempotency_key, response_message_id
+                 FROM interaction_responses WHERE interaction_id = ?1",
+                rusqlite::params![&input.interaction_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((_, persisted_answers, launch_key, Some(response_message_id))) =
+            existing_response.as_ref()
+        {
+            if persisted_answers != &answers_json
+                || launch_key.as_deref() != Some(idempotency_key.as_str())
+            {
+                return Err(CoreError::InvalidInput(
+                    "Interaction response was already launched with different input".to_string(),
+                ));
+            }
+            let (run_id, run_status) = tx.query_row(
+                "SELECT i.run_id, r.status
+                 FROM interaction_requests i
+                 JOIN agent_task_runs r ON r.id = i.run_id
+                 WHERE i.id = ?1",
+                rusqlite::params![&input.interaction_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let sort_order = tx.query_row(
+                "SELECT sort_order FROM messages WHERE id = ?1",
+                rusqlite::params![response_message_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            tx.commit()?;
+            return Ok(AgentTurnLaunchRecord {
+                conversation_id: message.conversation_id.clone(),
+                user_message_id: response_message_id.clone(),
+                user_message_sort_order: sort_order,
+                turn_id: request.turn_id,
+                run_id,
+                status: run_status,
+                reused: true,
+            });
+        }
+
+        let current_run_status: String = tx.query_row(
+            "SELECT r.status
+             FROM agent_task_runs r
+             JOIN interaction_requests i ON i.run_id = r.id
+             WHERE i.id = ?1",
+            rusqlite::params![&input.interaction_id],
+            |row| row.get(0),
+        )?;
+        if current_run_status != "awaiting_user_input" {
+            return Err(CoreError::InvalidInput(format!(
+                "Interaction {} cannot resume task from status {current_run_status}",
+                input.interaction_id
+            )));
+        }
+
+        let (response_id, newly_consumed) =
+            if let Some((response_id, persisted_answers, launch_key, None)) = existing_response {
+                if persisted_answers != answers_json
+                    || launch_key
+                        .as_deref()
+                        .is_some_and(|key| key != idempotency_key.as_str())
+                {
+                    return Err(CoreError::InvalidInput(
+                        "Interaction response was already submitted with different input"
+                            .to_string(),
+                    ));
+                }
+                (response_id, None)
+            } else {
+                let consumed = consume_interaction_response_in_transaction(
+                    &tx,
+                    input,
+                    Some(&message.conversation_id),
+                )?;
+                let response_id = tx.query_row(
+                    "SELECT id FROM interaction_responses WHERE interaction_id = ?1",
+                    rusqlite::params![&input.interaction_id],
+                    |row| row.get::<_, String>(0),
+                )?;
+                (response_id, Some(consumed))
+            };
+
+        let user_message_sort_order = tx.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1
+             FROM messages WHERE conversation_id = ?1",
+            rusqlite::params![&message.conversation_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        tx.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, tool_call_id,
+             tool_calls_json, artifacts_json, token_count, sort_order, thinking,
+             image_attachments_json)
+             VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                &message.id,
+                &message.conversation_id,
+                &message.content,
+                &message.tool_call_id,
+                &tool_calls_json,
+                &artifacts_json,
+                message.token_count,
+                user_message_sort_order,
+                &message.thinking,
+                &image_attachments_json,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE interaction_responses
+             SET launch_idempotency_key = ?2, response_message_id = ?3
+             WHERE id = ?1",
+            rusqlite::params![&response_id, &idempotency_key, &message.id],
+        )?;
+        let turn_updated = tx.execute(
+            "UPDATE conversation_turns
+             SET status = 'running', finished_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1 AND status = 'awaiting_user_input'",
+            rusqlite::params![&request.turn_id],
+        )?;
+        if turn_updated != 1 {
+            return Err(CoreError::InvalidInput(
+                "Interaction turn changed while its response was being resumed".to_string(),
+            ));
+        }
+        let run_id: String = tx.query_row(
+            "SELECT run_id FROM interaction_requests WHERE id = ?1",
+            rusqlite::params![&input.interaction_id],
+            |row| row.get(0),
+        )?;
+        let run_updated = tx.execute(
+            "UPDATE agent_task_runs
+             SET status = 'queued', phase = 'queued',
+                 summary = 'User input received', error_message = NULL,
+                 provider = COALESCE(?2, provider), model = COALESCE(?3, model),
+                 finished_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1 AND status = 'awaiting_user_input'",
+            rusqlite::params![&run_id, provider, model],
+        )?;
+        if run_updated != 1 {
+            return Err(CoreError::InvalidInput(
+                "Interaction task changed while its response was being resumed".to_string(),
+            ));
+        }
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&message.conversation_id],
+        )?;
+        tx.commit()?;
+        drop(conn);
+        if let Some(consumed) = newly_consumed.as_ref() {
+            self.record_interaction_submitted_event(consumed);
+        }
+        Ok(AgentTurnLaunchRecord {
+            conversation_id: message.conversation_id.clone(),
+            user_message_id: message.id.clone(),
+            user_message_sort_order,
+            turn_id: request.turn_id,
+            run_id,
+            status: "queued".to_string(),
+            reused: false,
+        })
+    }
+
+    /// Cancel the most recent suspended run in a conversation and all of its
+    /// still-active interaction requests.
+    pub fn cancel_awaiting_interactions_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<String>, CoreError> {
+        let mut conn = self.conn();
+        expire_due_requests(&mut conn)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let waiting = tx
+            .query_row(
+                "SELECT id, turn_id FROM agent_task_runs
+                 WHERE conversation_id = ?1 AND status = 'awaiting_user_input'
+                 ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1",
+                rusqlite::params![conversation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((run_id, turn_id)) = waiting else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        tx.execute(
+            "INSERT INTO interaction_events (interaction_id, from_status, to_status, reason)
+             SELECT id, status, 'cancelled', 'task_cancelled'
+             FROM interaction_requests
+             WHERE run_id = ?1 AND status IN ('pending', 'presented', 'partially_answered')",
+            rusqlite::params![&run_id],
+        )?;
+        tx.execute(
+            "UPDATE interaction_requests
+             SET status = 'cancelled', updated_at = datetime('now')
+             WHERE run_id = ?1 AND status IN ('pending', 'presented', 'partially_answered')",
+            rusqlite::params![&run_id],
+        )?;
+        tx.execute(
+            "UPDATE conversation_turns
+             SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ?1 AND status = 'awaiting_user_input'",
+            rusqlite::params![&turn_id],
+        )?;
+        tx.execute(
+            "UPDATE agent_task_runs
+             SET status = 'cancelled', phase = 'done', summary = 'Cancelled while waiting for user input',
+                 error_message = NULL, finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ?1 AND status = 'awaiting_user_input'",
+            rusqlite::params![&run_id],
+        )?;
+        tx.commit()?;
+        drop(conn);
+        let _ = self.record_agent_task_run_event(
+            &run_id,
+            "interaction_cancelled",
+            "Cancelled while waiting for user input",
+            Some("cancelled"),
+            None,
+        );
+        Ok(Some(run_id))
+    }
+
     pub fn create_interaction_request(
         &self,
         input: &CreateInteractionRequest,
@@ -1420,5 +1894,163 @@ mod tests {
             .get_interaction_request(&created.request.interaction_id)
             .unwrap();
         assert_eq!(request.status, InteractionStatus::Pending);
+    }
+
+    #[test]
+    fn suspended_interaction_resumes_the_original_turn_exactly_once() {
+        let fixture = fixture();
+        let original_run = fixture
+            .db
+            .get_agent_task_run_by_turn(&fixture.turn_id)
+            .unwrap()
+            .unwrap();
+        let created = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-resume"))
+            .unwrap();
+        assert!(fixture
+            .db
+            .suspend_agent_turn_for_interaction(&created.request.interaction_id)
+            .unwrap());
+        assert_eq!(
+            fixture
+                .db
+                .get_agent_task_run(&original_run.id)
+                .unwrap()
+                .status,
+            "awaiting_user_input"
+        );
+        assert_eq!(
+            fixture
+                .db
+                .get_conversation_turn(&fixture.turn_id)
+                .unwrap()
+                .status,
+            "awaiting_user_input"
+        );
+
+        let supplement = fixture
+            .db
+            .append_interaction_supplement(
+                &created.request.interaction_id,
+                "Keep legacy configuration compatibility.",
+            )
+            .unwrap();
+        assert_eq!(
+            supplement.artifacts.as_ref().unwrap()["kind"],
+            "interactionSupplement"
+        );
+        fixture
+            .db
+            .mark_interaction_presented(&created.request.interaction_id)
+            .unwrap();
+        let mut answers = InteractionAnswers::new();
+        answers.insert("scope".into(), vec!["Repo".into()]);
+        let input = SubmitInteractionResponse {
+            interaction_id: created.request.interaction_id.clone(),
+            resume_token: created.request.resume_token,
+            answers,
+        };
+        let response_message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: fixture.conversation_id.clone(),
+            role: Role::User,
+            content: "Which scope?\nRepo".into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: Some(serde_json::json!({
+                "kind": "questionResponse",
+                "version": 2,
+                "interactionId": created.request.interaction_id,
+                "requestCallId": "call-resume",
+                "answers": [{ "id": "scope", "question": "Which scope?", "answers": ["Repo"] }],
+            })),
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        let launch = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &response_message,
+                Some("openai"),
+                Some("gpt-5"),
+                "resume-launch-1",
+                &input,
+            )
+            .unwrap();
+        assert_eq!(launch.turn_id, fixture.turn_id);
+        assert_eq!(launch.run_id, original_run.id);
+        assert_eq!(launch.user_message_id, response_message.id);
+        assert_eq!(launch.status, "queued");
+        assert!(!launch.reused);
+        assert_eq!(
+            fixture
+                .db
+                .get_conversation_turn(&fixture.turn_id)
+                .unwrap()
+                .status,
+            "running"
+        );
+
+        let replay = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &response_message,
+                Some("openai"),
+                Some("gpt-5"),
+                "resume-launch-1",
+                &input,
+            )
+            .unwrap();
+        assert!(replay.reused);
+        assert_eq!(replay.turn_id, fixture.turn_id);
+        assert_eq!(replay.run_id, original_run.id);
+        let response_messages = fixture
+            .db
+            .get_messages(&fixture.conversation_id)
+            .unwrap()
+            .into_iter()
+            .filter(|message| {
+                message.artifacts.as_ref().is_some_and(|artifact| {
+                    artifact.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("questionResponse")
+                })
+            })
+            .count();
+        assert_eq!(response_messages, 1);
+    }
+
+    #[test]
+    fn suspended_interaction_survives_restart_and_can_be_cancelled() {
+        let fixture = fixture();
+        let created = fixture
+            .db
+            .create_interaction_request(&request_input(&fixture, "call-cancel"))
+            .unwrap();
+        fixture
+            .db
+            .suspend_agent_turn_for_interaction(&created.request.interaction_id)
+            .unwrap();
+        assert_eq!(fixture.db.mark_interrupted_agent_task_runs().unwrap(), 0);
+        let run_id = fixture
+            .db
+            .cancel_awaiting_interactions_for_conversation(&fixture.conversation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixture.db.get_agent_task_run(&run_id).unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(
+            fixture
+                .db
+                .get_interaction_request(&created.request.interaction_id)
+                .unwrap()
+                .status,
+            InteractionStatus::Cancelled
+        );
     }
 }

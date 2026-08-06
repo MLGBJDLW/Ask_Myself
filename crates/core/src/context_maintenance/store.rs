@@ -33,7 +33,7 @@ pub(crate) fn commit_context_checkpoint(
         "SELECT EXISTS(
              SELECT 1 FROM agent_task_runs
              WHERE conversation_id = ?1
-               AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+               AND status IN ('queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling')
          )",
         rusqlite::params![input.conversation_id],
         |row| row.get::<_, bool>(0),

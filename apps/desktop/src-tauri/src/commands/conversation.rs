@@ -255,6 +255,18 @@ pub async fn mark_interaction_partially_answered_cmd(
 }
 
 #[tauri::command]
+pub async fn append_interaction_supplement_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+    content: String,
+) -> Result<ConversationMessage, String> {
+    state
+        .db
+        .append_interaction_supplement(&interaction_id, &content)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn submit_interaction_response_cmd(
     state: tauri::State<'_, AppState>,
     input: SubmitInteractionResponse,

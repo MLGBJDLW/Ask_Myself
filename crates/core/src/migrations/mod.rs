@@ -1707,6 +1707,17 @@ Every answer that uses knowledge base search results.
              submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     ),
+    (
+        "v092_interaction_turn_resume",
+        "ALTER TABLE interaction_responses ADD COLUMN launch_idempotency_key TEXT;
+         ALTER TABLE interaction_responses ADD COLUMN response_message_id TEXT REFERENCES messages(id);
+         CREATE INDEX IF NOT EXISTS idx_interaction_responses_launch_key
+             ON interaction_responses(launch_idempotency_key)
+             WHERE launch_idempotency_key IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_interaction_responses_message
+             ON interaction_responses(response_message_id)
+             WHERE response_message_id IS NOT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

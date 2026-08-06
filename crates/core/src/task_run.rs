@@ -18,6 +18,7 @@ pub enum TaskRunStatus {
     Queued,
     Running,
     WaitingApproval,
+    AwaitingUserInput,
     Completed,
     Failed,
     TimedOut,
@@ -31,6 +32,7 @@ impl TaskRunStatus {
             Self::Queued => "queued",
             Self::Running => "running",
             Self::WaitingApproval => "waiting_approval",
+            Self::AwaitingUserInput => "awaiting_user_input",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::TimedOut => "timed_out",
@@ -223,6 +225,18 @@ impl<'a> AgentTaskRuntime<'a> {
         run_id: &str,
         event: &AgentRunEvent,
     ) -> Result<(), CoreError> {
+        let preserves_awaiting_status = !matches!(
+            event.kind,
+            AgentRunEventKind::Done | AgentRunEventKind::Error
+        ) && !(event.kind == AgentRunEventKind::Status
+            && event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput);
+        if preserves_awaiting_status
+            && self.db.get_agent_task_run(run_id)?.status
+                == TaskRunStatus::AwaitingUserInput.as_str()
+        {
+            return Ok(());
+        }
+
         match event.kind {
             AgentRunEventKind::ApprovalRequested => self.db.update_agent_task_run_progress(
                 run_id,
@@ -265,9 +279,14 @@ impl<'a> AgentTaskRuntime<'a> {
             ),
             AgentRunEventKind::Status => {
                 let route_kind = event.label.strip_prefix("Route selected: ").map(str::trim);
+                let status = if event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput {
+                    TaskRunStatus::AwaitingUserInput
+                } else {
+                    TaskRunStatus::Running
+                };
                 self.db.update_agent_task_run_progress(
                     run_id,
-                    Some(TaskRunStatus::Running.as_str()),
+                    Some(status.as_str()),
                     Some(event.phase.as_str()),
                     route_kind,
                     Some(&event.label),
@@ -497,5 +516,35 @@ mod tests {
         let run = runtime.apply_run_event(&run_id, &done_event).unwrap();
         assert_eq!(run.status, "cancelled");
         assert!(db.get_agent_task_run_events(&run_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_preserves_awaiting_status_until_resume_or_terminal_event() {
+        let db = Database::open_memory().unwrap();
+        let runtime = AgentTaskRuntime::new(&db);
+        let (run_id, turn_id) = create_started_run(&db, "awaiting-tool-complete");
+        db.update_agent_task_run_progress(
+            &run_id,
+            Some(TaskRunStatus::AwaitingUserInput.as_str()),
+            Some("awaiting_user_input"),
+            None,
+            Some("Waiting for your answer"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let tool_completed = AgentRunEvent::from_agent_event(&AgentEvent::ToolCallResult {
+            call_id: "call-question".to_string(),
+            tool_name: "request_user_input".to_string(),
+            content: "Question requested".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+        .with_context(Some(&run_id), Some(&turn_id), Some(1));
+
+        let run = runtime.apply_run_event(&run_id, &tool_completed).unwrap();
+        assert_eq!(run.status, TaskRunStatus::AwaitingUserInput.as_str());
+        assert_eq!(run.phase, "awaiting_user_input");
     }
 }

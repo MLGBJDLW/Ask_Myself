@@ -2032,9 +2032,24 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         .get_agent_task_run(task_run_id)
         .ok()
         .map(|run| run.status);
+    if current_task_status.as_deref() == Some("awaiting_user_input") {
+        let _ = db.update_agent_task_run_progress(
+            task_run_id,
+            Some("awaiting_user_input"),
+            Some("awaiting_user_input"),
+            None,
+            Some("Waiting for user input"),
+            None,
+            Some(&task_artifacts),
+        );
+        emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+        return;
+    }
     let (task_status, task_summary, task_error): (&str, &str, Option<String>) =
         if current_task_status.as_deref() == Some("paused") {
             ("paused", "Paused with a resumable checkpoint", None)
+        } else if current_task_status.as_deref() == Some("cancelled") {
+            ("cancelled", "Stopped by user", None)
         } else if outcome.timed_out {
             (
                 "timed_out",

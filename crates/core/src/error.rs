@@ -55,6 +55,13 @@ pub enum CoreError {
     #[error("Operation cancelled: {0}")]
     Cancelled(String),
 
+    /// The current turn intentionally yielded after creating a durable
+    /// interaction request. This is a non-terminal control-flow outcome: the
+    /// host must keep the original turn/run resumable instead of reporting a
+    /// failure or synthesizing an assistant answer.
+    #[error("Agent is awaiting user input for interaction {interaction_id}")]
+    AwaitingUserInput { interaction_id: String },
+
     #[error("MCP error: {0}")]
     Mcp(String),
 
