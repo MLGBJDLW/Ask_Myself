@@ -3,13 +3,13 @@ use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
-    build_desktop_agent_turn_config, build_desktop_agent_user_content_parts,
+    build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
     finalize_desktop_agent_turn, request_desktop_running_agent_stop,
     resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
     run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
     DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
     DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
-    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentUserContentRequest,
+    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
     DesktopRunningAgentStopRequest,
 };
 use nexa_core::llm::ReasoningEffort;
@@ -21,6 +21,51 @@ use nexa_core::runtime::{
     ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
     RuntimeTerminalStatus, StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
 };
+use nexa_core::vision_router::VisionTurnOverride;
+
+fn normalize_turn_attachments(
+    attachments: Vec<ImageAttachment>,
+) -> Result<Vec<ImageAttachment>, String> {
+    attachments
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut attachment)| {
+            attachment.vision_analysis = None;
+            if !attachment.media_type.starts_with("image/") {
+                return Ok(attachment);
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.base64_data)
+                .map_err(|error| {
+                    format!(
+                        "Failed to decode image attachment '{}': {error}",
+                        attachment.original_name
+                    )
+                })?;
+            let computed_hash = nexa_core::vision_router::attachment_hash(&bytes);
+            if attachment
+                .attachment_hash
+                .as_deref()
+                .is_some_and(|provided| !provided.eq_ignore_ascii_case(&computed_hash))
+            {
+                return Err(format!(
+                    "Image attachment '{}' changed after preparation",
+                    attachment.original_name
+                ));
+            }
+            attachment.attachment_hash = Some(computed_hash.clone());
+            if attachment
+                .attachment_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+            {
+                attachment.attachment_id =
+                    Some(format!("attachment-{index}-{}", &computed_hash[..24]));
+            }
+            Ok(attachment)
+        })
+        .collect()
+}
 
 fn build_moa_provider(
     db: &Database,
@@ -106,6 +151,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub moa_preset: Option<String>,
     pub orchestration_profile: Option<String>,
     pub custom_orchestration: Option<CustomOrchestrationOptions>,
+    pub vision_turn_override: Option<VisionTurnOverride>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
     pub idempotency_key: String,
@@ -240,6 +286,7 @@ pub async fn agent_chat_cmd(
         moa_preset: Some(request.moa_preset.as_str().to_string()),
         orchestration_profile: Some(request.orchestration_profile.as_str().to_string()),
         custom_orchestration: request.custom_orchestration,
+        vision_turn_override: request.vision_turn_override,
         user_artifacts: request.user_artifacts,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
         idempotency_key: request.idempotency_key,
@@ -310,6 +357,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         moa_preset,
         orchestration_profile,
         custom_orchestration,
+        vision_turn_override,
         user_artifacts,
         task_orchestrator_run_id,
         idempotency_key,
@@ -319,6 +367,8 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let collaboration_mode = AgentCollaborationMode::from_wire(collaboration_mode.as_deref())?;
     let moa_preset = MoaPresetId::from_wire(moa_preset.as_deref())?;
     let orchestration_profile = OrchestrationProfile::from_wire(orchestration_profile.as_deref())?;
+    let attachments = normalize_turn_attachments(attachments.unwrap_or_default())?;
+    let attachments = (!attachments.is_empty()).then_some(attachments);
     let task_orchestrator_run_id = task_orchestrator_run_id
         .as_deref()
         .map(str::trim)
@@ -396,7 +446,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
     // full history read and a concurrent MAX(sort_order) race on the hot path.
-    let persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
+    let mut persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
         user_artifacts,
         execution_mode,
         power_mode,
@@ -404,6 +454,16 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         moa_preset,
         orchestration_profile,
     );
+    if let Some(turn_override) = vision_turn_override {
+        let artifacts = persisted_user_artifacts
+            .get_or_insert_with(|| serde_json::json!({ "kind": "messageContextChannels" }));
+        if let Some(map) = artifacts.as_object_mut() {
+            map.insert(
+                "visionTurnOverride".to_string(),
+                serde_json::Value::String(turn_override.as_str().to_string()),
+            );
+        }
+    }
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -639,6 +699,29 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             } else {
                 provider
             };
+            let vision_resolution = if attachments.as_ref().is_some_and(|attachments| {
+                attachments
+                    .iter()
+                    .any(|attachment| attachment.media_type.starts_with("image/"))
+            }) {
+                db.resolve_or_pin_task_runtime_capability(
+                    &registry_scope,
+                    "vision",
+                    &task_run_id,
+                )
+                .map_err(|error| {
+                    format!(
+                        "Vision capability resolution failed for run {task_run_id}: {error}"
+                    )
+                })?
+            } else {
+                None
+            };
+            let vision_provider = vision_resolution
+                .as_ref()
+                .map(|resolution| create_provider(resolution.provider_config.clone()))
+                .transpose()
+                .map_err(|error| error.to_string())?;
 
             let history_started = Instant::now();
             let history_conversation_id = conv_id.clone();
@@ -817,15 +900,27 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             );
 
             let attachment_started = Instant::now();
-            let user_parts =
-                build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+            let vision_content =
+                build_desktop_agent_vision_user_content(DesktopAgentVisionUserContentRequest {
                     db: &db,
                     app_handle: Some(&handle),
                     provider_config: &provider_config,
                     db_config: &effective_db_config,
                     message: &user_llm_content,
                     attachments: attachments.as_deref(),
-                })?;
+                    vision_resolution: vision_resolution.as_ref(),
+                    vision_provider: vision_provider.as_deref(),
+                    turn_override: vision_turn_override,
+                    cancellation: &cancel_token_clone,
+                })
+                .await?;
+            db.update_message_vision_context(
+                &user_message_id,
+                &vision_content.attachments,
+                &vision_content.llm_context_content,
+            )
+            .map_err(|error| error.to_string())?;
+            let user_parts = vision_content.parts;
             record_turn_launch_metric(
                 &db,
                 &handle,

@@ -29,6 +29,9 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
 
     let (base64_data, media_type) =
         nexa_core::media::prepare_image_for_llm(&bytes, &mime).map_err(|e| e.to_string())?;
+    let prepared_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64_data)
+        .map_err(|error| format!("Failed to hash prepared image: {error}"))?;
 
     let original_name = file_path
         .file_name()
@@ -39,6 +42,9 @@ pub async fn prepare_image_attachment(path: String) -> Result<ImageAttachment, S
         base64_data,
         media_type,
         original_name,
+        attachment_id: Some(uuid::Uuid::new_v4().to_string()),
+        attachment_hash: Some(nexa_core::vision_router::attachment_hash(&prepared_bytes)),
+        vision_analysis: None,
     })
 }
 

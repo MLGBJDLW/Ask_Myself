@@ -1501,6 +1501,42 @@ pub async fn save_settings_profile_v2_cmd(
 }
 
 #[tauri::command]
+pub async fn save_capability_binding_v2_cmd(
+    state: tauri::State<'_, AppState>,
+    scope: SettingsScopeV2,
+    capability_id: String,
+    binding: CapabilityBindingV2,
+    expected_profile_revision: u64,
+) -> Result<SettingsProfileV2, String> {
+    state
+        .db
+        .save_capability_binding_v2(&scope, &capability_id, &binding, expected_profile_revision)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_vision_observation_cache_cmd(
+    state: tauri::State<'_, AppState>,
+    attachment_hash: String,
+    profile_hash: Option<String>,
+) -> Result<usize, String> {
+    state
+        .db
+        .delete_vision_observation_cache(&attachment_hash, profile_hash.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_vision_observation_cache_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    state
+        .db
+        .clear_vision_observation_cache()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn migrate_settings_schema_v2_cmd(
     state: tauri::State<'_, AppState>,
 ) -> Result<SettingsMigrationReportV2, String> {

@@ -83,7 +83,8 @@ use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::settings_schema_v2::{
-    SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2, SettingsScopeV2,
+    CapabilityBindingV2, SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2,
+    SettingsScopeV2,
 };
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;

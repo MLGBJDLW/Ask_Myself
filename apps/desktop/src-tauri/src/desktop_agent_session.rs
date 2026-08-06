@@ -27,6 +27,7 @@ use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
     ToolPermissionKey,
 };
+use nexa_core::capability_registry::RuntimeCapabilityResolution;
 use nexa_core::context_pack::{
     ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
     ContextTrustLevel,
@@ -53,6 +54,13 @@ use nexa_core::quality_profile::{
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
+use nexa_core::vision_router::{
+    attachment_hash, classify_vision_route, execute_vision_observation, observation_prompt_text,
+    VisionAttachmentAnalysis, VisionAttachmentStatus, VisionClassificationInput,
+    VisionExecutionInput, VisionOcrProfile, VisionProfileV1, VisionProviderInput,
+    VisionRouterPolicy, VisionTargetProfile, VisionTurnOverride, VISION_CLASSIFIER_VERSION,
+    VISION_OBSERVATION_SCHEMA_VERSION,
+};
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
@@ -162,6 +170,25 @@ pub struct DesktopAgentUserContentRequest<'a> {
     pub db_config: &'a DbAgentConfig,
     pub message: &'a str,
     pub attachments: Option<&'a [ImageAttachment]>,
+}
+
+pub struct DesktopAgentVisionUserContentRequest<'a> {
+    pub db: &'a Database,
+    pub app_handle: Option<&'a AppHandle>,
+    pub provider_config: &'a ProviderConfig,
+    pub db_config: &'a DbAgentConfig,
+    pub message: &'a str,
+    pub attachments: Option<&'a [ImageAttachment]>,
+    pub vision_resolution: Option<&'a RuntimeCapabilityResolution>,
+    pub vision_provider: Option<&'a dyn LlmProvider>,
+    pub turn_override: Option<VisionTurnOverride>,
+    pub cancellation: &'a CancellationToken,
+}
+
+pub struct DesktopAgentVisionUserContentResult {
+    pub parts: Vec<ContentPart>,
+    pub attachments: Vec<ImageAttachment>,
+    pub llm_context_content: String,
 }
 
 pub struct DesktopAgentPostSuccessLearningRequest {
@@ -968,6 +995,269 @@ pub fn build_desktop_agent_user_content_parts(
     }
 
     Ok(user_parts)
+}
+
+pub async fn build_desktop_agent_vision_user_content(
+    request: DesktopAgentVisionUserContentRequest<'_>,
+) -> Result<DesktopAgentVisionUserContentResult, String> {
+    let DesktopAgentVisionUserContentRequest {
+        db,
+        app_handle,
+        provider_config,
+        db_config,
+        message,
+        attachments,
+        vision_resolution,
+        vision_provider,
+        turn_override,
+        cancellation,
+    } = request;
+    let mut parts = vec![ContentPart::Text {
+        text: message.to_string(),
+    }];
+    let Some(input_attachments) = attachments else {
+        return Ok(DesktopAgentVisionUserContentResult {
+            parts,
+            attachments: Vec::new(),
+            llm_context_content: message.to_string(),
+        });
+    };
+    let policy = vision_resolution
+        .map(|resolution| VisionRouterPolicy::from_binding_options(&resolution.snapshot.options))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let ocr_config = db.load_ocr_config().unwrap_or_default();
+    let primary_supports_vision =
+        model_supports_vision(&provider_config.provider_type, &db_config.model);
+    let primary_is_local = provider_config_is_local(provider_config);
+    let auxiliary_is_local = vision_resolution
+        .is_some_and(|resolution| provider_config_is_local(&resolution.provider_config));
+    let mut persisted_attachments = Vec::with_capacity(input_attachments.len());
+    let mut llm_context_fragments = vec![message.to_string()];
+    let mut non_image_attachments = Vec::new();
+
+    for original in input_attachments {
+        if !original.media_type.starts_with("image/") {
+            let mut attachment = original.clone();
+            attachment.vision_analysis = None;
+            non_image_attachments.push(attachment.clone());
+            persisted_attachments.push(attachment);
+            continue;
+        }
+        if cancellation.is_cancelled() {
+            return Err("Agent execution cancelled during image understanding".to_string());
+        }
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&original.base64_data)
+            .map_err(|error| format!("Failed to decode image: {error}"))?;
+        if image_bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "Image attachment '{}' exceeds the {} byte limit",
+                original.original_name, MAX_ATTACHMENT_BYTES
+            ));
+        }
+        let computed_hash = attachment_hash(&image_bytes);
+        if original
+            .attachment_hash
+            .as_deref()
+            .is_some_and(|provided| !provided.eq_ignore_ascii_case(&computed_hash))
+        {
+            return Err(format!(
+                "Image attachment '{}' changed after preparation",
+                original.original_name
+            ));
+        }
+        let attachment_id = original
+            .attachment_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let decision = classify_vision_route(VisionClassificationInput {
+            original_name: &original.original_name,
+            mime_type: &original.media_type,
+            user_prompt: message,
+            policy: &policy,
+            turn_override,
+            primary_supports_vision,
+            primary_is_local,
+            auxiliary_available: vision_resolution.is_some() && vision_provider.is_some(),
+            auxiliary_is_local,
+            ocr_available: ocr_config.enabled,
+        })
+        .map_err(|error| error.to_string())?;
+        let target = vision_resolution.map(|resolution| VisionTargetProfile {
+            binding_revision: resolution.snapshot.binding_revision,
+            target_id: resolution.snapshot.target_id.clone(),
+            target_revision: resolution.snapshot.target_revision,
+            connection_id: resolution.snapshot.connection_id.clone(),
+            connection_revision: resolution.snapshot.connection_revision,
+            descriptor_hash: resolution.snapshot.descriptor_hash.clone(),
+        });
+        let profile = VisionProfileV1 {
+            observation_schema_version: VISION_OBSERVATION_SCHEMA_VERSION,
+            classifier_version: VISION_CLASSIFIER_VERSION,
+            intent: decision.intent,
+            mode: policy.mode,
+            turn_override,
+            prefer_local_processing: policy.prefer_local_processing,
+            local_only: policy.local_only,
+            ocr: VisionOcrProfile {
+                enabled: ocr_config.enabled,
+                confidence_threshold_millis: (ocr_config.confidence_threshold * 1_000.0)
+                    .round()
+                    .clamp(0.0, 1_000.0) as u16,
+                det_limit_side_len: ocr_config.det_limit_side_len,
+                use_cls: ocr_config.use_cls,
+                languages: ocr_config.languages.clone(),
+            },
+            target,
+        };
+        let profile_hash = profile.profile_hash().map_err(|error| error.to_string())?;
+        let mut attachment = original.clone();
+        attachment.attachment_id = Some(attachment_id.clone());
+        attachment.attachment_hash = Some(computed_hash.clone());
+        attachment.vision_analysis = None;
+
+        match decision.plan {
+            nexa_core::vision_router::VisionRoutePlan::NativeDirect => {
+                parts.push(ContentPart::Image {
+                    media_type: original.media_type.clone(),
+                    data: original.base64_data.clone(),
+                });
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status: VisionAttachmentStatus::MetadataOnly,
+                    profile_hash: Some(profile_hash),
+                    observation: None,
+                    reason_code: Some("native_direct_unstructured".to_string()),
+                });
+                llm_context_fragments.push(format!(
+                    "[Image: {} — processed directly by the pinned native vision model]",
+                    original.original_name
+                ));
+            }
+            nexa_core::vision_router::VisionRoutePlan::MetadataOnly => {
+                let metadata = format!(
+                    "[Image: {} — image understanding disabled; no pixels were sent to a model]",
+                    original.original_name
+                );
+                parts.push(ContentPart::Text {
+                    text: metadata.clone(),
+                });
+                llm_context_fragments.push(metadata);
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status: VisionAttachmentStatus::MetadataOnly,
+                    profile_hash: Some(profile_hash),
+                    observation: None,
+                    reason_code: Some("vision_disabled".to_string()),
+                });
+            }
+            _ => {
+                let now_epoch = Utc::now().timestamp();
+                let cached = if policy.cache_enabled {
+                    db.get_vision_observation_cache(&computed_hash, &profile_hash, now_epoch)
+                        .map_err(|error| error.to_string())?
+                } else {
+                    None
+                };
+                let (observation, status) = if let Some(cached) = cached {
+                    (cached.observation, VisionAttachmentStatus::Cached)
+                } else {
+                    let vision = match (vision_resolution, vision_provider) {
+                        (Some(resolution), Some(provider)) => Some(VisionProviderInput {
+                            provider,
+                            provider_type: resolution.provider_config.provider_type,
+                            provider_id: &resolution.snapshot.provider_id,
+                            model_id: &resolution.model_id,
+                            target_id: &resolution.snapshot.target_id,
+                            target_revision: resolution.snapshot.target_revision,
+                            local: auxiliary_is_local,
+                        }),
+                        _ => None,
+                    };
+                    let observation = execute_vision_observation(VisionExecutionInput {
+                        attachment_id: &attachment_id,
+                        attachment_hash: &computed_hash,
+                        profile_hash: &profile_hash,
+                        image_bytes: &image_bytes,
+                        mime_type: &original.media_type,
+                        decision,
+                        ocr_config: &ocr_config,
+                        vision,
+                        primary_provider_id: &db_config.provider,
+                        primary_is_local,
+                        cancellation,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    if policy.cache_enabled {
+                        let expires_at_epoch =
+                            now_epoch + i64::from(policy.cache_retention_days) * 24 * 60 * 60;
+                        db.save_vision_observation_cache(&observation, now_epoch, expires_at_epoch)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    (observation, VisionAttachmentStatus::Observed)
+                };
+                let prompt = observation_prompt_text(&original.original_name, &observation)
+                    .map_err(|error| error.to_string())?;
+                parts.push(ContentPart::Text {
+                    text: prompt.clone(),
+                });
+                llm_context_fragments.push(prompt);
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status,
+                    profile_hash: Some(profile_hash),
+                    observation: Some(observation),
+                    reason_code: None,
+                });
+            }
+        }
+        persisted_attachments.push(attachment);
+    }
+
+    if !non_image_attachments.is_empty() {
+        let mut document_parts =
+            build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+                db,
+                app_handle,
+                provider_config,
+                db_config,
+                message: "",
+                attachments: Some(&non_image_attachments),
+            })?;
+        if document_parts
+            .first()
+            .is_some_and(|part| matches!(part, ContentPart::Text { text } if text.is_empty()))
+        {
+            document_parts.remove(0);
+        }
+        for part in &document_parts {
+            if let ContentPart::Text { text } = part {
+                llm_context_fragments.push(text.clone());
+            }
+        }
+        parts.extend(document_parts);
+    }
+
+    Ok(DesktopAgentVisionUserContentResult {
+        parts,
+        attachments: persisted_attachments,
+        llm_context_content: llm_context_fragments
+            .into_iter()
+            .filter(|fragment| !fragment.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    })
+}
+
+fn provider_config_is_local(config: &ProviderConfig) -> bool {
+    matches!(
+        config.provider_type,
+        ProviderType::Ollama | ProviderType::LmStudio
+    ) || config.base_url.as_deref().is_some_and(|base_url| {
+        base_url.starts_with("http://localhost")
+            || base_url.starts_with("http://127.")
+            || base_url.starts_with("http://[::1]")
+    })
 }
 
 pub fn build_desktop_agent_turn_config(
@@ -2350,12 +2640,18 @@ mod tests {
                 base64_data: "image-data".to_string(),
                 media_type: "image/png".to_string(),
                 original_name: "diagram.png".to_string(),
+                attachment_id: None,
+                attachment_hash: None,
+                vision_analysis: None,
             },
             ImageAttachment {
                 base64_data: base64::engine::general_purpose::STANDARD
                     .encode("hello from attachment. ".repeat(8)),
                 media_type: "text/plain".to_string(),
                 original_name: "notes.txt".to_string(),
+                attachment_id: None,
+                attachment_hash: None,
+                vision_analysis: None,
             },
         ];
 
@@ -2397,6 +2693,9 @@ mod tests {
             base64_data: "%not-base64".to_string(),
             media_type: "text/plain".to_string(),
             original_name: "broken.txt".to_string(),
+            attachment_id: None,
+            attachment_hash: None,
+            vision_analysis: None,
         };
 
         let err = build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
