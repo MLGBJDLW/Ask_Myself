@@ -1788,6 +1788,111 @@ Every answer that uses knowledge base search results.
                  migration_key, source_kind, source_id, applied_at
              );",
     ),
+    (
+        "v096_connection_model_capability_registry",
+        "CREATE TABLE IF NOT EXISTS provider_connections (
+             id TEXT PRIMARY KEY NOT NULL,
+             schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+             revision INTEGER NOT NULL CHECK (revision > 0),
+             provider_id TEXT NOT NULL,
+             adapter_provider_id TEXT NOT NULL,
+             endpoint_id TEXT NOT NULL,
+             base_url TEXT NOT NULL,
+             endpoint_fingerprint TEXT NOT NULL,
+             credential_ref TEXT,
+             enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+             health_status TEXT NOT NULL DEFAULT 'unknown' CHECK (
+                 health_status IN ('unknown', 'configured', 'missing', 'invalid', 'expired')
+             ),
+             source_kind TEXT NOT NULL,
+             source_id TEXT NOT NULL,
+             source_revision INTEGER NOT NULL,
+             source_fingerprint TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(endpoint_fingerprint, credential_ref)
+         );
+         CREATE INDEX IF NOT EXISTS idx_provider_connections_provider
+             ON provider_connections(provider_id, enabled);
+
+         CREATE TABLE IF NOT EXISTS model_definitions (
+             id TEXT PRIMARY KEY NOT NULL,
+             schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+             provider_id TEXT NOT NULL,
+             canonical_model_id TEXT NOT NULL,
+             descriptor_json TEXT NOT NULL CHECK (json_valid(descriptor_json)),
+             descriptor_hash TEXT NOT NULL,
+             source TEXT NOT NULL,
+             revision INTEGER NOT NULL CHECK (revision > 0),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(provider_id, canonical_model_id)
+         );
+
+         CREATE TABLE IF NOT EXISTS model_targets (
+             id TEXT PRIMARY KEY NOT NULL,
+             connection_id TEXT NOT NULL REFERENCES provider_connections(id),
+             model_definition_id TEXT REFERENCES model_definitions(id),
+             upstream_model_id TEXT NOT NULL,
+             availability TEXT NOT NULL DEFAULT 'unknown' CHECK (
+                 availability IN ('unknown', 'unavailable', 'discoverable', 'callable', 'product_ready')
+             ),
+             revision INTEGER NOT NULL CHECK (revision > 0),
+             source_kind TEXT NOT NULL,
+             source_id TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(connection_id, upstream_model_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_model_targets_connection
+             ON model_targets(connection_id, availability);
+
+         CREATE TABLE IF NOT EXISTS model_catalog_snapshots (
+             id TEXT PRIMARY KEY NOT NULL,
+             source_id TEXT NOT NULL,
+             connection_id TEXT REFERENCES provider_connections(id),
+             connection_revision INTEGER,
+             schema_version INTEGER NOT NULL,
+             content_hash TEXT NOT NULL,
+             model_count INTEGER NOT NULL CHECK (model_count >= 0),
+             validation_status TEXT NOT NULL CHECK (
+                 validation_status IN ('valid', 'rejected')
+             ),
+             snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(source_id, content_hash, connection_id)
+         );
+
+         CREATE TABLE IF NOT EXISTS registry_activation_state (
+             capability_id TEXT NOT NULL,
+             scope_kind TEXT NOT NULL CHECK (
+                 scope_kind IN ('application', 'workspace', 'agent', 'task')
+             ),
+             scope_id TEXT NOT NULL DEFAULT '',
+             read_mode TEXT NOT NULL DEFAULT 'legacy' CHECK (
+                 read_mode IN ('legacy', 'registry')
+             ),
+             registry_revision INTEGER NOT NULL DEFAULT 0,
+             parity_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                 parity_status IN ('pending', 'matched', 'mismatched', 'blocked')
+             ),
+             parity_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(parity_json)),
+             activated_at TEXT,
+             rolled_back_at TEXT,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY(capability_id, scope_kind, scope_id)
+         );
+
+         CREATE TABLE IF NOT EXISTS agent_task_registry_snapshots (
+             run_id TEXT NOT NULL REFERENCES agent_task_runs(id) ON DELETE CASCADE,
+             capability_id TEXT NOT NULL,
+             schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+             snapshot_hash TEXT NOT NULL,
+             snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY(run_id, capability_id)
+         );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1905,6 +2010,12 @@ mod tests {
         assert!(tables.contains(&"settings_profiles_v2".to_string()));
         assert!(tables.contains(&"settings_schema_state".to_string()));
         assert!(tables.contains(&"settings_schema_migration_journal".to_string()));
+        assert!(tables.contains(&"provider_connections".to_string()));
+        assert!(tables.contains(&"model_definitions".to_string()));
+        assert!(tables.contains(&"model_targets".to_string()));
+        assert!(tables.contains(&"model_catalog_snapshots".to_string()));
+        assert!(tables.contains(&"registry_activation_state".to_string()));
+        assert!(tables.contains(&"agent_task_registry_snapshots".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));
         assert!(tables.contains(&"embeddings".to_string()));
         assert!(tables.contains(&"feedback".to_string()));

@@ -44,6 +44,12 @@ impl Database {
                 "Settings Schema V2 migration failed; keeping the V1 schema active"
             );
         }
+        if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            tracing::error!(
+                error = %error,
+                "Capability Registry import failed; keeping legacy runtime reads available"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: Some(path.as_ref().to_path_buf()),
@@ -61,6 +67,12 @@ impl Database {
             tracing::error!(
                 error = %error,
                 "Settings Schema V2 migration failed; keeping the V1 schema active"
+            );
+        }
+        if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            tracing::error!(
+                error = %error,
+                "Capability Registry import failed; keeping legacy runtime reads available"
             );
         }
         Ok(Self {

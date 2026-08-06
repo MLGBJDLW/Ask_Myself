@@ -40,7 +40,7 @@ impl SettingsScopeKindV2 {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Application => "application",
             Self::Workspace => "workspace",
@@ -101,6 +101,11 @@ pub struct ConnectionReferenceV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelReferenceV2 {
+    /// Stable Connection Registry identity. Transitional V2 documents may
+    /// omit it; the registry import resolves their provider/endpoint triple
+    /// once and emits a canonical target reference for runtime use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
     pub provider_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_id: Option<String>,
@@ -301,6 +306,15 @@ fn validate_keys<T>(kind: &str, values: &BTreeMap<String, T>) -> Result<(), Core
 }
 
 fn validate_model_reference(value: &ModelReferenceV2) -> Result<(), CoreError> {
+    if value
+        .connection_id
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        return Err(CoreError::InvalidInput(
+            "Model target connectionId must not be empty".to_string(),
+        ));
+    }
     if value.provider_id.trim().is_empty() || value.model_id.trim().is_empty() {
         return Err(CoreError::InvalidInput(
             "Model references require providerId and modelId".to_string(),
@@ -862,7 +876,7 @@ impl RawLegacyAppConfigSnapshot {
                             .and_then(Value::as_str)
                             .and_then(|value| non_empty(Some(value)))
                             .map(str::to_string),
-                        credential_ref: Some(credential_ref),
+                        credential_ref: Some(credential_ref.clone()),
                     },
                 },
             );
@@ -871,6 +885,7 @@ impl RawLegacyAppConfigSnapshot {
                 SettingOverrideV2::Set {
                     value: CapabilityBindingV2 {
                         primary: Some(ModelReferenceV2 {
+                            connection_id: Some(credential_ref.clone()),
                             provider_id: provider_id.to_string(),
                             endpoint_id: None,
                             model_id: model_id.to_string(),
@@ -925,18 +940,19 @@ impl RawLegacyAgentConfigSnapshot {
 impl LegacyAgentConfigSnapshot {
     fn profile(&self, fingerprint: &str) -> SettingsProfileV2 {
         let endpoint_id = self.provider_endpoint_id.clone();
+        let credential_ref = format!("legacy-agent-config:{}", self.id);
         let model_id = self
             .model_id
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| self.model.clone());
         let text_model = ModelReferenceV2 {
+            connection_id: Some(credential_ref.clone()),
             provider_id: self.provider.clone(),
             endpoint_id: endpoint_id.clone(),
             model_id,
         };
         let profile_id = legacy_profile_id(&self.id);
-        let credential_ref = format!("legacy-agent-config:{}", self.id);
         let mut overrides = SettingsOverridesV2::default();
         overrides.connections.insert(
             "default".to_string(),
@@ -967,6 +983,7 @@ impl LegacyAgentConfigSnapshot {
                 SettingOverrideV2::Set {
                     value: CapabilityBindingV2 {
                         primary: Some(ModelReferenceV2 {
+                            connection_id: Some(credential_ref.clone()),
                             provider_id: self.provider.clone(),
                             endpoint_id: endpoint_id.clone(),
                             model_id: image_model.to_string(),
@@ -983,6 +1000,11 @@ impl LegacyAgentConfigSnapshot {
                 SettingOverrideV2::Set {
                     value: CapabilityBindingV2 {
                         primary: Some(ModelReferenceV2 {
+                            connection_id: (non_empty(self.summarization_provider.as_deref())
+                                .is_none()
+                                || non_empty(self.summarization_provider.as_deref())
+                                    == Some(self.provider.as_str()))
+                            .then(|| credential_ref.clone()),
                             provider_id: non_empty(self.summarization_provider.as_deref())
                                 .unwrap_or(&self.provider)
                                 .to_string(),
@@ -2275,9 +2297,10 @@ impl Database {
             "settingsProfile",
         )?;
         let scope_id = profile.scope.id.as_deref().unwrap_or("");
-        let conn = self.conn();
-        validate_native_credential_references(&conn, profile)?;
-        let scope_occupant: Option<String> = conn
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_native_credential_references(&transaction, profile)?;
+        let scope_occupant: Option<String> = transaction
             .query_row(
                 "SELECT id FROM settings_profiles_v2
                  WHERE scope_kind = ?1 AND scope_id = ?2",
@@ -2295,7 +2318,7 @@ impl Database {
                 scope_id
             )));
         }
-        let existing: Option<(u64, Option<String>)> = conn
+        let existing: Option<(u64, Option<String>)> = transaction
             .query_row(
                 "SELECT revision, managed_by FROM settings_profiles_v2 WHERE id = ?1",
                 params![&profile.id],
@@ -2346,7 +2369,7 @@ impl Database {
                 )
             })
             .unwrap_or((None, None, None));
-        let affected = conn.execute(
+        let affected = transaction.execute(
             "INSERT INTO settings_profiles_v2 (
                  id, schema_version, revision, scope_kind, scope_id, name,
                  preset_id, preset_version, preset_hash, document_json,
@@ -2385,6 +2408,8 @@ impl Database {
                 saved.id
             )));
         }
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(saved)
     }
 }
@@ -2959,7 +2984,7 @@ mod tests {
             unreachable!();
         };
         value.credential_ref = Some("legacy-agent-config:legacy-agent".to_string());
-        assert!(db.save_settings_profile_v2(&native, None).is_ok());
+        db.save_settings_profile_v2(&native, None).unwrap();
     }
 
     #[test]

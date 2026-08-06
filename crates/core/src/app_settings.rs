@@ -829,6 +829,7 @@ impl Database {
             params![APP_CONFIG_KEY, &json],
         )?;
         crate::settings_schema_v2::sync_legacy_app_config_in_transaction(&transaction)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
         transaction.commit()?;
         Ok(())
     }

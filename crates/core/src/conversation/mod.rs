@@ -3638,6 +3638,7 @@ impl Database {
             ],
         )?;
         crate::settings_schema_v2::sync_legacy_agent_config_in_transaction(&transaction, &id)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
         transaction.commit()?;
         drop(conn);
         self.get_agent_config(&id)
@@ -3764,6 +3765,7 @@ impl Database {
             return Err(CoreError::NotFound(format!("AgentConfig {id}")));
         }
         crate::settings_schema_v2::remove_legacy_agent_config_projection(&transaction, id)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -3787,6 +3789,7 @@ impl Database {
             rusqlite::params![id],
         )?;
         crate::settings_schema_v2::sync_all_legacy_agent_configs_in_transaction(&transaction)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
