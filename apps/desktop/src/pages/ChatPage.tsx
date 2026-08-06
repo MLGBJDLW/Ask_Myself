@@ -777,6 +777,7 @@ export function ChatPage() {
               moaPreset: inputOptions?.moaPreset,
               orchestrationProfile: inputOptions?.orchestrationProfile,
               customOrchestration: inputOptions?.customOrchestration,
+              visionTurnOverride: inputOptions?.visionTurnOverride,
               taskOrchestratorRunId: inputOptions?.taskOrchestratorRunId,
               interactionContinuation: isDurableInteractionResponse,
             }
@@ -1871,6 +1872,7 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs}
               conversationId={chat.activeId ?? undefined}
+              agentId={selectedAgentConfig?.id ?? chat.agentConfig?.id}
               inputHistory={chatInputHistory}
               sessionControls={sessionControls}
               prefillText={prefillText}

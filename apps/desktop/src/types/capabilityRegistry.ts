@@ -75,6 +75,7 @@ export interface ResolvedCapabilityRoute {
     dataClasses: string[];
     maxCostClass?: string;
   };
+  options: Record<string, unknown>;
 }
 
 export interface RegistryActivationRecord {

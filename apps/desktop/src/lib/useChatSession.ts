@@ -265,6 +265,7 @@ export interface ChatSendOptions {
   moaPreset?: MoaPresetId;
   orchestrationProfile?: OrchestrationProfile;
   customOrchestration?: CustomOrchestrationOptions | null;
+  visionTurnOverride?: import('../types/conversation').VisionTurnOverride | null;
   taskOrchestratorRunId?: string | null;
   interactionContinuation?: boolean;
 }
@@ -1156,6 +1157,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.moaPreset,
         options?.orchestrationProfile,
         options?.customOrchestration,
+        options?.visionTurnOverride,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
         options?.interactionContinuation === true,
@@ -1266,6 +1268,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       options?.moaPreset,
       options?.orchestrationProfile,
       options?.customOrchestration,
+      options?.visionTurnOverride,
       options?.userArtifacts,
       null,
     );

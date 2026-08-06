@@ -634,4 +634,18 @@
   "connectionNextAction": "プロバイダー設定を確認し、接続が戻ったら再送してください。",
   "toolInputRedacted": "[非表示]",
   "toolInputInvalid": "[解析できない引数を非表示]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

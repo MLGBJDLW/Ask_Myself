@@ -634,4 +634,18 @@
   "connectionNextAction": "Verifique as configurações do provedor e reenvie quando a conexão estiver disponível.",
   "toolInputRedacted": "[Oculto]",
   "toolInputInvalid": "[Argumentos ilegíveis ocultos]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

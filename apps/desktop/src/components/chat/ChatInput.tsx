@@ -10,7 +10,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, Square, Paperclip, X, FileText, Workflow, ChevronDown, ArchiveRestore, Loader2, Command, BrainCircuit, Sparkles, CircleDollarSign, Timer, Users, ShieldCheck, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation, type TranslationKey } from "../../i18n";
-import type { ArtifactPayload, Conversation, ImageAttachment } from "../../types/conversation";
+import type { ArtifactPayload, Conversation, ImageAttachment, VisionTurnOverride } from "../../types/conversation";
 import type { Skill } from "../../types/extensions";
 import type {
   AgentCollaborationMode,
@@ -59,6 +59,7 @@ export interface ChatInputSendOptions {
   moaPreset?: MoaPresetId;
   orchestrationProfile?: OrchestrationProfile;
   customOrchestration?: CustomOrchestrationOptions | null;
+  visionTurnOverride?: import('../../types/conversation').VisionTurnOverride | null;
   taskOrchestratorRunId?: string | null;
   /** Internal control-plane continuation; never route through live steering. */
   interactionContinuation?: boolean;
@@ -70,6 +71,7 @@ interface ChatInputProps {
   isStreaming: boolean;
   disabled: boolean;
   conversationId?: string;
+  agentId?: string;
   inputHistory?: string[];
   sessionControls?: ReactNode;
   onRestoreCheckpoint?: () => void;
@@ -340,6 +342,7 @@ export function ChatInput({
   isStreaming,
   disabled,
   conversationId,
+  agentId,
   inputHistory = [],
   sessionControls,
   onRestoreCheckpoint,
@@ -396,6 +399,8 @@ export function ChatInput({
   );
   const [nexusDialogOpen, setNexusDialogOpen] = useState(false);
   const [nexusActivationVisible, setNexusActivationVisible] = useState(false);
+  const [visionPolicyMode, setVisionPolicyMode] = useState<'off' | 'ask' | 'auto' | 'always_auxiliary'>('auto');
+  const [visionTurnOverride, setVisionTurnOverride] = useState<VisionTurnOverride | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -409,15 +414,39 @@ export function ChatInput({
   // Compaction only locks actions that mutate conversation history. The draft
   // remains fully editable so the user can keep typing while the checkpoint is
   // being built, then send as soon as compaction completes.
+  const hasImageAttachments = attachments.some((attachment) => attachment.mediaType.startsWith('image/'));
+  const visionDecisionRequired = hasImageAttachments && visionPolicyMode === 'ask' && visionTurnOverride === null;
   const inputLocked = disabled;
-  const sendLocked = inputLocked || isCompacting;
-  const attachmentLocked = sendLocked || isStreaming;
+  const sendLocked = inputLocked || isCompacting || visionDecisionRequired;
+  const attachmentLocked = inputLocked || isCompacting || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
   const inputHistoryEntries = useMemo(
     () => normalizeInputHistory(inputHistory),
     [inputHistory],
   );
   const [inputHistoryIndex, setInputHistoryIndex] = useState(-1);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!agentId) {
+      setVisionPolicyMode('auto');
+      return () => { cancelled = true; };
+    }
+    void api.getCapabilityRegistryProjection({ agentId }).then((projection) => {
+      if (cancelled) return;
+      const mode = projection.capabilities.find((route) => route.capabilityId === 'vision')?.options.mode;
+      setVisionPolicyMode(
+        mode === 'off' || mode === 'ask' || mode === 'always_auxiliary' ? mode : 'auto',
+      );
+    }).catch(() => {
+      if (!cancelled) setVisionPolicyMode('auto');
+    });
+    return () => { cancelled = true; };
+  }, [agentId]);
+
+  useEffect(() => {
+    if (!hasImageAttachments) setVisionTurnOverride(null);
+  }, [hasImageAttachments]);
 
   const resetInputHistoryNavigation = useCallback(() => {
     setInputHistoryIndex(-1);
@@ -912,6 +941,7 @@ export function ChatInput({
       moaPreset,
       orchestrationProfile,
       customOrchestration: orchestrationProfile === "custom" ? customOrchestration : null,
+      visionTurnOverride,
     };
     if (executionMode === "plan") {
       setPlanMode(true);
@@ -922,7 +952,7 @@ export function ChatInput({
       sendOptions,
     );
     clearDraft();
-  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, collaborationMode, customOrchestration, effectivePlanModeEnabled, isStreaming, moaPreset, onCompact, onSend, orchestrationProfile, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value]);
+  }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, collaborationMode, customOrchestration, effectivePlanModeEnabled, isStreaming, moaPreset, onCompact, onSend, orchestrationProfile, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value, visionTurnOverride]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1576,6 +1606,25 @@ export function ChatInput({
             </div>
           ) : null}
         </CollapsibleMotion>
+        {hasImageAttachments && (
+          <div className="flex items-center justify-between gap-3 border-b border-border/35 bg-surface-1/45 px-3 py-1.5" data-testid="vision-turn-selector">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-text-secondary">{t('chat.visionTurnTitle')}</p>
+              {visionDecisionRequired && <p className="text-[10px] text-warning">{t('chat.visionTurnRequired')}</p>}
+            </div>
+            <select
+              className="shrink-0 rounded-md border border-border bg-surface-0 px-2 py-1 text-[11px] text-text-primary"
+              value={visionTurnOverride ?? ''}
+              onChange={(event) => setVisionTurnOverride((event.target.value || null) as VisionTurnOverride | null)}
+              aria-label={t('chat.visionTurnTitle')}
+            >
+              <option value="" disabled={visionPolicyMode === 'ask'}>{t('chat.visionTurnUseSettings')}</option>
+              <option value="auto">{t('chat.visionTurnAuto')}</option>
+              <option value="ocr_only">{t('chat.visionTurnOcr')}</option>
+              <option value="vision_only">{t('chat.visionTurnVision')}</option>
+            </select>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 border-b border-border/35 px-3 py-2">
             {attachments.map((att, i) => (

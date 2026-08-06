@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import { Check, CheckCircle2, ClipboardList, CornerDownRight, HelpCircle, ShieldCheck, Target, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
+import { toast } from 'sonner';
+import * as api from '../../lib/api';
 import {
   CitationContext,
   markdownComponents,
@@ -17,7 +19,8 @@ import { goalObjectiveFromMessage, isGoalMessage, isSteeringMessage } from '../.
 import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
-import type { ConversationMessage } from '../../types/conversation';
+import type { ConversationMessage, ImageAttachment } from '../../types/conversation';
+import { Modal } from '../ui/Modal';
 import { CitationChip } from './EvidenceCard';
 import {
   extractProposedPlan,
@@ -190,11 +193,45 @@ function GoalStatusCard({
   );
 }
 
+function VisionAttachmentTile({
+  attachment,
+  onInspect,
+}: {
+  attachment: ImageAttachment;
+  onInspect: () => void;
+}) {
+  const { t } = useTranslation();
+  const analysis = attachment.visionAnalysis;
+  if (!attachment.mediaType.startsWith('image/')) {
+    return <span className="rounded-md border border-border bg-surface-1 px-2 py-1 text-xs text-text-secondary">{attachment.originalName}</span>;
+  }
+  return (
+    <div className="relative overflow-hidden rounded-md border border-border bg-surface-1">
+      <img
+        src={`data:${attachment.mediaType};base64,${attachment.base64Data}`}
+        alt={attachment.originalName}
+        className="max-h-[200px] max-w-[200px] object-contain"
+      />
+      {analysis && (
+        <button
+          type="button"
+          onClick={onInspect}
+          className="absolute bottom-1.5 left-1.5 rounded-full border border-white/15 bg-black/70 px-2 py-1 text-[10px] font-medium text-white backdrop-blur hover:bg-black/85"
+          aria-label={t('chat.visionObservationInspect')}
+        >
+          {analysis.status === 'cached' ? t('chat.visionObservationCached') : t('chat.visionObservationReady')}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAssistant, lastCached, onRetry, alwaysShowTimestamp, onDeleteMessage, onEditAndResend, onApprovePlan, goalStatus = 'set', turnDurationLabel }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = msg.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.content);
+  const [visionAttachment, setVisionAttachment] = useState<ImageAttachment | null>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const proposedPlan = useMemo(
     () => (isUser ? null : extractProposedPlan(msg.artifacts, msg.content)),
@@ -355,12 +392,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               {msg.imageAttachments && msg.imageAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {msg.imageAttachments.map((att, i) => (
-                    <img
-                      key={i}
-                      src={`data:${att.mediaType};base64,${att.base64Data}`}
-                      alt={att.originalName}
-                      className="max-w-[200px] max-h-[200px] object-contain rounded-md border border-border"
-                    />
+                    <VisionAttachmentTile key={att.attachmentId ?? i} attachment={att} onInspect={() => setVisionAttachment(att)} />
                   ))}
                 </div>
               )}
@@ -377,12 +409,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               {msg.imageAttachments && msg.imageAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {msg.imageAttachments.map((att, i) => (
-                    <img
-                      key={i}
-                      src={`data:${att.mediaType};base64,${att.base64Data}`}
-                      alt={att.originalName}
-                      className="max-w-[200px] max-h-[200px] object-contain rounded-md border border-border"
-                    />
+                    <VisionAttachmentTile key={att.attachmentId ?? i} attachment={att} onInspect={() => setVisionAttachment(att)} />
                   ))}
                 </div>
               )}
@@ -474,6 +501,30 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
             : ''}
           {timestamp}
         </span>
+        <Modal
+          open={visionAttachment !== null}
+          onClose={() => setVisionAttachment(null)}
+          title={t('chat.visionObservationTitle')}
+          footer={visionAttachment ? (
+            <div className="flex justify-end gap-2">
+              {onRetry && <button type="button" className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary" onClick={() => { setVisionAttachment(null); void onRetry(msg.id); }}>{t('chat.visionObservationRerun')}</button>}
+              {visionAttachment.attachmentHash && <button type="button" className="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger" onClick={() => void api.deleteVisionObservationCache(visionAttachment.attachmentHash!, visionAttachment.visionAnalysis?.profileHash).then((removed) => toast.success(t('chat.visionObservationCacheDeleted', { count: String(removed) }))).catch((cause) => toast.error(String(cause)))}>{t('chat.visionObservationDeleteCache')}</button>}
+            </div>
+          ) : undefined}
+        >
+          {visionAttachment && (
+            <div className="space-y-3 text-xs">
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-full bg-surface-2 px-2 py-1 text-text-secondary">{visionAttachment.visionAnalysis?.status ?? 'pending'}</span>
+                {visionAttachment.visionAnalysis?.observation?.privacyScope && <span className="rounded-full bg-surface-2 px-2 py-1 text-text-secondary">{visionAttachment.visionAnalysis.observation.privacyScope}</span>}
+                {visionAttachment.visionAnalysis?.observation?.route.plan && <span className="rounded-full bg-surface-2 px-2 py-1 text-text-secondary">{visionAttachment.visionAnalysis.observation.route.plan}</span>}
+              </div>
+              {visionAttachment.visionAnalysis?.observation?.summary && <p className="leading-5 text-text-primary">{visionAttachment.visionAnalysis.observation.summary}</p>}
+              {visionAttachment.visionAnalysis?.observation?.ocrText && <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-0 p-3 text-[11px] leading-5 text-text-secondary">{visionAttachment.visionAnalysis.observation.ocrText}</pre>}
+              {!visionAttachment.visionAnalysis?.observation && <p className="text-text-tertiary">{visionAttachment.visionAnalysis?.reasonCode ?? t('chat.visionObservationUnavailable')}</p>}
+            </div>
+          )}
+        </Modal>
       </div>
     </motion.div>
   );

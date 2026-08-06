@@ -634,4 +634,18 @@
   "connectionNextAction": "請檢查模型服務設定，待連線恢復後重新傳送。",
   "toolInputRedacted": "[已隱藏敏感資訊]",
   "toolInputInvalid": "[無法解析的參數已隱藏]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

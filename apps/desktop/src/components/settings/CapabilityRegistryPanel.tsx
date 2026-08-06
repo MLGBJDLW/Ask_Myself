@@ -20,6 +20,7 @@ import type {
   RegistryReadMode,
   ResolvedCapabilityRoute,
 } from '../../types/capabilityRegistry';
+import type { CapabilityBindingV2, ModelReferenceV2 } from '../../types/settingsSchemaV2';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 
@@ -48,6 +49,154 @@ function routeActivation(
   return activations
     .filter((activation) => activation.capabilityId === route.capabilityId)
     .find((activation) => sameScope(activation.scope, route.source));
+}
+
+type VisionMode = 'off' | 'ask' | 'auto' | 'always_auxiliary';
+
+function optionBoolean(route: ResolvedCapabilityRoute, key: string, fallback: boolean): boolean {
+  return typeof route.options[key] === 'boolean' ? route.options[key] as boolean : fallback;
+}
+
+function VisionCapabilityEditor({
+  projection,
+  route,
+  onSaved,
+}: {
+  projection: CapabilityRegistryProjection;
+  route: ResolvedCapabilityRoute;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<VisionMode>(() => (
+    typeof route.options.mode === 'string' ? route.options.mode as VisionMode : 'auto'
+  ));
+  const [primaryTargetId, setPrimaryTargetId] = useState(route.primary?.target.id ?? '');
+  const [fallbackTargetId, setFallbackTargetId] = useState(route.fallbacks[0]?.target.id ?? '');
+  const [preferLocal, setPreferLocal] = useState(() => optionBoolean(route, 'preferLocalProcessing', true));
+  const [localOnly, setLocalOnly] = useState(() => optionBoolean(route, 'localOnly', false));
+  const [cacheEnabled, setCacheEnabled] = useState(() => optionBoolean(route, 'cacheEnabled', true));
+  const [cacheDays, setCacheDays] = useState(() => (
+    typeof route.options.cacheRetentionDays === 'number' ? route.options.cacheRetentionDays : 30
+  ));
+  const [saving, setSaving] = useState(false);
+  const definitions = useMemo(
+    () => new Map(projection.modelDefinitions.map((definition) => [definition.id, definition])),
+    [projection.modelDefinitions],
+  );
+  const connections = useMemo(
+    () => new Map(projection.connections.map((connection) => [connection.id, connection])),
+    [projection.connections],
+  );
+  const candidates = useMemo(() => projection.modelTargets.filter((target) => {
+    const definition = target.modelDefinitionId ? definitions.get(target.modelDefinitionId) : undefined;
+    return (definition?.descriptor.inputModalities?.includes('image')
+        || definition?.descriptor.capabilities?.vision === true)
+      && ['callable', 'product_ready'].includes(target.availability)
+      && connections.get(target.connectionId)?.enabled;
+  }), [connections, definitions, projection.modelTargets]);
+
+  const referenceFor = (targetId: string): ModelReferenceV2 | null => {
+    const target = candidates.find((candidate) => candidate.id === targetId);
+    const connection = target ? connections.get(target.connectionId) : undefined;
+    if (!target || !connection) return null;
+    return {
+      connectionId: connection.id,
+      providerId: connection.providerId,
+      endpointId: connection.endpointId,
+      modelId: target.upstreamModelId,
+    };
+  };
+
+  const save = async () => {
+    const primary = referenceFor(primaryTargetId);
+    if (!primary) {
+      toast.error(t('settings.visionModelRequired'));
+      return;
+    }
+    const fallback = referenceFor(fallbackTargetId);
+    const hasFallback = Boolean(fallback && fallbackTargetId !== primaryTargetId);
+    const binding: CapabilityBindingV2 = {
+      primary,
+      fallbacks: hasFallback && fallback ? [fallback] : [],
+      fallbackMode: hasFallback ? 'automatic' : 'disabled',
+      constraints: {
+        requireSameConnection: !hasFallback,
+        allowCrossProvider: hasFallback,
+        allowCrossRegion: hasFallback,
+        requiresStreaming: false,
+        dataClasses: localOnly ? ['confidential'] : [],
+      },
+      options: {
+        mode,
+        preferLocalProcessing: preferLocal || localOnly,
+        localOnly,
+        cacheEnabled,
+        cacheRetentionDays: Math.max(1, Math.min(3650, Math.round(cacheDays))),
+        selectionSource: 'explicit_user',
+      },
+    };
+    setSaving(true);
+    try {
+      await api.saveCapabilityBindingV2(route.source, 'vision', binding, route.sourceRevision);
+      toast.success(t('settings.visionSettingsSaved'));
+      await onSaved();
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearCache = async () => {
+    try {
+      const removed = await api.clearVisionObservationCache();
+      toast.success(t('settings.visionCacheCleared', { count: String(removed) }));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  return (
+    <section className="rounded-xl border border-accent/20 bg-accent/5 p-4" data-testid="vision-capability-editor">
+      <div className="mb-3">
+        <h4 className="text-sm font-semibold text-text-primary">{t('settings.visionRouterTitle')}</h4>
+        <p className="mt-1 text-xs leading-5 text-text-tertiary">{t('settings.visionRouterDesc')}</p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="space-y-1 text-xs text-text-secondary">
+          <span>{t('settings.visionMode')}</span>
+          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 text-sm" value={mode} onChange={(event) => setMode(event.target.value as VisionMode)}>
+            <option value="off">{t('settings.visionModeOff')}</option>
+            <option value="ask">{t('settings.visionModeAsk')}</option>
+            <option value="auto">{t('settings.visionModeAuto')}</option>
+            <option value="always_auxiliary">{t('settings.visionModeAlwaysAux')}</option>
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-text-secondary">
+          <span>{t('settings.visionPreferredModel')}</span>
+          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 font-mono text-xs" value={primaryTargetId} onChange={(event) => setPrimaryTargetId(event.target.value)}>
+            <option value="">{t('settings.visionChooseModel')}</option>
+            {candidates.map((target) => <option key={target.id} value={target.id}>{target.upstreamModelId}</option>)}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-text-secondary">
+          <span>{t('settings.visionFallbackModel')}</span>
+          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 font-mono text-xs" value={fallbackTargetId} onChange={(event) => setFallbackTargetId(event.target.value)}>
+            <option value="">{t('settings.visionNoFallback')}</option>
+            {candidates.filter((target) => target.id !== primaryTargetId).map((target) => <option key={target.id} value={target.id}>{target.upstreamModelId}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-text-secondary">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={preferLocal || localOnly} disabled={localOnly} onChange={(event) => setPreferLocal(event.target.checked)} />{t('settings.visionPreferLocal')}</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={localOnly} onChange={(event) => setLocalOnly(event.target.checked)} />{t('settings.visionLocalOnly')}</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={cacheEnabled} onChange={(event) => setCacheEnabled(event.target.checked)} />{t('settings.visionCache')}</label>
+        <label className="flex items-center gap-2">{t('settings.visionCacheDays')}<input type="number" min={1} max={3650} className="w-20 rounded-md border border-border bg-surface-1 px-2 py-1" value={cacheDays} disabled={!cacheEnabled} onChange={(event) => setCacheDays(Number(event.target.value))} /></label>
+        <Button type="button" size="sm" className="ml-auto" disabled={saving || candidates.length === 0} icon={saving ? <Loader2 size={13} className="animate-spin" /> : undefined} onClick={() => void save()}>{t('common.save')}</Button>
+        <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => void clearCache()}>{t('settings.visionClearCache')}</Button>
+      </div>
+    </section>
+  );
 }
 
 export function CapabilityRegistryPanel({ agentId, refreshToken }: CapabilityRegistryPanelProps) {
@@ -144,6 +293,7 @@ export function CapabilityRegistryPanel({ agentId, refreshToken }: CapabilityReg
       })),
   ];
   const visibleModels = unifiedModels.slice(0, 16);
+  const visionRoute = projection.capabilities.find((route) => route.capabilityId === 'vision');
 
   return (
     <div className="space-y-4" data-testid="capability-registry-panel">
@@ -260,7 +410,7 @@ export function CapabilityRegistryPanel({ agentId, refreshToken }: CapabilityReg
             const primary = route.primary;
             const reasons = primary?.eligibility.reasonCodes ?? [];
             const mode = activation?.readMode ?? 'legacy';
-            const hasRegistryRuntime = route.capabilityId === 'text_generation';
+            const hasRegistryRuntime = route.capabilityId === 'text_generation' || route.capabilityId === 'vision';
             return (
               <div key={`${route.capabilityId}:${route.source.kind}:${route.source.id ?? ''}`} className="rounded-lg border border-border/70 bg-surface-1 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -303,6 +453,10 @@ export function CapabilityRegistryPanel({ agentId, refreshToken }: CapabilityReg
           })}
         </div>
       </section>
+
+      {visionRoute && (
+        <VisionCapabilityEditor projection={projection} route={visionRoute} onSaved={load} />
+      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         <section className="rounded-xl border border-border/70 bg-surface-2 p-3" data-testid="registry-permissions-owner">

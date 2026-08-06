@@ -26,6 +26,7 @@ import type {
 } from "../types/video";
 import type {
   SettingsMigrationReportV2,
+  CapabilityBindingV2,
   SettingsProfileV2,
   SettingsSchemaStateV2,
   SettingsScopeV2,
@@ -68,6 +69,7 @@ import type {
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
+  VisionTurnOverride,
   ArtifactPayload,
   Checkpoint,
   CheckpointBranch,
@@ -868,6 +870,29 @@ export const saveSettingsProfileV2 = (
     expectedRevision: expectedRevision ?? null,
   });
 
+export const saveCapabilityBindingV2 = (
+  scope: SettingsScopeV2,
+  capabilityId: string,
+  binding: CapabilityBindingV2,
+  expectedProfileRevision: number,
+) => invoke<SettingsProfileV2>('save_capability_binding_v2_cmd', {
+  scope,
+  capabilityId,
+  binding,
+  expectedProfileRevision,
+});
+
+export const deleteVisionObservationCache = (
+  attachmentHash: string,
+  profileHash?: string | null,
+) => invoke<number>('delete_vision_observation_cache_cmd', {
+  attachmentHash,
+  profileHash: profileHash ?? null,
+});
+
+export const clearVisionObservationCache = () =>
+  invoke<number>('clear_vision_observation_cache_cmd');
+
 export const migrateSettingsSchemaV2 = () =>
   invoke<SettingsMigrationReportV2>('migrate_settings_schema_v2_cmd');
 
@@ -1400,6 +1425,7 @@ export const agentChat = (
   moaPreset?: MoaPresetId | null,
   orchestrationProfile?: OrchestrationProfile | null,
   customOrchestration?: CustomOrchestrationOptions | null,
+  visionTurnOverride?: VisionTurnOverride | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) => {
@@ -1427,6 +1453,7 @@ export const agentChat = (
     moaPreset: moaPreset ?? 'fastReview',
     orchestrationProfile: orchestrationProfile ?? 'balanced',
     customOrchestration: customOrchestration ?? null,
+    visionTurnOverride: visionTurnOverride ?? null,
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };

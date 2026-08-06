@@ -3,6 +3,7 @@ import * as api from './api';
 import { streamStore } from './streamStore';
 import type {
   ImageAttachment,
+  VisionTurnOverride,
   ApprovalRequest,
   ArtifactPayload,
   UsageTotal,
@@ -41,6 +42,7 @@ interface UseAgentStreamReturn {
     moaPreset?: MoaPresetId | null,
     orchestrationProfile?: OrchestrationProfile | null,
     customOrchestration?: CustomOrchestrationOptions | null,
+    visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
     propagateErrors?: boolean,
@@ -147,6 +149,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     moaPreset?: MoaPresetId | null,
     orchestrationProfile?: OrchestrationProfile | null,
     customOrchestration?: CustomOrchestrationOptions | null,
+    visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
     propagateErrors = false,
@@ -168,6 +171,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         moaPreset,
         orchestrationProfile,
         customOrchestration,
+        visionTurnOverride,
         userArtifacts,
         taskOrchestratorRunId,
       );
