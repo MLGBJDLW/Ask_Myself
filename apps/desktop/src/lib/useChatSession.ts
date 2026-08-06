@@ -284,6 +284,7 @@ export interface UseChatSessionReturn {
   thinkingText: string;
   isThinking: boolean;
   toolCalls: ReturnType<typeof useAgentStream>['toolCalls'];
+  connectionState: ReturnType<typeof useAgentStream>['connectionState'];
   loadingMsgs: boolean;
   loadingConfig: boolean;
   agentConfig: AgentConfig | null;
@@ -503,6 +504,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     finishReason,
     contextOverflow,
     rateLimited,
+    connectionState,
     autoCompacted,
     taskRun: streamTaskRun,
     taskEvents: streamTaskEvents,
@@ -1475,6 +1477,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     finishReason: scopedFinishReason,
     contextOverflow: scopedContextOverflow,
     rateLimited: scopedRateLimited,
+    connectionState,
     send,
     stop,
     deleteConversation,

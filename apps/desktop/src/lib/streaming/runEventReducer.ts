@@ -12,6 +12,7 @@ import {
   applyApprovalRequestedEvent,
   applyApprovalResolvedEvent,
   applyAutoCompactedEvent,
+  applyConnectionStateEvent,
   applyDoneEvent,
   applyErrorEvent,
   applyStatusEvent,
@@ -132,7 +133,15 @@ export function applyAgentRunEvent(
       // summaries inside the user-facing Thinking timeline.
       return;
 
-    case 'recoveryAttempt':
+    case 'recoveryAttempt': {
+      const connection = asRecord(payload.state);
+      if (typeof connection.state === 'string') {
+        const event = projectionEvent(runEvent, payload, {
+          state: connection as unknown as AgentFrontendEvent['state'],
+        });
+        applyConnectionStateEvent(state, event, event, runEvent.label);
+        return;
+      }
       appendStatusTraceEvent(
         state,
         stringValue(payload.reason) ?? runEvent.label,
@@ -141,6 +150,7 @@ export function applyAgentRunEvent(
         runEvent.displayKind ?? 'recovery',
       );
       return;
+    }
 
     case 'toolPreparing': {
       const run = toolRun(payload);

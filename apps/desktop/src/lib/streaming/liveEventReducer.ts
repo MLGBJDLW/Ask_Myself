@@ -9,6 +9,7 @@ import {
   applyApprovalRequestedEvent,
   applyApprovalResolvedEvent,
   applyAutoCompactedEvent,
+  applyConnectionStateEvent,
   applyDoneEvent,
   applyErrorEvent,
   applyStatusEvent,
@@ -125,6 +126,11 @@ export function applyLiveStreamEvent(
 
     case 'status': {
       applyStatusEvent(state, event, raw);
+      break;
+    }
+
+    case 'connectionState': {
+      applyConnectionStateEvent(state, event, raw);
       break;
     }
 

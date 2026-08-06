@@ -8,5 +8,6 @@ export { SystemPromptEditor } from './SystemPromptEditor';
 export { ActiveExtensions } from './ActiveExtensions';
 export { ChatRunOverview } from './ChatRunOverview';
 export { ContextCockpit } from './ContextCockpit';
+export { ConnectionStatusBanner } from './ConnectionStatusBanner';
 export { InvestigationHeader } from './InvestigationHeader';
 export { TaskBoard } from './TaskBoard';

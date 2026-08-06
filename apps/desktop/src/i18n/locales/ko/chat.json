@@ -611,5 +611,12 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "공급자에 다시 연결하는 중",
+  "connectionDegraded": "공급자 연결이 불안정합니다",
+  "connectionRecovered": "공급자 연결이 복구되었습니다",
+  "connectionOffline": "공급자가 오프라인입니다",
+  "connectionFailed": "공급자 연결에 실패했습니다",
+  "connectionTurnPreserved": "현재 턴이 보존되었습니다.",
+  "connectionTurnNotPreserved": "이 턴을 보존할 수 없습니다."
 }

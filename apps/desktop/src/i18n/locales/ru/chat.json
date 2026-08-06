@@ -611,5 +611,12 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "Повторное подключение к провайдеру",
+  "connectionDegraded": "Соединение с провайдером нестабильно",
+  "connectionRecovered": "Соединение с провайдером восстановлено",
+  "connectionOffline": "Провайдер не в сети",
+  "connectionFailed": "Не удалось подключиться к провайдеру",
+  "connectionTurnPreserved": "Текущий ход сохранён.",
+  "connectionTurnNotPreserved": "Не удалось сохранить этот ход."
 }

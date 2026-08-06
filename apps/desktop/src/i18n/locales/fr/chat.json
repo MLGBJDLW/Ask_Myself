@@ -611,5 +611,12 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "Reconnexion au fournisseur",
+  "connectionDegraded": "La connexion au fournisseur est dégradée",
+  "connectionRecovered": "Connexion au fournisseur rétablie",
+  "connectionOffline": "Le fournisseur est hors ligne",
+  "connectionFailed": "Échec de la connexion au fournisseur",
+  "connectionTurnPreserved": "Le tour actuel est conservé.",
+  "connectionTurnNotPreserved": "Ce tour n'a pas pu être conservé."
 }

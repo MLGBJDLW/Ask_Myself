@@ -58,6 +58,7 @@ interface UseAgentStreamReturn {
   finishReason: string | null;
   contextOverflow: boolean;
   rateLimited: boolean;
+  connectionState: StreamState['connectionState'];
   autoCompacted: AutoCompactedInfo;
   pendingApprovals: ApprovalRequest[];
   taskRun: StreamState['taskRun'];
@@ -120,6 +121,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
           prev.finishReason === next.finishReason &&
           prev.contextOverflow === next.contextOverflow &&
           prev.rateLimited === next.rateLimited &&
+          prev.connectionState === next.connectionState &&
           prev.autoCompacted === next.autoCompacted &&
           prev.pendingApprovals === next.pendingApprovals &&
           prev.taskRun === next.taskRun &&
@@ -216,6 +218,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     finishReason: resolvedState?.finishReason ?? null,
     contextOverflow: resolvedState?.contextOverflow ?? false,
     rateLimited: resolvedState?.rateLimited ?? false,
+    connectionState: resolvedState?.connectionState ?? null,
     autoCompacted: resolvedState?.autoCompacted ?? null,
     pendingApprovals: resolvedState?.pendingApprovals ?? EMPTY_APPROVALS,
     taskRun: resolvedState?.taskRun ?? null,

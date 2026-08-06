@@ -249,6 +249,24 @@ test.beforeEach(async ({ page }) => {
               content: routeStatusText,
               tone: "muted",
             });
+            if (localStorage.getItem("e2e-connection-state") === "1") {
+              emitEvent("agent:event", {
+                conversationId,
+                type: "connectionState",
+                state: {
+                  state: "reconnecting",
+                  providerId: "openai",
+                  modelId: "gpt-4.1",
+                  errorCategory: "network",
+                  attempt: 1,
+                  maxAttempts: 3,
+                  nextRetryAt: new Date(Date.now() + 1000).toISOString(),
+                  recoverable: true,
+                  queuedUserInputs: 0,
+                  turnPreserved: true,
+                },
+              });
+            }
           });
 
           if (!skipThinking) {
@@ -442,4 +460,18 @@ test("hides low-value file-operation route status", async ({ page }) => {
     page.getByText("The timeout branch did not return early.").first(),
   ).toBeVisible();
   await expect(page.getByText("Route selected: FileOperation")).toHaveCount(0);
+});
+
+test("renders structured reconnect state outside assistant reasoning", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("e2e-connection-state", "1");
+    localStorage.setItem("e2e-route-text-delay", "800");
+  });
+
+  await page.goto("/chat");
+
+  await expect(page.getByText("Reconnecting to the provider", { exact: true })).toBeVisible();
+  await expect(page.getByText(/openai · gpt-4\.1 · 1\/3/)).toBeVisible();
+  const chatLog = page.getByLabel("Chat messages");
+  await expect(chatLog.getByText("Reconnecting to the provider", { exact: true })).toHaveCount(0);
 });

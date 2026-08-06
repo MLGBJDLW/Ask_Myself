@@ -37,6 +37,7 @@ export function createDefaultState(): InternalStreamState {
     finishReason: null,
     contextOverflow: false,
     rateLimited: false,
+    connectionState: null,
     autoCompacted: null,
     pendingApprovals: [],
     taskRun: null,

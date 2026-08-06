@@ -49,6 +49,8 @@ import {
 } from '../../lib/streaming/toolStatus';
 import {
   formatToolTarget,
+  formatToolArgumentsForDisplay,
+  getToolInputPresentation,
   getStableFileChangeTarget,
   getToolTitleTarget,
   isCommandExecutionTool,
@@ -589,18 +591,6 @@ function parseSearchResults(content: string): SearchResultItem[] | null {
     items.push({ score, source: get('Source'), path: get('Path'), title: get('Title'), preview });
   }
   return items.length > 0 ? items : null;
-}
-
-function formatArgs(raw?: string): string {
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw);
-    return Object.entries(parsed)
-      .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-      .join(', ');
-  } catch {
-    return raw;
-  }
 }
 
 function parseArgsRecord(raw?: string): Record<string, unknown> | null {
@@ -1521,7 +1511,7 @@ export function ToolCallCard({
     ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
     : null;
   const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
-  const formattedArgs = formatArgs(args);
+  const formattedArgs = formatToolArgumentsForDisplay(args);
   const briefLabel = skillActivationName
     ? (
         skillActivation
@@ -1550,17 +1540,12 @@ export function ToolCallCard({
         resourceKeyCount > 0 ? t('chat.capabilityResources', { count: String(resourceKeyCount) }) : null,
       ].filter(Boolean).join(' · ')
     : null;
-  const suppressNoisyLiveArgs =
-    isCommandExecutionRender
-    && isPending
-    && (argsStatus === 'pending' || argsStatus === 'streaming');
-  const rawStreamingArgsPreview =
-    !suppressNoisyLiveArgs
-    && isPending
-    && (argsStatus === 'streaming' || status === 'starting' || status === 'approvalPending')
-    && args
-      ? args.length > 500 ? args.slice(0, 500) + '\u2026' : args
-      : null;
+  const inputPresentation = getToolInputPresentation({
+    toolName: safeToolName,
+    renderKind,
+    argsStatus,
+    status,
+  });
   const subagentRun = useMemo(
     () => buildSubagentRun(safeToolName, args, status, content, isError, artifacts),
     [safeToolName, args, status, content, isError, artifacts],
@@ -1714,10 +1699,9 @@ export function ToolCallCard({
     visibleResultContent || hasStructuredResult,
   );
   const visibleFormattedArgs =
-    fileDiff || diffStats || isFileChangeRender || suppressNoisyLiveArgs || hideCompletedArgs
+    fileDiff || diffStats || isFileChangeRender || inputPresentation !== 'final' || hideCompletedArgs
       ? null
       : formattedArgs;
-  const streamingArgsPreview = fileDiff || diffStats || isFileChangeRender ? null : rawStreamingArgsPreview;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;
   const expandableDetails = Boolean(
@@ -1734,8 +1718,7 @@ export function ToolCallCard({
     diffStats ||
     generatedImage ||
     graphUsage ||
-    showImagePendingPreview ||
-    streamingArgsPreview,
+    showImagePendingPreview,
   );
   const toolTone = getToolTone(safeToolName);
   const traceToneClass = 'tool-tone-surface';
@@ -1815,11 +1798,7 @@ export function ToolCallCard({
               className="overflow-hidden"
             >
               <div className={`ml-3 mt-1.5 max-w-[36rem] space-y-2 border-l py-1.5 pl-3 pr-1 ${traceDetailBorderClass}`}>
-                {streamingArgsPreview ? (
-                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
-                    {streamingArgsPreview}
-                  </pre>
-                ) : visibleFormattedArgs ? (
+                {visibleFormattedArgs ? (
                   <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
                     {visibleFormattedArgs}
                   </div>
@@ -1982,11 +1961,7 @@ export function ToolCallCard({
               className="overflow-hidden"
             >
               <div className={`ml-3 mt-1.5 max-w-[32rem] space-y-1.5 border-l py-1 pl-2.5 pr-1 ${traceDetailBorderClass}`}>
-                {streamingArgsPreview ? (
-                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
-                    {streamingArgsPreview}
-                  </pre>
-                ) : visibleFormattedArgs ? (
+                {visibleFormattedArgs ? (
                   <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
                     {visibleFormattedArgs}
                   </div>
@@ -2357,14 +2332,7 @@ export function ToolCallCard({
                   </Button>
                 </div>
               )}
-              {streamingArgsPreview && (
-                <pre
-                  className="mb-2 whitespace-pre-wrap break-words rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary max-h-48 overflow-y-auto"
-                >
-                  {streamingArgsPreview}
-                </pre>
-              )}
-              {visibleFormattedArgs && !streamingArgsPreview && (
+              {visibleFormattedArgs && (
                 <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
                   {visibleFormattedArgs}
                 </div>

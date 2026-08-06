@@ -156,6 +156,7 @@ class StreamStoreImpl {
       finishReason: s.finishReason,
       contextOverflow: s.contextOverflow,
       rateLimited: s.rateLimited,
+      connectionState: s.connectionState,
       autoCompacted: s.autoCompacted,
       pendingApprovals: s.pendingApprovals,
       taskRun: s.taskRun,

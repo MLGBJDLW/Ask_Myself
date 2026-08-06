@@ -611,5 +611,12 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "プロバイダーに再接続しています",
+  "connectionDegraded": "プロバイダー接続が不安定です",
+  "connectionRecovered": "プロバイダー接続が復旧しました",
+  "connectionOffline": "プロバイダーはオフラインです",
+  "connectionFailed": "プロバイダー接続に失敗しました",
+  "connectionTurnPreserved": "現在のターンは保持されています。",
+  "connectionTurnNotPreserved": "このターンを保持できませんでした。"
 }
