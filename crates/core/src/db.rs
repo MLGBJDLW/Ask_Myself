@@ -33,9 +33,17 @@ pub struct StoredDocumentMetadata {
 impl Database {
     /// Open a file-backed database with WAL mode, PRAGMAs, and auto-migration.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let conn = Connection::open(path.as_ref())?;
+        let mut conn = Connection::open(path.as_ref())?;
         Self::configure_connection(&conn)?;
         crate::migrations::run_migrations(&conn)?;
+        if let Err(error) =
+            crate::settings_schema_v2::migrate_legacy_agent_configs_on_open(&mut conn)
+        {
+            tracing::error!(
+                error = %error,
+                "Settings Schema V2 migration failed; keeping the V1 schema active"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: Some(path.as_ref().to_path_buf()),
@@ -44,9 +52,17 @@ impl Database {
 
     /// Open an in-memory database for testing.
     pub fn open_memory() -> Result<Self, CoreError> {
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         Self::configure_connection(&conn)?;
         crate::migrations::run_migrations(&conn)?;
+        if let Err(error) =
+            crate::settings_schema_v2::migrate_legacy_agent_configs_on_open(&mut conn)
+        {
+            tracing::error!(
+                error = %error,
+                "Settings Schema V2 migration failed; keeping the V1 schema active"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: None,

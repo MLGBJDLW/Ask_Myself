@@ -811,7 +811,7 @@ impl Database {
 
     pub fn save_app_config(&self, config: &AppConfig) -> Result<(), CoreError> {
         let json = serde_json::to_string(&encrypt_app_config_secrets(config.clone())?)?;
-        let conn = self.conn();
+        let mut conn = self.conn();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_config (
                  key TEXT PRIMARY KEY NOT NULL,
@@ -826,6 +826,7 @@ impl Database {
                                             updated_at = excluded.updated_at",
             params![APP_CONFIG_KEY, &json],
         )?;
+        crate::settings_schema_v2::sync_legacy_app_config(&mut conn)?;
         Ok(())
     }
 

@@ -85,6 +85,7 @@ pub mod quality_profile;
 pub mod rag;
 pub mod runtime;
 pub mod search;
+pub mod settings_schema_v2;
 pub mod skills;
 pub mod source_tree;
 pub mod sources;

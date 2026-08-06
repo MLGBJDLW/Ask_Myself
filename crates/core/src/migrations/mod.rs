@@ -1724,6 +1724,71 @@ Every answer that uses knowledge base search results.
              ON interaction_responses(response_message_id)
              WHERE response_message_id IS NOT NULL;",
     ),
+    (
+        "v095_settings_schema_v2",
+        "CREATE TABLE IF NOT EXISTS settings_profiles_v2 (
+             id TEXT PRIMARY KEY NOT NULL,
+             schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+             revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+             scope_kind TEXT NOT NULL CHECK (
+                 scope_kind IN ('application', 'workspace', 'agent', 'task')
+             ),
+             scope_id TEXT NOT NULL DEFAULT '',
+             name TEXT NOT NULL,
+             preset_id TEXT,
+             preset_version INTEGER,
+             preset_hash TEXT,
+             document_json TEXT NOT NULL CHECK (json_valid(document_json)),
+             managed_by TEXT,
+             legacy_source_id TEXT,
+             source_fingerprint TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(scope_kind, scope_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_settings_profiles_v2_scope
+             ON settings_profiles_v2(scope_kind, scope_id);
+         CREATE INDEX IF NOT EXISTS idx_settings_profiles_v2_legacy_source
+             ON settings_profiles_v2(managed_by, legacy_source_id)
+             WHERE legacy_source_id IS NOT NULL;
+
+         CREATE TABLE IF NOT EXISTS settings_schema_state (
+             singleton_id INTEGER PRIMARY KEY NOT NULL DEFAULT 1
+                 CHECK (singleton_id = 1),
+             active_version INTEGER NOT NULL CHECK (active_version IN (1, 2)),
+             migration_id TEXT,
+             activated_at TEXT,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         INSERT OR IGNORE INTO settings_schema_state (
+             singleton_id, active_version
+         ) VALUES (1, 1);
+
+         CREATE TABLE IF NOT EXISTS settings_schema_migration_journal (
+             id TEXT PRIMARY KEY NOT NULL,
+             migration_run_id TEXT NOT NULL,
+             migration_key TEXT NOT NULL,
+             source_kind TEXT NOT NULL,
+             source_id TEXT NOT NULL,
+             source_fingerprint TEXT NOT NULL,
+             target_profile_id TEXT NOT NULL,
+             status TEXT NOT NULL CHECK (
+                 status IN ('applied', 'rolled_back', 'superseded')
+             ),
+             source_snapshot_ciphertext TEXT NOT NULL,
+             source_hash TEXT NOT NULL,
+             target_hash TEXT NOT NULL,
+             round_trip_verified INTEGER NOT NULL DEFAULT 0
+                 CHECK (round_trip_verified IN (0, 1)),
+             applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+             rolled_back_at TEXT,
+             UNIQUE(migration_key, source_kind, source_id, source_fingerprint)
+         );
+         CREATE INDEX IF NOT EXISTS idx_settings_schema_migration_source
+             ON settings_schema_migration_journal(
+                 migration_key, source_kind, source_id, applied_at
+             );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -1838,6 +1903,9 @@ mod tests {
         assert!(tables.contains(&"chunks".to_string()));
         assert!(tables.contains(&"playbooks".to_string()));
         assert!(tables.contains(&"playbook_citations".to_string()));
+        assert!(tables.contains(&"settings_profiles_v2".to_string()));
+        assert!(tables.contains(&"settings_schema_state".to_string()));
+        assert!(tables.contains(&"settings_schema_migration_journal".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));
         assert!(tables.contains(&"embeddings".to_string()));
         assert!(tables.contains(&"feedback".to_string()));
