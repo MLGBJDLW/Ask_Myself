@@ -1617,6 +1617,15 @@ export function ChatMessages(props: ChatMessagesProps) {
     const container = scrollContainerRef.current;
     if (!container || turnNavigationItems.length === 0) return;
 
+    // Programmatic navigation to the first turn lands at the absolute top.
+    // Keep that explicit selection stable even when a compact first turn is
+    // shorter than the viewport probe used for ordinary scroll tracking.
+    if (container.scrollTop <= 1) {
+      const firstId = turnNavigationItems[0].id;
+      setActiveTurnNavigationId((current) => current === firstId ? current : firstId);
+      return;
+    }
+
     const marker = container.scrollTop + Math.min(container.clientHeight * 0.34, 220);
     let nextActive = activeTurnNavigationId ?? turnNavigationItems[0].id;
     let nextTop = Number.NEGATIVE_INFINITY;
