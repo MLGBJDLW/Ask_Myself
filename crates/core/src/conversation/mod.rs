@@ -64,6 +64,12 @@ pub struct ImageAttachment {
     pub base64_data: String,
     pub media_type: String,
     pub original_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_analysis: Option<crate::vision_router::VisionAttachmentAnalysis>,
 }
 
 /// A single message within a conversation.
@@ -2952,6 +2958,65 @@ impl Database {
             return Err(CoreError::NotFound(format!("Message {message_id}")));
         }
         invalidate_context_projection(&conn, &conversation_id)?;
+        Ok(())
+    }
+
+    /// Atomically persist the image-analysis projection and the secret-free
+    /// text replayed to future model turns.
+    pub fn update_message_vision_context(
+        &self,
+        message_id: &str,
+        attachments: &[ImageAttachment],
+        llm_context_content: &str,
+    ) -> Result<(), CoreError> {
+        let mut conn = self.conn();
+        let transaction = conn.transaction()?;
+        let (conversation_id, artifacts_json): (String, Option<String>) = transaction
+            .query_row(
+                "SELECT conversation_id, artifacts_json FROM messages WHERE id = ?1",
+                rusqlite::params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Message {message_id}")))?;
+        let mut artifacts = match artifacts_json {
+            Some(json) => serde_json::from_str::<serde_json::Value>(&json)?,
+            None => serde_json::json!({}),
+        };
+        if !artifacts.is_object() {
+            artifacts = serde_json::json!({
+                "kind": "messageContextChannels",
+                "displayArtifacts": artifacts,
+            });
+        }
+        let map = artifacts.as_object_mut().ok_or_else(|| {
+            CoreError::Internal("Message artifacts must be an object".to_string())
+        })?;
+        map.insert(
+            LLM_CONTEXT_CONTENT_ARTIFACT_KEY.to_string(),
+            serde_json::Value::String(llm_context_content.to_string()),
+        );
+        map.insert(
+            "llmContextVersion".to_string(),
+            serde_json::Value::Number(1.into()),
+        );
+        let artifacts_json = serde_json::to_string(&artifacts)?;
+        let attachments_json = if attachments.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(attachments)?)
+        };
+        let affected = transaction.execute(
+            "UPDATE messages
+             SET artifacts_json = ?2, image_attachments_json = ?3
+             WHERE id = ?1",
+            rusqlite::params![message_id, artifacts_json, attachments_json],
+        )?;
+        if affected != 1 {
+            return Err(CoreError::NotFound(format!("Message {message_id}")));
+        }
+        invalidate_context_projection(&transaction, &conversation_id)?;
+        transaction.commit()?;
         Ok(())
     }
 

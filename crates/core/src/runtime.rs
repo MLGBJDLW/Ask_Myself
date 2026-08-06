@@ -226,6 +226,8 @@ pub struct StartTurnRequest {
     #[serde(default)]
     pub custom_orchestration: Option<CustomOrchestrationOptions>,
     #[serde(default)]
+    pub vision_turn_override: Option<crate::vision_router::VisionTurnOverride>,
+    #[serde(default)]
     pub user_artifacts: Option<serde_json::Value>,
     #[serde(default)]
     pub task_orchestrator_run_id: Option<String>,

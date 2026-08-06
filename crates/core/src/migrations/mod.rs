@@ -1916,6 +1916,21 @@ Every answer that uses knowledge base search results.
              PRIMARY KEY(run_id, capability_id)
          );",
     ),
+    (
+        "v097_vision_observation_cache",
+        "CREATE TABLE IF NOT EXISTS vision_observation_cache (
+             attachment_hash TEXT NOT NULL CHECK (length(attachment_hash) = 64),
+             profile_hash TEXT NOT NULL CHECK (length(profile_hash) = 64),
+             schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+             observation_json TEXT NOT NULL CHECK (json_valid(observation_json)),
+             created_at_epoch INTEGER NOT NULL,
+             expires_at_epoch INTEGER NOT NULL CHECK (expires_at_epoch > created_at_epoch),
+             last_accessed_at_epoch INTEGER NOT NULL,
+             PRIMARY KEY(attachment_hash, profile_hash)
+         );
+         CREATE INDEX IF NOT EXISTS idx_vision_observation_cache_expiry
+             ON vision_observation_cache(expires_at_epoch);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2040,6 +2055,7 @@ mod tests {
         assert!(tables.contains(&"model_catalog_snapshots".to_string()));
         assert!(tables.contains(&"registry_activation_state".to_string()));
         assert!(tables.contains(&"agent_task_registry_snapshots".to_string()));
+        assert!(tables.contains(&"vision_observation_cache".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));
         assert!(tables.contains(&"embeddings".to_string()));
         assert!(tables.contains(&"feedback".to_string()));

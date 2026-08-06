@@ -4,10 +4,12 @@
 //! validation, and cache identity. Desktop orchestration supplies concrete OCR
 //! and LLM providers; provider-specific image serialization remains in `llm`.
 
+mod cache;
 mod classifier;
 mod observation;
 mod types;
 
+pub use cache::VisionObservationCacheEntry;
 pub use classifier::{classify_vision_route, VisionClassificationInput};
 pub use observation::{
     build_ocr_observation, execute_vision_observation, merge_vision_observations,
