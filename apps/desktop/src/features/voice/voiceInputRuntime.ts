@@ -7,6 +7,7 @@ import type { SpeechToTextConfig } from '../../types/conversation';
 import type { VideoConfig, WhisperModel } from '../../types/video';
 import { useMicrophoneDevices } from './useMicrophoneDevices';
 import { useVoiceRecorder } from './useVoiceRecorder';
+import { BoundedAudioUploadQueue } from './boundedAudioQueue';
 
 export type VoiceRuntimeErrorCode =
   | 'busy'
@@ -92,7 +93,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const [transcribing, setTranscribing] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState('');
   const realtimeSessionIdRef = useRef<string | null>(null);
-  const realtimeUploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const realtimeUploadQueueRef = useRef<BoundedAudioUploadQueue | null>(null);
   const realtimeUploadErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -123,6 +124,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       disposed = true;
       unlisten?.();
       const sessionId = realtimeSessionIdRef.current;
+      realtimeUploadQueueRef.current?.cancel();
       if (sessionId) void api.cancelRealtimeTranscription(sessionId);
     };
   }, []);
@@ -216,7 +218,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const transcribeWav = useCallback(async (wav: Uint8Array): Promise<VoiceRuntimeActionResult> => {
     setTranscribing(true);
     try {
-      const transcript = normalizeTranscript(await api.transcribeAudioBuffer(Array.from(wav)));
+      const transcript = normalizeTranscript(await api.transcribeAudioBuffer(wav));
       return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
     } catch (error) {
       return {
@@ -230,14 +232,13 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   }, []);
 
   const queueRealtimeAudio = useCallback((sessionId: string, chunk: Uint8Array) => {
-    realtimeUploadChainRef.current = realtimeUploadChainRef.current
-      .then(async () => {
-        if (realtimeUploadErrorRef.current) return;
-        await api.appendRealtimeTranscriptionAudio(sessionId, Array.from(chunk));
-      })
-      .catch((error) => {
-        realtimeUploadErrorRef.current = String(error);
-      });
+    if (realtimeSessionIdRef.current !== sessionId) return;
+    const queue = realtimeUploadQueueRef.current;
+    if (!queue || realtimeUploadErrorRef.current) return;
+    if (!queue.enqueue(chunk)) {
+      const snapshot = queue.snapshot();
+      realtimeUploadErrorRef.current = `Realtime audio backpressure limit reached (${snapshot.maxBufferedBytes} bytes buffered)`;
+    }
   }, []);
 
   const finishRealtimeRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
@@ -247,7 +248,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
 
     setTranscribing(true);
     try {
-      await realtimeUploadChainRef.current;
+      await realtimeUploadQueueRef.current?.flush();
       if (realtimeUploadErrorRef.current) {
         throw new Error(realtimeUploadErrorRef.current);
       }
@@ -263,7 +264,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       };
     } finally {
       realtimeSessionIdRef.current = null;
-      realtimeUploadChainRef.current = Promise.resolve();
+      realtimeUploadQueueRef.current = null;
       realtimeUploadErrorRef.current = null;
       setTranscribing(false);
     }
@@ -290,7 +291,9 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       if (isRealtimeTranscriptionConfig(appConfig.speechToText)) {
         const sessionId = await api.startRealtimeTranscription();
         realtimeSessionIdRef.current = sessionId;
-        realtimeUploadChainRef.current = Promise.resolve();
+        realtimeUploadQueueRef.current = new BoundedAudioUploadQueue(
+          (chunk) => api.appendRealtimeTranscriptionAudio(sessionId, chunk),
+        );
         realtimeUploadErrorRef.current = null;
         setPartialTranscript('');
         try {
@@ -301,6 +304,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           });
         } catch (error) {
           realtimeSessionIdRef.current = null;
+          realtimeUploadQueueRef.current?.cancel();
+          realtimeUploadQueueRef.current = null;
           void api.cancelRealtimeTranscription(sessionId);
           throw error;
         }
@@ -331,7 +336,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     recorder.cancelRecording();
     const sessionId = realtimeSessionIdRef.current;
     realtimeSessionIdRef.current = null;
-    realtimeUploadChainRef.current = Promise.resolve();
+    realtimeUploadQueueRef.current?.cancel();
+    realtimeUploadQueueRef.current = null;
     realtimeUploadErrorRef.current = null;
     setPartialTranscript('');
     if (sessionId) void api.cancelRealtimeTranscription(sessionId);

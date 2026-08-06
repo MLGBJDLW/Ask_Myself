@@ -107,6 +107,21 @@ function loadRealtimePcm() {
   return module.exports;
 }
 
+function loadBoundedAudioQueue() {
+  const queuePath = path.join(root, 'src', 'features', 'voice', 'boundedAudioQueue.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(queuePath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module, Uint8Array, Error }, {
+    filename: queuePath,
+  });
+  return module.exports;
+}
+
 function loadProviderIcons() {
   const iconsPath = path.join(root, 'src', 'lib', 'providerIcons.tsx');
   const transpiled = ts.transpileModule(fs.readFileSync(iconsPath, 'utf8'), {
@@ -324,6 +339,50 @@ test('desktop API exposes the complete realtime transcription lifecycle', () => 
   assert.match(apiSource, /append_realtime_transcription_audio_cmd/);
   assert.match(apiSource, /finish_realtime_transcription_cmd/);
   assert.match(apiSource, /cancel_realtime_transcription_cmd/);
+  assert.match(
+    apiSource,
+    /invoke<string>\('transcribe_audio_buffer_cmd', audioData\)/,
+    'final WAV should use a raw Uint8Array invoke body',
+  );
+  assert.match(
+    apiSource,
+    /invoke<void>\('append_realtime_transcription_audio_cmd', audioData, \{/,
+    'realtime PCM should use a raw Uint8Array invoke body',
+  );
+  assert.match(apiSource, /'x-nexa-session-id': sessionId/);
+  assert.doesNotMatch(apiSource, /Array\.from\(audioData\)/);
+});
+
+test('realtime renderer upload queue has a hard chunk and byte bound', () => {
+  const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
+  const neverCompletes = () => new Promise(() => {});
+  const queue = new BoundedAudioUploadQueue(neverCompletes, {
+    maxChunks: 3,
+    maxBytes: 12,
+    maxChunkBytes: 4,
+  });
+
+  assert.equal(queue.enqueue(new Uint8Array(4)), true);
+  assert.equal(queue.enqueue(new Uint8Array(4)), true);
+  assert.equal(queue.enqueue(new Uint8Array(4)), true);
+  assert.equal(queue.enqueue(new Uint8Array(4)), false);
+  assert.equal(queue.enqueue(new Uint8Array(6)), false);
+  const telemetry = queue.snapshot();
+  assert.equal(telemetry.maxQueueDepth, 3);
+  assert.equal(telemetry.maxBufferedBytes, 12);
+  assert.equal(telemetry.acceptedChunks, 3);
+  assert.equal(telemetry.rejectedChunks, 2);
+  queue.cancel();
+});
+
+test('voice runtime no longer builds an unbounded Promise chain or JSON byte arrays', () => {
+  const runtimeSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'voice', 'voiceInputRuntime.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(runtimeSource, /realtimeUploadChainRef/);
+  assert.doesNotMatch(runtimeSource, /Array\.from\((wav|chunk)\)/);
+  assert.match(runtimeSource, /BoundedAudioUploadQueue/);
 });
 
 test('realtime PCM encoder clips float samples into little-endian PCM16', () => {
