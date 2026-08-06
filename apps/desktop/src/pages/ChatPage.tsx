@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useState, useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { Archive, ArchiveRestore, Check, ChevronDown, Globe2, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
+import { DecisionTray } from '../components/chat/DecisionTray';
 import {
   TerminalDock,
   TERMINAL_TOGGLE_EVENT,
@@ -28,6 +29,8 @@ import { formatUserError } from '../lib/userError';
 import { useSpeechPlayback } from '../features/voice/SpeechPlaybackProvider';
 import { isGoalMessage, isSteeringMessage } from '../lib/chatMessageGuards';
 import { getActiveGoalContext } from '../lib/goalContext';
+import { interactionStore } from '../lib/interactionStore';
+import type { FormattedQuestionResponse } from '../lib/questionCards';
 import {
   GRAPH_AGENT_CONTEXT_EVENT,
   buildGraphCollectionContext,
@@ -558,6 +561,39 @@ export function ChatPage() {
     initialCollectionContext,
     activePersonaId,
   });
+  const interactionState = useSyncExternalStore(
+    interactionStore.subscribe,
+    interactionStore.getState,
+    interactionStore.getState,
+  );
+  const activeInteractionQueue = useMemo(
+    () => chat.activeId ? interactionStore.queue(chat.activeId) : [],
+    [chat.activeId, interactionState],
+  );
+  const activeInteraction = activeInteractionQueue[0] ?? null;
+
+  const refreshInteractions = useCallback(async () => {
+    const requests = await api.listInteractionRequests(null, false);
+    interactionStore.replaceRequests(null, requests);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const requests = await api.listInteractionRequests(null, false);
+        if (!disposed) interactionStore.replaceRequests(null, requests);
+      } catch {
+        // The durable task/run projection remains available while the host is reconnecting.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [chat.taskRun?.status, chat.taskRun?.updatedAt]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [autoSpeechSaving, setAutoSpeechSaving] = useState(false);
   const { speakMessage, stop: stopSpeech } = useSpeechPlayback();
@@ -683,13 +719,24 @@ export function ChatPage() {
 
   const handleChatSend = useCallback(
     async (content: string, attachments?: ImageAttachment[], inputOptions?: ChatInputSendOptions) => {
+      const isDurableInteractionResponse = Boolean(
+        inputOptions?.userArtifacts
+        && !Array.isArray(inputOptions.userArtifacts)
+        && inputOptions.userArtifacts.kind === 'questionResponse'
+        && inputOptions.userArtifacts.version === 2,
+      );
       const suggestedPersonaId =
-        activePersonaId === 'default' ? suggestPersonaId(content, personas) : null;
+        !isDurableInteractionResponse && activePersonaId === 'default'
+          ? suggestPersonaId(content, personas)
+          : null;
       const personaForSend = suggestedPersonaId ?? activePersonaId;
       if (suggestedPersonaId && suggestedPersonaId !== activePersonaId) {
         setPersona(suggestedPersonaId);
       }
-      const graphContext = pendingGraphContext;
+      // A Decision Tray submission is a control-plane continuation of the
+      // existing turn. Keep its artifact at the root and leave any separately
+      // staged graph context available for the user's next ordinary message.
+      const graphContext = isDurableInteractionResponse ? null : pendingGraphContext;
       if (graphContext?.sourceId) {
         currentSourceIdsRef.current = [graphContext.sourceId];
       }
@@ -741,6 +788,36 @@ export function ChatPage() {
     },
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
+
+  const handleInteractionSubmit = useCallback(async (
+    response: FormattedQuestionResponse,
+  ) => {
+    await handleChatSend(response.message, undefined, { userArtifacts: response.artifact });
+    await Promise.all([refreshInteractions(), chat.reloadMessages()]);
+  }, [chat.reloadMessages, handleChatSend, refreshInteractions]);
+
+  const handleInteractionCancel = useCallback(async () => {
+    if (!chat.activeId) return;
+    await api.agentStop(chat.activeId);
+    await Promise.all([refreshInteractions(), chat.reloadMessages()]);
+  }, [chat.activeId, chat.reloadMessages, refreshInteractions]);
+
+  const handleComposerSend = useCallback(async (
+    content: string,
+    attachments?: ImageAttachment[],
+    inputOptions?: ChatInputSendOptions,
+  ) => {
+    if (!activeInteraction) {
+      await handleChatSend(content, attachments, inputOptions);
+      return;
+    }
+    if (attachments?.length) {
+      throw new Error(t('chat.decisionTraySupplementTextOnly'));
+    }
+    await api.appendInteractionSupplement(activeInteraction.interactionId, content);
+    await chat.reloadMessages();
+    toast.success(t('chat.decisionTraySupplementSaved'));
+  }, [activeInteraction, chat.reloadMessages, handleChatSend, t]);
 
   const handleApprovePlan = useCallback(
     (planMarkdown: string, sourceMessageId: string) => {
@@ -1757,6 +1834,16 @@ export function ChatPage() {
             {!isArchivedConversation && (
               <ConnectionStatusBanner connection={chat.connectionState} />
             )}
+            {!isArchivedConversation && activeInteraction && (
+              <DecisionTray
+                request={activeInteraction}
+                draft={interactionState.draftsById[activeInteraction.interactionId]}
+                queuePosition={1}
+                queueTotal={activeInteractionQueue.length}
+                onSubmit={handleInteractionSubmit}
+                onCancelTask={handleInteractionCancel}
+              />
+            )}
             {isArchivedConversation ? (
               <div className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3">
                 <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 rounded-lg border border-border/70 bg-surface-2/70 px-3 py-2">
@@ -1778,7 +1865,7 @@ export function ChatPage() {
                 </div>
               </div>
             ) : <ChatInput
-              onSend={handleChatSend}
+              onSend={handleComposerSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
               disabled={!chat.agentConfig || chat.loadingMsgs}

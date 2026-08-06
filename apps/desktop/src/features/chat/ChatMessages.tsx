@@ -639,22 +639,22 @@ function TraceSteeringRow({
   );
 }
 
-function collectAnsweredQuestionCalls(
+function collectQuestionResponses(
   value: unknown,
-  output: Set<string>,
+  output: Map<string, Record<string, unknown>>,
   depth = 0,
 ) {
   if (depth > 6 || value == null) return;
   if (Array.isArray(value)) {
-    value.forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+    value.forEach((item) => collectQuestionResponses(item, output, depth + 1));
     return;
   }
   if (typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
   if (record.kind === 'questionResponse' && typeof record.requestCallId === 'string') {
-    output.add(record.requestCallId);
+    output.set(record.requestCallId, record);
   }
-  Object.values(record).forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+  Object.values(record).forEach((item) => collectQuestionResponses(item, output, depth + 1));
 }
 
 export function ChatMessages(props: ChatMessagesProps) {
@@ -706,10 +706,10 @@ export function ChatMessages(props: ChatMessagesProps) {
     () => getActiveGoalContext(messages),
     [messages],
   );
-  const answeredQuestionCalls = useMemo(() => {
-    const answered = new Set<string>();
-    messages.forEach((message) => collectAnsweredQuestionCalls(message.artifacts, answered));
-    return answered;
+  const questionResponses = useMemo(() => {
+    const responses = new Map<string, Record<string, unknown>>();
+    messages.forEach((message) => collectQuestionResponses(message.artifacts, responses));
+    return responses;
   }, [messages]);
 
   const { t } = useTranslation();
@@ -1057,7 +1057,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                 argsStatus={section.toolCall.argsStatus}
                 argsBytes={section.toolCall.argsBytes}
                 trace={section.trace}
-                questionAnswered={answeredQuestionCalls.has(section.toolCall.callId)}
+                questionAnswered={questionResponses.has(section.toolCall.callId)}
+                questionResponse={questionResponses.get(section.toolCall.callId)}
                 onQuestionSubmit={onQuestionSubmit}
               />
             ),
@@ -1066,7 +1067,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           return null;
       }
     },
-    [answeredQuestionCalls, onQuestionSubmit, renderTraceReplyNode, t],
+    [onQuestionSubmit, questionResponses, renderTraceReplyNode, t],
   );
 
   const renderTimelineSections = useCallback(
@@ -1082,7 +1083,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       const hasPendingQuestion = sections.some(
         (section) => section.kind === 'tool'
           && section.toolCall.toolName === 'request_user_input'
-          && !answeredQuestionCalls.has(section.toolCall.callId),
+          && !questionResponses.has(section.toolCall.callId),
       );
       return renderThinkingTraceNode(
         key,
@@ -1091,7 +1092,7 @@ export function ChatMessages(props: ChatMessagesProps) {
         hasPendingQuestion,
       );
     },
-    [answeredQuestionCalls, renderThinkingTraceNode, renderTimelineSections],
+    [questionResponses, renderThinkingTraceNode, renderTimelineSections],
   );
 
   const messageThinkingText = useMemo(() => {

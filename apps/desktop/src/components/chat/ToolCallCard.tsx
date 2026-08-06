@@ -35,6 +35,7 @@ import {
   ScrollText,
   Sparkles,
   Volume2,
+  CircleHelp,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
@@ -279,6 +280,65 @@ interface ToolCallCardProps {
   argsBytes?: number;
   onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
   questionAnswered?: boolean;
+  questionResponse?: unknown;
+}
+
+function QuestionRequestTimelineRecord({
+  request,
+  answered,
+  response,
+}: {
+  request: NonNullable<ReturnType<typeof extractQuestionRequest>>;
+  answered: boolean;
+  response?: unknown;
+}) {
+  const { t } = useTranslation();
+  const record = response && typeof response === 'object' && !Array.isArray(response)
+    ? response as Record<string, unknown>
+    : null;
+  const answerRows = Array.isArray(record?.answers)
+    ? record.answers.flatMap((value, index) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const answer = value as Record<string, unknown>;
+        const values = Array.isArray(answer.answers)
+          ? answer.answers.filter((item): item is string => typeof item === 'string')
+          : [];
+        return [{
+          id: typeof answer.id === 'string' ? answer.id : `answer-${index}`,
+          question: typeof answer.question === 'string' ? answer.question : '',
+          values,
+        }];
+      })
+    : [];
+  return (
+    <details
+      data-testid="question-request-summary"
+      className="my-1.5 rounded-lg border border-border/70 bg-surface-1/75 px-3 py-2"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs text-text-secondary marker:content-none">
+        {answered
+          ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+          : <CircleHelp className="h-3.5 w-3.5 shrink-0 text-accent" />}
+        <span className="font-medium text-text-primary">
+          {t('chat.decisionTrayAskedSummary', { count: request.questions.length })}
+        </span>
+        <span className="text-text-tertiary">·</span>
+        <span className={answered ? 'text-success' : 'text-accent'}>
+          {t(answered ? 'chat.questionAnswered' : 'chat.decisionTrayWaiting')}
+        </span>
+      </summary>
+      {answered && answerRows.length > 0 && (
+        <dl className="mt-2 space-y-1.5 border-t border-border/60 pt-2">
+          {answerRows.map((answer) => (
+            <div key={answer.id} className="grid gap-0.5 text-[11px] sm:grid-cols-[minmax(8rem,0.35fr)_1fr] sm:gap-3">
+              <dt className="truncate text-text-tertiary">{answer.question}</dt>
+              <dd className="text-text-secondary">{answer.values.join(', ')}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </details>
+  );
 }
 
 function formatByteCount(bytes: number): string {
@@ -1473,6 +1533,7 @@ export function ToolCallCard({
   argsStatus,
   onQuestionSubmit,
   questionAnswered,
+  questionResponse,
 }: ToolCallCardProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1603,6 +1664,15 @@ export function ToolCallCard({
   }, [isPending, subagentBatch, subagentJudgement]);
 
   if (questionRequest && !inline) {
+    if (questionRequest.interactionId) {
+      return (
+        <QuestionRequestTimelineRecord
+          request={questionRequest}
+          answered={Boolean(questionAnswered || questionResponse)}
+          response={questionResponse}
+        />
+      );
+    }
     return (
       <QuestionRequestPanel
         request={questionRequest}

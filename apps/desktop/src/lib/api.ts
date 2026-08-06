@@ -1018,6 +1018,9 @@ export const markInteractionPresented = (interactionId: string) =>
 export const markInteractionPartiallyAnswered = (interactionId: string) =>
   invoke<InteractionRequest>('mark_interaction_partially_answered_cmd', { interactionId });
 
+export const appendInteractionSupplement = (interactionId: string, content: string) =>
+  invoke<ConversationMessage>('append_interaction_supplement_cmd', { interactionId, content });
+
 export const submitInteractionResponse = (input: SubmitInteractionResponse) =>
   invoke<InteractionResponse>('submit_interaction_response_cmd', { input });
 
