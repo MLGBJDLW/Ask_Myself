@@ -551,10 +551,36 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
 
             let app_cfg = db.load_app_config().unwrap_or_default();
-            let provider_config = db_config_to_provider_config(&db_config, None);
+            let registry_scope = nexa_core::capability_registry::RegistryScope {
+                workspace_id: conv.project_id.clone(),
+                agent_id: Some(db_config.id.clone()),
+                task_id: Some(task_run_id.clone()),
+            };
+            let mut effective_db_config = db_config.clone();
+            let provider_config = match db
+                .resolve_runtime_capability(&registry_scope, "text_generation")
+                .map_err(|error| error.to_string())?
+            {
+                Some(resolution) => {
+                    db.pin_task_registry_snapshot(&task_run_id, &resolution.snapshot)
+                        .map_err(|error| error.to_string())?;
+                    effective_db_config.provider = resolution.provider_id;
+                    effective_db_config.provider_endpoint_id = Some(resolution.endpoint_id);
+                    effective_db_config.base_url = resolution.provider_config.base_url.clone();
+                    effective_db_config.api_key = resolution
+                        .provider_config
+                        .api_key
+                        .clone()
+                        .unwrap_or_default();
+                    effective_db_config.model = resolution.model_id.clone();
+                    effective_db_config.model_id = Some(resolution.model_id);
+                    resolution.provider_config
+                }
+                None => db_config_to_provider_config(&db_config, None),
+            };
             let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
             let provider = if collaboration_mode.is_moa() {
-                build_moa_provider(db.as_ref(), &db_config, provider, moa_preset)?
+                build_moa_provider(db.as_ref(), &effective_db_config, provider, moa_preset)?
             } else {
                 provider
             };
@@ -600,7 +626,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     message: &message,
                     persona_id: persona_id.as_deref(),
                     explicit_skill_ids: &requested_skill_ids,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     app_cfg: &app_cfg,
                     execution_mode,
                     power_mode,
@@ -623,16 +649,18 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
             let context_pack = desktop_turn_config.context_pack;
             let mut executor_config = desktop_turn_config.executor_config;
-            let summarization_provider =
-                match resolve_desktop_summarization_provider_config(db.as_ref(), &db_config)? {
-                    Some((summary_config, _, summary_model)) => {
-                        executor_config.summarization_model = Some(summary_model);
-                        executor_config.summarization_provider_type =
-                            Some(summary_config.provider_type);
-                        Some(create_provider(summary_config).map_err(|error| error.to_string())?)
-                    }
-                    None => None,
-                };
+            let summarization_provider = match resolve_desktop_summarization_provider_config(
+                db.as_ref(),
+                &effective_db_config,
+            )? {
+                Some((summary_config, _, summary_model)) => {
+                    executor_config.summarization_model = Some(summary_model);
+                    executor_config.summarization_provider_type =
+                        Some(summary_config.provider_type);
+                    Some(create_provider(summary_config).map_err(|error| error.to_string())?)
+                }
+                None => None,
+            };
 
             let session_dependencies =
                 build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
@@ -647,8 +675,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     pinned_skill_ids: &pinned_skill_ids,
                     provider_config: provider_config.clone(),
                     executor_config: executor_config.clone(),
-                    subagent_allowed_tools: db_config.subagent_allowed_tools.clone(),
-                    subagent_allowed_skill_ids: db_config.subagent_allowed_skill_ids.clone(),
+                    subagent_allowed_tools: effective_db_config.subagent_allowed_tools.clone(),
+                    subagent_allowed_skill_ids: effective_db_config
+                        .subagent_allowed_skill_ids
+                        .clone(),
                     cancel_token: cancel_token_clone.clone(),
                     plan_mode: execution_mode.is_plan(),
                     mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
@@ -692,7 +722,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     db: db.as_ref(),
                     conversation_id: &conv_id,
                     task_run_id: &task_run_id,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     app_cfg: &app_cfg,
                     source_scope_ids: &source_scope_ids,
                     selected_skills: &session_dependencies.selected_skills,
@@ -737,7 +767,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     db: &db,
                     app_handle: Some(&handle),
                     provider_config: &provider_config,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     message: &user_llm_content,
                     attachments: attachments.as_deref(),
                 })?;
