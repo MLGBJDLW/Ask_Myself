@@ -172,7 +172,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         taskOrchestratorRunId,
       );
       streamStore.bindTurnHandle(conversationId, handle);
-      if (handle.state === 'awaitingUserInput') {
+      if (handle?.state === 'awaitingUserInput') {
         streamStore.markAwaitingUserInput(conversationId);
       }
     } catch (err) {
