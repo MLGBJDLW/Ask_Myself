@@ -445,8 +445,10 @@ export function ChatInput({
   }, [agentId]);
 
   useEffect(() => {
-    if (!hasImageAttachments) setVisionTurnOverride(null);
-  }, [hasImageAttachments]);
+    // A per-turn decision authorizes exactly the current attachment set. Any
+    // add/remove/replace operation requires a fresh Ask-mode decision.
+    setVisionTurnOverride(null);
+  }, [attachments]);
 
   const resetInputHistoryNavigation = useCallback(() => {
     setInputHistoryIndex(-1);

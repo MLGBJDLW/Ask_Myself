@@ -52,6 +52,7 @@ function routeActivation(
 }
 
 type VisionMode = 'off' | 'ask' | 'auto' | 'always_auxiliary';
+type VisionFallbackMode = 'disabled' | 'ask' | 'automatic';
 
 function optionBoolean(route: ResolvedCapabilityRoute, key: string, fallback: boolean): boolean {
   return typeof route.options[key] === 'boolean' ? route.options[key] as boolean : fallback;
@@ -72,6 +73,8 @@ function VisionCapabilityEditor({
   ));
   const [primaryTargetId, setPrimaryTargetId] = useState(route.primary?.target.id ?? '');
   const [fallbackTargetId, setFallbackTargetId] = useState(route.fallbacks[0]?.target.id ?? '');
+  const [fallbackMode, setFallbackMode] = useState<VisionFallbackMode>(route.fallbackMode);
+  const [allowCrossProvider, setAllowCrossProvider] = useState(route.constraints.allowCrossProvider);
   const [preferLocal, setPreferLocal] = useState(() => optionBoolean(route, 'preferLocalProcessing', true));
   const [localOnly, setLocalOnly] = useState(() => optionBoolean(route, 'localOnly', false));
   const [cacheEnabled, setCacheEnabled] = useState(() => optionBoolean(route, 'cacheEnabled', true));
@@ -101,6 +104,8 @@ function VisionCapabilityEditor({
     if (!target || !connection) return null;
     return {
       connectionId: connection.id,
+      targetId: target.id,
+      targetRevision: target.revision,
       providerId: connection.providerId,
       endpointId: connection.endpointId,
       modelId: target.upstreamModelId,
@@ -114,15 +119,34 @@ function VisionCapabilityEditor({
       return;
     }
     const fallback = referenceFor(fallbackTargetId);
-    const hasFallback = Boolean(fallback && fallbackTargetId !== primaryTargetId);
+    const hasFallback = fallbackMode !== 'disabled'
+      && Boolean(fallback && fallbackTargetId !== primaryTargetId);
+    if (fallbackMode !== 'disabled' && !hasFallback) {
+      toast.error(t('settings.visionFallbackRequired'));
+      return;
+    }
+    const primaryTarget = candidates.find((candidate) => candidate.id === primaryTargetId);
+    const fallbackTarget = candidates.find((candidate) => candidate.id === fallbackTargetId);
+    const primaryConnection = primaryTarget ? connections.get(primaryTarget.connectionId) : undefined;
+    const fallbackConnection = fallbackTarget ? connections.get(fallbackTarget.connectionId) : undefined;
+    const crossesProvider = Boolean(
+      hasFallback
+      && primaryConnection
+      && fallbackConnection
+      && primaryConnection.providerId !== fallbackConnection.providerId,
+    );
+    if (crossesProvider && !allowCrossProvider) {
+      toast.error(t('settings.visionCrossProviderConsentRequired'));
+      return;
+    }
     const binding: CapabilityBindingV2 = {
       primary,
       fallbacks: hasFallback && fallback ? [fallback] : [],
-      fallbackMode: hasFallback ? 'automatic' : 'disabled',
+      fallbackMode: hasFallback ? fallbackMode : 'disabled',
       constraints: {
-        requireSameConnection: !hasFallback,
-        allowCrossProvider: hasFallback,
-        allowCrossRegion: hasFallback,
+        requireSameConnection: !hasFallback || !allowCrossProvider,
+        allowCrossProvider,
+        allowCrossRegion: allowCrossProvider,
         requiresStreaming: false,
         dataClasses: localOnly ? ['confidential'] : [],
       },
@@ -162,7 +186,7 @@ function VisionCapabilityEditor({
         <h4 className="text-sm font-semibold text-text-primary">{t('settings.visionRouterTitle')}</h4>
         <p className="mt-1 text-xs leading-5 text-text-tertiary">{t('settings.visionRouterDesc')}</p>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-4">
         <label className="space-y-1 text-xs text-text-secondary">
           <span>{t('settings.visionMode')}</span>
           <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 text-sm" value={mode} onChange={(event) => setMode(event.target.value as VisionMode)}>
@@ -170,6 +194,14 @@ function VisionCapabilityEditor({
             <option value="ask">{t('settings.visionModeAsk')}</option>
             <option value="auto">{t('settings.visionModeAuto')}</option>
             <option value="always_auxiliary">{t('settings.visionModeAlwaysAux')}</option>
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-text-secondary">
+          <span>{t('settings.visionFallbackMode')}</span>
+          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 text-xs" value={fallbackMode} onChange={(event) => setFallbackMode(event.target.value as VisionFallbackMode)}>
+            <option value="disabled">{t('settings.visionFallbackDisabled')}</option>
+            <option value="ask">{t('settings.visionFallbackAsk')}</option>
+            <option value="automatic">{t('settings.visionFallbackAutomatic')}</option>
           </select>
         </label>
         <label className="space-y-1 text-xs text-text-secondary">
@@ -181,7 +213,7 @@ function VisionCapabilityEditor({
         </label>
         <label className="space-y-1 text-xs text-text-secondary">
           <span>{t('settings.visionFallbackModel')}</span>
-          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 font-mono text-xs" value={fallbackTargetId} onChange={(event) => setFallbackTargetId(event.target.value)}>
+          <select className="w-full rounded-lg border border-border bg-surface-1 px-2.5 py-2 font-mono text-xs" value={fallbackTargetId} disabled={fallbackMode === 'disabled'} onChange={(event) => setFallbackTargetId(event.target.value)}>
             <option value="">{t('settings.visionNoFallback')}</option>
             {candidates.filter((target) => target.id !== primaryTargetId).map((target) => <option key={target.id} value={target.id}>{target.upstreamModelId}</option>)}
           </select>
@@ -190,6 +222,7 @@ function VisionCapabilityEditor({
       <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-text-secondary">
         <label className="flex items-center gap-2"><input type="checkbox" checked={preferLocal || localOnly} disabled={localOnly} onChange={(event) => setPreferLocal(event.target.checked)} />{t('settings.visionPreferLocal')}</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={localOnly} onChange={(event) => setLocalOnly(event.target.checked)} />{t('settings.visionLocalOnly')}</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={allowCrossProvider} onChange={(event) => setAllowCrossProvider(event.target.checked)} />{t('settings.visionAllowCrossProvider')}</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={cacheEnabled} onChange={(event) => setCacheEnabled(event.target.checked)} />{t('settings.visionCache')}</label>
         <label className="flex items-center gap-2">{t('settings.visionCacheDays')}<input type="number" min={1} max={3650} className="w-20 rounded-md border border-border bg-surface-1 px-2 py-1" value={cacheDays} disabled={!cacheEnabled} onChange={(event) => setCacheDays(Number(event.target.value))} /></label>
         <Button type="button" size="sm" className="ml-auto" disabled={saving || candidates.length === 0} icon={saving ? <Loader2 size={13} className="animate-spin" /> : undefined} onClick={() => void save()}>{t('common.save')}</Button>

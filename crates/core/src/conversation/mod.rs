@@ -3108,7 +3108,7 @@ impl Database {
     }
 }
 
-fn invalidate_context_projection(
+pub(crate) fn invalidate_context_projection(
     conn: &rusqlite::Connection,
     conversation_id: &str,
 ) -> Result<(), CoreError> {

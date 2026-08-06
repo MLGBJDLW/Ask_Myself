@@ -102,6 +102,7 @@ import type {
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
+  VisionTurnOverride,
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
@@ -117,7 +118,7 @@ interface ChatMessagesProps {
   taskRun?: AgentTaskRun | null;
   isStreaming: boolean;
   error?: string | null;
-  onRetry?: (messageId?: string) => void;
+  onRetry?: (messageId?: string, visionTurnOverride?: VisionTurnOverride, refreshVision?: boolean) => void;
   onDismissError?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
@@ -2208,6 +2209,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                     return false;
                   })()}
                   onDeleteMessage={onDeleteMessage}
+                  onRetry={onRetry}
                   onEditAndResend={onEditAndResend}
                   onApprovePlan={onApprovePlan}
                   goalStatus={

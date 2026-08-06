@@ -292,6 +292,11 @@ pub struct RuntimeRegistrySnapshot {
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilityFallback {
     pub fallback_index: usize,
+    pub target_id: String,
+    pub target_revision: u64,
+    pub connection_id: String,
+    pub connection_revision: u64,
+    pub descriptor_hash: Option<String>,
     pub provider_id: String,
     pub endpoint_id: String,
     pub provider_config: crate::llm::ProviderConfig,

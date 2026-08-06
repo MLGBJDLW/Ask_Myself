@@ -39,8 +39,8 @@ use nexa_core::conversation::{
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
 use nexa_core::llm::{
-    create_provider, model_supports_vision, ContentPart, LlmProvider, Message, ProviderConfig,
-    ProviderType, ReasoningEffort, Role,
+    create_provider, model_declares_vision_support, model_supports_vision, ContentPart,
+    LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role,
 };
 use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
@@ -180,7 +180,10 @@ pub struct DesktopAgentVisionUserContentRequest<'a> {
     pub message: &'a str,
     pub attachments: Option<&'a [ImageAttachment]>,
     pub vision_resolution: Option<&'a RuntimeCapabilityResolution>,
-    pub vision_provider: Option<&'a dyn LlmProvider>,
+    pub task_run_id: &'a str,
+    pub primary_egress_id: &'a str,
+    pub primary_routes_local: bool,
+    pub primary_native_vision_allowed: bool,
     pub turn_override: Option<VisionTurnOverride>,
     pub cancellation: &'a CancellationToken,
 }
@@ -189,6 +192,18 @@ pub struct DesktopAgentVisionUserContentResult {
     pub parts: Vec<ContentPart>,
     pub attachments: Vec<ImageAttachment>,
     pub llm_context_content: String,
+}
+
+struct DesktopVisionProviderRoute {
+    fallback_index: usize,
+    target_id: String,
+    target_revision: u64,
+    provider_id: String,
+    egress_id: String,
+    model_id: String,
+    local: bool,
+    provider_type: ProviderType,
+    provider: Box<dyn LlmProvider>,
 }
 
 pub struct DesktopAgentPostSuccessLearningRequest {
@@ -1008,7 +1023,10 @@ pub async fn build_desktop_agent_vision_user_content(
         message,
         attachments,
         vision_resolution,
-        vision_provider,
+        task_run_id,
+        primary_egress_id,
+        primary_routes_local,
+        primary_native_vision_allowed,
         turn_override,
         cancellation,
     } = request;
@@ -1028,14 +1046,18 @@ pub async fn build_desktop_agent_vision_user_content(
         .map_err(|error| error.to_string())?
         .unwrap_or_default();
     let ocr_config = db.load_ocr_config().unwrap_or_default();
-    let primary_supports_vision =
-        model_supports_vision(&provider_config.provider_type, &db_config.model);
-    let primary_is_local = provider_config_is_local(provider_config);
+    let primary_supports_vision = primary_native_vision_allowed
+        && model_declares_vision_support(&provider_config.provider_type, &db_config.model);
+    let primary_is_local = primary_routes_local;
     let auxiliary_is_local = vision_resolution
         .is_some_and(|resolution| provider_config_is_local(&resolution.provider_config));
     let mut persisted_attachments = Vec::with_capacity(input_attachments.len());
     let mut llm_context_fragments = vec![message.to_string()];
     let mut non_image_attachments = Vec::new();
+    let mut provider_routes: Option<Vec<DesktopVisionProviderRoute>> = None;
+    let mut selected_fallback_index = vision_resolution
+        .map(|resolution| resolution.snapshot.fallback_index)
+        .unwrap_or_default();
 
     for original in input_attachments {
         if !original.media_type.starts_with("image/") {
@@ -1080,7 +1102,7 @@ pub async fn build_desktop_agent_vision_user_content(
             turn_override,
             primary_supports_vision,
             primary_is_local,
-            auxiliary_available: vision_resolution.is_some() && vision_provider.is_some(),
+            auxiliary_available: vision_resolution.is_some(),
             auxiliary_is_local,
             ocr_available: ocr_config.enabled,
         })
@@ -1093,6 +1115,26 @@ pub async fn build_desktop_agent_vision_user_content(
             connection_revision: resolution.snapshot.connection_revision,
             descriptor_hash: resolution.snapshot.descriptor_hash.clone(),
         });
+        let fallback_targets = vision_resolution
+            .map(|resolution| {
+                resolution
+                    .snapshot
+                    .fallback_targets
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.fallback_index > resolution.snapshot.fallback_index
+                    })
+                    .map(|candidate| VisionTargetProfile {
+                        binding_revision: resolution.snapshot.binding_revision,
+                        target_id: candidate.target_id.clone(),
+                        target_revision: candidate.target_revision,
+                        connection_id: candidate.connection_id.clone(),
+                        connection_revision: candidate.connection_revision,
+                        descriptor_hash: candidate.descriptor_hash.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let profile = VisionProfileV1 {
             observation_schema_version: VISION_OBSERVATION_SCHEMA_VERSION,
             classifier_version: VISION_CLASSIFIER_VERSION,
@@ -1101,6 +1143,14 @@ pub async fn build_desktop_agent_vision_user_content(
             turn_override,
             prefer_local_processing: policy.prefer_local_processing,
             local_only: policy.local_only,
+            primary_egress_id: primary_egress_id.to_string(),
+            primary_is_local,
+            fallback_mode: vision_resolution
+                .map(|resolution| resolution.snapshot.fallback_mode)
+                .unwrap_or_default(),
+            constraints: vision_resolution
+                .map(|resolution| resolution.snapshot.constraints.clone())
+                .unwrap_or_default(),
             ocr: VisionOcrProfile {
                 enabled: ocr_config.enabled,
                 confidence_threshold_millis: (ocr_config.confidence_threshold * 1_000.0)
@@ -1111,6 +1161,7 @@ pub async fn build_desktop_agent_vision_user_content(
                 languages: ocr_config.languages.clone(),
             },
             target,
+            fallback_targets,
         };
         let profile_hash = profile.profile_hash().map_err(|error| error.to_string())?;
         let mut attachment = original.clone();
@@ -1160,20 +1211,39 @@ pub async fn build_desktop_agent_vision_user_content(
                     None
                 };
                 let (observation, status) = if let Some(cached) = cached {
-                    (cached.observation, VisionAttachmentStatus::Cached)
+                    let mut observation = cached.observation;
+                    observation.attachment_id = attachment_id.clone();
+                    observation.validate().map_err(|error| error.to_string())?;
+                    (observation, VisionAttachmentStatus::Cached)
                 } else {
-                    let vision = match (vision_resolution, vision_provider) {
-                        (Some(resolution), Some(provider)) => Some(VisionProviderInput {
-                            provider,
-                            provider_type: resolution.provider_config.provider_type,
-                            provider_id: &resolution.snapshot.provider_id,
-                            model_id: &resolution.model_id,
-                            target_id: &resolution.snapshot.target_id,
-                            target_revision: resolution.snapshot.target_revision,
-                            local: auxiliary_is_local,
-                        }),
-                        _ => None,
-                    };
+                    let requires_vision = matches!(
+                        decision.plan,
+                        nexa_core::vision_router::VisionRoutePlan::VisionOnly
+                            | nexa_core::vision_router::VisionRoutePlan::OcrThenVision
+                            | nexa_core::vision_router::VisionRoutePlan::VisionThenOcr
+                    );
+                    if requires_vision && provider_routes.is_none() {
+                        provider_routes = vision_resolution
+                            .map(build_desktop_vision_provider_routes)
+                            .transpose()?;
+                    }
+                    let vision = provider_routes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|route| route.fallback_index >= selected_fallback_index)
+                        .map(|route| VisionProviderInput {
+                            provider: route.provider.as_ref(),
+                            provider_type: route.provider_type,
+                            provider_id: &route.provider_id,
+                            egress_id: &route.egress_id,
+                            model_id: &route.model_id,
+                            target_id: &route.target_id,
+                            target_revision: route.target_revision,
+                            fallback_index: route.fallback_index,
+                            local: route.local,
+                        })
+                        .collect::<Vec<_>>();
                     let observation = execute_vision_observation(VisionExecutionInput {
                         attachment_id: &attachment_id,
                         attachment_hash: &computed_hash,
@@ -1182,21 +1252,38 @@ pub async fn build_desktop_agent_vision_user_content(
                         mime_type: &original.media_type,
                         decision,
                         ocr_config: &ocr_config,
-                        vision,
-                        primary_provider_id: &db_config.provider,
+                        vision: &vision,
+                        primary_egress_id,
                         primary_is_local,
                         cancellation,
                     })
                     .await
                     .map_err(|error| error.to_string())?;
-                    if policy.cache_enabled {
-                        let expires_at_epoch =
-                            now_epoch + i64::from(policy.cache_retention_days) * 24 * 60 * 60;
-                        db.save_vision_observation_cache(&observation, now_epoch, expires_at_epoch)
-                            .map_err(|error| error.to_string())?;
-                    }
                     (observation, VisionAttachmentStatus::Observed)
                 };
+                if let Some(next_fallback_index) = observation
+                    .sources
+                    .iter()
+                    .filter_map(|source| source.fallback_index)
+                    .max()
+                    .filter(|index| *index > selected_fallback_index)
+                {
+                    db.advance_task_runtime_fallback(
+                        task_run_id,
+                        "vision",
+                        selected_fallback_index,
+                        next_fallback_index,
+                        "vision_invocation_failed_automatic_fallback",
+                    )
+                    .map_err(|error| error.to_string())?;
+                    selected_fallback_index = next_fallback_index;
+                }
+                if policy.cache_enabled && status == VisionAttachmentStatus::Observed {
+                    let expires_at_epoch =
+                        now_epoch + i64::from(policy.cache_retention_days) * 24 * 60 * 60;
+                    db.save_vision_observation_cache(&observation, now_epoch, expires_at_epoch)
+                        .map_err(|error| error.to_string())?;
+                }
                 let prompt = observation_prompt_text(&original.original_name, &observation)
                     .map_err(|error| error.to_string())?;
                 parts.push(ContentPart::Text {
@@ -1249,15 +1336,81 @@ pub async fn build_desktop_agent_vision_user_content(
     })
 }
 
-fn provider_config_is_local(config: &ProviderConfig) -> bool {
-    matches!(
-        config.provider_type,
-        ProviderType::Ollama | ProviderType::LmStudio
-    ) || config.base_url.as_deref().is_some_and(|base_url| {
-        base_url.starts_with("http://localhost")
-            || base_url.starts_with("http://127.")
-            || base_url.starts_with("http://[::1]")
-    })
+fn build_desktop_vision_provider_routes(
+    resolution: &RuntimeCapabilityResolution,
+) -> Result<Vec<DesktopVisionProviderRoute>, String> {
+    let mut routes = vec![DesktopVisionProviderRoute {
+        fallback_index: resolution.snapshot.fallback_index,
+        target_id: resolution.snapshot.target_id.clone(),
+        target_revision: resolution.snapshot.target_revision,
+        provider_id: resolution.snapshot.provider_id.clone(),
+        egress_id: format!("registry:{}", resolution.snapshot.connection_id),
+        model_id: resolution.model_id.clone(),
+        local: provider_config_is_local(&resolution.provider_config),
+        provider_type: resolution.provider_config.provider_type,
+        provider: create_provider(resolution.provider_config.clone()).map_err(|_| {
+            "vision_provider_initialization_failed: provider details were redacted".to_string()
+        })?,
+    }];
+    for fallback in &resolution.fallbacks {
+        let snapshot = resolution
+            .snapshot
+            .fallback_targets
+            .iter()
+            .find(|candidate| candidate.fallback_index == fallback.fallback_index)
+            .ok_or_else(|| {
+                "vision_fallback_snapshot_missing: frozen fallback metadata is incomplete"
+                    .to_string()
+            })?;
+        routes.push(DesktopVisionProviderRoute {
+            fallback_index: fallback.fallback_index,
+            target_id: fallback.target_id.clone(),
+            target_revision: fallback.target_revision,
+            provider_id: snapshot.provider_id.clone(),
+            egress_id: format!("registry:{}", fallback.connection_id),
+            model_id: fallback.model_id.clone(),
+            local: provider_config_is_local(&fallback.provider_config),
+            provider_type: fallback.provider_config.provider_type,
+            provider: create_provider(fallback.provider_config.clone()).map_err(|_| {
+                "vision_fallback_initialization_failed: provider details were redacted".to_string()
+            })?,
+        });
+    }
+    routes.sort_by_key(|route| route.fallback_index);
+    Ok(routes)
+}
+
+pub(super) fn provider_config_is_local(config: &ProviderConfig) -> bool {
+    let Some(base_url) = config.base_url.as_deref() else {
+        return matches!(
+            config.provider_type,
+            ProviderType::Ollama | ProviderType::LmStudio
+        );
+    };
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+pub(super) fn provider_config_egress_id(config: &ProviderConfig) -> String {
+    let endpoint = config
+        .base_url
+        .as_deref()
+        .and_then(|base_url| reqwest::Url::parse(base_url).ok())
+        .and_then(|url| {
+            let host = url.host_str()?.to_ascii_lowercase();
+            let port = url.port_or_known_default()?;
+            Some(format!("{}://{host}:{port}", url.scheme()))
+        })
+        .unwrap_or_else(|| "default-endpoint".to_string());
+    format!("legacy:{:?}:{endpoint}", config.provider_type)
 }
 
 pub fn build_desktop_agent_turn_config(
@@ -2628,6 +2781,22 @@ mod tests {
             org_id: None,
             timeout_secs: None,
         }
+    }
+
+    #[test]
+    fn local_provider_detection_requires_an_exact_loopback_host() {
+        let mut config = test_provider_config(ProviderType::Ollama);
+        config.base_url = Some("http://127.example.com:11434".to_string());
+        assert!(!provider_config_is_local(&config));
+
+        config.base_url = Some("http://127.0.0.1:11434".to_string());
+        assert!(provider_config_is_local(&config));
+
+        config.base_url = Some("http://[::1]:11434".to_string());
+        assert!(provider_config_is_local(&config));
+
+        config.base_url = Some("https://remote-ollama.example.com".to_string());
+        assert!(!provider_config_is_local(&config));
     }
 
     #[test]

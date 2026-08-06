@@ -4,8 +4,9 @@ use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
     build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
-    finalize_desktop_agent_turn, request_desktop_running_agent_stop,
-    resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
+    finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
+    request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
+    run_desktop_agent_post_success_learning,
     run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
     DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
     DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
@@ -404,6 +405,42 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         conv.provider = db_config.provider.clone();
         conv.model = db_config.model.clone();
     }
+    let vision_attachment_hashes = attachments
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|attachment| attachment.media_type.starts_with("image/"))
+        .filter_map(|attachment| attachment.attachment_hash.clone())
+        .collect::<Vec<_>>();
+    if !vision_attachment_hashes.is_empty() {
+        let preflight_scope = nexa_core::capability_registry::RegistryScope {
+            workspace_id: conv.project_id.clone(),
+            agent_id: Some(db_config.id.clone()),
+            task_id: None,
+        };
+        let projection = state
+            .db
+            .capability_registry_projection(&preflight_scope)
+            .map_err(|error| format!("Vision policy preflight failed: {error}"))?;
+        let policy = projection
+            .capabilities
+            .iter()
+            .find(|route| route.capability_id == "vision")
+            .map(|route| {
+                nexa_core::vision_router::VisionRouterPolicy::from_binding_options(&route.options)
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        if policy.mode == nexa_core::vision_router::VisionMode::Ask
+            && vision_turn_override.is_none()
+        {
+            return Err(
+                "decision_required: choose Auto, OCR only, or Vision only before this turn is created"
+                    .to_string(),
+            );
+        }
+    }
 
     // Validate orchestrated launches before allocating their durable run.
     if let Some(run_id) = task_orchestrator_run_id.as_deref() {
@@ -461,6 +498,16 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             map.insert(
                 "visionTurnOverride".to_string(),
                 serde_json::Value::String(turn_override.as_str().to_string()),
+            );
+            map.insert(
+                "visionOverrideAttachmentHashes".to_string(),
+                serde_json::Value::Array(
+                    vision_attachment_hashes
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
     }
@@ -628,7 +675,13 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                         "Capability Registry resolution failed for run {task_run_id}; explicitly roll back the durable read mode before retrying: {error}"
                     )
                 })?;
-            let (provider_config, registry_fallback_plan) = match registry_resolution {
+            let (
+                provider_config,
+                registry_fallback_plan,
+                primary_egress_id,
+                primary_routes_local,
+                primary_native_vision_allowed,
+            ) = match registry_resolution {
                 Some(resolution) => {
                     effective_db_config.provider = resolution.provider_id;
                     effective_db_config.provider_endpoint_id = Some(resolution.endpoint_id);
@@ -640,14 +693,43 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                         .unwrap_or_default();
                     effective_db_config.model = resolution.model_id.clone();
                     effective_db_config.model_id = Some(resolution.model_id.clone());
+                    let primary_routes_local = provider_config_is_local(&resolution.provider_config)
+                        && resolution
+                            .fallbacks
+                            .iter()
+                            .all(|fallback| provider_config_is_local(&fallback.provider_config));
+                    let primary_native_vision_allowed = resolution.fallbacks.is_empty();
+                    let mut egress_connections = vec![resolution.snapshot.connection_id.clone()];
+                    egress_connections.extend(
+                        resolution
+                            .fallbacks
+                            .iter()
+                            .map(|fallback| fallback.connection_id.clone()),
+                    );
+                    let egress_id = if egress_connections.len() == 1 {
+                        format!("registry:{}", egress_connections[0])
+                    } else {
+                        format!("registry-plan:{}", egress_connections.join("|"))
+                    };
                     let plan = Some((
                         resolution.snapshot.fallback_index,
                         resolution.model_id,
                         resolution.fallbacks,
                     ));
-                    (resolution.provider_config, plan)
+                    (
+                        resolution.provider_config,
+                        plan,
+                        egress_id,
+                        primary_routes_local,
+                        primary_native_vision_allowed,
+                    )
                 }
-                None => (db_config_to_provider_config(&db_config, None), None),
+                None => {
+                    let provider_config = db_config_to_provider_config(&db_config, None);
+                    let egress_id = provider_config_egress_id(&provider_config);
+                    let primary_routes_local = provider_config_is_local(&provider_config);
+                    (provider_config, None, egress_id, primary_routes_local, true)
+                }
             };
             let mut provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
             if let Some((primary_fallback_index, primary_model, fallbacks)) =
@@ -717,12 +799,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             } else {
                 None
             };
-            let vision_provider = vision_resolution
-                .as_ref()
-                .map(|resolution| create_provider(resolution.provider_config.clone()))
-                .transpose()
-                .map_err(|error| error.to_string())?;
-
             let history_started = Instant::now();
             let history_conversation_id = conv_id.clone();
             let projection = db_executor
@@ -909,7 +985,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     message: &user_llm_content,
                     attachments: attachments.as_deref(),
                     vision_resolution: vision_resolution.as_ref(),
-                    vision_provider: vision_provider.as_deref(),
+                    task_run_id: &task_run_id,
+                    primary_egress_id: &primary_egress_id,
+                    primary_routes_local,
+                    primary_native_vision_allowed,
                     turn_override: vision_turn_override,
                     cancellation: &cancel_token_clone,
                 })

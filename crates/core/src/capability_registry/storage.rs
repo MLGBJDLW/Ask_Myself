@@ -630,6 +630,11 @@ fn materialize_runtime_fallback(
 ) -> Result<RuntimeCapabilityFallback, CoreError> {
     Ok(RuntimeCapabilityFallback {
         fallback_index: target.fallback_index,
+        target_id: target.target_id.clone(),
+        target_revision: target.target_revision,
+        connection_id: target.connection_id.clone(),
+        connection_revision: target.connection_revision,
+        descriptor_hash: target.descriptor_hash.clone(),
         provider_id: target.adapter_provider_id.clone(),
         endpoint_id: target.endpoint_id.clone(),
         provider_config: provider_config_for_route_target(conn, target)?,

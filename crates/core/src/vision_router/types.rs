@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::error::CoreError;
+use crate::settings_schema_v2::{CapabilityBindingConstraintsV2, CapabilityFallbackModeV2};
 
 pub const VISION_OBSERVATION_SCHEMA_VERSION: u16 = 1;
 pub const VISION_CLASSIFIER_VERSION: u16 = 1;
@@ -307,6 +308,8 @@ pub struct VisionObservationSource {
     pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_index: Option<usize>,
     pub local: bool,
 }
 
@@ -524,9 +527,15 @@ pub struct VisionProfileV1 {
     pub turn_override: Option<VisionTurnOverride>,
     pub prefer_local_processing: bool,
     pub local_only: bool,
+    pub primary_egress_id: String,
+    pub primary_is_local: bool,
+    pub fallback_mode: CapabilityFallbackModeV2,
+    pub constraints: CapabilityBindingConstraintsV2,
     pub ocr: VisionOcrProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<VisionTargetProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_targets: Vec<VisionTargetProfile>,
 }
 
 impl VisionProfileV1 {
@@ -599,6 +608,14 @@ mod tests {
             turn_override: None,
             prefer_local_processing: true,
             local_only: false,
+            primary_egress_id: "registry:primary".into(),
+            primary_is_local: false,
+            fallback_mode: CapabilityFallbackModeV2::Automatic,
+            constraints: CapabilityBindingConstraintsV2 {
+                require_same_connection: false,
+                allow_cross_provider: true,
+                ..CapabilityBindingConstraintsV2::default()
+            },
             ocr: VisionOcrProfile {
                 enabled: true,
                 confidence_threshold_millis: 600,
@@ -614,11 +631,25 @@ mod tests {
                 connection_revision: 3,
                 descriptor_hash: Some("descriptor".into()),
             }),
+            fallback_targets: vec![VisionTargetProfile {
+                binding_revision: 1,
+                target_id: "target:two".into(),
+                target_revision: 4,
+                connection_id: "connection:two".into(),
+                connection_revision: 5,
+                descriptor_hash: Some("fallback-descriptor".into()),
+            }],
         };
         let first = profile.profile_hash().unwrap();
         assert_eq!(first, profile.profile_hash().unwrap());
         profile.target.as_mut().unwrap().target_revision += 1;
         assert_ne!(first, profile.profile_hash().unwrap());
+        let target_revision_hash = profile.profile_hash().unwrap();
+        profile.fallback_targets[0].target_revision += 1;
+        assert_ne!(target_revision_hash, profile.profile_hash().unwrap());
+        let fallback_hash = profile.profile_hash().unwrap();
+        profile.constraints.allow_cross_provider = false;
+        assert_ne!(fallback_hash, profile.profile_hash().unwrap());
     }
 
     #[test]
@@ -648,6 +679,7 @@ mod tests {
                 model_id: None,
                 target_id: None,
                 target_revision: None,
+                fallback_index: None,
                 local: true,
             }],
             fallback_used: false,

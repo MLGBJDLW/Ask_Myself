@@ -22,9 +22,11 @@ pub struct VisionProviderInput<'a> {
     pub provider: &'a dyn LlmProvider,
     pub provider_type: ProviderType,
     pub provider_id: &'a str,
+    pub egress_id: &'a str,
     pub model_id: &'a str,
     pub target_id: &'a str,
     pub target_revision: u64,
+    pub fallback_index: usize,
     pub local: bool,
 }
 
@@ -36,8 +38,8 @@ pub struct VisionExecutionInput<'a> {
     pub mime_type: &'a str,
     pub decision: VisionRouteDecision,
     pub ocr_config: &'a OcrConfig,
-    pub vision: Option<VisionProviderInput<'a>>,
-    pub primary_provider_id: &'a str,
+    pub vision: &'a [VisionProviderInput<'a>],
+    pub primary_egress_id: &'a str,
     pub primary_is_local: bool,
     pub cancellation: &'a CancellationToken,
 }
@@ -229,11 +231,11 @@ async fn run_vision(
     trace: &mut VisionRouteTrace,
 ) -> Result<VisionObservationV1, CoreError> {
     check_cancelled(input.cancellation)?;
-    let vision = input.vision.as_ref().ok_or_else(|| {
-        CoreError::InvalidInput(
+    if input.vision.is_empty() {
+        return Err(CoreError::InvalidInput(
             "vision_binding_missing: no pinned auxiliary vision target".to_string(),
-        )
-    })?;
+        ));
+    }
     if !matches!(
         input.mime_type,
         "image/png" | "image/jpeg" | "image/webp" | "image/gif"
@@ -242,68 +244,125 @@ async fn run_vision(
             "unsupported_media_type: vision provider does not accept this image type".to_string(),
         ));
     }
-    let request = CompletionRequest {
-        model: vision.model_id.to_string(),
-        messages: vec![Message {
-            role: Role::User,
-            parts: vec![
-                ContentPart::Text {
-                    text: vision_observation_instruction(input.decision.intent),
-                },
-                ContentPart::Image {
-                    media_type: input.mime_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(input.image_bytes),
-                },
-            ],
-            name: None,
-            tool_calls: None,
-            reasoning_content: None,
-            prompt_cache_hint: None,
-        }],
-        temperature: Some(0.0),
-        max_tokens: Some(VISION_RESPONSE_MAX_TOKENS),
-        tools: None,
-        stop: None,
-        thinking_budget: None,
-        reasoning_enabled: Some(false),
-        reasoning_effort: None,
-        provider_type: Some(vision.provider_type),
-        routing_session_id: None,
-        parallel_tool_calls: false,
-    };
-    let response = vision.provider.complete(&request).await?;
-    check_cancelled(input.cancellation)?;
-    let privacy_scope = privacy_scope(
-        vision.local,
-        input.primary_is_local,
-        vision.provider_id,
-        input.primary_provider_id,
-    );
-    let observation = parse_vision_model_observation(
-        &response.content,
-        input.attachment_id,
-        input.attachment_hash,
-        input.profile_hash,
-        input.decision.intent,
-        VisionObservationSource {
-            kind: VisionObservationSourceKind::VisionModel,
-            provider_id: Some(vision.provider_id.to_string()),
-            model_id: Some(vision.model_id.to_string()),
-            target_id: Some(vision.target_id.to_string()),
-            target_revision: Some(vision.target_revision),
-            local: vision.local,
-        },
-        privacy_scope,
-        trace.clone(),
-    )?;
-    trace.attempts.push(VisionRouteAttempt {
-        processor: "vision".to_string(),
-        status: VisionAttemptStatus::Succeeded,
-        reason_code: "vision_complete".to_string(),
-    });
-    let mut observation = observation;
-    observation.route = trace.clone();
-    Ok(observation)
+
+    let first_fallback_index = input.vision[0].fallback_index;
+    let mut last_reason = "vision_provider_failed".to_string();
+    let mut attempted_egresses = HashSet::new();
+    let mut attempted_routes_local = true;
+    for (position, vision) in input.vision.iter().enumerate() {
+        check_cancelled(input.cancellation)?;
+        attempted_egresses.insert(vision.egress_id.to_ascii_lowercase());
+        attempted_routes_local &= vision.local;
+        let request = CompletionRequest {
+            model: vision.model_id.to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text {
+                        text: vision_observation_instruction(input.decision.intent),
+                    },
+                    ContentPart::Image {
+                        media_type: input.mime_type.to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(input.image_bytes),
+                    },
+                ],
+                name: None,
+                tool_calls: None,
+                reasoning_content: None,
+                prompt_cache_hint: None,
+            }],
+            temperature: Some(0.0),
+            max_tokens: Some(VISION_RESPONSE_MAX_TOKENS),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: Some(false),
+            reasoning_effort: None,
+            provider_type: Some(vision.provider_type),
+            routing_session_id: None,
+            parallel_tool_calls: false,
+        };
+        let response = match vision.provider.complete(&request).await {
+            Ok(response) => response,
+            Err(error) => {
+                last_reason = error_reason(&error);
+                trace.attempts.push(VisionRouteAttempt {
+                    processor: format!("vision:{}", vision.target_id),
+                    status: VisionAttemptStatus::Failed,
+                    reason_code: last_reason.to_string(),
+                });
+                if position + 1 < input.vision.len() {
+                    continue;
+                }
+                return Err(sanitized_vision_failure(&last_reason));
+            }
+        };
+        check_cancelled(input.cancellation)?;
+        let privacy_scope = privacy_scope(
+            attempted_routes_local,
+            input.primary_is_local,
+            &attempted_egresses,
+            input.primary_egress_id,
+        );
+        let observation = parse_vision_model_observation(
+            &response.content,
+            input.attachment_id,
+            input.attachment_hash,
+            input.profile_hash,
+            input.decision.intent,
+            VisionObservationSource {
+                kind: VisionObservationSourceKind::VisionModel,
+                provider_id: Some(vision.provider_id.to_string()),
+                model_id: Some(vision.model_id.to_string()),
+                target_id: Some(vision.target_id.to_string()),
+                target_revision: Some(vision.target_revision),
+                fallback_index: Some(vision.fallback_index),
+                local: vision.local,
+            },
+            privacy_scope,
+            trace.clone(),
+        );
+        let mut observation = match observation {
+            Ok(observation) => observation,
+            Err(error) => {
+                last_reason = error_reason(&error);
+                trace.attempts.push(VisionRouteAttempt {
+                    processor: format!("vision:{}", vision.target_id),
+                    status: VisionAttemptStatus::Failed,
+                    reason_code: last_reason.to_string(),
+                });
+                if position + 1 < input.vision.len() {
+                    continue;
+                }
+                return Err(sanitized_vision_failure(&last_reason));
+            }
+        };
+        trace.attempts.push(VisionRouteAttempt {
+            processor: format!("vision:{}", vision.target_id),
+            status: VisionAttemptStatus::Succeeded,
+            reason_code: if vision.fallback_index > first_fallback_index {
+                "vision_fallback_complete"
+            } else {
+                "vision_complete"
+            }
+            .to_string(),
+        });
+        if vision.fallback_index > first_fallback_index {
+            observation.fallback_used = true;
+            observation.fallback_reason =
+                Some("vision_target_failed_automatic_fallback".to_string());
+        }
+        observation.route = trace.clone();
+        return Ok(observation);
+    }
+
+    Err(sanitized_vision_failure(&last_reason))
+}
+
+fn sanitized_vision_failure(reason_code: &str) -> CoreError {
+    CoreError::Llm(format!(
+        "vision_processing_failed: {reason_code}; provider details were redacted"
+    ))
 }
 
 pub fn build_ocr_observation(
@@ -357,6 +416,7 @@ pub fn build_ocr_observation(
             model_id: None,
             target_id: None,
             target_revision: None,
+            fallback_index: None,
             local: source_local,
         }],
         fallback_used: false,
@@ -533,14 +593,16 @@ fn normalize_bbox(bbox: [f32; 4], width: u32, height: u32) -> [f32; 4] {
 }
 
 fn privacy_scope(
-    vision_local: bool,
+    vision_routes_local: bool,
     primary_local: bool,
-    vision_provider: &str,
-    primary_provider: &str,
+    vision_egresses: &HashSet<String>,
+    primary_egress: &str,
 ) -> VisionPrivacyScope {
-    if vision_local && primary_local {
+    if vision_routes_local && primary_local {
         VisionPrivacyScope::Local
-    } else if vision_provider.eq_ignore_ascii_case(primary_provider) {
+    } else if vision_egresses.len() == 1
+        && vision_egresses.contains(&primary_egress.to_ascii_lowercase())
+    {
         VisionPrivacyScope::SingleProvider
     } else {
         VisionPrivacyScope::MultiProvider
@@ -600,7 +662,63 @@ fn error_reason(error: &CoreError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use async_trait::async_trait;
+    use futures::stream::BoxStream;
+
     use super::*;
+    use crate::llm::{CompletionResponse, FinishReason, StreamChunk, Usage};
+
+    struct StaticVisionProvider {
+        response: Result<&'static str, &'static str>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for StaticVisionProvider {
+        fn name(&self) -> &str {
+            "static-vision"
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["vision".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            match self.response {
+                Ok(content) => Ok(CompletionResponse {
+                    content: content.to_string(),
+                    tool_calls: None,
+                    finish_reason: FinishReason::Stop,
+                    usage: Usage::default(),
+                    thinking: None,
+                }),
+                Err(secret) => Err(CoreError::TransientLlm(secret.to_string())),
+            }
+        }
+
+        async fn stream(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
 
     fn route() -> VisionRouteTrace {
         VisionRouteTrace {
@@ -620,6 +738,7 @@ mod tests {
             model_id: Some("gemini".into()),
             target_id: Some("target".into()),
             target_revision: Some(1),
+            fallback_index: None,
             local: false,
         }
     }
@@ -657,6 +776,115 @@ mod tests {
             args.6,
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_primary_observation_advances_to_frozen_secondary() {
+        let primary = StaticVisionProvider {
+            response: Ok("not-json"),
+        };
+        let secondary = StaticVisionProvider {
+            response: Ok(r#"{"summary":"fallback worked"}"#),
+        };
+        let providers = [
+            VisionProviderInput {
+                provider: &primary,
+                provider_type: ProviderType::Google,
+                provider_id: "google",
+                egress_id: "registry:primary",
+                model_id: "primary",
+                target_id: "target-primary",
+                target_revision: 1,
+                fallback_index: 0,
+                local: false,
+            },
+            VisionProviderInput {
+                provider: &secondary,
+                provider_type: ProviderType::Google,
+                provider_id: "google",
+                egress_id: "registry:secondary",
+                model_id: "secondary",
+                target_id: "target-secondary",
+                target_revision: 2,
+                fallback_index: 1,
+                local: false,
+            },
+        ];
+        let cancellation = CancellationToken::new();
+        let observation = execute_vision_observation(VisionExecutionInput {
+            attachment_id: "attachment",
+            attachment_hash: &"a".repeat(64),
+            profile_hash: &"b".repeat(64),
+            image_bytes: &tiny_png(),
+            mime_type: "image/png",
+            decision: VisionRouteDecision {
+                intent: VisionIntent::VisualReasoning,
+                plan: VisionRoutePlan::VisionOnly,
+                classification_confidence: 1.0,
+                reason_codes: vec!["test".to_string()],
+            },
+            ocr_config: &OcrConfig {
+                enabled: false,
+                ..OcrConfig::default()
+            },
+            vision: &providers,
+            primary_egress_id: "registry:text",
+            primary_is_local: false,
+            cancellation: &cancellation,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(observation.summary.as_deref(), Some("fallback worked"));
+        assert!(observation.fallback_used);
+        assert_eq!(observation.sources[0].fallback_index, Some(1));
+        assert_eq!(observation.route.attempts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn terminal_provider_errors_are_redacted() {
+        let provider = StaticVisionProvider {
+            response: Err("secret upstream response body"),
+        };
+        let providers = [VisionProviderInput {
+            provider: &provider,
+            provider_type: ProviderType::Google,
+            provider_id: "google",
+            egress_id: "registry:vision",
+            model_id: "vision",
+            target_id: "target",
+            target_revision: 1,
+            fallback_index: 0,
+            local: false,
+        }];
+        let cancellation = CancellationToken::new();
+        let error = execute_vision_observation(VisionExecutionInput {
+            attachment_id: "attachment",
+            attachment_hash: &"a".repeat(64),
+            profile_hash: &"b".repeat(64),
+            image_bytes: &tiny_png(),
+            mime_type: "image/png",
+            decision: VisionRouteDecision {
+                intent: VisionIntent::VisualReasoning,
+                plan: VisionRoutePlan::VisionOnly,
+                classification_confidence: 1.0,
+                reason_codes: vec![],
+            },
+            ocr_config: &OcrConfig {
+                enabled: false,
+                ..OcrConfig::default()
+            },
+            vision: &providers,
+            primary_egress_id: "registry:text",
+            primary_is_local: false,
+            cancellation: &cancellation,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("provider details were redacted"));
+        assert!(!error.contains("secret upstream response body"));
     }
 
     #[test]
@@ -699,6 +927,7 @@ mod tests {
                 model_id: None,
                 target_id: None,
                 target_revision: None,
+                fallback_index: None,
                 local: true,
             }],
             fallback_used: false,

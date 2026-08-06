@@ -19,7 +19,7 @@ import { goalObjectiveFromMessage, isGoalMessage, isSteeringMessage } from '../.
 import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
 import { MessageActions } from './MessageActions';
 import { messageTimestamp } from '../../lib/relativeTime';
-import type { ConversationMessage, ImageAttachment } from '../../types/conversation';
+import type { ConversationMessage, ImageAttachment, VisionTurnOverride } from '../../types/conversation';
 import { Modal } from '../ui/Modal';
 import { CitationChip } from './EvidenceCard';
 import {
@@ -44,7 +44,7 @@ export interface MessageBubbleProps {
   /** Whether the last response came from cache */
   lastCached?: boolean;
   /** Called when retry is clicked */
-  onRetry?: (messageId?: string) => void;
+  onRetry?: (messageId?: string, visionTurnOverride?: VisionTurnOverride, refreshVision?: boolean) => void;
   /** Always show timestamp (when gap > 5min) */
   alwaysShowTimestamp?: boolean;
   /** Called when a message is deleted */
@@ -232,6 +232,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.content);
   const [visionAttachment, setVisionAttachment] = useState<ImageAttachment | null>(null);
+  const [deletedVisionKeys, setDeletedVisionKeys] = useState<Set<string>>(() => new Set());
   const editRef = useRef<HTMLTextAreaElement>(null);
   const proposedPlan = useMemo(
     () => (isUser ? null : extractProposedPlan(msg.artifacts, msg.content)),
@@ -243,6 +244,28 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
   const actionText = proposedPlan
     ? [visibleContent, proposedPlan.markdown].filter(Boolean).join('\n\n')
     : msg.content;
+  const visibleAttachments = useMemo(() => (msg.imageAttachments ?? []).map((attachment) => {
+    const key = `${attachment.attachmentHash ?? ''}:${attachment.visionAnalysis?.profileHash ?? ''}`;
+    return deletedVisionKeys.has(key)
+      ? { ...attachment, visionAnalysis: null }
+      : attachment;
+  }), [deletedVisionKeys, msg.imageAttachments]);
+
+  const deleteVisionObservation = useCallback(async (attachment: ImageAttachment) => {
+    if (!attachment.attachmentHash || !attachment.visionAnalysis?.profileHash) return;
+    try {
+      const removed = await api.deleteVisionObservationCache(
+        attachment.attachmentHash,
+        attachment.visionAnalysis.profileHash,
+      );
+      const key = `${attachment.attachmentHash}:${attachment.visionAnalysis.profileHash}`;
+      setDeletedVisionKeys((current) => new Set(current).add(key));
+      setVisionAttachment(null);
+      toast.success(t('chat.visionObservationCacheDeleted', { count: String(removed) }));
+    } catch (cause) {
+      toast.error(String(cause));
+    }
+  }, [t]);
 
   // Focus textarea when entering edit mode
   useEffect(() => {
@@ -389,9 +412,9 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           ) : isUser && goalMessage ? (
             <>
               <GoalStatusCard objective={goalObjective} label={goalLabel} title={t('chat.goalStatusTitle')} />
-              {msg.imageAttachments && msg.imageAttachments.length > 0 && (
+              {visibleAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {msg.imageAttachments.map((att, i) => (
+                  {visibleAttachments.map((att, i) => (
                     <VisionAttachmentTile key={att.attachmentId ?? i} attachment={att} onInspect={() => setVisionAttachment(att)} />
                   ))}
                 </div>
@@ -406,9 +429,9 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
                 </span>
               )}
               <span className="whitespace-pre-wrap">{visibleContent}</span>
-              {msg.imageAttachments && msg.imageAttachments.length > 0 && (
+              {visibleAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {msg.imageAttachments.map((att, i) => (
+                  {visibleAttachments.map((att, i) => (
                     <VisionAttachmentTile key={att.attachmentId ?? i} attachment={att} onInspect={() => setVisionAttachment(att)} />
                   ))}
                 </div>
@@ -507,8 +530,10 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
           title={t('chat.visionObservationTitle')}
           footer={visionAttachment ? (
             <div className="flex justify-end gap-2">
-              {onRetry && <button type="button" className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary" onClick={() => { setVisionAttachment(null); void onRetry(msg.id); }}>{t('chat.visionObservationRerun')}</button>}
-              {visionAttachment.attachmentHash && <button type="button" className="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger" onClick={() => void api.deleteVisionObservationCache(visionAttachment.attachmentHash!, visionAttachment.visionAnalysis?.profileHash).then((removed) => toast.success(t('chat.visionObservationCacheDeleted', { count: String(removed) }))).catch((cause) => toast.error(String(cause)))}>{t('chat.visionObservationDeleteCache')}</button>}
+              {onRetry && <button type="button" className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary" onClick={() => { setVisionAttachment(null); onRetry(msg.id, 'auto', true); }}>{t('chat.visionTurnAuto')}</button>}
+              {onRetry && <button type="button" className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary" onClick={() => { setVisionAttachment(null); onRetry(msg.id, 'ocr_only', true); }}>{t('chat.visionTurnOcr')}</button>}
+              {onRetry && <button type="button" className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary" onClick={() => { setVisionAttachment(null); onRetry(msg.id, 'vision_only', true); }}>{t('chat.visionTurnVision')}</button>}
+              {visionAttachment.visionAnalysis?.observation && visionAttachment.attachmentHash && <button type="button" className="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger" onClick={() => void deleteVisionObservation(visionAttachment)}>{t('chat.visionObservationDeleteCache')}</button>}
             </div>
           ) : undefined}
         >
