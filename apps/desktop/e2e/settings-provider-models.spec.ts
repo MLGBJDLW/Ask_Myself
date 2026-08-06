@@ -162,6 +162,83 @@ test.beforeEach(async ({ page }) => {
       },
     };
 
+    let registryReadMode = "registry";
+    let registryRevision = 3;
+    const registryProjection = () => ({
+      schemaVersion: 1,
+      settingsRevisions: [{
+        profileId: "settings-v2:agent:cfg-qwen",
+        scope: { kind: "agent", id: "cfg-qwen" },
+        revision: 3,
+      }],
+      connections: [{
+        schemaVersion: 1,
+        id: "connection:qwen",
+        revision: 3,
+        adapterProviderId: "qwen",
+        providerId: "alibaba_model_studio",
+        endpointId: "text:qwen-cloud-cn",
+        baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        endpointFingerprint: "endpoint:qwen",
+        credentialRef: "legacy-agent-config:cfg-qwen",
+        enabled: true,
+        health: "configured",
+        source: { kind: "agent", id: "cfg-qwen" },
+        sourceRevision: 3,
+      }],
+      modelDefinitions: [],
+      modelTargets: [{
+        id: "target:qwen",
+        revision: 3,
+        connectionId: "connection:qwen",
+        upstreamModelId: "qwen3.6-plus",
+        availability: "callable",
+        source: { kind: "agent", id: "cfg-qwen" },
+        sourceRevision: 3,
+      }],
+      capabilities: [{
+        capabilityId: "text_generation",
+        source: { kind: "agent", id: "cfg-qwen" },
+        sourceRevision: 3,
+        primary: {
+          target: {
+            id: "target:qwen",
+            revision: 3,
+            connectionId: "connection:qwen",
+            upstreamModelId: "qwen3.6-plus",
+            availability: "callable",
+            source: { kind: "agent", id: "cfg-qwen" },
+            sourceRevision: 3,
+          },
+          connection: {
+            schemaVersion: 1,
+            id: "connection:qwen",
+            revision: 3,
+            adapterProviderId: "qwen",
+            providerId: "alibaba_model_studio",
+            endpointId: "text:qwen-cloud-cn",
+            baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            endpointFingerprint: "endpoint:qwen",
+            credentialRef: "legacy-agent-config:cfg-qwen",
+            enabled: true,
+            health: "configured",
+            source: { kind: "agent", id: "cfg-qwen" },
+            sourceRevision: 3,
+          },
+          eligibility: { eligible: true, reasonCodes: [] },
+        },
+        fallbacks: [],
+      }],
+      activations: [{
+        capabilityId: "text_generation",
+        scope: { kind: "agent", id: "cfg-qwen" },
+        readMode: registryReadMode,
+        registryRevision,
+        parityStatus: "matched",
+        parity: { status: "matched" },
+      }],
+    });
+
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
     const invoke = async (cmd: string, _args: Record<string, unknown> = {}) => {
@@ -205,6 +282,13 @@ test.beforeEach(async ({ page }) => {
           return clone(embedderConfig);
         case "get_app_config_cmd":
           return clone(appConfig);
+        case "get_capability_registry_projection_cmd":
+          return clone(registryProjection());
+        case "set_capability_registry_read_mode_cmd":
+          registryReadMode = String(_args.mode);
+          registryRevision += 1;
+          (window as unknown as { __registryModeArgs?: unknown }).__registryModeArgs = clone(_args);
+          return clone(registryProjection().activations[0]);
         case "save_agent_config_cmd":
           (window as unknown as { __savedAgentConfig?: unknown }).__savedAgentConfig = clone(
             _args.config,
@@ -497,6 +581,32 @@ test("settings provider form shows updated preset models for add and edit flows"
     "Claude Sonnet 4.5",
     "Claude Haiku 4.5",
   ]);
+});
+
+test("settings exposes the secret-free registry and durable runtime rollback", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const registry = page.getByTestId("capability-registry-panel");
+  await expect(registry).toBeVisible();
+  await expect(registry.getByTestId("registry-connections")).toContainText("Alibaba Model Studio");
+  await expect(registry.getByTestId("registry-connections")).toContainText("Configured");
+  await expect(registry.getByTestId("registry-models")).toContainText("qwen3.6-plus");
+  await expect(registry.getByTestId("registry-capabilities")).toContainText("Text Generation");
+  await expect(registry.getByTestId("registry-capabilities")).toContainText("Registry");
+  await expect(page.getByText("sk-qwen-demo")).toHaveCount(0);
+
+  await registry.getByRole("button", { name: "Use legacy" }).click();
+  await expect(registry.getByTestId("registry-capabilities")).toContainText("Legacy");
+  const args = await page.evaluate(() => (
+    window as unknown as { __registryModeArgs?: unknown }
+  ).__registryModeArgs);
+  expect(args).toMatchObject({
+    capabilityId: "text_generation",
+    mode: "legacy",
+    expectedRevision: 3,
+    scope: { kind: "agent", id: "cfg-qwen" },
+  });
 });
 
 test("provider output limit is automatic when the explicit cap is cleared", async ({ page }) => {

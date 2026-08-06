@@ -486,6 +486,8 @@ fn main() {
             commands::save_settings_profile_v2_cmd,
             commands::migrate_settings_schema_v2_cmd,
             commands::rollback_settings_schema_v2_cmd,
+            commands::get_capability_registry_projection_cmd,
+            commands::set_capability_registry_read_mode_cmd,
             commands::test_agent_connection_cmd,
             commands::refresh_provider_model_catalog_cmd,
             commands::list_provider_presets_cmd,

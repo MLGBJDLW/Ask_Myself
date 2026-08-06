@@ -1521,6 +1521,31 @@ pub async fn rollback_settings_schema_v2_cmd(
 }
 
 #[tauri::command]
+pub async fn get_capability_registry_projection_cmd(
+    state: tauri::State<'_, AppState>,
+    scope: RegistryScope,
+) -> Result<CapabilityRegistryProjection, String> {
+    state
+        .db
+        .capability_registry_projection(&scope)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_capability_registry_read_mode_cmd(
+    state: tauri::State<'_, AppState>,
+    capability_id: String,
+    scope: SettingsScopeV2,
+    mode: RegistryReadMode,
+    expected_revision: u64,
+) -> Result<RegistryActivationRecord, String> {
+    state
+        .db
+        .set_registry_read_mode(&capability_id, &scope, mode, expected_revision)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn test_agent_connection_cmd(
     config: SaveAgentConfigInput,
 ) -> Result<ProviderModelCatalogSnapshot, String> {

@@ -30,6 +30,9 @@ use nexa_core::app_settings::{AppConfig, TextToSpeechConfig, WizardState};
 #[cfg(test)]
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
+use nexa_core::capability_registry::{
+    CapabilityRegistryProjection, RegistryActivationRecord, RegistryReadMode, RegistryScope,
+};
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, validate_agent_config_credential_contract,
@@ -80,7 +83,7 @@ use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::settings_schema_v2::{
-    SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2,
+    SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2, SettingsScopeV2,
 };
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;

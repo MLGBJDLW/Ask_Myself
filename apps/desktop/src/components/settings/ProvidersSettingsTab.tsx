@@ -1,6 +1,5 @@
 import { AudioLines, Bot, Image as ImageIcon, Pencil, Plus, Settings2, Star, Trash2, X } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import { DEFAULT_SUBAGENT_TOOL_NAMES } from '../../lib/subagentTools';
 import { PROVIDER_PRESETS, type ProviderPreset } from '../../lib/providerPresets';
 import { ProviderIcon } from '../../lib/providerIcons';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput } from '../../types/conversation';
@@ -11,6 +10,7 @@ import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
 import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
 import { SpeechToTextSettingsPanel } from './SpeechToTextSettingsPanel';
 import { Section } from './SettingsSection';
+import { CapabilityRegistryPanel } from './CapabilityRegistryPanel';
 
 export type ProviderView = 'list' | 'selector' | 'form';
 
@@ -89,6 +89,10 @@ export function ProvidersSettingsTab({
     onEditingConfigChange(undefined);
     onSelectedPresetChange(null);
   };
+  const defaultAgentId = agentConfigs.find((config) => config.isDefault)?.id ?? agentConfigs[0]?.id;
+  const registryRefreshToken = agentConfigs
+    .map((config) => `${config.id}:${config.updatedAt ?? ''}:${config.isDefault}`)
+    .join('|');
 
   return (
     <Section icon={<Bot size={20} />} title={t('settings.aiProviders')} delay={0.03}>
@@ -141,6 +145,8 @@ export function ProvidersSettingsTab({
         </div>
       ) : (
         <div className="space-y-4">
+          <CapabilityRegistryPanel agentId={defaultAgentId} refreshToken={registryRefreshToken} />
+
           {/* Add button */}
           <div className="flex justify-end">
             <Button
@@ -187,11 +193,6 @@ export function ProvidersSettingsTab({
                             )}
                             <Badge variant="default" className="text-[10px] shrink-0">
                               {providerLabels[config.provider] ?? config.provider}
-                            </Badge>
-                            <Badge variant="default" className="text-[10px] shrink-0 bg-accent/10 text-accent border-accent/20">
-                              {t('settings.subagentsCount', {
-                                count: (config.subagentAllowedTools ?? DEFAULT_SUBAGENT_TOOL_NAMES).length,
-                              })}
                             </Badge>
                           </div>
                           <p className="mt-0.5 text-xs text-text-tertiary truncate">

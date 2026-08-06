@@ -28,7 +28,14 @@ import type {
   SettingsMigrationReportV2,
   SettingsProfileV2,
   SettingsSchemaStateV2,
+  SettingsScopeV2,
 } from "../types/settingsSchemaV2";
+import type {
+  CapabilityRegistryProjection,
+  RegistryActivationRecord,
+  RegistryReadMode,
+  RegistryScope,
+} from "../types/capabilityRegistry";
 import type {
   AgentConfig,
   AppConfig,
@@ -866,6 +873,21 @@ export const migrateSettingsSchemaV2 = () =>
 
 export const rollbackSettingsSchemaV2 = () =>
   invoke<boolean>('rollback_settings_schema_v2_cmd');
+
+export const getCapabilityRegistryProjection = (scope: RegistryScope = {}) =>
+  invoke<CapabilityRegistryProjection>('get_capability_registry_projection_cmd', { scope });
+
+export const setCapabilityRegistryReadMode = (
+  capabilityId: string,
+  scope: SettingsScopeV2,
+  mode: RegistryReadMode,
+  expectedRevision: number,
+) => invoke<RegistryActivationRecord>('set_capability_registry_read_mode_cmd', {
+  capabilityId,
+  scope,
+  mode,
+  expectedRevision,
+});
 
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
   invoke<ProviderModelCatalogSnapshot>('test_agent_connection_cmd', { config });
