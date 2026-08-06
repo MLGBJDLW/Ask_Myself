@@ -74,7 +74,11 @@ import {
   projectChatMessageVisibility,
   projectChatStreamingVisibility,
 } from "../../lib/streaming/chatVisibility";
-import { ToolCallCard } from "../../components/chat/ToolCallCard";
+import {
+  QuestionRequestTimelineRecord,
+  ToolCallCard,
+} from "../../components/chat/ToolCallCard";
+import { extractQuestionRequest } from "../../lib/questionCards";
 import {
   FileDiffSummaryPanel,
   extractFileDiffArtifacts,
@@ -657,6 +661,12 @@ function collectQuestionResponses(
   Object.values(record).forEach((item) => collectQuestionResponses(item, output, depth + 1));
 }
 
+function isInteractionControlArtifact(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const kind = (value as Record<string, unknown>).kind;
+  return kind === 'questionResponse' || kind === 'interactionSupplement';
+}
+
 export function ChatMessages(props: ChatMessagesProps) {
   const {
     turns,
@@ -708,9 +718,53 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
   const questionResponses = useMemo(() => {
     const responses = new Map<string, Record<string, unknown>>();
-    messages.forEach((message) => collectQuestionResponses(message.artifacts, responses));
+    // Question responses are intentionally removed from the visible transcript,
+    // but their artifacts still drive the compact answered record.
+    props.messages.forEach((message) => collectQuestionResponses(message.artifacts, responses));
     return responses;
-  }, [messages]);
+  }, [props.messages]);
+  const answeredQuestionRecords = useMemo(() => {
+    const toolResults = new Map(
+      props.messages
+        .filter((message) => message.role === 'tool' && message.toolCallId)
+        .map((message) => [message.toolCallId!, message]),
+    );
+    const seen = new Set<string>();
+    return props.messages.flatMap((message, messageIndex) => {
+      if (message.role !== 'assistant') return [];
+      return message.toolCalls.flatMap((toolCall) => {
+        if (toolCall.name !== 'request_user_input' || seen.has(toolCall.id)) return [];
+        const result = toolResults.get(toolCall.id);
+        const request = extractQuestionRequest(
+          toolCall.id,
+          toolCall.arguments,
+          result?.artifacts,
+        );
+        const response = request ? questionResponses.get(request.callId) : undefined;
+        if (!request?.interactionId || !response) return [];
+        const anchorMessage = props.messages
+          .slice(0, messageIndex)
+          .reverse()
+          .find((candidate) => candidate.role === 'user'
+            && !isInteractionControlArtifact(candidate.artifacts));
+        if (!anchorMessage) return [];
+        seen.add(toolCall.id);
+        return [{ request, response, anchorMessageId: anchorMessage.id }];
+      });
+    });
+  }, [props.messages, questionResponses]);
+  const answeredQuestionCallIds = useMemo(
+    () => new Set(answeredQuestionRecords.map(({ request }) => request.callId)),
+    [answeredQuestionRecords],
+  );
+  const answeredQuestionRecordsByMessageId = useMemo(() => {
+    const records = new Map<string, typeof answeredQuestionRecords>();
+    answeredQuestionRecords.forEach((record) => {
+      const existing = records.get(record.anchorMessageId) ?? [];
+      records.set(record.anchorMessageId, [...existing, record]);
+    });
+    return records;
+  }, [answeredQuestionRecords]);
 
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1080,20 +1134,36 @@ export function ChatMessages(props: ChatMessagesProps) {
 
   const renderTimelineTraceNode = useCallback(
     (key: string, sections: TimelineSection[], isStreaming = false) => {
-      const hasPendingQuestion = sections.some(
-        (section) => section.kind === 'tool'
-          && section.toolCall.toolName === 'request_user_input'
-          && !questionResponses.has(section.toolCall.callId),
-      );
+      const traceSections = sections.filter((section) => !(
+        section.kind === 'tool'
+        && section.toolCall.toolName === 'request_user_input'
+        && answeredQuestionCallIds.has(section.toolCall.callId)
+      ));
+      if (traceSections.length === 0) return <Fragment key={key} />;
       return renderThinkingTraceNode(
         key,
-        renderTimelineSections(sections),
+        renderTimelineSections(traceSections),
         isStreaming,
-        hasPendingQuestion,
       );
     },
-    [questionResponses, renderThinkingTraceNode, renderTimelineSections],
+    [answeredQuestionCallIds, renderThinkingTraceNode, renderTimelineSections],
   );
+  const renderAnsweredQuestionRecords = useCallback((messageId: string) => (
+    answeredQuestionRecordsByMessageId.get(messageId)?.map(({ request, response }) => (
+      <div
+        key={`answered-question-${request.interactionId ?? request.callId}`}
+        className="flex justify-start mb-1"
+      >
+        <div className="w-full min-w-0">
+          <QuestionRequestTimelineRecord
+            request={request}
+            answered
+            response={response}
+          />
+        </div>
+      </div>
+    )) ?? null
+  ), [answeredQuestionRecordsByMessageId]);
 
   const messageThinkingText = useMemo(() => {
     const map = new Map<number, string>();
@@ -2148,6 +2218,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                   <>{traceGroup.nodes}</>
                 )}
 
+                {renderAnsweredQuestionRecords(msg.id)}
+
                 {renderGeneratedImagePreviews(assistantImagePreviews)}
 
                 {assistantMsg &&
@@ -2288,6 +2360,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                   }
                 />
               )}
+
+              {msg.role === 'user' && renderAnsweredQuestionRecords(msg.id)}
 
               {developerMode && liveUserSkills.length > 0 && (
                 <TurnSkillStrip skills={liveUserSkills} live />

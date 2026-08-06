@@ -283,7 +283,7 @@ interface ToolCallCardProps {
   questionResponse?: unknown;
 }
 
-function QuestionRequestTimelineRecord({
+export function QuestionRequestTimelineRecord({
   request,
   answered,
   response,

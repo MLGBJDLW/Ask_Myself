@@ -266,6 +266,7 @@ export interface ChatSendOptions {
   orchestrationProfile?: OrchestrationProfile;
   customOrchestration?: CustomOrchestrationOptions | null;
   taskOrchestratorRunId?: string | null;
+  interactionContinuation?: boolean;
 }
 
 export interface UseChatSessionReturn {
@@ -1008,7 +1009,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       let convId = activeId;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
-      if (convId && liveStream?.isStreaming) {
+      if (convId && liveStream?.isStreaming && !options?.interactionContinuation) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));

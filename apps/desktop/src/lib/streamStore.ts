@@ -249,6 +249,19 @@ class StreamStoreImpl {
     this.scheduleFrontendFirstPaint(conversationId, state);
   }
 
+  /** Settle the live transport while the durable turn waits for a response. */
+  markAwaitingUserInput(conversationId: string): void {
+    const state = this._streams[conversationId];
+    if (!state) return;
+    clearStreamWatchdog(state);
+    clearToolPreparingTimers(state);
+    state.isStreaming = false;
+    state.isThinking = false;
+    this.finishTurnTiming(state);
+    this.touch(conversationId);
+    this.notifyImmediately(conversationId);
+  }
+
   /** Remove stream state entirely. */
   clearStream(conversationId: string): void {
     const existing = this._streams[conversationId];
@@ -412,6 +425,8 @@ class StreamStoreImpl {
     if (event.runEvent) {
       const runEvent = event.runEvent;
       const isTerminalEvent = runEvent.kind === 'done' || runEvent.kind === 'error';
+      const isAwaitingUserInput = runEvent.kind === 'status'
+        && runEvent.phase === 'awaiting_user_input';
       let state = this._streams[conversationId];
       if (!state) {
         state = createDefaultState();
@@ -444,12 +459,19 @@ class StreamStoreImpl {
           );
         },
       });
-      if (isTerminalEvent) this.finishTurnTiming(state);
+      if (isAwaitingUserInput) {
+        clearStreamWatchdog(state);
+        clearToolPreparingTimers(state);
+        state.isStreaming = false;
+        state.isThinking = false;
+      }
+      if (isTerminalEvent || isAwaitingUserInput) this.finishTurnTiming(state);
       this.touch(conversationId);
       this.capLiveCollections(state);
       if (isTerminalEvent) this.evictCompletedStreams(conversationId);
       if (
         isTerminalEvent
+        || isAwaitingUserInput
         || runEvent.kind === 'approvalRequested'
         || runEvent.kind === 'approvalResolved'
       ) {

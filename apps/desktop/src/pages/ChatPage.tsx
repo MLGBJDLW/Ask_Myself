@@ -778,6 +778,7 @@ export function ChatPage() {
               orchestrationProfile: inputOptions?.orchestrationProfile,
               customOrchestration: inputOptions?.customOrchestration,
               taskOrchestratorRunId: inputOptions?.taskOrchestratorRunId,
+              interactionContinuation: isDurableInteractionResponse,
             }
           : undefined,
       );

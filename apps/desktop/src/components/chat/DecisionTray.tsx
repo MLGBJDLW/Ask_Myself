@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -81,10 +81,51 @@ export function DecisionTray({
   const currentIndex = Math.min(rawIndex, questionCount);
   const reviewing = currentIndex >= questionCount;
   const currentQuestion = request.questions[Math.min(currentIndex, questionCount - 1)];
+  const highRisk = request.kind === 'high_risk_confirmation';
+  const modalRef = useRef<HTMLElement>(null);
   const [showAll, setShowAll] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const submittedRef = useRef(false);
+
+  useEffect(() => {
+    if (!highRisk) return undefined;
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frame = window.requestAnimationFrame(() => {
+      const firstControl = modalRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      (firstControl ?? modalRef.current)?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [highRisk]);
+
+  const trapModalFocus = (event: KeyboardEvent<HTMLElement>) => {
+    if (!highRisk || event.key !== 'Tab' || !modalRef.current) return;
+    const controls = Array.from(modalRef.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ));
+    if (controls.length === 0) {
+      event.preventDefault();
+      modalRef.current.focus();
+      return;
+    }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !modalRef.current.contains(active))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   const partialMarkedRef = useRef(false);
 
   useEffect(() => {
@@ -135,7 +176,7 @@ export function DecisionTray({
   const selectSingle = (value: string) => {
     if (!currentQuestion) return;
     const nextAnswers = { ...answers, [currentQuestion.id]: [value] };
-    if (questionCount === 1) {
+    if (questionCount === 1 && currentQuestion.type === 'confirm') {
       persist(nextAnswers, questionCount);
       void submit(nextAnswers);
       return;
@@ -186,10 +227,25 @@ export function DecisionTray({
   };
 
   return (
+    <>
+    {highRisk && (
+      <div
+        data-testid="decision-tray-modal-backdrop"
+        aria-hidden="true"
+        className="fixed inset-0 z-[89] bg-black/55 backdrop-blur-sm"
+      />
+    )}
     <section
+      ref={modalRef}
       data-testid="decision-tray"
       aria-label={t('chat.questionRequestTitle')}
-      className="z-40 mx-4 mb-2 shrink-0 overflow-hidden rounded-2xl border border-accent/35 bg-surface-1/98 shadow-[0_18px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:mx-0 max-sm:mb-0 max-sm:max-h-[78vh] max-sm:overflow-y-auto max-sm:rounded-b-none"
+      role={highRisk ? 'alertdialog' : undefined}
+      aria-modal={highRisk || undefined}
+      tabIndex={highRisk ? -1 : undefined}
+      onKeyDown={trapModalFocus}
+      className={highRisk
+        ? 'fixed left-1/2 top-1/2 z-[90] max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-danger/45 bg-surface-1 shadow-[0_24px_80px_rgba(0,0,0,0.5)]'
+        : 'z-40 mx-4 mb-2 shrink-0 overflow-hidden rounded-2xl border border-accent/35 bg-surface-1/98 shadow-[0_18px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:mx-0 max-sm:mb-0 max-sm:max-h-[78vh] max-sm:overflow-y-auto max-sm:rounded-b-none'}
     >
       <header className="flex items-start justify-between gap-3 border-b border-border/60 bg-linear-to-r from-accent/14 via-accent/5 to-transparent px-4 py-3">
         <div className="flex min-w-0 items-start gap-2.5">
@@ -337,8 +393,7 @@ export function DecisionTray({
                 onKeyDown={(event) => {
                   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                     event.preventDefault();
-                    if (questionCount === 1) void submit(answers);
-                    else advance();
+                    advance();
                   }
                 }}
                 placeholder={currentQuestion.placeholder ?? undefined}
@@ -390,11 +445,9 @@ export function DecisionTray({
               variant="primary"
               icon={<ChevronRight size={13} />}
               disabled={!questionIsComplete(currentQuestion, answers) || submitting}
-              onClick={() => questionCount === 1 ? void submit() : advance()}
+              onClick={() => advance()}
             >
-              {questionCount === 1
-                ? t('chat.questionSubmit')
-                : currentIndex === questionCount - 1
+              {currentIndex === questionCount - 1
                   ? t('chat.decisionTrayReview')
                   : t('chat.decisionTrayContinue')}
             </Button>
@@ -402,5 +455,6 @@ export function DecisionTray({
         </div>
       </footer>
     </section>
+    </>
   );
 }

@@ -5,6 +5,7 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem('nexa-locale', 'en');
     const now = new Date().toISOString();
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const testParams = new URLSearchParams(window.location.search);
     let callbackId = 1;
     let listenerId = 1;
     const callbacks = new Map<number, (event: unknown) => void>();
@@ -45,7 +46,7 @@ test.beforeEach(async ({ page }) => {
           type: 'short',
           placeholder: 'Describe the constraint',
         },
-      ],
+      ].slice(0, testParams.get('single') === '1' ? 1 : 2),
     };
     const messages: Array<Record<string, unknown>> = [
       {
@@ -148,7 +149,7 @@ test.beforeEach(async ({ page }) => {
       conversationId: conversation.id,
       turnId: turn.id,
       toolCallId: 'call-decision-1',
-      kind: 'user_input',
+      kind: testParams.get('risk') === 'high' ? 'high_risk_confirmation' : 'user_input',
       title: 'Input required',
       description: null,
       questions: questionArtifact.questions,
@@ -328,4 +329,28 @@ test('restores a per-question draft, distinguishes supplements, and collapses af
   await summary.click();
   await expect(summary).toContainText('Architectural refactor');
   await expect(summary).toContainText('Preserve legacy configuration');
+});
+
+test('single-choice questions advance to review before submission', async ({ page }) => {
+  await page.goto('/chat/conv-decision-tray?single=1');
+
+  const tray = page.getByTestId('decision-tray');
+  await expect(tray).toContainText('Question 1 of 1');
+  await tray.getByRole('radio', { name: /Architectural refactor/ }).click();
+
+  await expect(page.getByTestId('decision-tray-review')).toBeVisible();
+  await expect(tray.getByRole('button', { name: 'Submit answers' })).toBeVisible();
+});
+
+test('high-risk requests block the chat in an accessible modal', async ({ page }) => {
+  await page.goto('/chat/conv-decision-tray?risk=high');
+
+  const modal = page.getByRole('alertdialog', { name: 'A decision is needed' });
+  await expect(modal).toBeVisible();
+  await expect(modal).toHaveAttribute('aria-modal', 'true');
+  await expect(modal.getByRole('heading', { name: 'Input required' })).toBeVisible();
+  await expect(page.getByTestId('decision-tray-modal-backdrop')).toBeVisible();
+  await expect.poll(() => modal.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(() => modal.evaluate((element) => element.contains(document.activeElement))).toBe(true);
 });

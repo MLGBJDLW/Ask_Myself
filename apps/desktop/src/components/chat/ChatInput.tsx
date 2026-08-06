@@ -60,6 +60,8 @@ export interface ChatInputSendOptions {
   orchestrationProfile?: OrchestrationProfile;
   customOrchestration?: CustomOrchestrationOptions | null;
   taskOrchestratorRunId?: string | null;
+  /** Internal control-plane continuation; never route through live steering. */
+  interactionContinuation?: boolean;
 }
 
 interface ChatInputProps {
