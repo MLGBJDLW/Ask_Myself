@@ -2537,6 +2537,81 @@ impl Database {
         transaction.commit()?;
         Ok(saved)
     }
+
+    /// Compare-and-set one capability leaf without transferring ownership of
+    /// a migration-managed profile to the native editor. This is the narrow
+    /// write seam used by capability-specific settings such as Vision.
+    pub fn save_capability_binding_v2(
+        &self,
+        scope: &SettingsScopeV2,
+        capability_id: &str,
+        binding: &CapabilityBindingV2,
+        expected_profile_revision: u64,
+    ) -> Result<SettingsProfileV2, CoreError> {
+        let capability_id = capability_id.trim().to_ascii_lowercase();
+        if capability_id.is_empty()
+            || !capability_id
+                .chars()
+                .all(|character| character.is_ascii_lowercase() || character == '_')
+        {
+            return Err(CoreError::InvalidInput(
+                "Capability id must use lowercase snake_case".to_string(),
+            ));
+        }
+        reject_native_secret_fields(
+            &serde_json::to_value(binding)?,
+            &format!("capability.{capability_id}"),
+        )?;
+        let scope_id = scope.id.as_deref().unwrap_or("");
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (profile_id, revision, document_json): (String, u64, String) = transaction
+            .query_row(
+                "SELECT id, revision, document_json FROM settings_profiles_v2
+                 WHERE scope_kind = ?1 AND scope_id = ?2",
+                params![scope.kind.as_str(), scope_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "Settings profile for scope {}:{}",
+                    scope.kind.as_str(),
+                    scope_id
+                ))
+            })?;
+        if revision != expected_profile_revision {
+            return Err(CoreError::Conflict(format!(
+                "Settings profile {profile_id} revision changed from {expected_profile_revision} to {revision}"
+            )));
+        }
+        let mut saved: SettingsProfileV2 = serde_json::from_str(&document_json)?;
+        saved.overrides.capabilities.insert(
+            capability_id,
+            SettingOverrideV2::Set {
+                value: binding.clone(),
+            },
+        );
+        saved.revision = revision + 1;
+        saved.validate()?;
+        validate_native_credential_references(&transaction, &saved)?;
+        let updated_json = serde_json::to_string(&saved)?;
+        let affected = transaction.execute(
+            "UPDATE settings_profiles_v2
+             SET revision = ?2, document_json = ?3, updated_at = datetime('now')
+             WHERE id = ?1 AND revision = ?4",
+            params![profile_id, saved.revision, updated_json, revision],
+        )?;
+        if affected != 1 {
+            return Err(CoreError::Conflict(format!(
+                "Settings profile {} was modified concurrently",
+                saved.id
+            )));
+        }
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
+        Ok(saved)
+    }
 }
 
 fn restore_legacy_agent_config(
@@ -2973,6 +3048,80 @@ mod tests {
         let report = db.migrate_settings_schema_v2().unwrap();
         assert_eq!(report.migrated, 1);
         assert_eq!(db.list_settings_profiles_v2().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn managed_profile_accepts_only_capability_leaf_cas_updates() {
+        let db = Database::open_memory().unwrap();
+        let mut input = legacy_input("sk-managed-leaf");
+        input.model = "gpt-4.1".to_string();
+        input.model_id = Some("gpt-4.1".to_string());
+        db.save_agent_config(&input).unwrap();
+        let profile = db.list_settings_profiles_v2().unwrap().remove(0);
+        assert!(profile.legacy_source.is_some());
+        let projection = db
+            .capability_registry_projection(&crate::capability_registry::RegistryScope {
+                workspace_id: None,
+                agent_id: Some("legacy-agent".to_string()),
+                task_id: None,
+            })
+            .unwrap();
+        let primary = projection
+            .capabilities
+            .iter()
+            .find(|route| route.capability_id == "text_generation")
+            .and_then(|route| route.primary.as_ref())
+            .unwrap();
+        let binding = CapabilityBindingV2 {
+            primary: Some(ModelReferenceV2 {
+                connection_id: Some(primary.connection.id.clone()),
+                target_id: None,
+                target_revision: None,
+                provider_id: primary.connection.provider_id.clone(),
+                endpoint_id: Some(primary.connection.endpoint_id.clone()),
+                model_id: primary.target.upstream_model_id.clone(),
+            }),
+            fallbacks: Vec::new(),
+            fallback_mode: CapabilityFallbackModeV2::Disabled,
+            constraints: CapabilityBindingConstraintsV2::default(),
+            options: crate::vision_router::VisionRouterPolicy::default().to_binding_options(),
+        };
+
+        let saved = db
+            .save_capability_binding_v2(&profile.scope, "vision", &binding, profile.revision)
+            .unwrap();
+        assert_eq!(saved.revision, profile.revision + 1);
+        assert_eq!(
+            saved.overrides.capabilities.get("vision"),
+            Some(&SettingOverrideV2::Set {
+                value: binding.clone()
+            })
+        );
+        assert!(saved.legacy_source.is_some());
+        let resolution = db
+            .resolve_runtime_capability(
+                &crate::capability_registry::RegistryScope {
+                    workspace_id: None,
+                    agent_id: Some("legacy-agent".to_string()),
+                    task_id: None,
+                },
+                "vision",
+            )
+            .unwrap()
+            .expect("explicit vision binding activates");
+        assert_eq!(resolution.model_id, "gpt-4.1");
+        assert_eq!(
+            resolution
+                .snapshot
+                .options
+                .get("selectionSource")
+                .and_then(Value::as_str),
+            Some("explicit_user")
+        );
+        assert!(matches!(
+            db.save_capability_binding_v2(&profile.scope, "vision", &binding, profile.revision),
+            Err(CoreError::Conflict(_))
+        ));
     }
 
     #[test]

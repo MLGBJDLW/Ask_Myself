@@ -540,6 +540,8 @@ fn materialize_route_resolution(
         descriptor_hash: selected_target.descriptor_hash.clone(),
         fallback_index,
         fallback_mode: route.fallback_mode,
+        constraints: route.constraints.clone(),
+        options: route.options.clone(),
         fallback_reason,
         adapter_provider_id: selected_target.adapter_provider_id.clone(),
         provider_id: selected_target.provider_id.clone(),
@@ -1044,6 +1046,10 @@ fn upsert_activation(
          ON CONFLICT(capability_id, scope_kind, scope_id) DO UPDATE SET
              read_mode = CASE
                  WHEN excluded.read_mode = 'legacy' THEN 'legacy'
+                 WHEN registry_activation_state.parity_status <> 'matched'
+                      AND excluded.parity_status = 'matched'
+                      AND registry_activation_state.activated_at IS NULL
+                   THEN 'registry'
                  ELSE registry_activation_state.read_mode
              END,
              parity_status = excluded.parity_status,
@@ -1064,7 +1070,7 @@ fn upsert_activation(
 }
 
 fn registry_runtime_supported(capability_id: &str) -> bool {
-    capability_id == "text_generation"
+    matches!(capability_id, "text_generation" | "vision")
 }
 
 fn legacy_shadow_parity(
@@ -1082,6 +1088,37 @@ fn legacy_shadow_parity(
             }),
         ));
     };
+    if route.capability_id == "vision" {
+        let explicitly_selected = route
+            .options
+            .get("selectionSource")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == "explicit_user");
+        let eligible = primary.eligibility.eligible;
+        let matched = explicitly_selected && eligible;
+        let status = if matched { "matched" } else { "pending" };
+        return Ok((
+            status,
+            serde_json::json!({
+                "status": status,
+                "bindingId": route.binding_id,
+                "bindingRevision": route.binding_revision,
+                "primaryTargetId": primary.target.id,
+                "reasonCodes": if matched {
+                    Vec::<&str>::new()
+                } else if !explicitly_selected {
+                    vec!["vision_target_requires_explicit_selection"]
+                } else {
+                    vec!["vision_target_ineligible"]
+                },
+                "checks": {
+                    "explicitUserSelection": explicitly_selected,
+                    "runtimeEligibility": eligible,
+                    "secretFreePolicy": true,
+                },
+            }),
+        ));
+    }
     if route.capability_id != "text_generation" || route.source.kind != SettingsScopeKindV2::Agent {
         return Ok((
             "pending",
@@ -1758,6 +1795,8 @@ mod tests {
             descriptor_hash: None,
             fallback_index: 0,
             fallback_mode: CapabilityFallbackModeV2::Automatic,
+            constraints: CapabilityBindingConstraintsV2::default(),
+            options: BTreeMap::new(),
             fallback_reason: None,
             adapter_provider_id: "open_ai".to_string(),
             provider_id: "openai".to_string(),

@@ -160,6 +160,34 @@ pub fn build_registry_projection(
             );
         }
     }
+    // Vision defaults to the legacy text model only when that exact model is
+    // image-capable. It never inherits text fallbacks, so a second provider
+    // cannot receive raw image bytes without an explicit capability binding.
+    if !effective_bindings.contains_key("vision") {
+        if let Some(text) = effective_bindings.get("text_generation").cloned() {
+            let mut options =
+                crate::vision_router::VisionRouterPolicy::default().to_binding_options();
+            options.insert(
+                "selectionSource".to_string(),
+                serde_json::Value::String("derived_native".to_string()),
+            );
+            effective_bindings.insert(
+                "vision".to_string(),
+                ResolvedSettingV2 {
+                    value: text.value.map(|binding| CapabilityBindingV2 {
+                        primary: binding.primary,
+                        fallbacks: Vec::new(),
+                        fallback_mode: CapabilityFallbackModeV2::Disabled,
+                        constraints: CapabilityBindingConstraintsV2::default(),
+                        options,
+                    }),
+                    source: text.source,
+                    source_revision: text.source_revision,
+                    preset_origin: text.preset_origin,
+                },
+            );
+        }
+    }
     {
         let mut context = BindingResolutionContext {
             connections: &connections,
@@ -453,6 +481,7 @@ fn resolve_binding(
         fallbacks,
         fallback_mode: binding.fallback_mode,
         constraints: binding.constraints.clone(),
+        options: binding.options.clone(),
     })
 }
 

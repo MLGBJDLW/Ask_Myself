@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::model_catalog::ModelDescriptor;
@@ -207,6 +209,9 @@ pub struct ResolvedCapabilityRoute {
     pub fallbacks: Vec<ResolvedCapabilityRouteTarget>,
     pub fallback_mode: CapabilityFallbackModeV2,
     pub constraints: CapabilityBindingConstraintsV2,
+    /// Capability-specific, secret-free policy frozen with the binding.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +269,10 @@ pub struct RuntimeRegistrySnapshot {
     pub descriptor_hash: Option<String>,
     pub fallback_index: usize,
     pub fallback_mode: CapabilityFallbackModeV2,
+    #[serde(default)]
+    pub constraints: CapabilityBindingConstraintsV2,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
     pub adapter_provider_id: String,
