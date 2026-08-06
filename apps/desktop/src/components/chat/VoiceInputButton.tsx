@@ -18,6 +18,10 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     busy,
     cancelRecording,
     partialTranscript,
+    runtimeNotice,
+    automaticResult,
+    clearRuntimeNotice,
+    clearAutomaticResult,
     recordingDuration,
     toggleRecording,
     formatDuration,
@@ -37,19 +41,37 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     return () => window.removeEventListener('keydown', handler);
   }, [isRecording, cancelRecording]);
 
-  const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, message?: string) => {
+  const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, _message?: string) => {
     if (code === 'whisper_model_missing') {
       toast.error(t('voice.noModel'));
     } else if (code === 'speech_provider_not_configured') {
       toast.error(t('voice.providerNotConfigured'));
     } else if (code === 'permission_denied') {
       toast.error(t('voice.permissionDenied'));
-    } else if (code === 'transcription_failed' && message) {
-      toast.error(message);
+    } else if (code === 'realtime_backpressure') {
+      toast.error(t('voice.realtimeBackpressure'));
+    } else if (code === 'transcription_failed') {
+      toast.error(t('voice.transcriptionFailed'));
     } else if (code !== 'busy') {
       toast.error(t('voice.error'));
     }
   }, [t]);
+
+  useEffect(() => {
+    if (!runtimeNotice) return;
+    showRuntimeError(runtimeNotice);
+    clearRuntimeNotice();
+  }, [clearRuntimeNotice, runtimeNotice, showRuntimeError]);
+
+  useEffect(() => {
+    if (!automaticResult) return;
+    if (automaticResult.status === 'transcribed') {
+      onTranscript(automaticResult.text);
+    } else if (automaticResult.status === 'error') {
+      showRuntimeError(automaticResult.code, automaticResult.message);
+    }
+    clearAutomaticResult();
+  }, [automaticResult, clearAutomaticResult, onTranscript, showRuntimeError]);
 
   const handleClick = useCallback(async () => {
     if (busy) return;

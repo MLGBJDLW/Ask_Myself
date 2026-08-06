@@ -356,10 +356,12 @@ test('desktop API exposes the complete realtime transcription lifecycle', () => 
 test('realtime renderer upload queue has a hard chunk and byte bound', () => {
   const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
   const neverCompletes = () => new Promise(() => {});
+  const rejectionSnapshots = [];
   const queue = new BoundedAudioUploadQueue(neverCompletes, {
     maxChunks: 3,
     maxBytes: 12,
     maxChunkBytes: 4,
+    onRejected: (telemetry) => rejectionSnapshots.push(telemetry),
   });
 
   assert.equal(queue.enqueue(new Uint8Array(4)), true);
@@ -372,6 +374,9 @@ test('realtime renderer upload queue has a hard chunk and byte bound', () => {
   assert.equal(telemetry.maxBufferedBytes, 12);
   assert.equal(telemetry.acceptedChunks, 3);
   assert.equal(telemetry.rejectedChunks, 2);
+  assert.equal(rejectionSnapshots.length, 2);
+  assert.equal(rejectionSnapshots[0].rejectedChunks, 1);
+  assert.equal(rejectionSnapshots[1].rejectedChunks, 2);
   queue.cancel();
 });
 
@@ -383,6 +388,9 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.doesNotMatch(runtimeSource, /realtimeUploadChainRef/);
   assert.doesNotMatch(runtimeSource, /Array\.from\((wav|chunk)\)/);
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
+  assert.match(runtimeSource, /onRejected: \(\) => stopRealtimeSafely\(true\)/);
+  assert.match(runtimeSource, /void finishRealtimeRecording\(\)/);
+  assert.doesNotMatch(runtimeSource, /backpressure limit reached/);
 });
 
 test('realtime PCM encoder clips float samples into little-endian PCM16', () => {

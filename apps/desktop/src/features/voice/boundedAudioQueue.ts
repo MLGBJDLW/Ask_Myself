@@ -12,6 +12,7 @@ export interface BoundedAudioQueueOptions {
   maxChunks?: number;
   maxBytes?: number;
   maxChunkBytes?: number;
+  onRejected?: (telemetry: AudioQueueTelemetry) => void;
 }
 
 type FlushWaiter = {
@@ -34,6 +35,7 @@ export class BoundedAudioUploadQueue {
   private readonly maxChunks: number;
   private readonly maxBytes: number;
   private readonly maxChunkBytes: number;
+  private readonly onRejected?: (telemetry: AudioQueueTelemetry) => void;
   private readonly waiters: FlushWaiter[] = [];
   private queuedBytes = 0;
   private inFlightBytes = 0;
@@ -56,6 +58,7 @@ export class BoundedAudioUploadQueue {
     this.maxChunks = options.maxChunks ?? DEFAULT_MAX_CHUNKS;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.maxChunkBytes = options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+    this.onRejected = options.onRejected;
     if (this.maxChunks < 1 || this.maxBytes < 1 || this.maxChunkBytes < 1) {
       throw new Error('Audio queue limits must be positive');
     }
@@ -72,6 +75,7 @@ export class BoundedAudioUploadQueue {
       || bufferedBytes + chunk.byteLength > this.maxBytes
     ) {
       this.telemetry.rejectedChunks += 1;
+      this.onRejected?.(this.snapshot());
       return false;
     }
 
