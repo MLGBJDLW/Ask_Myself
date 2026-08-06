@@ -1142,12 +1142,13 @@ fn sanitize_legacy_value(mut value: Value, path: &str) -> Value {
 }
 
 fn is_secret_field(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
     matches!(
-        key.chars()
-            .filter(|character| character.is_ascii_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-            .as_str(),
+        normalized.as_str(),
         "apikey"
             | "token"
             | "secret"
@@ -1168,7 +1169,19 @@ fn is_secret_field(key: &str) -> bool {
             | "password"
             | "privatekey"
             | "sessionkey"
-    )
+    ) || [
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "privatekey",
+        "secretkey",
+        "sessionkey",
+        "signingkey",
+        "encryptionkey",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix))
 }
 
 fn validate_secret_free_value(value: &Value, path: &str) -> Result<(), CoreError> {
@@ -1177,25 +1190,23 @@ fn validate_secret_free_value(value: &Value, path: &str) -> Result<(), CoreError
             for (key, child) in object {
                 let child_path = format!("{path}.{key}");
                 if is_secret_field(key) {
-                    let is_reference = child.as_object().is_some_and(|reference| {
-                        reference
-                            .get("credentialRef")
-                            .and_then(Value::as_str)
-                            .is_some_and(|value| !value.trim().is_empty())
-                            && reference.keys().all(|field| {
-                                matches!(
-                                    field.as_str(),
-                                    "credentialRef" | "configured" | "redacted"
-                                )
-                            })
-                            && reference.get("configured").is_none_or(Value::is_boolean)
-                            && reference.get("redacted").is_none_or(Value::is_boolean)
+                    let reference_value = child.as_object().and_then(|reference| {
+                        let valid_shape = reference.keys().all(|field| {
+                            matches!(field.as_str(), "credentialRef" | "configured" | "redacted")
+                        }) && reference
+                            .get("configured")
+                            .is_none_or(Value::is_boolean)
+                            && reference.get("redacted").is_none_or(Value::is_boolean);
+                        valid_shape
+                            .then(|| reference.get("credentialRef").and_then(Value::as_str))
+                            .flatten()
                     });
-                    if !is_reference {
+                    let Some(reference) = reference_value else {
                         return Err(CoreError::InvalidInput(format!(
                             "Settings V2 cannot persist secret field {child_path}; use credentialRef"
                         )));
-                    }
+                    };
+                    validate_credential_reference(reference)?;
                 }
                 if is_endpoint_field(key)
                     && child.as_str().is_some_and(endpoint_contains_credentials)
@@ -1210,6 +1221,29 @@ fn validate_secret_free_value(value: &Value, path: &str) -> Result<(), CoreError
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
                 validate_secret_free_value(child, &format!("{path}[{index}]"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_native_secret_fields(value: &Value, path: &str) -> Result<(), CoreError> {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = format!("{path}.{key}");
+                if is_secret_field(key) {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Native Settings V2 cannot persist secret-shaped field {child_path}"
+                    )));
+                }
+                reject_native_secret_fields(child, &child_path)?;
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                reject_native_secret_fields(child, &format!("{path}[{index}]"))?;
             }
         }
         _ => {}
@@ -2031,6 +2065,58 @@ fn expected_rollback_sources(
     Ok(expected)
 }
 
+fn validate_native_credential_references(
+    conn: &Connection,
+    profile: &SettingsProfileV2,
+) -> Result<(), CoreError> {
+    for value in profile.overrides.connections.values() {
+        let SettingOverrideV2::Set { value } = value else {
+            continue;
+        };
+        let Some(reference) = value.credential_ref.as_deref() else {
+            continue;
+        };
+        let (namespace, identifier) = reference.split_once(':').ok_or_else(|| {
+            CoreError::InvalidInput("credentialRef must be namespaced".to_string())
+        })?;
+        let exists = match namespace {
+            "legacy-agent-config" => conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_configs WHERE id = ?1)",
+                params![identifier],
+                |row| row.get(0),
+            )?,
+            "legacy-app-config"
+                if matches!(
+                    identifier,
+                    "imageGeneration" | "textToSpeech" | "speechToText"
+                ) =>
+            {
+                let table_exists: bool = conn.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = 'app_config'
+                     )",
+                    [],
+                    |row| row.get(0),
+                )?;
+                table_exists
+                    && conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM app_config WHERE key = 'app_config')",
+                        [],
+                        |row| row.get(0),
+                    )?
+            }
+            _ => false,
+        };
+        if !exists {
+            return Err(CoreError::InvalidInput(format!(
+                "credentialRef {reference} does not resolve to an existing credential store"
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl Database {
     pub fn settings_schema_state_v2(&self) -> Result<SettingsSchemaStateV2, CoreError> {
         let conn = self.conn();
@@ -2181,8 +2267,16 @@ impl Database {
                 "Native V2 profiles must not provide legacySource".to_string(),
             ));
         }
+        reject_native_secret_fields(
+            &serde_json::json!({
+                "overrides": &profile.overrides,
+                "extensions": &profile.extensions,
+            }),
+            "settingsProfile",
+        )?;
         let scope_id = profile.scope.id.as_deref().unwrap_or("");
         let conn = self.conn();
+        validate_native_credential_references(&conn, profile)?;
         let scope_occupant: Option<String> = conn
             .query_row(
                 "SELECT id FROM settings_profiles_v2
@@ -2597,6 +2691,10 @@ mod tests {
                 "apiKey": "future-secret",
                 "sessionToken": "session-secret",
                 "secretKey": "key-secret",
+                "oauthToken": "oauth-secret",
+                "clientToken": "client-secret",
+                "apiSecret": "api-secret",
+                "xApiKey": "x-api-secret",
                 "endpoint": "https://user:password@example.test/v1",
                 "nested": [{ "access_token": "token-secret" }]
             }
@@ -2605,6 +2703,10 @@ mod tests {
         assert!(!json.contains("future-secret"));
         assert!(!json.contains("session-secret"));
         assert!(!json.contains("key-secret"));
+        assert!(!json.contains("oauth-secret"));
+        assert!(!json.contains("client-secret"));
+        assert!(!json.contains("api-secret"));
+        assert!(!json.contains("x-api-secret"));
         assert!(!json.contains("password@example"));
         assert!(!json.contains("token-secret"));
         assert!(json.contains("credentialRef"));
@@ -2809,7 +2911,55 @@ mod tests {
             },
         );
         assert!(db.save_settings_profile_v2(&raw_reference, None).is_err());
+        let mut disguised_secret = profile(
+            "native-disguised-secret",
+            SettingsScopeKindV2::Workspace,
+            Some("workspace"),
+        );
+        disguised_secret.extensions.insert(
+            "provider".to_string(),
+            serde_json::json!({
+                "apiKey": {
+                    "credentialRef": "legacy-agent-config:sk-live-secret"
+                }
+            }),
+        );
+        assert!(db
+            .save_settings_profile_v2(&disguised_secret, None)
+            .is_err());
         assert!(db.list_settings_profiles_v2().unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_credential_reference_must_resolve_to_existing_storage() {
+        let db = Database::open_memory().unwrap();
+        let mut native = profile(
+            "native-reference",
+            SettingsScopeKindV2::Workspace,
+            Some("workspace"),
+        );
+        native.overrides.connections.insert(
+            "default".to_string(),
+            SettingOverrideV2::Set {
+                value: ConnectionReferenceV2 {
+                    id: "connection-1".to_string(),
+                    provider_id: "openai".to_string(),
+                    endpoint_id: None,
+                    base_url: None,
+                    credential_ref: Some("legacy-agent-config:missing".to_string()),
+                },
+            },
+        );
+        assert!(db.save_settings_profile_v2(&native, None).is_err());
+
+        db.save_agent_config(&legacy_input("secret")).unwrap();
+        let SettingOverrideV2::Set { value } =
+            native.overrides.connections.get_mut("default").unwrap()
+        else {
+            unreachable!();
+        };
+        value.credential_ref = Some("legacy-agent-config:legacy-agent".to_string());
+        assert!(db.save_settings_profile_v2(&native, None).is_ok());
     }
 
     #[test]

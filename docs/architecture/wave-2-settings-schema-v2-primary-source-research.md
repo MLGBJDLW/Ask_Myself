@@ -516,9 +516,10 @@ The Nexa implementation keeps the public seam in
   verification leaves V1 active.
 - V2 documents contain credential references only. Known and unknown secret
   fields and credential-bearing endpoints are removed from compatibility
-  projections, and native V2 writes recursively reject inline secrets; exact
-  raw values exist only inside the outer-encrypted rollback snapshot and the
-  unchanged V1 store.
+  projections. Native V2 writes recursively reject secret-shaped fields even
+  when disguised as reference markers, and typed credential references must
+  resolve to an existing supported V1 credential store; exact raw values exist
+  only inside the outer-encrypted rollback snapshot and the unchanged V1 store.
 - Explicit global rollback verifies every snapshot hash, restores exact V1
   agent and application rows, flips the pointer last, and retains V2 sidecars.
   Repeated rollback is idempotent, and startup does not silently reactivate a
