@@ -43,7 +43,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     return () => window.removeEventListener('keydown', handler);
   }, [isRecording, cancelRecording]);
 
-  const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, _message?: string) => {
+  const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, message?: string) => {
     if (code === 'whisper_model_missing') {
       toast.error(t('voice.noModel'));
     } else if (code === 'speech_provider_not_configured') {
@@ -55,9 +55,9 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     } else if (code === 'realtime_deferred') {
       toast.info(t('voice.realtimeDeferred'));
     } else if (code === 'voice_cleanup_pending') {
-      toast.warning(t('voice.cleanupPending'));
+      toast.warning(t('voice.cleanupPending'), message ? { description: message } : undefined);
     } else if (code === 'transcription_failed') {
-      toast.error(t('voice.transcriptionFailed'));
+      toast.error(t('voice.transcriptionFailed'), message ? { description: message } : undefined);
     } else if (code !== 'busy') {
       toast.error(t('voice.error'));
     }

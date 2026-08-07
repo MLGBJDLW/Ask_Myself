@@ -700,7 +700,10 @@ impl VoiceAudioSpool {
         let mut deleting_ids = HashSet::new();
 
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
             let file_name = path
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -709,7 +712,7 @@ impl VoiceAudioSpool {
                 continue;
             };
             if Uuid::parse_str(session_id).is_err() {
-                remove_if_exists(&path)?;
+                let _ = remove_if_exists(&path);
                 continue;
             }
             deleting_ids.insert(session_id.to_string());
@@ -746,7 +749,10 @@ impl VoiceAudioSpool {
         }
 
         for entry in fs::read_dir(&self.root)? {
-            let recording_manifest_path = entry?.path();
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let recording_manifest_path = entry.path();
             let file_name = recording_manifest_path
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -758,14 +764,22 @@ impl VoiceAudioSpool {
                 continue;
             }
             if Uuid::parse_str(session_id).is_err() {
-                remove_if_exists(&recording_manifest_path)?;
+                let _ = remove_if_exists(&recording_manifest_path);
                 continue;
             }
-            let recording_manifest = read_latest_recording_manifest(
+            let recording_manifest = match read_latest_recording_manifest(
                 &recording_manifest_path,
                 session_id,
                 self.limits.max_audio_bytes_per_session,
-            )?;
+            ) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    tracing::warn!(
+                        "Quarantining unreadable voice spool journal {session_id}: {error}"
+                    );
+                    None
+                }
+            };
             let Some(recording_manifest) = recording_manifest else {
                 let (part_path, wav_path, _) = self.paths_for_valid_id(session_id)?;
                 let preserved_path = if part_path.exists() {
@@ -791,7 +805,34 @@ impl VoiceAudioSpool {
                 }
                 continue;
             };
-            let descriptor = self.recover_recording_session(recording_manifest, current_ms)?;
+            let descriptor = match self.recover_recording_session(recording_manifest, current_ms) {
+                Ok(descriptor) => descriptor,
+                Err(error) => {
+                    tracing::warn!("Quarantining unrecoverable voice spool {session_id}: {error}");
+                    let (part_path, wav_path, _) = self.paths_for_valid_id(session_id)?;
+                    let preserved_path = if part_path.exists() {
+                        retained_parts.insert(part_path.clone());
+                        Some(part_path)
+                    } else if wav_path.exists() {
+                        retained_wavs.insert(wav_path.clone());
+                        Some(wav_path)
+                    } else {
+                        None
+                    };
+                    let audio_bytes = preserved_path
+                        .and_then(|path| fs::metadata(path).ok())
+                        .map(|metadata| metadata.len().saturating_sub(WAV_HEADER_BYTES))
+                        .unwrap_or_default();
+                    recovered.insert(
+                        session_id.to_string(),
+                        VoiceSession::DeletionPending {
+                            descriptor: None,
+                            audio_bytes,
+                        },
+                    );
+                    continue;
+                }
+            };
             if let Some(descriptor) = descriptor {
                 let (_, wav_path, _) = self.paths_for_valid_id(&descriptor.session_id)?;
                 retained_wavs.insert(wav_path);
@@ -803,25 +844,33 @@ impl VoiceAudioSpool {
         }
 
         for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             let file_name = path
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("");
-            if entry.file_type()?.is_dir() && file_name.starts_with(".whisper-") {
-                fs::remove_dir_all(&path)?;
+            if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && file_name.starts_with(".whisper-")
+            {
+                if let Err(error) = fs::remove_dir_all(&path) {
+                    tracing::warn!("Deferred managed Whisper scratch cleanup: {error}");
+                }
                 continue;
             }
             if (file_name.ends_with(".part") && !retained_parts.contains(&path))
                 || file_name.ends_with(".tmp")
             {
-                remove_if_exists(&path)?;
+                let _ = remove_if_exists(&path);
             }
         }
 
         for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let manifest_path = entry.path();
             if manifest_path
                 .file_name()
@@ -839,12 +888,12 @@ impl VoiceAudioSpool {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<VoiceSpoolManifest>(&bytes).ok());
             let Some(manifest) = manifest else {
-                remove_if_exists(&manifest_path)?;
+                let _ = remove_if_exists(&manifest_path);
                 continue;
             };
             let descriptor = manifest.descriptor;
             if manifest.version != VOICE_SPOOL_MANIFEST_VERSION {
-                remove_if_exists(&manifest_path)?;
+                let _ = remove_if_exists(&manifest_path);
                 continue;
             }
             if deleting_ids.contains(&descriptor.session_id) {
@@ -854,7 +903,7 @@ impl VoiceAudioSpool {
                 && manifest_path.file_stem().and_then(|value| value.to_str())
                     == Some(descriptor.session_id.as_str());
             if !valid_id {
-                remove_if_exists(&manifest_path)?;
+                let _ = remove_if_exists(&manifest_path);
                 continue;
             }
             let (_, wav_path, _) = self.paths_for_valid_id(&descriptor.session_id)?;
@@ -862,8 +911,8 @@ impl VoiceAudioSpool {
                 .map(|metadata| metadata.len() == descriptor.audio_bytes + WAV_HEADER_BYTES)
                 .unwrap_or(false);
             if !valid_file || descriptor.expires_at_ms <= current_ms {
-                remove_if_exists(&manifest_path)?;
-                remove_if_exists(&wav_path)?;
+                let _ = remove_if_exists(&manifest_path);
+                let _ = remove_if_exists(&wav_path);
                 continue;
             }
             retained_wavs.insert(wav_path);
@@ -874,11 +923,14 @@ impl VoiceAudioSpool {
         }
 
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) == Some("wav")
                 && !retained_wavs.contains(&path)
             {
-                remove_if_exists(&path)?;
+                let _ = remove_if_exists(&path);
             }
         }
 
@@ -893,10 +945,23 @@ impl VoiceAudioSpool {
             ids.sort_by_key(|(_, created_at_ms)| *created_at_ms);
             let remove_count = recovered.len() - self.limits.max_sessions;
             for (id, _) in ids.into_iter().take(remove_count) {
-                recovered.remove(&id);
-                let deletion_path = self.deletion_marker_path(&id)?;
-                write_deletion_marker(&deletion_path, &id)?;
-                self.complete_pending_deletion(&id)?;
+                let Some(VoiceSession::Ready(descriptor)) = recovered.remove(&id) else {
+                    continue;
+                };
+                let deletion_result = self
+                    .deletion_marker_path(&id)
+                    .and_then(|path| write_deletion_marker(&path, &id))
+                    .and_then(|()| self.complete_pending_deletion(&id));
+                if let Err(error) = deletion_result {
+                    tracing::warn!("Deferred over-quota voice spool cleanup for {id}: {error}");
+                    recovered.insert(
+                        id,
+                        VoiceSession::DeletionPending {
+                            audio_bytes: descriptor.audio_bytes,
+                            descriptor: Some(descriptor),
+                        },
+                    );
+                }
             }
         }
 
@@ -1507,6 +1572,42 @@ mod tests {
         assert!(!part_path.exists());
         assert!(!recording_manifest_path.exists());
         assert!(recovered.prepare_transcription(&session_id).is_ok());
+    }
+
+    #[test]
+    fn corrupt_checkpoint_is_quarantined_without_blocking_startup() {
+        let root = tempfile::tempdir().unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let part_path = root.path().join(format!("{session_id}.wav.part"));
+        let recording_manifest_path = root.path().join(format!("{session_id}.recording.json"));
+        let mut bytes = vec![0_u8; WAV_HEADER_BYTES as usize];
+        bytes.extend_from_slice(&[1, 0]);
+        fs::write(&part_path, bytes).unwrap();
+        write_recording_manifest(
+            &recording_manifest_path,
+            &VoiceSpoolRecordingManifest {
+                version: VOICE_SPOOL_MANIFEST_VERSION,
+                session_id: session_id.clone(),
+                created_at_ms: 1,
+                sample_rate: 16_000,
+                target: VoiceSpoolTarget::default(),
+                checkpoint_audio_bytes: 8,
+                checkpoint_next_sequence: 1,
+                checkpoint_checksum_sha256: format!("{:x}", Sha256::digest([0_u8; 8])),
+            },
+        )
+        .unwrap();
+
+        let recovered = VoiceAudioSpool::with_limits(root.path(), test_limits()).unwrap();
+        let entry = recovered.list().unwrap().pop().unwrap();
+        assert_eq!(entry.session_id, session_id);
+        assert_eq!(entry.state, VoiceSpoolLifecycleState::DeletionPending);
+        assert!(part_path.exists());
+        assert!(recording_manifest_path.exists());
+
+        recovered.remove(&session_id).unwrap();
+        assert!(!part_path.exists());
+        assert!(!recording_manifest_path.exists());
     }
 
     #[test]
