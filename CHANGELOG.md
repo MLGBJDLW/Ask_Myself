@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.15...nexa-monorepo-v0.11.16) (2026-08-07)
+
+
+### Features
+
+* **desktop:** expose durable media generation jobs ([901a051](https://github.com/MLGBJDLW/Nexa/commit/901a05112da013e92f2c30ca280498ab0aeb563d))
+* **desktop:** expose video generation capabilities ([abe03c3](https://github.com/MLGBJDLW/Nexa/commit/abe03c3427dfec2edf6f25659526d0f6cca7023f))
+* **media:** add durable generation runtime and lineage ([4e9bba7](https://github.com/MLGBJDLW/Nexa/commit/4e9bba726c4eb4962f70ad9f21cc83cf613a3e43))
+* **media:** add durable generation runtime and lineage ([71feba7](https://github.com/MLGBJDLW/Nexa/commit/71feba7628085bda5403c29bc3aa02e16a97348d))
+* **media:** add strict video provider adapters ([5a7f60c](https://github.com/MLGBJDLW/Nexa/commit/5a7f60c1f4bde7ef6f91ad96c6d99e402bae7ece))
+* **media:** add strict video provider adapters ([e65a628](https://github.com/MLGBJDLW/Nexa/commit/e65a628cf9d39d3e44f44e0f8a47a20a6275c784))
+* **voice:** add bounded AudioWorklet recording dock ([b1a9c7b](https://github.com/MLGBJDLW/Nexa/commit/b1a9c7be35810a25562f7850003f035d86db92e9))
+
+
+### Bug Fixes
+
+* **media:** close video adapter review gaps ([6a6445b](https://github.com/MLGBJDLW/Nexa/commit/6a6445b34a6c9aab967a4a3c758db1c7d010812b))
+* **media:** harden video provider contracts ([c96e774](https://github.com/MLGBJDLW/Nexa/commit/c96e774ac6f0ca7d679a8345c281d438a4e6044b))
+
 ## [0.11.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.14...nexa-monorepo-v0.11.15) (2026-08-07)
 
 
