@@ -9,6 +9,24 @@ export interface ToolCardDiffStatsLike {
 }
 
 export type ToolCardArgsStatus = 'pending' | 'streaming' | 'ready' | 'done' | 'error';
+export type ToolInputPresentation =
+  | 'hidden'
+  | 'summary_on_start'
+  | 'final'
+  | 'live_diff'
+  | 'live_terminal';
+
+export interface ToolInputPresentationInput {
+  toolName?: string | null;
+  renderKind?: string | null;
+  argsStatus?: ToolCardArgsStatus | null;
+  status?: string | null;
+}
+
+export interface ToolArgumentDisplayLabels {
+  redacted: string;
+  invalid: string;
+}
 
 export interface ToolCardTitleTargetInput {
   toolName?: string | null;
@@ -38,6 +56,66 @@ function parseArgsRecord(raw?: string): Record<string, unknown> | null {
       : null;
   } catch {
     return null;
+  }
+}
+
+function isSecretArgumentKey(key: string): boolean {
+  const normalized = key.trim().replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const exact = new Set([
+    'apikey',
+    'authorization',
+    'cookie',
+    'password',
+    'secret',
+    'token',
+    'headers',
+    'accesstoken',
+    'refreshtoken',
+    'idtoken',
+    'clientsecret',
+    'privatekey',
+    'credential',
+    'credentials',
+  ]);
+  return exact.has(normalized)
+    || normalized.endsWith('apikey')
+    || normalized.endsWith('authorization')
+    || normalized.endsWith('cookie')
+    || normalized.endsWith('password')
+    || normalized.endsWith('secret')
+    || normalized.endsWith('token')
+    || normalized.endsWith('accesstoken')
+    || normalized.endsWith('refreshtoken')
+    || normalized.endsWith('privatekey');
+}
+
+function redactToolArgumentValue(value: unknown, redactedLabel: string): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactToolArgumentValue(item, redactedLabel));
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key,
+    isSecretArgumentKey(key) ? redactedLabel : redactToolArgumentValue(item, redactedLabel),
+  ]));
+}
+
+export function formatToolArgumentsForDisplay(
+  raw: string | undefined,
+  labels: ToolArgumentDisplayLabels,
+): string {
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    const redacted = redactToolArgumentValue(parsed, labels.redacted);
+    if (!redacted || typeof redacted !== 'object' || Array.isArray(redacted)) {
+      return JSON.stringify(redacted);
+    }
+    return Object.entries(redacted as Record<string, unknown>)
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+      .join(', ');
+  } catch {
+    return labels.invalid;
   }
 }
 
@@ -83,6 +161,25 @@ export function isCommandExecutionTool(toolName?: string | null, renderKind?: st
     || lower.includes('shell_command');
 }
 
+export function getToolInputPresentation({
+  toolName,
+  renderKind,
+  argsStatus,
+  status,
+}: ToolInputPresentationInput): ToolInputPresentation {
+  const pendingArguments = argsStatus === 'pending' || argsStatus === 'streaming';
+  const active = status === 'preparing'
+    || status === 'starting'
+    || status === 'approvalPending'
+    || status === 'running';
+
+  if (renderKind === 'fileChange' && active) return 'live_diff';
+  if (pendingArguments) return 'hidden';
+  if (isCommandExecutionTool(toolName, renderKind) && active) return 'summary_on_start';
+  if (active) return 'summary_on_start';
+  return 'final';
+}
+
 function commandArgsPreview(value: unknown): string {
   if (Array.isArray(value)) {
     return value
@@ -126,7 +223,7 @@ export function formatToolTarget(key: string, value: string): string {
 
 export function getToolBriefTarget(args?: string): string | null {
   const parsed = parseArgsRecord(args);
-  if (!parsed) return args ? truncateMiddle(normalizeOneLine(args), 44) : null;
+  if (!parsed) return null;
   const counted = firstArrayCountArg(parsed, ['paths', 'files', 'filePaths', 'resourcePaths', 'items']);
   if (counted) return counted;
   const picked = firstStringArg(parsed, [
@@ -160,12 +257,10 @@ export function getToolTitleTarget({
 }: ToolCardTitleTargetInput): string | null {
   if (targetOverride != null) return targetOverride.trim() ? targetOverride : null;
 
+  if (argsStatus === 'pending' || argsStatus === 'streaming') return null;
+
   if (!isCommandExecutionTool(toolName, renderKind)) {
     return getToolBriefTarget(args);
-  }
-
-  if (argsStatus === 'pending' || argsStatus === 'streaming') {
-    return null;
   }
 
   const parsed = parseArgsRecord(args);

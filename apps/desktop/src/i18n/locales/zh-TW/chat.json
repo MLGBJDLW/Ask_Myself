@@ -611,5 +611,15 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "正在重新連線模型服務",
+  "connectionDegraded": "模型服務連線不穩定",
+  "connectionRecovered": "模型服務連線已恢復",
+  "connectionOffline": "模型服務目前離線",
+  "connectionFailed": "模型服務連線失敗",
+  "connectionTurnPreserved": "目前對話輪次已保留。",
+  "connectionTurnNotPreserved": "目前對話輪次無法保留。",
+  "connectionNextAction": "請檢查模型服務設定，待連線恢復後重新傳送。",
+  "toolInputRedacted": "[已隱藏敏感資訊]",
+  "toolInputInvalid": "[無法解析的參數已隱藏]"
 }

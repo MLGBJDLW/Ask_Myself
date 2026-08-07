@@ -6,6 +6,7 @@ import type {
   ArtifactPayload,
   ActivityEvent,
   CapabilityOwner,
+  ProviderConnectionState,
   ToolRenderKind,
   ToolRunCapabilities,
 } from '../../types/conversation';
@@ -131,6 +132,7 @@ export interface StreamState {
   finishReason: string | null;
   contextOverflow: boolean;
   rateLimited: boolean;
+  connectionState: ProviderConnectionState | null;
   autoCompacted: { summary: string } | null;
   /** High-risk tool calls awaiting GUI approval. FIFO queue. */
   pendingApprovals: ApprovalRequest[];

@@ -16,5 +16,7 @@
   "microphoneTestStart": "Test microphone",
   "microphoneTestStop": "Stop test",
   "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
-  "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again."
+  "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
+  "realtimeBackpressure": "音声のアップロードが追いつかなかったため、録音を安全に停止しました。収録済みの音声を確定中です。続きは録音を再開してください。",
+  "transcriptionFailed": "文字起こしに失敗しました。音声プロバイダーの設定を確認して再試行してください。"
 }

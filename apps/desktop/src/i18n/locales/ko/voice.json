@@ -16,5 +16,7 @@
   "microphoneTestStart": "Test microphone",
   "microphoneTestStop": "Stop test",
   "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
-  "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again."
+  "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
+  "realtimeBackpressure": "오디오 업로드가 따라가지 못해 녹음을 안전하게 중지했습니다. 캡처된 음성을 마무리하는 중이며, 계속하려면 녹음을 다시 시작하세요.",
+  "transcriptionFailed": "음성 변환에 실패했습니다. 음성 공급자 설정을 확인한 후 다시 시도하세요."
 }

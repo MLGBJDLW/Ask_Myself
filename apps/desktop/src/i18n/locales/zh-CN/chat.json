@@ -611,5 +611,15 @@
   "autoTtsOn": "自动朗读已开启",
   "autoTtsOff": "自动朗读已关闭",
   "autoTtsNeedsProvider": "请先在设置中配置文本转语音服务",
-  "autoTtsFailed": "自动朗读失败"
+  "autoTtsFailed": "自动朗读失败",
+  "connectionReconnecting": "正在重新连接模型服务",
+  "connectionDegraded": "模型服务连接不稳定",
+  "connectionRecovered": "模型服务连接已恢复",
+  "connectionOffline": "模型服务当前离线",
+  "connectionFailed": "模型服务连接失败",
+  "connectionTurnPreserved": "当前对话轮次已保留。",
+  "connectionTurnNotPreserved": "当前对话轮次无法保留。",
+  "connectionNextAction": "请检查模型服务设置，待连接恢复后重新发送。",
+  "toolInputRedacted": "[已隐藏敏感信息]",
+  "toolInputInvalid": "[无法解析的参数已隐藏]"
 }

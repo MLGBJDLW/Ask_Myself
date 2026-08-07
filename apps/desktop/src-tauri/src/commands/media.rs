@@ -220,11 +220,31 @@ pub fn delete_whisper_model_cmd(state: tauri::State<'_, AppState>) -> Result<(),
 }
 
 #[cfg(feature = "video")]
+const MAX_VOICE_WAV_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "video")]
+fn raw_voice_wav(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
+    let tauri::ipc::InvokeBody::Raw(audio_data) = body else {
+        return Err("Voice transcription requires a raw binary request body".to_string());
+    };
+    if audio_data.is_empty() {
+        return Err("Voice transcription audio is empty".to_string());
+    }
+    if audio_data.len() > MAX_VOICE_WAV_BYTES {
+        return Err(format!(
+            "Voice transcription audio exceeds {MAX_VOICE_WAV_BYTES} bytes"
+        ));
+    }
+    Ok(audio_data.clone())
+}
+
+#[cfg(feature = "video")]
 #[tauri::command]
 pub async fn transcribe_audio_buffer_cmd(
-    audio_data: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
+    let audio_data = raw_voice_wav(request.body())?;
     let db = state.db.clone();
     let whisper_busy = state.whisper_busy.clone();
     if whisper_busy.swap(true, Ordering::SeqCst) {
@@ -294,6 +314,21 @@ fn with_voice_wav<T>(
 #[cfg(all(test, feature = "video"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_transcription_accepts_only_bounded_raw_binary() {
+        assert_eq!(
+            raw_voice_wav(&tauri::ipc::InvokeBody::Raw(vec![1, 2, 3])).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert!(raw_voice_wav(&tauri::ipc::InvokeBody::Raw(Vec::new())).is_err());
+        assert!(
+            raw_voice_wav(&tauri::ipc::InvokeBody::Json(serde_json::json!({
+                "audioData": [1, 2, 3]
+            })))
+            .is_err()
+        );
+    }
 
     #[test]
     fn managed_model_defaults_preserve_the_legacy_whisper_location() {

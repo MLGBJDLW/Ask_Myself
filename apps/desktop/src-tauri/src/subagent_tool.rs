@@ -21,6 +21,10 @@ use nexa_core::conversation::conversation_message_llm_context_content;
 use nexa_core::conversation::memory::estimate_tokens_for_model;
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
+use nexa_core::llm::message_validation::{
+    normalize_assistant_message, validate_message_sequence, InvalidAssistantHandling,
+    MessageNormalizationContext, MessageSource,
+};
 use nexa_core::llm::{
     create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart, Message,
     ProviderConfig, Role, Usage,
@@ -898,6 +902,7 @@ struct DelegationContextSnapshot {
     messages: Arc<[Message]>,
     token_estimate: u32,
     context_limit: u32,
+    dropped_invalid_messages: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -964,6 +969,7 @@ struct SubagentRunArtifact {
     source_scope_applied: bool,
     is_error: bool,
     error_message: Option<String>,
+    preflight_failure: Option<SubagentPreflightFailure>,
 }
 
 fn subtask_role_label(
@@ -1235,9 +1241,16 @@ fn load_delegation_context_snapshot(
     let token_budget = context_limit.saturating_mul(60) / 100;
     let mut selected = Vec::new();
     let mut token_estimate = 0u32;
+    let mut dropped_invalid_messages = 0usize;
     if let Some(conversation_id) = conversation_id {
         if let Ok(messages) = db.get_messages(conversation_id) {
             for message in messages.into_iter().rev() {
+                // Delegate conversational intent and final assistant output, not
+                // provider-specific tool protocol records. Evidence needed by a
+                // child is handed off through typed evidence cards instead.
+                if message.role == Role::Tool {
+                    continue;
+                }
                 let content = conversation_message_llm_context_content(&message).to_string();
                 let message_tokens = estimate_tokens_for_model(model, &content);
                 if !selected.is_empty()
@@ -1245,22 +1258,28 @@ fn load_delegation_context_snapshot(
                 {
                     break;
                 }
-                token_estimate = token_estimate.saturating_add(message_tokens);
-                let is_tool_result = message.role == Role::Tool;
-                let role = match &message.role {
-                    Role::Tool => Role::User,
-                    role => role.clone(),
-                };
-                let content = if is_tool_result {
-                    format!("[Prior tool result]\n{content}")
-                } else {
-                    content
-                };
-                let mut projected = Message::text(role, content);
+                let mut projected = Message::text(message.role.clone(), content);
                 if message.role == Role::Assistant {
                     projected.reasoning_content = message.thinking;
                 }
-                selected.push((message.id, projected));
+                let context = MessageNormalizationContext {
+                    provider: None,
+                    model: Some(model),
+                    conversation_id: Some(conversation_id),
+                    turn_id: None,
+                    message_index: selected.len(),
+                    source: MessageSource::SubagentHandoff,
+                    invalid_assistant: InvalidAssistantHandling::Drop,
+                };
+                match normalize_assistant_message(projected, &context) {
+                    Ok(Some(projected)) => {
+                        token_estimate = token_estimate.saturating_add(message_tokens);
+                        selected.push((message.id, projected));
+                    }
+                    Ok(None) | Err(_) => {
+                        dropped_invalid_messages = dropped_invalid_messages.saturating_add(1);
+                    }
+                }
             }
         }
     }
@@ -1271,6 +1290,9 @@ fn load_delegation_context_snapshot(
     for (id, message) in &selected {
         hasher.update(id.as_bytes());
         hasher.update(message.text_content().as_bytes());
+        if let Some(tool_calls) = message.tool_calls.as_ref() {
+            hasher.update(&serde_json::to_vec(tool_calls).unwrap_or_default());
+        }
     }
     let (selected_message_ids, messages): (Vec<_>, Vec<_>) = selected.into_iter().unzip();
     DelegationContextSnapshot {
@@ -1279,6 +1301,7 @@ fn load_delegation_context_snapshot(
         messages: Arc::from(messages),
         token_estimate,
         context_limit,
+        dropped_invalid_messages,
     }
 }
 
@@ -1476,7 +1499,7 @@ fn resolve_source_scope(
     requested_scope: Option<&[String]>,
 ) -> Vec<String> {
     match requested_scope {
-        Some(requested) if !requested.is_empty() => {
+        Some(requested) => {
             if parent_scope.is_empty() {
                 requested.to_vec()
             } else {
@@ -1486,11 +1509,7 @@ fn resolve_source_scope(
                     .filter(|id| parent.contains(id.as_str()))
                     .cloned()
                     .collect();
-                if narrowed.is_empty() {
-                    parent_scope.to_vec()
-                } else {
-                    narrowed
-                }
+                narrowed
             }
         }
         _ => parent_scope.to_vec(),
@@ -1502,18 +1521,14 @@ fn resolve_allowed_tools(
     requested_allowed_tools: Option<&[String]>,
 ) -> Vec<String> {
     match requested_allowed_tools {
-        Some(requested) if !requested.is_empty() => {
+        Some(requested) => {
             let allowed: BTreeSet<&str> = base_allowed_tools.iter().map(String::as_str).collect();
             let narrowed: Vec<String> = requested
                 .iter()
                 .filter(|name| allowed.contains(name.as_str()))
                 .cloned()
                 .collect();
-            if narrowed.is_empty() {
-                base_allowed_tools.to_vec()
-            } else {
-                narrowed
-            }
+            narrowed
         }
         _ => base_allowed_tools.to_vec(),
     }
@@ -1524,25 +1539,273 @@ fn resolve_allowed_tools_for_role(
     requested_allowed_tools: Option<&[String]>,
     role_profile: Option<&SubagentRoleProfile>,
 ) -> Vec<String> {
-    if requested_allowed_tools.is_some() {
-        return resolve_allowed_tools(base_allowed_tools, requested_allowed_tools);
+    let role_allowed_tools = match role_profile {
+        Some(profile) => {
+            let base: BTreeSet<&str> = base_allowed_tools.iter().map(String::as_str).collect();
+            profile
+                .recommended_tools
+                .iter()
+                .filter(|name| base.contains(**name))
+                .map(|name| (*name).to_string())
+                .collect()
+        }
+        None => base_allowed_tools.to_vec(),
+    };
+    resolve_allowed_tools(&role_allowed_tools, requested_allowed_tools)
+}
+
+const SUBAGENT_PREFLIGHT_SCHEMA_VERSION: u32 = 1;
+const SUBAGENT_PREFLIGHT_MARKER: &str = "NEXA_SUBAGENT_PREFLIGHT=";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SubagentPreflightStage {
+    History,
+    Provider,
+    Policy,
+    Budget,
+    Timeout,
+}
+
+impl std::fmt::Display for SubagentPreflightStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::History => "history",
+            Self::Provider => "provider",
+            Self::Policy => "policy",
+            Self::Budget => "budget",
+            Self::Timeout => "timeout",
+        };
+        formatter.write_str(value)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SubagentPreflightFailure {
+    schema_version: u32,
+    stage: SubagentPreflightStage,
+    code: String,
+    retryable: bool,
+    message: String,
+}
+
+fn subagent_preflight_failure(
+    stage: SubagentPreflightStage,
+    code: &str,
+    retryable: bool,
+    message: impl Into<String>,
+) -> CoreError {
+    let failure = SubagentPreflightFailure {
+        schema_version: SUBAGENT_PREFLIGHT_SCHEMA_VERSION,
+        stage,
+        code: code.to_string(),
+        retryable,
+        message: message.into(),
+    };
+    let encoded = serde_json::to_string(&failure).unwrap_or_else(|_| "{}".to_string());
+    CoreError::InvalidInput(format!(
+        "Subagent preflight failed at {} ({}): {}\n{SUBAGENT_PREFLIGHT_MARKER}{encoded}",
+        failure.stage, failure.code, failure.message
+    ))
+}
+
+fn subagent_preflight_failure_from_error(error: &CoreError) -> Option<SubagentPreflightFailure> {
+    let CoreError::InvalidInput(message) = error else {
+        return None;
+    };
+    let encoded = message.split_once(SUBAGENT_PREFLIGHT_MARKER)?.1.trim();
+    serde_json::from_str(encoded).ok()
+}
+
+fn subagent_admission_failure(error: &CoreError) -> CoreError {
+    let message = error.to_string();
+    if message.contains("queue deadline") {
+        subagent_preflight_failure(
+            SubagentPreflightStage::Timeout,
+            "queue_deadline_exceeded",
+            true,
+            message,
+        )
+    } else if message.contains("cancelled while waiting") {
+        subagent_preflight_failure(
+            SubagentPreflightStage::Timeout,
+            "queue_wait_cancelled",
+            false,
+            message,
+        )
+    } else {
+        subagent_preflight_failure(
+            SubagentPreflightStage::Budget,
+            "admission_rejected",
+            false,
+            message,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubagentPreflightReport {
+    schema_version: u32,
+    completed_stages: Vec<SubagentPreflightStage>,
+    provider_id: String,
+    effective_model: String,
+    inherited_tool_count: usize,
+    requested_tool_count: usize,
+    effective_tool_count: usize,
+    requested_source_count: usize,
+    effective_source_count: usize,
+    context_message_count: usize,
+    dropped_invalid_context_messages: usize,
+    reserved_tokens: u32,
+    remaining_token_budget: u32,
+    remaining_call_budget: u32,
+    run_deadline_ms: u64,
+}
+
+fn validate_subagent_preflight(
+    args: &SpawnSubagentArgs,
+    effective_model: &str,
+    provider_id: &str,
+    baseline_allowed_tools: &[String],
+    effective_allowed_tools: &[String],
+    inherited_source_scope: &[String],
+    effective_source_scope: &[String],
+    context_snapshot: &DelegationContextSnapshot,
+) -> Result<SubagentPreflightReport, CoreError> {
+    let history_context = MessageNormalizationContext {
+        provider: Some(provider_id),
+        model: Some(effective_model),
+        conversation_id: None,
+        turn_id: None,
+        message_index: 0,
+        source: MessageSource::SubagentHandoff,
+        invalid_assistant: InvalidAssistantHandling::Reject,
+    };
+    validate_message_sequence(&context_snapshot.messages, history_context).map_err(|error| {
+        subagent_preflight_failure(
+            SubagentPreflightStage::History,
+            "inherited_history_invalid",
+            false,
+            error.to_string(),
+        )
+    })?;
+
+    if let Some(requested) = args.allowed_tools.as_deref() {
+        let inherited: BTreeSet<&str> = baseline_allowed_tools.iter().map(String::as_str).collect();
+        let denied: Vec<&str> = requested
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !inherited.contains(name))
+            .collect();
+        if !denied.is_empty() {
+            return Err(subagent_preflight_failure(
+                SubagentPreflightStage::Policy,
+                "tool_scope_widening",
+                false,
+                format!(
+                    "Requested tool(s) are not available to the parent: {}.",
+                    denied.join(", ")
+                ),
+            ));
+        }
+        if !requested.is_empty() && effective_allowed_tools.is_empty() {
+            return Err(subagent_preflight_failure(
+                SubagentPreflightStage::Policy,
+                "tool_scope_empty_after_narrowing",
+                false,
+                "No requested tools remain after role and delegation-depth restrictions.",
+            ));
+        }
     }
 
-    let Some(profile) = role_profile else {
-        return base_allowed_tools.to_vec();
-    };
-    let base: BTreeSet<&str> = base_allowed_tools.iter().map(String::as_str).collect();
-    let narrowed: Vec<String> = profile
-        .recommended_tools
-        .iter()
-        .filter(|name| base.contains(**name))
-        .map(|name| (*name).to_string())
-        .collect();
-    if narrowed.is_empty() {
-        base_allowed_tools.to_vec()
-    } else {
-        narrowed
+    if let Some(requested) = args.source_ids.as_deref() {
+        if !inherited_source_scope.is_empty() {
+            let inherited: BTreeSet<&str> =
+                inherited_source_scope.iter().map(String::as_str).collect();
+            let denied: Vec<&str> = requested
+                .iter()
+                .map(String::as_str)
+                .filter(|source_id| !inherited.contains(source_id))
+                .collect();
+            if !denied.is_empty() {
+                return Err(subagent_preflight_failure(
+                    SubagentPreflightStage::Policy,
+                    "source_scope_widening",
+                    false,
+                    format!(
+                        "Requested source(s) are outside the parent scope: {}.",
+                        denied.join(", ")
+                    ),
+                ));
+            }
+        }
     }
+
+    Ok(SubagentPreflightReport {
+        schema_version: SUBAGENT_PREFLIGHT_SCHEMA_VERSION,
+        completed_stages: vec![
+            SubagentPreflightStage::History,
+            SubagentPreflightStage::Provider,
+            SubagentPreflightStage::Policy,
+        ],
+        provider_id: provider_id.to_string(),
+        effective_model: effective_model.to_string(),
+        inherited_tool_count: baseline_allowed_tools.len(),
+        requested_tool_count: args.allowed_tools.as_ref().map_or(0, Vec::len),
+        effective_tool_count: effective_allowed_tools.len(),
+        requested_source_count: args.source_ids.as_ref().map_or(0, Vec::len),
+        effective_source_count: effective_source_scope.len(),
+        context_message_count: context_snapshot.messages.len(),
+        dropped_invalid_context_messages: context_snapshot.dropped_invalid_messages,
+        reserved_tokens: 0,
+        remaining_token_budget: 0,
+        remaining_call_budget: 0,
+        run_deadline_ms: 0,
+    })
+}
+
+fn finalize_subagent_preflight(
+    report: &mut SubagentPreflightReport,
+    budget: &BudgetSnapshot,
+    reserved_tokens: u32,
+    run_deadline_ms: u64,
+) -> Result<(), CoreError> {
+    if budget.remaining_calls == 0 {
+        return Err(subagent_preflight_failure(
+            SubagentPreflightStage::Budget,
+            "call_budget_exhausted",
+            false,
+            "No delegated call budget remains for this turn.",
+        ));
+    }
+    if budget.remaining_tokens == 0 {
+        return Err(subagent_preflight_failure(
+            SubagentPreflightStage::Budget,
+            "token_budget_exhausted",
+            false,
+            "No delegated token budget remains for this turn.",
+        ));
+    }
+    report.reserved_tokens = reserved_tokens;
+    report.remaining_token_budget = budget.remaining_tokens;
+    report.remaining_call_budget = budget.remaining_calls;
+    report.completed_stages.push(SubagentPreflightStage::Budget);
+
+    if run_deadline_ms == 0 {
+        return Err(subagent_preflight_failure(
+            SubagentPreflightStage::Timeout,
+            "run_deadline_invalid",
+            false,
+            "The delegated run deadline is zero.",
+        ));
+    }
+    report.run_deadline_ms = run_deadline_ms;
+    report
+        .completed_stages
+        .push(SubagentPreflightStage::Timeout);
+    Ok(())
 }
 
 fn build_evidence_handoff(db: &Database, chunk_ids: Option<&[String]>) -> Vec<EvidenceHandoffItem> {
@@ -1796,10 +2059,15 @@ async fn run_subagent_once(
 ) -> Result<SubagentRunArtifact, CoreError> {
     let launch_started = Instant::now();
     if runtime.delegation_depth >= MAX_SUBAGENT_DELEGATION_DEPTH {
-        return Err(CoreError::InvalidInput(format!(
-            "Recursive delegated execution is blocked beyond depth {}.",
-            MAX_SUBAGENT_DELEGATION_DEPTH
-        )));
+        return Err(subagent_preflight_failure(
+            SubagentPreflightStage::Policy,
+            "recursion_depth_exceeded",
+            false,
+            format!(
+                "Recursive delegated execution is blocked beyond depth {}.",
+                MAX_SUBAGENT_DELEGATION_DEPTH
+            ),
+        ));
     }
 
     let worker_cancel_token = runtime.cancel_token.child_token();
@@ -1823,6 +2091,28 @@ async fn run_subagent_once(
         args.model_policy.as_ref(),
     );
     let effective_model = config.model.clone();
+    let effective_model_id = effective_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            subagent_preflight_failure(
+                SubagentPreflightStage::Provider,
+                "model_unresolved",
+                false,
+                "No effective model was resolved.",
+            )
+        })?
+        .to_string();
+    let provider = create_provider(runtime.provider_config.clone()).map_err(|error| {
+        subagent_preflight_failure(
+            SubagentPreflightStage::Provider,
+            "provider_configuration_invalid",
+            false,
+            error.to_string(),
+        )
+    })?;
+    let provider_id = provider.name().to_string();
     let effective_provider_type = config
         .provider_type
         .unwrap_or(runtime.provider_config.provider_type);
@@ -1874,7 +2164,17 @@ async fn run_subagent_once(
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
 
-    let available_tool_names = runtime.get_tool_registry()?.tool_names();
+    let available_tool_names = runtime
+        .get_tool_registry()
+        .map_err(|error| {
+            subagent_preflight_failure(
+                SubagentPreflightStage::Policy,
+                "tool_registry_unavailable",
+                false,
+                error.to_string(),
+            )
+        })?
+        .tool_names();
     let baseline_allowed_tools =
         normalize_allowed_tools(runtime.allowed_tools.as_deref(), &available_tool_names);
     let mut effective_allowed_tools = resolve_allowed_tools_for_role(
@@ -1887,6 +2187,16 @@ async fn run_subagent_once(
     }
     let effective_source_scope =
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
+    let mut preflight = validate_subagent_preflight(
+        &args,
+        &effective_model_id,
+        &provider_id,
+        &baseline_allowed_tools,
+        &effective_allowed_tools,
+        &inherited_source_scope,
+        &effective_source_scope,
+        &context_snapshot,
+    )?;
     let evidence_handoff = build_evidence_handoff(&db, args.evidence_chunk_ids.as_deref());
     let skill_select_started = Instant::now();
     let selected_skill_query = format!(
@@ -1905,7 +2215,15 @@ async fn run_subagent_once(
     let skill_select_ms = instant_elapsed_ms(skill_select_started);
     let tool_registry_started = Instant::now();
     let tools =
-        build_subagent_executor_tools(&runtime, &effective_allowed_tools, &worker_cancel_token)?;
+        build_subagent_executor_tools(&runtime, &effective_allowed_tools, &worker_cancel_token)
+            .map_err(|error| {
+                subagent_preflight_failure(
+                    SubagentPreflightStage::Policy,
+                    "tool_registry_construction_failed",
+                    false,
+                    error.to_string(),
+                )
+            })?;
     let tool_registry_ms = instant_elapsed_ms(tool_registry_started);
     let request_build_started = Instant::now();
     let request_text = build_subagent_request(
@@ -1921,6 +2239,13 @@ async fn run_subagent_once(
     let initial_output_credit = initial_output_credit(role_profile, &args, &config);
     let reserved_tokens =
         estimate_reserved_tokens(&config, &request_text, &tools, initial_output_credit);
+    let budget_snapshot = runtime.budget.snapshot().await;
+    finalize_subagent_preflight(
+        &mut preflight,
+        &budget_snapshot,
+        reserved_tokens,
+        run_deadline_ms,
+    )?;
     let mut subtask_input = subtask_input_payload(
         "subagent_run",
         &call_label,
@@ -1937,11 +2262,14 @@ async fn run_subagent_once(
         serde_json::to_value(&delegation_limits).unwrap_or_else(|_| serde_json::json!({}));
     subtask_input["initialOutputCredit"] = serde_json::json!(initial_output_credit);
     subtask_input["skillIndexGeneration"] = serde_json::json!(&skill_index.generation);
+    subtask_input["preflight"] =
+        serde_json::to_value(&preflight).unwrap_or_else(|_| serde_json::json!({}));
     subtask_input["contextSnapshot"] = serde_json::json!({
         "id": &context_snapshot.id,
         "selectedMessageIds": &context_snapshot.selected_message_ids,
         "tokenEstimate": context_snapshot.token_estimate,
         "contextLimit": context_snapshot.context_limit,
+        "droppedInvalidMessages": context_snapshot.dropped_invalid_messages,
     });
     let parent_task_run_id = runtime.parent_task_run_id.clone();
     let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
@@ -2016,10 +2344,12 @@ async fn run_subagent_once(
     {
         Ok(permit) => permit,
         Err(err) => {
+            let err = subagent_admission_failure(&err);
             let output = serde_json::json!({
                 "kind": "subagent_run_error",
                 "callLabel": &call_label,
                 "error": err.to_string(),
+                "preflight": subagent_preflight_failure_from_error(&err),
             });
             finish_subtask_run_best_effort(
                 &db,
@@ -2055,6 +2385,12 @@ async fn run_subagent_once(
         {
             Ok(permit) => Some(permit),
             Err(error) => {
+                let error = subagent_preflight_failure(
+                    SubagentPreflightStage::Timeout,
+                    "batch_queue_deadline_exceeded",
+                    true,
+                    error.to_string(),
+                );
                 runtime
                     .budget
                     .rollback_unstarted_worker(reserved_tokens, is_verification)
@@ -2116,35 +2452,6 @@ async fn run_subagent_once(
             })),
         );
     }
-    let provider = match create_provider(runtime.provider_config.clone()) {
-        Ok(provider) => provider,
-        Err(error) => {
-            runtime.budget.release_reservation(reserved_tokens).await;
-            let error = CoreError::Llm(error.to_string());
-            finish_subtask_run_best_effort(
-                &db,
-                subtask_run_id.as_deref(),
-                "failed",
-                None,
-                Some(&error.to_string()),
-            );
-            if let Some(parent_run_id) = parent_task_run_id.as_deref() {
-                record_subtask_event(
-                    &db,
-                    parent_run_id,
-                    &format!("Subagent failed: {call_label}"),
-                    "failed",
-                    Some(&serde_json::json!({
-                        "subtaskRunId": &subtask_run_id,
-                        "callLabel": &call_label,
-                        "error": error.to_string(),
-                        "phase": "connecting",
-                    })),
-                );
-            }
-            return Err(error);
-        }
-    };
     let estimated_cost_micros =
         nexa_core::usage_analytics::usage_cost_metadata(Some(effective_provider_type)).0;
     let non_streaming_completion = llm_streaming_disabled_by_env()
@@ -2308,6 +2615,12 @@ async fn run_subagent_once(
                             "tone": tone,
                         }));
                     }
+                }
+                AgentEvent::ConnectionState { state } => {
+                    capture.tool_events.push(serde_json::json!({
+                        "phase": "connection",
+                        "state": state,
+                    }));
                 }
                 AgentEvent::Steering { content } => {
                     if !content.trim().is_empty() {
@@ -2588,6 +2901,7 @@ async fn run_subagent_once(
         source_scope_applied,
         is_error: false,
         error_message: None,
+        preflight_failure: None,
     };
     runtime.save_session_snapshot(SubagentSessionSnapshot {
         task_id: session_id.clone(),
@@ -2666,6 +2980,7 @@ fn failed_subagent_run_artifact(
         source_scope_applied: false,
         is_error: true,
         error_message: Some(error.to_string()),
+        preflight_failure: subagent_preflight_failure_from_error(error),
     }
 }
 
@@ -3133,6 +3448,7 @@ impl Tool for SubagentTool {
         {
             Ok(run) => run,
             Err(err) => {
+                let preflight_failure = subagent_preflight_failure_from_error(&err);
                 let error_message = err.to_string();
                 return Ok(ToolResult {
                     call_id: call_id.to_string(),
@@ -3148,6 +3464,7 @@ impl Tool for SubagentTool {
                         "result": format!("Subagent failed: {error_message}"),
                         "isError": true,
                         "errorMessage": error_message,
+                        "preflightFailure": preflight_failure,
                     })),
                 });
             }
@@ -3193,6 +3510,7 @@ impl Tool for SubagentTool {
                 "allowedSkills": run.allowed_skills,
                 "isError": run.is_error,
                 "errorMessage": run.error_message,
+                "preflightFailure": run.preflight_failure,
             })),
         })
     }
@@ -4377,6 +4695,141 @@ mod tests {
         assert!(tools.contains(&"record_verification".to_string()));
         assert!(!tools.contains(&"desktop_automation".to_string()));
         assert!(!tools.contains(&"run_shell".to_string()));
+    }
+
+    #[test]
+    fn test_explicit_request_cannot_widen_role_tool_policy() {
+        let base_tools = vec!["web_search".to_string(), "desktop_automation".to_string()];
+        let verifier = role_profile_by_id("verifier").unwrap();
+
+        let tools = resolve_allowed_tools_for_role(
+            &base_tools,
+            Some(&["desktop_automation".to_string()]),
+            Some(verifier),
+        );
+
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_explicit_tool_scope_never_falls_back_to_parent_permissions() {
+        let base_tools = vec!["read_file".to_string(), "web_search".to_string()];
+
+        assert!(resolve_allowed_tools(&base_tools, Some(&[])).is_empty());
+        assert!(
+            resolve_allowed_tools(&base_tools, Some(&["desktop_automation".to_string()]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_explicit_source_scope_never_falls_back_to_parent_scope() {
+        let parent_scope = vec!["source-a".to_string()];
+
+        assert!(resolve_source_scope(&parent_scope, Some(&[])).is_empty());
+        assert!(resolve_source_scope(&parent_scope, Some(&["source-b".to_string()])).is_empty());
+    }
+
+    #[test]
+    fn test_preflight_rejects_tools_outside_parent_capabilities() {
+        let args = SpawnSubagentArgs {
+            task: "Inspect the repository".into(),
+            task_id: None,
+            role_id: None,
+            role: None,
+            model_policy: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: None,
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: Some(vec!["desktop_automation".into()]),
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        };
+        let snapshot = DelegationContextSnapshot {
+            id: "snapshot".into(),
+            selected_message_ids: Arc::from(Vec::<String>::new()),
+            messages: Arc::from(Vec::<Message>::new()),
+            token_estimate: 0,
+            context_limit: 128_000,
+            dropped_invalid_messages: 0,
+        };
+        let error = validate_subagent_preflight(
+            &args,
+            "test-model",
+            "openai",
+            &["read_file".into()],
+            &[],
+            &[],
+            &[],
+            &snapshot,
+        )
+        .unwrap_err();
+
+        let failure = subagent_preflight_failure_from_error(&error).unwrap();
+        assert_eq!(failure.schema_version, 1);
+        assert_eq!(failure.stage, SubagentPreflightStage::Policy);
+        assert_eq!(failure.code, "tool_scope_widening");
+        assert!(!failure.retryable);
+        assert!(error.to_string().contains("desktop_automation"));
+    }
+
+    #[test]
+    fn test_preflight_classifies_invalid_inherited_history() {
+        let args = SpawnSubagentArgs {
+            task: "Inspect the repository".into(),
+            task_id: None,
+            role_id: None,
+            role: None,
+            model_policy: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: None,
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: None,
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        };
+        let invalid_assistant = Message {
+            role: Role::Assistant,
+            parts: Vec::new(),
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("private reasoning".into()),
+            prompt_cache_hint: None,
+        };
+        let snapshot = DelegationContextSnapshot {
+            id: "snapshot".into(),
+            selected_message_ids: Arc::from(vec!["message-1".to_string()]),
+            messages: Arc::from(vec![invalid_assistant]),
+            token_estimate: 1,
+            context_limit: 128_000,
+            dropped_invalid_messages: 0,
+        };
+
+        let error = validate_subagent_preflight(
+            &args,
+            "test-model",
+            "openai",
+            &[],
+            &[],
+            &[],
+            &[],
+            &snapshot,
+        )
+        .unwrap_err();
+        let failure = subagent_preflight_failure_from_error(&error).unwrap();
+
+        assert_eq!(failure.stage, SubagentPreflightStage::History);
+        assert_eq!(failure.code, "inherited_history_invalid");
     }
 
     #[test]

@@ -25,6 +25,7 @@ export function normalizeAgentEventType(value: unknown): AgentEventType | null {
     case 'toolRunUpdated': return 'toolRunUpdated';
     case 'toolRunCompleted': return 'toolRunCompleted';
     case 'status': return 'status';
+    case 'connectionState': return 'connectionState';
     case 'steering': return 'steering';
     case 'done': return 'done';
     case 'error': return 'error';

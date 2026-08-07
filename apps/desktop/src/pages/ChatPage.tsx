@@ -5,7 +5,7 @@ import { Archive, ArchiveRestore, Check, ChevronDown, Globe2, Loader2, Network, 
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
-import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
+import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import {
   TerminalDock,
@@ -1753,6 +1753,9 @@ export function ChatPage() {
                   />
                 </div>
               </div>
+            )}
+            {!isArchivedConversation && (
+              <ConnectionStatusBanner connection={chat.connectionState} />
             )}
             {isArchivedConversation ? (
               <div className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3">

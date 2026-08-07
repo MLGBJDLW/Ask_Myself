@@ -611,5 +611,15 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "Reconnecting to the provider",
+  "connectionDegraded": "Provider connection is degraded",
+  "connectionRecovered": "Provider connection recovered",
+  "connectionOffline": "Provider is offline",
+  "connectionFailed": "Provider connection failed",
+  "connectionTurnPreserved": "Your current turn is preserved.",
+  "connectionTurnNotPreserved": "This turn could not be preserved.",
+  "connectionNextAction": "Check provider settings, then resend when the connection is available.",
+  "toolInputRedacted": "[Redacted]",
+  "toolInputInvalid": "[Unparseable arguments hidden]"
 }

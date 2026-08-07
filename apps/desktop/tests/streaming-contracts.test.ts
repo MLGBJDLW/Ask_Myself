@@ -11,8 +11,10 @@ import {
   normalizePersistedToolCallStatus,
 } from '../src/lib/streaming/toolStatus';
 import {
+  formatToolArgumentsForDisplay,
   getStableFileChangeTarget,
   getToolBriefTarget,
+  getToolInputPresentation,
   getToolTitleTarget,
 } from '../src/lib/streaming/toolCardPresentation';
 import {
@@ -1380,15 +1382,117 @@ test('uses one tool status reducer for run, trace, and card-facing statuses', ()
 test('file change tool cards use stable diff paths instead of partial streaming json as title target', () => {
   const partialArgs = '{"path":"notes/live.md","content":"first\\nsecond';
 
-  assert(
-    getToolBriefTarget(partialArgs)?.startsWith('{"path"'),
-    'generic tool target still falls back to partial args for non-file tools',
-  );
+  assertEqual(getToolBriefTarget(partialArgs), null, 'partial JSON is never used as a title target');
   assertEqual(
     getStableFileChangeTarget({ path: 'notes/live.md' }, { paths: ['notes/live.md'] }),
     'notes/live.md',
     'file change target should come from diff artifact path',
   );
+});
+
+test('generic tool input policy hides partial JSON and redacts completed secrets', () => {
+  assertEqual(
+    getToolInputPresentation({
+      toolName: 'fetch_url',
+      renderKind: 'generic',
+      argsStatus: 'streaming',
+      status: 'preparing',
+    }),
+    'hidden',
+    'generic partial input policy',
+  );
+  assertEqual(
+    getToolInputPresentation({
+      toolName: 'edit_file',
+      renderKind: 'fileChange',
+      argsStatus: 'streaming',
+      status: 'preparing',
+    }),
+    'live_diff',
+    'file edits retain semantic live diff rendering',
+  );
+  const formatted = formatToolArgumentsForDisplay(
+    JSON.stringify({
+      url: 'https://example.com',
+      authorization: 'Bearer secret',
+      headers: { 'x-client': 'should-stay-hidden-with-the-header-map' },
+      nested: { apiKey: 'sk-secret', sessionToken: 'session-secret', query: 'status' },
+    }),
+    { redacted: '[REDACTED]', invalid: '[INVALID]' },
+  );
+  assert(!formatted.includes('Bearer secret'), 'authorization value should be redacted');
+  assert(!formatted.includes('sk-secret'), 'nested API key should be redacted');
+  assert(!formatted.includes('session-secret'), 'token suffix should be redacted');
+  assert(!formatted.includes('should-stay-hidden'), 'header maps should be redacted');
+  assert(formatted.includes('[REDACTED]'), 'redaction marker should remain auditable');
+  assertEqual(
+    formatToolArgumentsForDisplay('{invalid', { redacted: '[REDACTED]', invalid: '[INVALID]' }),
+    '[INVALID]',
+    'invalid argument copy is supplied by the translated presentation layer',
+  );
+});
+
+test('structured connection recovery updates state without becoming reasoning', () => {
+  const projected = projectRunEventsToStreamState(taskRun('running'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'recoveryAttempt',
+      label: 'Reconnecting to provider',
+      status: 'reconnecting',
+      payload: {
+        type: 'connectionState',
+        state: {
+          state: 'reconnecting',
+          providerId: 'openai',
+          modelId: 'gpt-test',
+          errorCategory: 'network',
+          attempt: 1,
+          maxAttempts: 3,
+          nextRetryAt: '2026-01-01T00:00:05Z',
+          recoverable: true,
+          queuedUserInputs: 0,
+          turnPreserved: true,
+        },
+      },
+    }),
+  ]);
+
+  assertEqual(projected.connectionState?.state, 'reconnecting', 'connection state');
+  assertEqual(projected.connectionState?.attempt, 1, 'connection retry attempt');
+  assertEqual(projected.thinkingText, '', 'retry status must not enter reasoning');
+});
+
+test('terminal completion clears a stale reconnecting state', () => {
+  const projected = projectRunEventsToStreamState(taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'recoveryAttempt',
+      label: 'Reconnecting to provider',
+      status: 'reconnecting',
+      payload: {
+        type: 'connectionState',
+        state: {
+          state: 'reconnecting',
+          providerId: 'openai',
+          modelId: 'gpt-test',
+          errorCategory: 'network',
+          attempt: 1,
+          maxAttempts: 3,
+          recoverable: true,
+          queuedUserInputs: 0,
+          turnPreserved: true,
+        },
+      },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'done',
+      status: 'completed',
+      payload: { type: 'done', message: { role: 'assistant', content: 'Recovered answer' } },
+    }),
+  ]);
+
+  assertEqual(projected.connectionState, null, 'terminal state must not retain reconnecting');
 });
 
 test('command tool cards do not stream partial arguments into the title target', () => {

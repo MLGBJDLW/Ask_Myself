@@ -413,7 +413,13 @@ impl AgentRunEventKindContract {
             AgentRunEventKind::RecoveryAttempt => Self {
                 kind,
                 required_payload_paths: &["reason"],
-                alternative_payload_paths: &[],
+                alternative_payload_paths: &[&[
+                    "state.state",
+                    "state.providerId",
+                    "state.modelId",
+                    "state.attempt",
+                    "state.maxAttempts",
+                ]],
             },
             AgentRunEventKind::UsageUpdated => Self {
                 kind,
@@ -570,6 +576,31 @@ impl AgentRunEvent {
                 content.clone(),
                 tone.clone().or_else(|| Some("running".to_string())),
             ),
+            AgentEvent::ConnectionState { state } => {
+                let (label, status) = match state.state {
+                    crate::agent::ConnectionStateKind::Degraded => {
+                        ("Provider connection degraded", "degraded")
+                    }
+                    crate::agent::ConnectionStateKind::Reconnecting => {
+                        ("Reconnecting to provider", "reconnecting")
+                    }
+                    crate::agent::ConnectionStateKind::Recovered => {
+                        ("Provider connection recovered", "recovered")
+                    }
+                    crate::agent::ConnectionStateKind::Offline => {
+                        ("Provider is offline", "offline")
+                    }
+                    crate::agent::ConnectionStateKind::Failed => {
+                        ("Provider connection failed", "failed")
+                    }
+                };
+                (
+                    AgentRunEventKind::RecoveryAttempt,
+                    AgentRunPhase::Responding,
+                    label.to_string(),
+                    Some(status.to_string()),
+                )
+            }
             AgentEvent::Steering { content } => (
                 AgentRunEventKind::Status,
                 AgentRunPhase::Responding,
@@ -1094,7 +1125,10 @@ fn plan_phase(phase: &str) -> AgentRunPhase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{ToolRunItem, ToolRunStatus};
+    use crate::agent::{
+        ConnectionErrorCategory, ConnectionStateEvent, ConnectionStateKind, ToolRunItem,
+        ToolRunStatus,
+    };
     use crate::approval::{ApprovalDecision, ApprovalRequest, ApprovalRisk};
     use crate::llm::{Message, Role, Usage};
     use crate::tools::{
@@ -1120,6 +1154,31 @@ mod tests {
         assert_eq!(run_event.version, 2);
         assert_eq!(run_event.run_id, "run-1");
         assert_eq!(run_event.event_seq, 7);
+    }
+
+    #[test]
+    fn connection_state_projects_to_user_recovery_event() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ConnectionState {
+            state: ConnectionStateEvent {
+                state: ConnectionStateKind::Reconnecting,
+                provider_id: "openai".to_string(),
+                model_id: "gpt-test".to_string(),
+                error_category: Some(ConnectionErrorCategory::Network),
+                attempt: 1,
+                max_attempts: 3,
+                next_retry_at: Some("2026-08-06T10:00:00Z".to_string()),
+                recoverable: true,
+                queued_user_inputs: 0,
+                turn_preserved: true,
+            },
+        });
+
+        assert_eq!(run_event.kind, AgentRunEventKind::RecoveryAttempt);
+        assert_eq!(run_event.phase, AgentRunPhase::Responding);
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.display_kind, AgentRunDisplayKind::Recovery);
+        assert_eq!(run_event.status.as_deref(), Some("reconnecting"));
+        assert_eq!(run_event.payload["state"]["providerId"], "openai");
     }
 
     #[test]
@@ -1412,6 +1471,20 @@ mod tests {
             AgentEvent::Status {
                 content: "Route selected: Direct".to_string(),
                 tone: None,
+            },
+            AgentEvent::ConnectionState {
+                state: ConnectionStateEvent {
+                    state: ConnectionStateKind::Reconnecting,
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-test".to_string(),
+                    error_category: Some(ConnectionErrorCategory::Network),
+                    attempt: 1,
+                    max_attempts: 3,
+                    next_retry_at: None,
+                    recoverable: true,
+                    queued_user_inputs: 0,
+                    turn_preserved: true,
+                },
             },
             AgentEvent::PlanUpdated {
                 plan: serde_json::json!({ "items": [] }),

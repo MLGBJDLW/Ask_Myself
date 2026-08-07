@@ -634,6 +634,7 @@ export interface AgentEvent {
     | 'toolRunCompleted'
     | 'thinking'
     | 'status'
+    | 'connectionState'
     | 'steering'
     | 'done'
     | 'error'
@@ -662,6 +663,7 @@ export interface AgentEvent {
   run?: ToolRunItem;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
+  state?: ProviderConnectionState;
   isError?: boolean;
   artifacts?: ArtifactPayload;
   // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
@@ -670,6 +672,34 @@ export interface AgentEvent {
   contextBreakdown?: ContextUsageBreakdown;
   taskRun?: AgentTaskRun;
   taskEvent?: AgentTaskRunEvent;
+}
+
+export type ProviderConnectionStatus =
+  | 'degraded'
+  | 'reconnecting'
+  | 'recovered'
+  | 'offline'
+  | 'failed';
+
+export type ProviderConnectionErrorCategory =
+  | 'network'
+  | 'timeout'
+  | 'rate_limit'
+  | 'provider_unavailable'
+  | 'authentication'
+  | 'unknown';
+
+export interface ProviderConnectionState {
+  state: ProviderConnectionStatus;
+  providerId: string;
+  modelId: string;
+  errorCategory?: ProviderConnectionErrorCategory | null;
+  attempt: number;
+  maxAttempts: number;
+  nextRetryAt?: string | null;
+  recoverable: boolean;
+  queuedUserInputs: number;
+  turnPreserved: boolean;
 }
 
 export type ApprovalRisk = 'low' | 'medium' | 'high';
@@ -864,6 +894,7 @@ export interface AgentFrontendEvent {
   run?: ToolRunItem;
   content?: string;
   tone?: 'muted' | 'success' | 'error';
+  state?: ProviderConnectionState;
   isError?: boolean;
   artifacts?: ArtifactPayload;
   message?: ConversationMessage | string;

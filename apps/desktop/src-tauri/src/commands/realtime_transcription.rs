@@ -17,6 +17,7 @@ use crate::app_events::emit_app_event;
 const REALTIME_TRANSCRIPTION_EVENT: &str = "speech-to-text:realtime";
 const REALTIME_COMMAND_BUFFER: usize = 64;
 const MAX_AUDIO_CHUNK_BYTES: usize = 256 * 1024;
+const SESSION_ID_HEADER: &str = "x-nexa-session-id";
 const FINAL_TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 type RealtimeSessions = Arc<Mutex<HashMap<String, mpsc::Sender<RealtimeCommand>>>>;
@@ -391,15 +392,10 @@ async fn session_sender(
         .ok_or_else(|| "Realtime transcription session is not active".to_string())
 }
 
-#[tauri::command]
-pub async fn append_realtime_transcription_audio_cmd(
-    session_id: String,
-    audio_data: Vec<u8>,
-    state: State<'_, RealtimeTranscriptionState>,
-) -> Result<(), String> {
-    if audio_data.is_empty() {
-        return Ok(());
-    }
+fn raw_realtime_audio(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
+    let tauri::ipc::InvokeBody::Raw(audio_data) = body else {
+        return Err("Realtime transcription requires a raw binary request body".to_string());
+    };
     if audio_data.len() > MAX_AUDIO_CHUNK_BYTES {
         return Err(format!(
             "Realtime audio chunk exceeds {MAX_AUDIO_CHUNK_BYTES} bytes"
@@ -407,6 +403,26 @@ pub async fn append_realtime_transcription_audio_cmd(
     }
     if !audio_data.len().is_multiple_of(2) {
         return Err("Realtime PCM16 audio must contain complete 16-bit samples".to_string());
+    }
+    Ok(audio_data.clone())
+}
+
+#[tauri::command]
+pub async fn append_realtime_transcription_audio_cmd(
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, RealtimeTranscriptionState>,
+) -> Result<(), String> {
+    let session_id = request
+        .headers()
+        .get(SESSION_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Realtime transcription session header is missing".to_string())?
+        .to_string();
+    let audio_data = raw_realtime_audio(request.body())?;
+    if audio_data.is_empty() {
+        return Ok(());
     }
     session_sender(&state, &session_id)
         .await?
@@ -453,9 +469,29 @@ pub async fn cancel_realtime_transcription_cmd(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_realtime_endpoint, build_session_update, parse_server_event,
-        ParsedRealtimeServerEvent,
+        build_realtime_endpoint, build_session_update, parse_server_event, raw_realtime_audio,
+        ParsedRealtimeServerEvent, MAX_AUDIO_CHUNK_BYTES,
     };
+
+    #[test]
+    fn realtime_audio_requires_bounded_aligned_raw_pcm() {
+        assert_eq!(
+            raw_realtime_audio(&tauri::ipc::InvokeBody::Raw(vec![1, 2])).unwrap(),
+            vec![1, 2]
+        );
+        assert!(raw_realtime_audio(&tauri::ipc::InvokeBody::Raw(vec![1])).is_err());
+        assert!(raw_realtime_audio(&tauri::ipc::InvokeBody::Raw(vec![
+            0;
+            MAX_AUDIO_CHUNK_BYTES + 2
+        ]))
+        .is_err());
+        assert!(
+            raw_realtime_audio(&tauri::ipc::InvokeBody::Json(serde_json::json!({
+                "audioData": [1, 2]
+            })))
+            .is_err()
+        );
+    }
 
     #[test]
     fn realtime_endpoint_upgrades_https_and_selects_the_model() {

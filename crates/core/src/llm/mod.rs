@@ -11,6 +11,7 @@ use crate::provider_registry::{provider_adapter_for_type, ProviderAdapterKind};
 
 pub mod anthropic;
 pub mod google;
+pub mod message_validation;
 pub mod ollama;
 pub mod openai;
 pub mod prompt_cache;
@@ -595,6 +596,60 @@ pub trait LlmProvider: Send + Sync {
     }
 }
 
+struct MessageValidatingProvider {
+    inner: Box<dyn LlmProvider>,
+}
+
+impl MessageValidatingProvider {
+    fn new(inner: Box<dyn LlmProvider>) -> Self {
+        Self { inner }
+    }
+
+    fn validate(&self, request: &CompletionRequest) -> Result<(), CoreError> {
+        message_validation::validate_provider_request(
+            &request.messages,
+            self.inner.name(),
+            &request.model,
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MessageValidatingProvider {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
+        self.inner.prompt_cache_profile(model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        self.inner.list_models().await
+    }
+
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        self.validate(request)?;
+        self.inner.complete(request).await
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.validate(request)?;
+        self.inner.stream(request).await
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        self.inner.health_check().await
+    }
+
+    async fn runtime_metadata(&self) -> Option<serde_json::Value> {
+        self.inner.runtime_metadata().await
+    }
+}
+
 fn normalize_base_url(base_url: Option<String>) -> Option<String> {
     base_url.and_then(|url| {
         let trimmed = url.trim().trim_end_matches('/').to_string();
@@ -614,12 +669,13 @@ fn normalize_base_url(base_url: Option<String>) -> Option<String> {
 pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
     config.base_url = normalize_base_url(config.base_url);
 
-    match provider_adapter_for_type(config.provider_type) {
-        ProviderAdapterKind::OpenAiCompatible => Ok(Box::new(openai::OpenAiProvider::new(config)?)),
-        ProviderAdapterKind::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
-        ProviderAdapterKind::Google => Ok(Box::new(google::GeminiProvider::new(config)?)),
-        ProviderAdapterKind::Ollama => Ok(Box::new(ollama::OllamaProvider::new(config)?)),
-    }
+    let provider: Box<dyn LlmProvider> = match provider_adapter_for_type(config.provider_type) {
+        ProviderAdapterKind::OpenAiCompatible => Box::new(openai::OpenAiProvider::new(config)?),
+        ProviderAdapterKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(config)?),
+        ProviderAdapterKind::Google => Box::new(google::GeminiProvider::new(config)?),
+        ProviderAdapterKind::Ollama => Box::new(ollama::OllamaProvider::new(config)?),
+    };
+    Ok(Box::new(MessageValidatingProvider::new(provider)))
 }
 
 /// Whether the adapter must obtain the complete response before it can expose

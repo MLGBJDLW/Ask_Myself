@@ -611,5 +611,15 @@
   "autoTtsOn": "Automatic read-aloud is on",
   "autoTtsOff": "Automatic read-aloud is off",
   "autoTtsNeedsProvider": "Configure a text-to-speech provider in Settings first",
-  "autoTtsFailed": "Automatic read-aloud failed"
+  "autoTtsFailed": "Automatic read-aloud failed",
+  "connectionReconnecting": "Reconectando con el proveedor",
+  "connectionDegraded": "La conexión con el proveedor está degradada",
+  "connectionRecovered": "Conexión con el proveedor restablecida",
+  "connectionOffline": "El proveedor no tiene conexión",
+  "connectionFailed": "Falló la conexión con el proveedor",
+  "connectionTurnPreserved": "El turno actual se ha conservado.",
+  "connectionTurnNotPreserved": "No se pudo conservar este turno.",
+  "connectionNextAction": "Revisa la configuración del proveedor y vuelve a enviar cuando haya conexión.",
+  "toolInputRedacted": "[Oculto]",
+  "toolInputInvalid": "[Argumentos no válidos ocultos]"
 }

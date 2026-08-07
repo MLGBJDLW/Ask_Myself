@@ -4,6 +4,7 @@ import type {
   AgentTaskRunEvent,
   ApprovalRequest,
   ContextUsageBreakdown,
+  ProviderConnectionState,
 } from '../../types/conversation';
 import { appendReplyTraceEvent } from './blockProjection';
 import type { UsageTotal } from './protocol';
@@ -19,6 +20,55 @@ import {
 } from './terminalProjection';
 
 type RawFrontendEvent = AgentFrontendEvent & Record<string, unknown>;
+
+const CONNECTION_STATES = new Set([
+  'degraded',
+  'reconnecting',
+  'recovered',
+  'offline',
+  'failed',
+]);
+
+export function applyConnectionStateEvent(
+  state: InternalStreamState,
+  event: AgentFrontendEvent,
+  raw: RawFrontendEvent,
+  label?: string,
+): void {
+  const candidate = event.state ?? raw.state;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+  const value = candidate as unknown as Record<string, unknown>;
+  if (typeof value.state !== 'string' || !CONNECTION_STATES.has(value.state)) return;
+  if (typeof value.providerId !== 'string' || typeof value.modelId !== 'string') return;
+
+  const connectionState: ProviderConnectionState = {
+    state: value.state as ProviderConnectionState['state'],
+    providerId: value.providerId,
+    modelId: value.modelId,
+    errorCategory: typeof value.errorCategory === 'string'
+      ? value.errorCategory as ProviderConnectionState['errorCategory']
+      : null,
+    attempt: typeof value.attempt === 'number' ? value.attempt : 0,
+    maxAttempts: typeof value.maxAttempts === 'number' ? value.maxAttempts : 0,
+    nextRetryAt: typeof value.nextRetryAt === 'string' ? value.nextRetryAt : null,
+    recoverable: value.recoverable === true,
+    queuedUserInputs: typeof value.queuedUserInputs === 'number' ? value.queuedUserInputs : 0,
+    turnPreserved: value.turnPreserved !== false,
+  };
+  state.connectionState = connectionState;
+
+  if (label) {
+    appendStatusTraceEvent(
+      state,
+      label,
+      connectionState.state === 'failed' || connectionState.state === 'offline'
+        ? 'error'
+        : connectionState.state === 'recovered' ? 'success' : 'muted',
+      'user',
+      'recovery',
+    );
+  }
+}
 
 function extractMessageText(message: unknown): string | null {
   if (!message || typeof message !== 'object') return null;
@@ -130,6 +180,12 @@ export function applyDoneEvent(
   const finishReason = raw.finishReason ?? raw.finish_reason ?? null;
   state.finishReason = typeof finishReason === 'string' ? finishReason : null;
   state.isStreaming = false;
+  if (
+    state.connectionState?.state === 'reconnecting'
+    || state.connectionState?.state === 'degraded'
+  ) {
+    state.connectionState = null;
+  }
   if (terminalStatus === 'cancelled') state.error = null;
   state._activeRoundId = null;
   state._activeRoundAcceptingStarts = false;

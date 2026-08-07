@@ -14,6 +14,47 @@ pub enum StreamBlockChannel {
     Thinking,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionStateKind {
+    Degraded,
+    Reconnecting,
+    Recovered,
+    Offline,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionErrorCategory {
+    Network,
+    Timeout,
+    RateLimit,
+    ProviderUnavailable,
+    Authentication,
+    Unknown,
+}
+
+/// Structured provider connectivity state for recoverable turns.
+///
+/// This event is deliberately separate from model reasoning and user-visible
+/// answer text so retry status can never be persisted as assistant content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionStateEvent {
+    pub state: ConnectionStateKind,
+    pub provider_id: String,
+    pub model_id: String,
+    pub error_category: Option<ConnectionErrorCategory>,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
+    pub recoverable: bool,
+    pub queued_user_inputs: u32,
+    pub turn_preserved: bool,
+}
+
 /// Events emitted by the agent during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -110,6 +151,8 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         tone: Option<String>,
     },
+    /// Provider connectivity and retry state. Never treat this as reasoning.
+    ConnectionState { state: ConnectionStateEvent },
     /// A user-authored steering message accepted by the active turn.
     ///
     /// This is distinct from `Status` so presentation never depends on a

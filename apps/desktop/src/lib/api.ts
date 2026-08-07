@@ -1658,14 +1658,16 @@ export const checkFfmpeg = (config: VideoConfig) =>
 export const downloadFfmpeg = () =>
   invoke<string>('download_ffmpeg_cmd');
 
-export const transcribeAudioBuffer = (audioData: number[]) =>
-  invoke<string>('transcribe_audio_buffer_cmd', { audioData });
+export const transcribeAudioBuffer = (audioData: Uint8Array) =>
+  invoke<string>('transcribe_audio_buffer_cmd', audioData);
 
 export const startRealtimeTranscription = () =>
   invoke<string>('start_realtime_transcription_cmd');
 
-export const appendRealtimeTranscriptionAudio = (sessionId: string, audioData: number[]) =>
-  invoke<void>('append_realtime_transcription_audio_cmd', { sessionId, audioData });
+export const appendRealtimeTranscriptionAudio = (sessionId: string, audioData: Uint8Array) =>
+  invoke<void>('append_realtime_transcription_audio_cmd', audioData, {
+    headers: { 'x-nexa-session-id': sessionId },
+  });
 
 export const finishRealtimeTranscription = (sessionId: string) =>
   invoke<string>('finish_realtime_transcription_cmd', { sessionId });
