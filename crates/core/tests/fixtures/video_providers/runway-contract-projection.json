@@ -1,0 +1,38 @@
+{
+  "sourceUrl": "https://docs.dev.runwayml.com/openapi.json",
+  "observedAt": "2026-08-07",
+  "sourceSha256": "bfd825e85135d2e0c865b1467f93e85cefa26da41b0a24c00a7d4701fffe26b7",
+  "server": "https://api.dev.runwayml.com",
+  "auth": "bearer",
+  "apiVersionHeader": { "name": "X-Runway-Version", "value": "2024-11-06" },
+  "taskPaths": {
+    "query": "/v1/tasks/{id}",
+    "delete": "/v1/tasks/{id}"
+  },
+  "statuses": ["PENDING", "THROTTLED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"],
+  "models": {
+    "gen4.5": {
+      "operations": ["text_to_video", "image_to_video"],
+      "duration": { "minimum": 2, "maximum": 10 },
+      "seed": true
+    },
+    "gen4_turbo": {
+      "operations": ["image_to_video"],
+      "duration": { "minimum": 2, "maximum": 10 },
+      "seed": true
+    },
+    "seedance2_5": {
+      "operations": ["text_to_video", "image_to_video", "video_to_video"],
+      "duration": { "minimum": 4, "maximum": 30 },
+      "seed": false,
+      "audio": true,
+      "ratios": [
+        "992:432", "864:496", "752:560", "640:640", "560:752", "496:864",
+        "1470:630", "1280:720", "1112:834", "960:960", "834:1112", "720:1280"
+      ]
+    }
+  },
+  "outputUrlTtl": "24_to_48_hours",
+  "submissionIdempotency": "not_documented",
+  "webhook": "not_documented"
+}

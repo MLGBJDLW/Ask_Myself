@@ -490,6 +490,7 @@ fn main() {
             commands::cancel_context_compaction_cmd,
             // Durable media generation jobs
             commands::create_media_generation_job_cmd,
+            commands::list_video_generation_capabilities_cmd,
             commands::get_media_generation_job_cmd,
             commands::list_recoverable_media_generation_jobs_cmd,
             commands::list_media_generation_provider_events_cmd,
