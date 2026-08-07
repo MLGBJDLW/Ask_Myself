@@ -25,12 +25,38 @@ import type {
   VisualEvent,
 } from "../types/video";
 import type {
+  CreateMediaJobRequest,
+  DeleteMediaAssetOccurrenceRequest,
+  MediaAssetRecord,
+  MediaJobSnapshot,
+  MediaProviderEventRecord,
+  RequestMediaJobCancellation,
+  RequestMediaJobRemoteDeletion,
+  RequestMediaAssetDeletion,
+} from "../types/mediaGeneration";
+import type {
+  SettingsMigrationReportV2,
+  CapabilityBindingV2,
+  SettingsProfileV2,
+  SettingsSchemaStateV2,
+  SettingsScopeV2,
+} from "../types/settingsSchemaV2";
+import type {
+  CapabilityRegistryProjection,
+  RegistryActivationRecord,
+  RegistryReadMode,
+  RegistryScope,
+} from "../types/capabilityRegistry";
+import type {
   AgentConfig,
   AppConfig,
   SaveAgentConfigInput,
   Conversation,
   ConversationMessage,
   ConversationTurn,
+  InteractionRequest,
+  InteractionResponse,
+  SubmitInteractionResponse,
   AgentTaskRun,
   AgentTaskRunListItem,
   AgentTaskRunPageCursor,
@@ -53,6 +79,7 @@ import type {
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
+  VisionTurnOverride,
   ArtifactPayload,
   Checkpoint,
   CheckpointBranch,
@@ -838,6 +865,65 @@ export const deleteAgentConfig = (id: string) =>
 export const setDefaultAgentConfig = (id: string) =>
   invoke<void>('set_default_agent_config_cmd', { id });
 
+export const getSettingsSchemaStateV2 = () =>
+  invoke<SettingsSchemaStateV2>('get_settings_schema_state_v2_cmd');
+
+export const listSettingsProfilesV2 = () =>
+  invoke<SettingsProfileV2[]>('list_settings_profiles_v2_cmd');
+
+export const saveSettingsProfileV2 = (
+  profile: SettingsProfileV2,
+  expectedRevision?: number | null,
+) =>
+  invoke<SettingsProfileV2>('save_settings_profile_v2_cmd', {
+    profile,
+    expectedRevision: expectedRevision ?? null,
+  });
+
+export const saveCapabilityBindingV2 = (
+  scope: SettingsScopeV2,
+  capabilityId: string,
+  binding: CapabilityBindingV2,
+  expectedProfileRevision: number,
+) => invoke<SettingsProfileV2>('save_capability_binding_v2_cmd', {
+  scope,
+  capabilityId,
+  binding,
+  expectedProfileRevision,
+});
+
+export const deleteVisionObservationCache = (
+  attachmentHash: string,
+  profileHash?: string | null,
+) => invoke<number>('delete_vision_observation_cache_cmd', {
+  attachmentHash,
+  profileHash: profileHash ?? null,
+});
+
+export const clearVisionObservationCache = () =>
+  invoke<number>('clear_vision_observation_cache_cmd');
+
+export const migrateSettingsSchemaV2 = () =>
+  invoke<SettingsMigrationReportV2>('migrate_settings_schema_v2_cmd');
+
+export const rollbackSettingsSchemaV2 = () =>
+  invoke<boolean>('rollback_settings_schema_v2_cmd');
+
+export const getCapabilityRegistryProjection = (scope: RegistryScope = {}) =>
+  invoke<CapabilityRegistryProjection>('get_capability_registry_projection_cmd', { scope });
+
+export const setCapabilityRegistryReadMode = (
+  capabilityId: string,
+  scope: SettingsScopeV2,
+  mode: RegistryReadMode,
+  expectedRevision: number,
+) => invoke<RegistryActivationRecord>('set_capability_registry_read_mode_cmd', {
+  capabilityId,
+  scope,
+  mode,
+  expectedRevision,
+});
+
 export const testAgentConnection = (config: SaveAgentConfigInput) =>
   invoke<ProviderModelCatalogSnapshot>('test_agent_connection_cmd', { config });
 
@@ -997,6 +1083,44 @@ export const getConversation = (id: string) =>
 
 export const getConversationTurns = (conversationId: string) =>
   invoke<ConversationTurn[]>('get_conversation_turns_cmd', { conversationId });
+
+export const listInteractionRequests = (
+  conversationId: string | null = null,
+  includeTerminal = false,
+) => invoke<InteractionRequest[]>('list_interaction_requests_cmd', {
+  conversationId,
+  includeTerminal,
+});
+
+export const getInteractionRequest = (interactionId: string) =>
+  invoke<InteractionRequest>('get_interaction_request_cmd', { interactionId });
+
+export const markInteractionPresented = (interactionId: string) =>
+  invoke<InteractionRequest>('mark_interaction_presented_cmd', { interactionId });
+
+export const markInteractionPartiallyAnswered = (interactionId: string) =>
+  invoke<InteractionRequest>('mark_interaction_partially_answered_cmd', { interactionId });
+
+export const appendInteractionSupplement = (interactionId: string, content: string) =>
+  invoke<ConversationMessage>('append_interaction_supplement_cmd', { interactionId, content });
+
+export const submitInteractionResponse = (input: SubmitInteractionResponse) =>
+  invoke<InteractionResponse>('submit_interaction_response_cmd', { input });
+
+export const getInteractionResponse = (interactionId: string) =>
+  invoke<InteractionResponse>('get_interaction_response_cmd', { interactionId });
+
+export const acknowledgeInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('acknowledge_interaction_cmd', { interactionId });
+
+export const cancelInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('cancel_interaction_cmd', { interactionId });
+
+export const supersedeInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('supersede_interaction_cmd', { interactionId });
+
+export const failInteraction = (interactionId: string) =>
+  invoke<InteractionRequest>('fail_interaction_cmd', { interactionId });
 
 export const getAgentTaskRuns = (conversationId: string) =>
   invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId });
@@ -1311,12 +1435,22 @@ export const agentChat = (
   moaPreset?: MoaPresetId | null,
   orchestrationProfile?: OrchestrationProfile | null,
   customOrchestration?: CustomOrchestrationOptions | null,
+  visionTurnOverride?: VisionTurnOverride | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
 ) => {
+  const interactionId = userArtifacts
+    && !Array.isArray(userArtifacts)
+    && userArtifacts.kind === 'questionResponse'
+    && userArtifacts.version === 2
+    && typeof userArtifacts.interactionId === 'string'
+    ? userArtifacts.interactionId.trim()
+    : '';
   const request = {
     version: 1,
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: interactionId
+      ? `interaction-response:${interactionId}`
+      : crypto.randomUUID(),
     conversationId,
     message,
     attachments: attachments ?? [],
@@ -1329,6 +1463,7 @@ export const agentChat = (
     moaPreset: moaPreset ?? 'fastReview',
     orchestrationProfile: orchestrationProfile ?? 'balanced',
     customOrchestration: customOrchestration ?? null,
+    visionTurnOverride: visionTurnOverride ?? null,
     userArtifacts: userArtifacts ?? null,
     taskOrchestratorRunId: taskOrchestratorRunId ?? null,
   };
@@ -1445,6 +1580,38 @@ export const observeContextCompaction = (operationId: string, afterSeq: number) 
 
 export const cancelContextCompaction = (operationId: string) =>
   invoke<void>('cancel_context_compaction_cmd', { operationId });
+
+export const createMediaGenerationJob = (request: CreateMediaJobRequest) =>
+  invoke<MediaJobSnapshot>('create_media_generation_job_cmd', { request });
+
+export const getMediaGenerationJob = (jobId: string) =>
+  invoke<MediaJobSnapshot>('get_media_generation_job_cmd', { jobId });
+
+export const listRecoverableMediaGenerationJobs = () =>
+  invoke<MediaJobSnapshot[]>('list_recoverable_media_generation_jobs_cmd');
+
+export const listMediaGenerationProviderEvents = (
+  jobId: string,
+  afterSequence = 0,
+  limit = 100,
+) => invoke<MediaProviderEventRecord[]>('list_media_generation_provider_events_cmd', {
+  jobId,
+  afterSequence,
+  limit,
+});
+
+export const requestMediaGenerationCancellation = (request: RequestMediaJobCancellation) =>
+  invoke<MediaJobSnapshot>('request_media_generation_cancellation_cmd', { request });
+
+export const requestMediaGenerationRemoteDeletion = (request: RequestMediaJobRemoteDeletion) =>
+  invoke<MediaJobSnapshot>('request_media_generation_remote_deletion_cmd', { request });
+
+export const deleteMediaGenerationAssetOccurrence = (
+  request: DeleteMediaAssetOccurrenceRequest,
+) => invoke<MediaJobSnapshot>('delete_media_generation_asset_occurrence_cmd', { request });
+
+export const deleteMediaGenerationAsset = (request: RequestMediaAssetDeletion) =>
+  invoke<MediaAssetRecord>('delete_media_generation_asset_cmd', { request });
 
 /** @deprecated Compatibility adapter for pre-operation-protocol callers. */
 export const compactConversation = (conversationId: string) =>
@@ -1658,8 +1825,73 @@ export const checkFfmpeg = (config: VideoConfig) =>
 export const downloadFfmpeg = () =>
   invoke<string>('download_ffmpeg_cmd');
 
-export const transcribeAudioBuffer = (audioData: Uint8Array) =>
-  invoke<string>('transcribe_audio_buffer_cmd', audioData);
+export interface VoiceAudioSpoolStarted {
+  sessionId: string;
+  sampleRate: number;
+  maxChunkBytes: number;
+  maxAudioBytes: number;
+}
+
+export interface VoiceAudioSpoolProgress {
+  sessionId: string;
+  acceptedBytes: number;
+  audioBytes: number;
+  durationMs: number;
+  nextSequence: number;
+}
+
+export interface VoiceAudioSpoolDescriptor {
+  sessionId: string;
+  audioBytes: number;
+  durationMs: number;
+  sampleRate: number;
+  checksumSha256: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  target: {
+    provider: string;
+    apiStyle: string;
+    model: string;
+    configurationFingerprintSha256: string;
+  };
+}
+
+export interface VoiceAudioSpoolListEntry {
+  sessionId: string;
+  state: 'recording' | 'ready' | 'deletionPending';
+  descriptor?: VoiceAudioSpoolDescriptor;
+}
+
+export interface VoiceAudioSpoolTranscriptionResult {
+  transcript: string;
+  cleanupPending: boolean;
+}
+
+export const startVoiceAudioSpool = (sampleRate: number) =>
+  invoke<VoiceAudioSpoolStarted>('start_voice_audio_spool_cmd', { sampleRate });
+
+export const appendVoiceAudioSpool = (
+  sessionId: string,
+  sequence: number,
+  audioData: Uint8Array,
+) => invoke<VoiceAudioSpoolProgress>('append_voice_audio_spool_cmd', audioData, {
+  headers: {
+    'x-nexa-voice-session-id': sessionId,
+    'x-nexa-voice-sequence': String(sequence),
+  },
+});
+
+export const finishVoiceAudioSpool = (sessionId: string) =>
+  invoke<VoiceAudioSpoolDescriptor>('finish_voice_audio_spool_cmd', { sessionId });
+
+export const listVoiceAudioSpools = () =>
+  invoke<VoiceAudioSpoolListEntry[]>('list_voice_audio_spools_cmd');
+
+export const transcribeVoiceAudioSpool = (sessionId: string) =>
+  invoke<VoiceAudioSpoolTranscriptionResult>('transcribe_voice_audio_spool_cmd', { sessionId });
+
+export const cancelVoiceAudioSpool = (sessionId: string) =>
+  invoke<void>('cancel_voice_audio_spool_cmd', { sessionId });
 
 export const startRealtimeTranscription = () =>
   invoke<string>('start_realtime_transcription_cmd');

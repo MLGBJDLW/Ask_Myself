@@ -249,6 +249,19 @@ class StreamStoreImpl {
     this.scheduleFrontendFirstPaint(conversationId, state);
   }
 
+  /** Settle the live transport while the durable turn waits for a response. */
+  markAwaitingUserInput(conversationId: string): void {
+    const state = this._streams[conversationId];
+    if (!state) return;
+    clearStreamWatchdog(state);
+    clearToolPreparingTimers(state);
+    state.isStreaming = false;
+    state.isThinking = false;
+    this.finishTurnTiming(state);
+    this.touch(conversationId);
+    this.notifyImmediately(conversationId);
+  }
+
   /** Remove stream state entirely. */
   clearStream(conversationId: string): void {
     const existing = this._streams[conversationId];
@@ -412,18 +425,30 @@ class StreamStoreImpl {
     if (event.runEvent) {
       const runEvent = event.runEvent;
       const isTerminalEvent = runEvent.kind === 'done' || runEvent.kind === 'error';
+      const isAwaitingUserInput = runEvent.kind === 'status'
+        && runEvent.phase === 'awaiting_user_input';
+      const reopensAwaitingStream = runEvent.kind === 'status'
+        && runEvent.phase !== 'awaiting_user_input'
+        && ['queued', 'running', 'recovering'].includes(runEvent.status ?? '');
       let state = this._streams[conversationId];
       if (!state) {
         state = createDefaultState();
         state.isStreaming = !isTerminalEvent;
         this._streams[conversationId] = state;
       }
-      if (!state.isStreaming && !isTerminalEvent) return;
+      if (!state.isStreaming && !isTerminalEvent && !reopensAwaitingStream) return;
 
       this.markFirstEventTiming(state);
 
       const ordering = applyStreamEventOrdering(state, runEvent.eventSeq);
       if (!ordering.accepted) return;
+      if (reopensAwaitingStream) {
+        // A fast response can arrive while the old waiting event is still in
+        // flight. A newer durable launch status is authoritative and must
+        // reopen the continuation instead of being discarded forever.
+        state.isStreaming = true;
+        state.isThinking = false;
+      }
       if (ordering.gapDetected) {
         appendStatusTraceEvent(
           state,
@@ -444,12 +469,19 @@ class StreamStoreImpl {
           );
         },
       });
-      if (isTerminalEvent) this.finishTurnTiming(state);
+      if (isAwaitingUserInput) {
+        clearStreamWatchdog(state);
+        clearToolPreparingTimers(state);
+        state.isStreaming = false;
+        state.isThinking = false;
+      }
+      if (isTerminalEvent || isAwaitingUserInput) this.finishTurnTiming(state);
       this.touch(conversationId);
       this.capLiveCollections(state);
       if (isTerminalEvent) this.evictCompletedStreams(conversationId);
       if (
         isTerminalEvent
+        || isAwaitingUserInput
         || runEvent.kind === 'approvalRequested'
         || runEvent.kind === 'approvalResolved'
       ) {

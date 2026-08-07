@@ -7,7 +7,12 @@ import type { SpeechToTextConfig } from '../../types/conversation';
 import type { VideoConfig, WhisperModel } from '../../types/video';
 import { useMicrophoneDevices } from './useMicrophoneDevices';
 import { useVoiceRecorder } from './useVoiceRecorder';
+import {
+  appendBoundedVoicePartial,
+  replaceBoundedVoicePartial,
+} from './boundedVoicePartial';
 import { BoundedAudioUploadQueue } from './boundedAudioQueue';
+import { NativeVoiceSpoolUpload } from './nativeVoiceSpool';
 
 export type VoiceRuntimeErrorCode =
   | 'busy'
@@ -15,9 +20,25 @@ export type VoiceRuntimeErrorCode =
   | 'recording_failed'
   | 'transcription_failed'
   | 'realtime_backpressure'
+  | 'realtime_deferred'
+  | 'voice_cleanup_pending'
   | 'speech_provider_not_configured'
   | 'whisper_check_failed'
   | 'whisper_model_missing';
+
+export type VoiceTransportState =
+  | 'local'
+  | 'online'
+  | 'buffering'
+  | 'degraded'
+  | 'offline'
+  | 'processing';
+
+export interface VoiceRecordingContext {
+  providerLabel: string;
+  language: string | null;
+  realtime: boolean;
+}
 
 export type VoiceRuntimeActionResult =
   | { status: 'started' }
@@ -75,6 +96,33 @@ export function formatRecordingDuration(seconds: number): string {
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
+export function queuePendingVoiceSpool(ids: string[], sessionId: string): string[] {
+  return ids.includes(sessionId) ? ids : [...ids, sessionId];
+}
+
+export function forgetPendingVoiceSpool(ids: string[], sessionId: string): string[] {
+  return ids.filter((id) => id !== sessionId);
+}
+
+async function startManagedVoiceSpool(
+  sampleRate: number,
+  onFailure: () => void,
+): Promise<NativeVoiceSpoolUpload> {
+  const started = await api.startVoiceAudioSpool(sampleRate);
+  return new NativeVoiceSpoolUpload(
+    started,
+    {
+      append: api.appendVoiceAudioSpool,
+      finish: api.finishVoiceAudioSpool,
+      cancel: api.cancelVoiceAudioSpool,
+    },
+    {
+      onBackpressure: onFailure,
+      onError: onFailure,
+    },
+  );
+}
+
 function isPermissionDeniedError(error: unknown): boolean {
   return typeof DOMException !== 'undefined'
     && error instanceof DOMException
@@ -92,16 +140,28 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const [whisperChecking, setWhisperChecking] = useState(false);
   const [whisperDownloading, setWhisperDownloading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [safeStopping, setSafeStopping] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState('');
   const [runtimeNotice, setRuntimeNotice] = useState<VoiceRuntimeErrorCode | null>(null);
   const [automaticResult, setAutomaticResult] = useState<VoiceRuntimeActionResult | null>(null);
+  const [hasPendingVoiceSpool, setHasPendingVoiceSpool] = useState(false);
+  const [transportState, setTransportState] = useState<VoiceTransportState>('local');
+  const [recordingContext, setRecordingContext] = useState<VoiceRecordingContext | null>(null);
+  const [activeMicrophoneLabel, setActiveMicrophoneLabel] = useState<string | null>(null);
   const realtimeSessionIdRef = useRef<string | null>(null);
   const realtimeUploadQueueRef = useRef<BoundedAudioUploadQueue | null>(null);
   const realtimeUploadErrorRef = useRef<string | null>(null);
   const realtimeAcceptingAudioRef = useRef(false);
   const realtimeFinishPromiseRef = useRef<Promise<VoiceRuntimeActionResult> | null>(null);
   const realtimeSafeStopHandlerRef = useRef<() => void>(() => {});
+  const voiceSpoolUploadRef = useRef<NativeVoiceSpoolUpload | null>(null);
+  const pendingVoiceSpoolIdsRef = useRef<string[]>([]);
+  const pendingVoiceCleanupIdsRef = useRef<string[]>([]);
+  const voiceSpoolFinishPromiseRef = useRef<Promise<VoiceRuntimeActionResult> | null>(null);
+  const voiceSpoolSafeStopHandlerRef = useRef<() => void>(() => {});
+  const startInProgressRef = useRef(false);
+  const discardInProgressRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -114,9 +174,9 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     }>('speech-to-text:realtime', (event) => {
       if (event.payload.sessionId !== realtimeSessionIdRef.current) return;
       if (event.payload.kind === 'delta' && event.payload.text) {
-        setPartialTranscript((current) => current + event.payload.text);
+        setPartialTranscript((current) => appendBoundedVoicePartial(current, event.payload.text!));
       } else if (event.payload.kind === 'completed') {
-        setPartialTranscript(event.payload.text ?? '');
+        setPartialTranscript(replaceBoundedVoicePartial(event.payload.text ?? ''));
       } else if (event.payload.kind === 'error') {
         realtimeUploadErrorRef.current = event.payload.text ?? 'Realtime transcription failed';
         realtimeSafeStopHandlerRef.current();
@@ -128,12 +188,33 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       // The listener is unavailable outside the Tauri runtime (for example in
       // isolated component tests); command failures still surface to callers.
     });
+    void api.listVoiceAudioSpools().then((spools) => {
+      if (disposed) return;
+      pendingVoiceSpoolIdsRef.current = spools
+        .filter((spool) => spool.state === 'ready')
+        .map((spool) => spool.sessionId);
+      pendingVoiceCleanupIdsRef.current = spools
+        .filter((spool) => spool.state === 'deletionPending')
+        .map((spool) => spool.sessionId);
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
+      if (pendingVoiceCleanupIdsRef.current.length > 0) {
+        setRuntimeNotice('voice_cleanup_pending');
+      }
+    }).catch(() => {
+      // Recovery discovery is best-effort outside Tauri and during shutdown.
+    });
     return () => {
       disposed = true;
       unlisten?.();
       const sessionId = realtimeSessionIdRef.current;
       realtimeUploadQueueRef.current?.cancel();
       if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+      const voiceSpool = voiceSpoolUploadRef.current;
+      voiceSpoolUploadRef.current = null;
+      if (voiceSpool) void voiceSpool.preserveAcceptedAudio().catch(() => {});
     };
   }, []);
 
@@ -194,6 +275,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       if (speechConfig?.apiStyle !== 'local_whisper') return null;
       return ensureWhisperReadyForRecording();
     } catch (error) {
+      setRecordingContext(null);
+      setTransportState('local');
       return {
         status: 'error',
         code: 'whisper_check_failed',
@@ -223,15 +306,54 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     setWhisperModelExists(false);
   }, []);
 
-  const transcribeWav = useCallback(async (wav: Uint8Array): Promise<VoiceRuntimeActionResult> => {
+  const transcribeManagedVoiceSpool = useCallback(async (
+    sessionId: string,
+  ): Promise<VoiceRuntimeActionResult> => {
     setTranscribing(true);
     try {
-      const transcript = normalizeTranscript(await api.transcribeAudioBuffer(wav));
+      const result = await api.transcribeVoiceAudioSpool(sessionId);
+      const transcript = normalizeTranscript(result.transcript);
+      pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        sessionId,
+      );
+      if (result.cleanupPending) {
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          sessionId,
+        );
+        setRuntimeNotice('voice_cleanup_pending');
+      }
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
       return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
     } catch (error) {
+      const entries = await api.listVoiceAudioSpools().catch(() => null);
+      const cleanupPending = entries?.some(
+        (entry) => entry.sessionId === sessionId && entry.state === 'deletionPending',
+      ) ?? false;
+      if (cleanupPending) {
+        pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          sessionId,
+        );
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          sessionId,
+        );
+        setRuntimeNotice('voice_cleanup_pending');
+      } else {
+        pendingVoiceSpoolIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          sessionId,
+        );
+      }
+      setHasPendingVoiceSpool(true);
       return {
         status: 'error',
-        code: 'transcription_failed',
+        code: cleanupPending ? 'voice_cleanup_pending' : 'transcription_failed',
         message: String(error),
       };
     } finally {
@@ -244,12 +366,14 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
 
     const sessionId = realtimeSessionIdRef.current;
     const uploadQueue = realtimeUploadQueueRef.current;
+    const voiceSpool = voiceSpoolUploadRef.current;
     realtimeAcceptingAudioRef.current = false;
     const finishPromise = (async (): Promise<VoiceRuntimeActionResult> => {
       try {
         await recorder.stopRecording();
       } catch (error) {
         if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+        if (voiceSpool) void voiceSpool.cancel();
         if (realtimeSessionIdRef.current === sessionId) {
           realtimeSessionIdRef.current = null;
           realtimeUploadQueueRef.current?.cancel();
@@ -262,24 +386,71 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           message: String(error),
         };
       }
-      if (!sessionId) return { status: 'empty' };
+      if (!voiceSpool) return { status: 'empty' };
 
       setTranscribing(true);
+      let descriptor: api.VoiceAudioSpoolDescriptor;
+      try {
+        descriptor = await voiceSpool.finish();
+      } catch (error) {
+        try {
+          descriptor = await voiceSpool.finishAcceptedAudio();
+        } catch (recoveryError) {
+          if (voiceSpoolUploadRef.current === voiceSpool) voiceSpoolUploadRef.current = null;
+          if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+          setTranscribing(false);
+          return {
+            status: 'error',
+            code: 'recording_failed',
+            message: `${String(error)}. Accepted audio remains checkpointed: ${String(recoveryError)}`,
+          };
+        }
+      }
+      if (voiceSpoolUploadRef.current === voiceSpool) voiceSpoolUploadRef.current = null;
+      pendingVoiceSpoolIdsRef.current = queuePendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        descriptor.sessionId,
+      );
+      setHasPendingVoiceSpool(true);
+
+      if (!sessionId || realtimeUploadErrorRef.current) {
+        return transcribeManagedVoiceSpool(descriptor.sessionId);
+      }
+      let transcript: string;
       try {
         await uploadQueue?.flush();
         if (realtimeUploadErrorRef.current) {
           throw new Error(realtimeUploadErrorRef.current);
         }
-        const transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
+        transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
+      } catch {
+        void api.cancelRealtimeTranscription(sessionId);
+        return transcribeManagedVoiceSpool(descriptor.sessionId);
+      }
+      try {
+        await api.cancelVoiceAudioSpool(descriptor.sessionId);
+        pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          descriptor.sessionId,
+        );
+        setHasPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current.length > 0
+            || pendingVoiceCleanupIdsRef.current.length > 0,
+        );
         setPartialTranscript('');
         return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
-      } catch (error) {
-        void api.cancelRealtimeTranscription(sessionId);
-        return {
-          status: 'error',
-          code: 'transcription_failed',
-          message: String(error),
-        };
+      } catch {
+        pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          descriptor.sessionId,
+        );
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          descriptor.sessionId,
+        );
+        setHasPendingVoiceSpool(true);
+        setRuntimeNotice('voice_cleanup_pending');
+        return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
       } finally {
         if (realtimeSessionIdRef.current === sessionId) {
           realtimeSessionIdRef.current = null;
@@ -297,101 +468,312 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         realtimeFinishPromiseRef.current = null;
       }
     }
-  }, [recorder]);
+  }, [recorder, transcribeManagedVoiceSpool]);
 
-  const stopRealtimeSafely = useCallback((showBackpressureNotice: boolean) => {
-    if (!realtimeAcceptingAudioRef.current) return;
+  const degradeRealtimeToSpool = useCallback((showNotice: boolean) => {
+    const sessionId = realtimeSessionIdRef.current;
+    if (!sessionId && !realtimeAcceptingAudioRef.current) return;
     realtimeAcceptingAudioRef.current = false;
-    if (showBackpressureNotice) setRuntimeNotice('realtime_backpressure');
-    setSafeStopping(true);
-    void finishRealtimeRecording()
-      .then(setAutomaticResult)
-      .finally(() => setSafeStopping(false));
-  }, [finishRealtimeRecording]);
+    realtimeSessionIdRef.current = null;
+    realtimeUploadQueueRef.current?.cancel('Realtime provider degraded to native spool');
+    realtimeUploadQueueRef.current = null;
+    realtimeUploadErrorRef.current = 'Realtime provider degraded to native spool';
+    setPartialTranscript('');
+    setTransportState('degraded');
+    if (showNotice) setRuntimeNotice('realtime_deferred');
+    if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+  }, []);
 
   useEffect(() => {
-    realtimeSafeStopHandlerRef.current = () => stopRealtimeSafely(false);
+    realtimeSafeStopHandlerRef.current = () => degradeRealtimeToSpool(true);
     return () => {
       realtimeSafeStopHandlerRef.current = () => {};
     };
-  }, [stopRealtimeSafely]);
+  }, [degradeRealtimeToSpool]);
 
   const queueRealtimeAudio = useCallback((sessionId: string, chunk: Uint8Array) => {
     if (!realtimeAcceptingAudioRef.current || realtimeSessionIdRef.current !== sessionId) return;
     realtimeUploadQueueRef.current?.enqueue(chunk);
   }, []);
 
+  const finishManagedRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    if (voiceSpoolFinishPromiseRef.current) return voiceSpoolFinishPromiseRef.current;
+    const upload = voiceSpoolUploadRef.current;
+    const finishPromise = (async (): Promise<VoiceRuntimeActionResult> => {
+      try {
+        await recorder.stopRecording();
+      } catch (error) {
+        if (upload) void upload.cancel();
+        if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+        return {
+          status: 'error',
+          code: 'recording_failed',
+          message: String(error),
+        };
+      }
+      if (!upload) return { status: 'empty' };
+
+      setTranscribing(true);
+      let descriptor: api.VoiceAudioSpoolDescriptor;
+      try {
+        descriptor = await upload.finish();
+      } catch (error) {
+        try {
+          descriptor = await upload.finishAcceptedAudio();
+        } catch (recoveryError) {
+          if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+          setTranscribing(false);
+          return {
+            status: 'error',
+            code: 'recording_failed',
+            message: `${String(error)}. Accepted audio remains checkpointed: ${String(recoveryError)}`,
+          };
+        }
+      }
+
+      if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+      pendingVoiceSpoolIdsRef.current = queuePendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        descriptor.sessionId,
+      );
+      setHasPendingVoiceSpool(true);
+      return transcribeManagedVoiceSpool(descriptor.sessionId);
+    })();
+    voiceSpoolFinishPromiseRef.current = finishPromise;
+    try {
+      return await finishPromise;
+    } finally {
+      if (voiceSpoolFinishPromiseRef.current === finishPromise) {
+        voiceSpoolFinishPromiseRef.current = null;
+      }
+    }
+  }, [recorder, transcribeManagedVoiceSpool]);
+
+  const finishActiveRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    setSafeStopping(true);
+    setTransportState('processing');
+    const finish = realtimeSessionIdRef.current
+      ? finishRealtimeRecording
+      : finishManagedRecording;
+    try {
+      return await finish();
+    } finally {
+      setSafeStopping(false);
+      setRecordingContext(null);
+      setActiveMicrophoneLabel(null);
+    }
+  }, [finishManagedRecording, finishRealtimeRecording]);
+
+  const stopVoiceSpoolSafely = useCallback(() => {
+    if (!voiceSpoolUploadRef.current) return;
+    void finishActiveRecording().then(setAutomaticResult);
+  }, [finishActiveRecording]);
+
+  useEffect(() => {
+    voiceSpoolSafeStopHandlerRef.current = stopVoiceSpoolSafely;
+    return () => {
+      voiceSpoolSafeStopHandlerRef.current = () => {};
+    };
+  }, [stopVoiceSpoolSafely]);
+
   const clearRuntimeNotice = useCallback(() => setRuntimeNotice(null), []);
   const clearAutomaticResult = useCallback(() => setAutomaticResult(null), []);
 
   const toggleRecording = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
-    if (transcribing || recorder.isProcessing || whisperChecking || safeStopping) {
+    if (transcribing || whisperChecking || safeStopping || startInProgressRef.current) {
       return { status: 'error', code: 'busy' };
     }
 
     if (recorder.isRecording) {
-      if (realtimeSessionIdRef.current) {
-        return finishRealtimeRecording();
-      }
-      const wav = await recorder.stopRecording();
-      return wav ? transcribeWav(wav) : { status: 'empty' };
+      return finishActiveRecording();
     }
 
-    const readinessError = await ensureSpeechProviderReadyForRecording();
-    if (readinessError) return readinessError;
-
+    startInProgressRef.current = true;
+    setStarting(true);
     try {
+      const pendingVoiceSpoolId = pendingVoiceSpoolIdsRef.current[0];
+      if (pendingVoiceSpoolId) {
+        return await transcribeManagedVoiceSpool(pendingVoiceSpoolId);
+      }
+
+      const readinessError = await ensureSpeechProviderReadyForRecording();
+      if (readinessError) return readinessError;
+
       const appConfig = await api.getAppConfig();
-      if (isRealtimeTranscriptionConfig(appConfig.speechToText)) {
-        const sessionId = await api.startRealtimeTranscription();
-        realtimeSessionIdRef.current = sessionId;
-        realtimeUploadQueueRef.current = new BoundedAudioUploadQueue(
-          (chunk) => api.appendRealtimeTranscriptionAudio(sessionId, chunk),
-          { onRejected: () => stopRealtimeSafely(true) },
-        );
-        realtimeUploadErrorRef.current = null;
-        realtimeAcceptingAudioRef.current = true;
-        setRuntimeNotice(null);
-        setAutomaticResult(null);
-        setPartialTranscript('');
+      const speechConfig = appConfig.speechToText;
+      const realtime = isRealtimeTranscriptionConfig(speechConfig);
+      const sampleRate = realtime ? 24_000 : 16_000;
+      const handleCaptureStateChange = (state: 'capturing' | 'interrupted') => {
+        if (state === 'interrupted') {
+          setTransportState('buffering');
+        } else {
+          setTransportState(realtimeUploadErrorRef.current
+            ? 'degraded'
+            : realtime ? 'online' : 'local');
+        }
+      };
+      const handleCaptureIssue = (state: 'interrupted' | 'disconnected') => {
+        setTransportState(state === 'disconnected' ? 'offline' : 'buffering');
+        voiceSpoolSafeStopHandlerRef.current();
+      };
+      setRecordingContext({
+        providerLabel: speechConfig?.model?.trim()
+          || speechConfig?.provider?.trim()
+          || (realtime ? 'Realtime STT' : 'Local STT'),
+        language: speechConfig?.language?.trim() || null,
+        realtime,
+      });
+      setActiveMicrophoneLabel(null);
+      setTransportState(realtime ? 'buffering' : 'local');
+      const upload = await startManagedVoiceSpool(
+        sampleRate,
+        () => voiceSpoolSafeStopHandlerRef.current(),
+      );
+      voiceSpoolUploadRef.current = upload;
+      setRuntimeNotice(null);
+      setAutomaticResult(null);
+      setPartialTranscript('');
+
+      if (realtime) {
+        let sessionId: string | null = null;
+        try {
+          sessionId = await api.startRealtimeTranscription();
+          realtimeSessionIdRef.current = sessionId;
+          realtimeUploadQueueRef.current = new BoundedAudioUploadQueue(
+            (chunk) => api.appendRealtimeTranscriptionAudio(sessionId!, chunk),
+            {
+              bytesPerSecond: 24_000 * 2,
+              maxBufferedDurationMs: 2_000,
+              onRejected: () => degradeRealtimeToSpool(true),
+              onError: (error) => {
+                realtimeUploadErrorRef.current = error.message;
+                degradeRealtimeToSpool(true);
+              },
+            },
+          );
+          realtimeUploadErrorRef.current = null;
+          realtimeAcceptingAudioRef.current = true;
+          setTransportState('online');
+        } catch (error) {
+          realtimeUploadErrorRef.current = String(error);
+          setTransportState('degraded');
+          setRuntimeNotice('realtime_deferred');
+        }
         try {
           await recorder.startRecording({
-            captureWav: false,
             targetSampleRate: 24_000,
-            onPcmChunk: (chunk) => queueRealtimeAudio(sessionId, chunk),
+            onPcmChunk: (chunk) => {
+              const accepted = upload.enqueue(chunk);
+              if (sessionId) queueRealtimeAudio(sessionId, chunk);
+              return accepted;
+            },
+            onCaptureIssue: handleCaptureIssue,
+            onCaptureStateChange: handleCaptureStateChange,
+            onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
           });
+          void microphones.refresh();
         } catch (error) {
           realtimeSessionIdRef.current = null;
           realtimeAcceptingAudioRef.current = false;
           realtimeUploadQueueRef.current?.cancel();
           realtimeUploadQueueRef.current = null;
-          void api.cancelRealtimeTranscription(sessionId);
+          voiceSpoolUploadRef.current = null;
+          void upload.cancel();
+          if (sessionId) void api.cancelRealtimeTranscription(sessionId);
           throw error;
         }
       } else {
-        await recorder.startRecording();
+        try {
+          await recorder.startRecording({
+            targetSampleRate: 16_000,
+            onPcmChunk: (chunk) => upload.enqueue(chunk),
+            onCaptureIssue: handleCaptureIssue,
+            onCaptureStateChange: handleCaptureStateChange,
+            onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
+          });
+          void microphones.refresh();
+        } catch (error) {
+          voiceSpoolUploadRef.current = null;
+          void upload.cancel();
+          throw error;
+        }
       }
       return { status: 'started' };
     } catch (error) {
+      setRecordingContext(null);
+      setActiveMicrophoneLabel(null);
+      setTransportState('local');
       return {
         status: 'error',
         code: isPermissionDeniedError(error) ? 'permission_denied' : 'recording_failed',
         message: String(error),
       };
+    } finally {
+      startInProgressRef.current = false;
+      setStarting(false);
     }
   }, [
     recorder,
+    degradeRealtimeToSpool,
     ensureSpeechProviderReadyForRecording,
-    finishRealtimeRecording,
+    finishActiveRecording,
+    microphones,
     queueRealtimeAudio,
     safeStopping,
-    stopRealtimeSafely,
-    transcribeWav,
+    transcribeManagedVoiceSpool,
     transcribing,
     whisperChecking,
   ]);
 
-  const busy = recorder.isProcessing || transcribing || whisperChecking || safeStopping;
+  const busy = transcribing || whisperChecking || safeStopping || starting;
+
+  const discardPendingVoiceSpool = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    if (discardInProgressRef.current) return { status: 'error', code: 'busy' };
+    const sessionId = pendingVoiceCleanupIdsRef.current[0]
+      ?? pendingVoiceSpoolIdsRef.current[0];
+    if (!sessionId) {
+      setHasPendingVoiceSpool(false);
+      return { status: 'empty' };
+    }
+
+    discardInProgressRef.current = true;
+    setTranscribing(true);
+    try {
+      await api.cancelVoiceAudioSpool(sessionId);
+      pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        sessionId,
+      );
+      pendingVoiceCleanupIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceCleanupIdsRef.current,
+        sessionId,
+      );
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
+      return { status: 'empty' };
+    } catch (error) {
+      pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        sessionId,
+      );
+      pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+        pendingVoiceCleanupIdsRef.current,
+        sessionId,
+      );
+      setHasPendingVoiceSpool(true);
+      setRuntimeNotice('voice_cleanup_pending');
+      return {
+        status: 'error',
+        code: 'voice_cleanup_pending',
+        message: String(error),
+      };
+    } finally {
+      discardInProgressRef.current = false;
+      setTranscribing(false);
+    }
+  }, []);
 
   const cancelRecording = useCallback(() => {
     recorder.cancelRecording();
@@ -404,8 +786,36 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     setRuntimeNotice(null);
     setAutomaticResult(null);
     setPartialTranscript('');
+    setRecordingContext(null);
+    setActiveMicrophoneLabel(null);
+    setTransportState('local');
     if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+    const voiceSpool = voiceSpoolUploadRef.current;
+    voiceSpoolUploadRef.current = null;
+    if (voiceSpool) {
+      void voiceSpool.cancel().catch(() => setRuntimeNotice('voice_cleanup_pending'));
+    }
   }, [recorder]);
+
+  const toggleRecordingPause = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    if (!recorder.isRecording || transcribing || safeStopping) {
+      return { status: 'error', code: 'busy' };
+    }
+    try {
+      if (recorder.isPaused) await recorder.resumeRecording();
+      else await recorder.pauseRecording();
+      return { status: 'started' };
+    } catch (error) {
+      return {
+        status: 'error',
+        code: 'recording_failed',
+        message: String(error),
+      };
+    }
+  }, [recorder, safeStopping, transcribing]);
+
+  const recordingDockVisible = recordingContext !== null
+    && (recorder.isRecording || safeStopping || transcribing);
 
   return useMemo(
     () => ({
@@ -421,38 +831,51 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         deleteModel: deleteWhisperModel,
       },
       isRecording: recorder.isRecording,
-      isProcessing: recorder.isProcessing,
+      isPaused: recorder.isPaused,
+      captureState: recorder.captureState,
       isTranscribing: transcribing,
       busy,
+      recordingDockVisible,
       recordingDuration: recorder.recordingDuration,
+      transportState,
+      recordingContext,
+      activeMicrophoneLabel,
       partialTranscript,
       runtimeNotice,
       automaticResult,
+      hasPendingVoiceSpool,
       clearRuntimeNotice,
       clearAutomaticResult,
       analyser: recorder.analyser,
       toggleRecording,
+      toggleRecordingPause,
       cancelRecording,
-      transcribeWav,
+      discardPendingVoiceSpool,
       formatDuration: formatRecordingDuration,
     }),
     [
       busy,
+      activeMicrophoneLabel,
       cancelRecording,
+      discardPendingVoiceSpool,
       deleteWhisperModel,
       downloadWhisperModel,
       microphones,
+      hasPendingVoiceSpool,
       partialTranscript,
       runtimeNotice,
       automaticResult,
       clearAutomaticResult,
       clearRuntimeNotice,
       recorder,
+      recordingContext,
+      recordingDockVisible,
       refreshWhisperReadiness,
       resetWhisperReadiness,
       toggleRecording,
-      transcribeWav,
+      toggleRecordingPause,
       transcribing,
+      transportState,
       whisperChecking,
       whisperDownloading,
       whisperModelExists,

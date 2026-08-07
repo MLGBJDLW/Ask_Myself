@@ -92,9 +92,43 @@ function loadWaveform() {
   return module.exports;
 }
 
-function loadRealtimePcm() {
-  const pcmPath = path.join(root, 'src', 'features', 'voice', 'realtimePcm.ts');
-  const transpiled = ts.transpileModule(fs.readFileSync(pcmPath, 'utf8'), {
+function loadVoicePcmProcessor() {
+  const processorPath = path.join(root, 'src', 'features', 'voice', 'voicePcmProcessor.js');
+  const processorSource = fs.readFileSync(processorPath, 'utf8');
+  let registeredName = null;
+  let RegisteredProcessor = null;
+
+  class TestAudioWorkletProcessor {
+    constructor() {
+      this.port = {
+        messages: [],
+        onmessage: null,
+        postMessage(message, transfer = []) {
+          this.messages.push({ message, transfer });
+        },
+      };
+    }
+  }
+
+  vm.runInNewContext(processorSource, {
+    AudioWorkletProcessor: TestAudioWorkletProcessor,
+    Int16Array,
+    Math,
+    Number,
+    sampleRate: 48_000,
+    registerProcessor: (name, processor) => {
+      registeredName = name;
+      RegisteredProcessor = processor;
+    },
+  }, { filename: processorPath });
+
+  assert.equal(registeredName, 'nexa-voice-pcm-processor');
+  return RegisteredProcessor;
+}
+
+function loadBoundedVoicePartial() {
+  const partialPath = path.join(root, 'src', 'features', 'voice', 'boundedVoicePartial.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(partialPath, 'utf8'), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2020,
@@ -102,8 +136,25 @@ function loadRealtimePcm() {
   });
   const module = { exports: {} };
   vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
-    filename: pcmPath,
+    filename: partialPath,
   });
+  return module.exports;
+}
+
+function loadTerminalPcmDelivery() {
+  const deliveryPath = path.join(root, 'src', 'features', 'voice', 'terminalPcmDelivery.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(deliveryPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  vm.runInNewContext(
+    transpiled.outputText,
+    { exports: module.exports, module, Uint8Array },
+    { filename: deliveryPath },
+  );
   return module.exports;
 }
 
@@ -119,6 +170,28 @@ function loadBoundedAudioQueue() {
   vm.runInNewContext(transpiled.outputText, { exports: module.exports, module, Uint8Array, Error }, {
     filename: queuePath,
   });
+  return module.exports;
+}
+
+function loadNativeVoiceSpool() {
+  const queueModule = loadBoundedAudioQueue();
+  const spoolPath = path.join(root, 'src', 'features', 'voice', 'nativeVoiceSpool.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(spoolPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  const require = (specifier) => {
+    if (specifier === './boundedAudioQueue') return queueModule;
+    return {};
+  };
+  vm.runInNewContext(
+    transpiled.outputText,
+    { exports: module.exports, module, require, Uint8Array, Error, Promise },
+    { filename: spoolPath },
+  );
   return module.exports;
 }
 
@@ -192,6 +265,16 @@ function loadTtsVoiceCatalog() {
 function test(name, fn) {
   try {
     fn();
+    console.log(`ok - ${name}`);
+  } catch (error) {
+    console.error(`not ok - ${name}`);
+    throw error;
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     console.log(`ok - ${name}`);
   } catch (error) {
     console.error(`not ok - ${name}`);
@@ -333,23 +416,44 @@ test('accepts configured OpenAI realtime transcription for voice input', () => {
   assert.equal(isSpeechToTextConfigured({ ...configured, model: '' }), false);
 });
 
-test('desktop API exposes the complete realtime transcription lifecycle', () => {
+test('recovered native spools remain ordered and individually retryable', () => {
+  const { queuePendingVoiceSpool, forgetPendingVoiceSpool } = loadVoiceInputRuntime();
+  let pending = ['oldest', 'newer'];
+
+  pending = queuePendingVoiceSpool(pending, 'newest');
+  pending = queuePendingVoiceSpool(pending, 'newer');
+  assert.deepEqual(Array.from(pending), ['oldest', 'newer', 'newest']);
+
+  pending = forgetPendingVoiceSpool(pending, 'oldest');
+  assert.deepEqual(Array.from(pending), ['newer', 'newest']);
+});
+
+test('desktop API exposes raw realtime and native spool lifecycles', () => {
   const apiSource = fs.readFileSync(path.join(root, 'src', 'lib', 'api.ts'), 'utf8');
   assert.match(apiSource, /start_realtime_transcription_cmd/);
   assert.match(apiSource, /append_realtime_transcription_audio_cmd/);
   assert.match(apiSource, /finish_realtime_transcription_cmd/);
   assert.match(apiSource, /cancel_realtime_transcription_cmd/);
-  assert.match(
-    apiSource,
-    /invoke<string>\('transcribe_audio_buffer_cmd', audioData\)/,
-    'final WAV should use a raw Uint8Array invoke body',
-  );
+  assert.match(apiSource, /start_voice_audio_spool_cmd/);
+  assert.match(apiSource, /append_voice_audio_spool_cmd/);
+  assert.match(apiSource, /finish_voice_audio_spool_cmd/);
+  assert.match(apiSource, /transcribe_voice_audio_spool_cmd/);
+  assert.match(apiSource, /VoiceAudioSpoolTranscriptionResult/);
+  assert.match(apiSource, /cancel_voice_audio_spool_cmd/);
+  assert.doesNotMatch(apiSource, /transcribe_audio_buffer_cmd/);
   assert.match(
     apiSource,
     /invoke<void>\('append_realtime_transcription_audio_cmd', audioData, \{/,
     'realtime PCM should use a raw Uint8Array invoke body',
   );
+  assert.match(
+    apiSource,
+    /invoke<VoiceAudioSpoolProgress>\('append_voice_audio_spool_cmd', audioData, \{/,
+    'native spool PCM should use a raw Uint8Array invoke body',
+  );
   assert.match(apiSource, /'x-nexa-session-id': sessionId/);
+  assert.match(apiSource, /'x-nexa-voice-session-id': sessionId/);
+  assert.match(apiSource, /'x-nexa-voice-sequence': String\(sequence\)/);
   assert.doesNotMatch(apiSource, /Array\.from\(audioData\)/);
 });
 
@@ -380,6 +484,22 @@ test('realtime renderer upload queue has a hard chunk and byte bound', () => {
   queue.cancel();
 });
 
+test('audio queue enforces an explicit buffered-duration bound', () => {
+  const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
+  const queue = new BoundedAudioUploadQueue(() => new Promise(() => {}), {
+    maxChunks: 100,
+    maxBytes: 1024,
+    maxChunkBytes: 1024,
+    bytesPerSecond: 4,
+    maxBufferedDurationMs: 1_000,
+  });
+
+  assert.equal(queue.enqueue(new Uint8Array(4)), true);
+  assert.equal(queue.enqueue(new Uint8Array(2)), false);
+  assert.equal(queue.snapshot().maxBufferedDurationMs, 1_000);
+  queue.cancel();
+});
+
 test('voice runtime no longer builds an unbounded Promise chain or JSON byte arrays', () => {
   const runtimeSource = fs.readFileSync(
     path.join(root, 'src', 'features', 'voice', 'voiceInputRuntime.ts'),
@@ -388,36 +508,389 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.doesNotMatch(runtimeSource, /realtimeUploadChainRef/);
   assert.doesNotMatch(runtimeSource, /Array\.from\((wav|chunk)\)/);
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
-  assert.match(runtimeSource, /onRejected: \(\) => stopRealtimeSafely\(true\)/);
-  assert.match(runtimeSource, /void finishRealtimeRecording\(\)/);
+  assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
+  assert.match(runtimeSource, /startInProgressRef\.current/);
+  assert.match(runtimeSource, /pendingVoiceCleanupIdsRef/);
+  assert.match(runtimeSource, /discardPendingVoiceSpool/);
+  assert.match(runtimeSource, /voiceSpool\.preserveAcceptedAudio\(\)/);
+  assert.match(runtimeSource, /onRejected: \(\) => degradeRealtimeToSpool\(true\)/);
+  assert.match(runtimeSource, /startManagedVoiceSpool/);
+  assert.match(runtimeSource, /upload\.enqueue\(chunk\)/);
+  assert.match(runtimeSource, /queueRealtimeAudio\(sessionId, chunk\)/);
   assert.doesNotMatch(runtimeSource, /backpressure limit reached/);
+
+  const recorderSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'voice', 'useVoiceRecorder.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(recorderSource, /buffersRef|OfflineAudioContext|encodeWav|captureWav/);
+  assert.doesNotMatch(recorderSource, /createScriptProcessor|ScriptProcessorNode|StreamingPcm16Encoder/);
+  assert.match(recorderSource, /new AudioWorkletNode/);
+  assert.match(recorderSource, /new URL\('\.\/voicePcmProcessor\.js', import\.meta\.url\)/);
+  assert.match(recorderSource, /WORKLET_MAX_CREDITS = 4/);
+  assert.match(recorderSource, /WORKLET_MAX_PENDING_CHUNKS = 8/);
+  assert.match(recorderSource, /new Uint8Array\(message\.buffer\)/);
+  assert.match(recorderSource, /worklet\.onprocessorerror/);
+  assert.match(recorderSource, /worklet\.port\.close\(\)/);
+  assert.match(recorderSource, /TerminalPcmDelivery/);
+
+  const realtimeNativeSource = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
+    'utf8',
+  );
+  assert.match(realtimeNativeSource, /REPLAY_PCM_CHUNK_BYTES: usize = 64 \* 1024/);
+  assert.match(realtimeNativeSource, /transcribe_realtime_spool/);
+  assert.doesNotMatch(realtimeNativeSource, /std::fs::read\(wav_path\)/);
 });
 
-test('realtime PCM encoder clips float samples into little-endian PCM16', () => {
-  const { float32ToPcm16 } = loadRealtimePcm();
-  const encoded = float32ToPcm16(Float32Array.from([-2, -1, 0, 0.5, 1, 2]));
-  const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+test('terminal PCM delivery never resumes after the first rejected chunk', () => {
+  const { TerminalPcmDelivery } = loadTerminalPcmDelivery();
+  const delivered = [];
+  let accepting = true;
+  const delivery = new TerminalPcmDelivery((chunk) => {
+    delivered.push(chunk[0]);
+    return accepting;
+  });
+
+  assert.equal(delivery.deliver(new Uint8Array([1])), 'accepted');
+  accepting = false;
+  assert.equal(delivery.deliver(new Uint8Array([2])), 'rejected');
+  accepting = true;
+  assert.equal(delivery.deliver(new Uint8Array([3])), 'discarded');
+  assert.deepEqual(delivered, [1, 2]);
+  assert.equal(delivery.isTerminal, true);
+  assert.equal(delivery.terminate(), false);
+});
+
+test('terminal PCM delivery contains callback failures and explicit cancellation', () => {
+  let attempts = 0;
+  const { TerminalPcmDelivery } = loadTerminalPcmDelivery();
+  const failingDelivery = new TerminalPcmDelivery(() => {
+    attempts += 1;
+    throw new Error('native append failed');
+  });
+
+  assert.equal(failingDelivery.deliver(new Uint8Array([1])), 'rejected');
+  assert.equal(failingDelivery.deliver(new Uint8Array([2])), 'discarded');
+  assert.equal(attempts, 1);
+
+  const cancelledDelivery = new TerminalPcmDelivery(() => true);
+  assert.equal(cancelledDelivery.terminate(), true);
+  assert.equal(cancelledDelivery.deliver(new Uint8Array([3])), 'discarded');
+});
+
+test('audio worklet transfers fixed PCM16 chunks behind explicit credits', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 1,
+      maxPendingChunks: 2,
+    },
+  });
+  processor.process([[Float32Array.from([
+    -1, -0.5, 0, 0.5, 1, 0.25, 0, -0.25, 0.75, 0.5, 0.25, 0, -0.5,
+  ])]]);
+
+  let pcmMessages = processor.port.messages.filter(({ message }) => message.type === 'pcm');
+  assert.equal(pcmMessages.length, 1);
+  const firstChunk = pcmMessages[0].message.buffer;
+  assert.equal(new Int16Array(firstChunk).length, 4);
+  const firstChunkView = new DataView(firstChunk);
   assert.deepEqual(
-    Array.from({ length: 6 }, (_, index) => view.getInt16(index * 2, true)),
-    [-32768, -32768, 0, 16384, 32767, 32767],
+    Array.from({ length: 4 }, (_, index) => firstChunkView.getInt16(index * 2, true)),
+    [-32768, -16384, 0, 16384],
+  );
+  assert.equal(pcmMessages[0].transfer.length, 1);
+  assert.equal(pcmMessages[0].transfer[0], pcmMessages[0].message.buffer);
+  assert.equal(processor.pendingChunks.length, 2);
+
+  processor.port.onmessage({ data: { type: 'ack' } });
+  processor.port.onmessage({ data: { type: 'ack' } });
+  pcmMessages = processor.port.messages.filter(({ message }) => message.type === 'pcm');
+  assert.equal(pcmMessages.length, 3);
+  assert.equal(processor.pendingChunks.length, 0);
+});
+
+test('audio worklet overflow is bounded and becomes terminal', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 1,
+      maxPendingChunks: 1,
+    },
+  });
+  const samples = Float32Array.from({ length: 17 }, (_, index) => (index % 4) / 4);
+  processor.process([[samples]]);
+  assert.equal(
+    processor.port.messages.filter(({ message }) => message.type === 'overflow').length,
+    1,
+  );
+  const messageCount = processor.port.messages.length;
+  processor.process([[samples]]);
+  assert.equal(processor.port.messages.length, messageCount);
+});
+
+test('audio worklet pause flushes its partial chunk before suspending capture', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 2,
+      maxPendingChunks: 2,
+    },
+  });
+  processor.process([[Float32Array.from([0, 0.25, 0.5])]]);
+  assert.equal(processor.port.messages.length, 0);
+
+  processor.port.onmessage({ data: { type: 'flush', requestId: 7, pauseAfter: true } });
+  const pcmMessage = processor.port.messages.find(({ message }) => message.type === 'pcm');
+  assert.ok(pcmMessage);
+  assert.equal(new Int16Array(pcmMessage.message.buffer).length, 2);
+  assert.equal(
+    processor.port.messages.some(({ message }) => message.type === 'flushed'),
+    false,
+  );
+
+  processor.process([[Float32Array.from([0.75, 1, 0.5, 0])]]);
+  assert.equal(
+    processor.port.messages.filter(({ message }) => message.type === 'pcm').length,
+    1,
+  );
+  processor.port.onmessage({ data: { type: 'ack' } });
+  assert.equal(
+    processor.port.messages.some(({ message }) => message.type === 'flushed' && message.requestId === 7),
+    true,
   );
 });
 
-test('streaming PCM resampling preserves phase across microphone chunks', () => {
-  const { StreamingPcm16Encoder } = loadRealtimePcm();
-  const onePass = new StreamingPcm16Encoder(48_000, 24_000);
-  const split = new StreamingPcm16Encoder(48_000, 24_000);
-  const samples = Float32Array.from([0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25]);
+test('audio worklet resampling preserves phase across render quanta', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const createProcessor = () => new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 24_000,
+      chunkFrames: 256,
+      maxCredits: 4,
+      maxPendingChunks: 4,
+    },
+  });
+  const samples = Float32Array.from(
+    { length: 257 },
+    (_, index) => Math.sin(index / 13) * 0.75,
+  );
+  const onePass = createProcessor();
+  const split = createProcessor();
+  onePass.process([[samples]]);
+  split.process([[samples.slice(0, 128)]]);
+  split.process([[samples.slice(128)]]);
+  onePass.port.onmessage({ data: { type: 'flush', requestId: 1 } });
+  split.port.onmessage({ data: { type: 'flush', requestId: 2 } });
 
-  const expected = onePass.encode(samples);
-  const first = split.encode(samples.slice(0, 3));
-  const second = split.encode(samples.slice(3));
-  const actual = new Uint8Array(first.length + second.length);
-  actual.set(first);
-  actual.set(second, first.length);
+  const collectSamples = (processor) => processor.port.messages
+    .filter(({ message }) => message.type === 'pcm')
+    .flatMap(({ message }) => Array.from(new Int16Array(message.buffer)));
+  assert.deepEqual(collectSamples(split), collectSamples(onePass));
+});
 
-  assert.deepEqual(Array.from(actual), Array.from(expected));
-  assert.equal(expected.byteLength, 8);
+test('audio worklet keeps live ownership bounded through 30 and 60 logical minutes', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 24_000,
+      chunkFrames: 480,
+      maxCredits: 4,
+      maxPendingChunks: 8,
+    },
+  });
+  const sourceFramesPerBatch = 3_840;
+  const source = new Float32Array(sourceFramesPerBatch);
+  const batchesPerMinute = 60 * 48_000 / sourceFramesPerBatch;
+  const totalBatches = 60 * batchesPerMinute;
+  const checkpoints = new Set([30 * batchesPerMinute, totalBatches]);
+  let emittedChunks = 0;
+  let maxInFlightChunks = 0;
+  let maxPendingChunks = 0;
+
+  for (let batch = 1; batch <= totalBatches; batch += 1) {
+    processor.process([[source]]);
+    const messages = processor.port.messages.splice(0);
+    const pcmMessages = messages.filter(({ message }) => message.type === 'pcm');
+    assert.equal(messages.some(({ message }) => message.type === 'overflow'), false);
+    maxInFlightChunks = Math.max(maxInFlightChunks, pcmMessages.length);
+    maxPendingChunks = Math.max(maxPendingChunks, processor.pendingChunks.length);
+    emittedChunks += pcmMessages.length;
+    for (const { message } of pcmMessages) {
+      assert.equal(message.buffer.byteLength, 480 * 2);
+      processor.port.onmessage({ data: { type: 'ack' } });
+    }
+
+    if (checkpoints.has(batch)) {
+      assert.equal(processor.pendingChunks.length, 0);
+      assert.equal(processor.credits, processor.maxCredits);
+      assert.equal(processor.overflowed, false);
+      assert.equal(processor.port.messages.length, 0);
+    }
+  }
+
+  assert.equal(emittedChunks, 60 * 60 * 50);
+  assert.equal(maxInFlightChunks, 4);
+  assert.equal(maxPendingChunks, 0);
+});
+
+test('realtime partial transcript retains only the newest bounded text', () => {
+  const {
+    MAX_VOICE_PARTIAL_CHARS,
+    appendBoundedVoicePartial,
+    replaceBoundedVoicePartial,
+  } = loadBoundedVoicePartial();
+  const current = 'a'.repeat(MAX_VOICE_PARTIAL_CHARS);
+  const appended = appendBoundedVoicePartial(current, 'latest');
+  assert.equal(appended.length, MAX_VOICE_PARTIAL_CHARS);
+  assert.equal(appended.endsWith('latest'), true);
+
+  const oversized = `old-${'b'.repeat(MAX_VOICE_PARTIAL_CHARS)}-new`;
+  const replaced = replaceBoundedVoicePartial(oversized);
+  assert.equal(replaced.length, MAX_VOICE_PARTIAL_CHARS);
+  assert.equal(replaced.endsWith('-new'), true);
+});
+
+await testAsync('native spool upload assigns ordered sequences and finalizes by opaque handle', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  const sent = [];
+  const transport = {
+    append: async (sessionId, sequence, chunk) => {
+      sent.push({ sessionId, sequence, bytes: Array.from(chunk) });
+    },
+    finish: async (sessionId) => ({
+      sessionId,
+      audioBytes: 8,
+      durationMs: 1,
+      sampleRate: 16_000,
+      checksumSha256: 'abc',
+      createdAtMs: 1,
+      expiresAtMs: 2,
+    }),
+    cancel: async () => {},
+  };
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'opaque-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    transport,
+  );
+
+  assert.equal(upload.enqueue(new Uint8Array([1, 0, 2, 0])), true);
+  assert.equal(upload.enqueue(new Uint8Array([3, 0, 4, 0])), true);
+  const descriptor = await upload.finish();
+
+  assert.equal(descriptor.sessionId, 'opaque-id');
+  assert.deepEqual(sent.map(({ sessionId, sequence }) => ({ sessionId, sequence })), [
+    { sessionId: 'opaque-id', sequence: 0 },
+    { sessionId: 'opaque-id', sequence: 1 },
+  ]);
+  assert.equal(upload.enqueue(new Uint8Array([5, 0])), false);
+});
+
+await testAsync('native spool can finalize acknowledged chunks after a later write failure', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  let appendCount = 0;
+  let finalized = 0;
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'recoverable-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => {
+        appendCount += 1;
+        if (appendCount === 2) throw new Error('disk full');
+      },
+      finish: async (sessionId) => {
+        finalized += 1;
+        return {
+          sessionId,
+          audioBytes: 4,
+          durationMs: 1,
+          sampleRate: 16_000,
+          checksumSha256: 'abc',
+          createdAtMs: 1,
+          expiresAtMs: 2,
+        };
+      },
+      cancel: async () => {},
+    },
+  );
+
+  upload.enqueue(new Uint8Array([1, 0, 2, 0]));
+  await upload.finish();
+  assert.equal(finalized, 1);
+
+  const failingUpload = new NativeVoiceSpoolUpload(
+    { sessionId: 'recoverable-id-2', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => { throw new Error('disk full'); },
+      finish: async (sessionId) => {
+        finalized += 1;
+        return {
+          sessionId,
+          audioBytes: 2,
+          durationMs: 1,
+          sampleRate: 16_000,
+          checksumSha256: 'def',
+          createdAtMs: 1,
+          expiresAtMs: 2,
+        };
+      },
+      cancel: async () => {},
+    },
+  );
+  failingUpload.enqueue(new Uint8Array([1, 0]));
+  await assert.rejects(failingUpload.finish(), /disk full/);
+  const recovered = await failingUpload.finishAcceptedAudio();
+
+  assert.equal(recovered.sessionId, 'recoverable-id-2');
+  assert.equal(finalized, 2);
+});
+
+await testAsync('native spool unmount preserves accepted audio instead of privacy-deleting it', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  let cancelled = 0;
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'unmount-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => {},
+      finish: async (sessionId) => ({
+        sessionId,
+        audioBytes: 2,
+        durationMs: 1,
+        sampleRate: 16_000,
+        checksumSha256: 'abc',
+        createdAtMs: 1,
+        expiresAtMs: 2,
+      }),
+      cancel: async () => { cancelled += 1; },
+    },
+  );
+  upload.enqueue(new Uint8Array([1, 0]));
+
+  const descriptor = await upload.preserveAcceptedAudio();
+
+  assert.equal(descriptor.sessionId, 'unmount-id');
+  assert.equal(cancelled, 0);
+});
+
+await testAsync('bounded audio queue surfaces native write failures without Promise growth', async () => {
+  const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
+  const failures = [];
+  const queue = new BoundedAudioUploadQueue(
+    async () => { throw new Error('disk full'); },
+    { onError: (error, telemetry) => failures.push({ message: error.message, telemetry }) },
+  );
+
+  assert.equal(queue.enqueue(new Uint8Array([0, 0])), true);
+  await assert.rejects(queue.flush(), /disk full/);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].message, 'disk full');
+  assert.equal(failures[0].telemetry.inFlightChunks, 0);
 });
 
 test('waveform bars stay flat for silence and rise with loudness', () => {

@@ -52,6 +52,90 @@ export interface ConversationTurn {
   finishedAt?: string | null;
 }
 
+export type InteractionKind =
+  | 'user_input'
+  | 'approval'
+  | 'high_risk_confirmation'
+  | 'credential_request'
+  | 'conflict_resolution';
+
+export type InteractionStatus =
+  | 'pending'
+  | 'presented'
+  | 'partially_answered'
+  | 'submitted'
+  | 'acknowledged'
+  | 'cancelled'
+  | 'expired'
+  | 'superseded'
+  | 'failed';
+
+export type InteractionQuestionKind =
+  | 'short'
+  | 'long'
+  | 'single_choice'
+  | 'multi_choice'
+  | 'confirm';
+
+export interface InteractionQuestionOption {
+  label: string;
+  description?: string | null;
+}
+
+export interface InteractionQuestion {
+  id: string;
+  header: string;
+  question: string;
+  type: InteractionQuestionKind;
+  options?: InteractionQuestionOption[];
+  placeholder?: string | null;
+  why?: string | null;
+}
+
+export type InteractionAnswers = Record<string, string[]>;
+
+export interface InteractionRequest {
+  schemaVersion: 1;
+  interactionId: string;
+  conversationId: string;
+  turnId: string;
+  toolCallId?: string | null;
+  kind: InteractionKind;
+  title: string;
+  description?: string | null;
+  questions: InteractionQuestion[];
+  required: boolean;
+  status: InteractionStatus;
+  riskPriority: number;
+  queueSequence: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string | null;
+  resumeToken: string;
+}
+
+export interface InteractionDraft {
+  schemaVersion: 1;
+  interactionId: string;
+  conversationId: string;
+  answers: InteractionAnswers;
+  currentQuestionIndex: number;
+  updatedAt: string;
+}
+
+export interface SubmitInteractionResponse {
+  interactionId: string;
+  resumeToken: string;
+  answers: InteractionAnswers;
+}
+
+export interface InteractionResponse {
+  schemaVersion: 1;
+  interactionId: string;
+  answers: InteractionAnswers;
+  submittedAt: string;
+}
+
 export interface AgentTaskRun {
   id: string;
   conversationId: string;
@@ -104,6 +188,7 @@ export type AgentRunPhase =
   | 'responding'
   | 'tooling'
   | 'approval'
+  | 'awaiting_user_input'
   | 'compacting'
   | 'accounting'
   | 'done';
@@ -167,6 +252,7 @@ export type AgentTurnState =
   | 'starting'
   | 'running'
   | 'waitingApproval'
+  | 'awaitingUserInput'
   | { terminal: RuntimeTerminalStatus };
 
 /** Immediate runtime acknowledgement returned by `agent_chat_cmd`. */
@@ -313,6 +399,63 @@ export interface ImageAttachment {
   base64Data: string;
   mediaType: string;
   originalName: string;
+  attachmentId?: string | null;
+  attachmentHash?: string | null;
+  visionAnalysis?: VisionAttachmentAnalysis | null;
+}
+
+export type VisionAttachmentStatus = 'pending' | 'cached' | 'observed' | 'metadata_only' | 'failed';
+export type VisionTurnOverride = 'auto' | 'ocr_only' | 'vision_only';
+
+export interface VisionAttachmentAnalysis {
+  status: VisionAttachmentStatus;
+  profileHash?: string | null;
+  observation?: VisionObservation | null;
+  reasonCode?: string | null;
+}
+
+export interface VisionObservation {
+  schemaVersion: number;
+  attachmentId: string;
+  attachmentHash: string;
+  profileHash: string;
+  intent: 'dense_text' | 'visual_reasoning' | 'mixed' | 'unknown';
+  summary?: string | null;
+  ocrText?: string | null;
+  regions: Array<{
+    kind?: string | null;
+    text?: string | null;
+    bbox: [number, number, number, number];
+    confidence?: number | null;
+  }>;
+  tables: Array<{ title?: string | null; headers: string[]; rows: string[][] }>;
+  entities: Array<{ kind: string; value: string; regionIndex?: number | null }>;
+  chartData: unknown[];
+  confidence?: number | null;
+  confidenceKind?: 'ocr_recognition_mean' | 'provider_reported' | 'route_classification' | null;
+  sources: Array<{
+    kind: 'local_ocr' | 'vision_model';
+    providerId?: string | null;
+    modelId?: string | null;
+    targetId?: string | null;
+    targetRevision?: number | null;
+    local: boolean;
+  }>;
+  fallbackUsed: boolean;
+  fallbackReason?: string | null;
+  privacyScope: 'local' | 'single_provider' | 'multi_provider';
+  route: {
+    classifierVersion: number;
+    intent: string;
+    plan: string;
+    classificationConfidence: number;
+    reasonCodes: string[];
+    attempts: Array<{
+      processor: string;
+      status: 'succeeded' | 'failed' | 'skipped';
+      reasonCode: string;
+    }>;
+  };
 }
 
 export interface DelegationLimitsConfig {

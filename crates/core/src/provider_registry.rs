@@ -148,27 +148,41 @@ pub fn provider_type_from_key(key: &str) -> Option<ProviderType> {
 }
 
 pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> ProviderType {
-    let base_url_lower = base_url.unwrap_or_default().to_ascii_lowercase();
-    if base_url_lower.contains("deepseek") {
-        return ProviderType::DeepSeek;
+    let normalized_base_url = crate::model_catalog::normalize_endpoint_url(base_url);
+    if !normalized_base_url.is_empty() {
+        if let Ok(catalog) = crate::model_catalog::load_builtin_catalog() {
+            let exact_endpoints = catalog
+                .endpoints
+                .iter()
+                .filter(|endpoint| {
+                    crate::model_catalog::normalize_endpoint_url(Some(&endpoint.base_url_template))
+                        == normalized_base_url
+                })
+                .collect::<Vec<_>>();
+            // The unified catalog intentionally groups Qwen Token Plan and
+            // Model Studio under one model namespace, while the runtime keeps
+            // their credential contracts as distinct adapter identities.
+            if provider_type_from_key(provider) == Some(ProviderType::Qwen)
+                && exact_endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.id.contains("qwen-token-plan"))
+            {
+                return ProviderType::Qwen;
+            }
+            let matches = exact_endpoints
+                .into_iter()
+                .filter_map(|endpoint| provider_type_from_key(&endpoint.provider_id))
+                .fold(Vec::new(), |mut matches, provider_type| {
+                    if !matches.contains(&provider_type) {
+                        matches.push(provider_type);
+                    }
+                    matches
+                });
+            if matches.len() == 1 {
+                return matches[0];
+            }
+        }
     }
-    if base_url_lower.contains("openrouter.ai") {
-        return ProviderType::OpenRouter;
-    }
-    if base_url_lower.contains("siliconflow.cn") {
-        return ProviderType::SiliconFlow;
-    }
-    // Keep the dedicated Token Plan identity. Model Studio is selected by its
-    // canonical provider id or detected from its DashScope endpoint.
-    if provider_type_from_key(provider) == Some(ProviderType::Qwen)
-        && (base_url_lower.is_empty() || base_url_lower.contains("token-plan."))
-    {
-        return ProviderType::Qwen;
-    }
-    if base_url_lower.contains("dashscope") || base_url_lower.contains("maas.aliyuncs.com") {
-        return ProviderType::AlibabaModelStudio;
-    }
-
     provider_type_from_key(provider).unwrap_or(ProviderType::Custom)
 }
 
@@ -244,6 +258,18 @@ mod tests {
             ),
             ProviderType::Qwen
         );
+        for endpoint in [
+            "http://api.deepseek.com",
+            "https://api.deepseek.com:8443",
+            "https://api.deepseek.com/v1?tenant=other",
+            "https://api.deepseek.com.evil.example/v1",
+        ] {
+            assert_eq!(
+                provider_type_for_parts("custom", Some(endpoint)),
+                ProviderType::Custom,
+                "{endpoint} must not inherit a trusted provider adapter"
+            );
+        }
         assert_eq!(
             provider_adapter_for_type(ProviderType::Anthropic),
             ProviderAdapterKind::Anthropic

@@ -8,6 +8,7 @@
   "running": "執行中",
   "queued": "佇列中",
   "waitingApproval": "等待核准",
+  "waitingUser": "等待你的操作",
   "cancelling": "取消中",
   "paused": "已暂停",
   "cancelled": "已取消",

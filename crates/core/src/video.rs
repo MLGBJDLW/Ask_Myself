@@ -1432,6 +1432,147 @@ pub fn transcribe_audio(
     Ok(segments)
 }
 
+/// Transcribe a WAV through fixed-duration native files so PCM and mel memory
+/// plateau for long recordings. The cached model runtime is reused across
+/// chunks while timestamps are projected back onto the original recording.
+#[cfg(feature = "video")]
+pub fn transcribe_audio_bounded(
+    wav_path: &Path,
+    config: &VideoConfig,
+    max_chunk_seconds: usize,
+) -> Result<Vec<TranscriptSegment>, CoreError> {
+    if max_chunk_seconds == 0 {
+        return Err(CoreError::InvalidInput(
+            "Whisper chunk duration must be positive".into(),
+        ));
+    }
+    let mut reader = hound::WavReader::open(wav_path)
+        .map_err(|error| CoreError::Video(format!("Failed to open WAV: {error}")))?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(CoreError::Video(
+            "Bounded Whisper transcription requires 16-bit PCM WAV audio".into(),
+        ));
+    }
+    let channels = usize::from(spec.channels.max(1));
+    let samples_per_second = spec.sample_rate as usize * channels;
+    let samples_per_chunk = samples_per_second
+        .checked_mul(max_chunk_seconds)
+        .ok_or_else(|| CoreError::InvalidInput("Whisper chunk size overflow".into()))?;
+    // One second is enough to preserve speech around the seam while keeping
+    // every native and mel window strictly bounded.
+    let overlap_samples = (max_chunk_seconds > 1)
+        .then_some(samples_per_second)
+        .unwrap_or_default();
+    let overlap_ms = (overlap_samples > 0)
+        .then_some(1_000_i64)
+        .unwrap_or_default();
+    let scratch_root = wav_path.parent().ok_or_else(|| {
+        CoreError::Video("Managed Whisper input has no private parent directory".into())
+    })?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix(".whisper-")
+        .tempdir_in(scratch_root)
+        .map_err(|error| {
+            CoreError::Video(format!(
+                "Failed to create managed Whisper chunk dir: {error}"
+            ))
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(temp_dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    let mut samples = reader.samples::<i16>().peekable();
+    let mut chunk_start_sample = 0_usize;
+    let mut overlap = Vec::<i16>::new();
+    let mut chunk_index = 0_usize;
+    let mut result = Vec::new();
+
+    loop {
+        let mut chunk_samples = Vec::with_capacity(samples_per_chunk);
+        chunk_samples.extend_from_slice(&overlap);
+        let prior_overlap_samples = chunk_samples.len();
+        let mut reached_eof = false;
+        let mut new_samples = 0_usize;
+        for _ in prior_overlap_samples..samples_per_chunk {
+            let Some(sample) = samples.next() else {
+                reached_eof = true;
+                break;
+            };
+            chunk_samples.push(sample.map_err(|error| {
+                CoreError::Video(format!("Failed to read Whisper chunk sample: {error}"))
+            })?);
+            new_samples += 1;
+        }
+        if !reached_eof {
+            reached_eof = samples.peek().is_none();
+        }
+        if new_samples == 0 {
+            break;
+        }
+
+        let chunk_path = temp_dir.path().join(format!("chunk-{chunk_index:05}.wav"));
+        let mut writer = hound::WavWriter::create(&chunk_path, spec).map_err(|error| {
+            CoreError::Video(format!("Failed to create Whisper chunk: {error}"))
+        })?;
+        for sample in &chunk_samples {
+            writer.write_sample(*sample).map_err(|error| {
+                CoreError::Video(format!("Failed to write Whisper chunk sample: {error}"))
+            })?;
+        }
+        writer.finalize().map_err(|error| {
+            CoreError::Video(format!("Failed to finalize Whisper chunk: {error}"))
+        })?;
+
+        let chunk_offset_ms =
+            ((chunk_start_sample as f64 / channels as f64 / spec.sample_rate.max(1) as f64)
+                * 1_000.0)
+                .round() as i64;
+        let chunk_duration_ms =
+            ((chunk_samples.len() as f64 / channels as f64 / spec.sample_rate.max(1) as f64)
+                * 1_000.0)
+                .round() as i64;
+        let lower_seam_ms = (chunk_index > 0).then_some(chunk_offset_ms + overlap_ms / 2);
+        let upper_seam_ms =
+            (!reached_eof).then_some(chunk_offset_ms + chunk_duration_ms - overlap_ms / 2);
+        let mut chunk_segments = transcribe_audio(&chunk_path, config)?;
+        for segment in &mut chunk_segments {
+            segment.start_ms += chunk_offset_ms;
+            segment.end_ms += chunk_offset_ms;
+        }
+        result.extend(
+            chunk_segments.into_iter().filter(|segment| {
+                segment_within_bounded_seam(segment, lower_seam_ms, upper_seam_ms)
+            }),
+        );
+
+        let next_overlap_samples = overlap_samples.min(chunk_samples.len());
+        overlap.clear();
+        overlap.extend_from_slice(&chunk_samples[chunk_samples.len() - next_overlap_samples..]);
+        chunk_start_sample = chunk_start_sample
+            .saturating_add(chunk_samples.len().saturating_sub(next_overlap_samples));
+        chunk_index += 1;
+    }
+    temp_dir.close().map_err(|error| {
+        CoreError::Video(format!(
+            "Failed to delete managed Whisper chunk dir: {error}"
+        ))
+    })?;
+    Ok(result)
+}
+
+#[cfg(feature = "video")]
+fn segment_within_bounded_seam(
+    segment: &TranscriptSegment,
+    lower_seam_ms: Option<i64>,
+    upper_seam_ms: Option<i64>,
+) -> bool {
+    let midpoint_ms = segment.start_ms.saturating_add(segment.end_ms) / 2;
+    lower_seam_ms.is_none_or(|lower| midpoint_ms >= lower)
+        && upper_seam_ms.is_none_or(|upper| midpoint_ms < upper)
+}
+
 #[cfg(feature = "video")]
 fn wav_duration_ms(wav_path: &Path) -> Result<i64, CoreError> {
     let reader = hound::WavReader::open(wav_path)
@@ -2839,6 +2980,25 @@ pub fn is_supported_video(mime: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_whisper_seams_assign_overlap_to_exactly_one_window() {
+        let before = TranscriptSegment {
+            start_ms: 58_000,
+            end_ms: 58_800,
+            text: "before".into(),
+        };
+        let after = TranscriptSegment {
+            start_ms: 59_200,
+            end_ms: 60_000,
+            text: "after".into(),
+        };
+
+        assert!(segment_within_bounded_seam(&before, None, Some(59_500)));
+        assert!(!segment_within_bounded_seam(&after, None, Some(59_500)));
+        assert!(!segment_within_bounded_seam(&before, Some(59_500), None));
+        assert!(segment_within_bounded_seam(&after, Some(59_500), None));
+    }
 
     #[test]
     fn test_whisper_model_filename() {

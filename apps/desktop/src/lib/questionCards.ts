@@ -18,6 +18,8 @@ export interface QuestionCard {
 
 export interface QuestionRequest {
   callId: string;
+  interactionId?: string;
+  resumeToken?: string;
   questions: QuestionCard[];
   status: 'pending' | 'answered';
 }
@@ -144,6 +146,8 @@ export function extractQuestionRequest(
   if (questions.length === 0) return null;
   return {
     callId: asString(artifact?.callId) || callId,
+    interactionId: asString(artifact?.interactionId) || undefined,
+    resumeToken: asString(artifact?.resumeToken) || undefined,
     questions,
     status: artifact?.status === 'answered' ? 'answered' : 'pending',
   };
@@ -165,8 +169,9 @@ export function formatQuestionResponse(
     message,
     artifact: {
       kind: 'questionResponse',
-      version: 1,
+      version: request.interactionId ? 2 : 1,
       requestCallId: request.callId,
+      ...(request.interactionId ? { interactionId: request.interactionId } : {}),
       answers: normalizedAnswers,
     },
   };

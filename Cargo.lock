@@ -3636,7 +3636,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexa-core"
-version = "0.11.12"
+version = "0.11.14"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3676,6 +3676,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "strsim",
+ "subtle",
  "tar",
  "tempfile",
  "thiserror 2.0.19",
@@ -3685,6 +3686,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unicode-normalization",
+ "url",
  "uuid",
  "walkdir",
  "windows 0.62.2",
@@ -3695,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "nexa-desktop"
-version = "0.11.12"
+version = "0.11.14"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

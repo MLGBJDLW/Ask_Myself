@@ -244,6 +244,7 @@ mod tests {
                 source_scope: &[],
                 activity_runtime: None,
                 conversation_id: None,
+                turn_id: None,
                 tool_registry: Some(&registry),
                 cancel_token: None,
             })

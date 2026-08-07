@@ -299,6 +299,7 @@ async fn launch_task_orchestrator_execution_ticket(
         moa_preset: Some("fastReview".to_string()),
         orchestration_profile: Some("balanced".to_string()),
         custom_orchestration: None,
+        vision_turn_override: None,
         user_artifacts: Some(serde_json::json!({
             "kind": "taskOrchestratorLaunch",
             "version": 1,

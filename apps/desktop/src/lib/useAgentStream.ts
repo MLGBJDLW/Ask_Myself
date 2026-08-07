@@ -3,6 +3,7 @@ import * as api from './api';
 import { streamStore } from './streamStore';
 import type {
   ImageAttachment,
+  VisionTurnOverride,
   ApprovalRequest,
   ArtifactPayload,
   UsageTotal,
@@ -41,8 +42,10 @@ interface UseAgentStreamReturn {
     moaPreset?: MoaPresetId | null,
     orchestrationProfile?: OrchestrationProfile | null,
     customOrchestration?: CustomOrchestrationOptions | null,
+    visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    propagateErrors?: boolean,
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
@@ -146,8 +149,10 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     moaPreset?: MoaPresetId | null,
     orchestrationProfile?: OrchestrationProfile | null,
     customOrchestration?: CustomOrchestrationOptions | null,
+    visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    propagateErrors = false,
   ) => {
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
@@ -166,12 +171,17 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         moaPreset,
         orchestrationProfile,
         customOrchestration,
+        visionTurnOverride,
         userArtifacts,
         taskOrchestratorRunId,
       );
       streamStore.bindTurnHandle(conversationId, handle);
+      if (handle?.state === 'awaitingUserInput') {
+        streamStore.markAwaitingUserInput(conversationId);
+      }
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
+      if (propagateErrors) throw err;
     }
   }, []);
 

@@ -178,6 +178,18 @@
   "questionSubmit": "Envoyer les réponses",
   "questionYes": "Oui",
   "questionNo": "Non",
+  "decisionTrayQueue": "Décision {{current}} sur {{total}}",
+  "decisionTrayReview": "Vérifier les réponses",
+  "decisionTrayProgress": "Question {{current}} sur {{total}}",
+  "decisionTrayHideAll": "Tout masquer",
+  "decisionTrayShowAll": "Tout afficher",
+  "decisionTrayCancelTask": "Annuler la tâche",
+  "decisionTraySupplementHint": "Le texte du composeur ajoute du contexte sans répondre à cette question.",
+  "decisionTrayContinue": "Continuer",
+  "decisionTraySupplementTextOnly": "Pendant une décision, le composeur accepte uniquement du texte complémentaire.",
+  "decisionTraySupplementSaved": "Contexte supplémentaire ajouté",
+  "decisionTrayAskedSummary": "L’agent a posé {{count}} questions",
+  "decisionTrayWaiting": "En attente de vous",
   "attachImage": "Joindre une image",
   "insertEmoji": "Insérer un emoji",
   "scrollToBottom": "Aller en bas",
@@ -622,4 +634,18 @@
   "connectionNextAction": "Vérifiez les réglages du fournisseur, puis renvoyez le message une fois la connexion disponible.",
   "toolInputRedacted": "[Masqué]",
   "toolInputInvalid": "[Arguments illisibles masqués]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

@@ -321,6 +321,7 @@ pub struct ToolExecutionContext<'a> {
     pub db: &'a Database,
     pub source_scope: &'a [String],
     pub conversation_id: Option<&'a str>,
+    pub turn_id: Option<&'a str>,
     pub tool_registry: Option<&'a ToolRegistry>,
     pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
     pub activity_runtime: Option<&'a ActivityRuntime>,
@@ -340,6 +341,7 @@ impl<'a> ToolExecutionContext<'a> {
             db,
             source_scope,
             conversation_id: None,
+            turn_id: None,
             tool_registry: None,
             cancel_token: None,
             activity_runtime: None,
@@ -348,6 +350,11 @@ impl<'a> ToolExecutionContext<'a> {
 
     pub fn with_conversation_id(mut self, conversation_id: Option<&'a str>) -> Self {
         self.conversation_id = conversation_id;
+        self
+    }
+
+    pub fn with_turn_id(mut self, turn_id: Option<&'a str>) -> Self {
+        self.turn_id = turn_id;
         self
     }
 
@@ -905,6 +912,7 @@ impl ToolRegistry {
                 db: ctx.db,
                 source_scope: ctx.source_scope,
                 conversation_id: ctx.conversation_id,
+                turn_id: ctx.turn_id,
                 tool_registry: ctx.tool_registry,
                 cancel_token: ctx.cancel_token,
                 activity_runtime: ctx.activity_runtime,
@@ -1739,7 +1747,11 @@ mod tests {
             .expect("request_user_input should be registered");
         let schema = tool.parameters_schema();
         assert_eq!(schema["properties"]["questions"]["minItems"], 1);
-        assert_eq!(schema["properties"]["questions"]["maxItems"], 3);
+        assert_eq!(schema["properties"]["questions"]["maxItems"], 6);
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            serde_json::json!(["user_input", "high_risk_confirmation"])
+        );
     }
 
     #[test]

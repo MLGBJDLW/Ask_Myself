@@ -178,6 +178,18 @@
   "questionSubmit": "답변 제출",
   "questionYes": "예",
   "questionNo": "아니요",
+  "decisionTrayQueue": "결정 {{current}} / {{total}}",
+  "decisionTrayReview": "답변 검토",
+  "decisionTrayProgress": "질문 {{current}} / {{total}}",
+  "decisionTrayHideAll": "모두 숨기기",
+  "decisionTrayShowAll": "모두 보기",
+  "decisionTrayCancelTask": "작업 취소",
+  "decisionTraySupplementHint": "입력창 텍스트는 추가 정보이며 현재 질문의 답변이 아닙니다.",
+  "decisionTrayContinue": "계속",
+  "decisionTraySupplementTextOnly": "결정을 기다리는 동안 입력창에는 보충 텍스트만 보낼 수 있습니다.",
+  "decisionTraySupplementSaved": "추가 정보를 보냈습니다",
+  "decisionTrayAskedSummary": "Agent가 {{count}}개 질문했습니다",
+  "decisionTrayWaiting": "응답 대기 중",
   "attachImage": "이미지 첨부",
   "insertEmoji": "이모지 삽입",
   "scrollToBottom": "맨 아래로 스크롤",
@@ -622,4 +634,18 @@
   "connectionNextAction": "공급자 설정을 확인하고 연결이 복구되면 다시 보내세요.",
   "toolInputRedacted": "[숨김]",
   "toolInputInvalid": "[해석할 수 없는 인수 숨김]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

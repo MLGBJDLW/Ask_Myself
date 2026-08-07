@@ -1013,10 +1013,7 @@ export function AgentConfigForm({
         onOpenChange={setShowAdvanced}
         summary={
           <span className="rounded-full border border-border/60 bg-surface-2 px-2 py-1 text-[11px] text-text-secondary">
-            {t("settings.selectedToolsSummary", {
-              selected: String(visibleSelectedToolCount),
-              total: String(subagentToolCatalog.length),
-            })}
+            {t("settings.capabilityRegistryAdvancedDesc")}
           </span>
         }
       >

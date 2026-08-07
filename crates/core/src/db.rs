@@ -33,9 +33,24 @@ pub struct StoredDocumentMetadata {
 impl Database {
     /// Open a file-backed database with WAL mode, PRAGMAs, and auto-migration.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let conn = Connection::open(path.as_ref())?;
+        let mut conn = Connection::open(path.as_ref())?;
         Self::configure_connection(&conn)?;
         crate::migrations::run_migrations(&conn)?;
+        if let Err(error) =
+            crate::settings_schema_v2::migrate_legacy_agent_configs_on_open(&mut conn)
+        {
+            tracing::error!(
+                error = %error,
+                "Settings Schema V2 migration failed; keeping the V1 schema active"
+            );
+        }
+        if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            disable_registry_reads(&conn, &error);
+            tracing::error!(
+                error = %error,
+                "Capability Registry import failed; keeping legacy runtime reads available"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: Some(path.as_ref().to_path_buf()),
@@ -44,9 +59,24 @@ impl Database {
 
     /// Open an in-memory database for testing.
     pub fn open_memory() -> Result<Self, CoreError> {
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         Self::configure_connection(&conn)?;
         crate::migrations::run_migrations(&conn)?;
+        if let Err(error) =
+            crate::settings_schema_v2::migrate_legacy_agent_configs_on_open(&mut conn)
+        {
+            tracing::error!(
+                error = %error,
+                "Settings Schema V2 migration failed; keeping the V1 schema active"
+            );
+        }
+        if let Err(error) = crate::capability_registry::migrate_registry_on_open(&mut conn) {
+            disable_registry_reads(&conn, &error);
+            tracing::error!(
+                error = %error,
+                "Capability Registry import failed; keeping legacy runtime reads available"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: None,
@@ -180,6 +210,25 @@ impl Database {
             let _ = conn.prepare(pragma)?.query([])?;
         }
         Ok(())
+    }
+}
+
+fn disable_registry_reads(conn: &Connection, _error: &CoreError) {
+    let parity = serde_json::json!({
+        "status": "blocked",
+        "reasonCodes": ["registry_import_failed"],
+        "errorCategory": "import_error",
+    });
+    if let Err(update_error) = conn.execute(
+        "UPDATE registry_activation_state
+         SET read_mode = 'legacy', parity_status = 'blocked', parity_json = ?1,
+             rolled_back_at = datetime('now'), updated_at = datetime('now')",
+        [parity.to_string()],
+    ) {
+        tracing::error!(
+            error = %update_error,
+            "Failed to force Capability Registry reads back to legacy mode"
+        );
     }
 }
 
@@ -379,6 +428,20 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
+    pub fn latest_agent_run_event_sequence(&self, run_id: &str) -> Result<u64, CoreError> {
+        let conn = self.conn();
+        let sequence: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(event_seq), 0) FROM agent_run_events WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |row| row.get(0),
+        )?;
+        u64::try_from(sequence).map_err(|_| {
+            CoreError::Internal(format!(
+                "Agent run {run_id} has an invalid negative event sequence"
+            ))
+        })
+    }
+
     /// Persist one durable agent run event after validating the protocol contract.
     pub fn save_agent_run_event(
         &self,

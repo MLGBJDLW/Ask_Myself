@@ -3,6 +3,8 @@ export interface AudioQueueTelemetry {
   inFlightChunks: number;
   maxQueueDepth: number;
   maxBufferedBytes: number;
+  bufferedDurationMs: number;
+  maxBufferedDurationMs: number;
   acceptedChunks: number;
   sentChunks: number;
   rejectedChunks: number;
@@ -12,7 +14,10 @@ export interface BoundedAudioQueueOptions {
   maxChunks?: number;
   maxBytes?: number;
   maxChunkBytes?: number;
+  bytesPerSecond?: number;
+  maxBufferedDurationMs?: number;
   onRejected?: (telemetry: AudioQueueTelemetry) => void;
+  onError?: (error: Error, telemetry: AudioQueueTelemetry) => void;
 }
 
 type FlushWaiter = {
@@ -35,7 +40,10 @@ export class BoundedAudioUploadQueue {
   private readonly maxChunks: number;
   private readonly maxBytes: number;
   private readonly maxChunkBytes: number;
+  private readonly bytesPerSecond?: number;
+  private readonly maxBufferedDurationMs?: number;
   private readonly onRejected?: (telemetry: AudioQueueTelemetry) => void;
+  private readonly onError?: (error: Error, telemetry: AudioQueueTelemetry) => void;
   private readonly waiters: FlushWaiter[] = [];
   private queuedBytes = 0;
   private inFlightBytes = 0;
@@ -46,6 +54,8 @@ export class BoundedAudioUploadQueue {
     inFlightChunks: 0,
     maxQueueDepth: 0,
     maxBufferedBytes: 0,
+    bufferedDurationMs: 0,
+    maxBufferedDurationMs: 0,
     acceptedChunks: 0,
     sentChunks: 0,
     rejectedChunks: 0,
@@ -58,9 +68,18 @@ export class BoundedAudioUploadQueue {
     this.maxChunks = options.maxChunks ?? DEFAULT_MAX_CHUNKS;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.maxChunkBytes = options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+    this.bytesPerSecond = options.bytesPerSecond;
+    this.maxBufferedDurationMs = options.maxBufferedDurationMs;
     this.onRejected = options.onRejected;
+    this.onError = options.onError;
     if (this.maxChunks < 1 || this.maxBytes < 1 || this.maxChunkBytes < 1) {
       throw new Error('Audio queue limits must be positive');
+    }
+    if ((this.bytesPerSecond === undefined) !== (this.maxBufferedDurationMs === undefined)) {
+      throw new Error('Audio queue duration bounds require bytesPerSecond and maxBufferedDurationMs');
+    }
+    if ((this.bytesPerSecond ?? 1) <= 0 || (this.maxBufferedDurationMs ?? 1) <= 0) {
+      throw new Error('Audio queue duration limits must be positive');
     }
   }
 
@@ -73,6 +92,8 @@ export class BoundedAudioUploadQueue {
       || chunk.byteLength > this.maxChunkBytes
       || bufferedChunks >= this.maxChunks
       || bufferedBytes + chunk.byteLength > this.maxBytes
+      || this.bufferedDurationMs(bufferedBytes + chunk.byteLength)
+        > (this.maxBufferedDurationMs ?? Number.POSITIVE_INFINITY)
     ) {
       this.telemetry.rejectedChunks += 1;
       this.onRejected?.(this.snapshot());
@@ -118,6 +139,18 @@ export class BoundedAudioUploadQueue {
       this.telemetry.maxBufferedBytes,
       this.queuedBytes + this.inFlightBytes,
     );
+    this.telemetry.bufferedDurationMs = this.bufferedDurationMs(
+      this.queuedBytes + this.inFlightBytes,
+    );
+    this.telemetry.maxBufferedDurationMs = Math.max(
+      this.telemetry.maxBufferedDurationMs,
+      this.telemetry.bufferedDurationMs,
+    );
+  }
+
+  private bufferedDurationMs(bytes: number): number {
+    if (!this.bytesPerSecond) return 0;
+    return Math.ceil(bytes * 1000 / this.bytesPerSecond);
   }
 
   private async drain(): Promise<void> {
@@ -140,6 +173,7 @@ export class BoundedAudioUploadQueue {
       this.queuedBytes = 0;
       this.inFlightBytes = 0;
       this.updateTelemetry();
+      this.onError?.(this.terminalError, this.snapshot());
     } finally {
       this.draining = false;
       this.settleWaiters();

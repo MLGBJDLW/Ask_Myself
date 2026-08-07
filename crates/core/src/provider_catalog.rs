@@ -219,9 +219,23 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         }) {
             return Some(exact.clone());
         }
-        if provider == "qwen" {
-            return None;
+        // DeepSeek documents both the origin and its OpenAI-compatible `/v1`
+        // path. Treat only that exact path variant as the same trusted
+        // endpoint; arbitrary paths, ports, schemes, and hosts still fail.
+        if lookup_provider == "deep_seek" {
+            if let Some(exact) = presets.iter().find(|preset| {
+                preset.provider == lookup_provider
+                    && format!(
+                        "{}/v1",
+                        normalize_base_url(Some(&preset.base_url)).trim_end_matches('/')
+                    ) == normalized_base_url.trim_end_matches('/')
+            }) {
+                return Some(exact.clone());
+            }
         }
+        // A provider label never authorizes projecting a trusted catalog onto
+        // an unknown, user-edited, HTTP, or non-standard-port endpoint.
+        return None;
     }
 
     let mut provider_matches = presets

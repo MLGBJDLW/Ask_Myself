@@ -3,14 +3,14 @@ use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
-    build_desktop_agent_turn_config, build_desktop_agent_user_content_parts,
-    finalize_desktop_agent_turn, request_desktop_running_agent_stop,
-    resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
-    run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
-    DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
-    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
-    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentUserContentRequest,
-    DesktopRunningAgentStopRequest,
+    build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
+    finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
+    request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
+    run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
+    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
+    DesktopAgentSessionDependencyRequest, DesktopAgentTurnConfigRequest,
+    DesktopAgentTurnFinalization, DesktopAgentTurnRequest, DesktopAgentTurnRuntime,
+    DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest, DesktopRunningAgentStopRequest,
 };
 use nexa_core::llm::ReasoningEffort;
 use nexa_core::mixture_of_agents::{
@@ -21,6 +21,51 @@ use nexa_core::runtime::{
     ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
     RuntimeTerminalStatus, StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
 };
+use nexa_core::vision_router::VisionTurnOverride;
+
+fn normalize_turn_attachments(
+    attachments: Vec<ImageAttachment>,
+) -> Result<Vec<ImageAttachment>, String> {
+    attachments
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut attachment)| {
+            attachment.vision_analysis = None;
+            if !attachment.media_type.starts_with("image/") {
+                return Ok(attachment);
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.base64_data)
+                .map_err(|error| {
+                    format!(
+                        "Failed to decode image attachment '{}': {error}",
+                        attachment.original_name
+                    )
+                })?;
+            let computed_hash = nexa_core::vision_router::attachment_hash(&bytes);
+            if attachment
+                .attachment_hash
+                .as_deref()
+                .is_some_and(|provided| !provided.eq_ignore_ascii_case(&computed_hash))
+            {
+                return Err(format!(
+                    "Image attachment '{}' changed after preparation",
+                    attachment.original_name
+                ));
+            }
+            attachment.attachment_hash = Some(computed_hash.clone());
+            if attachment
+                .attachment_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+            {
+                attachment.attachment_id =
+                    Some(format!("attachment-{index}-{}", &computed_hash[..24]));
+            }
+            Ok(attachment)
+        })
+        .collect()
+}
 
 fn build_moa_provider(
     db: &Database,
@@ -106,9 +151,100 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub moa_preset: Option<String>,
     pub orchestration_profile: Option<String>,
     pub custom_orchestration: Option<CustomOrchestrationOptions>,
+    pub vision_turn_override: Option<VisionTurnOverride>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
     pub idempotency_key: String,
+}
+
+struct InteractionSubmissionArtifact {
+    interaction_id: String,
+    answers: InteractionAnswers,
+}
+
+fn interaction_submission_from_artifacts(
+    artifacts: Option<&serde_json::Value>,
+) -> Result<Option<InteractionSubmissionArtifact>, String> {
+    let Some(artifact) = artifacts.and_then(serde_json::Value::as_object) else {
+        return Ok(None);
+    };
+    if artifact.get("kind").and_then(serde_json::Value::as_str) != Some("questionResponse") {
+        return Ok(None);
+    }
+    let Some(interaction_id) = artifact
+        .get("interactionId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        // Version 1 question responses intentionally remain on the legacy path.
+        return Ok(None);
+    };
+    let raw_answers = artifact
+        .get("answers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Durable question response is missing its answers.".to_string())?;
+    let mut answers = InteractionAnswers::new();
+    for raw_answer in raw_answers {
+        let answer = raw_answer
+            .as_object()
+            .ok_or_else(|| "Durable question response contains an invalid answer.".to_string())?;
+        let id = answer
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Durable question response contains an answer without an id.".to_string()
+            })?;
+        let values = answer
+            .get("answers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("Durable question response `{id}` has invalid values."))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("Durable question response `{id}` must contain text."))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if answers.insert(id.to_string(), values).is_some() {
+            return Err(format!(
+                "Durable question response contains duplicate answer id `{id}`."
+            ));
+        }
+    }
+    Ok(Some(InteractionSubmissionArtifact {
+        interaction_id: interaction_id.to_string(),
+        answers,
+    }))
+}
+
+fn interaction_response_from_user_artifacts(
+    db: &Database,
+    conversation_id: &str,
+    artifacts: Option<&serde_json::Value>,
+) -> Result<Option<SubmitInteractionResponse>, String> {
+    let Some(submission) = interaction_submission_from_artifacts(artifacts)? else {
+        return Ok(None);
+    };
+    let mut request = db
+        .get_interaction_request(&submission.interaction_id)
+        .map_err(|error| error.to_string())?;
+    if request.conversation_id != conversation_id {
+        return Err("Interaction response belongs to a different conversation.".to_string());
+    }
+    if request.status == InteractionStatus::Pending {
+        request = db
+            .mark_interaction_presented(&request.interaction_id)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(Some(SubmitInteractionResponse {
+        interaction_id: submission.interaction_id,
+        resume_token: request.resume_token,
+        answers: submission.answers,
+    }))
 }
 
 #[tauri::command]
@@ -150,6 +286,7 @@ pub async fn agent_chat_cmd(
         moa_preset: Some(request.moa_preset.as_str().to_string()),
         orchestration_profile: Some(request.orchestration_profile.as_str().to_string()),
         custom_orchestration: request.custom_orchestration,
+        vision_turn_override: request.vision_turn_override,
         user_artifacts: request.user_artifacts,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
         idempotency_key: request.idempotency_key,
@@ -220,6 +357,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         moa_preset,
         orchestration_profile,
         custom_orchestration,
+        vision_turn_override,
         user_artifacts,
         task_orchestrator_run_id,
         idempotency_key,
@@ -229,6 +367,8 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let collaboration_mode = AgentCollaborationMode::from_wire(collaboration_mode.as_deref())?;
     let moa_preset = MoaPresetId::from_wire(moa_preset.as_deref())?;
     let orchestration_profile = OrchestrationProfile::from_wire(orchestration_profile.as_deref())?;
+    let attachments = normalize_turn_attachments(attachments.unwrap_or_default())?;
+    let attachments = (!attachments.is_empty()).then_some(attachments);
     let task_orchestrator_run_id = task_orchestrator_run_id
         .as_deref()
         .map(str::trim)
@@ -264,6 +404,42 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         conv.provider = db_config.provider.clone();
         conv.model = db_config.model.clone();
     }
+    let vision_attachment_hashes = attachments
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|attachment| attachment.media_type.starts_with("image/"))
+        .filter_map(|attachment| attachment.attachment_hash.clone())
+        .collect::<Vec<_>>();
+    if !vision_attachment_hashes.is_empty() {
+        let preflight_scope = nexa_core::capability_registry::RegistryScope {
+            workspace_id: conv.project_id.clone(),
+            agent_id: Some(db_config.id.clone()),
+            task_id: None,
+        };
+        let projection = state
+            .db
+            .capability_registry_projection(&preflight_scope)
+            .map_err(|error| format!("Vision policy preflight failed: {error}"))?;
+        let policy = projection
+            .capabilities
+            .iter()
+            .find(|route| route.capability_id == "vision")
+            .map(|route| {
+                nexa_core::vision_router::VisionRouterPolicy::from_binding_options(&route.options)
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        if policy.mode == nexa_core::vision_router::VisionMode::Ask
+            && vision_turn_override.is_none()
+        {
+            return Err(
+                "decision_required: choose Auto, OCR only, or Vision only before this turn is created"
+                    .to_string(),
+            );
+        }
+    }
 
     // Validate orchestrated launches before allocating their durable run.
     if let Some(run_id) = task_orchestrator_run_id.as_deref() {
@@ -296,10 +472,17 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         )?;
     }
 
+    let interaction_response = interaction_response_from_user_artifacts(
+        state.db.as_ref(),
+        &conversation_id,
+        user_artifacts.as_ref(),
+    )?;
+    let resumes_interaction = interaction_response.is_some();
+
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
     // full history read and a concurrent MAX(sort_order) race on the hot path.
-    let persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
+    let mut persisted_user_artifacts = annotate_user_artifacts_with_execution_mode(
         user_artifacts,
         execution_mode,
         power_mode,
@@ -307,6 +490,26 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         moa_preset,
         orchestration_profile,
     );
+    if let Some(turn_override) = vision_turn_override {
+        let artifacts = persisted_user_artifacts
+            .get_or_insert_with(|| serde_json::json!({ "kind": "messageContextChannels" }));
+        if let Some(map) = artifacts.as_object_mut() {
+            map.insert(
+                "visionTurnOverride".to_string(),
+                serde_json::Value::String(turn_override.as_str().to_string()),
+            );
+            map.insert(
+                "visionOverrideAttachmentHashes".to_string(),
+                serde_json::Value::Array(
+                    vision_attachment_hashes
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+    }
     let user_msg = ConversationMessage {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -329,12 +532,13 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     };
     let launch_record = state
         .db
-        .create_agent_turn_and_run(
+        .create_agent_turn_and_run_with_interaction_response(
             &user_msg,
             &task_title_from_message(&message),
             Some(&db_config.provider),
             Some(&db_config.model),
             &idempotency_key,
+            interaction_response.as_ref(),
         )
         .map_err(|e| e.to_string())?;
     if launch_record.reused {
@@ -343,14 +547,40 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_orchestrator_run_id,
         ));
     }
-    let task_run_id_for_command = launch_record.run_id.clone();
-    if let Some(run_id) = task_orchestrator_run_id.as_deref() {
+    if resumes_interaction {
+        // Validate and persist the response before touching a live session.
+        // A forged or stale response artifact must never abort unrelated work.
+        if let Some(previous) = agent_state.sessions.take(&conversation_id).await {
+            previous.cancel_token.cancel();
+            previous.task.abort();
+            let _ = previous.task.await;
+        }
+    }
+    let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
+        task_orchestrator_run_id
+    } else if resumes_interaction {
         state
             .db
-            .start_workflow_automation_run(run_id, &launch_record.run_id, None)
-            .map_err(|err| err.to_string())?;
+            .get_workflow_automation_run_for_task_run(&launch_record.run_id)
+            .map_err(|error| error.to_string())?
+            .map(|run| run.id)
+    } else {
+        None
+    };
+    let task_run_id_for_command = launch_record.run_id.clone();
+    if !resumes_interaction {
+        if let Some(run_id) = task_orchestrator_run_id.as_deref() {
+            state
+                .db
+                .start_workflow_automation_run(run_id, &launch_record.run_id, None)
+                .map_err(|err| err.to_string())?;
+        }
     }
-    let stream_event_seq = Arc::new(AgentRunEventSequencer::default());
+    let last_event_sequence = state
+        .db
+        .latest_agent_run_event_sequence(&launch_record.run_id)
+        .map_err(|error| error.to_string())?;
+    let stream_event_seq = Arc::new(AgentRunEventSequencer::new(last_event_sequence));
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,
@@ -384,6 +614,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let handle = app_handle.clone();
     let db_config_for_post_success = db_config.clone();
     let task_orchestrator_run_id_for_task = task_orchestrator_run_id.clone();
+    let resumes_interaction_for_task = resumes_interaction;
     let approval_pending = approval_state.pending.clone();
     let approval_session_store = approval_state.session_store.clone();
     let mcp_manager = Arc::clone(&mcp_state.manager);
@@ -426,14 +657,147 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
 
             let app_cfg = db.load_app_config().unwrap_or_default();
-            let provider_config = db_config_to_provider_config(&db_config, None);
-            let provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+            let registry_scope = nexa_core::capability_registry::RegistryScope {
+                workspace_id: conv.project_id.clone(),
+                agent_id: Some(db_config.id.clone()),
+                task_id: Some(task_run_id.clone()),
+            };
+            let mut effective_db_config = db_config.clone();
+            let registry_resolution = db
+                .resolve_or_pin_task_runtime_capability(
+                    &registry_scope,
+                    "text_generation",
+                    &task_run_id,
+                )
+                .map_err(|error| {
+                    format!(
+                        "Capability Registry resolution failed for run {task_run_id}; explicitly roll back the durable read mode before retrying: {error}"
+                    )
+                })?;
+            let (
+                provider_config,
+                registry_fallback_plan,
+                primary_egress_id,
+                primary_routes_local,
+                primary_native_vision_allowed,
+            ) = match registry_resolution {
+                Some(resolution) => {
+                    effective_db_config.provider = resolution.provider_id;
+                    effective_db_config.provider_endpoint_id = Some(resolution.endpoint_id);
+                    effective_db_config.base_url = resolution.provider_config.base_url.clone();
+                    effective_db_config.api_key = resolution
+                        .provider_config
+                        .api_key
+                        .clone()
+                        .unwrap_or_default();
+                    effective_db_config.model = resolution.model_id.clone();
+                    effective_db_config.model_id = Some(resolution.model_id.clone());
+                    let primary_routes_local = provider_config_is_local(&resolution.provider_config)
+                        && resolution
+                            .fallbacks
+                            .iter()
+                            .all(|fallback| provider_config_is_local(&fallback.provider_config));
+                    let primary_native_vision_allowed = resolution.fallbacks.is_empty();
+                    let mut egress_connections = vec![resolution.snapshot.connection_id.clone()];
+                    egress_connections.extend(
+                        resolution
+                            .fallbacks
+                            .iter()
+                            .map(|fallback| fallback.connection_id.clone()),
+                    );
+                    let egress_id = if egress_connections.len() == 1 {
+                        format!("registry:{}", egress_connections[0])
+                    } else {
+                        format!("registry-plan:{}", egress_connections.join("|"))
+                    };
+                    let plan = Some((
+                        resolution.snapshot.fallback_index,
+                        resolution.model_id,
+                        resolution.fallbacks,
+                    ));
+                    (
+                        resolution.provider_config,
+                        plan,
+                        egress_id,
+                        primary_routes_local,
+                        primary_native_vision_allowed,
+                    )
+                }
+                None => {
+                    let provider_config = db_config_to_provider_config(&db_config, None);
+                    let egress_id = provider_config_egress_id(&provider_config);
+                    let primary_routes_local = provider_config_is_local(&provider_config);
+                    (provider_config, None, egress_id, primary_routes_local, true)
+                }
+            };
+            let mut provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
+            if let Some((primary_fallback_index, primary_model, fallbacks)) =
+                registry_fallback_plan
+            {
+                if !fallbacks.is_empty() {
+                    let candidates = fallbacks
+                        .into_iter()
+                        .map(|fallback| {
+                            let provider_type = fallback.provider_config.provider_type;
+                            let provider = create_provider(fallback.provider_config)
+                                .map_err(|error| error.to_string())?;
+                            Ok(nexa_core::llm::fallback::AutomaticFallbackCandidate {
+                                fallback_index: fallback.fallback_index,
+                                provider,
+                                model: fallback.model_id,
+                                provider_type,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let fallback_db = Arc::clone(&db);
+                    let fallback_run_id = task_run_id.clone();
+                    let on_selected = Arc::new(move |from_index, to_index, reason: &str| {
+                        fallback_db
+                            .advance_task_runtime_fallback(
+                                &fallback_run_id,
+                                "text_generation",
+                                from_index,
+                                to_index,
+                                reason,
+                            )
+                            .map(|_| ())
+                    });
+                    provider = Box::new(
+                        nexa_core::llm::fallback::AutomaticFallbackProvider::new(
+                            primary_fallback_index,
+                            provider,
+                            primary_model,
+                            provider_config.provider_type,
+                            candidates,
+                            on_selected,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                }
+            }
             let provider = if collaboration_mode.is_moa() {
-                build_moa_provider(db.as_ref(), &db_config, provider, moa_preset)?
+                build_moa_provider(db.as_ref(), &effective_db_config, provider, moa_preset)?
             } else {
                 provider
             };
-
+            let vision_resolution = if attachments.as_ref().is_some_and(|attachments| {
+                attachments
+                    .iter()
+                    .any(|attachment| attachment.media_type.starts_with("image/"))
+            }) {
+                db.resolve_or_pin_task_runtime_capability(
+                    &registry_scope,
+                    "vision",
+                    &task_run_id,
+                )
+                .map_err(|error| {
+                    format!(
+                        "Vision capability resolution failed for run {task_run_id}: {error}"
+                    )
+                })?
+            } else {
+                None
+            };
             let history_started = Instant::now();
             let history_conversation_id = conv_id.clone();
             let projection = db_executor
@@ -475,7 +839,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     message: &message,
                     persona_id: persona_id.as_deref(),
                     explicit_skill_ids: &requested_skill_ids,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     app_cfg: &app_cfg,
                     execution_mode,
                     power_mode,
@@ -498,16 +862,18 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
             let context_pack = desktop_turn_config.context_pack;
             let mut executor_config = desktop_turn_config.executor_config;
-            let summarization_provider =
-                match resolve_desktop_summarization_provider_config(db.as_ref(), &db_config)? {
-                    Some((summary_config, _, summary_model)) => {
-                        executor_config.summarization_model = Some(summary_model);
-                        executor_config.summarization_provider_type =
-                            Some(summary_config.provider_type);
-                        Some(create_provider(summary_config).map_err(|error| error.to_string())?)
-                    }
-                    None => None,
-                };
+            let summarization_provider = match resolve_desktop_summarization_provider_config(
+                db.as_ref(),
+                &effective_db_config,
+            )? {
+                Some((summary_config, _, summary_model)) => {
+                    executor_config.summarization_model = Some(summary_model);
+                    executor_config.summarization_provider_type =
+                        Some(summary_config.provider_type);
+                    Some(create_provider(summary_config).map_err(|error| error.to_string())?)
+                }
+                None => None,
+            };
 
             let session_dependencies =
                 build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
@@ -522,8 +888,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     pinned_skill_ids: &pinned_skill_ids,
                     provider_config: provider_config.clone(),
                     executor_config: executor_config.clone(),
-                    subagent_allowed_tools: db_config.subagent_allowed_tools.clone(),
-                    subagent_allowed_skill_ids: db_config.subagent_allowed_skill_ids.clone(),
+                    subagent_allowed_tools: effective_db_config.subagent_allowed_tools.clone(),
+                    subagent_allowed_skill_ids: effective_db_config
+                        .subagent_allowed_skill_ids
+                        .clone(),
                     cancel_token: cancel_token_clone.clone(),
                     plan_mode: execution_mode.is_plan(),
                     mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,
@@ -567,7 +935,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     db: db.as_ref(),
                     conversation_id: &conv_id,
                     task_run_id: &task_run_id,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     app_cfg: &app_cfg,
                     source_scope_ids: &source_scope_ids,
                     selected_skills: &session_dependencies.selected_skills,
@@ -607,15 +975,30 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             );
 
             let attachment_started = Instant::now();
-            let user_parts =
-                build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+            let vision_content =
+                build_desktop_agent_vision_user_content(DesktopAgentVisionUserContentRequest {
                     db: &db,
                     app_handle: Some(&handle),
                     provider_config: &provider_config,
-                    db_config: &db_config,
+                    db_config: &effective_db_config,
                     message: &user_llm_content,
                     attachments: attachments.as_deref(),
-                })?;
+                    vision_resolution: vision_resolution.as_ref(),
+                    task_run_id: &task_run_id,
+                    primary_egress_id: &primary_egress_id,
+                    primary_routes_local,
+                    primary_native_vision_allowed,
+                    turn_override: vision_turn_override,
+                    cancellation: &cancel_token_clone,
+                })
+                .await?;
+            db.update_message_vision_context(
+                &user_message_id,
+                &vision_content.attachments,
+                &vision_content.llm_context_content,
+            )
+            .map_err(|error| error.to_string())?;
+            let user_parts = vision_content.parts;
             record_turn_launch_metric(
                 &db,
                 &handle,
@@ -672,6 +1055,22 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 return;
             }
         };
+        if resumes_interaction_for_task {
+            if let Err(error) = db.acknowledge_submitted_interactions_for_run(&task_run_id) {
+                finalize_desktop_agent_initialization_failure(
+                    &db,
+                    &handle,
+                    &conv_id,
+                    &task_run_id,
+                    task_orchestrator_run_id_for_task.as_deref(),
+                    &turn_id,
+                    &stream_event_seq_for_task,
+                    &terminal_emitted,
+                    &error.to_string(),
+                );
+                return;
+            }
+        }
 
         let outcome = run_desktop_agent_turn(DesktopAgentTurnRequest {
             provider,
@@ -704,6 +1103,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
         match result {
             Some(Ok(_)) => {}
+            Some(Err(CoreError::AwaitingUserInput { interaction_id })) => {
+                log::info!("Agent turn {turn_id} is waiting for interaction {interaction_id}");
+            }
             Some(Err(CoreError::Cancelled(message))) => {
                 warn!("Agent execution cancelled for conversation {conv_id}: {message}");
                 let payload = serde_json::json!({ "reason": message });
@@ -905,6 +1307,7 @@ fn desktop_agent_chat_launch(
         "queued" => AgentTurnState::Starting,
         "running" | "cancelling" => AgentTurnState::Running,
         "waiting_approval" => AgentTurnState::WaitingApproval,
+        "awaiting_user_input" => AgentTurnState::AwaitingUserInput,
         "completed" | "success" | "cached" => {
             AgentTurnState::Terminal(RuntimeTerminalStatus::Completed)
         }
@@ -1014,6 +1417,18 @@ pub async fn agent_stop_cmd(
     app_handle: AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
+    if let Some(run_id) = state
+        .db
+        .cancel_awaiting_interactions_for_conversation(&conversation_id)
+        .map_err(|error| error.to_string())?
+    {
+        if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
+            turn.cancel_token.cancel();
+        }
+        emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &run_id);
+        return Ok(());
+    }
+
     if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
         request_desktop_running_agent_stop(
             turn,

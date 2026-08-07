@@ -1138,6 +1138,34 @@ impl Database {
         })
     }
 
+    pub fn get_workflow_automation_run_for_task_run(
+        &self,
+        task_run_id: &str,
+    ) -> Result<Option<WorkflowAutomationRun>, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at
+             FROM workflow_automation_runs
+             WHERE task_run_id = ?1
+             ORDER BY datetime(created_at) DESC, id DESC
+             LIMIT 1",
+            rusqlite::params![task_run_id],
+            |row| {
+                Ok(WorkflowAutomationRun {
+                    id: row.get(0)?,
+                    automation_id: row.get(1)?,
+                    task_run_id: row.get(2)?,
+                    status: row.get(3)?,
+                    summary: row.get(4)?,
+                    created_at: row.get(5)?,
+                    finished_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(CoreError::Database)
+    }
+
     pub fn record_workflow_automation_scheduler_event(
         &self,
         automation_id: Option<&str>,

@@ -178,6 +178,18 @@
   "questionSubmit": "Отправить ответы",
   "questionYes": "Да",
   "questionNo": "Нет",
+  "decisionTrayQueue": "Решение {{current}} из {{total}}",
+  "decisionTrayReview": "Проверить ответы",
+  "decisionTrayProgress": "Вопрос {{current}} из {{total}}",
+  "decisionTrayHideAll": "Скрыть все",
+  "decisionTrayShowAll": "Показать все",
+  "decisionTrayCancelTask": "Отменить задачу",
+  "decisionTraySupplementHint": "Текст в поле ввода добавляет контекст, но не отвечает на вопрос.",
+  "decisionTrayContinue": "Продолжить",
+  "decisionTraySupplementTextOnly": "Пока ожидается решение, поле ввода принимает только дополнительный текст.",
+  "decisionTraySupplementSaved": "Дополнительный контекст добавлен",
+  "decisionTrayAskedSummary": "Агент задал {{count}} вопросов",
+  "decisionTrayWaiting": "Ожидает вас",
   "attachImage": "Прикрепить изображение",
   "insertEmoji": "Вставить эмодзи",
   "scrollToBottom": "Прокрутить вниз",
@@ -622,4 +634,18 @@
   "connectionNextAction": "Проверьте настройки провайдера и отправьте сообщение снова после восстановления соединения.",
   "toolInputRedacted": "[Скрыто]",
   "toolInputInvalid": "[Нечитаемые аргументы скрыты]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

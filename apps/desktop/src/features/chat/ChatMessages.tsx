@@ -74,7 +74,11 @@ import {
   projectChatMessageVisibility,
   projectChatStreamingVisibility,
 } from "../../lib/streaming/chatVisibility";
-import { ToolCallCard } from "../../components/chat/ToolCallCard";
+import {
+  QuestionRequestTimelineRecord,
+  ToolCallCard,
+} from "../../components/chat/ToolCallCard";
+import { extractQuestionRequest } from "../../lib/questionCards";
 import {
   FileDiffSummaryPanel,
   extractFileDiffArtifacts,
@@ -98,6 +102,7 @@ import type {
   ArtifactPayload,
   ConversationMessage,
   ConversationTurn,
+  VisionTurnOverride,
 } from "../../types/conversation";
 
 interface ChatMessagesProps {
@@ -113,7 +118,7 @@ interface ChatMessagesProps {
   taskRun?: AgentTaskRun | null;
   isStreaming: boolean;
   error?: string | null;
-  onRetry?: (messageId?: string) => void;
+  onRetry?: (messageId?: string, visionTurnOverride?: VisionTurnOverride, refreshVision?: boolean) => void;
   onDismissError?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onEditAndResend?: (messageId: string, newContent: string) => void;
@@ -639,22 +644,22 @@ function TraceSteeringRow({
   );
 }
 
-function collectAnsweredQuestionCalls(
+function collectQuestionResponses(
   value: unknown,
-  output: Set<string>,
+  output: Map<string, Record<string, unknown>>,
   depth = 0,
 ) {
   if (depth > 6 || value == null) return;
   if (Array.isArray(value)) {
-    value.forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+    value.forEach((item) => collectQuestionResponses(item, output, depth + 1));
     return;
   }
   if (typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
   if (record.kind === 'questionResponse' && typeof record.requestCallId === 'string') {
-    output.add(record.requestCallId);
+    output.set(record.requestCallId, record);
   }
-  Object.values(record).forEach((item) => collectAnsweredQuestionCalls(item, output, depth + 1));
+  Object.values(record).forEach((item) => collectQuestionResponses(item, output, depth + 1));
 }
 
 export function ChatMessages(props: ChatMessagesProps) {
@@ -706,12 +711,13 @@ export function ChatMessages(props: ChatMessagesProps) {
     () => getActiveGoalContext(messages),
     [messages],
   );
-  const answeredQuestionCalls = useMemo(() => {
-    const answered = new Set<string>();
-    messages.forEach((message) => collectAnsweredQuestionCalls(message.artifacts, answered));
-    return answered;
-  }, [messages]);
-
+  const questionResponses = useMemo(() => {
+    const responses = new Map<string, Record<string, unknown>>();
+    // Question responses are intentionally removed from the visible transcript,
+    // but their artifacts still drive the compact answered record.
+    props.messages.forEach((message) => collectQuestionResponses(message.artifacts, responses));
+    return responses;
+  }, [props.messages]);
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1057,7 +1063,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                 argsStatus={section.toolCall.argsStatus}
                 argsBytes={section.toolCall.argsBytes}
                 trace={section.trace}
-                questionAnswered={answeredQuestionCalls.has(section.toolCall.callId)}
+                questionAnswered={questionResponses.has(section.toolCall.callId)}
+                questionResponse={questionResponses.get(section.toolCall.callId)}
                 onQuestionSubmit={onQuestionSubmit}
               />
             ),
@@ -1066,7 +1073,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           return null;
       }
     },
-    [answeredQuestionCalls, onQuestionSubmit, renderTraceReplyNode, t],
+    [onQuestionSubmit, questionResponses, renderTraceReplyNode, t],
   );
 
   const renderTimelineSections = useCallback(
@@ -1079,19 +1086,84 @@ export function ChatMessages(props: ChatMessagesProps) {
 
   const renderTimelineTraceNode = useCallback(
     (key: string, sections: TimelineSection[], isStreaming = false) => {
-      const hasPendingQuestion = sections.some(
-        (section) => section.kind === 'tool'
-          && section.toolCall.toolName === 'request_user_input'
-          && !answeredQuestionCalls.has(section.toolCall.callId),
-      );
-      return renderThinkingTraceNode(
-        key,
-        renderTimelineSections(sections),
-        isStreaming,
-        hasPendingQuestion,
+      if (sections.length === 0) return <Fragment key={key} />;
+      const ordered: Array<
+        | { kind: 'trace'; id: string; sections: TimelineSection[] }
+        | {
+            kind: 'answeredQuestion';
+            id: string;
+            request: NonNullable<ReturnType<typeof extractQuestionRequest>>;
+            response: Record<string, unknown>;
+          }
+      > = [];
+      const seenQuestions = new Set<string>();
+      let traceSegment: TimelineSection[] = [];
+      const flushTrace = () => {
+        if (traceSegment.length === 0) return;
+        ordered.push({
+          kind: 'trace',
+          id: `${key}-trace-${ordered.length}`,
+          sections: traceSegment,
+        });
+        traceSegment = [];
+      };
+
+      for (const section of sections) {
+        if (section.kind !== 'tool' || section.toolCall.toolName !== 'request_user_input') {
+          traceSegment.push(section);
+          continue;
+        }
+        const response = questionResponses.get(section.toolCall.callId);
+        const request = response
+          ? extractQuestionRequest(
+              section.toolCall.callId,
+              section.toolCall.arguments,
+              section.toolCall.artifacts,
+            )
+          : null;
+        if (!request?.interactionId || !response) {
+          traceSegment.push(section);
+          continue;
+        }
+        if (seenQuestions.has(request.callId)) continue;
+        seenQuestions.add(request.callId);
+        flushTrace();
+        ordered.push({
+          kind: 'answeredQuestion',
+          id: `${key}-answered-${request.interactionId}`,
+          request,
+          response,
+        });
+      }
+      flushTrace();
+      let lastTraceIndex = -1;
+      ordered.forEach((item, index) => {
+        if (item.kind === 'trace') lastTraceIndex = index;
+      });
+
+      return (
+        <Fragment key={key}>
+          {ordered.map((item, index) => item.kind === 'trace'
+            ? renderThinkingTraceNode(
+                item.id,
+                renderTimelineSections(item.sections),
+                isStreaming && index === lastTraceIndex,
+              )
+            : (
+                <div key={item.id} className="mb-1 flex justify-start">
+                  <div className="w-full min-w-0">
+                    <QuestionRequestTimelineRecord
+                      request={item.request}
+                      answered
+                      response={item.response}
+                    />
+                  </div>
+                </div>
+              ))}
+        </Fragment>
       );
     },
-    [answeredQuestionCalls, renderThinkingTraceNode, renderTimelineSections],
+    [questionResponses, renderThinkingTraceNode, renderTimelineSections],
   );
 
   const messageThinkingText = useMemo(() => {
@@ -1546,6 +1618,15 @@ export function ChatMessages(props: ChatMessagesProps) {
     const container = scrollContainerRef.current;
     if (!container || turnNavigationItems.length === 0) return;
 
+    // Programmatic navigation to the first turn lands at the absolute top.
+    // Keep that explicit selection stable even when a compact first turn is
+    // shorter than the viewport probe used for ordinary scroll tracking.
+    if (container.scrollTop <= 1) {
+      const firstId = turnNavigationItems[0].id;
+      setActiveTurnNavigationId((current) => current === firstId ? current : firstId);
+      return;
+    }
+
     const marker = container.scrollTop + Math.min(container.clientHeight * 0.34, 220);
     let nextActive = activeTurnNavigationId ?? turnNavigationItems[0].id;
     let nextTop = Number.NEGATIVE_INFINITY;
@@ -1967,7 +2048,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     !compactCompleteVisible
   ) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">
         <div className="text-center max-w-md w-full px-4">
           <div className="p-4 rounded-2xl bg-surface-2 text-text-tertiary inline-block mb-4">
             <MessageCircle className="h-8 w-8" />
@@ -2013,7 +2094,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
   if (loadingMsgs) {
     return (
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
         <div className="flex justify-end">
           <div className="max-w-[60%] rounded-lg bg-accent-subtle px-3.5 py-2.5">
             <Skeleton className="h-4 w-48" />
@@ -2040,7 +2121,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       ref={scrollContainerRef}
       onScroll={handleScroll}
       data-chat-scroll-root="true"
-      className="flex-1 overflow-y-auto px-4 py-4 relative lg:pr-14"
+      className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:pr-14"
       role="log"
       aria-live="polite"
       aria-label={t("chat.messageArea")}
@@ -2128,6 +2209,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                     return false;
                   })()}
                   onDeleteMessage={onDeleteMessage}
+                  onRetry={onRetry}
                   onEditAndResend={onEditAndResend}
                   onApprovePlan={onApprovePlan}
                   goalStatus={

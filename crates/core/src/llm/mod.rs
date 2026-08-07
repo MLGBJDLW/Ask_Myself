@@ -10,6 +10,7 @@ use crate::provider_catalog::model_supports_vision_from_catalog;
 use crate::provider_registry::{provider_adapter_for_type, ProviderAdapterKind};
 
 pub mod anthropic;
+pub mod fallback;
 pub mod google;
 pub mod message_validation;
 pub mod ollama;
@@ -760,6 +761,13 @@ pub fn model_supports_vision(provider_type: &ProviderType, model: &str) -> bool 
     }
 }
 
+/// Strict image-input eligibility for privacy-sensitive routing. Unknown
+/// models are deliberately ineligible: heuristics may improve legacy UX, but
+/// they must never authorize sending raw image bytes to an undeclared model.
+pub fn model_declares_vision_support(provider_type: &ProviderType, model: &str) -> bool {
+    model_supports_vision_from_catalog(*provider_type, model).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,6 +807,18 @@ mod tests {
         assert!(model_supports_vision(
             &ProviderType::LmStudio,
             "local-vision-model"
+        ));
+    }
+
+    #[test]
+    fn strict_vision_eligibility_fails_closed_for_unknown_models() {
+        assert!(!model_declares_vision_support(
+            &ProviderType::OpenAi,
+            "unknown-private-text-model"
+        ));
+        assert!(model_declares_vision_support(
+            &ProviderType::OpenAi,
+            "gpt-5.5"
         ));
     }
 

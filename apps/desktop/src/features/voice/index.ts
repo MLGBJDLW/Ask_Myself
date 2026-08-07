@@ -11,7 +11,11 @@ export { useMicrophoneAnalyser } from './useMicrophoneAnalyser';
 export type { MicrophoneAnalyserError, UseMicrophoneAnalyserReturn } from './useMicrophoneAnalyser';
 export { computeWaveformBars, smoothWaveformBars, toBarHeights } from './waveform';
 export { useVoiceRecorder } from './useVoiceRecorder';
-export type { UseVoiceRecorderReturn, VoiceRecordingOptions } from './useVoiceRecorder';
+export type {
+  UseVoiceRecorderReturn,
+  VoiceCaptureState,
+  VoiceRecordingOptions,
+} from './useVoiceRecorder';
 export {
   formatRecordingDuration,
   getWhisperReadiness,
@@ -23,6 +27,8 @@ export {
 } from './voiceInputRuntime';
 export type {
   UseVoiceInputRuntimeOptions,
+  VoiceRecordingContext,
   VoiceRuntimeActionResult,
   VoiceRuntimeErrorCode,
+  VoiceTransportState,
 } from './voiceInputRuntime';

@@ -178,6 +178,18 @@
   "questionSubmit": "Enviar respuestas",
   "questionYes": "Sí",
   "questionNo": "No",
+  "decisionTrayQueue": "Decisión {{current}} de {{total}}",
+  "decisionTrayReview": "Revisar respuestas",
+  "decisionTrayProgress": "Pregunta {{current}} de {{total}}",
+  "decisionTrayHideAll": "Ocultar todo",
+  "decisionTrayShowAll": "Mostrar todo",
+  "decisionTrayCancelTask": "Cancelar tarea",
+  "decisionTraySupplementHint": "El texto del cuadro añade contexto; no responde esta pregunta.",
+  "decisionTrayContinue": "Continuar",
+  "decisionTraySupplementTextOnly": "Mientras haya una decisión pendiente, el cuadro solo acepta texto complementario.",
+  "decisionTraySupplementSaved": "Contexto adicional añadido",
+  "decisionTrayAskedSummary": "El agente hizo {{count}} preguntas",
+  "decisionTrayWaiting": "Esperando tu respuesta",
   "attachImage": "Adjuntar imagen",
   "insertEmoji": "Insertar emoji",
   "scrollToBottom": "Ir al final",
@@ -622,4 +634,18 @@
   "connectionNextAction": "Revisa la configuración del proveedor y vuelve a enviar cuando haya conexión.",
   "toolInputRedacted": "[Oculto]",
   "toolInputInvalid": "[Argumentos no válidos ocultos]"
+  ,"visionTurnTitle": "Image processing for this turn"
+  ,"visionTurnRequired": "Choose how to process the attached images before sending."
+  ,"visionTurnUseSettings": "Use settings"
+  ,"visionTurnAuto": "Auto"
+  ,"visionTurnOcr": "OCR only"
+  ,"visionTurnVision": "Vision only"
+  ,"visionObservationTitle": "Image observation"
+  ,"visionObservationInspect": "Inspect image observation"
+  ,"visionObservationReady": "Observed"
+  ,"visionObservationCached": "Cached observation"
+  ,"visionObservationUnavailable": "No structured observation is available for this route."
+  ,"visionObservationRerun": "Rerun"
+  ,"visionObservationDeleteCache": "Delete cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result"
 }

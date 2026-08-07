@@ -26,6 +26,28 @@ export type {
 export type { EmbedderConfig } from "./embedder";
 export type { OcrConfig, OcrDownloadProgress } from "./ocr";
 export type {
+  CreateMediaJobRequest,
+  DeleteMediaAssetOccurrenceRequest,
+  MediaAssetLocalRetentionPolicy,
+  MediaAssetLocalState,
+  MediaAssetRecord,
+  MediaAssetRelationRecord,
+  MediaAssetRelationType,
+  MediaAssetStorageKind,
+  MediaJobAttemptRecord,
+  MediaJobAttemptState,
+  MediaJobRecord,
+  MediaJobSnapshot,
+  MediaJobState,
+  MediaObservationMode,
+  MediaOperation,
+  MediaProviderEventRecord,
+  MediaRemoteDeletionStatus,
+  RequestMediaJobCancellation,
+  RequestMediaJobRemoteDeletion,
+  RequestMediaAssetDeletion,
+} from "./mediaGeneration";
+export type {
   BehavioralEvalCaseResult,
   BehavioralEvalReport,
   QualityEvalCaseResult,

@@ -271,13 +271,46 @@ fn main() {
                 db_executor.clone(),
                 activity_runtime,
             );
+            let media_generation = nexa_core::media_generation::MediaGenerationRuntime::with_asset_store(
+                db_executor.clone(),
+                nexa_core::media_generation::MediaGenerationAssetStore::new(
+                    data_dir.join("generation-assets"),
+                ),
+            );
+            let recovered_media_jobs =
+                tauri::async_runtime::block_on(media_generation.recover_after_restart())?;
+            if recovered_media_jobs > 0 {
+                log::info!(
+                    "Marked {recovered_media_jobs} ambiguous media submission(s) provider_unknown after restart"
+                );
+            }
+            let media_recovery_plan =
+                tauri::async_runtime::block_on(media_generation.build_recovery_plan())?;
+            if !media_recovery_plan.is_empty() {
+                log::info!(
+                    "Prepared {} durable media recovery action(s) before exposing renderer state",
+                    media_recovery_plan.len()
+                );
+            }
+            #[cfg(feature = "video")]
+            let voice_audio_spool = Arc::new(
+                nexa_core::voice_audio_spool::VoiceAudioSpool::new(
+                    data_dir.join("voice-spool"),
+                )
+                .expect("failed to initialize managed voice audio spool"),
+            );
 
             app.manage(AppState {
                 db: db.clone(),
                 db_executor,
                 context_compaction,
+                media_generation,
                 #[cfg(feature = "video")]
                 whisper_busy: Arc::new(AtomicBool::new(false)),
+                #[cfg(feature = "video")]
+                voice_audio_spool,
+                #[cfg(feature = "video")]
+                voice_spool_append_permits: Arc::new(tokio::sync::Semaphore::new(4)),
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
             });
             app.manage(AgentState {
@@ -399,6 +432,17 @@ fn main() {
             commands::list_archived_conversations_cmd,
             commands::get_conversation_cmd,
             commands::get_conversation_turns_cmd,
+            commands::list_interaction_requests_cmd,
+            commands::get_interaction_request_cmd,
+            commands::mark_interaction_presented_cmd,
+            commands::mark_interaction_partially_answered_cmd,
+            commands::append_interaction_supplement_cmd,
+            commands::submit_interaction_response_cmd,
+            commands::get_interaction_response_cmd,
+            commands::acknowledge_interaction_cmd,
+            commands::cancel_interaction_cmd,
+            commands::supersede_interaction_cmd,
+            commands::fail_interaction_cmd,
             commands::get_agent_task_runs_cmd,
             commands::list_recent_agent_task_runs_cmd,
             commands::list_agent_task_run_summaries_cmd,
@@ -444,6 +488,16 @@ fn main() {
             commands::start_context_compaction_cmd,
             commands::observe_context_compaction_cmd,
             commands::cancel_context_compaction_cmd,
+            // Durable media generation jobs
+            commands::create_media_generation_job_cmd,
+            commands::list_video_generation_capabilities_cmd,
+            commands::get_media_generation_job_cmd,
+            commands::list_recoverable_media_generation_jobs_cmd,
+            commands::list_media_generation_provider_events_cmd,
+            commands::request_media_generation_cancellation_cmd,
+            commands::request_media_generation_remote_deletion_cmd,
+            commands::delete_media_generation_asset_occurrence_cmd,
+            commands::delete_media_generation_asset_cmd,
             commands::search_conversations_cmd,
             // Conversation checkpoints
             commands::list_checkpoints_cmd,
@@ -470,6 +524,16 @@ fn main() {
             commands::save_agent_config_cmd,
             commands::delete_agent_config_cmd,
             commands::set_default_agent_config_cmd,
+            commands::get_settings_schema_state_v2_cmd,
+            commands::list_settings_profiles_v2_cmd,
+            commands::save_settings_profile_v2_cmd,
+            commands::save_capability_binding_v2_cmd,
+            commands::delete_vision_observation_cache_cmd,
+            commands::clear_vision_observation_cache_cmd,
+            commands::migrate_settings_schema_v2_cmd,
+            commands::rollback_settings_schema_v2_cmd,
+            commands::get_capability_registry_projection_cmd,
+            commands::set_capability_registry_read_mode_cmd,
             commands::test_agent_connection_cmd,
             commands::refresh_provider_model_catalog_cmd,
             commands::list_provider_presets_cmd,
@@ -566,7 +630,17 @@ fn main() {
             #[cfg(feature = "video")]
             commands::delete_whisper_model_cmd,
             #[cfg(feature = "video")]
-            commands::transcribe_audio_buffer_cmd,
+            commands::start_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::append_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::finish_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::list_voice_audio_spools_cmd,
+            #[cfg(feature = "video")]
+            commands::transcribe_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::cancel_voice_audio_spool_cmd,
             commands::start_realtime_transcription_cmd,
             commands::append_realtime_transcription_audio_cmd,
             commands::finish_realtime_transcription_cmd,

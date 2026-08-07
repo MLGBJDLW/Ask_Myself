@@ -5,6 +5,7 @@ import {
   Brain,
   CheckCircle2,
   Circle,
+  CircleHelp,
   ClipboardList,
   ExternalLink,
   FileText,
@@ -77,6 +78,7 @@ const COPY_KEYS = {
   running: 'taskCenter.running',
   queued: 'taskCenter.queued',
   waitingApproval: 'taskCenter.waitingApproval',
+  waitingUser: 'taskCenter.waitingUser',
   cancelling: 'taskCenter.cancelling',
   paused: 'taskCenter.paused',
   cancelled: 'taskCenter.cancelled',
@@ -172,6 +174,8 @@ function statusLabel(status: string, copy: Copy) {
       return copy.running;
     case 'waiting_approval':
       return copy.waitingApproval;
+    case 'awaiting_user_input':
+      return copy.waitingUser;
     case 'cancelling':
       return copy.cancelling;
     case 'paused':
@@ -194,6 +198,7 @@ function statusTone(status: string) {
     case 'running':
     case 'queued':
     case 'waiting_approval':
+    case 'awaiting_user_input':
       return 'border-accent/25 bg-accent/10 text-accent';
     case 'completed':
       return 'border-success/25 bg-success/10 text-success';
@@ -213,6 +218,7 @@ function statusIcon(status: string) {
   if (status === 'running' || status === 'queued' || status === 'waiting_approval') {
     return <Loader2 className="h-3.5 w-3.5 animate-spin" />;
   }
+  if (status === 'awaiting_user_input') return <CircleHelp className="h-3.5 w-3.5" />;
   if (status === 'completed') return <CheckCircle2 className="h-3.5 w-3.5" />;
   if (status === 'failed' || status === 'timed_out') return <XCircle className="h-3.5 w-3.5" />;
   if (status === 'paused') return <Pause className="h-3.5 w-3.5" />;
@@ -221,7 +227,7 @@ function statusIcon(status: string) {
 }
 
 function isActiveTask(status: string) {
-  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(status);
+  return ['queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling'].includes(status);
 }
 
 function TaskElapsed({ run }: { run: AgentTaskRunListItem['run'] }) {
@@ -597,7 +603,7 @@ export function TaskCenterPage() {
   }, [copy.stopError, copy.stopped, load, selected]);
 
   const handlePause = useCallback(async () => {
-    if (!selected || !isActiveTask(selected.run.status)) return;
+    if (!selected || !isActiveTask(selected.run.status) || selected.run.status === 'awaiting_user_input') return;
     setPausingId(selected.run.id);
     try {
       const checkpoint = await api.pauseAgentTaskRun(selected.run.id);
@@ -946,7 +952,7 @@ export function TaskCenterPage() {
                       <RotateCcw className="h-4 w-4" />
                       {copy.retry}
                     </button>
-                    {isActiveTask(selected.run.status) && (
+                    {isActiveTask(selected.run.status) && selected.run.status !== 'awaiting_user_input' && (
                       <button
                         type="button"
                         onClick={() => void handlePause()}

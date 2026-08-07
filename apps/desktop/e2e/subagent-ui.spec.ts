@@ -128,6 +128,33 @@ test.beforeEach(async ({ page }) => {
           return { completed: true };
         case 'list_agent_configs_cmd':
           return [clone(defaultAgentConfig)];
+        case 'get_capability_registry_projection_cmd':
+          return {
+            schemaVersion: 1,
+            settingsRevisions: [],
+            connections: [],
+            modelDefinitions: [],
+            modelTargets: [],
+            capabilities: [{
+              bindingId: 'binding:subagent',
+              bindingRevision: 1,
+              capabilityId: 'text_generation',
+              source: { kind: 'agent', id: 'cfg-subagent' },
+              sourceRevision: 1,
+              primary: null,
+              fallbacks: [],
+              fallbackMode: 'disabled',
+              constraints: {
+                requireSameConnection: true,
+                allowCrossProvider: false,
+                allowCrossRegion: false,
+                requiresStreaming: false,
+                allowedRegions: [],
+                dataClasses: [],
+              },
+            }],
+            activations: [],
+          };
         case 'get_model_context_window':
           return 1047576;
         case 'list_conversations_cmd':
@@ -486,7 +513,9 @@ test('shows subagent cards in chat and tool permissions in settings', async ({ p
 
   await page.goto('/settings');
   await page.getByRole('button', { name: 'AI Providers' }).click();
-  await expect(page.getByText(/subagents \d+/)).toBeVisible();
+  await expect(page.getByTestId('registry-capabilities')).toContainText('Agent Capabilities');
+  await expect(page.getByTestId('registry-permissions-owner')).toContainText('Permissions');
+  await expect(page.getByText(/subagents \d+/)).toHaveCount(0);
   await page.getByRole('button', { name: 'Add Provider' }).click();
   await page.getByRole('button', { name: 'Custom / Manual' }).click();
   await page.getByRole('button', { name: /Advanced Settings/ }).click();

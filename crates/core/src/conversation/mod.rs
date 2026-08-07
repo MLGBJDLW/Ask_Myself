@@ -8,12 +8,13 @@ pub use goal::{ConversationGoal, ConversationGoalStatus};
 
 use std::collections::{BTreeSet, HashSet};
 
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::CoreError;
+use crate::interaction::SubmitInteractionResponse;
 use crate::llm::{Role, ToolCallRequest};
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,12 @@ pub struct ImageAttachment {
     pub base64_data: String,
     pub media_type: String,
     pub original_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_analysis: Option<crate::vision_router::VisionAttachmentAnalysis>,
 }
 
 /// A single message within a conversation.
@@ -1522,6 +1529,28 @@ impl Database {
         model: Option<&str>,
         idempotency_key: &str,
     ) -> Result<AgentTurnLaunchRecord, CoreError> {
+        self.create_agent_turn_and_run_with_interaction_response(
+            message,
+            title,
+            provider,
+            model,
+            idempotency_key,
+            None,
+        )
+    }
+
+    /// Atomically consumes an optional interaction response with turn launch.
+    /// A launch rollback therefore leaves its one-shot response available for
+    /// a safe retry, and an idempotent launch retry does not consume it twice.
+    pub fn create_agent_turn_and_run_with_interaction_response(
+        &self,
+        message: &ConversationMessage,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        idempotency_key: &str,
+        interaction_response: Option<&SubmitInteractionResponse>,
+    ) -> Result<AgentTurnLaunchRecord, CoreError> {
         let idempotency_key = idempotency_key.trim();
         if idempotency_key.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -1537,6 +1566,20 @@ impl Database {
             return Err(CoreError::InvalidInput(
                 "Agent turn conversation id cannot be empty".to_string(),
             ));
+        }
+
+        // A durable interaction response resumes the exact turn/run that
+        // created the request. It must never allocate a second user-facing
+        // turn, even though the response is represented by a hidden user
+        // transcript message for provider context reconstruction.
+        if let Some(response) = interaction_response {
+            return self.resume_agent_turn_with_interaction_response(
+                message,
+                provider,
+                model,
+                idempotency_key,
+                response,
+            );
         }
 
         let role = role_to_str(&message.role);
@@ -1560,7 +1603,7 @@ impl Database {
         let turn_id = new_id();
         let run_id = new_id();
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let existing = tx
             .query_row(
@@ -2046,7 +2089,7 @@ impl Database {
             "SELECT EXISTS(
                  SELECT 1 FROM agent_task_runs
                  WHERE conversation_id = ?1
-                   AND status IN ('queued', 'running', 'waiting_approval', 'cancelling')
+                   AND status IN ('queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling')
              )",
             rusqlite::params![conversation_id],
             |row| row.get(0),
@@ -2918,6 +2961,65 @@ impl Database {
         Ok(())
     }
 
+    /// Atomically persist the image-analysis projection and the secret-free
+    /// text replayed to future model turns.
+    pub fn update_message_vision_context(
+        &self,
+        message_id: &str,
+        attachments: &[ImageAttachment],
+        llm_context_content: &str,
+    ) -> Result<(), CoreError> {
+        let mut conn = self.conn();
+        let transaction = conn.transaction()?;
+        let (conversation_id, artifacts_json): (String, Option<String>) = transaction
+            .query_row(
+                "SELECT conversation_id, artifacts_json FROM messages WHERE id = ?1",
+                rusqlite::params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("Message {message_id}")))?;
+        let mut artifacts = match artifacts_json {
+            Some(json) => serde_json::from_str::<serde_json::Value>(&json)?,
+            None => serde_json::json!({}),
+        };
+        if !artifacts.is_object() {
+            artifacts = serde_json::json!({
+                "kind": "messageContextChannels",
+                "displayArtifacts": artifacts,
+            });
+        }
+        let map = artifacts.as_object_mut().ok_or_else(|| {
+            CoreError::Internal("Message artifacts must be an object".to_string())
+        })?;
+        map.insert(
+            LLM_CONTEXT_CONTENT_ARTIFACT_KEY.to_string(),
+            serde_json::Value::String(llm_context_content.to_string()),
+        );
+        map.insert(
+            "llmContextVersion".to_string(),
+            serde_json::Value::Number(1.into()),
+        );
+        let artifacts_json = serde_json::to_string(&artifacts)?;
+        let attachments_json = if attachments.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(attachments)?)
+        };
+        let affected = transaction.execute(
+            "UPDATE messages
+             SET artifacts_json = ?2, image_attachments_json = ?3
+             WHERE id = ?1",
+            rusqlite::params![message_id, artifacts_json, attachments_json],
+        )?;
+        if affected != 1 {
+            return Err(CoreError::NotFound(format!("Message {message_id}")));
+        }
+        invalidate_context_projection(&transaction, &conversation_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Get all messages for a conversation, ordered by `sort_order` ASC.
     pub fn get_messages(
         &self,
@@ -3006,7 +3108,7 @@ impl Database {
     }
 }
 
-fn invalidate_context_projection(
+pub(crate) fn invalidate_context_projection(
     conn: &rusqlite::Connection,
     conversation_id: &str,
 ) -> Result<(), CoreError> {
@@ -3537,8 +3639,9 @@ impl Database {
             .map_err(|error| {
                 CoreError::InvalidInput(format!("Invalid delegation limits v2: {error}"))
             })?;
-        let conn = self.conn();
-        conn.execute(
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
              ON CONFLICT(id) DO UPDATE SET
@@ -3599,6 +3702,9 @@ impl Database {
                 &delegation_limits_v2_json,
             ],
         )?;
+        crate::settings_schema_v2::sync_legacy_agent_config_in_transaction(&transaction, &id)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
         drop(conn);
         self.get_agent_config(&id)
     }
@@ -3714,22 +3820,27 @@ impl Database {
 
     /// Delete an agent config by id.
     pub fn delete_agent_config(&self, id: &str) -> Result<(), CoreError> {
-        let conn = self.conn();
-        let affected = conn.execute(
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
             "DELETE FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("AgentConfig {id}")));
         }
+        crate::settings_schema_v2::remove_legacy_agent_config_projection(&transaction, id)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 
     /// Set one config as default (clears all others).
     pub fn set_default_agent_config(&self, id: &str) -> Result<(), CoreError> {
-        let conn = self.conn();
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Verify it exists first.
-        let exists: bool = conn.query_row(
+        let exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_configs WHERE id = ?1)",
             rusqlite::params![id],
             |row| row.get(0),
@@ -3737,11 +3848,14 @@ impl Database {
         if !exists {
             return Err(CoreError::NotFound(format!("AgentConfig {id}")));
         }
-        conn.execute("UPDATE agent_configs SET is_default = 0", [])?;
-        conn.execute(
+        transaction.execute("UPDATE agent_configs SET is_default = 0", [])?;
+        transaction.execute(
             "UPDATE agent_configs SET is_default = 1 WHERE id = ?1",
             rusqlite::params![id],
         )?;
+        crate::settings_schema_v2::sync_all_legacy_agent_configs_in_transaction(&transaction)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 

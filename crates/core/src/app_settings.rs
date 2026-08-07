@@ -811,21 +811,26 @@ impl Database {
 
     pub fn save_app_config(&self, config: &AppConfig) -> Result<(), CoreError> {
         let json = serde_json::to_string(&encrypt_app_config_secrets(config.clone())?)?;
-        let conn = self.conn();
-        conn.execute_batch(
+        let mut conn = self.conn();
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_config (
                  key TEXT PRIMARY KEY NOT NULL,
                  value TEXT NOT NULL,
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              )",
         )?;
-        conn.execute(
+        transaction.execute(
             "INSERT INTO app_config (key, value, updated_at)
              VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(key) DO UPDATE SET value = excluded.value,
                                             updated_at = excluded.updated_at",
             params![APP_CONFIG_KEY, &json],
         )?;
+        crate::settings_schema_v2::sync_legacy_app_config_in_transaction(&transaction)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 

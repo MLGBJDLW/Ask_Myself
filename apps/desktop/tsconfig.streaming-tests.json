@@ -15,6 +15,7 @@
     "src/lib/chatAttachments.ts",
     "src/lib/boundedConversationCache.ts",
     "src/lib/localStorageMigrations.ts",
+    "src/lib/interactionStore.ts",
     "src/lib/slashCommands.ts",
     "src/lib/workflowRecorder.ts",
     "src/lib/streaming/**/*.ts",

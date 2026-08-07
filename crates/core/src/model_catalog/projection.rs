@@ -275,18 +275,29 @@ fn project_model(
     descriptor.product_readiness = readiness(model, &descriptor);
     descriptor.input_modalities = input_modalities(surface, model);
     descriptor.output_modalities = output_modalities(surface, model);
-    descriptor.capabilities = capabilities(surface, api_style, model);
+    descriptor.capabilities = capabilities(surface, api_style, preset, model);
     descriptor.limits = limits(surface, preset, model);
     Ok(descriptor)
 }
 
-fn capabilities(surface: CatalogSurface, api_style: &str, model: &Value) -> ModelCapabilities {
+fn capabilities(
+    surface: CatalogSurface,
+    api_style: &str,
+    preset: &Value,
+    model: &Value,
+) -> ModelCapabilities {
     let raw = model.get("capabilities").cloned().unwrap_or(Value::Null);
+    let provider_raw = preset.get("capabilities").cloned().unwrap_or(Value::Null);
     let reasoning = raw
         .get("reasoning")
         .cloned()
         .and_then(|value| serde_json::from_value::<ReasoningCapability>(value).ok());
-    let bool_value = |field: &str| raw.get(field).and_then(Value::as_bool).unwrap_or(false);
+    let bool_value = |field: &str| {
+        raw.get(field)
+            .and_then(Value::as_bool)
+            .or_else(|| provider_raw.get(field).and_then(Value::as_bool))
+            .unwrap_or(false)
+    };
     let supports_tools = model
         .get("supportsTools")
         .and_then(Value::as_bool)
@@ -624,4 +635,29 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_capabilities_inherit_provider_defaults_but_keep_explicit_false() {
+        let preset = serde_json::json!({ "capabilities": { "vision": true } });
+        let inherited = capabilities(
+            CatalogSurface::Text,
+            "openai",
+            &preset,
+            &serde_json::json!({}),
+        );
+        assert!(inherited.vision);
+
+        let denied = capabilities(
+            CatalogSurface::Text,
+            "openai",
+            &preset,
+            &serde_json::json!({ "capabilities": { "vision": false } }),
+        );
+        assert!(!denied.vision);
+    }
 }

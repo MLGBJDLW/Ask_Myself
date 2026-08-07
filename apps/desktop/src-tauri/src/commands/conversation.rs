@@ -207,6 +207,132 @@ pub async fn get_conversation_turns_cmd(
 }
 
 #[tauri::command]
+pub async fn list_interaction_requests_cmd(
+    state: tauri::State<'_, AppState>,
+    conversation_id: Option<String>,
+    include_terminal: Option<bool>,
+) -> Result<Vec<InteractionRequest>, String> {
+    state
+        .db
+        .list_interaction_requests(
+            conversation_id.as_deref(),
+            include_terminal.unwrap_or(false),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_interaction_request_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .get_interaction_request(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mark_interaction_presented_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .mark_interaction_presented(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mark_interaction_partially_answered_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .mark_interaction_partially_answered(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn append_interaction_supplement_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+    content: String,
+) -> Result<ConversationMessage, String> {
+    state
+        .db
+        .append_interaction_supplement(&interaction_id, &content)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_interaction_response_cmd(
+    state: tauri::State<'_, AppState>,
+    input: SubmitInteractionResponse,
+) -> Result<InteractionResponse, String> {
+    state
+        .db
+        .submit_interaction_response(&input)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_interaction_response_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionResponse, String> {
+    state
+        .db
+        .get_interaction_response(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn acknowledge_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .acknowledge_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .cancel_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn supersede_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .supersede_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn fail_interaction_cmd(
+    state: tauri::State<'_, AppState>,
+    interaction_id: String,
+) -> Result<InteractionRequest, String> {
+    state
+        .db
+        .fail_interaction(&interaction_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent_task_runs_cmd(
     state: tauri::State<'_, AppState>,
     conversation_id: String,
@@ -1336,6 +1462,123 @@ pub async fn set_default_agent_config_cmd(
         .db
         .set_default_agent_config(&id)
         .map_err(|e| e.to_string())
+}
+
+// Settings Schema V2 remains compatible with AgentConfig during PR 8. These
+// commands expose migration state and explicit rollback without coupling the
+// future Settings UI to the legacy provider form.
+
+#[tauri::command]
+pub async fn get_settings_schema_state_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<SettingsSchemaStateV2, String> {
+    state
+        .db
+        .settings_schema_state_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_settings_profiles_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SettingsProfileV2>, String> {
+    state
+        .db
+        .list_settings_profiles_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_settings_profile_v2_cmd(
+    state: tauri::State<'_, AppState>,
+    profile: SettingsProfileV2,
+    expected_revision: Option<u64>,
+) -> Result<SettingsProfileV2, String> {
+    state
+        .db
+        .save_settings_profile_v2(&profile, expected_revision)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_capability_binding_v2_cmd(
+    state: tauri::State<'_, AppState>,
+    scope: SettingsScopeV2,
+    capability_id: String,
+    binding: CapabilityBindingV2,
+    expected_profile_revision: u64,
+) -> Result<SettingsProfileV2, String> {
+    state
+        .db
+        .save_capability_binding_v2(&scope, &capability_id, &binding, expected_profile_revision)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_vision_observation_cache_cmd(
+    state: tauri::State<'_, AppState>,
+    attachment_hash: String,
+    profile_hash: Option<String>,
+) -> Result<usize, String> {
+    state
+        .db
+        .delete_vision_observation_cache(&attachment_hash, profile_hash.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_vision_observation_cache_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    state
+        .db
+        .clear_vision_observation_cache()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn migrate_settings_schema_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<SettingsMigrationReportV2, String> {
+    state
+        .db
+        .migrate_settings_schema_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn rollback_settings_schema_v2_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    state
+        .db
+        .rollback_settings_schema_v2()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_capability_registry_projection_cmd(
+    state: tauri::State<'_, AppState>,
+    scope: RegistryScope,
+) -> Result<CapabilityRegistryProjection, String> {
+    state
+        .db
+        .capability_registry_projection(&scope)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_capability_registry_read_mode_cmd(
+    state: tauri::State<'_, AppState>,
+    capability_id: String,
+    scope: SettingsScopeV2,
+    mode: RegistryReadMode,
+    expected_revision: u64,
+) -> Result<RegistryActivationRecord, String> {
+    state
+        .db
+        .set_registry_read_mode(&capability_id, &scope, mode, expected_revision)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -1,9 +1,10 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Archive,
   ArchiveRestore,
   Check,
+  CircleHelp,
   ChevronLeft,
   FolderInput,
   Loader2,
@@ -31,6 +32,7 @@ import * as api from '../../lib/api';
 import { ProjectIcon } from '../../lib/projectIcons';
 import { undoableAction } from '../../lib/undoToast';
 import { formatUserError } from '../../lib/userError';
+import { interactionStore } from '../../lib/interactionStore';
 
 import type { Conversation } from '../../types/conversation';
 
@@ -154,6 +156,7 @@ function ConversationItem({
   conv,
   isActive,
   isRunning,
+  hasPendingQuestion,
   isPinned,
   isSelectMode,
   isSelected,
@@ -170,6 +173,7 @@ function ConversationItem({
   conv: Conversation;
   isActive: boolean;
   isRunning: boolean;
+  hasPendingQuestion: boolean;
   isPinned: boolean;
   isSelectMode: boolean;
   isSelected: boolean;
@@ -301,7 +305,18 @@ function ConversationItem({
         )}
       </div>
 
-      {isRunning && !isSelectMode && !editing && (
+      {hasPendingQuestion && !isSelectMode && !editing && (
+        <span
+          data-testid={`conversation-question-${conv.id}`}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-accent/30 bg-accent/12 text-accent"
+          title={t('chat.decisionTrayWaiting')}
+          aria-label={t('chat.decisionTrayWaiting')}
+        >
+          <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+        </span>
+      )}
+
+      {isRunning && !hasPendingQuestion && !isSelectMode && !editing && (
         <span
           data-testid={`conversation-running-${conv.id}`}
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent"
@@ -420,6 +435,15 @@ export function ChatSidebar({
   onConversationMoved,
 }: ChatSidebarProps) {
   const { t } = useTranslation();
+  const interactionState = useSyncExternalStore(
+    interactionStore.subscribe,
+    interactionStore.getState,
+    interactionStore.getState,
+  );
+  const pendingQuestionConversationIds = useMemo(
+    () => new Set(interactionStore.queue().map((request) => request.conversationId)),
+    [interactionState],
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(getPinnedIds);
   const { activeProjectId, setProject } = useActiveProject();
@@ -950,6 +974,7 @@ export function ChatSidebar({
                         conv={conv}
                         isActive={conv.id === activeId}
                         isRunning={runningConversationIds.has(conv.id)}
+                        hasPendingQuestion={pendingQuestionConversationIds.has(conv.id)}
                         isPinned={pinnedIds.has(conv.id)}
                         isSelectMode={selectMode}
                         isSelected={selectedIds.has(conv.id)}

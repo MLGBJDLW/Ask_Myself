@@ -1955,6 +1955,36 @@ test('restoreFromRunEvents closes a stale cancelling task after app restart', ()
   streamStore.clearStream(conversationId);
 });
 
+test('awaiting-user-input status settles live streaming without a terminal error', () => {
+  const conversationId = 'conversation-awaiting-user-input';
+  streamStore.startStream(conversationId);
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'thinking',
+    phase: 'responding',
+    label: 'Thinking',
+    payload: { content: 'Need a decision.' },
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'awaiting_user_input',
+    label: 'Waiting for your input',
+    status: 'awaiting_user_input',
+    payload: { content: 'Waiting for your input' },
+  })));
+
+  const awaiting = streamStore.getStream(conversationId);
+  assert(awaiting, 'awaiting stream state should exist');
+  assertEqual(awaiting.isStreaming, false, 'awaiting input should settle streaming');
+  assertEqual(awaiting.isThinking, false, 'awaiting input should settle thinking');
+  assertEqual(awaiting.error, null, 'awaiting input should not surface an error');
+  assert(awaiting.turnTiming?.finishedAtEpochMs, 'awaiting input should freeze turn timing');
+
+  streamStore.clearStream(conversationId);
+});
+
 test('dispatches canonical terminal errors without an active stream state', () => {
   const conversationId = 'conversation-no-state-terminal';
 
@@ -2143,6 +2173,47 @@ test('live ordering ignores duplicate and late events while marking gaps', () =>
     'gap bookkeeping should not be rendered in the timeline',
   );
 
+  streamStore.clearStream(conversationId);
+});
+
+test('a newer launch status reopens a stream settled by awaiting user input', () => {
+  const conversationId = 'conversation-fast-interaction-resume';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'awaiting_user_input',
+    status: 'awaiting_user_input',
+    label: 'Waiting for your response',
+  })));
+  assertEqual(
+    streamStore.getStream(conversationId)?.isStreaming,
+    false,
+    'awaiting status settles the suspended stream',
+  );
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'routing',
+    status: 'running',
+    label: 'Agent started',
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 3,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'resumed-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Continued',
+    },
+  })));
+
+  const resumed = streamStore.getStream(conversationId);
+  assert(resumed, 'resumed stream state should exist');
+  assertEqual(resumed.isStreaming, true, 'new running status reopens the continuation');
+  assertEqual(resumed.streamText, 'Continued', 'resumed nonterminal events are accepted');
   streamStore.clearStream(conversationId);
 });
 

@@ -27,6 +27,7 @@ use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
     ToolPermissionKey,
 };
+use nexa_core::capability_registry::RuntimeCapabilityResolution;
 use nexa_core::context_pack::{
     ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
     ContextTrustLevel,
@@ -38,8 +39,8 @@ use nexa_core::conversation::{
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
 use nexa_core::llm::{
-    create_provider, model_supports_vision, ContentPart, LlmProvider, Message, ProviderConfig,
-    ProviderType, ReasoningEffort, Role,
+    create_provider, model_declares_vision_support, model_supports_vision, ContentPart,
+    LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role,
 };
 use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
@@ -53,6 +54,13 @@ use nexa_core::quality_profile::{
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
+use nexa_core::vision_router::{
+    attachment_hash, classify_vision_route, execute_vision_observation, observation_prompt_text,
+    VisionAttachmentAnalysis, VisionAttachmentStatus, VisionClassificationInput,
+    VisionExecutionInput, VisionOcrProfile, VisionProfileV1, VisionProviderInput,
+    VisionRouterPolicy, VisionTargetProfile, VisionTurnOverride, VISION_CLASSIFIER_VERSION,
+    VISION_OBSERVATION_SCHEMA_VERSION,
+};
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
@@ -162,6 +170,40 @@ pub struct DesktopAgentUserContentRequest<'a> {
     pub db_config: &'a DbAgentConfig,
     pub message: &'a str,
     pub attachments: Option<&'a [ImageAttachment]>,
+}
+
+pub struct DesktopAgentVisionUserContentRequest<'a> {
+    pub db: &'a Database,
+    pub app_handle: Option<&'a AppHandle>,
+    pub provider_config: &'a ProviderConfig,
+    pub db_config: &'a DbAgentConfig,
+    pub message: &'a str,
+    pub attachments: Option<&'a [ImageAttachment]>,
+    pub vision_resolution: Option<&'a RuntimeCapabilityResolution>,
+    pub task_run_id: &'a str,
+    pub primary_egress_id: &'a str,
+    pub primary_routes_local: bool,
+    pub primary_native_vision_allowed: bool,
+    pub turn_override: Option<VisionTurnOverride>,
+    pub cancellation: &'a CancellationToken,
+}
+
+pub struct DesktopAgentVisionUserContentResult {
+    pub parts: Vec<ContentPart>,
+    pub attachments: Vec<ImageAttachment>,
+    pub llm_context_content: String,
+}
+
+struct DesktopVisionProviderRoute {
+    fallback_index: usize,
+    target_id: String,
+    target_revision: u64,
+    provider_id: String,
+    egress_id: String,
+    model_id: String,
+    local: bool,
+    provider_type: ProviderType,
+    provider: Box<dyn LlmProvider>,
 }
 
 pub struct DesktopAgentPostSuccessLearningRequest {
@@ -338,6 +380,9 @@ pub fn request_desktop_running_agent_stop(
     let task_orchestrator_run_id = task_state.orchestrator_run_id.clone();
     let turn_id = task_state.handle.turn_id.clone();
     let stream_event_seq = Arc::clone(&task_state.event_sequencer);
+    if let Err(error) = db.cancel_interactions_for_stopped_run(&task_run_id) {
+        warn!("Failed to cancel interactions for stopped run {task_run_id}: {error}");
+    }
     let _ = db.update_agent_task_run_progress(
         &task_run_id,
         Some("cancelling"),
@@ -965,6 +1010,411 @@ pub fn build_desktop_agent_user_content_parts(
     }
 
     Ok(user_parts)
+}
+
+pub async fn build_desktop_agent_vision_user_content(
+    request: DesktopAgentVisionUserContentRequest<'_>,
+) -> Result<DesktopAgentVisionUserContentResult, String> {
+    let DesktopAgentVisionUserContentRequest {
+        db,
+        app_handle,
+        provider_config,
+        db_config,
+        message,
+        attachments,
+        vision_resolution,
+        task_run_id,
+        primary_egress_id,
+        primary_routes_local,
+        primary_native_vision_allowed,
+        turn_override,
+        cancellation,
+    } = request;
+    let mut parts = vec![ContentPart::Text {
+        text: message.to_string(),
+    }];
+    let Some(input_attachments) = attachments else {
+        return Ok(DesktopAgentVisionUserContentResult {
+            parts,
+            attachments: Vec::new(),
+            llm_context_content: message.to_string(),
+        });
+    };
+    let policy = vision_resolution
+        .map(|resolution| VisionRouterPolicy::from_binding_options(&resolution.snapshot.options))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let ocr_config = db.load_ocr_config().unwrap_or_default();
+    let primary_supports_vision = primary_native_vision_allowed
+        && model_declares_vision_support(&provider_config.provider_type, &db_config.model);
+    let primary_is_local = primary_routes_local;
+    let auxiliary_is_local = vision_resolution
+        .is_some_and(|resolution| provider_config_is_local(&resolution.provider_config));
+    let mut persisted_attachments = Vec::with_capacity(input_attachments.len());
+    let mut llm_context_fragments = vec![message.to_string()];
+    let mut non_image_attachments = Vec::new();
+    let mut provider_routes: Option<Vec<DesktopVisionProviderRoute>> = None;
+    let mut selected_fallback_index = vision_resolution
+        .map(|resolution| resolution.snapshot.fallback_index)
+        .unwrap_or_default();
+
+    for original in input_attachments {
+        if !original.media_type.starts_with("image/") {
+            let mut attachment = original.clone();
+            attachment.vision_analysis = None;
+            non_image_attachments.push(attachment.clone());
+            persisted_attachments.push(attachment);
+            continue;
+        }
+        if cancellation.is_cancelled() {
+            return Err("Agent execution cancelled during image understanding".to_string());
+        }
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&original.base64_data)
+            .map_err(|error| format!("Failed to decode image: {error}"))?;
+        if image_bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "Image attachment '{}' exceeds the {} byte limit",
+                original.original_name, MAX_ATTACHMENT_BYTES
+            ));
+        }
+        let computed_hash = attachment_hash(&image_bytes);
+        if original
+            .attachment_hash
+            .as_deref()
+            .is_some_and(|provided| !provided.eq_ignore_ascii_case(&computed_hash))
+        {
+            return Err(format!(
+                "Image attachment '{}' changed after preparation",
+                original.original_name
+            ));
+        }
+        let attachment_id = original
+            .attachment_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let decision = classify_vision_route(VisionClassificationInput {
+            original_name: &original.original_name,
+            mime_type: &original.media_type,
+            user_prompt: message,
+            policy: &policy,
+            turn_override,
+            primary_supports_vision,
+            primary_is_local,
+            auxiliary_available: vision_resolution.is_some(),
+            auxiliary_is_local,
+            ocr_available: ocr_config.enabled,
+        })
+        .map_err(|error| error.to_string())?;
+        let target = vision_resolution.map(|resolution| VisionTargetProfile {
+            binding_revision: resolution.snapshot.binding_revision,
+            target_id: resolution.snapshot.target_id.clone(),
+            target_revision: resolution.snapshot.target_revision,
+            connection_id: resolution.snapshot.connection_id.clone(),
+            connection_revision: resolution.snapshot.connection_revision,
+            descriptor_hash: resolution.snapshot.descriptor_hash.clone(),
+        });
+        let fallback_targets = vision_resolution
+            .map(|resolution| {
+                resolution
+                    .snapshot
+                    .fallback_targets
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.fallback_index > resolution.snapshot.fallback_index
+                    })
+                    .map(|candidate| VisionTargetProfile {
+                        binding_revision: resolution.snapshot.binding_revision,
+                        target_id: candidate.target_id.clone(),
+                        target_revision: candidate.target_revision,
+                        connection_id: candidate.connection_id.clone(),
+                        connection_revision: candidate.connection_revision,
+                        descriptor_hash: candidate.descriptor_hash.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let profile = VisionProfileV1 {
+            observation_schema_version: VISION_OBSERVATION_SCHEMA_VERSION,
+            classifier_version: VISION_CLASSIFIER_VERSION,
+            intent: decision.intent,
+            mode: policy.mode,
+            turn_override,
+            prefer_local_processing: policy.prefer_local_processing,
+            local_only: policy.local_only,
+            primary_egress_id: primary_egress_id.to_string(),
+            primary_is_local,
+            fallback_mode: vision_resolution
+                .map(|resolution| resolution.snapshot.fallback_mode)
+                .unwrap_or_default(),
+            constraints: vision_resolution
+                .map(|resolution| resolution.snapshot.constraints.clone())
+                .unwrap_or_default(),
+            ocr: VisionOcrProfile {
+                enabled: ocr_config.enabled,
+                confidence_threshold_millis: (ocr_config.confidence_threshold * 1_000.0)
+                    .round()
+                    .clamp(0.0, 1_000.0) as u16,
+                det_limit_side_len: ocr_config.det_limit_side_len,
+                use_cls: ocr_config.use_cls,
+                languages: ocr_config.languages.clone(),
+            },
+            target,
+            fallback_targets,
+        };
+        let profile_hash = profile.profile_hash().map_err(|error| error.to_string())?;
+        let mut attachment = original.clone();
+        attachment.attachment_id = Some(attachment_id.clone());
+        attachment.attachment_hash = Some(computed_hash.clone());
+        attachment.vision_analysis = None;
+
+        match decision.plan {
+            nexa_core::vision_router::VisionRoutePlan::NativeDirect => {
+                parts.push(ContentPart::Image {
+                    media_type: original.media_type.clone(),
+                    data: original.base64_data.clone(),
+                });
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status: VisionAttachmentStatus::MetadataOnly,
+                    profile_hash: Some(profile_hash),
+                    observation: None,
+                    reason_code: Some("native_direct_unstructured".to_string()),
+                });
+                llm_context_fragments.push(format!(
+                    "[Image: {} — processed directly by the pinned native vision model]",
+                    original.original_name
+                ));
+            }
+            nexa_core::vision_router::VisionRoutePlan::MetadataOnly => {
+                let metadata = format!(
+                    "[Image: {} — image understanding disabled; no pixels were sent to a model]",
+                    original.original_name
+                );
+                parts.push(ContentPart::Text {
+                    text: metadata.clone(),
+                });
+                llm_context_fragments.push(metadata);
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status: VisionAttachmentStatus::MetadataOnly,
+                    profile_hash: Some(profile_hash),
+                    observation: None,
+                    reason_code: Some("vision_disabled".to_string()),
+                });
+            }
+            _ => {
+                let now_epoch = Utc::now().timestamp();
+                let cached = if policy.cache_enabled {
+                    db.get_vision_observation_cache(&computed_hash, &profile_hash, now_epoch)
+                        .map_err(|error| error.to_string())?
+                } else {
+                    None
+                };
+                let (observation, status) = if let Some(cached) = cached {
+                    let mut observation = cached.observation;
+                    observation.attachment_id = attachment_id.clone();
+                    observation.validate().map_err(|error| error.to_string())?;
+                    (observation, VisionAttachmentStatus::Cached)
+                } else {
+                    let requires_vision = matches!(
+                        decision.plan,
+                        nexa_core::vision_router::VisionRoutePlan::VisionOnly
+                            | nexa_core::vision_router::VisionRoutePlan::OcrThenVision
+                            | nexa_core::vision_router::VisionRoutePlan::VisionThenOcr
+                    );
+                    if requires_vision && provider_routes.is_none() {
+                        provider_routes = vision_resolution
+                            .map(build_desktop_vision_provider_routes)
+                            .transpose()?;
+                    }
+                    let vision = provider_routes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|route| route.fallback_index >= selected_fallback_index)
+                        .filter(|route| !policy.local_only || route.local)
+                        .map(|route| VisionProviderInput {
+                            provider: route.provider.as_ref(),
+                            provider_type: route.provider_type,
+                            provider_id: &route.provider_id,
+                            egress_id: &route.egress_id,
+                            model_id: &route.model_id,
+                            target_id: &route.target_id,
+                            target_revision: route.target_revision,
+                            fallback_index: route.fallback_index,
+                            local: route.local,
+                        })
+                        .collect::<Vec<_>>();
+                    let observation = execute_vision_observation(VisionExecutionInput {
+                        attachment_id: &attachment_id,
+                        attachment_hash: &computed_hash,
+                        profile_hash: &profile_hash,
+                        image_bytes: &image_bytes,
+                        mime_type: &original.media_type,
+                        decision,
+                        ocr_config: &ocr_config,
+                        vision: &vision,
+                        route_primary_fallback_index: vision_resolution
+                            .map(|resolution| resolution.snapshot.fallback_index)
+                            .unwrap_or_default(),
+                        primary_egress_id,
+                        primary_is_local,
+                        cancellation,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    (observation, VisionAttachmentStatus::Observed)
+                };
+                if let Some(next_fallback_index) = observation
+                    .sources
+                    .iter()
+                    .filter_map(|source| source.fallback_index)
+                    .max()
+                    .filter(|index| *index > selected_fallback_index)
+                {
+                    db.advance_task_runtime_fallback(
+                        task_run_id,
+                        "vision",
+                        selected_fallback_index,
+                        next_fallback_index,
+                        "vision_invocation_failed_automatic_fallback",
+                    )
+                    .map_err(|error| error.to_string())?;
+                    selected_fallback_index = next_fallback_index;
+                }
+                if policy.cache_enabled && status == VisionAttachmentStatus::Observed {
+                    let expires_at_epoch =
+                        now_epoch + i64::from(policy.cache_retention_days) * 24 * 60 * 60;
+                    db.save_vision_observation_cache(&observation, now_epoch, expires_at_epoch)
+                        .map_err(|error| error.to_string())?;
+                }
+                let prompt = observation_prompt_text(&original.original_name, &observation)
+                    .map_err(|error| error.to_string())?;
+                parts.push(ContentPart::Text {
+                    text: prompt.clone(),
+                });
+                llm_context_fragments.push(prompt);
+                attachment.vision_analysis = Some(VisionAttachmentAnalysis {
+                    status,
+                    profile_hash: Some(profile_hash),
+                    observation: Some(observation),
+                    reason_code: None,
+                });
+            }
+        }
+        persisted_attachments.push(attachment);
+    }
+
+    if !non_image_attachments.is_empty() {
+        let mut document_parts =
+            build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {
+                db,
+                app_handle,
+                provider_config,
+                db_config,
+                message: "",
+                attachments: Some(&non_image_attachments),
+            })?;
+        if document_parts
+            .first()
+            .is_some_and(|part| matches!(part, ContentPart::Text { text } if text.is_empty()))
+        {
+            document_parts.remove(0);
+        }
+        for part in &document_parts {
+            if let ContentPart::Text { text } = part {
+                llm_context_fragments.push(text.clone());
+            }
+        }
+        parts.extend(document_parts);
+    }
+
+    Ok(DesktopAgentVisionUserContentResult {
+        parts,
+        attachments: persisted_attachments,
+        llm_context_content: llm_context_fragments
+            .into_iter()
+            .filter(|fragment| !fragment.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    })
+}
+
+fn build_desktop_vision_provider_routes(
+    resolution: &RuntimeCapabilityResolution,
+) -> Result<Vec<DesktopVisionProviderRoute>, String> {
+    let mut routes = vec![DesktopVisionProviderRoute {
+        fallback_index: resolution.snapshot.fallback_index,
+        target_id: resolution.snapshot.target_id.clone(),
+        target_revision: resolution.snapshot.target_revision,
+        provider_id: resolution.snapshot.provider_id.clone(),
+        egress_id: format!("registry:{}", resolution.snapshot.connection_id),
+        model_id: resolution.model_id.clone(),
+        local: provider_config_is_local(&resolution.provider_config),
+        provider_type: resolution.provider_config.provider_type,
+        provider: create_provider(resolution.provider_config.clone()).map_err(|_| {
+            "vision_provider_initialization_failed: provider details were redacted".to_string()
+        })?,
+    }];
+    for fallback in &resolution.fallbacks {
+        let snapshot = resolution
+            .snapshot
+            .fallback_targets
+            .iter()
+            .find(|candidate| candidate.fallback_index == fallback.fallback_index)
+            .ok_or_else(|| {
+                "vision_fallback_snapshot_missing: frozen fallback metadata is incomplete"
+                    .to_string()
+            })?;
+        routes.push(DesktopVisionProviderRoute {
+            fallback_index: fallback.fallback_index,
+            target_id: fallback.target_id.clone(),
+            target_revision: fallback.target_revision,
+            provider_id: snapshot.provider_id.clone(),
+            egress_id: format!("registry:{}", fallback.connection_id),
+            model_id: fallback.model_id.clone(),
+            local: provider_config_is_local(&fallback.provider_config),
+            provider_type: fallback.provider_config.provider_type,
+            provider: create_provider(fallback.provider_config.clone()).map_err(|_| {
+                "vision_fallback_initialization_failed: provider details were redacted".to_string()
+            })?,
+        });
+    }
+    routes.sort_by_key(|route| route.fallback_index);
+    Ok(routes)
+}
+
+pub(super) fn provider_config_is_local(config: &ProviderConfig) -> bool {
+    let Some(base_url) = config.base_url.as_deref() else {
+        return matches!(
+            config.provider_type,
+            ProviderType::Ollama | ProviderType::LmStudio
+        );
+    };
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+pub(super) fn provider_config_egress_id(config: &ProviderConfig) -> String {
+    let endpoint = config
+        .base_url
+        .as_deref()
+        .and_then(|base_url| reqwest::Url::parse(base_url).ok())
+        .and_then(|url| {
+            let host = url.host_str()?.to_ascii_lowercase();
+            let port = url.port_or_known_default()?;
+            Some(format!("{}://{host}:{port}", url.scheme()))
+        })
+        .unwrap_or_else(|| "default-endpoint".to_string());
+    format!("legacy:{:?}:{endpoint}", config.provider_type)
 }
 
 pub fn build_desktop_agent_turn_config(
@@ -1921,75 +2371,79 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         .with_auto_loaded_skills_override(dependencies.auto_loaded_skills);
 
     let (events_tx, events_rx) = mpsc::channel::<AgentEvent>(64);
-    let event_forwarder = tokio::spawn(
-        AgentStreamForwarder::new(
-            stream.app_handle.clone(),
-            db.clone(),
-            conversation_id.clone(),
-            stream.task_run_id.clone(),
-            turn_id.clone(),
-            Arc::clone(&stream.event_seq),
-            Arc::clone(&stream.terminal_emitted),
-            stream.launch_started,
-        )
-        .run(events_rx),
-    );
+    let event_forwarder = AgentStreamForwarder::new(
+        stream.app_handle.clone(),
+        db.clone(),
+        conversation_id.clone(),
+        stream.task_run_id.clone(),
+        turn_id.clone(),
+        Arc::clone(&stream.event_seq),
+        Arc::clone(&stream.terminal_emitted),
+        stream.launch_started,
+    )
+    .run(events_rx);
 
-    let run_future = executor.run(
-        history,
-        user_parts,
-        db.as_ref(),
-        Some(&conversation_id),
-        Some(&turn_id),
-        events_tx,
-        assistant_sort_order,
-    );
+    // Keep the forwarder structurally owned by the turn future. Aborting a
+    // suspended outer task now drops both the executor and its event consumer;
+    // no detached producer can race the resumed launch's event sequencer.
+    let run_driver = async {
+        let run_future = executor.run(
+            history,
+            user_parts,
+            db.as_ref(),
+            Some(&conversation_id),
+            Some(&turn_id),
+            events_tx,
+            assistant_sort_order,
+        );
 
-    let mut run_future = Box::pin(run_future);
-    let mut turn_timeout = (runtime.timeout_secs > 0).then(|| {
-        Box::pin(tokio::time::sleep(Duration::from_secs(
-            runtime.timeout_secs,
-        )))
-    });
-    let mut keepalive =
-        tokio::time::interval(Duration::from_secs(runtime.keepalive_interval_secs.max(1)));
-    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    keepalive.tick().await;
+        let mut run_future = Box::pin(run_future);
+        let mut turn_timeout = (runtime.timeout_secs > 0).then(|| {
+            Box::pin(tokio::time::sleep(Duration::from_secs(
+                runtime.timeout_secs,
+            )))
+        });
+        let mut keepalive =
+            tokio::time::interval(Duration::from_secs(runtime.keepalive_interval_secs.max(1)));
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        keepalive.tick().await;
 
-    let (result, timed_out) = loop {
-        tokio::select! {
-            run_result = &mut run_future => break (Some(run_result), false),
-            _ = async {
-                if let Some(timeout) = turn_timeout.as_mut() {
-                    timeout.as_mut().await;
-                } else {
-                    std::future::pending::<()>().await;
+        let (result, timed_out) = loop {
+            tokio::select! {
+                run_result = &mut run_future => break (Some(run_result), false),
+                _ = async {
+                    if let Some(timeout) = turn_timeout.as_mut() {
+                        timeout.as_mut().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break (None, true),
+                _ = keepalive.tick() => {
+                    emit_agent_frontend_event(
+                        &stream.app_handle,
+                        stream.event_seq.as_ref(),
+                        &conversation_id,
+                        &stream.task_run_id,
+                        Some(&turn_id),
+                        AgentEvent::Thinking {
+                            content: String::new(),
+                        },
+                    );
                 }
-            } => break (None, true),
-            _ = keepalive.tick() => {
-                emit_agent_frontend_event(
-                    &stream.app_handle,
-                    stream.event_seq.as_ref(),
-                    &conversation_id,
-                    &stream.task_run_id,
-                    Some(&turn_id),
-                    AgentEvent::Thinking {
-                        content: String::new(),
-                    },
-                );
             }
+        };
+
+        if timed_out {
+            cancel_token.cancel();
         }
+
+        drop(run_future);
+        drop(turn_timeout);
+        drop(executor);
+        (result, timed_out)
     };
 
-    if timed_out {
-        cancel_token.cancel();
-    }
-
-    drop(run_future);
-    drop(turn_timeout);
-    drop(executor);
-
-    let _ = event_forwarder.await;
+    let ((result, timed_out), ()) = tokio::join!(run_driver, event_forwarder);
 
     DesktopAgentTurnOutcome { result, timed_out }
 }
@@ -2032,9 +2486,34 @@ pub fn finalize_desktop_agent_turn(finalization: DesktopAgentTurnFinalization<'_
         .get_agent_task_run(task_run_id)
         .ok()
         .map(|run| run.status);
+    if current_task_status.as_deref() == Some("awaiting_user_input")
+        || matches!(
+            &outcome.result,
+            Some(Err(CoreError::AwaitingUserInput { .. }))
+        )
+    {
+        if current_task_status.as_deref() == Some("awaiting_user_input") {
+            let _ = db.update_agent_task_run_progress(
+                task_run_id,
+                Some("awaiting_user_input"),
+                Some("awaiting_user_input"),
+                None,
+                Some("Waiting for user input"),
+                None,
+                Some(&task_artifacts),
+            );
+        }
+        // A fast response can re-queue this same durable run before the
+        // suspended executor reaches finalization. Never let that stale
+        // executor overwrite the resumed or explicitly cancelled state.
+        emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+        return;
+    }
     let (task_status, task_summary, task_error): (&str, &str, Option<String>) =
         if current_task_status.as_deref() == Some("paused") {
             ("paused", "Paused with a resumable checkpoint", None)
+        } else if current_task_status.as_deref() == Some("cancelled") {
+            ("cancelled", "Stopped by user", None)
         } else if outcome.timed_out {
             (
                 "timed_out",
@@ -2309,6 +2788,22 @@ mod tests {
     }
 
     #[test]
+    fn local_provider_detection_requires_an_exact_loopback_host() {
+        let mut config = test_provider_config(ProviderType::Ollama);
+        config.base_url = Some("http://127.example.com:11434".to_string());
+        assert!(!provider_config_is_local(&config));
+
+        config.base_url = Some("http://127.0.0.1:11434".to_string());
+        assert!(provider_config_is_local(&config));
+
+        config.base_url = Some("http://[::1]:11434".to_string());
+        assert!(provider_config_is_local(&config));
+
+        config.base_url = Some("https://remote-ollama.example.com".to_string());
+        assert!(!provider_config_is_local(&config));
+    }
+
+    #[test]
     fn desktop_agent_user_content_parts_project_attachments() {
         let db = Database::open_memory().expect("open memory db");
         let mut db_config = test_agent_config();
@@ -2318,12 +2813,18 @@ mod tests {
                 base64_data: "image-data".to_string(),
                 media_type: "image/png".to_string(),
                 original_name: "diagram.png".to_string(),
+                attachment_id: None,
+                attachment_hash: None,
+                vision_analysis: None,
             },
             ImageAttachment {
                 base64_data: base64::engine::general_purpose::STANDARD
                     .encode("hello from attachment. ".repeat(8)),
                 media_type: "text/plain".to_string(),
                 original_name: "notes.txt".to_string(),
+                attachment_id: None,
+                attachment_hash: None,
+                vision_analysis: None,
             },
         ];
 
@@ -2365,6 +2866,9 @@ mod tests {
             base64_data: "%not-base64".to_string(),
             media_type: "text/plain".to_string(),
             original_name: "broken.txt".to_string(),
+            attachment_id: None,
+            attachment_hash: None,
+            vision_analysis: None,
         };
 
         let err = build_desktop_agent_user_content_parts(DesktopAgentUserContentRequest {

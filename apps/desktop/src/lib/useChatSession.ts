@@ -23,6 +23,7 @@ import type {
   ArtifactPayload,
   ContextUsageBreakdown,
   ImageAttachment,
+  VisionTurnOverride,
   UsageTotal,
   UsageSnapshot,
 } from '../types/conversation';
@@ -53,6 +54,25 @@ const MAX_CACHED_CONVERSATIONS = 8;
 const MAX_MESSAGE_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_TURN_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_TASK_RUN_CACHE_BYTES = 16 * 1024 * 1024;
+
+function persistedVisionOverride(
+  artifacts: ArtifactPayload | null | undefined,
+  attachments: ImageAttachment[] | undefined,
+): VisionTurnOverride | undefined {
+  if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) return undefined;
+  const record = artifacts as Record<string, unknown>;
+  const override = record.visionTurnOverride;
+  if (override !== 'auto' && override !== 'ocr_only' && override !== 'vision_only') return undefined;
+  const authorized = Array.isArray(record.visionOverrideAttachmentHashes)
+    ? record.visionOverrideAttachmentHashes.filter((value): value is string => typeof value === 'string')
+    : [];
+  const current = (attachments ?? [])
+    .filter((attachment) => attachment.mediaType.startsWith('image/'))
+    .map((attachment) => attachment.attachmentHash)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  if (authorized.length === 0 || authorized.length !== current.length) return undefined;
+  return authorized.every((hash, index) => hash === current[index]) ? override : undefined;
+}
 
 /**
  * Merge imageAttachments from the prior in-memory message list onto a fresh
@@ -265,7 +285,9 @@ export interface ChatSendOptions {
   moaPreset?: MoaPresetId;
   orchestrationProfile?: OrchestrationProfile;
   customOrchestration?: CustomOrchestrationOptions | null;
+  visionTurnOverride?: import('../types/conversation').VisionTurnOverride | null;
   taskOrchestratorRunId?: string | null;
+  interactionContinuation?: boolean;
 }
 
 export interface UseChatSessionReturn {
@@ -326,7 +348,7 @@ export interface UseChatSessionReturn {
   customSystemPrompt: string;
   setCustomSystemPrompt: (prompt: string) => void;
   error: string | null;
-  retry: (messageId?: string) => Promise<void>;
+  retry: (messageId?: string, visionTurnOverride?: VisionTurnOverride, refreshVision?: boolean) => Promise<void>;
   clearError: () => void;
   loadConversations: () => Promise<void>;
   reloadMessages: (options?: {
@@ -1008,7 +1030,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       let convId = activeId;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
-      if (convId && liveStream?.isStreaming) {
+      if (convId && liveStream?.isStreaming && !options?.interactionContinuation) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));
@@ -1155,8 +1177,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.moaPreset,
         options?.orchestrationProfile,
         options?.customOrchestration,
+        options?.visionTurnOverride,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
+        options?.interactionContinuation === true,
       );
     },
     [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
@@ -1168,7 +1192,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
   }, [activeId, streamStop]);
 
-  const retry = useCallback(async (messageId?: string) => {
+  const retry = useCallback(async (
+    messageId?: string,
+    visionTurnOverride?: VisionTurnOverride,
+    refreshVision = false,
+  ) => {
     if (!activeId || streamStore.getStream(activeId)?.isStreaming) return;
 
     const messageIndexById = new Map(messages.map((message, index) => [message.id, index]));
@@ -1204,10 +1232,29 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
     const fallbackRetry = lastUserMessageRef.current;
     const content = targetMessage.content;
-    const attachments =
+    const sourceAttachments =
       fallbackRetry && fallbackRetry.content === content
         ? fallbackRetry.attachments
         : targetMessage.imageAttachments ?? undefined;
+    if (refreshVision) {
+      try {
+        await Promise.all((sourceAttachments ?? []).map((attachment) => {
+          if (!attachment.attachmentHash || !attachment.visionAnalysis?.profileHash) {
+            return Promise.resolve(0);
+          }
+          return api.deleteVisionObservationCache(
+            attachment.attachmentHash,
+            attachment.visionAnalysis.profileHash,
+          );
+        }));
+      } catch (cause) {
+        setChatError(formatUserError(t('chat.deleteError'), cause));
+        return;
+      }
+    }
+    const attachments = sourceAttachments?.map((attachment) => (
+      refreshVision ? { ...attachment, visionAnalysis: null } : attachment
+    ));
     const personaId =
       fallbackRetry && fallbackRetry.content === content
         ? fallbackRetry.personaId
@@ -1217,7 +1264,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         ? fallbackRetry.options
         : {
             userArtifacts: targetMessage.artifacts ?? null,
+            visionTurnOverride: persistedVisionOverride(
+              targetMessage.artifacts,
+              attachments,
+            ),
           };
+    const retryOptions = {
+      ...options,
+      visionTurnOverride: visionTurnOverride ?? options?.visionTurnOverride,
+    };
 
     // Re-add optimistic user message
     const optimisticMsg: ConversationMessage = {
@@ -1227,7 +1282,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       content,
       toolCallId: null,
       toolCalls: [],
-      artifacts: options?.userArtifacts ?? null,
+      artifacts: retryOptions.userArtifacts ?? null,
       tokenCount: 0,
       createdAt: new Date().toISOString(),
       sortOrder: targetUserIdx,
@@ -1244,7 +1299,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       }),
     );
     setChatError(null);
-    lastUserMessageRef.current = { content, attachments, personaId, options };
+    lastUserMessageRef.current = { content, attachments, personaId, options: retryOptions };
 
     setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     knownStreamConversationsRef.current.add(activeId);
@@ -1257,17 +1312,18 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       attachments,
       activeAgentConfigRef.current?.id ?? null,
       personaId ?? activePersonaId,
-      options?.skillIds,
-      options?.executionMode,
-      options?.powerMode,
-      options?.collaborationMode,
-      options?.moaPreset,
-      options?.orchestrationProfile,
-      options?.customOrchestration,
-      options?.userArtifacts,
+      retryOptions.skillIds,
+      retryOptions.executionMode,
+      retryOptions.powerMode,
+      retryOptions.collaborationMode,
+      retryOptions.moaPreset,
+      retryOptions.orchestrationProfile,
+      retryOptions.customOrchestration,
+      retryOptions.visionTurnOverride,
+      retryOptions.userArtifacts,
       null,
     );
-  }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
+  }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, t, turns]);
 
   /* ── Delete single message (optimistic, local only) ─────────────── */
   const deleteMessage = useCallback((messageId: string) => {

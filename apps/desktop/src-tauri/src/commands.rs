@@ -30,6 +30,9 @@ use nexa_core::app_settings::{AppConfig, TextToSpeechConfig, WizardState};
 #[cfg(test)]
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermissionKey};
+use nexa_core::capability_registry::{
+    CapabilityRegistryProjection, RegistryActivationRecord, RegistryReadMode, RegistryScope,
+};
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, validate_agent_config_credential_contract,
@@ -50,6 +53,10 @@ use nexa_core::evolution::{
 use nexa_core::feedback::{Feedback, FeedbackAction};
 use nexa_core::index::IndexStats;
 use nexa_core::ingest::{self, EmbedResult, IngestResult};
+use nexa_core::interaction::{
+    InteractionAnswers, InteractionRequest, InteractionResponse, InteractionStatus,
+    SubmitInteractionResponse,
+};
 use nexa_core::llm::{
     create_provider, CompletionRequest, ContentPart, Message, ProviderConfig, ProviderType, Role,
 };
@@ -75,6 +82,10 @@ use nexa_core::provider_catalog::{
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::runtime::AgentRunEventSequencer;
 use nexa_core::search::{self, SearchResult};
+use nexa_core::settings_schema_v2::{
+    CapabilityBindingV2, SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2,
+    SettingsScopeV2,
+};
 use nexa_core::skills::{DiscoveredSkillBundle, SaveSkillInput, Skill};
 use nexa_core::source_tree::SourceTree;
 use nexa_core::sources::{CreateSourceInput, UpdateSourceInput};
@@ -95,6 +106,7 @@ mod approval;
 mod conversation;
 mod knowledge;
 mod media;
+mod media_generation;
 mod personas;
 mod preview;
 mod realtime_transcription;
@@ -111,6 +123,7 @@ pub use approval::*;
 pub use conversation::*;
 pub use knowledge::*;
 pub use media::*;
+pub use media_generation::*;
 pub use personas::*;
 pub use preview::*;
 pub use realtime_transcription::*;
@@ -129,9 +142,18 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub db_executor: DatabaseExecutor,
     pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
+    pub media_generation: nexa_core::media_generation::MediaGenerationRuntime,
     /// Guard: true while whisper transcription is in progress.
     #[cfg(feature = "video")]
     pub whisper_busy: Arc<AtomicBool>,
+    /// Native, bounded microphone audio spool. Renderer callers only receive
+    /// opaque session IDs; filesystem paths remain inside Rust.
+    #[cfg(feature = "video")]
+    pub voice_audio_spool: Arc<nexa_core::voice_audio_spool::VoiceAudioSpool>,
+    /// Rejects excess raw append work before cloning or entering Tokio's
+    /// blocking pool, preventing direct IPC callers from bypassing JS bounds.
+    #[cfg(feature = "video")]
+    pub voice_spool_append_permits: Arc<tokio::sync::Semaphore>,
     /// Lock to serialize scan operations and prevent duplicate document inserts.
     pub scan_lock: Arc<Mutex<()>>,
 }

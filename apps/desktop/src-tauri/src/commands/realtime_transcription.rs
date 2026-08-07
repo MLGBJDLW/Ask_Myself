@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io::SeekFrom;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,6 +9,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, State};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use url::Url;
@@ -19,6 +22,8 @@ const REALTIME_COMMAND_BUFFER: usize = 64;
 const MAX_AUDIO_CHUNK_BYTES: usize = 256 * 1024;
 const SESSION_ID_HEADER: &str = "x-nexa-session-id";
 const FINAL_TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
+const REPLAY_FINAL_TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(180);
+const REPLAY_PCM_CHUNK_BYTES: usize = 64 * 1024;
 
 type RealtimeSessions = Arc<Mutex<HashMap<String, mpsc::Sender<RealtimeCommand>>>>;
 
@@ -192,6 +197,160 @@ fn resolve_pending_final(
     if let Some(sender) = pending_final.take() {
         let _ = sender.send(result);
     }
+}
+
+fn replay_wav_data_bytes(header: &[u8; 44]) -> Result<u32, String> {
+    if &header[0..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+        || &header[12..16] != b"fmt "
+        || &header[36..40] != b"data"
+    {
+        return Err("Managed Realtime replay requires a canonical PCM WAV".to_string());
+    }
+    let audio_format = u16::from_le_bytes([header[20], header[21]]);
+    let channels = u16::from_le_bytes([header[22], header[23]]);
+    let sample_rate = u32::from_le_bytes(header[24..28].try_into().expect("four bytes"));
+    let bits_per_sample = u16::from_le_bytes([header[34], header[35]]);
+    if audio_format != 1 || channels != 1 || sample_rate != 24_000 || bits_per_sample != 16 {
+        return Err("Managed Realtime replay requires mono 24 kHz little-endian PCM16".to_string());
+    }
+    Ok(u32::from_le_bytes(
+        header[40..44].try_into().expect("four bytes"),
+    ))
+}
+
+/// Replay a finalized native spool through a fresh Realtime transcription
+/// session. The file path never crosses IPC and only one bounded PCM chunk is
+/// base64-encoded at a time.
+pub(super) async fn transcribe_realtime_spool(
+    wav_path: &Path,
+    config: &nexa_core::app_settings::SpeechToTextConfig,
+) -> Result<String, String> {
+    if config.api_style != "openai_realtime_transcription" || !config.is_configured() {
+        return Err("OpenAI Live transcription is not fully configured".to_string());
+    }
+    let endpoint = build_realtime_endpoint(
+        config.base_url.as_deref().unwrap_or_default(),
+        &config.model,
+    )?;
+    let mut request = endpoint
+        .into_client_request()
+        .map_err(|error| format!("Invalid Realtime WebSocket request: {error}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", config.api_key.trim())
+            .parse()
+            .map_err(|error| format!("Invalid OpenAI authorization header: {error}"))?,
+    );
+    request.headers_mut().insert(
+        "User-Agent",
+        nexa_core::USER_AGENT
+            .parse()
+            .map_err(|error| format!("Invalid User-Agent header: {error}"))?,
+    );
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|error| format!("Unable to reconnect to OpenAI Realtime: {error}"))?;
+    socket
+        .send(Message::Text(
+            build_session_update(&config.model, config.language.as_deref())
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to configure OpenAI Realtime replay: {error}"))?;
+
+    let mut file = tokio::fs::File::open(wav_path)
+        .await
+        .map_err(|error| format!("Unable to open managed Realtime audio: {error}"))?;
+    let mut header = [0_u8; 44];
+    file.read_exact(&mut header)
+        .await
+        .map_err(|error| format!("Unable to read managed Realtime WAV header: {error}"))?;
+    let mut remaining = replay_wav_data_bytes(&header)? as usize;
+    file.seek(SeekFrom::Start(44))
+        .await
+        .map_err(|error| format!("Unable to seek managed Realtime audio: {error}"))?;
+    let mut buffer = vec![0_u8; REPLAY_PCM_CHUNK_BYTES];
+    while remaining > 0 {
+        let chunk_len = remaining.min(buffer.len());
+        file.read_exact(&mut buffer[..chunk_len])
+            .await
+            .map_err(|error| format!("Unable to read managed Realtime audio: {error}"))?;
+        let payload = serde_json::json!({
+            "type": "input_audio_buffer.append",
+            "audio": BASE64.encode(&buffer[..chunk_len]),
+        });
+        socket
+            .send(Message::Text(payload.to_string().into()))
+            .await
+            .map_err(|error| format!("Unable to replay audio to OpenAI Realtime: {error}"))?;
+        remaining -= chunk_len;
+
+        if let Ok(Some(incoming)) =
+            tokio::time::timeout(Duration::from_millis(1), socket.next()).await
+        {
+            match incoming {
+                Ok(Message::Text(text)) => {
+                    if let Ok(event) = serde_json::from_str::<Value>(&text) {
+                        if let ParsedRealtimeServerEvent::Error(message) =
+                            parse_server_event(&event)
+                        {
+                            return Err(message);
+                        }
+                    }
+                }
+                Ok(Message::Ping(payload)) => socket
+                    .send(Message::Pong(payload))
+                    .await
+                    .map_err(|error| format!("OpenAI Realtime replay heartbeat failed: {error}"))?,
+                Ok(Message::Close(_)) => {
+                    return Err("OpenAI Realtime replay closed while uploading audio".to_string())
+                }
+                Err(error) => return Err(format!("OpenAI Realtime replay failed: {error}")),
+                Ok(_) => {}
+            }
+        }
+    }
+    socket
+        .send(Message::Text(
+            serde_json::json!({ "type": "input_audio_buffer.commit" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to commit OpenAI Realtime replay: {error}"))?;
+
+    tokio::time::timeout(REPLAY_FINAL_TRANSCRIPT_TIMEOUT, async {
+        while let Some(incoming) = socket.next().await {
+            match incoming {
+                Ok(Message::Text(text)) => {
+                    let Ok(event) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    match parse_server_event(&event) {
+                        ParsedRealtimeServerEvent::Completed { text, .. } => return Ok(text),
+                        ParsedRealtimeServerEvent::Error(message) => return Err(message),
+                        _ => {}
+                    }
+                }
+                Ok(Message::Ping(payload)) => socket
+                    .send(Message::Pong(payload))
+                    .await
+                    .map_err(|error| format!("OpenAI Realtime replay heartbeat failed: {error}"))?,
+                Ok(Message::Close(_)) | Err(_) => {
+                    return Err(
+                        "OpenAI Realtime replay closed before returning a transcript".to_string(),
+                    )
+                }
+                Ok(_) => {}
+            }
+        }
+        Err("OpenAI Realtime replay ended before returning a transcript".to_string())
+    })
+    .await
+    .map_err(|_| "Timed out waiting for the replayed Realtime transcript".to_string())?
 }
 
 #[tauri::command]
@@ -470,7 +629,7 @@ pub async fn cancel_realtime_transcription_cmd(
 mod tests {
     use super::{
         build_realtime_endpoint, build_session_update, parse_server_event, raw_realtime_audio,
-        ParsedRealtimeServerEvent, MAX_AUDIO_CHUNK_BYTES,
+        replay_wav_data_bytes, ParsedRealtimeServerEvent, MAX_AUDIO_CHUNK_BYTES,
     };
 
     #[test]
@@ -491,6 +650,24 @@ mod tests {
             })))
             .is_err()
         );
+    }
+
+    #[test]
+    fn replay_accepts_only_canonical_mono_24khz_pcm16() {
+        let mut header = [0_u8; 44];
+        header[0..4].copy_from_slice(b"RIFF");
+        header[8..12].copy_from_slice(b"WAVE");
+        header[12..16].copy_from_slice(b"fmt ");
+        header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+        header[24..28].copy_from_slice(&24_000_u32.to_le_bytes());
+        header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+        header[36..40].copy_from_slice(b"data");
+        header[40..44].copy_from_slice(&128_u32.to_le_bytes());
+
+        assert_eq!(replay_wav_data_bytes(&header).unwrap(), 128);
+        header[24..28].copy_from_slice(&16_000_u32.to_le_bytes());
+        assert!(replay_wav_data_bytes(&header).is_err());
     }
 
     #[test]
