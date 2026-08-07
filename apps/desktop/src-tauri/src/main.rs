@@ -305,6 +305,28 @@ fn main() {
                 );
             }
             #[cfg(feature = "video")]
+            let ffmpeg_program = db
+                .load_video_config()
+                .ok()
+                .and_then(|config| config.ffmpeg_path)
+                .unwrap_or_else(|| "ffmpeg".to_string());
+            #[cfg(not(feature = "video"))]
+            let ffmpeg_program = "ffmpeg".to_string();
+            let video_timeline_export_coordinator =
+                nexa_core::media_generation::VideoTimelineExportCoordinator::new(
+                    media_generation.clone(),
+                    data_dir.join("timeline-exports"),
+                    ffmpeg_program,
+                );
+            let resumed_timeline_exports = tauri::async_runtime::block_on(
+                video_timeline_export_coordinator.resume(),
+            )?;
+            if resumed_timeline_exports > 0 {
+                log::info!(
+                    "Resumed {resumed_timeline_exports} durable video timeline export(s) before exposing renderer state"
+                );
+            }
+            #[cfg(feature = "video")]
             let voice_audio_spool = Arc::new(
                 nexa_core::voice_audio_spool::VoiceAudioSpool::new(
                     data_dir.join("voice-spool"),
@@ -318,6 +340,7 @@ fn main() {
                 context_compaction,
                 media_generation,
                 video_generation_coordinator,
+                video_timeline_export_coordinator,
                 #[cfg(feature = "video")]
                 whisper_busy: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "video")]
@@ -530,6 +553,15 @@ fn main() {
             commands::cancel_video_variant_cmd,
             commands::select_video_workflow_variant_cmd,
             commands::resolve_media_generation_asset_path_cmd,
+            commands::get_video_timeline_cmd,
+            commands::add_video_timeline_clip_cmd,
+            commands::refresh_video_timeline_clip_cmd,
+            commands::update_video_timeline_clip_cmd,
+            commands::reorder_video_timeline_clips_cmd,
+            commands::remove_video_timeline_clip_cmd,
+            commands::create_video_timeline_export_cmd,
+            commands::cancel_video_timeline_export_cmd,
+            commands::retry_video_timeline_export_cmd,
             commands::search_conversations_cmd,
             // Conversation checkpoints
             commands::list_checkpoints_cmd,

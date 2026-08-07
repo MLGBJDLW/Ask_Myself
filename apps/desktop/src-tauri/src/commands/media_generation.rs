@@ -339,3 +339,111 @@ pub async fn resolve_media_generation_asset_path_cmd(
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub async fn get_video_timeline_cmd(
+    state: tauri::State<'_, AppState>,
+    workflow_id: String,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .get_video_timeline(&workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_video_timeline_clip_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::AddVideoTimelineClipRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .add_video_timeline_clip(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn refresh_video_timeline_clip_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::RefreshVideoTimelineClipRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .refresh_video_timeline_clip(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_video_timeline_clip_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::UpdateVideoTimelineClipRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .update_video_timeline_clip(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn reorder_video_timeline_clips_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::ReorderVideoTimelineClipsRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .reorder_video_timeline_clips(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_video_timeline_clip_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::RemoveVideoTimelineClipRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineSnapshot, String> {
+    state
+        .media_generation
+        .remove_video_timeline_clip(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_video_timeline_export_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::CreateVideoTimelineExportRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineExportRecord, String> {
+    state
+        .video_timeline_export_coordinator
+        .create_export(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_video_timeline_export_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::CancelVideoTimelineExportRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineExportRecord, String> {
+    state
+        .video_timeline_export_coordinator
+        .cancel_export(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn retry_video_timeline_export_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::RetryVideoTimelineExportRequest,
+) -> Result<nexa_core::media_generation::VideoTimelineExportRecord, String> {
+    state
+        .video_timeline_export_coordinator
+        .retry_export(request)
+        .await
+        .map_err(|error| error.to_string())
+}

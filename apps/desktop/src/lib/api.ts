@@ -36,21 +36,31 @@ import type {
 } from "../types/mediaGeneration";
 import type {
   AddVideoWorkflowShotRequest,
+  AddVideoTimelineClipRequest,
+  CancelVideoTimelineExportRequest,
   CancelVideoVariantRequest,
+  CreateVideoTimelineExportRequest,
   CreateVideoWorkflowRequest,
   DeleteVideoWorkflowShotRequest,
   PreviewVideoShotQueueRequest,
   QueueVideoShotVariantsRequest,
   ReorderVideoWorkflowShotsRequest,
+  RetryVideoTimelineExportRequest,
   ReorderVideoWorkflowVariantsRequest,
+  RefreshVideoTimelineClipRequest,
+  RemoveVideoTimelineClipRequest,
+  ReorderVideoTimelineClipsRequest,
   RetryVideoVariantRequest,
   SaveVideoProviderConnectionRequest,
   SelectVideoWorkflowVariantRequest,
   UpdateVideoWorkflowRequest,
   UpdateVideoWorkflowShotRequest,
+  UpdateVideoTimelineClipRequest,
   VideoProviderConnectionRecord,
   VideoProviderPreset,
   VideoQueueDisclosure,
+  VideoTimelineExportRecord,
+  VideoTimelineSnapshot,
   VerifiedVideoReferenceImage,
   VideoWorkflowSnapshot,
 } from "../types/videoWorkflow";
@@ -1692,6 +1702,33 @@ export const selectVideoWorkflowVariant = (request: SelectVideoWorkflowVariantRe
 
 export const resolveMediaGenerationAssetPath = (assetId: string) =>
   invoke<string>('resolve_media_generation_asset_path_cmd', { assetId });
+
+export const getVideoTimeline = (workflowId: string) =>
+  invoke<VideoTimelineSnapshot>('get_video_timeline_cmd', { workflowId });
+
+export const addVideoTimelineClip = (request: AddVideoTimelineClipRequest) =>
+  invoke<VideoTimelineSnapshot>('add_video_timeline_clip_cmd', { request });
+
+export const refreshVideoTimelineClip = (request: RefreshVideoTimelineClipRequest) =>
+  invoke<VideoTimelineSnapshot>('refresh_video_timeline_clip_cmd', { request });
+
+export const updateVideoTimelineClip = (request: UpdateVideoTimelineClipRequest) =>
+  invoke<VideoTimelineSnapshot>('update_video_timeline_clip_cmd', { request });
+
+export const reorderVideoTimelineClips = (request: ReorderVideoTimelineClipsRequest) =>
+  invoke<VideoTimelineSnapshot>('reorder_video_timeline_clips_cmd', { request });
+
+export const removeVideoTimelineClip = (request: RemoveVideoTimelineClipRequest) =>
+  invoke<VideoTimelineSnapshot>('remove_video_timeline_clip_cmd', { request });
+
+export const createVideoTimelineExport = (request: CreateVideoTimelineExportRequest) =>
+  invoke<VideoTimelineExportRecord>('create_video_timeline_export_cmd', { request });
+
+export const cancelVideoTimelineExport = (request: CancelVideoTimelineExportRequest) =>
+  invoke<VideoTimelineExportRecord>('cancel_video_timeline_export_cmd', { request });
+
+export const retryVideoTimelineExport = (request: RetryVideoTimelineExportRequest) =>
+  invoke<VideoTimelineExportRecord>('retry_video_timeline_export_cmd', { request });
 
 /** @deprecated Compatibility adapter for pre-operation-protocol callers. */
 export const compactConversation = (conversationId: string) =>

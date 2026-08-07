@@ -370,3 +370,182 @@ export interface SelectVideoWorkflowVariantRequest {
   expectedShotRevision: number;
   variantId: string;
 }
+
+export interface VideoTimelineRecord {
+  id: string;
+  workflowId: string;
+  schemaVersion: number;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VideoTimelineClipRecord {
+  id: string;
+  timelineId: string;
+  shotId: string;
+  shotTitle: string;
+  variantId: string;
+  selectedVariantId: string | null;
+  assetId: string;
+  assetContentHash: string;
+  mediaType: string;
+  ordinal: number;
+  sourceStartUs: number;
+  sourceDurationUs: number;
+  availableDurationUs: number;
+  stale: boolean;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type VideoTimelineExportState =
+  | 'validating'
+  | 'queued'
+  | 'running'
+  | 'verifying'
+  | 'publishing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export type VideoTimelineExportStageKind = 'validate' | 'normalize' | 'concatenate' | 'verify' | 'publish';
+export type VideoTimelineExportStageState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+
+export interface VideoTimelineOutputProfile {
+  schemaVersion: 1;
+  width: number;
+  height: number;
+  fit: 'contain';
+  fpsNumerator: number;
+  fpsDenominator: number;
+  pixelFormat: 'yuv420p';
+  videoCodec: 'h264';
+  videoProfile: 'high';
+  videoLevel: 52;
+  videoTimeBaseNumerator: 1;
+  videoTimeBaseDenominator: 90000;
+  colorPrimaries: 'bt709';
+  colorTransfer: 'bt709';
+  colorSpace: 'bt709';
+  colorRange: 'tv';
+  videoPreset: 'medium' | 'fast';
+  videoCrf: number;
+  audioCodec: 'aac';
+  audioSampleRate: 48000;
+  audioChannelLayout: 'stereo';
+}
+
+export interface VideoTimelineExportClipSnapshot {
+  ordinal: number;
+  clipId: string;
+  clipRevision: number;
+  shotId: string;
+  shotTitle: string;
+  variantId: string;
+  assetId: string;
+  assetContentHash: string;
+  sourceStartUs: number;
+  sourceDurationUs: number;
+}
+
+export interface VideoTimelineExportStageRecord {
+  ordinal: number;
+  stageKind: VideoTimelineExportStageKind;
+  clipOrdinal: number | null;
+  state: VideoTimelineExportStageState;
+  fingerprintSha256: string;
+  attemptCount: number;
+  progressBasisPoints: number;
+  intermediateAssetId: string | null;
+  error: Record<string, unknown> | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+export interface VideoTimelineExportRecord {
+  id: string;
+  workflowId: string;
+  timelineId: string;
+  timelineRevision: number;
+  state: VideoTimelineExportState;
+  currentStage: VideoTimelineExportStageKind;
+  outputProfile: VideoTimelineOutputProfile;
+  ffmpegIdentity: Record<string, unknown> | null;
+  clips: VideoTimelineExportClipSnapshot[];
+  inputFingerprintSha256: string;
+  destinationPath: string;
+  progressBasisPoints: number;
+  outputAssetId: string | null;
+  cancellationRequestedAt: string | null;
+  error: Record<string, unknown> | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  stages: VideoTimelineExportStageRecord[];
+}
+
+export interface VideoTimelineSnapshot {
+  timeline: VideoTimelineRecord;
+  clips: VideoTimelineClipRecord[];
+  exports: VideoTimelineExportRecord[];
+}
+
+export interface AddVideoTimelineClipRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  shotId: string;
+  variantId: string;
+}
+
+export interface RefreshVideoTimelineClipRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  clipId: string;
+  expectedClipRevision: number;
+}
+
+export interface UpdateVideoTimelineClipRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  clipId: string;
+  expectedClipRevision: number;
+  sourceStartUs: number;
+  sourceDurationUs: number;
+}
+
+export interface ReorderVideoTimelineClipsRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  orderedClipIds: string[];
+}
+
+export interface RemoveVideoTimelineClipRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  clipId: string;
+  expectedClipRevision: number;
+}
+
+export interface CreateVideoTimelineExportRequest {
+  workflowId: string;
+  expectedTimelineRevision: number;
+  idempotencyKey: string;
+  destinationPath: string;
+  outputProfile: VideoTimelineOutputProfile;
+}
+
+export interface CancelVideoTimelineExportRequest {
+  exportId: string;
+  expectedRevision: number;
+}
+
+export interface RetryVideoTimelineExportRequest {
+  exportId: string;
+  expectedRevision: number;
+  destinationPath: string;
+}
