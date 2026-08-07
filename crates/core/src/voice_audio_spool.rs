@@ -24,7 +24,10 @@ const PCM_CHANNELS: u16 = 1;
 const PCM_BITS_PER_SAMPLE: u16 = 16;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 96_000;
-const VOICE_SPOOL_MANIFEST_VERSION: u32 = 1;
+const VOICE_SPOOL_MANIFEST_VERSION: u32 = 2;
+/// At process-crash recovery, at most this much acknowledged PCM may trail the
+/// last integrity checkpoint. Graceful finalization and shutdown force a full
+/// checkpoint before releasing the native file handle.
 const VOICE_SPOOL_CHECKPOINT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -172,6 +175,9 @@ struct VoiceSpoolRecordingManifest {
     created_at_ms: u64,
     sample_rate: u32,
     target: VoiceSpoolTarget,
+    checkpoint_audio_bytes: u64,
+    checkpoint_next_sequence: u64,
+    checkpoint_checksum_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +188,7 @@ struct VoiceSpoolDeletionMarker {
 }
 
 struct RecordingSession {
+    session_id: String,
     created_at_ms: u64,
     sample_rate: u32,
     target: VoiceSpoolTarget,
@@ -189,6 +196,8 @@ struct RecordingSession {
     last_chunk_sha256: Option<[u8; 32]>,
     audio_bytes: u64,
     last_checkpoint_audio_bytes: u64,
+    last_checkpoint_next_sequence: u64,
+    last_checkpoint_checksum_sha256: String,
     hasher: Sha256,
     file: Option<File>,
     part_path: PathBuf,
@@ -280,6 +289,7 @@ impl VoiceAudioSpool {
         file.flush()?;
         file.sync_all()?;
         let created_at_ms = now_ms();
+        let empty_checksum_sha256 = format!("{:x}", Sha256::digest([]));
         if let Err(error) = write_recording_manifest(
             &recording_manifest_path,
             &VoiceSpoolRecordingManifest {
@@ -288,16 +298,21 @@ impl VoiceAudioSpool {
                 created_at_ms,
                 sample_rate,
                 target: target.clone(),
+                checkpoint_audio_bytes: 0,
+                checkpoint_next_sequence: 0,
+                checkpoint_checksum_sha256: empty_checksum_sha256.clone(),
             },
         ) {
             drop(file);
             let _ = fs::remove_file(&part_path);
+            let _ = fs::remove_file(&recording_manifest_path);
             return Err(error);
         }
 
         sessions.insert(
             session_id.clone(),
             VoiceSession::Recording(RecordingSession {
+                session_id: session_id.clone(),
                 created_at_ms,
                 sample_rate,
                 target,
@@ -305,6 +320,8 @@ impl VoiceAudioSpool {
                 last_chunk_sha256: None,
                 audio_bytes: 0,
                 last_checkpoint_audio_bytes: 0,
+                last_checkpoint_next_sequence: 0,
+                last_checkpoint_checksum_sha256: empty_checksum_sha256,
                 hasher: Sha256::new(),
                 file: Some(file),
                 part_path,
@@ -364,6 +381,7 @@ impl VoiceAudioSpool {
             if recording.next_sequence.checked_sub(1) == Some(sequence)
                 && recording.last_chunk_sha256 == Some(chunk_sha256)
             {
+                checkpoint_recording(recording, false)?;
                 return Ok(VoiceSpoolProgress {
                     session_id: session_id.to_string(),
                     accepted_bytes: pcm16.len(),
@@ -410,19 +428,7 @@ impl VoiceAudioSpool {
         recording.audio_bytes = next_session_bytes;
         recording.next_sequence += 1;
         recording.last_chunk_sha256 = Some(chunk_sha256);
-        if recording
-            .audio_bytes
-            .saturating_sub(recording.last_checkpoint_audio_bytes)
-            >= VOICE_SPOOL_CHECKPOINT_BYTES
-        {
-            let file = recording
-                .file
-                .as_mut()
-                .expect("recording session owns its spool file");
-            file.flush()?;
-            file.sync_all()?;
-            recording.last_checkpoint_audio_bytes = recording.audio_bytes;
-        }
+        checkpoint_recording(recording, false)?;
         Ok(VoiceSpoolProgress {
             session_id: session_id.to_string(),
             accepted_bytes: pcm16.len(),
@@ -458,6 +464,13 @@ impl VoiceAudioSpool {
             ));
         }
 
+        if let Err(error) = checkpoint_recording(&mut recording, true) {
+            sessions.insert(session_id.to_string(), VoiceSession::Recording(recording));
+            return Err(CoreError::Internal(format!(
+                "Voice spool final checkpoint failed; accepted audio remains recoverable for retry: {error}"
+            )));
+        }
+
         let recording_manifest_path = recording.recording_manifest_path.clone();
         let recovery_manifest = VoiceSpoolRecordingManifest {
             version: VOICE_SPOOL_MANIFEST_VERSION,
@@ -465,6 +478,9 @@ impl VoiceAudioSpool {
             created_at_ms: recording.created_at_ms,
             sample_rate: recording.sample_rate,
             target: recording.target.clone(),
+            checkpoint_audio_bytes: recording.last_checkpoint_audio_bytes,
+            checkpoint_next_sequence: recording.last_checkpoint_next_sequence,
+            checkpoint_checksum_sha256: recording.last_checkpoint_checksum_sha256.clone(),
         };
         let part_path = recording.part_path.clone();
         let mut file = recording
@@ -680,6 +696,7 @@ impl VoiceAudioSpool {
         let current_ms = now_ms();
         let mut recovered = HashMap::new();
         let mut retained_wavs = HashSet::new();
+        let mut retained_parts = HashSet::new();
         let mut deleting_ids = HashSet::new();
 
         for entry in fs::read_dir(&self.root)? {
@@ -715,6 +732,9 @@ impl VoiceAudioSpool {
                 if wav_path.exists() {
                     retained_wavs.insert(wav_path);
                 }
+                if part_path.exists() {
+                    retained_parts.insert(part_path);
+                }
                 recovered.insert(
                     session_id.to_string(),
                     VoiceSession::DeletionPending {
@@ -737,27 +757,41 @@ impl VoiceAudioSpool {
             if deleting_ids.contains(session_id) {
                 continue;
             }
-            let recording_manifest = fs::read(&recording_manifest_path).ok().and_then(|bytes| {
-                serde_json::from_slice::<VoiceSpoolRecordingManifest>(&bytes).ok()
-            });
-            let valid_manifest = recording_manifest.as_ref().is_some_and(|manifest| {
-                manifest.version == VOICE_SPOOL_MANIFEST_VERSION
-                    && manifest.session_id == session_id
-                    && Uuid::parse_str(session_id).is_ok()
-                    && (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&manifest.sample_rate)
-            });
-            if !valid_manifest {
+            if Uuid::parse_str(session_id).is_err() {
                 remove_if_exists(&recording_manifest_path)?;
-                if Uuid::parse_str(session_id).is_ok() {
-                    let (part_path, _, _) = self.paths_for_valid_id(session_id)?;
-                    remove_if_exists(&part_path)?;
-                }
                 continue;
             }
-            let descriptor = self.recover_recording_session(
-                recording_manifest.expect("validated recording manifest"),
-                current_ms,
+            let recording_manifest = read_latest_recording_manifest(
+                &recording_manifest_path,
+                session_id,
+                self.limits.max_audio_bytes_per_session,
             )?;
+            let Some(recording_manifest) = recording_manifest else {
+                let (part_path, wav_path, _) = self.paths_for_valid_id(session_id)?;
+                let preserved_path = if part_path.exists() {
+                    retained_parts.insert(part_path.clone());
+                    Some(part_path)
+                } else if wav_path.exists() {
+                    retained_wavs.insert(wav_path.clone());
+                    Some(wav_path)
+                } else {
+                    None
+                };
+                if let Some(path) = preserved_path {
+                    let audio_bytes = fs::metadata(path)
+                        .map(|metadata| metadata.len().saturating_sub(WAV_HEADER_BYTES))
+                        .unwrap_or_default();
+                    recovered.insert(
+                        session_id.to_string(),
+                        VoiceSession::DeletionPending {
+                            descriptor: None,
+                            audio_bytes,
+                        },
+                    );
+                }
+                continue;
+            };
+            let descriptor = self.recover_recording_session(recording_manifest, current_ms)?;
             if let Some(descriptor) = descriptor {
                 let (_, wav_path, _) = self.paths_for_valid_id(&descriptor.session_id)?;
                 retained_wavs.insert(wav_path);
@@ -779,7 +813,9 @@ impl VoiceAudioSpool {
                 fs::remove_dir_all(&path)?;
                 continue;
             }
-            if file_name.ends_with(".part") || file_name.ends_with(".tmp") {
+            if (file_name.ends_with(".part") && !retained_parts.contains(&path))
+                || file_name.ends_with(".tmp")
+            {
                 remove_if_exists(&path)?;
             }
         }
@@ -790,7 +826,9 @@ impl VoiceAudioSpool {
             if manifest_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .is_some_and(|name| name.ends_with(".deleting.json"))
+                .is_some_and(|name| {
+                    name.ends_with(".deleting.json") || name.ends_with(".recording.json")
+                })
             {
                 continue;
             }
@@ -874,27 +912,63 @@ impl VoiceAudioSpool {
         let session_id = manifest.session_id;
         let (part_path, wav_path, ready_manifest_path) = self.paths_for_valid_id(&session_id)?;
         let recording_manifest_path = self.recording_manifest_path(&session_id)?;
-        let metadata = match fs::symlink_metadata(&part_path) {
+        if ready_manifest_path.exists() {
+            let ready_manifest = fs::read(&ready_manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<VoiceSpoolManifest>(&bytes).ok());
+            if let Some(ready_manifest) = ready_manifest.filter(|ready| {
+                ready.version == VOICE_SPOOL_MANIFEST_VERSION
+                    && ready.descriptor.session_id == session_id
+                    && verify_voice_spool_file(&wav_path, &ready.descriptor).is_ok()
+            }) {
+                remove_if_exists(&recording_manifest_path)?;
+                return Ok(Some(ready_manifest.descriptor));
+            }
+            return Err(CoreError::Conflict(format!(
+                "Voice spool recovery found an invalid ready manifest for {session_id}"
+            )));
+        }
+
+        let source_path = if part_path.exists() {
+            if wav_path.exists() {
+                return Err(CoreError::Conflict(format!(
+                    "Voice spool recovery found both partial and finalized audio for {session_id}"
+                )));
+            }
+            part_path.clone()
+        } else if wav_path.exists() {
+            // Finalization may have published the WAV before its ready manifest
+            // failed. The durable recording journal still authenticates it.
+            wav_path.clone()
+        } else {
+            remove_if_exists(&recording_manifest_path)?;
+            return Ok(None);
+        };
+        let metadata = match fs::symlink_metadata(&source_path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                remove_if_exists(&recording_manifest_path)?;
                 return Ok(None);
             }
             Err(error) => return Err(CoreError::Io(error)),
         };
-        let audio_bytes = metadata.len().saturating_sub(WAV_HEADER_BYTES);
+        let audio_bytes = manifest.checkpoint_audio_bytes;
         let valid_partial = metadata.file_type().is_file()
             && metadata.len() >= WAV_HEADER_BYTES
             && audio_bytes > 0
             && audio_bytes.is_multiple_of(2)
+            && metadata.len() >= WAV_HEADER_BYTES.saturating_add(audio_bytes)
             && audio_bytes <= self.limits.max_audio_bytes_per_session;
         if !valid_partial {
-            remove_if_exists(&part_path)?;
-            remove_if_exists(&recording_manifest_path)?;
-            return Ok(None);
+            return Err(CoreError::Conflict(format!(
+                "Voice spool recovery has no complete authenticated checkpoint for {session_id}"
+            )));
         }
 
-        let mut file = OpenOptions::new().read(true).write(true).open(&part_path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&source_path)?;
+        file.set_len(WAV_HEADER_BYTES.saturating_add(audio_bytes))?;
         file.seek(SeekFrom::Start(WAV_HEADER_BYTES))?;
         let mut hasher = Sha256::new();
         let mut remaining = audio_bytes;
@@ -906,24 +980,28 @@ impl VoiceAudioSpool {
             hasher.update(&buffer[..read_len]);
             remaining -= read_len as u64;
         }
+        let checksum_sha256 = format!("{:x}", hasher.finalize());
+        if checksum_sha256 != manifest.checkpoint_checksum_sha256 {
+            return Err(CoreError::Conflict(format!(
+                "Voice spool recovery checkpoint checksum failed for {session_id}"
+            )));
+        }
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&pcm16_wav_header(manifest.sample_rate, audio_bytes)?)?;
         file.flush()?;
         file.sync_all()?;
         drop(file);
 
-        if wav_path.exists() || ready_manifest_path.exists() {
-            return Err(CoreError::Conflict(format!(
-                "Voice spool recovery target already exists for {session_id}"
-            )));
+        let moved_from_part = source_path == part_path;
+        if moved_from_part {
+            fs::rename(&part_path, &wav_path)?;
         }
-        fs::rename(&part_path, &wav_path)?;
         let descriptor = VoiceSpoolDescriptor {
             session_id: session_id.clone(),
             audio_bytes,
             duration_ms: pcm_duration_ms(audio_bytes, manifest.sample_rate),
             sample_rate: manifest.sample_rate,
-            checksum_sha256: format!("{:x}", hasher.finalize()),
+            checksum_sha256,
             created_at_ms: manifest.created_at_ms,
             expires_at_ms: recovered_at_ms.saturating_add(self.limits.retention.as_millis() as u64),
             target: manifest.target,
@@ -935,7 +1013,9 @@ impl VoiceAudioSpool {
                 descriptor: descriptor.clone(),
             },
         ) {
-            let _ = fs::rename(&wav_path, &part_path);
+            if moved_from_part {
+                let _ = fs::rename(&wav_path, &part_path);
+            }
             return Err(error);
         }
         remove_if_exists(&recording_manifest_path)?;
@@ -992,23 +1072,56 @@ impl VoiceAudioSpool {
 
 impl Drop for VoiceAudioSpool {
     fn drop(&mut self) {
-        let root = self.root.clone();
         let Ok(sessions) = self.sessions.get_mut() else {
             return;
         };
-        let recording_ids = sessions
-            .iter()
-            .filter_map(|(session_id, session)| {
-                matches!(session, VoiceSession::Recording(_)).then(|| session_id.clone())
-            })
-            .collect::<Vec<_>>();
-        for session_id in recording_ids {
-            let session = sessions.remove(&session_id);
-            drop(session);
-            let _ = fs::remove_file(root.join(format!("{session_id}.wav.part")));
-            let _ = fs::remove_file(root.join(format!("{session_id}.recording.json")));
+        for session in sessions.values_mut() {
+            if let VoiceSession::Recording(recording) = session {
+                // Normal application shutdown is interruption, not explicit
+                // user cancellation. Preserve a complete authenticated
+                // checkpoint; `remove` remains the sole privacy-delete path.
+                let _ = checkpoint_recording(recording, true);
+            }
         }
     }
+}
+
+fn checkpoint_recording(recording: &mut RecordingSession, force: bool) -> Result<(), CoreError> {
+    let bytes_since_checkpoint = recording
+        .audio_bytes
+        .saturating_sub(recording.last_checkpoint_audio_bytes);
+    let checkpoint_due = recording.audio_bytes > 0
+        && (force
+            || recording.last_checkpoint_audio_bytes == 0
+            || bytes_since_checkpoint >= VOICE_SPOOL_CHECKPOINT_BYTES);
+    if !checkpoint_due {
+        return Ok(());
+    }
+
+    let file = recording
+        .file
+        .as_mut()
+        .expect("recording session owns its spool file");
+    file.flush()?;
+    file.sync_all()?;
+    let checksum_sha256 = format!("{:x}", recording.hasher.clone().finalize());
+    append_recording_checkpoint(
+        &recording.recording_manifest_path,
+        &VoiceSpoolRecordingManifest {
+            version: VOICE_SPOOL_MANIFEST_VERSION,
+            session_id: recording.session_id.clone(),
+            created_at_ms: recording.created_at_ms,
+            sample_rate: recording.sample_rate,
+            target: recording.target.clone(),
+            checkpoint_audio_bytes: recording.audio_bytes,
+            checkpoint_next_sequence: recording.next_sequence,
+            checkpoint_checksum_sha256: checksum_sha256.clone(),
+        },
+    )?;
+    recording.last_checkpoint_audio_bytes = recording.audio_bytes;
+    recording.last_checkpoint_next_sequence = recording.next_sequence;
+    recording.last_checkpoint_checksum_sha256 = checksum_sha256;
+    Ok(())
 }
 
 pub fn pcm_duration_ms(audio_bytes: u64, sample_rate: u32) -> u64 {
@@ -1111,7 +1224,8 @@ fn write_recording_manifest(
 ) -> Result<(), CoreError> {
     let temp_path = path.with_extension("json.tmp");
     remove_if_exists(&temp_path)?;
-    let bytes = serde_json::to_vec(manifest)?;
+    let mut bytes = serde_json::to_vec(manifest)?;
+    bytes.push(b'\n');
     let mut open_options = OpenOptions::new();
     open_options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1129,6 +1243,65 @@ fn write_recording_manifest(
         sync_directory(parent)?;
     }
     Ok(())
+}
+
+fn append_recording_checkpoint(
+    path: &Path,
+    manifest: &VoiceSpoolRecordingManifest,
+) -> Result<(), CoreError> {
+    let mut bytes = serde_json::to_vec(manifest)?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new().append(true).open(path)?;
+    file.write_all(&bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn read_latest_recording_manifest(
+    path: &Path,
+    expected_session_id: &str,
+    max_audio_bytes: u64,
+) -> Result<Option<VoiceSpoolRecordingManifest>, CoreError> {
+    let bytes = fs::read(path)?;
+    let mut latest: Option<VoiceSpoolRecordingManifest> = None;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(candidate) = serde_json::from_slice::<VoiceSpoolRecordingManifest>(line) else {
+            // A crash may tear only the final append. Earlier complete journal
+            // records remain authoritative.
+            continue;
+        };
+        let checksum_valid = candidate.checkpoint_checksum_sha256.len() == 64
+            && candidate
+                .checkpoint_checksum_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit());
+        let structurally_valid = candidate.version == VOICE_SPOOL_MANIFEST_VERSION
+            && candidate.session_id == expected_session_id
+            && (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&candidate.sample_rate)
+            && candidate.checkpoint_audio_bytes <= max_audio_bytes
+            && candidate.checkpoint_audio_bytes.is_multiple_of(2)
+            && (candidate.checkpoint_audio_bytes == 0 || candidate.checkpoint_next_sequence > 0)
+            && checksum_valid;
+        if !structurally_valid {
+            continue;
+        }
+        if let Some(previous) = latest.as_ref() {
+            let same_recording = candidate.created_at_ms == previous.created_at_ms
+                && candidate.sample_rate == previous.sample_rate
+                && candidate.target == previous.target;
+            let monotonic = candidate.checkpoint_audio_bytes >= previous.checkpoint_audio_bytes
+                && candidate.checkpoint_next_sequence >= previous.checkpoint_next_sequence;
+            if !same_recording || !monotonic {
+                continue;
+            }
+        }
+        latest = Some(candidate);
+    }
+    Ok(latest)
 }
 
 fn write_deletion_marker(path: &Path, session_id: &str) -> Result<(), CoreError> {
@@ -1305,7 +1478,11 @@ mod tests {
         let part_path = root.path().join(format!("{session_id}.wav.part"));
         let recording_manifest_path = root.path().join(format!("{session_id}.recording.json"));
         let mut bytes = vec![0_u8; WAV_HEADER_BYTES as usize];
-        bytes.extend_from_slice(&[1, 0, 2, 0, 3, 0, 4, 0]);
+        let checkpoint_audio = [1, 0, 2, 0, 3, 0, 4, 0];
+        bytes.extend_from_slice(&checkpoint_audio);
+        // Simulate a torn even-length write after the last durable journal
+        // record. Recovery must never promote these unauthenticated bytes.
+        bytes.extend_from_slice(&[9, 9]);
         fs::write(&part_path, bytes).unwrap();
         write_recording_manifest(
             &recording_manifest_path,
@@ -1315,6 +1492,9 @@ mod tests {
                 created_at_ms: 1,
                 sample_rate: 16_000,
                 target: VoiceSpoolTarget::default(),
+                checkpoint_audio_bytes: checkpoint_audio.len() as u64,
+                checkpoint_next_sequence: 1,
+                checkpoint_checksum_sha256: format!("{:x}", Sha256::digest(checkpoint_audio)),
             },
         )
         .unwrap();
@@ -1330,16 +1510,24 @@ mod tests {
     }
 
     #[test]
-    fn normal_shutdown_deletes_an_unfinished_private_recording() {
+    fn normal_shutdown_preserves_and_recovers_accepted_audio() {
         let root = tempfile::tempdir().unwrap();
-        let part_path = {
+        let (session_id, part_path, recording_manifest_path) = {
             let spool = VoiceAudioSpool::with_limits(root.path(), test_limits()).unwrap();
             let started = spool.start(16_000).unwrap();
             spool.append(&started.session_id, 0, &[0; 8]).unwrap();
-            spool.paths_for_valid_id(&started.session_id).unwrap().0
+            let part_path = spool.paths_for_valid_id(&started.session_id).unwrap().0;
+            let manifest_path = spool.recording_manifest_path(&started.session_id).unwrap();
+            (started.session_id, part_path, manifest_path)
         };
 
-        assert!(!part_path.exists());
+        assert!(part_path.exists());
+        assert!(recording_manifest_path.exists());
+        let recovered = VoiceAudioSpool::with_limits(root.path(), test_limits()).unwrap();
+        let descriptor = recovered.list_ready().unwrap().pop().unwrap();
+        assert_eq!(descriptor.session_id, session_id);
+        assert_eq!(descriptor.audio_bytes, 8);
+        assert!(recovered.prepare_transcription(&session_id).is_ok());
     }
 
     #[test]

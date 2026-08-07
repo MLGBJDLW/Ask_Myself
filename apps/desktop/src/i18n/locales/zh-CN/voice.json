@@ -19,6 +19,7 @@
   "microphoneTestUnavailable": "无法打开该麦克风，请换一个设备重试。",
   "realtimeBackpressure": "音频上传速度不足，录音已安全停止。正在完成已采集语音的转写；请继续录音以补充后续内容。",
   "realtimeDeferred": "实时转写暂不可用。录音会继续安全保存到本地暂存，并在停止后重试。",
-  "cleanupPending": "私密录音仍在等待删除，应用会自动重试清理。",
+  "cleanupPending": "私密录音仍在等待删除；可使用删除按钮重试清理。",
+  "discardPending": "删除待处理录音",
   "transcriptionFailed": "转写失败。请检查语音服务设置后重试。"
 }

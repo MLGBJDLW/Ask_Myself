@@ -127,6 +127,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const [partialTranscript, setPartialTranscript] = useState('');
   const [runtimeNotice, setRuntimeNotice] = useState<VoiceRuntimeErrorCode | null>(null);
   const [automaticResult, setAutomaticResult] = useState<VoiceRuntimeActionResult | null>(null);
+  const [hasPendingVoiceSpool, setHasPendingVoiceSpool] = useState(false);
   const realtimeSessionIdRef = useRef<string | null>(null);
   const realtimeUploadQueueRef = useRef<BoundedAudioUploadQueue | null>(null);
   const realtimeUploadErrorRef = useRef<string | null>(null);
@@ -135,9 +136,11 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const realtimeSafeStopHandlerRef = useRef<() => void>(() => {});
   const voiceSpoolUploadRef = useRef<NativeVoiceSpoolUpload | null>(null);
   const pendingVoiceSpoolIdsRef = useRef<string[]>([]);
+  const pendingVoiceCleanupIdsRef = useRef<string[]>([]);
   const voiceSpoolFinishPromiseRef = useRef<Promise<VoiceRuntimeActionResult> | null>(null);
   const voiceSpoolSafeStopHandlerRef = useRef<() => void>(() => {});
   const startInProgressRef = useRef(false);
+  const discardInProgressRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -169,7 +172,14 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       pendingVoiceSpoolIdsRef.current = spools
         .filter((spool) => spool.state === 'ready')
         .map((spool) => spool.sessionId);
-      if (spools.some((spool) => spool.state === 'deletionPending')) {
+      pendingVoiceCleanupIdsRef.current = spools
+        .filter((spool) => spool.state === 'deletionPending')
+        .map((spool) => spool.sessionId);
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
+      if (pendingVoiceCleanupIdsRef.current.length > 0) {
         setRuntimeNotice('voice_cleanup_pending');
       }
     }).catch(() => {
@@ -183,7 +193,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       if (sessionId) void api.cancelRealtimeTranscription(sessionId);
       const voiceSpool = voiceSpoolUploadRef.current;
       voiceSpoolUploadRef.current = null;
-      if (voiceSpool) void voiceSpool.cancel();
+      if (voiceSpool) void voiceSpool.preserveAcceptedAudio().catch(() => {});
     };
   }, []);
 
@@ -278,20 +288,49 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   ): Promise<VoiceRuntimeActionResult> => {
     setTranscribing(true);
     try {
-      const transcript = normalizeTranscript(await api.transcribeVoiceAudioSpool(sessionId));
+      const result = await api.transcribeVoiceAudioSpool(sessionId);
+      const transcript = normalizeTranscript(result.transcript);
       pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
         pendingVoiceSpoolIdsRef.current,
         sessionId,
       );
+      if (result.cleanupPending) {
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          sessionId,
+        );
+        setRuntimeNotice('voice_cleanup_pending');
+      }
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
       return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
     } catch (error) {
-      pendingVoiceSpoolIdsRef.current = queuePendingVoiceSpool(
-        pendingVoiceSpoolIdsRef.current,
-        sessionId,
-      );
+      const entries = await api.listVoiceAudioSpools().catch(() => null);
+      const cleanupPending = entries?.some(
+        (entry) => entry.sessionId === sessionId && entry.state === 'deletionPending',
+      ) ?? false;
+      if (cleanupPending) {
+        pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          sessionId,
+        );
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          sessionId,
+        );
+        setRuntimeNotice('voice_cleanup_pending');
+      } else {
+        pendingVoiceSpoolIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          sessionId,
+        );
+      }
+      setHasPendingVoiceSpool(true);
       return {
         status: 'error',
-        code: 'transcription_failed',
+        code: cleanupPending ? 'voice_cleanup_pending' : 'transcription_failed',
         message: String(error),
       };
     } finally {
@@ -349,6 +388,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         pendingVoiceSpoolIdsRef.current,
         descriptor.sessionId,
       );
+      setHasPendingVoiceSpool(true);
 
       if (!sessionId || realtimeUploadErrorRef.current) {
         return transcribeManagedVoiceSpool(descriptor.sessionId);
@@ -370,26 +410,24 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           pendingVoiceSpoolIdsRef.current,
           descriptor.sessionId,
         );
+        setHasPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current.length > 0
+            || pendingVoiceCleanupIdsRef.current.length > 0,
+        );
         setPartialTranscript('');
         return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
-      } catch (error) {
-        const ready = await api.listVoiceAudioSpools().catch(() => null);
-        if (
-          ready
-          && !ready.some(
-            (spool) => spool.state === 'ready' && spool.sessionId === descriptor.sessionId,
-          )
-        ) {
-          pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
-            pendingVoiceSpoolIdsRef.current,
-            descriptor.sessionId,
-          );
-        }
-        return {
-          status: 'error',
-          code: 'transcription_failed',
-          message: `Realtime transcription succeeded but managed audio cleanup is pending: ${String(error)}`,
-        };
+      } catch {
+        pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+          pendingVoiceSpoolIdsRef.current,
+          descriptor.sessionId,
+        );
+        pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+          pendingVoiceCleanupIdsRef.current,
+          descriptor.sessionId,
+        );
+        setHasPendingVoiceSpool(true);
+        setRuntimeNotice('voice_cleanup_pending');
+        return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
       } finally {
         if (realtimeSessionIdRef.current === sessionId) {
           realtimeSessionIdRef.current = null;
@@ -474,6 +512,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         pendingVoiceSpoolIdsRef.current,
         descriptor.sessionId,
       );
+      setHasPendingVoiceSpool(true);
       return transcribeManagedVoiceSpool(descriptor.sessionId);
     })();
     voiceSpoolFinishPromiseRef.current = finishPromise;
@@ -621,6 +660,54 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
 
   const busy = transcribing || whisperChecking || safeStopping || starting;
 
+  const discardPendingVoiceSpool = useCallback(async (): Promise<VoiceRuntimeActionResult> => {
+    if (discardInProgressRef.current) return { status: 'error', code: 'busy' };
+    const sessionId = pendingVoiceCleanupIdsRef.current[0]
+      ?? pendingVoiceSpoolIdsRef.current[0];
+    if (!sessionId) {
+      setHasPendingVoiceSpool(false);
+      return { status: 'empty' };
+    }
+
+    discardInProgressRef.current = true;
+    setTranscribing(true);
+    try {
+      await api.cancelVoiceAudioSpool(sessionId);
+      pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        sessionId,
+      );
+      pendingVoiceCleanupIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceCleanupIdsRef.current,
+        sessionId,
+      );
+      setHasPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current.length > 0
+          || pendingVoiceCleanupIdsRef.current.length > 0,
+      );
+      return { status: 'empty' };
+    } catch (error) {
+      pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
+        pendingVoiceSpoolIdsRef.current,
+        sessionId,
+      );
+      pendingVoiceCleanupIdsRef.current = queuePendingVoiceSpool(
+        pendingVoiceCleanupIdsRef.current,
+        sessionId,
+      );
+      setHasPendingVoiceSpool(true);
+      setRuntimeNotice('voice_cleanup_pending');
+      return {
+        status: 'error',
+        code: 'voice_cleanup_pending',
+        message: String(error),
+      };
+    } finally {
+      discardInProgressRef.current = false;
+      setTranscribing(false);
+    }
+  }, []);
+
   const cancelRecording = useCallback(() => {
     recorder.cancelRecording();
     const sessionId = realtimeSessionIdRef.current;
@@ -660,19 +747,23 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       partialTranscript,
       runtimeNotice,
       automaticResult,
+      hasPendingVoiceSpool,
       clearRuntimeNotice,
       clearAutomaticResult,
       analyser: recorder.analyser,
       toggleRecording,
       cancelRecording,
+      discardPendingVoiceSpool,
       formatDuration: formatRecordingDuration,
     }),
     [
       busy,
       cancelRecording,
+      discardPendingVoiceSpool,
       deleteWhisperModel,
       downloadWhisperModel,
       microphones,
+      hasPendingVoiceSpool,
       partialTranscript,
       runtimeNotice,
       automaticResult,

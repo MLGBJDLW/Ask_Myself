@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from 'react';
-import { Mic, Loader2 } from 'lucide-react';
+import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
@@ -20,10 +20,12 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     partialTranscript,
     runtimeNotice,
     automaticResult,
+    hasPendingVoiceSpool,
     clearRuntimeNotice,
     clearAutomaticResult,
     recordingDuration,
     toggleRecording,
+    discardPendingVoiceSpool,
     formatDuration,
     analyser,
   } =
@@ -88,6 +90,12 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     }
   }, [busy, onTranscript, showRuntimeError, toggleRecording]);
 
+  const handleDiscard = useCallback(async () => {
+    if (busy) return;
+    const result = await discardPendingVoiceSpool();
+    if (result.status === 'error') showRuntimeError(result.code, result.message);
+  }, [busy, discardPendingVoiceSpool, showRuntimeError]);
+
   const label = busy
     ? t('voice.processing')
     : isRecording
@@ -95,38 +103,53 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       : t('voice.startRecording');
 
   return (
-    <button
-      onClick={handleClick}
-      disabled={disabled || busy}
-      className={`relative flex h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
-        isRecording
-          ? 'gap-1.5 bg-danger/10 px-2.5 text-danger voice-btn-recording'
-          : 'w-8 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
-      }`}
-      aria-label={label}
-      title={label}
-    >
-      {busy ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-      ) : isRecording ? (
-        <>
-          <span className="recording-indicator" />
-          <MicrophoneWaveform
-            analyser={analyser}
-            barCount={12}
-            className="h-4"
-            label={t('voice.waveformLabel')}
-          />
-          {partialTranscript && (
-            <span className="max-w-36 truncate text-[11px] text-text-secondary">
-              {partialTranscript}
-            </span>
-          )}
-          <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
-        </>
-      ) : (
-        <Mic className="h-3.5 w-3.5" />
+    <div className="flex shrink-0 items-center gap-0.5">
+      {hasPendingVoiceSpool && !isRecording && (
+        <button
+          type="button"
+          onClick={handleDiscard}
+          disabled={disabled || busy}
+          className="flex h-8 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out hover:bg-danger/10 hover:text-danger disabled:pointer-events-none disabled:opacity-40"
+          aria-label={t('voice.discardPending')}
+          title={t('voice.discardPending')}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       )}
-    </button>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={disabled || busy}
+        className={`relative flex h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
+          isRecording
+            ? 'gap-1.5 bg-danger/10 px-2.5 text-danger voice-btn-recording'
+            : 'w-8 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+        }`}
+        aria-label={label}
+        title={label}
+      >
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : isRecording ? (
+          <>
+            <span className="recording-indicator" />
+            <MicrophoneWaveform
+              analyser={analyser}
+              barCount={12}
+              className="h-4"
+              label={t('voice.waveformLabel')}
+            />
+            {partialTranscript && (
+              <span className="max-w-36 truncate text-[11px] text-text-secondary">
+                {partialTranscript}
+              </span>
+            )}
+            <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
+          </>
+        ) : (
+          <Mic className="h-3.5 w-3.5" />
+        )}
+      </button>
+    </div>
   );
 }

@@ -91,6 +91,13 @@ export class NativeVoiceSpoolUpload {
     return this.recoveryPromise;
   }
 
+  /** Preserve acknowledged audio when its React owner unmounts. This is not
+   * a privacy cancellation: native state is finalized when possible and its
+   * crash journal remains authoritative if application shutdown wins the race. */
+  preserveAcceptedAudio(): Promise<VoiceAudioSpoolDescriptor> {
+    return this.finish().catch(() => this.finishAcceptedAudio());
+  }
+
   cancel(): Promise<void> {
     if (this.cancelPromise) return this.cancelPromise;
     this.accepting = false;

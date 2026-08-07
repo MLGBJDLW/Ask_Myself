@@ -387,6 +387,7 @@ test('desktop API exposes raw realtime and native spool lifecycles', () => {
   assert.match(apiSource, /append_voice_audio_spool_cmd/);
   assert.match(apiSource, /finish_voice_audio_spool_cmd/);
   assert.match(apiSource, /transcribe_voice_audio_spool_cmd/);
+  assert.match(apiSource, /VoiceAudioSpoolTranscriptionResult/);
   assert.match(apiSource, /cancel_voice_audio_spool_cmd/);
   assert.doesNotMatch(apiSource, /transcribe_audio_buffer_cmd/);
   assert.match(
@@ -458,6 +459,9 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
   assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
   assert.match(runtimeSource, /startInProgressRef\.current/);
+  assert.match(runtimeSource, /pendingVoiceCleanupIdsRef/);
+  assert.match(runtimeSource, /discardPendingVoiceSpool/);
+  assert.match(runtimeSource, /voiceSpool\.preserveAcceptedAudio\(\)/);
   assert.match(runtimeSource, /onRejected: \(\) => degradeRealtimeToSpool\(true\)/);
   assert.match(runtimeSource, /startManagedVoiceSpool/);
   assert.match(runtimeSource, /upload\.enqueue\(chunk\)/);
@@ -571,6 +575,33 @@ await testAsync('native spool can finalize acknowledged chunks after a later wri
 
   assert.equal(recovered.sessionId, 'recoverable-id-2');
   assert.equal(finalized, 2);
+});
+
+await testAsync('native spool unmount preserves accepted audio instead of privacy-deleting it', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  let cancelled = 0;
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'unmount-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => {},
+      finish: async (sessionId) => ({
+        sessionId,
+        audioBytes: 2,
+        durationMs: 1,
+        sampleRate: 16_000,
+        checksumSha256: 'abc',
+        createdAtMs: 1,
+        expiresAtMs: 2,
+      }),
+      cancel: async () => { cancelled += 1; },
+    },
+  );
+  upload.enqueue(new Uint8Array([1, 0]));
+
+  const descriptor = await upload.preserveAcceptedAudio();
+
+  assert.equal(descriptor.sessionId, 'unmount-id');
+  assert.equal(cancelled, 0);
 });
 
 await testAsync('bounded audio queue surfaces native write failures without Promise growth', async () => {

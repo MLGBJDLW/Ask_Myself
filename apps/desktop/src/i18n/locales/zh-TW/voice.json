@@ -19,6 +19,7 @@
   "microphoneTestUnavailable": "無法開啟此麥克風，請換一個裝置再試。",
   "realtimeBackpressure": "音訊上傳速度不足，錄音已安全停止。正在完成已擷取語音的轉寫；請繼續錄音以補充後續內容。",
   "realtimeDeferred": "即時轉寫暫時無法使用。錄音會繼續安全儲存在本機暫存，並在停止後重試。",
-  "cleanupPending": "私密錄音仍在等待刪除，應用程式會自動重試清理。",
+  "cleanupPending": "私密錄音仍在等待刪除；可使用刪除按鈕重試清理。",
+  "discardPending": "刪除待處理錄音",
   "transcriptionFailed": "轉寫失敗。請檢查語音服務設定後再試。"
 }

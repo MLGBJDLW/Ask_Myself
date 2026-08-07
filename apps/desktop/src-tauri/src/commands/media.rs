@@ -225,6 +225,14 @@ const VOICE_SPOOL_SESSION_HEADER: &str = "x-nexa-voice-session-id";
 const VOICE_SPOOL_SEQUENCE_HEADER: &str = "x-nexa-voice-sequence";
 
 #[cfg(feature = "video")]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSpoolTranscriptionResult {
+    transcript: String,
+    cleanup_pending: bool,
+}
+
+#[cfg(feature = "video")]
 fn validate_voice_spool_pcm(audio_data: &[u8], max_chunk_bytes: usize) -> Result<(), String> {
     if audio_data.is_empty() {
         return Err("Voice spool chunk cannot be empty".to_string());
@@ -343,7 +351,7 @@ pub async fn list_voice_audio_spools_cmd(
 pub async fn transcribe_voice_audio_spool_cmd(
     session_id: String,
     state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<VoiceSpoolTranscriptionResult, String> {
     let db = state.db.clone();
     let spool = state.voice_audio_spool.clone();
     let whisper_busy = state.whisper_busy.clone();
@@ -418,13 +426,14 @@ pub async fn transcribe_voice_audio_spool_cmd(
         Ok(transcript) => {
             let cleanup_spool = spool.clone();
             let cleanup_id = session_id.clone();
-            tokio::task::spawn_blocking(move || cleanup_spool.remove(&cleanup_id))
-                .await
-                .map_err(|e| format!("spawn_blocking: {e}"))?
-                .map_err(|e| {
-                    format!("Transcription succeeded but voice privacy cleanup failed: {e}")
-                })?;
-            Ok(transcript)
+            let cleanup_pending = !matches!(
+                tokio::task::spawn_blocking(move || cleanup_spool.remove(&cleanup_id)).await,
+                Ok(Ok(()))
+            );
+            Ok(VoiceSpoolTranscriptionResult {
+                transcript,
+                cleanup_pending,
+            })
         }
         Err(error) => Err(format!(
             "{error}. Managed audio {session_id} is retained for retry until expiry or cancellation"

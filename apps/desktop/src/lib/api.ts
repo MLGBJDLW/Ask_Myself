@@ -1820,6 +1820,11 @@ export interface VoiceAudioSpoolListEntry {
   descriptor?: VoiceAudioSpoolDescriptor;
 }
 
+export interface VoiceAudioSpoolTranscriptionResult {
+  transcript: string;
+  cleanupPending: boolean;
+}
+
 export const startVoiceAudioSpool = (sampleRate: number) =>
   invoke<VoiceAudioSpoolStarted>('start_voice_audio_spool_cmd', { sampleRate });
 
@@ -1841,7 +1846,7 @@ export const listVoiceAudioSpools = () =>
   invoke<VoiceAudioSpoolListEntry[]>('list_voice_audio_spools_cmd');
 
 export const transcribeVoiceAudioSpool = (sessionId: string) =>
-  invoke<string>('transcribe_voice_audio_spool_cmd', { sessionId });
+  invoke<VoiceAudioSpoolTranscriptionResult>('transcribe_voice_audio_spool_cmd', { sessionId });
 
 export const cancelVoiceAudioSpool = (sessionId: string) =>
   invoke<void>('cancel_voice_audio_spool_cmd', { sessionId });
