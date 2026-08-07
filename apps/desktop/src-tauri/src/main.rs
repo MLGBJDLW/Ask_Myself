@@ -271,6 +271,13 @@ fn main() {
                 db_executor.clone(),
                 activity_runtime,
             );
+            #[cfg(feature = "video")]
+            let voice_audio_spool = Arc::new(
+                nexa_core::voice_audio_spool::VoiceAudioSpool::new(
+                    data_dir.join("voice-spool"),
+                )
+                .expect("failed to initialize managed voice audio spool"),
+            );
 
             app.manage(AppState {
                 db: db.clone(),
@@ -278,6 +285,8 @@ fn main() {
                 context_compaction,
                 #[cfg(feature = "video")]
                 whisper_busy: Arc::new(AtomicBool::new(false)),
+                #[cfg(feature = "video")]
+                voice_audio_spool,
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
             });
             app.manage(AgentState {
@@ -587,7 +596,17 @@ fn main() {
             #[cfg(feature = "video")]
             commands::delete_whisper_model_cmd,
             #[cfg(feature = "video")]
-            commands::transcribe_audio_buffer_cmd,
+            commands::start_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::append_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::finish_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::list_voice_audio_spools_cmd,
+            #[cfg(feature = "video")]
+            commands::transcribe_voice_audio_spool_cmd,
+            #[cfg(feature = "video")]
+            commands::cancel_voice_audio_spool_cmd,
             commands::start_realtime_transcription_cmd,
             commands::append_realtime_transcription_audio_cmd,
             commands::finish_realtime_transcription_cmd,

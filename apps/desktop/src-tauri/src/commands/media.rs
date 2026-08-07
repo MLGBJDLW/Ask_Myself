@@ -220,35 +220,98 @@ pub fn delete_whisper_model_cmd(state: tauri::State<'_, AppState>) -> Result<(),
 }
 
 #[cfg(feature = "video")]
-const MAX_VOICE_WAV_BYTES: usize = 64 * 1024 * 1024;
+const VOICE_SPOOL_SESSION_HEADER: &str = "x-nexa-voice-session-id";
+#[cfg(feature = "video")]
+const VOICE_SPOOL_SEQUENCE_HEADER: &str = "x-nexa-voice-sequence";
 
 #[cfg(feature = "video")]
-fn raw_voice_wav(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
-    let tauri::ipc::InvokeBody::Raw(audio_data) = body else {
-        return Err("Voice transcription requires a raw binary request body".to_string());
+fn raw_voice_spool_chunk(
+    request: &tauri::ipc::Request<'_>,
+) -> Result<(String, u64, Vec<u8>), String> {
+    let session_id = request
+        .headers()
+        .get(VOICE_SPOOL_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Voice spool session header is missing".to_string())?
+        .to_string();
+    let sequence = request
+        .headers()
+        .get(VOICE_SPOOL_SEQUENCE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "Voice spool sequence header is missing".to_string())?
+        .parse::<u64>()
+        .map_err(|_| "Voice spool sequence header must be an unsigned integer".to_string())?;
+    let tauri::ipc::InvokeBody::Raw(audio_data) = request.body() else {
+        return Err("Voice spool append requires a raw binary request body".to_string());
     };
-    if audio_data.is_empty() {
-        return Err("Voice transcription audio is empty".to_string());
-    }
-    if audio_data.len() > MAX_VOICE_WAV_BYTES {
-        return Err(format!(
-            "Voice transcription audio exceeds {MAX_VOICE_WAV_BYTES} bytes"
-        ));
-    }
-    Ok(audio_data.clone())
+    Ok((session_id, sequence, audio_data.clone()))
 }
 
 #[cfg(feature = "video")]
 #[tauri::command]
-pub async fn transcribe_audio_buffer_cmd(
+pub async fn start_voice_audio_spool_cmd(
+    sample_rate: u32,
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::voice_audio_spool::VoiceSpoolStarted, String> {
+    let spool = state.voice_audio_spool.clone();
+    tokio::task::spawn_blocking(move || spool.start(sample_rate).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
+pub async fn append_voice_audio_spool_cmd(
     request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::voice_audio_spool::VoiceSpoolProgress, String> {
+    let (session_id, sequence, audio_data) = raw_voice_spool_chunk(&request)?;
+    let spool = state.voice_audio_spool.clone();
+    tokio::task::spawn_blocking(move || {
+        spool
+            .append(&session_id, sequence, &audio_data)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
+pub async fn finish_voice_audio_spool_cmd(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::voice_audio_spool::VoiceSpoolDescriptor, String> {
+    let spool = state.voice_audio_spool.clone();
+    tokio::task::spawn_blocking(move || spool.finish(&session_id).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
+pub async fn list_voice_audio_spools_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<nexa_core::voice_audio_spool::VoiceSpoolDescriptor>, String> {
+    let spool = state.voice_audio_spool.clone();
+    tokio::task::spawn_blocking(move || spool.list_ready().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[cfg(feature = "video")]
+#[tauri::command]
+pub async fn transcribe_voice_audio_spool_cmd(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let audio_data = raw_voice_wav(request.body())?;
     let db = state.db.clone();
+    let spool = state.voice_audio_spool.clone();
     let whisper_busy = state.whisper_busy.clone();
     if whisper_busy.swap(true, Ordering::SeqCst) {
-        return Err("Transcription already in progress".into());
+        return Err("Transcription already in progress; managed audio remains available".into());
     }
     struct BusyGuard(Arc<AtomicBool>);
     impl Drop for BusyGuard {
@@ -258,77 +321,84 @@ pub async fn transcribe_audio_buffer_cmd(
     }
     let _busy_guard = BusyGuard(whisper_busy);
 
+    let prepared = {
+        let spool = spool.clone();
+        let session_id = session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            spool
+                .prepare_transcription(&session_id)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??
+    };
     let app_config = db.load_app_config().map_err(|e| e.to_string())?;
     let speech_config = app_config.speech_to_text;
-    match speech_config.api_style.as_str() {
+    let wav_path = prepared.path;
+    let result = match speech_config.api_style.as_str() {
         "openai_transcription" | "dashscope_asr" => {
-            nexa_core::speech_to_text::transcribe_cloud_wav(audio_data, &speech_config)
+            nexa_core::speech_to_text::transcribe_cloud_wav_path(&wav_path, &speech_config)
                 .await
                 .map_err(|e| e.to_string())
         }
+        "openai_realtime_transcription" => {
+            super::realtime_transcription::transcribe_realtime_spool(&wav_path, &speech_config)
+                .await
+        }
         "sherpa_onnx" => tokio::task::spawn_blocking(move || {
-            with_voice_wav(&audio_data, |wav_path| {
-                nexa_core::speech_to_text::transcribe_sherpa_wav(wav_path, &speech_config)
-                    .map_err(|e| e.to_string())
-            })
+            nexa_core::speech_to_text::transcribe_sherpa_wav(&wav_path, &speech_config)
+                .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?,
         "local_whisper" => tokio::task::spawn_blocking(move || {
             let config = db.load_video_config().map_err(|e| e.to_string())?;
-            with_voice_wav(&audio_data, |wav_path| {
-                let segments = nexa_core::video::transcribe_audio(wav_path, &config)
-                    .map_err(|e| e.to_string())?;
-                Ok(segments
-                    .iter()
-                    .map(|segment| segment.text.trim())
-                    .collect::<Vec<_>>()
-                    .join(" "))
-            })
+            let segments = nexa_core::video::transcribe_audio_bounded(&wav_path, &config, 60)
+                .map_err(|e| e.to_string())?;
+            Ok(segments
+                .iter()
+                .map(|segment| segment.text.trim())
+                .collect::<Vec<_>>()
+                .join(" "))
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?,
         style => Err(format!("Unsupported speech-to-text API style: {style}")),
+    };
+
+    match result {
+        Ok(transcript) => {
+            let cleanup_spool = spool.clone();
+            let cleanup_id = session_id.clone();
+            tokio::task::spawn_blocking(move || cleanup_spool.remove(&cleanup_id))
+                .await
+                .map_err(|e| format!("spawn_blocking: {e}"))?
+                .map_err(|e| {
+                    format!("Transcription succeeded but voice privacy cleanup failed: {e}")
+                })?;
+            Ok(transcript)
+        }
+        Err(error) => Err(format!(
+            "{error}. Managed audio {session_id} is retained for retry until expiry or cancellation"
+        )),
     }
 }
 
 #[cfg(feature = "video")]
-fn with_voice_wav<T>(
-    audio_data: &[u8],
-    operation: impl FnOnce(&std::path::Path) -> Result<T, String>,
-) -> Result<T, String> {
-    let temp_dir = std::env::temp_dir().join("nexa-voice");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
-    let wav_path = temp_dir.join(format!("voice-{}.wav", Uuid::new_v4()));
-    std::fs::write(&wav_path, audio_data).map_err(|e| e.to_string())?;
-    struct WavGuard(PathBuf);
-    impl Drop for WavGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _guard = WavGuard(wav_path.clone());
-    operation(&wav_path)
+#[tauri::command]
+pub async fn cancel_voice_audio_spool_cmd(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let spool = state.voice_audio_spool.clone();
+    tokio::task::spawn_blocking(move || spool.remove(&session_id).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(all(test, feature = "video"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn voice_transcription_accepts_only_bounded_raw_binary() {
-        assert_eq!(
-            raw_voice_wav(&tauri::ipc::InvokeBody::Raw(vec![1, 2, 3])).unwrap(),
-            vec![1, 2, 3]
-        );
-        assert!(raw_voice_wav(&tauri::ipc::InvokeBody::Raw(Vec::new())).is_err());
-        assert!(
-            raw_voice_wav(&tauri::ipc::InvokeBody::Json(serde_json::json!({
-                "audioData": [1, 2, 3]
-            })))
-            .is_err()
-        );
-    }
 
     #[test]
     fn managed_model_defaults_preserve_the_legacy_whisper_location() {

@@ -143,6 +143,10 @@ pub struct AppState {
     /// Guard: true while whisper transcription is in progress.
     #[cfg(feature = "video")]
     pub whisper_busy: Arc<AtomicBool>,
+    /// Native, bounded microphone audio spool. Renderer callers only receive
+    /// opaque session IDs; filesystem paths remain inside Rust.
+    #[cfg(feature = "video")]
+    pub voice_audio_spool: Arc<nexa_core::voice_audio_spool::VoiceAudioSpool>,
     /// Lock to serialize scan operations and prevent duplicate document inserts.
     pub scan_lock: Arc<Mutex<()>>,
 }
