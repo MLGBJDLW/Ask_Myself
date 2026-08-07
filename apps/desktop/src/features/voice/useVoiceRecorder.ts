@@ -23,6 +23,8 @@ export interface VoiceRecordingOptions {
   onCaptureIssue?: (state: Extract<VoiceCaptureState, 'interrupted' | 'disconnected'>) => void;
   /** Receives recoverable input interruptions without ending the recording. */
   onCaptureStateChange?: (state: Extract<VoiceCaptureState, 'capturing' | 'interrupted'>) => void;
+  /** Reports the track that actually opened after any device fallback. */
+  onCaptureReady?: (device: { label: string | null }) => void;
 }
 
 export interface UseVoiceRecorderReturn {
@@ -190,6 +192,8 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
       streamRef.current = stream;
+      const activeTrack = stream.getAudioTracks()[0];
+      options.onCaptureReady?.({ label: activeTrack?.label?.trim() || null });
 
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;

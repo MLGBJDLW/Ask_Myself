@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
+    localStorage.setItem('nexa-mic-device-id', 'configured-microphone');
 
     const nowIso = new Date().toISOString();
     const conversation = {
@@ -52,6 +53,7 @@ test.beforeEach(async ({ page }) => {
       getFloatTimeDomainData(samples: Float32Array) { samples.fill(0); }
     }
     class FakeTrack {
+      label = 'Studio Microphone';
       onended: (() => void) | null = null;
       onmute: (() => void) | null = null;
       onunmute: (() => void) | null = null;
@@ -94,17 +96,38 @@ test.beforeEach(async ({ page }) => {
         else track.onunmute?.();
       };
     const mediaDevices = {
-      getUserMedia: async () => ({
-        getTracks: () => [track],
-        getAudioTracks: () => [track],
-      }),
-      enumerateDevices: async () => ([{
-        deviceId: 'default',
-        groupId: 'group-default',
-        kind: 'audioinput',
-        label: 'Studio Microphone',
-        toJSON: () => ({}),
-      }]),
+      getUserMedia: async (constraints?: MediaStreamConstraints) => {
+        const deviceConstraint = typeof constraints?.audio === 'object'
+          ? constraints.audio.deviceId
+          : undefined;
+        if (
+          typeof deviceConstraint === 'object'
+          && 'exact' in deviceConstraint
+          && deviceConstraint.exact === 'configured-microphone'
+        ) {
+          throw new DOMException('Configured microphone is busy', 'NotReadableError');
+        }
+        return {
+          getTracks: () => [track],
+          getAudioTracks: () => [track],
+        };
+      },
+      enumerateDevices: async () => ([
+        {
+          deviceId: 'default',
+          groupId: 'group-default',
+          kind: 'audioinput',
+          label: 'Studio Microphone',
+          toJSON: () => ({}),
+        },
+        {
+          deviceId: 'configured-microphone',
+          groupId: 'group-configured',
+          kind: 'audioinput',
+          label: 'Configured Microphone',
+          toJSON: () => ({}),
+        },
+      ]),
       addEventListener: () => {},
       removeEventListener: () => {},
     };
@@ -264,6 +287,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
 
   await page.getByRole('button', { name: 'Audio input details' }).click();
   await expect(dock).toContainText('Studio Microphone');
+  await expect(dock).not.toContainText('Configured Microphone');
   await expect(dock).toContainText('Local protected spool');
 
   await page.setViewportSize({ width: 700, height: 800 });

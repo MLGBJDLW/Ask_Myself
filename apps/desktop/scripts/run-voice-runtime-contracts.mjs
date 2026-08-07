@@ -642,6 +642,51 @@ test('audio worklet resampling preserves phase across render quanta', () => {
   assert.deepEqual(collectSamples(split), collectSamples(onePass));
 });
 
+test('audio worklet keeps live ownership bounded through 30 and 60 logical minutes', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 24_000,
+      chunkFrames: 480,
+      maxCredits: 4,
+      maxPendingChunks: 8,
+    },
+  });
+  const sourceFramesPerBatch = 3_840;
+  const source = new Float32Array(sourceFramesPerBatch);
+  const batchesPerMinute = 60 * 48_000 / sourceFramesPerBatch;
+  const totalBatches = 60 * batchesPerMinute;
+  const checkpoints = new Set([30 * batchesPerMinute, totalBatches]);
+  let emittedChunks = 0;
+  let maxInFlightChunks = 0;
+  let maxPendingChunks = 0;
+
+  for (let batch = 1; batch <= totalBatches; batch += 1) {
+    processor.process([[source]]);
+    const messages = processor.port.messages.splice(0);
+    const pcmMessages = messages.filter(({ message }) => message.type === 'pcm');
+    assert.equal(messages.some(({ message }) => message.type === 'overflow'), false);
+    maxInFlightChunks = Math.max(maxInFlightChunks, pcmMessages.length);
+    maxPendingChunks = Math.max(maxPendingChunks, processor.pendingChunks.length);
+    emittedChunks += pcmMessages.length;
+    for (const { message } of pcmMessages) {
+      assert.equal(message.buffer.byteLength, 480 * 2);
+      processor.port.onmessage({ data: { type: 'ack' } });
+    }
+
+    if (checkpoints.has(batch)) {
+      assert.equal(processor.pendingChunks.length, 0);
+      assert.equal(processor.credits, processor.maxCredits);
+      assert.equal(processor.overflowed, false);
+      assert.equal(processor.port.messages.length, 0);
+    }
+  }
+
+  assert.equal(emittedChunks, 60 * 60 * 50);
+  assert.equal(maxInFlightChunks, 4);
+  assert.equal(maxPendingChunks, 0);
+});
+
 test('realtime partial transcript retains only the newest bounded text', () => {
   const {
     MAX_VOICE_PARTIAL_CHARS,

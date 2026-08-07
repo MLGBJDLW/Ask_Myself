@@ -148,6 +148,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const [hasPendingVoiceSpool, setHasPendingVoiceSpool] = useState(false);
   const [transportState, setTransportState] = useState<VoiceTransportState>('local');
   const [recordingContext, setRecordingContext] = useState<VoiceRecordingContext | null>(null);
+  const [activeMicrophoneLabel, setActiveMicrophoneLabel] = useState<string | null>(null);
   const realtimeSessionIdRef = useRef<string | null>(null);
   const realtimeUploadQueueRef = useRef<BoundedAudioUploadQueue | null>(null);
   const realtimeUploadErrorRef = useRef<string | null>(null);
@@ -559,6 +560,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     } finally {
       setSafeStopping(false);
       setRecordingContext(null);
+      setActiveMicrophoneLabel(null);
     }
   }, [finishManagedRecording, finishRealtimeRecording]);
 
@@ -621,6 +623,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         language: speechConfig?.language?.trim() || null,
         realtime,
       });
+      setActiveMicrophoneLabel(null);
       setTransportState(realtime ? 'buffering' : 'local');
       const upload = await startManagedVoiceSpool(
         sampleRate,
@@ -666,6 +669,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
             },
             onCaptureIssue: handleCaptureIssue,
             onCaptureStateChange: handleCaptureStateChange,
+            onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
           });
           void microphones.refresh();
         } catch (error) {
@@ -685,6 +689,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
             onPcmChunk: (chunk) => upload.enqueue(chunk),
             onCaptureIssue: handleCaptureIssue,
             onCaptureStateChange: handleCaptureStateChange,
+            onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
           });
           void microphones.refresh();
         } catch (error) {
@@ -696,6 +701,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       return { status: 'started' };
     } catch (error) {
       setRecordingContext(null);
+      setActiveMicrophoneLabel(null);
       setTransportState('local');
       return {
         status: 'error',
@@ -781,6 +787,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     setAutomaticResult(null);
     setPartialTranscript('');
     setRecordingContext(null);
+    setActiveMicrophoneLabel(null);
     setTransportState('local');
     if (sessionId) void api.cancelRealtimeTranscription(sessionId);
     const voiceSpool = voiceSpoolUploadRef.current;
@@ -806,14 +813,6 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       };
     }
   }, [recorder, safeStopping, transcribing]);
-
-  const activeMicrophoneLabel = useMemo(() => {
-    const selected = microphones.selectedDeviceId
-      ? microphones.devices.find((device) => device.deviceId === microphones.selectedDeviceId)
-      : microphones.devices.find((device) => device.deviceId === 'default')
-        ?? microphones.devices[0];
-    return selected?.label || null;
-  }, [microphones.devices, microphones.selectedDeviceId]);
 
   const recordingDockVisible = recordingContext !== null
     && (recorder.isRecording || safeStopping || transcribing);

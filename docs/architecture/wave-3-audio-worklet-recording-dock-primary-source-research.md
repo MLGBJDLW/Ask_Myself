@@ -139,7 +139,8 @@ inside the viewport.
 
 - `run-voice-runtime-contracts.mjs` executes the worklet in an isolated VM and
   checks fixed PCM16 chunks, transfer lists, credits, bounded terminal
-  overflow, pause flush, and resampling phase across render quanta.
+  overflow, pause flush, resampling phase across render quanta, and bounded
+  live ownership at 30/60 logical-minute checkpoints.
 - `chat-recording-dock.spec.ts` covers live partials, pause/resume, detail
   disclosure, a minimum 420 px desktop Dock, full-width narrow layout,
   in-viewport controls, stop feedback under 300 ms, processing persistence,
