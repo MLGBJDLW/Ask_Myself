@@ -106,6 +106,7 @@ pub mod usage_snapshot;
 pub mod video;
 pub mod vision_router;
 pub mod visual_document;
+pub mod voice_audio_spool;
 pub mod watcher;
 pub mod web_search;
 pub mod wiki;
