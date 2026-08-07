@@ -1931,6 +1931,182 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_vision_observation_cache_expiry
              ON vision_observation_cache(expires_at_epoch);",
     ),
+    (
+        "v098_media_job_runtime_and_asset_lineage",
+        "CREATE TABLE IF NOT EXISTS media_jobs (
+             id TEXT PRIMARY KEY,
+             idempotency_key TEXT NOT NULL UNIQUE,
+             request_fingerprint_sha256 TEXT NOT NULL CHECK (length(request_fingerprint_sha256) = 64),
+             project_id TEXT,
+             conversation_id TEXT,
+             provider_id TEXT NOT NULL,
+             provider_source TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             api_version TEXT,
+             operation TEXT NOT NULL CHECK (operation IN (
+                 'text_to_video', 'image_to_video', 'video_to_video', 'extend',
+                 'edit', 'first_last_frame', 'motion_transfer', 'lip_sync',
+                 'upscale', 'audio_generation'
+             )),
+             input_asset_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(input_asset_ids_json)),
+             state TEXT NOT NULL CHECK (state IN (
+                 'draft', 'validating', 'uploading_assets', 'submitting', 'queued',
+                 'running', 'post_processing', 'completed', 'failed', 'cancelled',
+                 'expired', 'provider_unknown'
+             )),
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             raw_parameters_json TEXT NOT NULL CHECK (json_valid(raw_parameters_json)),
+             normalized_parameters_json TEXT NOT NULL CHECK (json_valid(normalized_parameters_json)),
+             provider_extras_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provider_extras_json)),
+             observation_mode TEXT NOT NULL CHECK (observation_mode IN ('polling', 'webhook', 'hybrid')),
+             current_attempt_id TEXT,
+             current_provider_task_id TEXT,
+             retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+             max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 10),
+             estimated_cost_micros INTEGER CHECK (estimated_cost_micros >= 0),
+             final_cost_micros INTEGER CHECK (final_cost_micros >= 0),
+             currency TEXT,
+             data_region TEXT,
+             remote_retention_expires_at TEXT,
+             cancellation_requested_at TEXT,
+             cancellation_reason TEXT,
+             allow_cross_provider_fallback INTEGER NOT NULL DEFAULT 0 CHECK (allow_cross_provider_fallback IN (0, 1)),
+             watermark_present INTEGER CHECK (watermark_present IN (0, 1)),
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             last_provider_observed_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             completed_at TEXT,
+             expires_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_media_jobs_recovery
+             ON media_jobs(state, updated_at);
+         CREATE INDEX IF NOT EXISTS idx_media_jobs_project_created
+             ON media_jobs(project_id, created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS media_job_attempts (
+             id TEXT PRIMARY KEY,
+             job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+             attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+             idempotency_key TEXT NOT NULL,
+             provider_id TEXT NOT NULL,
+             provider_source TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             api_version TEXT,
+             data_region TEXT,
+             remote_retention_expires_at TEXT,
+             cross_provider_fallback_authorized INTEGER NOT NULL DEFAULT 0 CHECK (cross_provider_fallback_authorized IN (0, 1)),
+             provider_task_id TEXT,
+             state TEXT NOT NULL CHECK (state IN (
+                 'created', 'submitting', 'accepted', 'observing', 'succeeded',
+                 'failed', 'cancelled', 'expired', 'provider_unknown'
+             )),
+             error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+             retry_classification TEXT,
+             next_eligible_at TEXT,
+             cancellation_requested_at TEXT,
+             cancellation_result_json TEXT CHECK (cancellation_result_json IS NULL OR json_valid(cancellation_result_json)),
+             remote_deletion_requested_at TEXT,
+             remote_deletion_status TEXT NOT NULL DEFAULT 'not_requested' CHECK (remote_deletion_status IN (
+                 'not_requested', 'requested', 'confirmed', 'unsupported', 'failed'
+             )),
+             remote_deletion_completed_at TEXT,
+             remote_deletion_error_json TEXT CHECK (remote_deletion_error_json IS NULL OR json_valid(remote_deletion_error_json)),
+             submitted_at TEXT,
+             last_observed_at TEXT,
+             completed_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(job_id, attempt_number),
+             UNIQUE(job_id, idempotency_key)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_media_job_attempt_provider_task
+             ON media_job_attempts(provider_source, provider_task_id)
+             WHERE provider_task_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_media_job_attempt_remote_deletion
+             ON media_job_attempts(remote_deletion_status, updated_at)
+             WHERE remote_deletion_status = 'requested';
+
+         CREATE TABLE IF NOT EXISTS media_assets (
+             id TEXT PRIMARY KEY CHECK (length(id) = 64),
+             content_hash_sha256 TEXT NOT NULL UNIQUE CHECK (length(content_hash_sha256) = 64),
+             content_verified_at TEXT NOT NULL,
+             media_type TEXT NOT NULL,
+             byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+             storage_kind TEXT NOT NULL CHECK (storage_kind IN ('managed_local', 'provider_remote', 'external')),
+             storage_key TEXT NOT NULL,
+             width INTEGER CHECK (width IS NULL OR width > 0),
+             height INTEGER CHECK (height IS NULL OR height > 0),
+             duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+             local_state TEXT NOT NULL DEFAULT 'available' CHECK (local_state IN (
+                 'available', 'deletion_requested', 'deleted'
+             )),
+             local_deletion_requested_at TEXT,
+             local_deletion_completed_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+
+         CREATE TABLE IF NOT EXISTS media_asset_relations (
+             id TEXT PRIMARY KEY,
+             job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+             attempt_id TEXT NOT NULL REFERENCES media_job_attempts(id) ON DELETE RESTRICT,
+             asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+             parent_asset_id TEXT REFERENCES media_assets(id) ON DELETE RESTRICT,
+             relation_type TEXT NOT NULL CHECK (relation_type IN (
+                 'input', 'output', 'derived_from', 'variant_of', 'extends',
+                 'edits', 'audio_track', 'export'
+             )),
+             ordinal INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+             local_retention_policy TEXT NOT NULL DEFAULT 'retain_until_deleted' CHECK (
+                 local_retention_policy IN ('retain_until_deleted', 'delete_after_expiry')
+             ),
+             local_retention_expires_at TEXT,
+             metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             CHECK (parent_asset_id IS NULL OR parent_asset_id <> asset_id),
+             CHECK (
+                 (local_retention_policy = 'retain_until_deleted' AND local_retention_expires_at IS NULL)
+                 OR (local_retention_policy = 'delete_after_expiry' AND local_retention_expires_at IS NOT NULL)
+             )
+         );
+         CREATE INDEX IF NOT EXISTS idx_media_asset_relations_job
+             ON media_asset_relations(job_id, relation_type, ordinal);
+         CREATE INDEX IF NOT EXISTS idx_media_asset_relations_parent
+             ON media_asset_relations(parent_asset_id);
+
+         CREATE TABLE IF NOT EXISTS media_provider_events (
+             id TEXT PRIMARY KEY,
+             job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+             attempt_id TEXT NOT NULL REFERENCES media_job_attempts(id) ON DELETE CASCADE,
+             sequence INTEGER NOT NULL CHECK (sequence >= 1),
+             provider_id TEXT NOT NULL,
+             event_source TEXT NOT NULL,
+             deduplication_key TEXT NOT NULL,
+             event_kind TEXT NOT NULL,
+             payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+             provider_created_at TEXT,
+             observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(event_source, deduplication_key),
+             UNIQUE(job_id, sequence)
+         );
+         CREATE INDEX IF NOT EXISTS idx_media_provider_events_job
+             ON media_provider_events(job_id, observed_at);
+
+         CREATE TABLE IF NOT EXISTS media_exports (
+             id TEXT PRIMARY KEY,
+             job_id TEXT REFERENCES media_jobs(id) ON DELETE SET NULL,
+             asset_id TEXT REFERENCES media_assets(id) ON DELETE RESTRICT,
+             state TEXT NOT NULL CHECK (state IN ('draft', 'rendering', 'completed', 'failed', 'cancelled')),
+             format TEXT NOT NULL,
+             settings_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(settings_json)),
+             output_storage_key TEXT,
+             error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             completed_at TEXT
+         );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2056,6 +2232,12 @@ mod tests {
         assert!(tables.contains(&"registry_activation_state".to_string()));
         assert!(tables.contains(&"agent_task_registry_snapshots".to_string()));
         assert!(tables.contains(&"vision_observation_cache".to_string()));
+        assert!(tables.contains(&"media_jobs".to_string()));
+        assert!(tables.contains(&"media_job_attempts".to_string()));
+        assert!(tables.contains(&"media_assets".to_string()));
+        assert!(tables.contains(&"media_asset_relations".to_string()));
+        assert!(tables.contains(&"media_provider_events".to_string()));
+        assert!(tables.contains(&"media_exports".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));
         assert!(tables.contains(&"embeddings".to_string()));
         assert!(tables.contains(&"feedback".to_string()));

@@ -57,6 +57,7 @@ pub mod llm;
 pub mod managed_assets;
 pub mod mcp;
 pub mod media;
+pub mod media_generation;
 pub mod migrations;
 pub mod mixture_of_agents;
 pub mod model_catalog;
