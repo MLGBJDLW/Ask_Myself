@@ -709,6 +709,10 @@ pub(crate) fn prepare_asset_deletion(
         "SELECT
              (SELECT COUNT(*) FROM media_asset_relations WHERE asset_id = ?1 OR parent_asset_id = ?1)
            + (SELECT COUNT(*) FROM media_exports WHERE asset_id = ?1)
+           + (SELECT COUNT(*) FROM video_timeline_clips WHERE asset_id = ?1)
+           + (SELECT COUNT(*) FROM video_timeline_export_inputs WHERE asset_id = ?1)
+           + (SELECT COUNT(*) FROM video_timeline_exports WHERE output_asset_id = ?1)
+           + (SELECT COUNT(*) FROM video_timeline_export_stages WHERE intermediate_asset_id = ?1)
            + (SELECT COUNT(*) FROM media_jobs, json_each(media_jobs.input_asset_ids_json)
               WHERE json_each.value = ?1
                 AND media_jobs.state NOT IN ('completed', 'failed', 'cancelled', 'expired'))",

@@ -13,8 +13,18 @@ use super::model::{
     TransitionMediaJobRequest,
 };
 use super::store;
+use super::timeline::{
+    self, VideoTimelineExportExecutionPlan, VideoTimelineExportStageKind, VideoTimelineExportState,
+};
 use super::workflow::{
     self, EnqueuePreparedVideoVariantsRequest, MaterializedVideoProviderConnection,
+};
+use super::{
+    AddVideoTimelineClipRequest, CancelVideoTimelineExportRequest,
+    CreateVideoTimelineExportRequest, RefreshVideoTimelineClipRequest,
+    RemoveVideoTimelineClipRequest, ReorderVideoTimelineClipsRequest,
+    RetryVideoTimelineExportRequest, UpdateVideoTimelineClipRequest, VideoTimelineExportRecord,
+    VideoTimelineSnapshot,
 };
 use super::{
     AddVideoWorkflowShotRequest, CreateVideoWorkflowRequest, DeleteVideoWorkflowShotRequest,
@@ -169,6 +179,406 @@ impl MediaGenerationRuntime {
             .read(move |database| workflow::get_workflow(database, &workflow_id))
             .await?
             .value)
+    }
+
+    pub async fn get_video_timeline(
+        &self,
+        workflow_id: &str,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        let workflow_id = workflow_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| timeline::get_timeline(database, &workflow_id))
+            .await?
+            .value)
+    }
+
+    pub async fn add_video_timeline_clip(
+        &self,
+        request: AddVideoTimelineClipRequest,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::add_clip(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn refresh_video_timeline_clip(
+        &self,
+        request: RefreshVideoTimelineClipRequest,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::refresh_clip(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn update_video_timeline_clip(
+        &self,
+        request: UpdateVideoTimelineClipRequest,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::update_clip(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn reorder_video_timeline_clips(
+        &self,
+        request: ReorderVideoTimelineClipsRequest,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::reorder_clips(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn remove_video_timeline_clip(
+        &self,
+        request: RemoveVideoTimelineClipRequest,
+    ) -> Result<VideoTimelineSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::remove_clip(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn create_video_timeline_export(
+        &self,
+        request: CreateVideoTimelineExportRequest,
+        ffmpeg_identity: serde_json::Value,
+    ) -> Result<VideoTimelineExportRecord, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::create_export(database, request, ffmpeg_identity))
+            .await?
+            .value)
+    }
+
+    pub async fn find_video_timeline_export_by_idempotency(
+        &self,
+        workflow_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<VideoTimelineExportRecord>, CoreError> {
+        let workflow_id = workflow_id.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        Ok(self
+            .database
+            .read(move |database| {
+                timeline::find_export_by_idempotency(database, &workflow_id, &idempotency_key)
+            })
+            .await?
+            .value)
+    }
+
+    pub async fn cancel_video_timeline_export(
+        &self,
+        request: CancelVideoTimelineExportRequest,
+    ) -> Result<VideoTimelineExportRecord, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::request_export_cancellation(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn retry_video_timeline_export(
+        &self,
+        request: RetryVideoTimelineExportRequest,
+    ) -> Result<VideoTimelineExportRecord, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::retry_export(database, request))
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn video_timeline_export_execution_plan(
+        &self,
+        export_id: &str,
+    ) -> Result<VideoTimelineExportExecutionPlan, CoreError> {
+        let export_id = export_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| timeline::export_execution_plan(database, &export_id))
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn list_resumable_video_timeline_exports(
+        &self,
+    ) -> Result<Vec<String>, CoreError> {
+        Ok(self
+            .database
+            .read(timeline::list_resumable_exports)
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn mark_live_video_timeline_exports_interrupted(
+        &self,
+        now_epoch: i64,
+    ) -> Result<usize, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| timeline::mark_live_exports_interrupted(database, now_epoch))
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn try_acquire_video_timeline_export_lease(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+    ) -> Result<bool, CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        Ok(self
+            .database
+            .write(move |database| {
+                timeline::try_acquire_export_lease(database, &export_id, &owner_id, now_epoch)
+            })
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn renew_video_timeline_export_lease(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+    ) -> Result<bool, CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        Ok(self
+            .database
+            .write(move |database| {
+                timeline::renew_export_lease(database, &export_id, &owner_id, now_epoch)
+            })
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn release_video_timeline_export_lease(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| timeline::release_export_lease(database, &export_id, &owner_id))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn video_timeline_export_cancel_requested(
+        &self,
+        export_id: &str,
+    ) -> Result<bool, CoreError> {
+        let export_id = export_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| timeline::export_cancel_requested(database, &export_id))
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn begin_video_timeline_export_stage(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        stage_ordinal: u32,
+        stage_kind: VideoTimelineExportStageKind,
+        export_state: VideoTimelineExportState,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::begin_export_stage(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    stage_ordinal,
+                    stage_kind,
+                    export_state,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_video_timeline_export_progress(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        stage_ordinal: u32,
+        stage_progress: u32,
+        overall_progress: u32,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::record_export_progress(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    stage_ordinal,
+                    stage_progress,
+                    overall_progress,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn complete_video_timeline_export_stage(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        stage_ordinal: u32,
+        intermediate_asset_id: Option<String>,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::complete_export_stage(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    stage_ordinal,
+                    intermediate_asset_id.as_deref(),
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_video_timeline_export_completed(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        output_asset_id: &str,
+    ) -> Result<VideoTimelineExportRecord, CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        let output_asset_id = output_asset_id.to_string();
+        Ok(self
+            .database
+            .write(move |database| {
+                timeline::mark_export_completed(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    &output_asset_id,
+                )
+            })
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn begin_video_timeline_export_publication_commit(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::begin_export_publication_commit(
+                    database, &export_id, &owner_id, now_epoch,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_video_timeline_export_output_asset(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        output_asset_id: &str,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        let output_asset_id = output_asset_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::record_export_output_asset(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    &output_asset_id,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_video_timeline_export_cancelled(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.database
+            .write(move |database| {
+                timeline::mark_export_cancelled(database, &export_id, &owner_id, now_epoch)
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_video_timeline_export_failed(
+        &self,
+        export_id: &str,
+        owner_id: &str,
+        now_epoch: i64,
+        stage_ordinal: u32,
+        code: &str,
+        message: &str,
+    ) -> Result<(), CoreError> {
+        let export_id = export_id.to_string();
+        let owner_id = owner_id.to_string();
+        let code = code.to_string();
+        let message = message.to_string();
+        self.database
+            .write(move |database| {
+                timeline::mark_export_failed(
+                    database,
+                    &export_id,
+                    &owner_id,
+                    now_epoch,
+                    stage_ordinal,
+                    &code,
+                    &message,
+                )
+            })
+            .await?;
+        Ok(())
     }
 
     pub async fn video_variant_execution_context(

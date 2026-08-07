@@ -482,9 +482,10 @@ pub(crate) fn create_workflow(
         request.target_duration_ms,
     )?;
     request.project_id = optional_bounded(request.project_id, "project_id", 128)?;
-    let conn = database.conn();
+    let mut conn = database.conn();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let id = Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO video_workflows
          (id, project_id, title, brief_json, aspect_ratio, target_duration_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -499,7 +500,13 @@ pub(crate) fn create_workflow(
             ))?,
         ],
     )?;
-    load_workflow_snapshot(&conn, &id)
+    tx.execute(
+        "INSERT INTO video_timelines (id, workflow_id) VALUES (?1, ?2)",
+        rusqlite::params![format!("timeline-{id}"), id],
+    )?;
+    let snapshot = load_workflow_snapshot(&tx, &id)?;
+    tx.commit()?;
+    Ok(snapshot)
 }
 
 pub(crate) fn update_workflow(

@@ -2227,6 +2227,121 @@ Every answer that uses knowledge base search results.
              SELECT RAISE(ABORT, 'selected variant must belong to the shot');
          END;",
     ),
+    (
+        "v100_video_timeline_export",
+        "CREATE TABLE IF NOT EXISTS video_timelines (
+             id TEXT PRIMARY KEY,
+             workflow_id TEXT NOT NULL UNIQUE REFERENCES video_workflows(id) ON DELETE CASCADE,
+             schema_version INTEGER NOT NULL DEFAULT 1 CHECK (schema_version = 1),
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+
+         INSERT OR IGNORE INTO video_timelines (id, workflow_id)
+         SELECT 'timeline-' || id, id FROM video_workflows;
+
+         CREATE TABLE IF NOT EXISTS video_timeline_clips (
+             id TEXT PRIMARY KEY,
+             timeline_id TEXT NOT NULL REFERENCES video_timelines(id) ON DELETE CASCADE,
+             shot_id TEXT NOT NULL REFERENCES video_workflow_shots(id) ON DELETE RESTRICT,
+             variant_id TEXT NOT NULL REFERENCES video_workflow_variants(id) ON DELETE RESTRICT,
+             asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+             source_start_us INTEGER NOT NULL DEFAULT 0 CHECK (source_start_us >= 0),
+             source_duration_us INTEGER NOT NULL CHECK (source_duration_us > 0),
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(timeline_id, ordinal),
+             UNIQUE(timeline_id, shot_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_clips_timeline
+             ON video_timeline_clips(timeline_id, ordinal);
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_clips_asset
+             ON video_timeline_clips(asset_id);
+
+         CREATE TABLE IF NOT EXISTS video_timeline_exports (
+             id TEXT PRIMARY KEY,
+             workflow_id TEXT NOT NULL REFERENCES video_workflows(id) ON DELETE RESTRICT,
+             timeline_id TEXT NOT NULL REFERENCES video_timelines(id) ON DELETE RESTRICT,
+             timeline_revision INTEGER NOT NULL CHECK (timeline_revision >= 0),
+             idempotency_key TEXT NOT NULL,
+             state TEXT NOT NULL CHECK (state IN (
+                 'validating', 'queued', 'running', 'verifying', 'publishing',
+                 'completed', 'failed', 'cancelled', 'interrupted'
+             )),
+             current_stage TEXT NOT NULL CHECK (current_stage IN (
+                 'validate', 'normalize', 'concatenate', 'verify', 'publish'
+             )),
+             output_profile_json TEXT NOT NULL CHECK (json_valid(output_profile_json)),
+             ffmpeg_identity_json TEXT CHECK (ffmpeg_identity_json IS NULL OR json_valid(ffmpeg_identity_json)),
+             clip_snapshot_json TEXT NOT NULL CHECK (json_valid(clip_snapshot_json)),
+             input_fingerprint_sha256 TEXT NOT NULL CHECK (length(input_fingerprint_sha256) = 64),
+             destination_path TEXT NOT NULL,
+             progress_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (progress_basis_points BETWEEN 0 AND 10000),
+             output_asset_id TEXT REFERENCES media_assets(id) ON DELETE RESTRICT,
+             cancellation_requested_at TEXT,
+             publication_commit_started_at TEXT,
+             error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             completed_at TEXT,
+             UNIQUE(workflow_id, idempotency_key),
+             CHECK (state <> 'completed' OR output_asset_id IS NOT NULL)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_exports_workflow
+             ON video_timeline_exports(workflow_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_exports_recovery
+             ON video_timeline_exports(state, cancellation_requested_at, updated_at);
+
+         CREATE TABLE IF NOT EXISTS video_timeline_export_inputs (
+             export_id TEXT NOT NULL REFERENCES video_timeline_exports(id) ON DELETE CASCADE,
+             asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+             asset_content_hash TEXT NOT NULL CHECK (length(asset_content_hash) = 64),
+             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+             clip_id TEXT NOT NULL,
+             variant_id TEXT NOT NULL REFERENCES video_workflow_variants(id) ON DELETE RESTRICT,
+             source_start_us INTEGER NOT NULL CHECK (source_start_us >= 0),
+             source_duration_us INTEGER NOT NULL CHECK (source_duration_us > 0),
+             PRIMARY KEY(export_id, ordinal)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_export_inputs_asset
+             ON video_timeline_export_inputs(asset_id);
+
+         CREATE TABLE IF NOT EXISTS video_timeline_export_stages (
+             export_id TEXT NOT NULL REFERENCES video_timeline_exports(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+             stage_kind TEXT NOT NULL CHECK (stage_kind IN (
+                 'validate', 'normalize', 'concatenate', 'verify', 'publish'
+             )),
+             clip_ordinal INTEGER CHECK (clip_ordinal IS NULL OR clip_ordinal >= 0),
+             state TEXT NOT NULL CHECK (state IN (
+                 'queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'
+             )),
+             fingerprint_sha256 TEXT NOT NULL CHECK (length(fingerprint_sha256) = 64),
+             attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 64),
+             progress_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (progress_basis_points BETWEEN 0 AND 10000),
+             intermediate_asset_id TEXT REFERENCES media_assets(id) ON DELETE RESTRICT,
+             error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+             started_at TEXT,
+             completed_at TEXT,
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             PRIMARY KEY(export_id, ordinal)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_export_stages_state
+             ON video_timeline_export_stages(export_id, state, ordinal);
+
+         CREATE TABLE IF NOT EXISTS video_timeline_export_leases (
+             export_id TEXT PRIMARY KEY REFERENCES video_timeline_exports(id) ON DELETE CASCADE,
+             owner_id TEXT NOT NULL,
+             expires_at_epoch INTEGER NOT NULL,
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_timeline_export_leases_expiry
+             ON video_timeline_export_leases(expires_at_epoch);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2360,6 +2475,12 @@ mod tests {
         assert!(tables.contains(&"video_workflows".to_string()));
         assert!(tables.contains(&"video_workflow_shots".to_string()));
         assert!(tables.contains(&"video_workflow_variants".to_string()));
+        assert!(tables.contains(&"video_timelines".to_string()));
+        assert!(tables.contains(&"video_timeline_clips".to_string()));
+        assert!(tables.contains(&"video_timeline_exports".to_string()));
+        assert!(tables.contains(&"video_timeline_export_inputs".to_string()));
+        assert!(tables.contains(&"video_timeline_export_stages".to_string()));
+        assert!(tables.contains(&"video_timeline_export_leases".to_string()));
         assert!(tables.contains(&"media_provider_events".to_string()));
         assert!(tables.contains(&"media_exports".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));

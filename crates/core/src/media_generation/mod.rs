@@ -11,6 +11,8 @@ mod coordinator;
 mod model;
 mod runtime;
 mod store;
+mod timeline;
+mod timeline_export;
 mod workflow;
 
 pub use asset_store::{ImportMediaAssetRequest, MediaGenerationAssetStore};
@@ -30,6 +32,16 @@ pub use model::{
     RequestMediaJobRemoteDeletion, TransitionMediaJobRequest,
 };
 pub use runtime::MediaGenerationRuntime;
+pub use timeline::{
+    AddVideoTimelineClipRequest, CancelVideoTimelineExportRequest,
+    CreateVideoTimelineExportRequest, RefreshVideoTimelineClipRequest,
+    RemoveVideoTimelineClipRequest, ReorderVideoTimelineClipsRequest,
+    RetryVideoTimelineExportRequest, UpdateVideoTimelineClipRequest, VideoTimelineClipRecord,
+    VideoTimelineExportClipSnapshot, VideoTimelineExportRecord, VideoTimelineExportStageKind,
+    VideoTimelineExportStageRecord, VideoTimelineExportStageState, VideoTimelineExportState,
+    VideoTimelineOutputProfile, VideoTimelineRecord, VideoTimelineSnapshot,
+};
+pub use timeline_export::VideoTimelineExportCoordinator;
 pub use workflow::{
     AddVideoWorkflowShotRequest, CreateVideoWorkflowRequest, DeleteVideoWorkflowShotRequest,
     EnqueuePreparedVideoVariantsRequest, MaterializedVideoProviderConnection,
