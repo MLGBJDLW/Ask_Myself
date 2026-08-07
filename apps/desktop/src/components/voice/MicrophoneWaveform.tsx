@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useReducedMotion } from 'framer-motion';
 
 import { computeWaveformBars, smoothWaveformBars, toBarHeights } from '../../features/voice/waveform';
 
@@ -23,12 +24,13 @@ export function MicrophoneWaveform({
   label,
 }: MicrophoneWaveformProps) {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
     const bars = barsRef.current;
-    if (!analyser) {
+    if (!analyser || shouldReduceMotion) {
       bars.forEach((bar) => {
-        if (bar) bar.style.transform = 'scaleY(0.06)';
+        if (bar) bar.style.transform = `scaleY(${analyser ? '0.18' : '0.06'})`;
       });
       return;
     }
@@ -50,12 +52,13 @@ export function MicrophoneWaveform({
 
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [analyser, barCount]);
+  }, [analyser, barCount, shouldReduceMotion]);
 
   return (
     <div
       data-testid="microphone-waveform"
       data-active={analyser ? 'true' : 'false'}
+      data-animated={analyser && !shouldReduceMotion ? 'true' : 'false'}
       role="img"
       aria-label={label}
       className={`flex h-6 items-center gap-[2px] ${className}`}

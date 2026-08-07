@@ -3,7 +3,7 @@ import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
-import { MicrophoneWaveform } from '../voice/MicrophoneWaveform';
+import { VoiceRecordingDock } from '../voice/VoiceRecordingDock';
 
 interface VoiceInputButtonProps {
   onTranscript: (text: string) => void;
@@ -15,8 +15,14 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
   const voiceRuntime = useVoiceInputRuntime();
   const {
     isRecording,
+    isPaused,
+    captureState,
     busy,
     cancelRecording,
+    recordingDockVisible,
+    transportState,
+    recordingContext,
+    activeMicrophoneLabel,
     partialTranscript,
     runtimeNotice,
     automaticResult,
@@ -25,6 +31,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     clearAutomaticResult,
     recordingDuration,
     toggleRecording,
+    toggleRecordingPause,
     discardPendingVoiceSpool,
     formatDuration,
     analyser,
@@ -96,6 +103,11 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     if (result.status === 'error') showRuntimeError(result.code, result.message);
   }, [busy, discardPendingVoiceSpool, showRuntimeError]);
 
+  const handlePauseResume = useCallback(async () => {
+    const result = await toggleRecordingPause();
+    if (result.status === 'error') showRuntimeError(result.code, result.message);
+  }, [showRuntimeError, toggleRecordingPause]);
+
   const label = busy
     ? t('voice.processing')
     : isRecording
@@ -103,8 +115,26 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       : t('voice.startRecording');
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5">
-      {hasPendingVoiceSpool && !isRecording && (
+    <div className={recordingDockVisible
+      ? 'order-first flex w-full min-w-0 shrink-0 basis-full lg:order-none lg:w-auto lg:min-w-[420px] lg:flex-1 lg:basis-auto'
+      : 'flex shrink-0 items-center gap-0.5'}>
+      {recordingDockVisible && (
+        <VoiceRecordingDock
+          analyser={analyser}
+          captureState={captureState}
+          context={recordingContext}
+          duration={formatDuration(recordingDuration)}
+          isPaused={isPaused}
+          isProcessing={transportState === 'processing'}
+          microphoneLabel={activeMicrophoneLabel}
+          partialTranscript={partialTranscript}
+          transportState={transportState}
+          onCancel={cancelRecording}
+          onPauseResume={() => { void handlePauseResume(); }}
+          onStop={() => { void handleClick(); }}
+        />
+      )}
+      {hasPendingVoiceSpool && !isRecording && !recordingDockVisible && (
         <button
           type="button"
           onClick={handleDiscard}
@@ -120,7 +150,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
         type="button"
         onClick={handleClick}
         disabled={disabled || busy}
-        className={`relative flex h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
+        className={`relative h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${recordingDockVisible ? 'hidden' : 'flex'} ${
           isRecording
             ? 'gap-1.5 bg-danger/10 px-2.5 text-danger voice-btn-recording'
             : 'w-8 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
@@ -131,21 +161,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
         {busy ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : isRecording ? (
-          <>
-            <span className="recording-indicator" />
-            <MicrophoneWaveform
-              analyser={analyser}
-              barCount={12}
-              className="h-4"
-              label={t('voice.waveformLabel')}
-            />
-            {partialTranscript && (
-              <span className="max-w-36 truncate text-[11px] text-text-secondary">
-                {partialTranscript}
-              </span>
-            )}
-            <span className="text-[11px] font-medium tabular-nums">{formatDuration(recordingDuration)}</span>
-          </>
+          <span className="recording-indicator" />
         ) : (
           <Mic className="h-3.5 w-3.5" />
         )}
