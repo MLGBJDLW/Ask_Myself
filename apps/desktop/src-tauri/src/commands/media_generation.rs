@@ -1,5 +1,15 @@
 use super::*;
 
+/// Returns the shared evidence-backed manifest that the renderer must use for
+/// model availability and validation controls. It includes non-selectable
+/// watchlist entries so the UI never has to infer release status.
+#[tauri::command]
+pub async fn list_video_generation_capabilities_cmd(
+) -> Result<Vec<nexa_core::video_provider_catalog::VideoProviderPreset>, String> {
+    nexa_core::video_provider_catalog::load_video_provider_presets()
+        .map_err(|error| error.to_string())
+}
+
 /// Creates the durable provider-neutral job only. Provider submission belongs
 /// to an adapter and never runs inside this renderer-facing command.
 #[tauri::command]
