@@ -43,6 +43,20 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
     let voiceSessionSequence = 0;
     const voiceCancelCalls: string[] = [];
+    const microphoneControl = {
+      deferGrant: false,
+      grantPending: false,
+      deferExactFailure: false,
+      exactFailurePending: false,
+      deferWorkletModule: false,
+      workletModulePending: false,
+      defaultRequestCalls: 0,
+      stopCalls: 0,
+      contextCloseCalls: 0,
+      grant: () => {},
+      rejectExact: () => {},
+      grantWorkletModule: () => {},
+    };
 
     class FakeAudioNode {
       connect() { return this; }
@@ -57,7 +71,7 @@ test.beforeEach(async ({ page }) => {
       onended: (() => void) | null = null;
       onmute: (() => void) | null = null;
       onunmute: (() => void) | null = null;
-      stop() {}
+      stop() { microphoneControl.stopCalls += 1; }
     }
     class FakeWorkletNode extends FakeAudioNode {
       onprocessorerror: (() => void) | null = null;
@@ -77,7 +91,16 @@ test.beforeEach(async ({ page }) => {
       state: AudioContextState = 'running';
       sampleRate = 48_000;
       destination = new FakeAudioNode();
-      audioWorklet = { addModule: async () => {} };
+      audioWorklet = {
+        addModule: async () => {
+          if (!microphoneControl.deferWorkletModule) return;
+          microphoneControl.workletModulePending = true;
+          await new Promise<void>((resolve) => {
+            microphoneControl.grantWorkletModule = resolve;
+          });
+          microphoneControl.workletModulePending = false;
+        },
+      };
       createMediaStreamSource() { return new FakeAudioNode(); }
       createAnalyser() { return new FakeAnalyserNode(); }
       createGain() {
@@ -87,7 +110,10 @@ test.beforeEach(async ({ page }) => {
       }
       async suspend() { this.state = 'suspended'; }
       async resume() { this.state = 'running'; }
-      async close() { this.state = 'closed'; }
+      async close() {
+        microphoneControl.contextCloseCalls += 1;
+        this.state = 'closed';
+      }
     }
     const track = new FakeTrack();
     (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
@@ -105,7 +131,22 @@ test.beforeEach(async ({ page }) => {
           && 'exact' in deviceConstraint
           && deviceConstraint.exact === 'configured-microphone'
         ) {
+          if (microphoneControl.deferExactFailure) {
+            microphoneControl.exactFailurePending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.rejectExact = resolve;
+            });
+            microphoneControl.exactFailurePending = false;
+          }
           throw new DOMException('Configured microphone is busy', 'NotReadableError');
+        }
+        microphoneControl.defaultRequestCalls += 1;
+        if (microphoneControl.deferGrant) {
+          microphoneControl.grantPending = true;
+          await new Promise<void>((resolve) => {
+            microphoneControl.grant = resolve;
+          });
+          microphoneControl.grantPending = false;
         }
         return {
           getTracks: () => [track],
@@ -221,6 +262,8 @@ test.beforeEach(async ({ page }) => {
     };
 
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__ = voiceCancelCalls;
+    (window as unknown as { __VOICE_MICROPHONE_CONTROL__: typeof microphoneControl })
+      .__VOICE_MICROPHONE_CONTROL__ = microphoneControl;
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
       .__EMIT_TAURI_EVENT__ = (event, payload) => {
         for (const [id, listener] of listeners) {
@@ -325,4 +368,107 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
   )).toContain('voice-2');
+});
+
+test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferGrant: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferGrant = true;
+  });
+
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.grantPending,
+  )).toBe(true);
+
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grant: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grant();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { stopCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.stopCalls,
+  )).toBeGreaterThanOrEqual(1);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('capture resources close while a stale worklet module is still loading', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferWorkletModule: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferWorkletModule = true;
+  });
+
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { workletModulePending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.workletModulePending,
+  )).toBe(true);
+
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const control = (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { stopCalls: number; contextCloseCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__;
+    return control.stopCalls >= 1 && control.contextCloseCalls >= 1;
+  })).toBe(true);
+
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantWorkletModule: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantWorkletModule();
+  });
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('a stale selected-device failure never opens the default microphone', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferExactFailure: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferExactFailure = true;
+  });
+
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { exactFailurePending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.exactFailurePending,
+  )).toBe(true);
+
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { rejectExact: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.rejectExact();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { exactFailurePending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.exactFailurePending,
+  )).toBe(false);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(await page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { defaultRequestCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.defaultRequestCalls,
+  )).toBe(0);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
 });

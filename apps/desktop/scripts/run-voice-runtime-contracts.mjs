@@ -141,6 +141,23 @@ function loadBoundedVoicePartial() {
   return module.exports;
 }
 
+function loadTerminalPcmDelivery() {
+  const deliveryPath = path.join(root, 'src', 'features', 'voice', 'terminalPcmDelivery.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(deliveryPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  vm.runInNewContext(
+    transpiled.outputText,
+    { exports: module.exports, module, Uint8Array },
+    { filename: deliveryPath },
+  );
+  return module.exports;
+}
+
 function loadBoundedAudioQueue() {
   const queuePath = path.join(root, 'src', 'features', 'voice', 'boundedAudioQueue.ts');
   const transpiled = ts.transpileModule(fs.readFileSync(queuePath, 'utf8'), {
@@ -515,6 +532,7 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(recorderSource, /new Uint8Array\(message\.buffer\)/);
   assert.match(recorderSource, /worklet\.onprocessorerror/);
   assert.match(recorderSource, /worklet\.port\.close\(\)/);
+  assert.match(recorderSource, /TerminalPcmDelivery/);
 
   const realtimeNativeSource = fs.readFileSync(
     path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
@@ -523,6 +541,42 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(realtimeNativeSource, /REPLAY_PCM_CHUNK_BYTES: usize = 64 \* 1024/);
   assert.match(realtimeNativeSource, /transcribe_realtime_spool/);
   assert.doesNotMatch(realtimeNativeSource, /std::fs::read\(wav_path\)/);
+});
+
+test('terminal PCM delivery never resumes after the first rejected chunk', () => {
+  const { TerminalPcmDelivery } = loadTerminalPcmDelivery();
+  const delivered = [];
+  let accepting = true;
+  const delivery = new TerminalPcmDelivery((chunk) => {
+    delivered.push(chunk[0]);
+    return accepting;
+  });
+
+  assert.equal(delivery.deliver(new Uint8Array([1])), 'accepted');
+  accepting = false;
+  assert.equal(delivery.deliver(new Uint8Array([2])), 'rejected');
+  accepting = true;
+  assert.equal(delivery.deliver(new Uint8Array([3])), 'discarded');
+  assert.deepEqual(delivered, [1, 2]);
+  assert.equal(delivery.isTerminal, true);
+  assert.equal(delivery.terminate(), false);
+});
+
+test('terminal PCM delivery contains callback failures and explicit cancellation', () => {
+  let attempts = 0;
+  const { TerminalPcmDelivery } = loadTerminalPcmDelivery();
+  const failingDelivery = new TerminalPcmDelivery(() => {
+    attempts += 1;
+    throw new Error('native append failed');
+  });
+
+  assert.equal(failingDelivery.deliver(new Uint8Array([1])), 'rejected');
+  assert.equal(failingDelivery.deliver(new Uint8Array([2])), 'discarded');
+  assert.equal(attempts, 1);
+
+  const cancelledDelivery = new TerminalPcmDelivery(() => true);
+  assert.equal(cancelledDelivery.terminate(), true);
+  assert.equal(cancelledDelivery.deliver(new Uint8Array([3])), 'discarded');
 });
 
 test('audio worklet transfers fixed PCM16 chunks behind explicit credits', () => {

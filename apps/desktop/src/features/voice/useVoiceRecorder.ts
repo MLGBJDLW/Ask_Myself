@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { TerminalPcmDelivery } from './terminalPcmDelivery';
+
 const VOICE_PCM_WORKLET_URL = new URL('./voicePcmProcessor.js', import.meta.url).href;
 const VOICE_PCM_PROCESSOR_NAME = 'nexa-voice-pcm-processor';
 const WORKLET_CHUNK_DURATION_MS = 20;
 const WORKLET_MAX_CREDITS = 4;
 const WORKLET_MAX_PENDING_CHUNKS = 8;
 const WORKLET_FLUSH_TIMEOUT_MS = 250;
+const CAPTURE_START_CANCELLED_MESSAGE = 'Voice capture start was cancelled';
 
 export type VoiceCaptureState =
   | 'idle'
@@ -72,11 +75,14 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef(false);
   const recordingRef = useRef(false);
+  const startingRef = useRef(false);
   const pausedRef = useRef(false);
   const recordingOptionsRef = useRef<VoiceRecordingOptions | null>(null);
+  const pcmDeliveryRef = useRef<TerminalPcmDelivery | null>(null);
   const accumulatedDurationMsRef = useRef(0);
   const activeSegmentStartedAtRef = useRef(0);
   const nextFlushRequestIdRef = useRef(1);
+  const captureGenerationRef = useRef(0);
   const flushWaitersRef = useRef(new Map<number, FlushWaiter>());
 
   const updateDuration = useCallback(() => {
@@ -88,7 +94,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     ));
   }, []);
 
-  const reportCaptureIssue = useCallback((
+  const publishCaptureIssue = useCallback((
     state: Extract<VoiceCaptureState, 'interrupted' | 'disconnected'>,
   ) => {
     if (cancelledRef.current || !recordingRef.current) return;
@@ -96,10 +102,22 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     recordingOptionsRef.current?.onCaptureIssue?.(state);
   }, []);
 
+  const reportCaptureIssue = useCallback((
+    state: Extract<VoiceCaptureState, 'interrupted' | 'disconnected'>,
+  ) => {
+    if (cancelledRef.current || !recordingRef.current) return;
+    if (pcmDeliveryRef.current && !pcmDeliveryRef.current.terminate()) return;
+    publishCaptureIssue(state);
+  }, [publishCaptureIssue]);
+
   const reportCaptureState = useCallback((
     state: Extract<VoiceCaptureState, 'capturing' | 'interrupted'>,
   ) => {
-    if (cancelledRef.current || !recordingRef.current) return;
+    if (
+      cancelledRef.current
+      || !recordingRef.current
+      || pcmDeliveryRef.current?.isTerminal
+    ) return;
     const effectiveState = state === 'capturing' && pausedRef.current ? 'paused' : state;
     setCaptureState(effectiveState);
     if (effectiveState !== 'paused') {
@@ -108,6 +126,9 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   }, []);
 
   const teardown = useCallback((resetDuration: boolean) => {
+    captureGenerationRef.current += 1;
+    startingRef.current = false;
+    pcmDeliveryRef.current?.terminate();
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -145,6 +166,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     audioCtxRef.current = null;
     streamRef.current = null;
     recordingOptionsRef.current = null;
+    pcmDeliveryRef.current = null;
     recordingRef.current = false;
     pausedRef.current = false;
     activeSegmentStartedAtRef.current = 0;
@@ -154,6 +176,11 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   }, []);
 
   useEffect(() => () => teardown(false), [teardown]);
+
+  const captureStartIsCurrent = useCallback(
+    (generation: number) => captureGenerationRef.current === generation,
+    [],
+  );
 
   const flushWorklet = useCallback((options: { pauseAfter?: boolean; stopAfter?: boolean } = {}) => {
     const worklet = workletRef.current;
@@ -171,11 +198,20 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
   }, []);
 
   const startRecording = useCallback(async (options: VoiceRecordingOptions) => {
-    if (recordingRef.current) throw new Error('Voice recording is already active');
+    if (recordingRef.current || startingRef.current) {
+      throw new Error('Voice recording is already active');
+    }
+    const captureGeneration = captureGenerationRef.current + 1;
+    captureGenerationRef.current = captureGeneration;
+    startingRef.current = true;
     cancelledRef.current = false;
     recordingOptionsRef.current = options;
+    pcmDeliveryRef.current = new TerminalPcmDelivery(options.onPcmChunk);
     setRecordingDuration(0);
     setCaptureState('idle');
+
+    let pendingStream: MediaStream | null = null;
+    let pendingAudioCtx: AudioContext | null = null;
 
     try {
       let stream: MediaStream;
@@ -185,22 +221,34 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
             audio: { deviceId: { exact: deviceId } },
           });
         } catch {
+          if (!captureStartIsCurrent(captureGeneration)) {
+            throw new Error(CAPTURE_START_CANCELLED_MESSAGE);
+          }
           console.warn(`[useVoiceRecorder] deviceId ${deviceId} unavailable, falling back to default`);
           stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
       } else {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
-      streamRef.current = stream;
+      pendingStream = stream;
+      if (!captureStartIsCurrent(captureGeneration)) {
+        throw new Error(CAPTURE_START_CANCELLED_MESSAGE);
+      }
       const activeTrack = stream.getAudioTracks()[0];
-      options.onCaptureReady?.({ label: activeTrack?.label?.trim() || null });
+      streamRef.current = stream;
 
       const audioCtx = new AudioContext();
+      pendingAudioCtx = audioCtx;
       audioCtxRef.current = audioCtx;
       if (!audioCtx.audioWorklet) {
         throw new Error('AudioWorklet is unavailable in this desktop runtime');
       }
       await audioCtx.audioWorklet.addModule(VOICE_PCM_WORKLET_URL);
+      if (!captureStartIsCurrent(captureGeneration)) {
+        throw new Error(CAPTURE_START_CANCELLED_MESSAGE);
+      }
+
+      options.onCaptureReady?.({ label: activeTrack?.label?.trim() || null });
 
       const source = audioCtx.createMediaStreamSource(stream);
       sourceRef.current = source;
@@ -231,12 +279,10 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
         const message = event.data;
         if (message.type === 'pcm') {
           try {
-            const accepted = recordingOptionsRef.current?.onPcmChunk(
+            const result = pcmDeliveryRef.current?.deliver(
               new Uint8Array(message.buffer),
             );
-            if (accepted === false) reportCaptureIssue('interrupted');
-          } catch {
-            reportCaptureIssue('interrupted');
+            if (result === 'rejected') publishCaptureIssue('interrupted');
           } finally {
             worklet.port.postMessage({ type: 'ack' });
           }
@@ -270,8 +316,12 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
         else if (audioCtx.state === 'running') reportCaptureState('capturing');
       };
       if (audioCtx.state === 'suspended') await audioCtx.resume();
+      if (!captureStartIsCurrent(captureGeneration)) {
+        throw new Error(CAPTURE_START_CANCELLED_MESSAGE);
+      }
 
       recordingRef.current = true;
+      startingRef.current = false;
       pausedRef.current = false;
       accumulatedDurationMsRef.current = 0;
       activeSegmentStartedAtRef.current = Date.now();
@@ -281,13 +331,25 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
       setAnalyser(analyserNode);
       timerRef.current = setInterval(updateDuration, 250);
     } catch (error) {
-      teardown(true);
-      setIsRecording(false);
-      setIsPaused(false);
-      setCaptureState('idle');
+      pendingStream?.getTracks().forEach((track) => track.stop());
+      void pendingAudioCtx?.close().catch(() => {});
+      if (captureStartIsCurrent(captureGeneration)) {
+        teardown(true);
+        setIsRecording(false);
+        setIsPaused(false);
+        setCaptureState('idle');
+      }
       throw error;
     }
-  }, [deviceId, reportCaptureIssue, reportCaptureState, teardown, updateDuration]);
+  }, [
+    captureStartIsCurrent,
+    deviceId,
+    publishCaptureIssue,
+    reportCaptureIssue,
+    reportCaptureState,
+    teardown,
+    updateDuration,
+  ]);
 
   const pauseRecording = useCallback(async () => {
     if (!recordingRef.current || pausedRef.current) return;
