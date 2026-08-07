@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.14...nexa-monorepo-v0.11.15) (2026-08-07)
+
+
+### Features
+
+* **agent:** harden runtime recovery and delegation boundaries ([79c4cdb](https://github.com/MLGBJDLW/Nexa/commit/79c4cdbb703c382cf31143ed0fc41fe4273ca2fd))
+* **chat:** present safe tool and connection state ([bb6d6ea](https://github.com/MLGBJDLW/Nexa/commit/bb6d6ea23b6ecb03646d1956d52eac6711c3d244))
+* **runtime:** establish platform reliability foundations ([1b8fe67](https://github.com/MLGBJDLW/Nexa/commit/1b8fe678023dbafc1c5d29484219ae9c3013c4d2))
+* **voice:** bound binary transcription transport ([a633aed](https://github.com/MLGBJDLW/Nexa/commit/a633aed595428c141454d866de6beed8bac2dbbd))
+
+
+### Bug Fixes
+
+* **agent:** close recovered connection states ([67d0187](https://github.com/MLGBJDLW/Nexa/commit/67d018743fa473ba2036aa8ffb8f3fb83415dc4b))
+* **chat:** clarify recoverable runtime state ([dc85fef](https://github.com/MLGBJDLW/Nexa/commit/dc85fef9be334f7f99dce412ecb92ef6fb09fd9c))
+* **voice:** stop safely under realtime backpressure ([7e2d747](https://github.com/MLGBJDLW/Nexa/commit/7e2d7479307d59b81301bbcd8e99b638ccd29c69))
+
 ## [0.11.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.13...nexa-monorepo-v0.11.14) (2026-08-05)
 
 
