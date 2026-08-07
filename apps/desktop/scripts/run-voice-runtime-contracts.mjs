@@ -92,19 +92,38 @@ function loadWaveform() {
   return module.exports;
 }
 
-function loadRealtimePcm() {
-  const pcmPath = path.join(root, 'src', 'features', 'voice', 'realtimePcm.ts');
-  const transpiled = ts.transpileModule(fs.readFileSync(pcmPath, 'utf8'), {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
+function loadVoicePcmProcessor() {
+  const processorPath = path.join(root, 'src', 'features', 'voice', 'voicePcmProcessor.js');
+  const processorSource = fs.readFileSync(processorPath, 'utf8');
+  let registeredName = null;
+  let RegisteredProcessor = null;
+
+  class TestAudioWorkletProcessor {
+    constructor() {
+      this.port = {
+        messages: [],
+        onmessage: null,
+        postMessage(message, transfer = []) {
+          this.messages.push({ message, transfer });
+        },
+      };
+    }
+  }
+
+  vm.runInNewContext(processorSource, {
+    AudioWorkletProcessor: TestAudioWorkletProcessor,
+    Int16Array,
+    Math,
+    Number,
+    sampleRate: 48_000,
+    registerProcessor: (name, processor) => {
+      registeredName = name;
+      RegisteredProcessor = processor;
     },
-  });
-  const module = { exports: {} };
-  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
-    filename: pcmPath,
-  });
-  return module.exports;
+  }, { filename: processorPath });
+
+  assert.equal(registeredName, 'nexa-voice-pcm-processor');
+  return RegisteredProcessor;
 }
 
 function loadBoundedAudioQueue() {
@@ -473,7 +492,12 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
     'utf8',
   );
   assert.doesNotMatch(recorderSource, /buffersRef|OfflineAudioContext|encodeWav|captureWav/);
-  assert.match(recorderSource, /fixed-size and never retains full PCM/);
+  assert.doesNotMatch(recorderSource, /createScriptProcessor|ScriptProcessorNode|StreamingPcm16Encoder/);
+  assert.match(recorderSource, /new AudioWorkletNode/);
+  assert.match(recorderSource, /new URL\('\.\/voicePcmProcessor\.js', import\.meta\.url\)/);
+  assert.match(recorderSource, /WORKLET_MAX_CREDITS = 4/);
+  assert.match(recorderSource, /WORKLET_MAX_PENDING_CHUNKS = 8/);
+  assert.match(recorderSource, /new Uint8Array\(message\.buffer\)/);
 
   const realtimeNativeSource = fs.readFileSync(
     path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
@@ -482,6 +506,123 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(realtimeNativeSource, /REPLAY_PCM_CHUNK_BYTES: usize = 64 \* 1024/);
   assert.match(realtimeNativeSource, /transcribe_realtime_spool/);
   assert.doesNotMatch(realtimeNativeSource, /std::fs::read\(wav_path\)/);
+});
+
+test('audio worklet transfers fixed PCM16 chunks behind explicit credits', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 1,
+      maxPendingChunks: 2,
+    },
+  });
+  processor.process([[Float32Array.from([
+    -1, -0.5, 0, 0.5, 1, 0.25, 0, -0.25, 0.75, 0.5, 0.25, 0, -0.5,
+  ])]]);
+
+  let pcmMessages = processor.port.messages.filter(({ message }) => message.type === 'pcm');
+  assert.equal(pcmMessages.length, 1);
+  const firstChunk = pcmMessages[0].message.buffer;
+  assert.equal(new Int16Array(firstChunk).length, 4);
+  const firstChunkView = new DataView(firstChunk);
+  assert.deepEqual(
+    Array.from({ length: 4 }, (_, index) => firstChunkView.getInt16(index * 2, true)),
+    [-32768, -16384, 0, 16384],
+  );
+  assert.equal(pcmMessages[0].transfer.length, 1);
+  assert.equal(pcmMessages[0].transfer[0], pcmMessages[0].message.buffer);
+  assert.equal(processor.pendingChunks.length, 2);
+
+  processor.port.onmessage({ data: { type: 'ack' } });
+  processor.port.onmessage({ data: { type: 'ack' } });
+  pcmMessages = processor.port.messages.filter(({ message }) => message.type === 'pcm');
+  assert.equal(pcmMessages.length, 3);
+  assert.equal(processor.pendingChunks.length, 0);
+});
+
+test('audio worklet overflow is bounded and becomes terminal', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 1,
+      maxPendingChunks: 1,
+    },
+  });
+  const samples = Float32Array.from({ length: 17 }, (_, index) => (index % 4) / 4);
+  processor.process([[samples]]);
+  assert.equal(
+    processor.port.messages.filter(({ message }) => message.type === 'overflow').length,
+    1,
+  );
+  const messageCount = processor.port.messages.length;
+  processor.process([[samples]]);
+  assert.equal(processor.port.messages.length, messageCount);
+});
+
+test('audio worklet pause flushes its partial chunk before suspending capture', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const processor = new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 48_000,
+      chunkFrames: 4,
+      maxCredits: 2,
+      maxPendingChunks: 2,
+    },
+  });
+  processor.process([[Float32Array.from([0, 0.25, 0.5])]]);
+  assert.equal(processor.port.messages.length, 0);
+
+  processor.port.onmessage({ data: { type: 'flush', requestId: 7, pauseAfter: true } });
+  const pcmMessage = processor.port.messages.find(({ message }) => message.type === 'pcm');
+  assert.ok(pcmMessage);
+  assert.equal(new Int16Array(pcmMessage.message.buffer).length, 2);
+  assert.equal(
+    processor.port.messages.some(({ message }) => message.type === 'flushed'),
+    false,
+  );
+
+  processor.process([[Float32Array.from([0.75, 1, 0.5, 0])]]);
+  assert.equal(
+    processor.port.messages.filter(({ message }) => message.type === 'pcm').length,
+    1,
+  );
+  processor.port.onmessage({ data: { type: 'ack' } });
+  assert.equal(
+    processor.port.messages.some(({ message }) => message.type === 'flushed' && message.requestId === 7),
+    true,
+  );
+});
+
+test('audio worklet resampling preserves phase across render quanta', () => {
+  const VoicePcmProcessor = loadVoicePcmProcessor();
+  const createProcessor = () => new VoicePcmProcessor({
+    processorOptions: {
+      targetSampleRate: 24_000,
+      chunkFrames: 256,
+      maxCredits: 4,
+      maxPendingChunks: 4,
+    },
+  });
+  const samples = Float32Array.from(
+    { length: 257 },
+    (_, index) => Math.sin(index / 13) * 0.75,
+  );
+  const onePass = createProcessor();
+  const split = createProcessor();
+  onePass.process([[samples]]);
+  split.process([[samples.slice(0, 128)]]);
+  split.process([[samples.slice(128)]]);
+  onePass.port.onmessage({ data: { type: 'flush', requestId: 1 } });
+  split.port.onmessage({ data: { type: 'flush', requestId: 2 } });
+
+  const collectSamples = (processor) => processor.port.messages
+    .filter(({ message }) => message.type === 'pcm')
+    .flatMap(({ message }) => Array.from(new Int16Array(message.buffer)));
+  assert.deepEqual(collectSamples(split), collectSamples(onePass));
 });
 
 await testAsync('native spool upload assigns ordered sequences and finalizes by opaque handle', async () => {
@@ -617,33 +758,6 @@ await testAsync('bounded audio queue surfaces native write failures without Prom
   assert.equal(failures.length, 1);
   assert.equal(failures[0].message, 'disk full');
   assert.equal(failures[0].telemetry.inFlightChunks, 0);
-});
-
-test('realtime PCM encoder clips float samples into little-endian PCM16', () => {
-  const { float32ToPcm16 } = loadRealtimePcm();
-  const encoded = float32ToPcm16(Float32Array.from([-2, -1, 0, 0.5, 1, 2]));
-  const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
-  assert.deepEqual(
-    Array.from({ length: 6 }, (_, index) => view.getInt16(index * 2, true)),
-    [-32768, -32768, 0, 16384, 32767, 32767],
-  );
-});
-
-test('streaming PCM resampling preserves phase across microphone chunks', () => {
-  const { StreamingPcm16Encoder } = loadRealtimePcm();
-  const onePass = new StreamingPcm16Encoder(48_000, 24_000);
-  const split = new StreamingPcm16Encoder(48_000, 24_000);
-  const samples = Float32Array.from([0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25]);
-
-  const expected = onePass.encode(samples);
-  const first = split.encode(samples.slice(0, 3));
-  const second = split.encode(samples.slice(3));
-  const actual = new Uint8Array(first.length + second.length);
-  actual.set(first);
-  actual.set(second, first.length);
-
-  assert.deepEqual(Array.from(actual), Array.from(expected));
-  assert.equal(expected.byteLength, 8);
 });
 
 test('waveform bars stay flat for silence and rise with loudness', () => {
