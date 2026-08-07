@@ -910,7 +910,6 @@ mod tests {
             .any(|issue| issue.code == "adaptive_ratio_required"));
     }
 
-    #[test]
     #[tokio::test]
     async fn submit_uses_v2_multimodal_contract_and_bearer_auth() {
         let (base_url, captured) = serve_once(r#"{"task_id":"424010985738629"}"#).await;
