@@ -182,6 +182,17 @@ pub struct CancellationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderCancellationRequest {
+    pub provider_task_id: String,
+    /// Both enabled provider DELETE contracts can delete a terminal task if
+    /// completion races the cancellation call. Callers must obtain explicit
+    /// destructive consent before setting this flag.
+    #[serde(default)]
+    pub allow_terminal_record_deletion: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadedAsset {
     pub path: PathBuf,
     pub declared_media_type: String,
@@ -230,7 +241,7 @@ pub trait VideoGenerationAdapter: Send + Sync {
     ) -> Result<ProviderJobStatus, NormalizedProviderError>;
     async fn cancel(
         &self,
-        provider_task_id: &str,
+        request: &ProviderCancellationRequest,
     ) -> Result<CancellationResult, NormalizedProviderError>;
     async fn download_outputs(
         &self,
@@ -417,19 +428,24 @@ fn invalid_request_error(
     }
 }
 
-fn submission_error(mut error: NormalizedProviderError) -> NormalizedProviderError {
+fn submission_error(error: NormalizedProviderError) -> NormalizedProviderError {
     let ambiguous = matches!(error.code.as_str(), "transport_timeout" | "transport_error")
         || error
             .http_status
-            .is_some_and(|status| status == 408 || status >= 500);
+            .is_some_and(|status| status == 408 || status >= 500 || (200..300).contains(&status));
     if ambiguous {
-        error.code = "submission_outcome_unknown".to_string();
-        error.message = format!(
-            "Provider may have accepted the generation request; reconcile the attempt before any resubmission. {}",
-            error.message
-        );
-        error.retryable = false;
+        return submission_response_error(error);
     }
+    error
+}
+
+fn submission_response_error(mut error: NormalizedProviderError) -> NormalizedProviderError {
+    error.code = "submission_outcome_unknown".to_string();
+    error.message = format!(
+        "Provider may have accepted the generation request; reconcile the attempt before any resubmission. {}",
+        error.message
+    );
+    error.retryable = false;
     error
 }
 
@@ -524,5 +540,18 @@ mod tests {
         let normalized = submission_error(throttled);
         assert_eq!(normalized.code, "http_429");
         assert!(normalized.retryable);
+
+        let malformed_success = NormalizedProviderError {
+            provider_id: "provider".to_string(),
+            code: "invalid_provider_response".to_string(),
+            message: "missing task id".to_string(),
+            retryable: false,
+            retry_after_seconds: None,
+            http_status: Some(200),
+            request_id: None,
+        };
+        let normalized = submission_error(malformed_success);
+        assert_eq!(normalized.code, "submission_outcome_unknown");
+        assert!(!normalized.retryable);
     }
 }

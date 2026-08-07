@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use futures::StreamExt;
-use reqwest::header::{LOCATION, RETRY_AFTER};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION, RETRY_AFTER, USER_AGENT};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -392,6 +392,87 @@ pub(super) async fn download_outputs(
     }
     let _ = tokio::fs::remove_dir(&staging_directory).await;
     Ok(downloaded)
+}
+
+pub(super) async fn preflight_remote_input(
+    provider_id: &str,
+    uri: &str,
+    expected_media_type: &str,
+    expected_byte_length: u64,
+) -> Result<(), NormalizedProviderError> {
+    let url = url::Url::parse(uri).map_err(|_| {
+        local_error(
+            provider_id,
+            "invalid_input_url",
+            "Provider input URL is invalid",
+        )
+    })?;
+    let client = pinned_public_client(provider_id, &url).await?;
+    let response = client
+        .head(url)
+        .header(USER_AGENT, "RunwayML API/Nexa-preflight")
+        .send()
+        .await
+        .map_err(|error| transport_error(provider_id, "", error))?;
+    if response.status().is_redirection() {
+        return Err(local_error(
+            provider_id,
+            "input_redirect_unsupported",
+            "Runway does not follow redirects for HTTPS inputs",
+        ));
+    }
+    if !response.status().is_success() {
+        return Err(NormalizedProviderError {
+            provider_id: provider_id.to_string(),
+            code: format!("input_head_http_{}", response.status().as_u16()),
+            message: "Runway input URL did not accept a HEAD request".to_string(),
+            retryable: response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || response.status().is_server_error(),
+            retry_after_seconds: None,
+            http_status: Some(response.status().as_u16()),
+            request_id: None,
+        });
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .ok_or_else(|| {
+            local_error(
+                provider_id,
+                "missing_input_content_type",
+                "Runway HTTPS inputs require a valid Content-Type header",
+            )
+        })?;
+    if !content_type.eq_ignore_ascii_case(expected_media_type) {
+        return Err(local_error(
+            provider_id,
+            "input_content_type_mismatch",
+            "Runway input Content-Type does not match verified metadata",
+        ));
+    }
+    let content_length = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| {
+            local_error(
+                provider_id,
+                "missing_input_content_length",
+                "Runway HTTPS inputs require a valid Content-Length header",
+            )
+        })?;
+    if content_length != expected_byte_length {
+        return Err(local_error(
+            provider_id,
+            "input_content_length_mismatch",
+            "Runway input Content-Length does not match verified metadata",
+        ));
+    }
+    Ok(())
 }
 
 fn detect_media_type(header: &[u8]) -> Option<&'static str> {

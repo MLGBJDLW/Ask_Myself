@@ -90,8 +90,8 @@
           "note": "Output and reference-video seconds are billed by resolution; the first five input images are free, then USD 0.04 each."
         },
         "outputUrlTtl": "time_limited",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       }
     ]
@@ -163,8 +163,8 @@
           "note": "Official pay-as-you-go fixed price by duration and resolution."
         },
         "outputUrlTtl": "temporary",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       },
       {
@@ -211,8 +211,8 @@
           "note": "Official pay-as-you-go fixed price by duration and resolution."
         },
         "outputUrlTtl": "temporary",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       },
       {
@@ -284,8 +284,8 @@
           "note": "Official pay-as-you-go fixed price by duration and resolution."
         },
         "outputUrlTtl": "temporary",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       }
     ]
@@ -351,8 +351,8 @@
           "note": "Twelve credits per second at USD 0.01 per credit."
         },
         "outputUrlTtl": "24_to_48_hours",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       },
       {
@@ -394,8 +394,8 @@
           "note": "Five credits per second at USD 0.01 per credit."
         },
         "outputUrlTtl": "24_to_48_hours",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "provider_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       },
       {
@@ -466,8 +466,8 @@
           "note": "Output seconds plus input/reference-video seconds are billed by resolution, with an 80-credit minimum."
         },
         "outputUrlTtl": "24_to_48_hours",
-        "watermarkPolicy": "provider_reported",
-        "provenancePolicy": "runway_aggregator_model_and_task_id",
+        "watermarkPolicy": "unknown",
+        "provenancePolicy": "nexa_local_lineage_only",
         "lastVerifiedAt": "2026-08-07"
       }
     ]

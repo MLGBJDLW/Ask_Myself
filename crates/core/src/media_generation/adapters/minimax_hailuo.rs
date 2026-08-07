@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, submission_error, CancellationResult, CostEstimate, DownloadedAsset,
-    NormalizedProviderError, NormalizedVideoRequest, ProviderJobResult, ProviderJobState,
-    ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
-    VideoGenerationAdapter, VideoInputRole,
+    provider_source, submission_error, submission_response_error, CancellationResult, CostEstimate,
+    DownloadedAsset, NormalizedProviderError, NormalizedVideoRequest, ProviderCancellationRequest,
+    ProviderJobResult, ProviderJobState, ProviderJobStatus, ProviderOutputLocator, SubmittedJob,
+    ValidationResult, VideoGenerationAdapter, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -306,9 +306,10 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
         .await
         .map_err(submission_error)?;
         ensure_base_response(&response.base_resp, &self.api_key)?;
-        let task_id = scalar_string(&response.task_id)
-            .ok_or_else(|| configuration_error("MiniMax returned an invalid task ID"))?;
-        let task_id = validate_task_id(&task_id)?;
+        let task_id = scalar_string(&response.task_id).ok_or_else(|| {
+            submission_response_error(configuration_error("MiniMax returned an invalid task ID"))
+        })?;
+        let task_id = validate_task_id(&task_id).map_err(submission_response_error)?;
         Ok(SubmittedJob {
             provider_task_id: task_id,
             provider_source: self.provider_source.clone(),
@@ -404,9 +405,9 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
 
     async fn cancel(
         &self,
-        provider_task_id: &str,
+        request: &ProviderCancellationRequest,
     ) -> Result<CancellationResult, NormalizedProviderError> {
-        let task_id = validate_task_id(provider_task_id)?;
+        let task_id = validate_task_id(&request.provider_task_id)?;
         Err(NormalizedProviderError {
             provider_id: PROVIDER_ID.to_string(),
             code: "cancellation_unsupported".to_string(),

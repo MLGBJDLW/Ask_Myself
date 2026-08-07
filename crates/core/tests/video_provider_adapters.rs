@@ -1,6 +1,7 @@
 use nexa_core::media_generation::adapters::{
     CostEstimateKind, MiniMaxHailuoVideoAdapter, MiniMaxVideoAdapter, NormalizedVideoRequest,
-    RunwayVideoAdapter, VideoGenerationAdapter, VideoInputAsset, VideoInputRole,
+    ProviderCancellationRequest, RunwayVideoAdapter, VideoGenerationAdapter, VideoInputAsset,
+    VideoInputRole,
 };
 use nexa_core::media_generation::MediaOperation;
 use nexa_core::video_provider_catalog::{
@@ -110,7 +111,10 @@ fn checked_in_contract_projections_pin_the_live_model_and_version_branches() {
     assert_eq!(minimax["v2"]["duration"]["minimum"], 4);
     assert_eq!(minimax["v2"]["duration"]["maximum"], 15);
     assert_eq!(minimax["legacy"]["cancelScope"], "unsupported");
-    assert_eq!(minimax["sourceSha256"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        minimax["sourceSha256"],
+        "34a219f5f08ecb786a89852fef722841a25d18f2b3386c0f10c75fdc4a333c37"
+    );
 
     let runway: Value = serde_json::from_str(RUNWAY_CONTRACT).unwrap();
     assert_eq!(runway["apiVersionHeader"]["value"], "2024-11-06");
@@ -128,7 +132,10 @@ fn checked_in_contract_projections_pin_the_live_model_and_version_branches() {
             .len(),
         12
     );
-    assert_eq!(runway["sourceSha256"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        runway["sourceSha256"],
+        "bfd825e85135d2e0c865b1467f93e85cefa26da41b0a24c00a7d4701fffe26b7"
+    );
 }
 
 #[test]
@@ -299,6 +306,36 @@ fn runway_validation_is_model_operation_and_capability_specific() {
         .issues
         .iter()
         .any(|issue| issue.code == "unsupported_locator"));
+    seedance.input_assets[0].uri = "https://cdn.example.com/first.gif".to_string();
+    seedance.input_assets[0].media_type = "image/gif".to_string();
+    assert!(adapter
+        .validate(&seedance)
+        .issues
+        .iter()
+        .any(|issue| issue.code == "media_role_mismatch"));
+}
+
+#[tokio::test]
+async fn destructive_cancel_endpoints_require_explicit_confirmation() {
+    let minimax = MiniMaxVideoAdapter::new("secret", "credential-1").unwrap();
+    let error = minimax
+        .cancel(&ProviderCancellationRequest {
+            provider_task_id: "task-1".to_string(),
+            allow_terminal_record_deletion: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "destructive_confirmation_required");
+
+    let runway = RunwayVideoAdapter::new("secret", "credential-1").unwrap();
+    let error = runway
+        .cancel(&ProviderCancellationRequest {
+            provider_task_id: "497f6eca-6276-4993-bfeb-53cbbbba6f08".to_string(),
+            allow_terminal_record_deletion: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "destructive_confirmation_required");
 }
 
 #[test]

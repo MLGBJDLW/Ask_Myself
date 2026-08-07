@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, submission_error, CancellationResult, CostEstimate, DownloadedAsset,
-    NormalizedProviderError, NormalizedVideoRequest, ProviderBilledUsage, ProviderJobResult,
-    ProviderJobState, ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
-    VideoGenerationAdapter, VideoInputRole,
+    provider_source, submission_error, submission_response_error, CancellationResult, CostEstimate,
+    DownloadedAsset, NormalizedProviderError, NormalizedVideoRequest, ProviderBilledUsage,
+    ProviderCancellationRequest, ProviderJobResult, ProviderJobState, ProviderJobStatus,
+    ProviderOutputLocator, SubmittedJob, ValidationResult, VideoGenerationAdapter, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -503,7 +503,9 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
         .await
         .map_err(submission_error)?;
         if response.task_id.trim().is_empty() || response.task_id.len() > 256 {
-            return Err(configuration_error("MiniMax returned an invalid task ID"));
+            return Err(submission_response_error(configuration_error(
+                "MiniMax returned an invalid task ID",
+            )));
         }
         Ok(SubmittedJob {
             provider_task_id: response.task_id,
@@ -556,7 +558,6 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             input_image_count: usage.input_image_count,
             credits: None,
         });
-        let final_cost_micros = h3_final_cost(&task);
         let result = if state == ProviderJobState::Succeeded {
             let uri = task
                 .content
@@ -584,15 +585,27 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             result,
             error,
             billed_usage,
-            final_cost_micros,
+            final_cost_micros: None,
         })
     }
 
     async fn cancel(
         &self,
-        provider_task_id: &str,
+        request: &ProviderCancellationRequest,
     ) -> Result<CancellationResult, NormalizedProviderError> {
-        let task_id = validate_task_id(provider_task_id)?;
+        if !request.allow_terminal_record_deletion {
+            return Err(NormalizedProviderError {
+                provider_id: PROVIDER_ID.to_string(),
+                code: "destructive_confirmation_required".to_string(),
+                message: "MiniMax cancellation may delete a task that completes during the request"
+                    .to_string(),
+                retryable: false,
+                retry_after_seconds: None,
+                http_status: None,
+                request_id: None,
+            });
+        }
+        let task_id = validate_task_id(&request.provider_task_id)?;
         let before = self.get_status(&task_id).await?;
         if before.state != ProviderJobState::Queued {
             return Err(NormalizedProviderError {
@@ -751,30 +764,6 @@ fn h3_cost_estimate(
     Ok(estimate)
 }
 
-fn h3_final_cost(task: &MiniMaxTask) -> Option<u64> {
-    let usage = task.usage.as_ref()?;
-    let per_second = match task.resolution.as_deref()? {
-        "768P" => 80_000_u64,
-        "2K" => 130_000_u64,
-        _ => return None,
-    };
-    let total_seconds = usage.total_seconds.or_else(|| {
-        usage
-            .input_seconds
-            .unwrap_or(0)
-            .checked_add(usage.output_seconds.unwrap_or(0))
-    })?;
-    total_seconds.checked_mul(per_second).and_then(|amount| {
-        amount.checked_add(
-            usage
-                .input_image_count
-                .unwrap_or(0)
-                .saturating_sub(5)
-                .saturating_mul(40_000),
-        )
-    })
-}
-
 fn validate_secret_and_scope(
     api_key: &str,
     credential_scope: &str,
@@ -834,7 +823,6 @@ struct MiniMaxTask {
     content: Option<MiniMaxContent>,
     error: Option<MiniMaxError>,
     duration: Option<u32>,
-    resolution: Option<String>,
     usage: Option<MiniMaxUsage>,
 }
 
@@ -923,24 +911,6 @@ mod tests {
     }
 
     #[test]
-    fn billed_usage_produces_authoritative_h3_final_cost() {
-        let task = MiniMaxTask {
-            id: "task-1".to_string(),
-            status: "succeeded".to_string(),
-            content: None,
-            error: None,
-            duration: Some(5),
-            resolution: Some("2K".to_string()),
-            usage: Some(MiniMaxUsage {
-                total_seconds: Some(8),
-                input_seconds: Some(3),
-                output_seconds: Some(5),
-                input_image_count: Some(7),
-            }),
-        };
-        assert_eq!(h3_final_cost(&task), Some(1_120_000));
-    }
-
     #[tokio::test]
     async fn submit_uses_v2_multimodal_contract_and_bearer_auth() {
         let (base_url, captured) = serve_once(r#"{"task_id":"424010985738629"}"#).await;
@@ -958,6 +928,15 @@ mod tests {
         assert_eq!(body["model"], MODEL_ID);
         assert_eq!(body["content"][0]["type"], "text");
         assert_eq!(body["resolution"], "2K");
+    }
+
+    #[tokio::test]
+    async fn successful_response_without_task_id_is_provider_unknown() {
+        let (base_url, _) = serve_once(r#"{"task_id":""}"#).await;
+        let adapter = MiniMaxVideoAdapter::for_test(&base_url);
+        let error = adapter.submit(&request()).await.unwrap_err();
+        assert_eq!(error.code, "submission_outcome_unknown");
+        assert!(!error.retryable);
     }
 
     async fn serve_once(body: &'static str) -> (String, Arc<Mutex<String>>) {

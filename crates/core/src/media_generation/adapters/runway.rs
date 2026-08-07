@@ -7,10 +7,11 @@ use serde_json::{json, Map, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, submission_error, CancellationResult, CostEstimate, CostEstimateKind,
-    DownloadedAsset, NormalizedProviderError, NormalizedVideoRequest, ProviderBilledUsage,
-    ProviderJobResult, ProviderJobState, ProviderJobStatus, ProviderOutputLocator, SubmittedJob,
-    ValidationResult, VideoGenerationAdapter, VideoInputAsset, VideoInputRole,
+    provider_source, submission_error, submission_response_error, CancellationResult, CostEstimate,
+    CostEstimateKind, DownloadedAsset, NormalizedProviderError, NormalizedVideoRequest,
+    ProviderBilledUsage, ProviderCancellationRequest, ProviderJobResult, ProviderJobState,
+    ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
+    VideoGenerationAdapter, VideoInputAsset, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -382,11 +383,27 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
             let valid_type = match asset.role {
                 VideoInputRole::FirstFrame
                 | VideoInputRole::LastFrame
-                | VideoInputRole::ReferenceImage => asset.media_type.starts_with("image/"),
+                | VideoInputRole::ReferenceImage => matches!(
+                    asset.media_type.as_str(),
+                    "image/jpg" | "image/jpeg" | "image/png" | "image/webp"
+                ),
                 VideoInputRole::InputVideo | VideoInputRole::ReferenceVideo => {
-                    asset.media_type.starts_with("video/")
+                    runway_video_codec_supported(asset)
                 }
-                VideoInputRole::ReferenceAudio => asset.media_type.starts_with("audio/"),
+                VideoInputRole::ReferenceAudio => matches!(
+                    asset.media_type.as_str(),
+                    "audio/mpeg"
+                        | "audio/mp3"
+                        | "audio/wav"
+                        | "audio/wave"
+                        | "audio/x-wav"
+                        | "audio/flac"
+                        | "audio/x-flac"
+                        | "audio/mp4"
+                        | "audio/x-m4a"
+                        | "audio/aac"
+                        | "audio/x-aac"
+                ),
             };
             if !valid_type {
                 issues.push(issue(
@@ -514,6 +531,19 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
         if !validation.valid {
             return Err(invalid_request_error(PROVIDER_ID, validation));
         }
+        for asset in request
+            .input_assets
+            .iter()
+            .filter(|asset| asset.uri.starts_with("https://"))
+        {
+            http::preflight_remote_input(
+                PROVIDER_ID,
+                &asset.uri,
+                &asset.media_type,
+                asset.byte_length.unwrap_or(0),
+            )
+            .await?;
+        }
         let path = Self::submit_path(request.operation)
             .ok_or_else(|| configuration_error("Unsupported Runway operation"))?;
         let response: CreateResponse = http::execute_json(
@@ -524,7 +554,7 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
         )
         .await
         .map_err(submission_error)?;
-        validate_task_id(&response.id)?;
+        validate_task_id(&response.id).map_err(submission_response_error)?;
         let estimated_cost = response
             .estimated_cost
             .and_then(|cost| credits_to_micros(cost.credits))
@@ -630,9 +660,21 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
 
     async fn cancel(
         &self,
-        provider_task_id: &str,
+        request: &ProviderCancellationRequest,
     ) -> Result<CancellationResult, NormalizedProviderError> {
-        let task_id = validate_task_id(provider_task_id)?;
+        if !request.allow_terminal_record_deletion {
+            return Err(NormalizedProviderError {
+                provider_id: PROVIDER_ID.to_string(),
+                code: "destructive_confirmation_required".to_string(),
+                message: "Runway cancellation may delete a task that completes during the request"
+                    .to_string(),
+                retryable: false,
+                retry_after_seconds: None,
+                http_status: None,
+                request_id: None,
+            });
+        }
+        let task_id = validate_task_id(&request.provider_task_id)?;
         let before = self.get_status(&task_id).await?;
         if matches!(
             before.state,
@@ -730,6 +772,36 @@ fn dimensions_for(request: &NormalizedVideoRequest) -> Option<&'static str> {
         "3:4" => Some("832:1104"),
         "9:16" => Some("720:1280"),
         _ => None,
+    }
+}
+
+fn runway_video_codec_supported(asset: &VideoInputAsset) -> bool {
+    let Some(codec) = asset
+        .video_codec
+        .as_deref()
+        .map(|codec| codec.to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let codec = codec.as_str();
+    match asset.media_type.as_str() {
+        "video/mp4" => matches!(codec, "h264" | "h265" | "hevc" | "av1"),
+        "video/quicktime" => {
+            matches!(codec, "h264" | "h265" | "hevc" | "mjpeg") || codec.starts_with("prores")
+        }
+        "video/x-matroska" => {
+            matches!(
+                codec,
+                "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" | "mpeg2"
+            )
+        }
+        "video/webm" => matches!(codec, "vp8" | "vp9" | "av1"),
+        "video/3gpp" => codec == "h264",
+        "video/ogg" => codec == "theora",
+        "video/x-msvideo" => matches!(codec, "h264" | "mjpeg" | "msmpeg4v3"),
+        "video/x-flv" => matches!(codec, "flv1" | "h264"),
+        "video/mpeg" => codec == "mpeg2",
+        _ => false,
     }
 }
 
