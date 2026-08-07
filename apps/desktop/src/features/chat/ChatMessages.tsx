@@ -2048,7 +2048,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     !compactCompleteVisible
   ) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">
         <div className="text-center max-w-md w-full px-4">
           <div className="p-4 rounded-2xl bg-surface-2 text-text-tertiary inline-block mb-4">
             <MessageCircle className="h-8 w-8" />
@@ -2094,7 +2094,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
   if (loadingMsgs) {
     return (
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
         <div className="flex justify-end">
           <div className="max-w-[60%] rounded-lg bg-accent-subtle px-3.5 py-2.5">
             <Skeleton className="h-4 w-48" />
@@ -2121,7 +2121,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       ref={scrollContainerRef}
       onScroll={handleScroll}
       data-chat-scroll-root="true"
-      className="flex-1 overflow-y-auto px-4 py-4 relative lg:pr-14"
+      className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:pr-14"
       role="log"
       aria-live="polite"
       aria-label={t("chat.messageArea")}

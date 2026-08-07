@@ -1403,7 +1403,7 @@ export function ChatInput({
     >
     <div
       data-testid="chat-input"
-      className={`relative border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
+      className={`relative shrink-0 border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
         isDragging ? "ring-2 ring-accent/50 bg-accent-subtle" : ""
       }`}
       onDragOver={handleDragOver}
@@ -1701,7 +1701,7 @@ export function ChatInput({
         />
         </NexaPopoverAnchor>
 
-        <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border/35 px-2.5 py-2">
+        <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t border-border/35 px-2.5 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
             <NexaPopover
               open={workflowCatalogOpen && !slashMenuOpen}
@@ -1911,18 +1911,18 @@ export function ChatInput({
             )}
           </div>
 
-          <div className="flex shrink-0 items-center gap-1.5">
-            <VoiceInputButton
-              onTranscript={(text) => {
-                setValue((prev) => {
-                  const nextValue = prev + (prev ? " " : "") + text;
-                  persistDraft(nextValue);
-                  return nextValue;
-                });
-              }}
-              disabled={attachmentLocked}
-            />
+          <VoiceInputButton
+            onTranscript={(text) => {
+              setValue((prev) => {
+                const nextValue = prev + (prev ? " " : "") + text;
+                persistDraft(nextValue);
+                return nextValue;
+              });
+            }}
+            disabled={attachmentLocked}
+          />
 
+          <div className="flex shrink-0 items-center gap-1.5">
             <EmojiPicker
               onEmojiSelect={(emoji) => {
                 setValue((prev) => {
