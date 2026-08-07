@@ -8,6 +8,7 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use regex::Regex;
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 use crate::app_settings::SpeechToTextConfig;
 use crate::error::CoreError;
@@ -43,7 +44,13 @@ fn transcription_endpoint(base_url: &str) -> String {
 
 fn async_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30 * 60))
+            .build()
+            .expect("static async speech-to-text HTTP client should build")
+    })
 }
 
 fn blocking_client() -> &'static reqwest::blocking::Client {
@@ -74,6 +81,130 @@ pub async fn transcribe_cloud_wav(
             config.api_style
         ))),
     }
+}
+
+/// Transcribe a managed WAV as fixed-size provider units. Only one bounded WAV
+/// segment is held at a time, so multipart and base64/JSON providers cannot
+/// turn a 60-minute recording into a whole-file native allocation.
+pub async fn transcribe_cloud_wav_path(
+    audio_path: &Path,
+    config: &SpeechToTextConfig,
+) -> Result<String, CoreError> {
+    if !config.is_configured() {
+        return Err(CoreError::InvalidInput(
+            "Cloud speech-to-text is not fully configured".into(),
+        ));
+    }
+    const MAX_SEGMENT_DATA_BYTES: usize = 8 * 1024 * 1024;
+    let mut file = tokio::fs::File::open(audio_path).await?;
+    let mut source_header = [0_u8; 44];
+    file.read_exact(&mut source_header).await?;
+    let wav = managed_pcm16_wav_spec(&source_header)?;
+    let expected_file_bytes = 44_u64.saturating_add(u64::from(wav.data_bytes));
+    let actual_file_bytes = file.metadata().await?.len();
+    if actual_file_bytes != expected_file_bytes {
+        return Err(CoreError::InvalidInput(format!(
+            "Managed speech WAV length mismatch: expected {expected_file_bytes}, found {actual_file_bytes}"
+        )));
+    }
+
+    let block_align = usize::from(wav.channels) * 2;
+    let max_segment_bytes = MAX_SEGMENT_DATA_BYTES / block_align * block_align;
+    let mut remaining = wav.data_bytes as usize;
+    let mut transcripts = Vec::new();
+    while remaining > 0 {
+        let segment_data_bytes = remaining.min(max_segment_bytes);
+        let segment_header = pcm16_wav_header(wav.sample_rate, wav.channels, segment_data_bytes)?;
+        let mut segment = vec![0_u8; 44 + segment_data_bytes];
+        segment[..44].copy_from_slice(&segment_header);
+        file.read_exact(&mut segment[44..]).await?;
+        let transcript = match config.api_style.as_str() {
+            "openai_transcription" => transcribe_openai_compatible_wav(segment, config).await?,
+            "dashscope_asr" => transcribe_dashscope_wav(segment, config).await?,
+            _ => {
+                return Err(CoreError::InvalidInput(format!(
+                    "Unsupported cloud speech-to-text API style: {}",
+                    config.api_style
+                )))
+            }
+        };
+        let transcript = transcript.trim();
+        if !transcript.is_empty() {
+            transcripts.push(transcript.to_string());
+        }
+        remaining -= segment_data_bytes;
+    }
+    Ok(transcripts.join(" "))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ManagedPcm16WavSpec {
+    channels: u16,
+    sample_rate: u32,
+    data_bytes: u32,
+}
+
+fn managed_pcm16_wav_spec(header: &[u8; 44]) -> Result<ManagedPcm16WavSpec, CoreError> {
+    if &header[0..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+        || &header[12..16] != b"fmt "
+        || &header[36..40] != b"data"
+    {
+        return Err(CoreError::InvalidInput(
+            "Managed speech input must be a canonical PCM WAV".into(),
+        ));
+    }
+    let audio_format = u16::from_le_bytes([header[20], header[21]]);
+    let channels = u16::from_le_bytes([header[22], header[23]]);
+    let sample_rate = u32::from_le_bytes(header[24..28].try_into().expect("four bytes"));
+    let bits_per_sample = u16::from_le_bytes([header[34], header[35]]);
+    let data_bytes = u32::from_le_bytes(header[40..44].try_into().expect("four bytes"));
+    if audio_format != 1 || channels == 0 || bits_per_sample != 16 || data_bytes == 0 {
+        return Err(CoreError::InvalidInput(
+            "Managed speech input must contain aligned 16-bit PCM audio".into(),
+        ));
+    }
+    let block_align = u32::from(channels) * 2;
+    if data_bytes % block_align != 0 {
+        return Err(CoreError::InvalidInput(
+            "Managed speech WAV contains an incomplete PCM frame".into(),
+        ));
+    }
+    Ok(ManagedPcm16WavSpec {
+        channels,
+        sample_rate,
+        data_bytes,
+    })
+}
+
+fn pcm16_wav_header(
+    sample_rate: u32,
+    channels: u16,
+    data_bytes: usize,
+) -> Result<[u8; 44], CoreError> {
+    let data_bytes = u32::try_from(data_bytes)
+        .map_err(|_| CoreError::InvalidInput("Speech WAV segment is too large".into()))?;
+    let block_align = channels
+        .checked_mul(2)
+        .ok_or_else(|| CoreError::InvalidInput("Speech WAV channel count overflow".into()))?;
+    let byte_rate = sample_rate
+        .checked_mul(u32::from(block_align))
+        .ok_or_else(|| CoreError::InvalidInput("Speech WAV byte rate overflow".into()))?;
+    let mut header = [0_u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(36_u32 + data_bytes).to_le_bytes());
+    header[8..12].copy_from_slice(b"WAVE");
+    header[12..16].copy_from_slice(b"fmt ");
+    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&channels.to_le_bytes());
+    header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
+    header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
+    header[32..34].copy_from_slice(&block_align.to_le_bytes());
+    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+    Ok(header)
 }
 
 async fn transcribe_openai_compatible_wav(
@@ -438,6 +569,25 @@ mod tests {
             transcription_endpoint("https://example.test/audio/transcriptions/"),
             "https://example.test/audio/transcriptions"
         );
+    }
+
+    #[test]
+    fn managed_wav_segments_preserve_pcm_contract_and_bounded_sizes() {
+        let header = pcm16_wav_header(16_000, 1, 8 * 1024 * 1024).unwrap();
+        let spec = managed_pcm16_wav_spec(&header).unwrap();
+
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.data_bytes, 8 * 1024 * 1024);
+        assert_eq!(
+            u32::from_le_bytes(header[4..8].try_into().unwrap()),
+            36 + spec.data_bytes
+        );
+        assert_eq!(u16::from_le_bytes(header[32..34].try_into().unwrap()), 2);
+
+        let mut malformed = header;
+        malformed[40..44].copy_from_slice(&3_u32.to_le_bytes());
+        assert!(managed_pcm16_wav_spec(&malformed).is_err());
     }
 
     #[test]
