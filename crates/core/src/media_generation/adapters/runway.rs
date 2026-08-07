@@ -373,7 +373,10 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
             ));
         }
         for (index, asset) in request.input_assets.iter().enumerate() {
-            if !asset.uri.starts_with("https://") && !asset.uri.starts_with("runway://") {
+            if !asset.uri.starts_with("https://")
+                && !asset.uri.starts_with("runway://")
+                && !asset.uri.starts_with("data:image/")
+            {
                 issues.push(issue(
                     &format!("inputAssets[{index}].uri"),
                     "unsupported_locator",
@@ -421,6 +424,8 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
             }
             let size_limit = if asset.uri.starts_with("runway://") {
                 200 * 1024 * 1024
+            } else if asset.uri.starts_with("data:image/") {
+                5 * 1024 * 1024
             } else if asset.media_type.starts_with("image/") {
                 16 * 1024 * 1024
             } else {

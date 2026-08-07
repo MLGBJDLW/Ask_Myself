@@ -31,6 +31,7 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => 
 const ChatPage = lazy(() => import("./pages/ChatPage").then((module) => ({ default: module.ChatPage })));
 const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage").then((module) => ({ default: module.TaskCenterPage })));
 const WorkflowsPage = lazy(() => import("./pages/WorkflowsPage").then((module) => ({ default: module.WorkflowsPage })));
+const VideoStudioPage = lazy(() => import("./pages/VideoStudioPage").then((module) => ({ default: module.VideoStudioPage })));
 const WizardPage = lazy(() => import("./pages/WizardPage").then((module) => ({ default: module.WizardPage })));
 
 /* ── Page transition wrapper ─────────────────────────────────────── */
@@ -150,6 +151,7 @@ const router = createBrowserRouter(
         <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
         <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />
         <Route path="/workflows" element={<LazyPage><WorkflowsPage /></LazyPage>} />
+        <Route path="/studio" element={<LazyPage><VideoStudioPage /></LazyPage>} />
         <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
         <Route path="*" element={<LazyPage><NotFoundPage /></LazyPage>} />
       </Route>

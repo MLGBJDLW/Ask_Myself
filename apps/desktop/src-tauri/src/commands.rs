@@ -143,6 +143,7 @@ pub struct AppState {
     pub db_executor: DatabaseExecutor,
     pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
     pub media_generation: nexa_core::media_generation::MediaGenerationRuntime,
+    pub video_generation_coordinator: nexa_core::media_generation::VideoGenerationCoordinator,
     /// Guard: true while whisper transcription is in progress.
     #[cfg(feature = "video")]
     pub whisper_busy: Arc<AtomicBool>,

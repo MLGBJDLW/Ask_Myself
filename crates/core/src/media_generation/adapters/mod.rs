@@ -5,6 +5,12 @@
 //! persist their outputs through [`super::MediaGenerationRuntime`].
 
 mod http;
+
+pub(crate) async fn inspect_public_reference_image(
+    uri: &str,
+) -> Result<InspectedReferenceImage, NormalizedProviderError> {
+    http::inspect_public_image(uri, 20 * 1024 * 1024).await
+}
 mod minimax;
 mod minimax_hailuo;
 mod runway;
@@ -48,11 +54,27 @@ pub struct VideoInputAsset {
     #[serde(default)]
     pub metadata_verified: bool,
     pub byte_length: Option<u64>,
+    #[serde(default)]
+    pub content_hash_sha256: Option<String>,
+    /// Nexa-managed content identity. Renderer-authored shot drafts may never
+    /// set this field; queue preparation binds it after importing exact bytes.
+    #[serde(default)]
+    pub local_asset_id: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub duration_ms: Option<u64>,
     pub frame_rate: Option<f64>,
     pub video_codec: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct InspectedReferenceImage {
+    pub media_type: String,
+    pub byte_length: u64,
+    pub width: u32,
+    pub height: u32,
+    pub content_hash_sha256: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -325,6 +347,9 @@ fn issue(field: &str, code: &str, message: &str) -> ValidationIssue {
 }
 
 fn valid_media_uri(value: &str) -> bool {
+    if value.starts_with("data:image/") && value.contains(";base64,") {
+        return value.len() <= 90 * 1024 * 1024;
+    }
     if value.starts_with("mm_file://") || value.starts_with("runway://") {
         return value.len() > 12 && value.len() <= 5000;
     }

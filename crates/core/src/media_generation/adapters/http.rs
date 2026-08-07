@@ -418,14 +418,14 @@ pub(super) async fn preflight_remote_input(
         return Err(local_error(
             provider_id,
             "input_redirect_unsupported",
-            "Runway does not follow redirects for HTTPS inputs",
+            "Provider input preflight does not follow redirects",
         ));
     }
     if !response.status().is_success() {
         return Err(NormalizedProviderError {
             provider_id: provider_id.to_string(),
             code: format!("input_head_http_{}", response.status().as_u16()),
-            message: "Runway input URL did not accept a HEAD request".to_string(),
+            message: "Provider input URL did not accept a HEAD request".to_string(),
             retryable: response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
                 || response.status().is_server_error(),
             retry_after_seconds: None,
@@ -443,14 +443,14 @@ pub(super) async fn preflight_remote_input(
             local_error(
                 provider_id,
                 "missing_input_content_type",
-                "Runway HTTPS inputs require a valid Content-Type header",
+                "Provider HTTPS inputs require a valid Content-Type header",
             )
         })?;
     if !content_type.eq_ignore_ascii_case(expected_media_type) {
         return Err(local_error(
             provider_id,
             "input_content_type_mismatch",
-            "Runway input Content-Type does not match verified metadata",
+            "Provider input Content-Type does not match verified metadata",
         ));
     }
     let content_length = response
@@ -462,15 +462,153 @@ pub(super) async fn preflight_remote_input(
             local_error(
                 provider_id,
                 "missing_input_content_length",
-                "Runway HTTPS inputs require a valid Content-Length header",
+                "Provider HTTPS inputs require a valid Content-Length header",
             )
         })?;
     if content_length != expected_byte_length {
         return Err(local_error(
             provider_id,
             "input_content_length_mismatch",
-            "Runway input Content-Length does not match verified metadata",
+            "Provider input Content-Length does not match verified metadata",
         ));
+    }
+    Ok(())
+}
+
+pub(super) async fn inspect_public_image(
+    uri: &str,
+    max_bytes: u64,
+) -> Result<super::InspectedReferenceImage, NormalizedProviderError> {
+    let provider_id = "video_reference_inspector";
+    let url = url::Url::parse(uri)
+        .map_err(|_| local_error(provider_id, "invalid_input_url", "Reference URL is invalid"))?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(local_error(
+            provider_id,
+            "unsafe_input_url",
+            "Reference URL must be credential-free HTTPS without query or fragment",
+        ));
+    }
+    let client = pinned_public_client(provider_id, &url).await?;
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "Nexa-video-reference-inspector")
+        .send()
+        .await
+        .map_err(|error| transport_error(provider_id, "", error))?;
+    if response.status().is_redirection() || !response.status().is_success() {
+        return Err(local_error(
+            provider_id,
+            "reference_fetch_failed",
+            "Reference image could not be fetched without redirects",
+        ));
+    }
+    let declared_length = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| {
+            local_error(
+                provider_id,
+                "missing_input_content_length",
+                "Reference image requires a valid Content-Length header",
+            )
+        })?;
+    if declared_length == 0 || declared_length > max_bytes {
+        return Err(local_error(
+            provider_id,
+            "input_too_large",
+            "Reference image exceeds the bounded inspection limit",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(declared_length).unwrap_or(0));
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| transport_error(provider_id, "", error))?;
+        if bytes.len().saturating_add(chunk.len())
+            > usize::try_from(max_bytes).unwrap_or(usize::MAX)
+        {
+            return Err(local_error(
+                provider_id,
+                "input_too_large",
+                "Reference image exceeded the bounded inspection limit while downloading",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if u64::try_from(bytes.len()).ok() != Some(declared_length) {
+        return Err(local_error(
+            provider_id,
+            "input_content_length_mismatch",
+            "Reference image length changed during inspection",
+        ));
+    }
+    let inspected = tokio::task::spawn_blocking(move || {
+        let metadata = inspect_image_metadata(&bytes)?;
+        Ok::<_, String>((metadata, bytes))
+    })
+    .await
+    .map_err(|_| {
+        local_error(
+            provider_id,
+            "reference_inspection_failed",
+            "Reference image inspection task failed",
+        )
+    })?
+    .map_err(|message| local_error(provider_id, "invalid_input_image", &message))?;
+    Ok(super::InspectedReferenceImage {
+        media_type: inspected.0 .0,
+        byte_length: declared_length,
+        width: inspected.0 .1,
+        height: inspected.0 .2,
+        content_hash_sha256: inspected.0 .3,
+        bytes: inspected.1,
+    })
+}
+
+fn inspect_image_metadata(bytes: &[u8]) -> Result<(String, u32, u32, String), String> {
+    let format = image::guess_format(bytes)
+        .map_err(|_| "Reference bytes are not a supported image".to_string())?;
+    let media_type = match format {
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::WebP => "image/webp",
+        image::ImageFormat::Gif => "image/gif",
+        _ => return Err("Reference image must be JPEG, PNG, WebP, or GIF".to_string()),
+    };
+    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|_| "Reference image header could not be decoded".to_string())?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| "Reference image dimensions could not be decoded".to_string())?;
+    validate_image_dimensions(width, height)?;
+    let content_hash_sha256 = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok((media_type.to_string(), width, height, content_hash_sha256))
+}
+
+fn validate_image_dimensions(width: u32, height: u32) -> Result<(), String> {
+    const MAX_DIMENSION: u32 = 16_384;
+    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| "Reference image dimensions overflowed".to_string())?;
+    if width == 0
+        || height == 0
+        || width > MAX_DIMENSION
+        || height > MAX_DIMENSION
+        || pixels > MAX_PIXELS
+    {
+        return Err("Reference image exceeds the 16384px or 64-megapixel limit".to_string());
     }
     Ok(())
 }
@@ -746,6 +884,14 @@ mod tests {
         assert!(valid_remote_download_url(
             &url::Url::parse("https://cdn.example.com/output.mp4?signature=temporary").unwrap()
         ));
+    }
+
+    #[test]
+    fn reference_dimensions_reject_decompression_bomb_shapes() {
+        assert!(validate_image_dimensions(8_192, 8_192).is_ok());
+        assert!(validate_image_dimensions(16_384, 16_384).is_err());
+        assert!(validate_image_dimensions(100_000, 1).is_err());
+        assert!(validate_image_dimensions(0, 720).is_err());
     }
 
     #[tokio::test]

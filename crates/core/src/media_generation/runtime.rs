@@ -13,6 +13,16 @@ use super::model::{
     TransitionMediaJobRequest,
 };
 use super::store;
+use super::workflow::{
+    self, EnqueuePreparedVideoVariantsRequest, MaterializedVideoProviderConnection,
+};
+use super::{
+    AddVideoWorkflowShotRequest, CreateVideoWorkflowRequest, DeleteVideoWorkflowShotRequest,
+    ReorderVideoWorkflowShotsRequest, ReorderVideoWorkflowVariantsRequest,
+    SaveVideoProviderConnectionRequest, SelectVideoWorkflowVariantRequest,
+    UpdateVideoWorkflowRequest, UpdateVideoWorkflowShotRequest, VideoProviderConnectionRecord,
+    VideoVariantExecutionContext, VideoWorkflowSnapshot,
+};
 use super::{ImportMediaAssetRequest, MediaGenerationAssetStore};
 
 /// Provider-neutral durable boundary for asynchronous media generation.
@@ -65,6 +75,322 @@ impl MediaGenerationRuntime {
             .read(move |database| store::get_job(database, &job_id))
             .await?
             .value)
+    }
+
+    pub async fn save_video_provider_connection(
+        &self,
+        request: SaveVideoProviderConnectionRequest,
+    ) -> Result<VideoProviderConnectionRecord, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::save_provider_connection(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn list_video_provider_connections(
+        &self,
+    ) -> Result<Vec<VideoProviderConnectionRecord>, CoreError> {
+        Ok(self
+            .database
+            .read(workflow::list_provider_connections)
+            .await?
+            .value)
+    }
+
+    pub async fn materialize_video_provider_connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<MaterializedVideoProviderConnection, CoreError> {
+        let connection_id = connection_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| {
+                workflow::materialize_provider_connection(database, &connection_id)
+            })
+            .await?
+            .value)
+    }
+
+    pub async fn delete_video_provider_connection(
+        &self,
+        connection_id: &str,
+        expected_revision: u64,
+    ) -> Result<(), CoreError> {
+        let connection_id = connection_id.to_string();
+        self.database
+            .write(move |database| {
+                workflow::delete_provider_connection(database, &connection_id, expected_revision)
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_video_workflow(
+        &self,
+        request: CreateVideoWorkflowRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::create_workflow(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn update_video_workflow(
+        &self,
+        request: UpdateVideoWorkflowRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::update_workflow(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn list_video_workflows(
+        &self,
+        project_id: Option<String>,
+    ) -> Result<Vec<VideoWorkflowSnapshot>, CoreError> {
+        Ok(self
+            .database
+            .read(move |database| workflow::list_workflows(database, project_id))
+            .await?
+            .value)
+    }
+
+    pub async fn get_video_workflow(
+        &self,
+        workflow_id: &str,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        let workflow_id = workflow_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| workflow::get_workflow(database, &workflow_id))
+            .await?
+            .value)
+    }
+
+    pub async fn video_variant_execution_context(
+        &self,
+        job_id: &str,
+    ) -> Result<VideoVariantExecutionContext, CoreError> {
+        let job_id = job_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| workflow::variant_execution_context(database, &job_id))
+            .await?
+            .value)
+    }
+
+    pub async fn list_resumable_video_variant_contexts(
+        &self,
+    ) -> Result<Vec<VideoVariantExecutionContext>, CoreError> {
+        Ok(self
+            .database
+            .read(workflow::list_resumable_variant_contexts)
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn authorize_video_variant_cancellation(
+        &self,
+        job_id: &str,
+        expected_job_revision: u64,
+        authorized: bool,
+    ) -> Result<(), CoreError> {
+        let job_id = job_id.to_string();
+        self.database
+            .write(move |database| {
+                workflow::authorize_variant_cancellation(
+                    database,
+                    &job_id,
+                    expected_job_revision,
+                    authorized,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn add_video_workflow_shot(
+        &self,
+        request: AddVideoWorkflowShotRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::add_shot(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn update_video_workflow_shot(
+        &self,
+        request: UpdateVideoWorkflowShotRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::update_shot(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn reorder_video_workflow_shots(
+        &self,
+        request: ReorderVideoWorkflowShotsRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::reorder_shots(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn reorder_video_workflow_variants(
+        &self,
+        request: ReorderVideoWorkflowVariantsRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::reorder_variants(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn delete_video_workflow_shot(
+        &self,
+        request: DeleteVideoWorkflowShotRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::delete_shot(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn enqueue_video_workflow_variants(
+        &self,
+        request: EnqueuePreparedVideoVariantsRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::enqueue_variants(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn video_materialization_failure_count(
+        &self,
+        job_id: &str,
+    ) -> Result<u32, CoreError> {
+        let job_id = job_id.to_string();
+        Ok(self
+            .database
+            .read(move |database| workflow::materialization_failure_count(database, &job_id))
+            .await?
+            .value)
+    }
+
+    pub async fn increment_video_materialization_failure(
+        &self,
+        job_id: &str,
+    ) -> Result<u32, CoreError> {
+        let job_id = job_id.to_string();
+        Ok(self
+            .database
+            .write(move |database| workflow::increment_materialization_failure(database, &job_id))
+            .await?
+            .value)
+    }
+
+    pub async fn reset_video_materialization_failures(
+        &self,
+        job_id: &str,
+    ) -> Result<(), CoreError> {
+        let job_id = job_id.to_string();
+        self.database
+            .write(move |database| workflow::reset_materialization_failures(database, &job_id))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn try_acquire_video_job_lease(
+        &self,
+        job_id: &str,
+        kind: &str,
+        owner_id: &str,
+        ttl_seconds: i64,
+    ) -> Result<bool, CoreError> {
+        let (job_id, kind, owner_id) = (job_id.to_string(), kind.to_string(), owner_id.to_string());
+        Ok(self
+            .database
+            .write(move |database| {
+                workflow::try_acquire_job_lease(database, &job_id, &kind, &owner_id, ttl_seconds)
+            })
+            .await?
+            .value)
+    }
+
+    pub async fn renew_video_job_lease(
+        &self,
+        job_id: &str,
+        kind: &str,
+        owner_id: &str,
+        ttl_seconds: i64,
+    ) -> Result<bool, CoreError> {
+        let (job_id, kind, owner_id) = (job_id.to_string(), kind.to_string(), owner_id.to_string());
+        Ok(self
+            .database
+            .write(move |database| {
+                workflow::renew_job_lease(database, &job_id, &kind, &owner_id, ttl_seconds)
+            })
+            .await?
+            .value)
+    }
+
+    pub async fn release_video_job_lease(
+        &self,
+        job_id: &str,
+        kind: &str,
+        owner_id: &str,
+    ) -> Result<(), CoreError> {
+        let (job_id, kind, owner_id) = (job_id.to_string(), kind.to_string(), owner_id.to_string());
+        self.database
+            .write(move |database| workflow::release_job_lease(database, &job_id, &kind, &owner_id))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn select_video_workflow_variant(
+        &self,
+        request: SelectVideoWorkflowVariantRequest,
+    ) -> Result<VideoWorkflowSnapshot, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| workflow::select_variant(database, request))
+            .await?
+            .value)
+    }
+
+    pub async fn resolve_asset_path(
+        &self,
+        asset_id: &str,
+    ) -> Result<std::path::PathBuf, CoreError> {
+        let asset_id = asset_id.to_string();
+        let asset = self
+            .database
+            .read(move |database| store::get_asset(database, &asset_id))
+            .await?
+            .value;
+        if asset.local_state != super::model::MediaAssetLocalState::Available {
+            return Err(CoreError::Conflict(
+                "Media asset is not locally available".to_string(),
+            ));
+        }
+        let asset_store = self.asset_store.clone().ok_or_else(|| {
+            CoreError::Internal("Media generation asset store is not configured".to_string())
+        })?;
+        asset_store.resolve_storage_key(&asset.storage_key)
     }
 
     /// Returns every non-terminal job that an adapter must reconcile after
@@ -217,6 +543,17 @@ impl MediaGenerationRuntime {
         Ok(self
             .database
             .write(move |database| store::begin_attempt(database, request))
+            .await?
+            .value)
+    }
+
+    pub(crate) async fn begin_attempt_claim(
+        &self,
+        request: BeginMediaJobAttemptRequest,
+    ) -> Result<store::BeginAttemptClaim, CoreError> {
+        Ok(self
+            .database
+            .write(move |database| store::begin_attempt_claim(database, request))
             .await?
             .value)
     }
@@ -428,6 +765,21 @@ mod tests {
             .unwrap()
     }
 
+    fn attempt_request(snapshot: &MediaJobSnapshot, key: &str) -> BeginMediaJobAttemptRequest {
+        BeginMediaJobAttemptRequest {
+            job_id: snapshot.job.id.clone(),
+            expected_revision: snapshot.job.revision,
+            idempotency_key: key.to_string(),
+            provider_id: "provider-a".to_string(),
+            provider_source: "urn:nexa:provider-a:endpoint-1:account-hash-a:us".to_string(),
+            model_id: "video-model-1".to_string(),
+            api_version: Some("2026-08-01".to_string()),
+            data_region: Some("us".to_string()),
+            remote_retention_expires_at: Some("2026-08-14T00:00:00Z".to_string()),
+            provider_unknown_reconciliation: None,
+        }
+    }
+
     #[tokio::test]
     async fn create_is_idempotent_and_rejects_key_reuse_for_different_input() {
         let runtime = runtime(Database::open_memory().unwrap());
@@ -445,6 +797,23 @@ mod tests {
         changed.normalized_parameters = json!({ "prompt": "different" });
         let error = runtime.create_job(changed).await.unwrap_err();
         assert!(matches!(error, CoreError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn attempt_claim_has_exactly_one_submission_owner() {
+        let runtime = runtime(Database::open_memory().unwrap());
+        let submitting = submitting_job(&runtime, "attempt-claim").await;
+        let request = attempt_request(&submitting, "attempt-claim:1");
+        let first = runtime.begin_attempt_claim(request.clone()).await.unwrap();
+        let replay = runtime.begin_attempt_claim(request).await.unwrap();
+
+        assert!(first.claimed);
+        assert!(!replay.claimed);
+        assert_eq!(
+            first.snapshot.job.current_attempt_id,
+            replay.snapshot.job.current_attempt_id
+        );
+        assert_eq!(replay.snapshot.attempts.len(), 1);
     }
 
     #[tokio::test]
