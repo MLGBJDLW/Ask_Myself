@@ -7,10 +7,10 @@ use serde_json::{json, Map, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, CancellationResult, CostEstimate, CostEstimateKind, DownloadedAsset,
-    NormalizedProviderError, NormalizedVideoRequest, ProviderJobResult, ProviderJobState,
-    ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
-    VideoGenerationAdapter, VideoInputAsset, VideoInputRole,
+    provider_source, submission_error, CancellationResult, CostEstimate, CostEstimateKind,
+    DownloadedAsset, NormalizedProviderError, NormalizedVideoRequest, ProviderBilledUsage,
+    ProviderJobResult, ProviderJobState, ProviderJobStatus, ProviderOutputLocator, SubmittedJob,
+    ValidationResult, VideoGenerationAdapter, VideoInputAsset, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -358,6 +358,19 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
                 "Runway Seedance 2.5 input and reference videos may total at most 30 seconds",
             ));
         }
+        let total_audio_ms = request
+            .input_assets
+            .iter()
+            .filter(|asset| asset.role == VideoInputRole::ReferenceAudio)
+            .filter_map(|asset| asset.duration_ms)
+            .sum::<u64>();
+        if request.model_id == "seedance2_5" && total_audio_ms > 30_000 {
+            issues.push(issue(
+                "inputAssets",
+                "audio_duration_exceeded",
+                "Runway Seedance 2.5 reference audio may total at most 30 seconds",
+            ));
+        }
         for (index, asset) in request.input_assets.iter().enumerate() {
             if !asset.uri.starts_with("https://") && !asset.uri.starts_with("runway://") {
                 issues.push(issue(
@@ -381,6 +394,102 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
                     "media_role_mismatch",
                     "Media MIME type does not match its Runway input role",
                 ));
+            }
+            if asset.byte_length.is_none() {
+                issues.push(issue(
+                    &format!("inputAssets[{index}].byteLength"),
+                    "missing_media_metadata",
+                    "Runway inputs require a verified byte length",
+                ));
+            }
+            let size_limit = if asset.uri.starts_with("runway://") {
+                200 * 1024 * 1024
+            } else if asset.media_type.starts_with("image/") {
+                16 * 1024 * 1024
+            } else {
+                32 * 1024 * 1024
+            };
+            if asset.byte_length.is_some_and(|bytes| bytes > size_limit) {
+                issues.push(issue(
+                    &format!("inputAssets[{index}].byteLength"),
+                    "input_too_large",
+                    "Runway input exceeds the locator-specific byte limit",
+                ));
+            }
+            if asset.uri.starts_with("https://") && asset.uri.len() > 2_048 {
+                issues.push(issue(
+                    &format!("inputAssets[{index}].uri"),
+                    "input_url_too_long",
+                    "Runway HTTPS input URLs may not exceed 2048 bytes",
+                ));
+            }
+            if asset.uri.starts_with("https://")
+                && url::Url::parse(&asset.uri)
+                    .ok()
+                    .is_some_and(|url| !matches!(url.host(), Some(url::Host::Domain(_))))
+            {
+                issues.push(issue(
+                    &format!("inputAssets[{index}].uri"),
+                    "ip_input_url_unsupported",
+                    "Runway HTTPS inputs require a domain host rather than an IP literal",
+                ));
+            }
+            match asset.role {
+                VideoInputRole::InputVideo | VideoInputRole::ReferenceVideo => {
+                    if asset.width.is_none()
+                        || asset.height.is_none()
+                        || asset.duration_ms.is_none()
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "missing_media_metadata",
+                            "Runway videos require verified dimensions and duration",
+                        ));
+                    }
+                    if request.model_id == "seedance2_5"
+                        && asset
+                            .width
+                            .zip(asset.height)
+                            .is_some_and(|(width, height)| width.min(height) < 480)
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "video_resolution_too_small",
+                            "Runway Seedance 2.5 videos must be at least 480p",
+                        ));
+                    }
+                }
+                VideoInputRole::FirstFrame | VideoInputRole::ReferenceImage => {
+                    if asset.width.is_none() || asset.height.is_none() {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "missing_media_metadata",
+                            "Runway images require verified dimensions",
+                        ));
+                    }
+                    if asset
+                        .width
+                        .zip(asset.height)
+                        .is_some_and(|(width, height)| {
+                            let ratio = f64::from(width) / f64::from(height.max(1));
+                            !(0.4..=4.0).contains(&ratio)
+                        })
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "unsupported_image_ratio",
+                            "Runway image aspect ratio must be between 0.4 and 4",
+                        ));
+                    }
+                }
+                VideoInputRole::ReferenceAudio if asset.duration_ms.is_none() => {
+                    issues.push(issue(
+                        &format!("inputAssets[{index}].durationMs"),
+                        "missing_media_metadata",
+                        "Runway reference audio requires verified duration",
+                    ));
+                }
+                _ => {}
             }
         }
         ValidationResult::new(issues)
@@ -413,13 +522,14 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
             self.authenticated(self.client.post(self.endpoint(path)))
                 .json(&Self::payload(request)?),
         )
-        .await?;
+        .await
+        .map_err(submission_error)?;
         validate_task_id(&response.id)?;
         let estimated_cost = response
             .estimated_cost
             .and_then(|cost| credits_to_micros(cost.credits))
             .map(|amount_micros| CostEstimate {
-                kind: CostEstimateKind::Exact,
+                kind: CostEstimateKind::Estimated,
                 amount_micros: Some(amount_micros),
                 currency: Some("USD".to_string()),
                 note: "Runway task response estimate at USD 0.01 per credit".to_string(),
@@ -500,15 +610,21 @@ impl VideoGenerationAdapter for RunwayVideoAdapter {
         } else {
             None
         };
+        let billed_credits = response.cost.as_ref().map(|cost| cost.credits);
         Ok(ProviderJobStatus {
             provider_task_id: response.id,
             state,
             raw_status: response.status,
             result,
             error,
-            final_cost_micros: response
-                .cost
-                .and_then(|cost| credits_to_micros(cost.credits)),
+            billed_usage: billed_credits.map(|credits| ProviderBilledUsage {
+                total_seconds: None,
+                input_seconds: None,
+                output_seconds: None,
+                input_image_count: None,
+                credits: Some(credits),
+            }),
+            final_cost_micros: billed_credits.and_then(credits_to_micros),
         })
     }
 
@@ -827,6 +943,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(submitted.estimated_cost.amount_micros, Some(600_000));
+        assert_eq!(submitted.estimated_cost.kind, CostEstimateKind::Estimated);
         let request = captured.lock().unwrap().clone();
         assert!(request.starts_with("POST /v1/text_to_video HTTP/1.1"));
         assert!(request

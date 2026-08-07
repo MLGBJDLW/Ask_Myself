@@ -45,21 +45,12 @@ pub struct VideoModelManifest {
     pub release_status: VideoModelReleaseStatus,
     pub selectable: bool,
     #[serde(default)]
-    pub operations: Vec<MediaOperation>,
-    pub min_duration_seconds: Option<u32>,
-    pub max_duration_seconds: Option<u32>,
-    #[serde(default)]
-    pub durations_seconds: Vec<u32>,
-    #[serde(default)]
-    pub resolutions: Vec<String>,
-    #[serde(default)]
-    pub aspect_ratios: Vec<String>,
-    pub supports_audio: bool,
+    pub operation_capabilities: Vec<VideoOperationCapability>,
     pub supports_negative_prompt: bool,
-    pub supports_seed: bool,
     pub supports_webhook: bool,
     pub supports_cancellation: bool,
     pub cancellation_scope: String,
+    pub cancellation_may_delete_terminal_record: bool,
     #[serde(default)]
     pub regions: Vec<String>,
     pub moderation_policy: String,
@@ -68,6 +59,30 @@ pub struct VideoModelManifest {
     pub watermark_policy: String,
     pub provenance_policy: String,
     pub last_verified_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoOperationCapability {
+    pub operation: MediaOperation,
+    #[serde(default)]
+    pub duration_options: Vec<VideoDurationOption>,
+    #[serde(default)]
+    pub aspect_ratios: Vec<String>,
+    #[serde(default)]
+    pub input_roles: Vec<String>,
+    pub supports_audio: bool,
+    pub supports_seed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoDurationOption {
+    pub resolution: String,
+    pub min_duration_seconds: Option<u32>,
+    pub max_duration_seconds: Option<u32>,
+    #[serde(default)]
+    pub durations_seconds: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

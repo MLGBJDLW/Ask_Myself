@@ -45,6 +45,21 @@ fn manifest_scopes_release_status_to_the_exact_provider_contract() {
     assert_eq!(minimax_h3.release_status, VideoModelReleaseStatus::Ga);
     assert!(minimax_h3.selectable);
     assert!(!minimax_h3.supports_webhook);
+    let h3_text = minimax_h3
+        .operation_capabilities
+        .iter()
+        .find(|capability| capability.operation == MediaOperation::TextToVideo)
+        .unwrap();
+    assert!(!h3_text
+        .aspect_ratios
+        .iter()
+        .any(|ratio| ratio == "adaptive"));
+    let h3_image = minimax_h3
+        .operation_capabilities
+        .iter()
+        .find(|capability| capability.operation == MediaOperation::ImageToVideo)
+        .unwrap();
+    assert_eq!(h3_image.aspect_ratios, ["adaptive"]);
 
     let runway_seedance = providers
         .iter()
@@ -58,6 +73,23 @@ fn manifest_scopes_release_status_to_the_exact_provider_contract() {
         .expect("Runway Seedance 2.5 capability");
     assert_eq!(runway_seedance.release_status, VideoModelReleaseStatus::Ga);
     assert!(runway_seedance.selectable);
+
+    let runway_gen45 = providers
+        .iter()
+        .find(|provider| provider.provider_id == "runway")
+        .and_then(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.model_id == "gen4.5")
+        })
+        .unwrap();
+    let gen45_text = runway_gen45
+        .operation_capabilities
+        .iter()
+        .find(|capability| capability.operation == MediaOperation::TextToVideo)
+        .unwrap();
+    assert_eq!(gen45_text.aspect_ratios, ["16:9", "9:16"]);
 
     let direct_seedance = providers
         .iter()
@@ -150,19 +182,25 @@ fn minimax_validation_enforces_the_h3_multimodal_matrix() {
             role: VideoInputRole::FirstFrame,
             uri: "https://cdn.example.com/first.png".to_string(),
             media_type: "image/png".to_string(),
-            byte_length: None,
-            width: None,
-            height: None,
+            metadata_verified: true,
+            byte_length: Some(1024),
+            width: Some(1024),
+            height: Some(768),
             duration_ms: None,
+            frame_rate: None,
+            video_codec: None,
         },
         VideoInputAsset {
             role: VideoInputRole::LastFrame,
             uri: "https://cdn.example.com/last.png".to_string(),
             media_type: "image/png".to_string(),
-            byte_length: None,
-            width: None,
-            height: None,
+            metadata_verified: true,
+            byte_length: Some(1024),
+            width: Some(1024),
+            height: Some(768),
             duration_ms: None,
+            frame_rate: None,
+            video_codec: None,
         },
     ];
     assert!(adapter.validate(&keyframes).valid);
@@ -171,10 +209,13 @@ fn minimax_validation_enforces_the_h3_multimodal_matrix() {
         role: VideoInputRole::ReferenceAudio,
         uri: "https://cdn.example.com/guide.mp3".to_string(),
         media_type: "audio/mpeg".to_string(),
-        byte_length: None,
+        metadata_verified: true,
+        byte_length: Some(1024),
         width: None,
         height: None,
-        duration_ms: None,
+        duration_ms: Some(2_000),
+        frame_rate: None,
+        video_codec: None,
     });
     assert!(adapter
         .validate(&keyframes)
@@ -188,12 +229,22 @@ fn minimax_validation_enforces_the_h3_multimodal_matrix() {
         role: VideoInputRole::FirstFrame,
         uri: "https://cdn.example.com/first.png?signature=temporary".to_string(),
         media_type: "image/png".to_string(),
-        byte_length: None,
-        width: None,
-        height: None,
+        metadata_verified: true,
+        byte_length: Some(1024),
+        width: Some(1024),
+        height: Some(768),
         duration_ms: None,
+        frame_rate: None,
+        video_codec: None,
     });
     assert!(adapter.validate(&keyframes).valid);
+    keyframes.input_assets[0].metadata_verified = false;
+    assert!(adapter
+        .validate(&keyframes)
+        .issues
+        .iter()
+        .any(|issue| issue.code == "unverified_input_metadata"));
+    keyframes.input_assets[0].metadata_verified = true;
     keyframes.input_assets[0].uri = "runway://cross-provider".to_string();
     assert!(adapter
         .validate(&keyframes)
@@ -235,10 +286,13 @@ fn runway_validation_is_model_operation_and_capability_specific() {
         role: VideoInputRole::FirstFrame,
         uri: "mm_file://cross-provider".to_string(),
         media_type: "image/png".to_string(),
-        byte_length: None,
-        width: None,
-        height: None,
+        metadata_verified: true,
+        byte_length: Some(1024),
+        width: Some(1024),
+        height: Some(768),
         duration_ms: None,
+        frame_rate: None,
+        video_codec: None,
     });
     assert!(adapter
         .validate(&seedance)
@@ -278,10 +332,13 @@ fn minimax_hailuo_validation_preserves_legacy_model_matrices() {
         role: VideoInputRole::FirstFrame,
         uri: "https://cdn.example.com/first.png".to_string(),
         media_type: "image/png".to_string(),
+        metadata_verified: true,
         byte_length: Some(1024),
         width: Some(1024),
         height: Some(768),
         duration_ms: None,
+        frame_rate: None,
+        video_codec: None,
     });
     assert!(adapter.validate(&hailuo).valid);
 }
@@ -311,10 +368,13 @@ async fn cost_estimates_follow_verified_provider_formulas() {
         role: VideoInputRole::InputVideo,
         uri: "https://cdn.example.com/reference.mp4".to_string(),
         media_type: "video/mp4".to_string(),
+        metadata_verified: true,
         byte_length: Some(1024),
         width: Some(1920),
         height: Some(1080),
         duration_ms: Some(2_500),
+        frame_rate: Some(30.0),
+        video_codec: Some("h264".to_string()),
     });
     let estimate = h3.estimate_cost(&h3_request).await.unwrap();
     assert_eq!(estimate.kind, CostEstimateKind::Exact);
@@ -329,10 +389,13 @@ async fn cost_estimates_follow_verified_provider_formulas() {
         role: VideoInputRole::FirstFrame,
         uri: "https://cdn.example.com/first.png".to_string(),
         media_type: "image/png".to_string(),
+        metadata_verified: true,
         byte_length: Some(1024),
         width: Some(1024),
         height: Some(768),
         duration_ms: None,
+        frame_rate: None,
+        video_codec: None,
     });
     assert_eq!(
         legacy
@@ -352,10 +415,13 @@ async fn cost_estimates_follow_verified_provider_formulas() {
         role: VideoInputRole::InputVideo,
         uri: "https://cdn.example.com/input.mp4".to_string(),
         media_type: "video/mp4".to_string(),
+        metadata_verified: true,
         byte_length: Some(1024),
         width: Some(1280),
         height: Some(720),
         duration_ms: Some(2_000),
+        frame_rate: Some(30.0),
+        video_codec: Some("h264".to_string()),
     });
     assert_eq!(
         runway.estimate_cost(&seedance).await.unwrap().amount_micros,

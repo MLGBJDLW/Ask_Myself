@@ -7,9 +7,10 @@ use serde_json::{json, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, CancellationResult, CostEstimate, DownloadedAsset, NormalizedProviderError,
-    NormalizedVideoRequest, ProviderJobResult, ProviderJobState, ProviderJobStatus,
-    ProviderOutputLocator, SubmittedJob, ValidationResult, VideoGenerationAdapter, VideoInputRole,
+    provider_source, submission_error, CancellationResult, CostEstimate, DownloadedAsset,
+    NormalizedProviderError, NormalizedVideoRequest, ProviderBilledUsage, ProviderJobResult,
+    ProviderJobState, ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
+    VideoGenerationAdapter, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -292,6 +293,31 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
                 VideoInputRole::FirstFrame
                 | VideoInputRole::LastFrame
                 | VideoInputRole::ReferenceImage => {
+                    if !matches!(
+                        asset.media_type.as_str(),
+                        "image/jpeg"
+                            | "image/jpg"
+                            | "image/png"
+                            | "image/webp"
+                            | "image/heic"
+                            | "image/heif"
+                    ) {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}].mediaType"),
+                            "unsupported_image_format",
+                            "MiniMax H3 images must be JPEG, PNG, WebP, HEIC, or HEIF",
+                        ));
+                    }
+                    if asset.byte_length.is_none()
+                        || asset.width.is_none()
+                        || asset.height.is_none()
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "missing_media_metadata",
+                            "MiniMax H3 images require verified byte length and dimensions",
+                        ));
+                    }
                     if asset
                         .byte_length
                         .is_some_and(|bytes| bytes > 30 * 1024 * 1024)
@@ -305,6 +331,17 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
                     validate_visual_dimensions(&mut issues, index, asset);
                 }
                 VideoInputRole::InputVideo | VideoInputRole::ReferenceVideo => {
+                    if asset.byte_length.is_none()
+                        || asset.width.is_none()
+                        || asset.height.is_none()
+                        || asset.duration_ms.is_none()
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "missing_media_metadata",
+                            "MiniMax H3 videos require verified byte length, dimensions, and duration",
+                        ));
+                    }
                     if asset
                         .byte_length
                         .is_some_and(|bytes| bytes > 50 * 1024 * 1024)
@@ -313,6 +350,35 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
                             &format!("inputAssets[{index}].byteLength"),
                             "input_too_large",
                             "MiniMax H3 reference videos may not exceed 50 MiB",
+                        ));
+                    }
+                    if !matches!(asset.media_type.as_str(), "video/mp4" | "video/quicktime") {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}].mediaType"),
+                            "unsupported_video_format",
+                            "MiniMax H3 reference videos must be MP4 or MOV",
+                        ));
+                    }
+                    if !asset.video_codec.as_deref().is_some_and(|codec| {
+                        matches!(
+                            codec.to_ascii_lowercase().as_str(),
+                            "h264" | "h265" | "hevc"
+                        )
+                    }) {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}].videoCodec"),
+                            "unsupported_video_codec",
+                            "MiniMax H3 reference videos require verified H.264 or H.265 codec",
+                        ));
+                    }
+                    if !asset
+                        .frame_rate
+                        .is_some_and(|fps| (23.976..=60.0).contains(&fps))
+                    {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}].frameRate"),
+                            "unsupported_frame_rate",
+                            "MiniMax H3 reference videos require verified 23.976-60 fps",
                         ));
                     }
                     if asset
@@ -328,6 +394,23 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
                     validate_visual_dimensions(&mut issues, index, asset);
                 }
                 VideoInputRole::ReferenceAudio => {
+                    if !matches!(
+                        asset.media_type.as_str(),
+                        "audio/wav" | "audio/x-wav" | "audio/mpeg"
+                    ) {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}].mediaType"),
+                            "unsupported_audio_format",
+                            "MiniMax H3 reference audio must be WAV or MP3",
+                        ));
+                    }
+                    if asset.byte_length.is_none() || asset.duration_ms.is_none() {
+                        issues.push(issue(
+                            &format!("inputAssets[{index}]"),
+                            "missing_media_metadata",
+                            "MiniMax H3 audio requires verified byte length and duration",
+                        ));
+                    }
                     if asset
                         .byte_length
                         .is_some_and(|bytes| bytes > 15 * 1024 * 1024)
@@ -417,7 +500,8 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             self.authenticated(self.client.post(self.endpoint("/v2/video_generation")))
                 .json(&payload),
         )
-        .await?;
+        .await
+        .map_err(submission_error)?;
         if response.task_id.trim().is_empty() || response.task_id.len() > 256 {
             return Err(configuration_error("MiniMax returned an invalid task ID"));
         }
@@ -456,7 +540,7 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             "cancelled" => ProviderJobState::Cancelled,
             _ => ProviderJobState::ProviderUnknown,
         };
-        let error = task.error.map(|error| NormalizedProviderError {
+        let error = task.error.as_ref().map(|error| NormalizedProviderError {
             provider_id: PROVIDER_ID.to_string(),
             code: http::sanitize_message(&error.code.to_string(), Some(&self.api_key)),
             message: http::sanitize_message(&error.message, Some(&self.api_key)),
@@ -465,6 +549,14 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             http_status: None,
             request_id: None,
         });
+        let billed_usage = task.usage.as_ref().map(|usage| ProviderBilledUsage {
+            total_seconds: usage.total_seconds,
+            input_seconds: usage.input_seconds,
+            output_seconds: usage.output_seconds,
+            input_image_count: usage.input_image_count,
+            credits: None,
+        });
+        let final_cost_micros = h3_final_cost(&task);
         let result = if state == ProviderJobState::Succeeded {
             let uri = task
                 .content
@@ -491,7 +583,8 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             raw_status: task.status,
             result,
             error,
-            final_cost_micros: None,
+            billed_usage,
+            final_cost_micros,
         })
     }
 
@@ -500,6 +593,18 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
         provider_task_id: &str,
     ) -> Result<CancellationResult, NormalizedProviderError> {
         let task_id = validate_task_id(provider_task_id)?;
+        let before = self.get_status(&task_id).await?;
+        if before.state != ProviderJobState::Queued {
+            return Err(NormalizedProviderError {
+                provider_id: PROVIDER_ID.to_string(),
+                code: "task_not_cancellable".to_string(),
+                message: "MiniMax only permits cancellation while the task is queued".to_string(),
+                retryable: false,
+                retry_after_seconds: None,
+                http_status: None,
+                request_id: None,
+            });
+        }
         let response: DeleteResponse = http::execute_json(
             PROVIDER_ID,
             &self.api_key,
@@ -646,6 +751,30 @@ fn h3_cost_estimate(
     Ok(estimate)
 }
 
+fn h3_final_cost(task: &MiniMaxTask) -> Option<u64> {
+    let usage = task.usage.as_ref()?;
+    let per_second = match task.resolution.as_deref()? {
+        "768P" => 80_000_u64,
+        "2K" => 130_000_u64,
+        _ => return None,
+    };
+    let total_seconds = usage.total_seconds.or_else(|| {
+        usage
+            .input_seconds
+            .unwrap_or(0)
+            .checked_add(usage.output_seconds.unwrap_or(0))
+    })?;
+    total_seconds.checked_mul(per_second).and_then(|amount| {
+        amount.checked_add(
+            usage
+                .input_image_count
+                .unwrap_or(0)
+                .saturating_sub(5)
+                .saturating_mul(40_000),
+        )
+    })
+}
+
 fn validate_secret_and_scope(
     api_key: &str,
     credential_scope: &str,
@@ -705,6 +834,16 @@ struct MiniMaxTask {
     content: Option<MiniMaxContent>,
     error: Option<MiniMaxError>,
     duration: Option<u32>,
+    resolution: Option<String>,
+    usage: Option<MiniMaxUsage>,
+}
+
+#[derive(Deserialize)]
+struct MiniMaxUsage {
+    total_seconds: Option<u64>,
+    input_seconds: Option<u64>,
+    output_seconds: Option<u64>,
+    input_image_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -763,10 +902,13 @@ mod tests {
             role: VideoInputRole::LastFrame,
             uri: "https://cdn.example.com/last.png".to_string(),
             media_type: "image/png".to_string(),
-            byte_length: None,
-            width: None,
-            height: None,
+            metadata_verified: true,
+            byte_length: Some(1024),
+            width: Some(1024),
+            height: Some(768),
             duration_ms: None,
+            frame_rate: None,
+            video_codec: None,
         }];
         let result = adapter.validate(&invalid);
         assert!(!result.valid);
@@ -778,6 +920,25 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "adaptive_ratio_required"));
+    }
+
+    #[test]
+    fn billed_usage_produces_authoritative_h3_final_cost() {
+        let task = MiniMaxTask {
+            id: "task-1".to_string(),
+            status: "succeeded".to_string(),
+            content: None,
+            error: None,
+            duration: Some(5),
+            resolution: Some("2K".to_string()),
+            usage: Some(MiniMaxUsage {
+                total_seconds: Some(8),
+                input_seconds: Some(3),
+                output_seconds: Some(5),
+                input_image_count: Some(7),
+            }),
+        };
+        assert_eq!(h3_final_cost(&task), Some(1_120_000));
     }
 
     #[tokio::test]

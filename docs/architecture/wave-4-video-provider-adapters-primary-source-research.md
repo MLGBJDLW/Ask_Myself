@@ -596,6 +596,12 @@ Each adapter should expose strict, pure `capabilities`, `validate`, and
 size limits, redacted tracing, and model-specific parsers. Raw provider JSON is
 never a substitute for the normalized state machine.
 
+Because both published DELETE contracts can delete a terminal task record, the
+manifest exposes `cancellationMayDeleteTerminalRecord` separately from
+`supportsCancellation`. Nexa persists the user's cancellation intent before
+the call, preflights the latest state, and still treats the provider response
+as an observation rather than a local proof that no completion race occurred.
+
 ## Release-status and watchlist disposition
 
 | Provider/model tuple | Disposition on 2026-08-07 | Reason |

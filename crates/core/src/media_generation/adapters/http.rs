@@ -2,8 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use futures::StreamExt;
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{LOCATION, RETRY_AFTER};
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -15,16 +16,7 @@ pub(super) fn client() -> Result<reqwest::Client, NormalizedProviderError> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 5 {
-                return attempt.error("too many redirects");
-            }
-            if valid_remote_download_url(attempt.url()) {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        }))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(crate::USER_AGENT)
         .build()
         .map_err(|error| NormalizedProviderError {
@@ -276,11 +268,7 @@ pub(super) async fn download_outputs(
                     "Provider output URL must use public HTTPS and contain no credentials",
                 ));
             }
-            let response = client
-                .get(url)
-                .send()
-                .await
-                .map_err(|error| transport_error(provider_id, "", error))?;
+            let response = fetch_output(provider_id, client, url, allow_insecure_http).await?;
             if !response.status().is_success() {
                 let status = response.status();
                 return Err(NormalizedProviderError {
@@ -315,6 +303,8 @@ pub(super) async fn download_outputs(
                 })?;
             let mut stream = response.bytes_stream();
             let mut output_bytes = 0_u64;
+            let mut header = Vec::with_capacity(16);
+            let mut digest = Sha256::new();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|error| transport_error(provider_id, "", error))?;
                 output_bytes = output_bytes.saturating_add(chunk.len() as u64);
@@ -326,6 +316,11 @@ pub(super) async fn download_outputs(
                         "Provider outputs exceed the configured byte limit",
                     ));
                 }
+                if header.len() < 16 {
+                    let remaining = 16 - header.len();
+                    header.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                }
+                digest.update(&chunk);
                 file.write_all(&chunk).await.map_err(|error| {
                     local_error(provider_id, "download_io_error", &error.to_string())
                 })?;
@@ -333,11 +328,27 @@ pub(super) async fn download_outputs(
             file.flush().await.map_err(|error| {
                 local_error(provider_id, "download_io_error", &error.to_string())
             })?;
+            let detected_media_type = detect_media_type(&header).ok_or_else(|| {
+                local_error(
+                    provider_id,
+                    "invalid_output_content",
+                    "Provider output bytes are not a supported MP4, QuickTime, or ZIP asset",
+                )
+            })?;
+            if !media_types_compatible(&output.media_type, detected_media_type) {
+                return Err(local_error(
+                    provider_id,
+                    "output_media_type_mismatch",
+                    "Provider output bytes do not match the declared media type",
+                ));
+            }
             staged.push((
                 temporary_path,
                 final_path,
                 output.media_type.clone(),
+                detected_media_type.to_string(),
                 output_bytes,
+                format!("{:x}", digest.finalize()),
             ));
         }
         Ok::<(), NormalizedProviderError>(())
@@ -349,7 +360,15 @@ pub(super) async fn download_outputs(
     }
     let mut downloaded = Vec::with_capacity(staged.len());
     let mut moved_paths = Vec::with_capacity(staged.len());
-    for (temporary_path, final_path, declared_media_type, byte_length) in staged {
+    for (
+        temporary_path,
+        final_path,
+        declared_media_type,
+        detected_media_type,
+        byte_length,
+        sha256,
+    ) in staged
+    {
         if let Err(error) = tokio::fs::rename(&temporary_path, &final_path).await {
             for moved_path in moved_paths {
                 let _ = tokio::fs::remove_file(moved_path).await;
@@ -366,37 +385,193 @@ pub(super) async fn download_outputs(
         downloaded.push(DownloadedAsset {
             path: asset_path,
             declared_media_type,
+            detected_media_type,
             byte_length,
+            sha256,
         });
     }
     let _ = tokio::fs::remove_dir(&staging_directory).await;
     Ok(downloaded)
 }
 
+fn detect_media_type(header: &[u8]) -> Option<&'static str> {
+    if header.starts_with(b"PK\x03\x04") || header.starts_with(b"PK\x05\x06") {
+        return Some("application/zip");
+    }
+    if header.len() >= 12 && &header[4..8] == b"ftyp" {
+        return if &header[8..12] == b"qt  " {
+            Some("video/quicktime")
+        } else {
+            Some("video/mp4")
+        };
+    }
+    None
+}
+
+fn media_types_compatible(declared: &str, detected: &str) -> bool {
+    declared == detected
+        || (matches!(declared, "video/mp4" | "video/quicktime")
+            && matches!(detected, "video/mp4" | "video/quicktime"))
+}
+
+async fn fetch_output(
+    provider_id: &str,
+    fallback_client: &reqwest::Client,
+    mut url: url::Url,
+    allow_insecure_http: bool,
+) -> Result<reqwest::Response, NormalizedProviderError> {
+    for redirect_count in 0..=5 {
+        let client = if allow_insecure_http {
+            fallback_client.clone()
+        } else {
+            pinned_public_client(provider_id, &url).await?
+        };
+        let response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|error| transport_error(provider_id, "", error))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        if redirect_count == 5 {
+            return Err(local_error(
+                provider_id,
+                "too_many_redirects",
+                "Provider output exceeded five redirects",
+            ));
+        }
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                local_error(
+                    provider_id,
+                    "invalid_output_redirect",
+                    "Provider output redirect omitted a valid Location header",
+                )
+            })?;
+        url = url.join(location).map_err(|_| {
+            local_error(
+                provider_id,
+                "invalid_output_redirect",
+                "Provider output redirect URL is invalid",
+            )
+        })?;
+        if !allow_insecure_http && !valid_remote_download_url(&url) {
+            return Err(local_error(
+                provider_id,
+                "invalid_output_redirect",
+                "Provider output redirect must remain on public HTTPS",
+            ));
+        }
+    }
+    unreachable!("redirect loop returns within the bounded iteration")
+}
+
+async fn pinned_public_client(
+    provider_id: &str,
+    url: &url::Url,
+) -> Result<reqwest::Client, NormalizedProviderError> {
+    if !valid_remote_download_url(url) {
+        return Err(local_error(
+            provider_id,
+            "invalid_output_url",
+            "Provider output URL must use public HTTPS and contain no credentials",
+        ));
+    }
+    let host = url.host().ok_or_else(|| {
+        local_error(
+            provider_id,
+            "invalid_output_url",
+            "Provider output URL has no host",
+        )
+    })?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let (domain, addresses) = match host {
+        url::Host::Domain(domain) => {
+            let addresses = tokio::net::lookup_host((domain, port))
+                .await
+                .map_err(|error| local_error(provider_id, "output_dns_error", &error.to_string()))?
+                .collect::<Vec<_>>();
+            (Some(domain.to_string()), addresses)
+        }
+        url::Host::Ipv4(address) => (None, vec![(address, port).into()]),
+        url::Host::Ipv6(address) => (None, vec![(address, port).into()]),
+    };
+    if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(local_error(
+            provider_id,
+            "private_output_target",
+            "Provider output host resolved to a non-public address",
+        ));
+    }
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .user_agent(crate::USER_AGENT);
+    if let Some(domain) = domain {
+        builder = builder.resolve_to_addrs(&domain, &addresses);
+    }
+    builder.build().map_err(|error| {
+        local_error(
+            provider_id,
+            "client_initialization_failed",
+            &error.to_string(),
+        )
+    })
+}
+
 fn valid_remote_download_url(url: &url::Url) -> bool {
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return false;
     }
-    let Some(host) = url.host_str() else {
+    let Some(host) = url.host() else {
         return false;
     };
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
-        return false;
+    match host {
+        url::Host::Domain(host) => {
+            !host.eq_ignore_ascii_case("localhost") && !host.ends_with(".local")
+        }
+        url::Host::Ipv4(address) => is_public_ip(address.into()),
+        url::Host::Ipv6(address) => is_public_ip(address.into()),
     }
-    host.parse::<std::net::IpAddr>()
-        .map(|address| match address {
-            std::net::IpAddr::V4(address) => {
-                !address.is_private()
-                    && !address.is_loopback()
-                    && !address.is_link_local()
-                    && !address.is_unspecified()
-                    && !address.is_broadcast()
-            }
-            std::net::IpAddr::V6(address) => {
-                !address.is_loopback() && !address.is_unspecified() && !address.is_unique_local()
-            }
-        })
-        .unwrap_or(true)
+}
+
+fn is_public_ip(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            let [first, second, _, _] = address.octets();
+            !address.is_private()
+                && !address.is_loopback()
+                && !address.is_link_local()
+                && !address.is_unspecified()
+                && !address.is_broadcast()
+                && !address.is_multicast()
+                && !address.is_documentation()
+                && first != 0
+                && !(first == 100 && (64..=127).contains(&second))
+                && !(first == 192 && second == 0)
+                && !(first == 198 && (18..=19).contains(&second))
+                && first < 224
+        }
+        std::net::IpAddr::V6(address) => {
+            let segments = address.segments();
+            !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_unique_local()
+                && !address.is_unicast_link_local()
+                && !address.is_multicast()
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && (segments[0] & 0xffc0) != 0xfec0
+                && address
+                    .to_ipv4()
+                    .is_none_or(|address| is_public_ip(std::net::IpAddr::V4(address)))
+        }
+    }
 }
 
 fn extension_for_media_type(media_type: &str) -> &'static str {
@@ -434,6 +609,16 @@ pub(super) fn sanitize_message(value: &str, api_key: Option<&str>) -> String {
             sanitized = regex.replace_all(&sanitized, "${1}[REDACTED]").into_owned();
         }
     }
+    if let Ok(url_query) = regex::Regex::new(r#"(?i)\b(https?://[^\s?#\"'<>]+)\?[^\s#\"'<>]*"#) {
+        sanitized = url_query
+            .replace_all(&sanitized, "${1}?[REDACTED]")
+            .into_owned();
+    }
+    if let Ok(provider_locator) = regex::Regex::new(r"(?i)\b(?:runway|mm_file)://[^\s,;]+") {
+        sanitized = provider_locator
+            .replace_all(&sanitized, "[REDACTED_PROVIDER_LOCATOR]")
+            .into_owned();
+    }
     sanitized.chars().take(2048).collect()
 }
 
@@ -454,12 +639,28 @@ mod tests {
         assert!(!sanitized.contains("sk-secret"));
         assert!(!sanitized.contains("another-secret"));
         assert!(sanitized.contains("[REDACTED]"));
+
+        let signed = sanitize_message(
+            "request failed for https://cdn.example.com/output.mp4?X-Amz-Signature=usable-secret",
+            None,
+        );
+        assert!(!signed.contains("usable-secret"));
+        assert!(signed.contains("?[REDACTED]"));
     }
 
     #[test]
     fn output_urls_reject_private_network_targets_but_allow_signed_queries() {
         assert!(!valid_remote_download_url(
             &url::Url::parse("https://127.0.0.1/private.mp4").unwrap()
+        ));
+        assert!(!valid_remote_download_url(
+            &url::Url::parse("https://[::1]/private.mp4").unwrap()
+        ));
+        assert!(!valid_remote_download_url(
+            &url::Url::parse("https://100.64.0.1/private.mp4").unwrap()
+        ));
+        assert!(!valid_remote_download_url(
+            &url::Url::parse("https://[::ffff:127.0.0.1]/private.mp4").unwrap()
         ));
         assert!(valid_remote_download_url(
             &url::Url::parse("https://cdn.example.com/output.mp4?signature=temporary").unwrap()
@@ -474,7 +675,7 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request).await.unwrap();
-            let body = b"video-bytes";
+            let body = b"\0\0\0\x0cftypisom";
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()

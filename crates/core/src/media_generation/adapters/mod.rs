@@ -37,16 +37,22 @@ pub enum VideoInputRole {
     ReferenceAudio,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoInputAsset {
     pub role: VideoInputRole,
     pub uri: String,
     pub media_type: String,
+    /// True only when the following size/dimension/duration fields came from
+    /// Nexa's verified local asset record or a completed provider upload.
+    #[serde(default)]
+    pub metadata_verified: bool,
     pub byte_length: Option<u64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub duration_ms: Option<u64>,
+    pub frame_rate: Option<f64>,
+    pub video_codec: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,7 +150,7 @@ pub struct ProviderJobResult {
     pub duration_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderJobStatus {
     pub provider_task_id: String,
@@ -152,7 +158,18 @@ pub struct ProviderJobStatus {
     pub raw_status: String,
     pub result: Option<ProviderJobResult>,
     pub error: Option<NormalizedProviderError>,
+    pub billed_usage: Option<ProviderBilledUsage>,
     pub final_cost_micros: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderBilledUsage {
+    pub total_seconds: Option<u64>,
+    pub input_seconds: Option<u64>,
+    pub output_seconds: Option<u64>,
+    pub input_image_count: Option<u64>,
+    pub credits: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,7 +185,9 @@ pub struct CancellationResult {
 pub struct DownloadedAsset {
     pub path: PathBuf,
     pub declared_media_type: String,
+    pub detected_media_type: String,
     pub byte_length: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +271,13 @@ fn common_validation(request: &NormalizedVideoRequest) -> Vec<ValidationIssue> {
         ));
     }
     for (index, asset) in request.input_assets.iter().enumerate() {
+        if !asset.metadata_verified {
+            issues.push(issue(
+                &format!("inputAssets[{index}]"),
+                "unverified_input_metadata",
+                "Provider submission requires verified input asset metadata",
+            ));
+        }
         if !valid_media_uri(&asset.uri) {
             issues.push(issue(
                 &format!("inputAssets[{index}].uri"),
@@ -391,6 +417,22 @@ fn invalid_request_error(
     }
 }
 
+fn submission_error(mut error: NormalizedProviderError) -> NormalizedProviderError {
+    let ambiguous = matches!(error.code.as_str(), "transport_timeout" | "transport_error")
+        || error
+            .http_status
+            .is_some_and(|status| status == 408 || status >= 500);
+    if ambiguous {
+        error.code = "submission_outcome_unknown".to_string();
+        error.message = format!(
+            "Provider may have accepted the generation request; reconcile the attempt before any resubmission. {}",
+            error.message
+        );
+        error.retryable = false;
+    }
+    error
+}
+
 fn find_capabilities(provider_id: &str) -> Vec<VideoModelManifest> {
     crate::video_provider_catalog::load_video_provider_presets()
         .unwrap_or_default()
@@ -448,5 +490,39 @@ fn pricing_estimate(
             currency: manifest.pricing.currency,
             note: manifest.pricing.note,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambiguous_submission_errors_are_never_retryable() {
+        let timeout = NormalizedProviderError {
+            provider_id: "provider".to_string(),
+            code: "transport_timeout".to_string(),
+            message: "response timed out".to_string(),
+            retryable: true,
+            retry_after_seconds: None,
+            http_status: None,
+            request_id: None,
+        };
+        let normalized = submission_error(timeout);
+        assert_eq!(normalized.code, "submission_outcome_unknown");
+        assert!(!normalized.retryable);
+
+        let throttled = NormalizedProviderError {
+            provider_id: "provider".to_string(),
+            code: "http_429".to_string(),
+            message: "rate limited".to_string(),
+            retryable: true,
+            retry_after_seconds: Some(5),
+            http_status: Some(429),
+            request_id: None,
+        };
+        let normalized = submission_error(throttled);
+        assert_eq!(normalized.code, "http_429");
+        assert!(normalized.retryable);
     }
 }

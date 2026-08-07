@@ -7,9 +7,10 @@ use serde_json::{json, Value};
 
 use super::{
     common_validation, find_capabilities, http, invalid_request_error, issue, pricing_estimate,
-    provider_source, CancellationResult, CostEstimate, DownloadedAsset, NormalizedProviderError,
-    NormalizedVideoRequest, ProviderJobResult, ProviderJobState, ProviderJobStatus,
-    ProviderOutputLocator, SubmittedJob, ValidationResult, VideoGenerationAdapter, VideoInputRole,
+    provider_source, submission_error, CancellationResult, CostEstimate, DownloadedAsset,
+    NormalizedProviderError, NormalizedVideoRequest, ProviderJobResult, ProviderJobState,
+    ProviderJobStatus, ProviderOutputLocator, SubmittedJob, ValidationResult,
+    VideoGenerationAdapter, VideoInputRole,
 };
 use crate::media_generation::MediaOperation;
 use crate::video_provider_catalog::VideoModelManifest;
@@ -212,6 +213,23 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
         }
         for (index, asset) in request.input_assets.iter().enumerate() {
             if !matches!(
+                asset.media_type.as_str(),
+                "image/jpeg" | "image/jpg" | "image/png" | "image/webp"
+            ) {
+                issues.push(issue(
+                    &format!("inputAssets[{index}].mediaType"),
+                    "unsupported_image_format",
+                    "Legacy Hailuo images must be JPEG, PNG, or WebP",
+                ));
+            }
+            if asset.byte_length.is_none() || asset.width.is_none() || asset.height.is_none() {
+                issues.push(issue(
+                    &format!("inputAssets[{index}]"),
+                    "missing_media_metadata",
+                    "Legacy Hailuo images require verified byte length and dimensions",
+                ));
+            }
+            if !matches!(
                 asset.role,
                 VideoInputRole::FirstFrame | VideoInputRole::LastFrame
             ) || !asset.media_type.starts_with("image/")
@@ -285,7 +303,8 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
             self.authenticated(self.client.post(self.endpoint("/v1/video_generation")))
                 .json(&payload),
         )
-        .await?;
+        .await
+        .map_err(submission_error)?;
         ensure_base_response(&response.base_resp, &self.api_key)?;
         let task_id = scalar_string(&response.task_id)
             .ok_or_else(|| configuration_error("MiniMax returned an invalid task ID"))?;
@@ -378,6 +397,7 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
             raw_status: response.status,
             result,
             error,
+            billed_usage: None,
             final_cost_micros: None,
         })
     }
@@ -598,10 +618,13 @@ mod tests {
             role: VideoInputRole::FirstFrame,
             uri: "https://cdn.example.com/first.png".to_string(),
             media_type: "image/png".to_string(),
+            metadata_verified: true,
             byte_length: Some(1024),
             width: Some(1024),
             height: Some(768),
             duration_ms: None,
+            frame_rate: None,
+            video_codec: None,
         });
         assert!(adapter.validate(&image).valid);
     }
