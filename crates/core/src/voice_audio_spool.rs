@@ -347,7 +347,7 @@ impl VoiceAudioSpool {
                 "Voice spool chunk cannot be empty".into(),
             ));
         }
-        if pcm16.len() % 2 != 0 {
+        if !pcm16.len().is_multiple_of(2) {
             return Err(CoreError::InvalidInput(
                 "Voice spool PCM16 chunk must contain complete samples".into(),
             ));
