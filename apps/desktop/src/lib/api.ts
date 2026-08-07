@@ -1783,8 +1783,56 @@ export const checkFfmpeg = (config: VideoConfig) =>
 export const downloadFfmpeg = () =>
   invoke<string>('download_ffmpeg_cmd');
 
-export const transcribeAudioBuffer = (audioData: Uint8Array) =>
-  invoke<string>('transcribe_audio_buffer_cmd', audioData);
+export interface VoiceAudioSpoolStarted {
+  sessionId: string;
+  sampleRate: number;
+  maxChunkBytes: number;
+  maxAudioBytes: number;
+}
+
+export interface VoiceAudioSpoolProgress {
+  sessionId: string;
+  acceptedBytes: number;
+  audioBytes: number;
+  durationMs: number;
+  nextSequence: number;
+}
+
+export interface VoiceAudioSpoolDescriptor {
+  sessionId: string;
+  audioBytes: number;
+  durationMs: number;
+  sampleRate: number;
+  checksumSha256: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+}
+
+export const startVoiceAudioSpool = (sampleRate: number) =>
+  invoke<VoiceAudioSpoolStarted>('start_voice_audio_spool_cmd', { sampleRate });
+
+export const appendVoiceAudioSpool = (
+  sessionId: string,
+  sequence: number,
+  audioData: Uint8Array,
+) => invoke<VoiceAudioSpoolProgress>('append_voice_audio_spool_cmd', audioData, {
+  headers: {
+    'x-nexa-voice-session-id': sessionId,
+    'x-nexa-voice-sequence': String(sequence),
+  },
+});
+
+export const finishVoiceAudioSpool = (sessionId: string) =>
+  invoke<VoiceAudioSpoolDescriptor>('finish_voice_audio_spool_cmd', { sessionId });
+
+export const listVoiceAudioSpools = () =>
+  invoke<VoiceAudioSpoolDescriptor[]>('list_voice_audio_spools_cmd');
+
+export const transcribeVoiceAudioSpool = (sessionId: string) =>
+  invoke<string>('transcribe_voice_audio_spool_cmd', { sessionId });
+
+export const cancelVoiceAudioSpool = (sessionId: string) =>
+  invoke<void>('cancel_voice_audio_spool_cmd', { sessionId });
 
 export const startRealtimeTranscription = () =>
   invoke<string>('start_realtime_transcription_cmd');

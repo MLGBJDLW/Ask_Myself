@@ -18,5 +18,6 @@
   "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "Recording stopped because audio upload could not keep up. Captured speech is being finalized; resume to continue.",
+  "realtimeDeferred": "Live transcription is unavailable. Recording continues safely in the local spool and will retry after you stop.",
   "transcriptionFailed": "Transcription failed. Check the speech provider settings and try again."
 }

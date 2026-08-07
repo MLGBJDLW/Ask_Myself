@@ -18,5 +18,6 @@
   "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "A gravação parou porque o envio de áudio não conseguiu acompanhar. O áudio capturado está sendo finalizado; retome para continuar.",
+  "realtimeDeferred": "A transcrição ao vivo está indisponível. A gravação continua com segurança no spool local e será tentada novamente após parar.",
   "transcriptionFailed": "A transcrição falhou. Verifique as configurações do provedor de voz e tente novamente."
 }

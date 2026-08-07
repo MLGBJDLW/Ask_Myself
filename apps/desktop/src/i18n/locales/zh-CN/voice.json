@@ -18,5 +18,6 @@
   "microphoneTestDesc": "开始测试后说话，波形应随你的声音起伏。",
   "microphoneTestUnavailable": "无法打开该麦克风，请换一个设备重试。",
   "realtimeBackpressure": "音频上传速度不足，录音已安全停止。正在完成已采集语音的转写；请继续录音以补充后续内容。",
+  "realtimeDeferred": "实时转写暂不可用。录音会继续安全保存到本地暂存，并在停止后重试。",
   "transcriptionFailed": "转写失败。请检查语音服务设置后重试。"
 }

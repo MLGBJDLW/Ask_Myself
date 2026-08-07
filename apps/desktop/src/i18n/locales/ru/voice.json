@@ -18,5 +18,6 @@
   "microphoneTestDesc": "Start the test and speak: the bars should move with your voice.",
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "Запись остановлена: отправка аудио не успевала за потоком. Записанная речь обрабатывается; возобновите запись, чтобы продолжить.",
+  "realtimeDeferred": "Онлайн-распознавание недоступно. Запись безопасно продолжается в локальном буфере и будет повторена после остановки.",
   "transcriptionFailed": "Не удалось расшифровать речь. Проверьте настройки голосового провайдера и повторите попытку."
 }

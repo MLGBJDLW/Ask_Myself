@@ -122,6 +122,28 @@ function loadBoundedAudioQueue() {
   return module.exports;
 }
 
+function loadNativeVoiceSpool() {
+  const queueModule = loadBoundedAudioQueue();
+  const spoolPath = path.join(root, 'src', 'features', 'voice', 'nativeVoiceSpool.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(spoolPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  const require = (specifier) => {
+    if (specifier === './boundedAudioQueue') return queueModule;
+    return {};
+  };
+  vm.runInNewContext(
+    transpiled.outputText,
+    { exports: module.exports, module, require, Uint8Array, Error, Promise },
+    { filename: spoolPath },
+  );
+  return module.exports;
+}
+
 function loadProviderIcons() {
   const iconsPath = path.join(root, 'src', 'lib', 'providerIcons.tsx');
   const transpiled = ts.transpileModule(fs.readFileSync(iconsPath, 'utf8'), {
@@ -192,6 +214,16 @@ function loadTtsVoiceCatalog() {
 function test(name, fn) {
   try {
     fn();
+    console.log(`ok - ${name}`);
+  } catch (error) {
+    console.error(`not ok - ${name}`);
+    throw error;
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     console.log(`ok - ${name}`);
   } catch (error) {
     console.error(`not ok - ${name}`);
@@ -333,23 +365,38 @@ test('accepts configured OpenAI realtime transcription for voice input', () => {
   assert.equal(isSpeechToTextConfigured({ ...configured, model: '' }), false);
 });
 
-test('desktop API exposes the complete realtime transcription lifecycle', () => {
+test('recovered native spools remain ordered and individually retryable', () => {
+  const { queuePendingVoiceSpool, forgetPendingVoiceSpool } = loadVoiceInputRuntime();
+  let pending = ['oldest', 'newer'];
+
+  pending = queuePendingVoiceSpool(pending, 'newest');
+  pending = queuePendingVoiceSpool(pending, 'newer');
+  assert.deepEqual(Array.from(pending), ['oldest', 'newer', 'newest']);
+
+  pending = forgetPendingVoiceSpool(pending, 'oldest');
+  assert.deepEqual(Array.from(pending), ['newer', 'newest']);
+});
+
+test('desktop API exposes raw realtime and native spool lifecycles', () => {
   const apiSource = fs.readFileSync(path.join(root, 'src', 'lib', 'api.ts'), 'utf8');
   assert.match(apiSource, /start_realtime_transcription_cmd/);
   assert.match(apiSource, /append_realtime_transcription_audio_cmd/);
   assert.match(apiSource, /finish_realtime_transcription_cmd/);
   assert.match(apiSource, /cancel_realtime_transcription_cmd/);
-  assert.match(
-    apiSource,
-    /invoke<string>\('transcribe_audio_buffer_cmd', audioData\)/,
-    'final WAV should use a raw Uint8Array invoke body',
-  );
+  assert.match(apiSource, /start_voice_audio_spool_cmd/);
+  assert.match(apiSource, /append_voice_audio_spool_cmd/);
+  assert.match(apiSource, /finish_voice_audio_spool_cmd/);
+  assert.match(apiSource, /transcribe_voice_audio_spool_cmd/);
+  assert.match(apiSource, /cancel_voice_audio_spool_cmd/);
+  assert.doesNotMatch(apiSource, /transcribe_audio_buffer_cmd/);
   assert.match(
     apiSource,
     /invoke<void>\('append_realtime_transcription_audio_cmd', audioData, \{/,
     'realtime PCM should use a raw Uint8Array invoke body',
   );
   assert.match(apiSource, /'x-nexa-session-id': sessionId/);
+  assert.match(apiSource, /'x-nexa-voice-session-id': sessionId/);
+  assert.match(apiSource, /'x-nexa-voice-sequence': String\(sequence\)/);
   assert.doesNotMatch(apiSource, /Array\.from\(audioData\)/);
 });
 
@@ -380,6 +427,22 @@ test('realtime renderer upload queue has a hard chunk and byte bound', () => {
   queue.cancel();
 });
 
+test('audio queue enforces an explicit buffered-duration bound', () => {
+  const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
+  const queue = new BoundedAudioUploadQueue(() => new Promise(() => {}), {
+    maxChunks: 100,
+    maxBytes: 1024,
+    maxChunkBytes: 1024,
+    bytesPerSecond: 4,
+    maxBufferedDurationMs: 1_000,
+  });
+
+  assert.equal(queue.enqueue(new Uint8Array(4)), true);
+  assert.equal(queue.enqueue(new Uint8Array(2)), false);
+  assert.equal(queue.snapshot().maxBufferedDurationMs, 1_000);
+  queue.cancel();
+});
+
 test('voice runtime no longer builds an unbounded Promise chain or JSON byte arrays', () => {
   const runtimeSource = fs.readFileSync(
     path.join(root, 'src', 'features', 'voice', 'voiceInputRuntime.ts'),
@@ -388,9 +451,77 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.doesNotMatch(runtimeSource, /realtimeUploadChainRef/);
   assert.doesNotMatch(runtimeSource, /Array\.from\((wav|chunk)\)/);
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
-  assert.match(runtimeSource, /onRejected: \(\) => stopRealtimeSafely\(true\)/);
-  assert.match(runtimeSource, /void finishRealtimeRecording\(\)/);
+  assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
+  assert.match(runtimeSource, /onRejected: \(\) => degradeRealtimeToSpool\(true\)/);
+  assert.match(runtimeSource, /startManagedVoiceSpool/);
+  assert.match(runtimeSource, /upload\.enqueue\(chunk\)/);
+  assert.match(runtimeSource, /queueRealtimeAudio\(sessionId, chunk\)/);
   assert.doesNotMatch(runtimeSource, /backpressure limit reached/);
+
+  const recorderSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'voice', 'useVoiceRecorder.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(recorderSource, /buffersRef|OfflineAudioContext|encodeWav|captureWav/);
+  assert.match(recorderSource, /fixed-size and never retains full PCM/);
+
+  const realtimeNativeSource = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
+    'utf8',
+  );
+  assert.match(realtimeNativeSource, /REPLAY_PCM_CHUNK_BYTES: usize = 64 \* 1024/);
+  assert.match(realtimeNativeSource, /transcribe_realtime_spool/);
+  assert.doesNotMatch(realtimeNativeSource, /std::fs::read\(wav_path\)/);
+});
+
+await testAsync('native spool upload assigns ordered sequences and finalizes by opaque handle', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  const sent = [];
+  const transport = {
+    append: async (sessionId, sequence, chunk) => {
+      sent.push({ sessionId, sequence, bytes: Array.from(chunk) });
+    },
+    finish: async (sessionId) => ({
+      sessionId,
+      audioBytes: 8,
+      durationMs: 1,
+      sampleRate: 16_000,
+      checksumSha256: 'abc',
+      createdAtMs: 1,
+      expiresAtMs: 2,
+    }),
+    cancel: async () => {},
+  };
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'opaque-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    transport,
+  );
+
+  assert.equal(upload.enqueue(new Uint8Array([1, 0, 2, 0])), true);
+  assert.equal(upload.enqueue(new Uint8Array([3, 0, 4, 0])), true);
+  const descriptor = await upload.finish();
+
+  assert.equal(descriptor.sessionId, 'opaque-id');
+  assert.deepEqual(sent.map(({ sessionId, sequence }) => ({ sessionId, sequence })), [
+    { sessionId: 'opaque-id', sequence: 0 },
+    { sessionId: 'opaque-id', sequence: 1 },
+  ]);
+  assert.equal(upload.enqueue(new Uint8Array([5, 0])), false);
+});
+
+await testAsync('bounded audio queue surfaces native write failures without Promise growth', async () => {
+  const { BoundedAudioUploadQueue } = loadBoundedAudioQueue();
+  const failures = [];
+  const queue = new BoundedAudioUploadQueue(
+    async () => { throw new Error('disk full'); },
+    { onError: (error, telemetry) => failures.push({ message: error.message, telemetry }) },
+  );
+
+  assert.equal(queue.enqueue(new Uint8Array([0, 0])), true);
+  await assert.rejects(queue.flush(), /disk full/);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].message, 'disk full');
+  assert.equal(failures[0].telemetry.inFlightChunks, 0);
 });
 
 test('realtime PCM encoder clips float samples into little-endian PCM16', () => {
