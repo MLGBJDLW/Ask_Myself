@@ -146,14 +146,23 @@ const EVENT_PROJECTION: &str = r#"json_object(
 
 pub(crate) fn create_job(
     database: &Database,
+    request: CreateMediaJobRequest,
+) -> Result<MediaJobSnapshot, CoreError> {
+    let mut conn = database.conn();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let snapshot = create_job_in_transaction(&tx, request)?;
+    tx.commit()?;
+    Ok(snapshot)
+}
+
+pub(crate) fn create_job_in_transaction(
+    conn: &Connection,
     mut request: CreateMediaJobRequest,
 ) -> Result<MediaJobSnapshot, CoreError> {
     normalize_create_request(&mut request)?;
     let fingerprint = request_fingerprint(&request)?;
-    let mut conn = database.conn();
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    if let Some((job_id, stored_fingerprint)) = tx
+    if let Some((job_id, stored_fingerprint)) = conn
         .query_row(
             "SELECT id, request_fingerprint_sha256 FROM media_jobs WHERE idempotency_key = ?1",
             [&request.idempotency_key],
@@ -167,11 +176,11 @@ pub(crate) fn create_job(
                 request.idempotency_key
             )));
         }
-        return load_snapshot(&tx, &job_id);
+        return load_snapshot(conn, &job_id);
     }
 
     for asset_id in &request.input_asset_ids {
-        let asset = load_asset(&tx, asset_id)?;
+        let asset = load_asset(conn, asset_id)?;
         if asset.local_state != super::model::MediaAssetLocalState::Available {
             return Err(CoreError::Conflict(format!(
                 "Input media asset {asset_id} is not locally available"
@@ -180,7 +189,7 @@ pub(crate) fn create_job(
     }
 
     let job_id = Uuid::new_v4().to_string();
-    tx.execute(
+    conn.execute(
         "INSERT INTO media_jobs (
              id, idempotency_key, request_fingerprint_sha256, project_id, conversation_id,
              provider_id, provider_source, model_id, api_version, operation, input_asset_ids_json, state,
@@ -215,14 +224,20 @@ pub(crate) fn create_job(
             bool_to_i64(request.allow_cross_provider_fallback),
         ],
     )?;
-    let snapshot = load_snapshot(&tx, &job_id)?;
-    tx.commit()?;
-    Ok(snapshot)
+    load_snapshot(conn, &job_id)
 }
 
 pub(crate) fn get_job(database: &Database, job_id: &str) -> Result<MediaJobSnapshot, CoreError> {
     let conn = database.conn();
     load_snapshot(&conn, required(job_id, "job_id", 128)?)
+}
+
+pub(crate) fn get_asset(
+    database: &Database,
+    asset_id: &str,
+) -> Result<MediaAssetRecord, CoreError> {
+    let conn = database.conn();
+    load_asset(&conn, required(asset_id, "asset_id", 128)?)
 }
 
 pub(crate) fn list_recoverable_jobs(
@@ -777,10 +792,22 @@ pub(crate) fn list_registered_asset_storage_keys(
     Ok(storage_keys)
 }
 
+pub(crate) struct BeginAttemptClaim {
+    pub snapshot: MediaJobSnapshot,
+    pub claimed: bool,
+}
+
 pub(crate) fn begin_attempt(
     database: &Database,
-    mut request: BeginMediaJobAttemptRequest,
+    request: BeginMediaJobAttemptRequest,
 ) -> Result<MediaJobSnapshot, CoreError> {
+    Ok(begin_attempt_claim(database, request)?.snapshot)
+}
+
+pub(crate) fn begin_attempt_claim(
+    database: &Database,
+    mut request: BeginMediaJobAttemptRequest,
+) -> Result<BeginAttemptClaim, CoreError> {
     request.job_id = required(&request.job_id, "job_id", 128)?.to_string();
     request.idempotency_key =
         required(&request.idempotency_key, "idempotency_key", 256)?.to_string();
@@ -837,7 +864,10 @@ pub(crate) fn begin_attempt(
                 request.idempotency_key
             )));
         }
-        return load_snapshot(&tx, &request.job_id);
+        return Ok(BeginAttemptClaim {
+            snapshot: load_snapshot(&tx, &request.job_id)?,
+            claimed: false,
+        });
     }
 
     let current = load_job_record(&tx, &request.job_id)?;
@@ -1050,7 +1080,10 @@ pub(crate) fn begin_attempt(
     )?;
     let snapshot = load_snapshot(&tx, &request.job_id)?;
     tx.commit()?;
-    Ok(snapshot)
+    Ok(BeginAttemptClaim {
+        snapshot,
+        claimed: true,
+    })
 }
 
 pub(crate) fn record_provider_event(
@@ -1185,6 +1218,13 @@ pub(crate) fn record_provider_event(
         }
     }
     if let Some(next) = request.attempt_state {
+        let clear_attention = error_json.is_none()
+            && matches!(
+                next,
+                super::model::MediaJobAttemptState::Accepted
+                    | super::model::MediaJobAttemptState::Observing
+                    | super::model::MediaJobAttemptState::Succeeded
+            );
         if request.next_job_state.is_none()
             && next != super::model::MediaJobAttemptState::Submitting
             && !(current.state == MediaJobState::Submitting
@@ -1209,9 +1249,9 @@ pub(crate) fn record_provider_event(
             "UPDATE media_job_attempts
              SET state = ?2,
                  provider_task_id = COALESCE(?3, provider_task_id),
-                 error_json = COALESCE(?4, error_json),
-                 retry_classification = COALESCE(?5, retry_classification),
-                 next_eligible_at = COALESCE(?6, next_eligible_at),
+                 error_json = CASE WHEN ?9 = 1 THEN NULL ELSE COALESCE(?4, error_json) END,
+                 retry_classification = CASE WHEN ?9 = 1 THEN NULL ELSE COALESCE(?5, retry_classification) END,
+                 next_eligible_at = CASE WHEN ?9 = 1 THEN NULL ELSE COALESCE(?6, next_eligible_at) END,
                  cancellation_result_json = COALESCE(?7, cancellation_result_json),
                  submitted_at = CASE WHEN ?2 IN ('submitting', 'accepted', 'observing')
                      THEN COALESCE(submitted_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE submitted_at END,
@@ -1228,6 +1268,7 @@ pub(crate) fn record_provider_event(
                 request.next_eligible_at,
                 cancellation_result_json,
                 bool_to_i64(next.is_terminal()),
+                bool_to_i64(clear_attention),
             ],
         )?;
     } else {
@@ -1493,10 +1534,42 @@ pub(crate) fn delete_asset_occurrence(
             "Media asset relation does not belong to the requested job".to_string(),
         ));
     }
+    let selected_video_shot: Option<(String, String)> =
+        if relation.relation_type == MediaAssetRelationType::Output {
+            tx.query_row(
+                "SELECT shots.id, shots.workflow_id
+             FROM video_workflow_variants AS variants
+             JOIN video_workflow_shots AS shots
+               ON shots.id = variants.shot_id
+              AND shots.selected_variant_id = variants.id
+             WHERE variants.job_id = ?1",
+                [&request.job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+        } else {
+            None
+        };
     tx.execute(
         "DELETE FROM media_asset_relations WHERE id = ?1",
         [&request.relation_id],
     )?;
+    if let Some((shot_id, workflow_id)) = selected_video_shot {
+        tx.execute(
+            "UPDATE video_workflow_shots
+             SET selected_variant_id = NULL, revision = revision + 1,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?1",
+            [&shot_id],
+        )?;
+        tx.execute(
+            "UPDATE video_workflows
+             SET revision = revision + 1,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?1",
+            [&workflow_id],
+        )?;
+    }
     tx.execute(
         "UPDATE media_jobs SET revision = revision + 1,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",

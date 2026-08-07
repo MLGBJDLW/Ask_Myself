@@ -2107,6 +2107,126 @@ Every answer that uses knowledge base search results.
              completed_at TEXT
          );",
     ),
+    (
+        "v099_video_shot_board_queue_compare",
+        "CREATE TABLE IF NOT EXISTS video_provider_connections (
+             id TEXT PRIMARY KEY,
+             provider_id TEXT NOT NULL CHECK (provider_id IN ('minimax', 'runway')),
+             display_name TEXT NOT NULL,
+             official_base_url TEXT NOT NULL,
+             credential_ciphertext TEXT NOT NULL,
+             credential_scope TEXT NOT NULL UNIQUE,
+             data_region TEXT,
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_provider_connections_provider
+             ON video_provider_connections(provider_id, display_name);
+
+         CREATE TABLE IF NOT EXISTS video_workflows (
+             id TEXT PRIMARY KEY,
+             project_id TEXT,
+             title TEXT NOT NULL,
+             brief_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(brief_json)),
+             aspect_ratio TEXT NOT NULL,
+             target_duration_ms INTEGER NOT NULL CHECK (target_duration_ms > 0),
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_workflows_project_updated
+             ON video_workflows(project_id, updated_at DESC);
+
+         CREATE TABLE IF NOT EXISTS video_workflow_shots (
+             id TEXT PRIMARY KEY,
+             workflow_id TEXT NOT NULL REFERENCES video_workflows(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+             title TEXT NOT NULL,
+             prompt TEXT NOT NULL,
+             operation TEXT NOT NULL CHECK (operation IN (
+                 'text_to_video', 'image_to_video', 'video_to_video', 'first_last_frame'
+             )),
+             connection_id TEXT REFERENCES video_provider_connections(id) ON DELETE SET NULL,
+             provider_id TEXT,
+             model_id TEXT,
+             api_version TEXT,
+             duration_seconds INTEGER NOT NULL CHECK (duration_seconds BETWEEN 1 AND 120),
+             resolution TEXT NOT NULL,
+             aspect_ratio TEXT NOT NULL,
+             input_assets_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(input_assets_json)),
+             seed INTEGER CHECK (seed IS NULL OR seed BETWEEN 0 AND 4294967295),
+             generate_audio INTEGER CHECK (generate_audio IS NULL OR generate_audio IN (0, 1)),
+             data_region TEXT,
+             retention_policy TEXT NOT NULL DEFAULT 'unverified',
+             watermark_policy TEXT NOT NULL DEFAULT 'unverified',
+             provenance_policy TEXT NOT NULL DEFAULT 'unverified',
+             allow_cross_provider_fallback INTEGER NOT NULL DEFAULT 0 CHECK (allow_cross_provider_fallback IN (0, 1)),
+             selected_variant_id TEXT,
+             revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(workflow_id, ordinal)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_workflow_shots_workflow
+             ON video_workflow_shots(workflow_id, ordinal);
+
+         CREATE TABLE IF NOT EXISTS video_workflow_variants (
+             id TEXT PRIMARY KEY,
+             workflow_id TEXT NOT NULL REFERENCES video_workflows(id) ON DELETE CASCADE,
+             shot_id TEXT NOT NULL REFERENCES video_workflow_shots(id) ON DELETE RESTRICT,
+             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+             job_id TEXT NOT NULL UNIQUE REFERENCES media_jobs(id) ON DELETE RESTRICT,
+             connection_id TEXT NOT NULL REFERENCES video_provider_connections(id) ON DELETE RESTRICT,
+             shot_snapshot_json TEXT NOT NULL CHECK (json_valid(shot_snapshot_json)),
+             cancel_terminal_record_deletion_authorized INTEGER NOT NULL DEFAULT 0 CHECK (
+                 cancel_terminal_record_deletion_authorized IN (0, 1)
+             ),
+             label TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(shot_id, ordinal)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_workflow_variants_shot
+             ON video_workflow_variants(shot_id, ordinal);
+         CREATE INDEX IF NOT EXISTS idx_video_workflow_variants_workflow
+             ON video_workflow_variants(workflow_id, created_at);
+
+         CREATE TABLE IF NOT EXISTS video_job_runtime_state (
+             job_id TEXT PRIMARY KEY REFERENCES media_jobs(id) ON DELETE CASCADE,
+             materialization_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                 materialization_failure_count BETWEEN 0 AND 12
+             ),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+
+         CREATE TABLE IF NOT EXISTS video_job_leases (
+             job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+             lease_kind TEXT NOT NULL CHECK (lease_kind IN ('observe', 'cancel')),
+             owner_id TEXT NOT NULL,
+             expires_at_epoch INTEGER NOT NULL,
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             PRIMARY KEY(job_id, lease_kind)
+         );
+         CREATE INDEX IF NOT EXISTS idx_video_job_leases_expiry
+             ON video_job_leases(expires_at_epoch);
+
+         CREATE TRIGGER IF NOT EXISTS trg_video_shot_selected_variant_insert
+         BEFORE INSERT ON video_workflow_shots
+         WHEN NEW.selected_variant_id IS NOT NULL
+         BEGIN
+             SELECT RAISE(ABORT, 'a new shot cannot preselect a variant');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_video_shot_selected_variant_update
+         BEFORE UPDATE OF selected_variant_id ON video_workflow_shots
+         WHEN NEW.selected_variant_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM video_workflow_variants
+              WHERE id = NEW.selected_variant_id AND shot_id = NEW.id AND workflow_id = NEW.workflow_id
+          )
+         BEGIN
+             SELECT RAISE(ABORT, 'selected variant must belong to the shot');
+         END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2236,6 +2356,10 @@ mod tests {
         assert!(tables.contains(&"media_job_attempts".to_string()));
         assert!(tables.contains(&"media_assets".to_string()));
         assert!(tables.contains(&"media_asset_relations".to_string()));
+        assert!(tables.contains(&"video_provider_connections".to_string()));
+        assert!(tables.contains(&"video_workflows".to_string()));
+        assert!(tables.contains(&"video_workflow_shots".to_string()));
+        assert!(tables.contains(&"video_workflow_variants".to_string()));
         assert!(tables.contains(&"media_provider_events".to_string()));
         assert!(tables.contains(&"media_exports".to_string()));
         assert!(tables.contains(&"query_logs".to_string()));

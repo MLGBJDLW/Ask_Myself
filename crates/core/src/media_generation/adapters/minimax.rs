@@ -266,7 +266,10 @@ impl VideoGenerationAdapter for MiniMaxVideoAdapter {
             ));
         }
         for (index, asset) in request.input_assets.iter().enumerate() {
-            if !asset.uri.starts_with("https://") && !asset.uri.starts_with("mm_file://") {
+            if !asset.uri.starts_with("https://")
+                && !asset.uri.starts_with("mm_file://")
+                && !asset.uri.starts_with("data:image/")
+            {
                 issues.push(issue(
                     &format!("inputAssets[{index}].uri"),
                     "unsupported_locator",
@@ -892,6 +895,8 @@ mod tests {
             media_type: "image/png".to_string(),
             metadata_verified: true,
             byte_length: Some(1024),
+            content_hash_sha256: None,
+            local_asset_id: None,
             width: Some(1024),
             height: Some(768),
             duration_ms: None,

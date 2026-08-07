@@ -233,7 +233,7 @@ impl VideoGenerationAdapter for MiniMaxHailuoVideoAdapter {
                 asset.role,
                 VideoInputRole::FirstFrame | VideoInputRole::LastFrame
             ) || !asset.media_type.starts_with("image/")
-                || !asset.uri.starts_with("https://")
+                || (!asset.uri.starts_with("https://") && !asset.uri.starts_with("data:image/"))
             {
                 issues.push(issue(
                     &format!("inputAssets[{index}]"),
@@ -621,6 +621,8 @@ mod tests {
             media_type: "image/png".to_string(),
             metadata_verified: true,
             byte_length: Some(1024),
+            content_hash_sha256: None,
+            local_asset_id: None,
             width: Some(1024),
             height: Some(768),
             duration_ms: None,
