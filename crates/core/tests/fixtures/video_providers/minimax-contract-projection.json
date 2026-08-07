@@ -1,0 +1,34 @@
+{
+  "sourceUrl": "https://platform.minimax.io/docs/api-reference/video/generation/api/v2-video-generation.json",
+  "legacySources": [
+    "https://platform.minimax.io/docs/api-reference/video/generation/api/text-to-video.json",
+    "https://platform.minimax.io/docs/api-reference/video/generation/api/image-to-video.json",
+    "https://platform.minimax.io/docs/api-reference/video/generation/api/start-end-to-video.json"
+  ],
+  "observedAt": "2026-08-07",
+  "sourceSha256": "34a219f5f08ecb786a89852fef722841a25d18f2b3386c0f10c75fdc4a333c37",
+  "server": "https://api.minimax.io",
+  "auth": "bearer",
+  "v2": {
+    "model": "MiniMax-H3",
+    "createPath": "/v2/video_generation",
+    "queryPath": "/v2/query/video_generation/{task_id}",
+    "deletePath": "/v2/video_generation/{task_id}",
+    "contentTypes": ["text", "image_url", "video_url", "audio_url"],
+    "roles": ["first_frame", "last_frame", "reference_image", "reference_video", "reference_audio"],
+    "resolutions": ["768P", "2K"],
+    "duration": { "minimum": 4, "maximum": 15 },
+    "ratios": ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    "statuses": ["queued", "running", "succeeded", "failed", "cancelled"],
+    "queryWindowDays": 7,
+    "cancelScope": "queued_only"
+  },
+  "legacy": {
+    "createPath": "/v1/video_generation",
+    "queryPath": "/v1/query/video_generation",
+    "retrievePath": "/v1/files/retrieve",
+    "models": ["MiniMax-Hailuo-2.3", "MiniMax-Hailuo-2.3-Fast", "MiniMax-Hailuo-02"],
+    "statuses": ["Preparing", "Queueing", "Processing", "Success", "Fail"],
+    "cancelScope": "unsupported"
+  }
+}

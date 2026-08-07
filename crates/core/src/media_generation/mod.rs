@@ -5,6 +5,7 @@
 //! adapters outside this module; state-machine, idempotency, optimistic
 //! concurrency, and transaction rules stay behind the runtime interface.
 
+pub mod adapters;
 mod asset_store;
 mod model;
 mod runtime;
