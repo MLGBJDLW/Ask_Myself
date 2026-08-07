@@ -7,6 +7,10 @@ import type { SpeechToTextConfig } from '../../types/conversation';
 import type { VideoConfig, WhisperModel } from '../../types/video';
 import { useMicrophoneDevices } from './useMicrophoneDevices';
 import { useVoiceRecorder } from './useVoiceRecorder';
+import {
+  appendBoundedVoicePartial,
+  replaceBoundedVoicePartial,
+} from './boundedVoicePartial';
 import { BoundedAudioUploadQueue } from './boundedAudioQueue';
 import { NativeVoiceSpoolUpload } from './nativeVoiceSpool';
 
@@ -169,9 +173,9 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     }>('speech-to-text:realtime', (event) => {
       if (event.payload.sessionId !== realtimeSessionIdRef.current) return;
       if (event.payload.kind === 'delta' && event.payload.text) {
-        setPartialTranscript((current) => current + event.payload.text);
+        setPartialTranscript((current) => appendBoundedVoicePartial(current, event.payload.text!));
       } else if (event.payload.kind === 'completed') {
-        setPartialTranscript(event.payload.text ?? '');
+        setPartialTranscript(replaceBoundedVoicePartial(event.payload.text ?? ''));
       } else if (event.payload.kind === 'error') {
         realtimeUploadErrorRef.current = event.payload.text ?? 'Realtime transcription failed';
         realtimeSafeStopHandlerRef.current();
@@ -597,6 +601,19 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       const speechConfig = appConfig.speechToText;
       const realtime = isRealtimeTranscriptionConfig(speechConfig);
       const sampleRate = realtime ? 24_000 : 16_000;
+      const handleCaptureStateChange = (state: 'capturing' | 'interrupted') => {
+        if (state === 'interrupted') {
+          setTransportState('buffering');
+        } else {
+          setTransportState(realtimeUploadErrorRef.current
+            ? 'degraded'
+            : realtime ? 'online' : 'local');
+        }
+      };
+      const handleCaptureIssue = (state: 'interrupted' | 'disconnected') => {
+        setTransportState(state === 'disconnected' ? 'offline' : 'buffering');
+        voiceSpoolSafeStopHandlerRef.current();
+      };
       setRecordingContext({
         providerLabel: speechConfig?.model?.trim()
           || speechConfig?.provider?.trim()
@@ -647,10 +664,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
               if (sessionId) queueRealtimeAudio(sessionId, chunk);
               return accepted;
             },
-            onCaptureIssue: (state) => {
-              setTransportState(state === 'disconnected' ? 'offline' : 'buffering');
-              voiceSpoolSafeStopHandlerRef.current();
-            },
+            onCaptureIssue: handleCaptureIssue,
+            onCaptureStateChange: handleCaptureStateChange,
           });
           void microphones.refresh();
         } catch (error) {
@@ -668,10 +683,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           await recorder.startRecording({
             targetSampleRate: 16_000,
             onPcmChunk: (chunk) => upload.enqueue(chunk),
-            onCaptureIssue: (state) => {
-              setTransportState(state === 'disconnected' ? 'offline' : 'buffering');
-              voiceSpoolSafeStopHandlerRef.current();
-            },
+            onCaptureIssue: handleCaptureIssue,
+            onCaptureStateChange: handleCaptureStateChange,
           });
           void microphones.refresh();
         } catch (error) {

@@ -21,6 +21,8 @@ export interface VoiceRecordingOptions {
   onPcmChunk: (chunk: Uint8Array) => boolean | void;
   /** Receives bounded-capture failures that require a safe spool finalize. */
   onCaptureIssue?: (state: Extract<VoiceCaptureState, 'interrupted' | 'disconnected'>) => void;
+  /** Receives recoverable input interruptions without ending the recording. */
+  onCaptureStateChange?: (state: Extract<VoiceCaptureState, 'capturing' | 'interrupted'>) => void;
 }
 
 export interface UseVoiceRecorderReturn {
@@ -92,6 +94,17 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     recordingOptionsRef.current?.onCaptureIssue?.(state);
   }, []);
 
+  const reportCaptureState = useCallback((
+    state: Extract<VoiceCaptureState, 'capturing' | 'interrupted'>,
+  ) => {
+    if (cancelledRef.current || !recordingRef.current) return;
+    const effectiveState = state === 'capturing' && pausedRef.current ? 'paused' : state;
+    setCaptureState(effectiveState);
+    if (effectiveState !== 'paused') {
+      recordingOptionsRef.current?.onCaptureStateChange?.(effectiveState);
+    }
+  }, []);
+
   const teardown = useCallback((resetDuration: boolean) => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -105,16 +118,21 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
 
     const worklet = workletRef.current;
     if (worklet) {
+      worklet.onprocessorerror = null;
       worklet.port.onmessage = null;
       worklet.port.postMessage({ type: 'stop' });
+      worklet.port.close();
       worklet.disconnect();
     }
     muteRef.current?.disconnect();
     analyserRef.current?.disconnect();
     sourceRef.current?.disconnect();
+    if (audioCtxRef.current) audioCtxRef.current.onstatechange = null;
     void audioCtxRef.current?.close().catch(() => {});
     streamRef.current?.getTracks().forEach((track) => {
       track.onended = null;
+      track.onmute = null;
+      track.onunmute = null;
       track.stop();
     });
 
@@ -204,6 +222,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
         },
       });
       workletRef.current = worklet;
+      worklet.onprocessorerror = () => reportCaptureIssue('interrupted');
       worklet.port.onmessage = (event: MessageEvent<VoiceWorkletMessage>) => {
         const message = event.data;
         if (message.type === 'pcm') {
@@ -239,7 +258,13 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
 
       for (const track of stream.getAudioTracks()) {
         track.onended = () => reportCaptureIssue('disconnected');
+        track.onmute = () => reportCaptureState('interrupted');
+        track.onunmute = () => reportCaptureState('capturing');
       }
+      audioCtx.onstatechange = () => {
+        if (String(audioCtx.state) === 'interrupted') reportCaptureState('interrupted');
+        else if (audioCtx.state === 'running') reportCaptureState('capturing');
+      };
       if (audioCtx.state === 'suspended') await audioCtx.resume();
 
       recordingRef.current = true;
@@ -258,7 +283,7 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
       setCaptureState('idle');
       throw error;
     }
-  }, [deviceId, reportCaptureIssue, teardown, updateDuration]);
+  }, [deviceId, reportCaptureIssue, reportCaptureState, teardown, updateDuration]);
 
   const pauseRecording = useCallback(async () => {
     if (!recordingRef.current || pausedRef.current) return;
@@ -279,8 +304,8 @@ export function useVoiceRecorder(deviceId?: string | null): UseVoiceRecorderRetu
     pausedRef.current = false;
     activeSegmentStartedAtRef.current = Date.now();
     setIsPaused(false);
-    setCaptureState('capturing');
-  }, []);
+    reportCaptureState('capturing');
+  }, [reportCaptureState]);
 
   const stopRecording = useCallback(async (): Promise<void> => {
     if (!recordingRef.current) return;

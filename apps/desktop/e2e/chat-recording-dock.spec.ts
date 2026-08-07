@@ -53,11 +53,15 @@ test.beforeEach(async ({ page }) => {
     }
     class FakeTrack {
       onended: (() => void) | null = null;
+      onmute: (() => void) | null = null;
+      onunmute: (() => void) | null = null;
       stop() {}
     }
     class FakeWorkletNode extends FakeAudioNode {
+      onprocessorerror: (() => void) | null = null;
       port = {
         onmessage: null as ((event: { data: unknown }) => void) | null,
+        close: () => {},
         postMessage: (message: { type?: string; requestId?: number }) => {
           if (message.type === 'flush') {
             queueMicrotask(() => this.port.onmessage?.({
@@ -84,6 +88,11 @@ test.beforeEach(async ({ page }) => {
       async close() { this.state = 'closed'; }
     }
     const track = new FakeTrack();
+    (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
+      .__SET_VOICE_TRACK_MUTED__ = (muted) => {
+        if (muted) track.onmute?.();
+        else track.onunmute?.();
+      };
     const mediaDevices = {
       getUserMedia: async () => ({
         getTracks: () => [track],
@@ -214,6 +223,7 @@ test.beforeEach(async ({ page }) => {
 
 test('recording dock exposes responsive live, pause, details, processing, and cancel states', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/chat/conv-voice-dock');
 
   await page.getByRole('button', { name: 'Start voice input' }).click();
@@ -222,6 +232,9 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect(dock).toHaveAttribute('data-state', 'online');
   await expect(dock).toContainText('en · gpt-4o-mini-transcribe');
   expect((await dock.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(420);
+
+  const waveform = page.getByTestId('microphone-waveform');
+  await expect(waveform).toHaveAttribute('data-animated', 'false');
 
   await page.evaluate(() => {
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
@@ -232,6 +245,17 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
       });
   });
   await expect(page.getByTestId('voice-partial-transcript')).toContainText('check the entire configuration');
+
+  await page.evaluate(() => {
+    (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
+      .__SET_VOICE_TRACK_MUTED__(true);
+  });
+  await expect(dock).toHaveAttribute('data-state', 'buffering');
+  await page.evaluate(() => {
+    (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
+      .__SET_VOICE_TRACK_MUTED__(false);
+  });
+  await expect(dock).toHaveAttribute('data-state', 'online');
 
   await page.getByRole('button', { name: 'Pause recording' }).click();
   await expect(dock).toHaveAttribute('data-state', 'paused');

@@ -126,6 +126,21 @@ function loadVoicePcmProcessor() {
   return RegisteredProcessor;
 }
 
+function loadBoundedVoicePartial() {
+  const partialPath = path.join(root, 'src', 'features', 'voice', 'boundedVoicePartial.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(partialPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
+    filename: partialPath,
+  });
+  return module.exports;
+}
+
 function loadBoundedAudioQueue() {
   const queuePath = path.join(root, 'src', 'features', 'voice', 'boundedAudioQueue.ts');
   const transpiled = ts.transpileModule(fs.readFileSync(queuePath, 'utf8'), {
@@ -498,6 +513,8 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(recorderSource, /WORKLET_MAX_CREDITS = 4/);
   assert.match(recorderSource, /WORKLET_MAX_PENDING_CHUNKS = 8/);
   assert.match(recorderSource, /new Uint8Array\(message\.buffer\)/);
+  assert.match(recorderSource, /worklet\.onprocessorerror/);
+  assert.match(recorderSource, /worklet\.port\.close\(\)/);
 
   const realtimeNativeSource = fs.readFileSync(
     path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
@@ -623,6 +640,23 @@ test('audio worklet resampling preserves phase across render quanta', () => {
     .filter(({ message }) => message.type === 'pcm')
     .flatMap(({ message }) => Array.from(new Int16Array(message.buffer)));
   assert.deepEqual(collectSamples(split), collectSamples(onePass));
+});
+
+test('realtime partial transcript retains only the newest bounded text', () => {
+  const {
+    MAX_VOICE_PARTIAL_CHARS,
+    appendBoundedVoicePartial,
+    replaceBoundedVoicePartial,
+  } = loadBoundedVoicePartial();
+  const current = 'a'.repeat(MAX_VOICE_PARTIAL_CHARS);
+  const appended = appendBoundedVoicePartial(current, 'latest');
+  assert.equal(appended.length, MAX_VOICE_PARTIAL_CHARS);
+  assert.equal(appended.endsWith('latest'), true);
+
+  const oversized = `old-${'b'.repeat(MAX_VOICE_PARTIAL_CHARS)}-new`;
+  const replaced = replaceBoundedVoicePartial(oversized);
+  assert.equal(replaced.length, MAX_VOICE_PARTIAL_CHARS);
+  assert.equal(replaced.endsWith('-new'), true);
 });
 
 await testAsync('native spool upload assigns ordered sequences and finalizes by opaque handle', async () => {
