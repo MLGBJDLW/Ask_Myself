@@ -147,6 +147,10 @@ pub struct AppState {
     /// opaque session IDs; filesystem paths remain inside Rust.
     #[cfg(feature = "video")]
     pub voice_audio_spool: Arc<nexa_core::voice_audio_spool::VoiceAudioSpool>,
+    /// Rejects excess raw append work before cloning or entering Tokio's
+    /// blocking pool, preventing direct IPC callers from bypassing JS bounds.
+    #[cfg(feature = "video")]
+    pub voice_spool_append_permits: Arc<tokio::sync::Semaphore>,
     /// Lock to serialize scan operations and prevent duplicate document inserts.
     pub scan_lock: Arc<Mutex<()>>,
 }

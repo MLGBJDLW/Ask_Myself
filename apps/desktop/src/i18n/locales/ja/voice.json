@@ -19,5 +19,6 @@
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "音声のアップロードが追いつかなかったため、録音を安全に停止しました。収録済みの音声を確定中です。続きは録音を再開してください。",
   "realtimeDeferred": "ライブ文字起こしを利用できません。録音はローカルスプールへ安全に継続され、停止後に再試行されます。",
+  "cleanupPending": "非公開の音声データは削除待ちで、自動的に再試行されます。",
   "transcriptionFailed": "文字起こしに失敗しました。音声プロバイダーの設定を確認して再試行してください。"
 }

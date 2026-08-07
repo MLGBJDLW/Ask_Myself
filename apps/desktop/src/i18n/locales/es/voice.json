@@ -19,5 +19,6 @@
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "La grabación se detuvo porque la carga de audio no pudo seguir el ritmo. Se está finalizando lo capturado; reanuda para continuar.",
   "realtimeDeferred": "La transcripción en directo no está disponible. La grabación continúa de forma segura en el spool local y se reintentará al detenerla.",
+  "cleanupPending": "La eliminación del audio privado está pendiente y se volverá a intentar automáticamente.",
   "transcriptionFailed": "La transcripción falló. Revisa la configuración del proveedor de voz e inténtalo de nuevo."
 }

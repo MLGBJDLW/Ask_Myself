@@ -33,6 +33,7 @@ export class NativeVoiceSpoolUpload {
   private rejected = false;
   private nextSequence = 0;
   private finishPromise: Promise<VoiceAudioSpoolDescriptor> | null = null;
+  private recoveryPromise: Promise<VoiceAudioSpoolDescriptor> | null = null;
   private cancelPromise: Promise<void> | null = null;
 
   constructor(
@@ -78,6 +79,16 @@ export class NativeVoiceSpoolUpload {
       return this.transport.finish(this.sessionId);
     })();
     return this.finishPromise;
+  }
+
+  /** Finalize chunks already acknowledged by native storage after the
+   * renderer queue itself has failed or rejected later audio. */
+  finishAcceptedAudio(): Promise<VoiceAudioSpoolDescriptor> {
+    if (this.recoveryPromise) return this.recoveryPromise;
+    this.accepting = false;
+    this.queue.cancel('Finalizing acknowledged voice audio after upload failure');
+    this.recoveryPromise = this.transport.finish(this.sessionId);
+    return this.recoveryPromise;
   }
 
   cancel(): Promise<void> {

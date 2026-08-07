@@ -287,6 +287,8 @@ fn main() {
                 whisper_busy: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "video")]
                 voice_audio_spool,
+                #[cfg(feature = "video")]
+                voice_spool_append_permits: Arc::new(tokio::sync::Semaphore::new(4)),
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
             });
             app.manage(AgentState {

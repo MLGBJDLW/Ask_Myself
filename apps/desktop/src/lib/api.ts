@@ -1806,6 +1806,18 @@ export interface VoiceAudioSpoolDescriptor {
   checksumSha256: string;
   createdAtMs: number;
   expiresAtMs: number;
+  target: {
+    provider: string;
+    apiStyle: string;
+    model: string;
+    configurationFingerprintSha256: string;
+  };
+}
+
+export interface VoiceAudioSpoolListEntry {
+  sessionId: string;
+  state: 'recording' | 'ready' | 'deletionPending';
+  descriptor?: VoiceAudioSpoolDescriptor;
 }
 
 export const startVoiceAudioSpool = (sampleRate: number) =>
@@ -1826,7 +1838,7 @@ export const finishVoiceAudioSpool = (sessionId: string) =>
   invoke<VoiceAudioSpoolDescriptor>('finish_voice_audio_spool_cmd', { sessionId });
 
 export const listVoiceAudioSpools = () =>
-  invoke<VoiceAudioSpoolDescriptor[]>('list_voice_audio_spools_cmd');
+  invoke<VoiceAudioSpoolListEntry[]>('list_voice_audio_spools_cmd');
 
 export const transcribeVoiceAudioSpool = (sessionId: string) =>
   invoke<string>('transcribe_voice_audio_spool_cmd', { sessionId });

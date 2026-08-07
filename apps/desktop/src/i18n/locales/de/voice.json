@@ -19,5 +19,6 @@
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "Die Aufnahme wurde gestoppt, weil der Audio-Upload nicht mithalten konnte. Die erfasste Sprache wird abgeschlossen; setzen Sie danach fort.",
   "realtimeDeferred": "Live-Transkription ist nicht verfügbar. Die Aufnahme wird sicher im lokalen Spool fortgesetzt und nach dem Stoppen erneut versucht.",
+  "cleanupPending": "Das Löschen privater Sprachaufnahmen steht noch aus und wird automatisch erneut versucht.",
   "transcriptionFailed": "Die Transkription ist fehlgeschlagen. Prüfen Sie die Einstellungen des Sprachanbieters und versuchen Sie es erneut."
 }

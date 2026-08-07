@@ -52,6 +52,8 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       toast.error(t('voice.realtimeBackpressure'));
     } else if (code === 'realtime_deferred') {
       toast.info(t('voice.realtimeDeferred'));
+    } else if (code === 'voice_cleanup_pending') {
+      toast.warning(t('voice.cleanupPending'));
     } else if (code === 'transcription_failed') {
       toast.error(t('voice.transcriptionFailed'));
     } else if (code !== 'busy') {

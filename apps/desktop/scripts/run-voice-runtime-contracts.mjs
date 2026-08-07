@@ -394,6 +394,11 @@ test('desktop API exposes raw realtime and native spool lifecycles', () => {
     /invoke<void>\('append_realtime_transcription_audio_cmd', audioData, \{/,
     'realtime PCM should use a raw Uint8Array invoke body',
   );
+  assert.match(
+    apiSource,
+    /invoke<VoiceAudioSpoolProgress>\('append_voice_audio_spool_cmd', audioData, \{/,
+    'native spool PCM should use a raw Uint8Array invoke body',
+  );
   assert.match(apiSource, /'x-nexa-session-id': sessionId/);
   assert.match(apiSource, /'x-nexa-voice-session-id': sessionId/);
   assert.match(apiSource, /'x-nexa-voice-sequence': String\(sequence\)/);
@@ -452,6 +457,7 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.doesNotMatch(runtimeSource, /Array\.from\((wav|chunk)\)/);
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
   assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
+  assert.match(runtimeSource, /startInProgressRef\.current/);
   assert.match(runtimeSource, /onRejected: \(\) => degradeRealtimeToSpool\(true\)/);
   assert.match(runtimeSource, /startManagedVoiceSpool/);
   assert.match(runtimeSource, /upload\.enqueue\(chunk\)/);
@@ -507,6 +513,64 @@ await testAsync('native spool upload assigns ordered sequences and finalizes by 
     { sessionId: 'opaque-id', sequence: 1 },
   ]);
   assert.equal(upload.enqueue(new Uint8Array([5, 0])), false);
+});
+
+await testAsync('native spool can finalize acknowledged chunks after a later write failure', async () => {
+  const { NativeVoiceSpoolUpload } = loadNativeVoiceSpool();
+  let appendCount = 0;
+  let finalized = 0;
+  const upload = new NativeVoiceSpoolUpload(
+    { sessionId: 'recoverable-id', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => {
+        appendCount += 1;
+        if (appendCount === 2) throw new Error('disk full');
+      },
+      finish: async (sessionId) => {
+        finalized += 1;
+        return {
+          sessionId,
+          audioBytes: 4,
+          durationMs: 1,
+          sampleRate: 16_000,
+          checksumSha256: 'abc',
+          createdAtMs: 1,
+          expiresAtMs: 2,
+        };
+      },
+      cancel: async () => {},
+    },
+  );
+
+  upload.enqueue(new Uint8Array([1, 0, 2, 0]));
+  await upload.finish();
+  assert.equal(finalized, 1);
+
+  const failingUpload = new NativeVoiceSpoolUpload(
+    { sessionId: 'recoverable-id-2', sampleRate: 16_000, maxChunkBytes: 4, maxAudioBytes: 1024 },
+    {
+      append: async () => { throw new Error('disk full'); },
+      finish: async (sessionId) => {
+        finalized += 1;
+        return {
+          sessionId,
+          audioBytes: 2,
+          durationMs: 1,
+          sampleRate: 16_000,
+          checksumSha256: 'def',
+          createdAtMs: 1,
+          expiresAtMs: 2,
+        };
+      },
+      cancel: async () => {},
+    },
+  );
+  failingUpload.enqueue(new Uint8Array([1, 0]));
+  await assert.rejects(failingUpload.finish(), /disk full/);
+  const recovered = await failingUpload.finishAcceptedAudio();
+
+  assert.equal(recovered.sessionId, 'recoverable-id-2');
+  assert.equal(finalized, 2);
 });
 
 await testAsync('bounded audio queue surfaces native write failures without Promise growth', async () => {

@@ -1467,10 +1467,23 @@ pub fn transcribe_audio_bounded(
     let overlap_ms = (overlap_samples > 0)
         .then_some(1_000_i64)
         .unwrap_or_default();
-    let temp_dir = tempfile::tempdir().map_err(|error| {
-        CoreError::Video(format!("Failed to create Whisper chunk dir: {error}"))
+    let scratch_root = wav_path.parent().ok_or_else(|| {
+        CoreError::Video("Managed Whisper input has no private parent directory".into())
     })?;
-    let mut samples = reader.samples::<i16>();
+    let temp_dir = tempfile::Builder::new()
+        .prefix(".whisper-")
+        .tempdir_in(scratch_root)
+        .map_err(|error| {
+            CoreError::Video(format!(
+                "Failed to create managed Whisper chunk dir: {error}"
+            ))
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(temp_dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    let mut samples = reader.samples::<i16>().peekable();
     let mut chunk_start_sample = 0_usize;
     let mut overlap = Vec::<i16>::new();
     let mut chunk_index = 0_usize;
@@ -1491,6 +1504,9 @@ pub fn transcribe_audio_bounded(
                 CoreError::Video(format!("Failed to read Whisper chunk sample: {error}"))
             })?);
             new_samples += 1;
+        }
+        if !reached_eof {
+            reached_eof = samples.peek().is_none();
         }
         if new_samples == 0 {
             break;
@@ -1538,6 +1554,11 @@ pub fn transcribe_audio_bounded(
             .saturating_add(chunk_samples.len().saturating_sub(next_overlap_samples));
         chunk_index += 1;
     }
+    temp_dir.close().map_err(|error| {
+        CoreError::Video(format!(
+            "Failed to delete managed Whisper chunk dir: {error}"
+        ))
+    })?;
     Ok(result)
 }
 

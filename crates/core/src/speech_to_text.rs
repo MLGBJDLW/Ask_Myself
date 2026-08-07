@@ -1,5 +1,6 @@
 //! Low-latency microphone transcription backends.
 
+use std::io::SeekFrom;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -8,7 +9,7 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use regex::Regex;
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::app_settings::SpeechToTextConfig;
 use crate::error::CoreError;
@@ -110,15 +111,21 @@ pub async fn transcribe_cloud_wav_path(
 
     let block_align = usize::from(wav.channels) * 2;
     let max_segment_bytes = MAX_SEGMENT_DATA_BYTES / block_align * block_align;
-    let mut remaining = wav.data_bytes as usize;
-    let mut transcripts = Vec::new();
-    while remaining > 0 {
-        let segment_data_bytes = remaining.min(max_segment_bytes);
+    let total_data_bytes = wav.data_bytes as usize;
+    let overlap_bytes = (wav.sample_rate as usize)
+        .saturating_mul(block_align)
+        .min(max_segment_bytes / 4);
+    let mut segment_offset = 0_usize;
+    let mut transcript = String::new();
+    while segment_offset < total_data_bytes {
+        let segment_data_bytes = (total_data_bytes - segment_offset).min(max_segment_bytes);
         let segment_header = pcm16_wav_header(wav.sample_rate, wav.channels, segment_data_bytes)?;
         let mut segment = vec![0_u8; 44 + segment_data_bytes];
         segment[..44].copy_from_slice(&segment_header);
+        file.seek(SeekFrom::Start(44 + segment_offset as u64))
+            .await?;
         file.read_exact(&mut segment[44..]).await?;
-        let transcript = match config.api_style.as_str() {
+        let segment_transcript = match config.api_style.as_str() {
             "openai_transcription" => transcribe_openai_compatible_wav(segment, config).await?,
             "dashscope_asr" => transcribe_dashscope_wav(segment, config).await?,
             _ => {
@@ -128,13 +135,60 @@ pub async fn transcribe_cloud_wav_path(
                 )))
             }
         };
-        let transcript = transcript.trim();
-        if !transcript.is_empty() {
-            transcripts.push(transcript.to_string());
+        merge_overlapping_transcript(&mut transcript, segment_transcript.trim());
+        if segment_offset + segment_data_bytes >= total_data_bytes {
+            break;
         }
-        remaining -= segment_data_bytes;
+        segment_offset =
+            segment_offset.saturating_add(segment_data_bytes.saturating_sub(overlap_bytes));
     }
-    Ok(transcripts.join(" "))
+    Ok(transcript)
+}
+
+fn merge_overlapping_transcript(transcript: &mut String, next: &str) {
+    if next.is_empty() {
+        return;
+    }
+    if transcript.is_empty() {
+        transcript.push_str(next);
+        return;
+    }
+    let existing_chars = transcript.chars().collect::<Vec<_>>();
+    let next_chars = next.chars().collect::<Vec<_>>();
+    let max_overlap = existing_chars.len().min(next_chars.len()).min(256);
+    let overlap = (1..=max_overlap).rev().find(|length| {
+        let existing_overlap = &existing_chars[existing_chars.len() - length..];
+        let next_overlap = &next_chars[..*length];
+        let minimum_length = if existing_overlap
+            .iter()
+            .any(|character| !character.is_ascii())
+        {
+            2
+        } else {
+            4
+        };
+        *length >= minimum_length
+            && existing_overlap
+                .iter()
+                .collect::<String>()
+                .eq_ignore_ascii_case(&next_overlap.iter().collect::<String>())
+    });
+    let skip_chars = overlap.unwrap_or_default();
+    let remainder = next_chars[skip_chars..].iter().collect::<String>();
+    if !remainder.is_empty() {
+        let needs_ascii_separator = transcript
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+            && remainder
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_alphanumeric());
+        if needs_ascii_separator {
+            transcript.push(' ');
+        }
+        transcript.push_str(&remainder);
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -588,6 +642,21 @@ mod tests {
         let mut malformed = header;
         malformed[40..44].copy_from_slice(&3_u32.to_le_bytes());
         assert!(managed_pcm16_wav_spec(&malformed).is_err());
+    }
+
+    #[test]
+    fn provider_segment_overlap_is_reconciled_without_duplicate_text() {
+        let mut english = "hello world".to_string();
+        merge_overlapping_transcript(&mut english, "world again");
+        assert_eq!(english, "hello world again");
+
+        let mut chinese = "你好世界".to_string();
+        merge_overlapping_transcript(&mut chinese, "世界继续");
+        assert_eq!(chinese, "你好世界继续");
+
+        let mut incidental = "a".to_string();
+        merge_overlapping_transcript(&mut incidental, "and then");
+        assert_eq!(incidental, "a and then");
     }
 
     #[test]

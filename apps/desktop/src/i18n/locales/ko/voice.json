@@ -19,5 +19,6 @@
   "microphoneTestUnavailable": "This microphone could not be opened. Pick another device and try again.",
   "realtimeBackpressure": "오디오 업로드가 따라가지 못해 녹음을 안전하게 중지했습니다. 캡처된 음성을 마무리하는 중이며, 계속하려면 녹음을 다시 시작하세요.",
   "realtimeDeferred": "실시간 받아쓰기를 사용할 수 없습니다. 녹음은 로컬 스풀에 안전하게 계속 저장되며 중지 후 다시 시도됩니다.",
+  "cleanupPending": "비공개 음성 데이터 삭제가 보류 중이며 자동으로 다시 시도됩니다.",
   "transcriptionFailed": "음성 변환에 실패했습니다. 음성 공급자 설정을 확인한 후 다시 시도하세요."
 }
