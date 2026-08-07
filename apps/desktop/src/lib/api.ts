@@ -25,6 +25,16 @@ import type {
   VisualEvent,
 } from "../types/video";
 import type {
+  CreateMediaJobRequest,
+  DeleteMediaAssetOccurrenceRequest,
+  MediaAssetRecord,
+  MediaJobSnapshot,
+  MediaProviderEventRecord,
+  RequestMediaJobCancellation,
+  RequestMediaJobRemoteDeletion,
+  RequestMediaAssetDeletion,
+} from "../types/mediaGeneration";
+import type {
   SettingsMigrationReportV2,
   CapabilityBindingV2,
   SettingsProfileV2,
@@ -1570,6 +1580,38 @@ export const observeContextCompaction = (operationId: string, afterSeq: number) 
 
 export const cancelContextCompaction = (operationId: string) =>
   invoke<void>('cancel_context_compaction_cmd', { operationId });
+
+export const createMediaGenerationJob = (request: CreateMediaJobRequest) =>
+  invoke<MediaJobSnapshot>('create_media_generation_job_cmd', { request });
+
+export const getMediaGenerationJob = (jobId: string) =>
+  invoke<MediaJobSnapshot>('get_media_generation_job_cmd', { jobId });
+
+export const listRecoverableMediaGenerationJobs = () =>
+  invoke<MediaJobSnapshot[]>('list_recoverable_media_generation_jobs_cmd');
+
+export const listMediaGenerationProviderEvents = (
+  jobId: string,
+  afterSequence = 0,
+  limit = 100,
+) => invoke<MediaProviderEventRecord[]>('list_media_generation_provider_events_cmd', {
+  jobId,
+  afterSequence,
+  limit,
+});
+
+export const requestMediaGenerationCancellation = (request: RequestMediaJobCancellation) =>
+  invoke<MediaJobSnapshot>('request_media_generation_cancellation_cmd', { request });
+
+export const requestMediaGenerationRemoteDeletion = (request: RequestMediaJobRemoteDeletion) =>
+  invoke<MediaJobSnapshot>('request_media_generation_remote_deletion_cmd', { request });
+
+export const deleteMediaGenerationAssetOccurrence = (
+  request: DeleteMediaAssetOccurrenceRequest,
+) => invoke<MediaJobSnapshot>('delete_media_generation_asset_occurrence_cmd', { request });
+
+export const deleteMediaGenerationAsset = (request: RequestMediaAssetDeletion) =>
+  invoke<MediaAssetRecord>('delete_media_generation_asset_cmd', { request });
 
 /** @deprecated Compatibility adapter for pre-operation-protocol callers. */
 export const compactConversation = (conversationId: string) =>

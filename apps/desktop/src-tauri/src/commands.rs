@@ -106,6 +106,7 @@ mod approval;
 mod conversation;
 mod knowledge;
 mod media;
+mod media_generation;
 mod personas;
 mod preview;
 mod realtime_transcription;
@@ -122,6 +123,7 @@ pub use approval::*;
 pub use conversation::*;
 pub use knowledge::*;
 pub use media::*;
+pub use media_generation::*;
 pub use personas::*;
 pub use preview::*;
 pub use realtime_transcription::*;
@@ -140,6 +142,7 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub db_executor: DatabaseExecutor,
     pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
+    pub media_generation: nexa_core::media_generation::MediaGenerationRuntime,
     /// Guard: true while whisper transcription is in progress.
     #[cfg(feature = "video")]
     pub whisper_busy: Arc<AtomicBool>,
