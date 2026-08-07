@@ -35,6 +35,26 @@ import type {
   RequestMediaAssetDeletion,
 } from "../types/mediaGeneration";
 import type {
+  AddVideoWorkflowShotRequest,
+  CancelVideoVariantRequest,
+  CreateVideoWorkflowRequest,
+  DeleteVideoWorkflowShotRequest,
+  PreviewVideoShotQueueRequest,
+  QueueVideoShotVariantsRequest,
+  ReorderVideoWorkflowShotsRequest,
+  ReorderVideoWorkflowVariantsRequest,
+  RetryVideoVariantRequest,
+  SaveVideoProviderConnectionRequest,
+  SelectVideoWorkflowVariantRequest,
+  UpdateVideoWorkflowRequest,
+  UpdateVideoWorkflowShotRequest,
+  VideoProviderConnectionRecord,
+  VideoProviderPreset,
+  VideoQueueDisclosure,
+  VerifiedVideoReferenceImage,
+  VideoWorkflowSnapshot,
+} from "../types/videoWorkflow";
+import type {
   SettingsMigrationReportV2,
   CapabilityBindingV2,
   SettingsProfileV2,
@@ -1612,6 +1632,66 @@ export const deleteMediaGenerationAssetOccurrence = (
 
 export const deleteMediaGenerationAsset = (request: RequestMediaAssetDeletion) =>
   invoke<MediaAssetRecord>('delete_media_generation_asset_cmd', { request });
+
+export const listVideoGenerationCapabilities = () =>
+  invoke<VideoProviderPreset[]>('list_video_generation_capabilities_cmd');
+
+export const saveVideoProviderConnection = (request: SaveVideoProviderConnectionRequest) =>
+  invoke<VideoProviderConnectionRecord>('save_video_provider_connection_cmd', { request });
+
+export const listVideoProviderConnections = () =>
+  invoke<VideoProviderConnectionRecord[]>('list_video_provider_connections_cmd');
+
+export const deleteVideoProviderConnection = (connectionId: string, expectedRevision: number) =>
+  invoke<void>('delete_video_provider_connection_cmd', { connectionId, expectedRevision });
+
+export const createVideoWorkflow = (request: CreateVideoWorkflowRequest) =>
+  invoke<VideoWorkflowSnapshot>('create_video_workflow_cmd', { request });
+
+export const updateVideoWorkflow = (request: UpdateVideoWorkflowRequest) =>
+  invoke<VideoWorkflowSnapshot>('update_video_workflow_cmd', { request });
+
+export const listVideoWorkflows = (projectId?: string | null) =>
+  invoke<VideoWorkflowSnapshot[]>('list_video_workflows_cmd', { projectId: projectId ?? null });
+
+export const getVideoWorkflow = (workflowId: string) =>
+  invoke<VideoWorkflowSnapshot>('get_video_workflow_cmd', { workflowId });
+
+export const addVideoWorkflowShot = (request: AddVideoWorkflowShotRequest) =>
+  invoke<VideoWorkflowSnapshot>('add_video_workflow_shot_cmd', { request });
+
+export const updateVideoWorkflowShot = (request: UpdateVideoWorkflowShotRequest) =>
+  invoke<VideoWorkflowSnapshot>('update_video_workflow_shot_cmd', { request });
+
+export const reorderVideoWorkflowShots = (request: ReorderVideoWorkflowShotsRequest) =>
+  invoke<VideoWorkflowSnapshot>('reorder_video_workflow_shots_cmd', { request });
+
+export const reorderVideoWorkflowVariants = (request: ReorderVideoWorkflowVariantsRequest) =>
+  invoke<VideoWorkflowSnapshot>('reorder_video_workflow_variants_cmd', { request });
+
+export const deleteVideoWorkflowShot = (request: DeleteVideoWorkflowShotRequest) =>
+  invoke<VideoWorkflowSnapshot>('delete_video_workflow_shot_cmd', { request });
+
+export const queueVideoShotVariants = (request: QueueVideoShotVariantsRequest) =>
+  invoke<VideoWorkflowSnapshot>('queue_video_shot_variants_cmd', { request });
+
+export const previewVideoShotQueue = (request: PreviewVideoShotQueueRequest) =>
+  invoke<VideoQueueDisclosure>('preview_video_shot_queue_cmd', { request });
+
+export const inspectVideoReferenceImage = (uri: string) =>
+  invoke<VerifiedVideoReferenceImage>('inspect_video_reference_image_cmd', { uri });
+
+export const retryVideoVariant = (request: RetryVideoVariantRequest) =>
+  invoke<VideoWorkflowSnapshot>('retry_video_variant_cmd', { request });
+
+export const cancelVideoVariant = (request: CancelVideoVariantRequest) =>
+  invoke<VideoWorkflowSnapshot>('cancel_video_variant_cmd', { request });
+
+export const selectVideoWorkflowVariant = (request: SelectVideoWorkflowVariantRequest) =>
+  invoke<VideoWorkflowSnapshot>('select_video_workflow_variant_cmd', { request });
+
+export const resolveMediaGenerationAssetPath = (assetId: string) =>
+  invoke<string>('resolve_media_generation_asset_path_cmd', { assetId });
 
 /** @deprecated Compatibility adapter for pre-operation-protocol callers. */
 export const compactConversation = (conversationId: string) =>

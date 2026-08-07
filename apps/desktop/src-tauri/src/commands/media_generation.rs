@@ -110,3 +110,232 @@ pub async fn delete_media_generation_asset_cmd(
         .await
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub async fn save_video_provider_connection_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::SaveVideoProviderConnectionRequest,
+) -> Result<nexa_core::media_generation::VideoProviderConnectionRecord, String> {
+    state
+        .media_generation
+        .save_video_provider_connection(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_video_provider_connections_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<nexa_core::media_generation::VideoProviderConnectionRecord>, String> {
+    state
+        .media_generation
+        .list_video_provider_connections()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_video_provider_connection_cmd(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    expected_revision: u64,
+) -> Result<(), String> {
+    state
+        .media_generation
+        .delete_video_provider_connection(&connection_id, expected_revision)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_video_workflow_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::CreateVideoWorkflowRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .create_video_workflow(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_video_workflow_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::UpdateVideoWorkflowRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .update_video_workflow(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_video_workflows_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<nexa_core::media_generation::VideoWorkflowSnapshot>, String> {
+    state
+        .media_generation
+        .list_video_workflows(project_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_video_workflow_cmd(
+    state: tauri::State<'_, AppState>,
+    workflow_id: String,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .get_video_workflow(&workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_video_workflow_shot_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::AddVideoWorkflowShotRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .add_video_workflow_shot(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_video_workflow_shot_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::UpdateVideoWorkflowShotRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .update_video_workflow_shot(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn reorder_video_workflow_shots_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::ReorderVideoWorkflowShotsRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .reorder_video_workflow_shots(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn reorder_video_workflow_variants_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::ReorderVideoWorkflowVariantsRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .reorder_video_workflow_variants(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_video_workflow_shot_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::DeleteVideoWorkflowShotRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .media_generation
+        .delete_video_workflow_shot(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn queue_video_shot_variants_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::QueueVideoShotVariantsRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .video_generation_coordinator
+        .queue_shot_variants(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_video_shot_queue_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::PreviewVideoShotQueueRequest,
+) -> Result<nexa_core::media_generation::VideoQueueDisclosure, String> {
+    state
+        .video_generation_coordinator
+        .preview_shot_queue(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn inspect_video_reference_image_cmd(
+    state: tauri::State<'_, AppState>,
+    uri: String,
+) -> Result<nexa_core::media_generation::VerifiedVideoReferenceImage, String> {
+    state
+        .video_generation_coordinator
+        .inspect_reference_image(uri)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn retry_video_variant_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::RetryVideoVariantRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .video_generation_coordinator
+        .retry_variant(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_video_variant_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::CancelVideoVariantRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .video_generation_coordinator
+        .cancel_variant(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn select_video_workflow_variant_cmd(
+    state: tauri::State<'_, AppState>,
+    request: nexa_core::media_generation::SelectVideoWorkflowVariantRequest,
+) -> Result<nexa_core::media_generation::VideoWorkflowSnapshot, String> {
+    state
+        .video_generation_coordinator
+        .select_variant(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn resolve_media_generation_asset_path_cmd(
+    state: tauri::State<'_, AppState>,
+    asset_id: String,
+) -> Result<String, String> {
+    state
+        .media_generation
+        .resolve_asset_path(&asset_id)
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}

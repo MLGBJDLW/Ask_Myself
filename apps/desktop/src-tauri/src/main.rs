@@ -292,6 +292,18 @@ fn main() {
                     media_recovery_plan.len()
                 );
             }
+            let video_generation_coordinator =
+                nexa_core::media_generation::VideoGenerationCoordinator::new(
+                    media_generation.clone(),
+                    data_dir.join("generation-downloads"),
+                );
+            let resumed_video_variants =
+                tauri::async_runtime::block_on(video_generation_coordinator.resume())?;
+            if resumed_video_variants > 0 {
+                log::info!(
+                    "Resumed {resumed_video_variants} durable video workflow variant(s) before exposing renderer state"
+                );
+            }
             #[cfg(feature = "video")]
             let voice_audio_spool = Arc::new(
                 nexa_core::voice_audio_spool::VoiceAudioSpool::new(
@@ -305,6 +317,7 @@ fn main() {
                 db_executor,
                 context_compaction,
                 media_generation,
+                video_generation_coordinator,
                 #[cfg(feature = "video")]
                 whisper_busy: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "video")]
@@ -498,6 +511,25 @@ fn main() {
             commands::request_media_generation_remote_deletion_cmd,
             commands::delete_media_generation_asset_occurrence_cmd,
             commands::delete_media_generation_asset_cmd,
+            commands::save_video_provider_connection_cmd,
+            commands::list_video_provider_connections_cmd,
+            commands::delete_video_provider_connection_cmd,
+            commands::create_video_workflow_cmd,
+            commands::update_video_workflow_cmd,
+            commands::list_video_workflows_cmd,
+            commands::get_video_workflow_cmd,
+            commands::add_video_workflow_shot_cmd,
+            commands::update_video_workflow_shot_cmd,
+            commands::reorder_video_workflow_shots_cmd,
+            commands::reorder_video_workflow_variants_cmd,
+            commands::delete_video_workflow_shot_cmd,
+            commands::queue_video_shot_variants_cmd,
+            commands::preview_video_shot_queue_cmd,
+            commands::inspect_video_reference_image_cmd,
+            commands::retry_video_variant_cmd,
+            commands::cancel_video_variant_cmd,
+            commands::select_video_workflow_variant_cmd,
+            commands::resolve_media_generation_asset_path_cmd,
             commands::search_conversations_cmd,
             // Conversation checkpoints
             commands::list_checkpoints_cmd,
