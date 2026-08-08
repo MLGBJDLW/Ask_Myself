@@ -178,6 +178,16 @@ impl LlmProvider for AutomaticFallbackProvider {
             .prompt_cache_profile(&self.routes[position].model)
     }
 
+    fn reasoning_replay_policy(
+        &self,
+        _model: &str,
+    ) -> super::reasoning_profile::ReasoningReplayPolicy {
+        let position = self.active_position();
+        self.routes[position]
+            .provider
+            .reasoning_replay_policy(&self.routes[position].model)
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         self.routes[self.active_position()]
             .provider

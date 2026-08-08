@@ -200,10 +200,11 @@ fn summary_message(message: &ConversationMessage) -> Message {
         content.push_str(&bounded_reference(&calls, TOOL_CALL_CAP));
     }
     if message.role == Role::Assistant && content.trim().is_empty() {
-        if let Some(thinking) = message.thinking.as_deref() {
+        if let Some(thinking) = crate::conversation::conversation_message_display_thinking(message)
+        {
             content = format!(
                 "Assistant reasoning: {}",
-                bounded_reference(thinking, TOOL_CALL_CAP)
+                bounded_reference(&thinking, TOOL_CALL_CAP)
             );
         }
     }

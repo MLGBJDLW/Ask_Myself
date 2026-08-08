@@ -127,9 +127,25 @@ impl AgentExecutor {
         let stream_recovery_policy = StreamRecoveryPolicy::default();
         let request_tools =
             request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
+        let reasoning_replay_policy =
+            self.reasoning_replay_policy_for_request(model, force_answer_only);
+        let replay_projection = crate::llm::reasoning_replay::prepare_reasoning_replay_history(
+            messages,
+            reasoning_replay_policy,
+        );
+        if replay_projection.omitted_units > 0 {
+            append_developer_persisted_trace_status(
+                persisted_trace_items,
+                &format!(
+                    "reasoning_replay_boundary: omitted_units={}",
+                    replay_projection.omitted_units
+                ),
+                "warning",
+            );
+        }
         let current_request = CompletionRequest {
             model: model.to_string(),
-            messages: (*messages).clone(),
+            messages: replay_projection.messages,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             tools: if request_tools.is_empty() {
@@ -907,6 +923,123 @@ impl AgentExecutor {
                                 )));
                             }
                         }
+                    }
+                }
+            }
+
+            let missing_required_tool_reasoning = reasoning_replay_policy
+                .requires_tool_call_payload()
+                && !tool_calls.is_empty()
+                && crate::llm::reasoning_replay::sanitize_reasoning_text(Some(&iteration_thinking))
+                    .is_none();
+            if missing_required_tool_reasoning {
+                append_developer_persisted_trace_status(
+                    persisted_trace_items,
+                    "reasoning_replay_recovery: streaming tool calls omitted required replay payload; retrying non-streaming before dispatch",
+                    "warning",
+                );
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "reasoning_replay_recovery".to_string(),
+                        content: "The provider omitted reasoning required for a safe tool replay. Retrying before any tool runs.".to_string(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+
+                match self.provider.complete(&current_request).await {
+                    Ok(response) => {
+                        let recovered_tool_calls = response.tool_calls.unwrap_or_default();
+                        let recovered_thinking =
+                            crate::llm::reasoning_replay::sanitize_reasoning_text(
+                                response.thinking.as_deref(),
+                            );
+                        if !recovered_tool_calls.is_empty() && recovered_thinking.is_none() {
+                            let frontend_message = "The provider returned tool calls without the reasoning payload required for safe replay. No tools were executed. Retry the turn or disable reasoning for this model step.";
+                            let trace_message = format!(
+                                "reasoning_replay_payload_missing: provider={}, model={}, tool_call_count={}",
+                                self.provider.name(),
+                                model,
+                                recovered_tool_calls.len()
+                            );
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                &trace_message,
+                                "error",
+                            );
+                            emit_error_and_finalize_turn(
+                                tx,
+                                db,
+                                trace,
+                                turn_id,
+                                route_kind,
+                                persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: frontend_message.to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                            return Err(CoreError::Agent(trace_message));
+                        }
+
+                        let _ = tx
+                            .send(AgentEvent::StreamReset {
+                                reason: "Recovered a complete reasoning/tool-call response before tool dispatch.".to_string(),
+                            })
+                            .await;
+                        accumulated_content.truncate(accumulated_len_before_iteration);
+                        full_content = response.content;
+                        answer_delta_seen = !full_content.is_empty();
+                        accumulated_content.push_str(&full_content);
+                        iteration_thinking = recovered_thinking.unwrap_or_default();
+                        thinking_delta_seen = !iteration_thinking.is_empty();
+                        tool_calls = recovered_tool_calls;
+                        preparing_call_ids.clear();
+                        started_call_ids.clear();
+                        tool_run_started_ids.clear();
+                        chunk_usage = Some(response.usage);
+                        finish_reason = Some(response.finish_reason);
+                        if !iteration_thinking.is_empty() {
+                            let _ = tx
+                                .send(AgentEvent::Thinking {
+                                    content: iteration_thinking.clone(),
+                                })
+                                .await;
+                        }
+                        if !full_content.is_empty() {
+                            let _ = tx
+                                .send(AgentEvent::TextDelta {
+                                    delta: full_content.clone(),
+                                })
+                                .await;
+                        }
+                    }
+                    Err(error) => {
+                        let frontend_message = "The provider omitted reasoning required for safe tool replay, and the recovery request failed. No tools were executed.";
+                        let trace_message = format!(
+                            "reasoning_replay_recovery_failed: provider={}, model={}, error={error}",
+                            self.provider.name(),
+                            model
+                        );
+                        append_developer_persisted_trace_status(
+                            persisted_trace_items,
+                            &trace_message,
+                            "error",
+                        );
+                        emit_error_and_finalize_turn(
+                            tx,
+                            db,
+                            trace,
+                            turn_id,
+                            route_kind,
+                            persisted_trace_items,
+                            TurnErrorMessages {
+                                frontend_message: frontend_message.to_string(),
+                                trace_message: trace_message.clone(),
+                            },
+                        )
+                        .await;
+                        return Err(CoreError::Agent(trace_message));
                     }
                 }
             }

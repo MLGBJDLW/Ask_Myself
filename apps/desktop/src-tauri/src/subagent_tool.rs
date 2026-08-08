@@ -1260,7 +1260,8 @@ fn load_delegation_context_snapshot(
                 }
                 let mut projected = Message::text(message.role.clone(), content);
                 if message.role == Role::Assistant {
-                    projected.reasoning_content = message.thinking;
+                    projected.reasoning_content =
+                        nexa_core::conversation::conversation_message_reasoning_replay(&message);
                 }
                 let context = MessageNormalizationContext {
                     provider: None,

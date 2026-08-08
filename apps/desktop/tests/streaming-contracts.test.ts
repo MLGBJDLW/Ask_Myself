@@ -22,6 +22,7 @@ import {
   buildCurrentTimelineSections,
   buildLiveTraceTimeline,
   formatTurnDuration,
+  normalizeThinking,
   persistedTraceItemToTimelineSections,
   projectLiveConversationTimeline,
   shouldRenderTraceToolCall,
@@ -79,6 +80,19 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
   }
 }
+
+test('legacy missing-reasoning sentinel is never rendered as thinking', () => {
+  assertEqual(
+    normalizeThinking('[reasoning content unavailable in local history]'),
+    '',
+    'legacy sentinel should be hidden',
+  );
+  assertEqual(
+    normalizeThinking('  captured reasoning  '),
+    'captured reasoning',
+    'real reasoning remains visible',
+  );
+});
 
 function runEvent(input: {
   eventSeq: number;

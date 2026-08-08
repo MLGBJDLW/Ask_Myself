@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::interaction::SubmitInteractionResponse;
+use crate::llm::reasoning_profile::ReasoningEnvelope;
 use crate::llm::{Role, ToolCallRequest};
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ pub struct ConversationMessage {
 /// Artifact key used when the text shown in the UI differs from the canonical
 /// content that should be replayed to the LLM on later turns.
 pub const LLM_CONTEXT_CONTENT_ARTIFACT_KEY: &str = "llmContextContent";
+pub const REASONING_ENVELOPE_ARTIFACT_KEY: &str = "reasoningEnvelope";
 
 pub fn conversation_message_llm_context_content(message: &ConversationMessage) -> &str {
     message
@@ -104,6 +106,112 @@ pub fn conversation_message_llm_context_content(message: &ConversationMessage) -
         .and_then(|artifacts| artifacts.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
         .and_then(|value| value.as_str())
         .unwrap_or(&message.content)
+}
+
+pub fn conversation_message_display_thinking(message: &ConversationMessage) -> Option<String> {
+    crate::llm::reasoning_replay::sanitize_reasoning_text(message.thinking.as_deref())
+}
+
+pub fn conversation_message_reasoning_replay(message: &ConversationMessage) -> Option<String> {
+    if let Some(envelope) = message
+        .artifacts
+        .as_ref()
+        .and_then(|artifacts| artifacts.get(REASONING_ENVELOPE_ARTIFACT_KEY))
+    {
+        return serde_json::from_value::<ReasoningEnvelope>(envelope.clone())
+            .ok()
+            .and_then(|envelope| envelope.replay_payload)
+            .and_then(|payload| payload.as_str().map(str::to_string));
+    }
+
+    conversation_message_display_thinking(message)
+}
+
+pub fn merge_reasoning_envelope_artifact(
+    artifacts: Option<serde_json::Value>,
+    envelope: Option<ReasoningEnvelope>,
+) -> Option<serde_json::Value> {
+    let Some(envelope) = envelope else {
+        return artifacts;
+    };
+    let envelope = serde_json::to_value(envelope).ok()?;
+    match artifacts {
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert(REASONING_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+        Some(legacy) => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_string(), serde_json::json!("assistantArtifacts"));
+            map.insert("version".to_string(), serde_json::json!(1));
+            map.insert("legacyArtifacts".to_string(), legacy);
+            map.insert(REASONING_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+        None => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_string(), serde_json::json!("assistantArtifacts"));
+            map.insert("version".to_string(), serde_json::json!(1));
+            map.insert(REASONING_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+    }
+}
+
+#[cfg(test)]
+mod reasoning_envelope_tests {
+    use super::*;
+    use crate::llm::reasoning_profile::ReasoningCaptureStatus;
+
+    fn assistant_message(
+        thinking: Option<&str>,
+        artifacts: Option<serde_json::Value>,
+    ) -> ConversationMessage {
+        ConversationMessage {
+            id: "message".to_string(),
+            conversation_id: "conversation".to_string(),
+            role: Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts,
+            token_count: 0,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: thinking.map(str::to_string),
+            image_attachments: None,
+        }
+    }
+
+    #[test]
+    fn missing_envelope_does_not_discard_existing_assistant_artifacts() {
+        let artifacts = serde_json::json!({"kind": "traceTimeline", "items": []});
+        assert_eq!(
+            merge_reasoning_envelope_artifact(Some(artifacts.clone()), None),
+            Some(artifacts)
+        );
+    }
+
+    #[test]
+    fn envelope_without_replay_payload_never_falls_back_to_display_thinking() {
+        let envelope = ReasoningEnvelope {
+            display_text: Some("visible summary".to_string()),
+            replay_payload: None,
+            status: ReasoningCaptureStatus::OmittedByProvider,
+            required_for_replay: true,
+            source_field: None,
+            provider_id: "deep_seek".to_string(),
+            model_id: "deepseek-v4".to_string(),
+        };
+        let artifacts = merge_reasoning_envelope_artifact(None, Some(envelope));
+        let message = assistant_message(Some("visible summary"), artifacts);
+
+        assert_eq!(
+            conversation_message_display_thinking(&message).as_deref(),
+            Some("visible summary")
+        );
+        assert_eq!(conversation_message_reasoning_replay(&message), None);
+    }
 }
 
 /// Saved LLM provider configuration.
@@ -3183,6 +3291,8 @@ impl Database {
                 Some(json) => serde_json::from_str::<Vec<ImageAttachment>>(&json).ok(),
                 None => None,
             };
+            let thinking =
+                crate::llm::reasoning_replay::sanitize_reasoning_text(thinking.as_deref());
             results.push(ConversationMessage {
                 id,
                 conversation_id: conv_id,

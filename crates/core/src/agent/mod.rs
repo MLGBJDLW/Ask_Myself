@@ -19,13 +19,18 @@ use crate::conversation::memory::{
     model_context_window, trim_to_context_window,
 };
 use crate::conversation::summarizer;
-use crate::conversation::{ConversationMessage, ImageAttachment};
+use crate::conversation::{
+    merge_reasoning_envelope_artifact, ConversationMessage, ImageAttachment,
+};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::evidence_verifier::audit_final_answer;
 use crate::intelligence::{
     advance_task_plan_for_tool_result, build_task_plan, finalize_task_plan, AgentTaskPlan,
     TaskPlanningInput,
+};
+use crate::llm::reasoning_profile::{
+    ReasoningCaptureStatus, ReasoningEnvelope, ReasoningReplayPolicy,
 };
 use crate::llm::{
     stream_chunks_to_provider_events, CompletionRequest, ContentPart, LlmProvider, Message,
@@ -119,9 +124,6 @@ pub use self::events::{
 
 // Re-export so consumers don't need to depend on tokio-util directly.
 pub use tokio_util::sync::CancellationToken;
-
-const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
-    "[reasoning content unavailable in local history]";
 
 fn compact_tool_result_for_context(tool_name: &str, content: &str) -> String {
     tool_scheduler::compact_tool_result_for_context(tool_name, content)

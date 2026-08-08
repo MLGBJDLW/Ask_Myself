@@ -76,6 +76,55 @@ pub enum ReasoningHistoryEncoding {
     MistralContentChunks,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningReplayPolicy {
+    NotRequired,
+    RequiredOnToolCall,
+    RequiredAlways,
+    OpaqueSignature,
+    Forbidden,
+    #[default]
+    Unknown,
+}
+
+impl ReasoningReplayPolicy {
+    pub fn requires_tool_call_payload(self) -> bool {
+        matches!(
+            self,
+            Self::RequiredOnToolCall | Self::RequiredAlways | Self::OpaqueSignature
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningCaptureStatus {
+    Captured,
+    NotRequested,
+    NotRequired,
+    OmittedByProvider,
+    MissingFromLegacyHistory,
+    Interrupted,
+    Truncated,
+    Redacted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningEnvelope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_payload: Option<serde_json::Value>,
+    pub status: ReasoningCaptureStatus,
+    pub required_for_replay: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_field: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReasoningProfileKey {
@@ -102,7 +151,7 @@ pub struct ReasoningProfile {
     pub effort_budget_exclusive: bool,
     pub preserve_reasoning_history: bool,
     pub reasoning_history_encoding: ReasoningHistoryEncoding,
-    pub synthesize_missing_reasoning_history: bool,
+    pub replay_policy: ReasoningReplayPolicy,
     pub send_preserve_thinking: bool,
     pub omit_temperature_when_reasoning: bool,
     pub use_max_completion_tokens: bool,
@@ -126,7 +175,7 @@ impl ReasoningProfile {
             effort_budget_exclusive: false,
             preserve_reasoning_history: false,
             reasoning_history_encoding: ReasoningHistoryEncoding::ReasoningContent,
-            synthesize_missing_reasoning_history: false,
+            replay_policy: ReasoningReplayPolicy::Unknown,
             send_preserve_thinking: false,
             omit_temperature_when_reasoning: false,
             use_max_completion_tokens: false,
@@ -214,7 +263,7 @@ fn profile(
         effort_budget_exclusive: false,
         preserve_reasoning_history: false,
         reasoning_history_encoding: ReasoningHistoryEncoding::ReasoningContent,
-        synthesize_missing_reasoning_history: false,
+        replay_policy: ReasoningReplayPolicy::NotRequired,
         send_preserve_thinking: false,
         omit_temperature_when_reasoning: false,
         use_max_completion_tokens: false,
@@ -417,7 +466,7 @@ pub fn resolve_reasoning_profile(
             ReasoningBudgetField::None,
         );
         value.preserve_reasoning_history = true;
-        value.synthesize_missing_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::RequiredOnToolCall;
         value.omit_temperature_when_reasoning = true;
         return value;
     }
@@ -820,5 +869,34 @@ mod tests {
             "grok-4.20-multi-agent-0309",
         );
         assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+    }
+
+    #[test]
+    fn deepseek_replay_requirement_is_scoped_to_the_exact_public_endpoint() {
+        let direct = resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "deepseek-v4",
+        );
+        let custom = resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://deepseek.example.com/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "deepseek-v4",
+        );
+        let alibaba = resolve_reasoning_profile(
+            ProviderType::AlibabaModelStudio,
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "deepseek-v4-pro",
+        );
+
+        assert_eq!(
+            direct.replay_policy,
+            ReasoningReplayPolicy::RequiredOnToolCall
+        );
+        assert_eq!(custom.replay_policy, ReasoningReplayPolicy::Unknown);
+        assert_eq!(alibaba.replay_policy, ReasoningReplayPolicy::NotRequired);
     }
 }

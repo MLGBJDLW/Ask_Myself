@@ -19,6 +19,7 @@ pub mod openai;
 pub mod prompt_cache;
 pub(crate) mod provider_boundary;
 pub mod reasoning_profile;
+pub mod reasoning_replay;
 pub mod streaming;
 pub(crate) mod transport;
 
@@ -568,6 +569,13 @@ pub trait LlmProvider: Send + Sync {
         )
     }
 
+    /// Endpoint-scoped contract for replaying provider reasoning. The agent
+    /// uses this before dispatching tool calls; callers never infer it from a
+    /// model name alone.
+    fn reasoning_replay_policy(&self, _model: &str) -> reasoning_profile::ReasoningReplayPolicy {
+        reasoning_profile::ReasoningReplayPolicy::Unknown
+    }
+
     /// List available models from this provider.
     async fn list_models(&self) -> Result<Vec<String>, CoreError>;
 
@@ -624,6 +632,10 @@ impl LlmProvider for MessageValidatingProvider {
 
     fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
         self.inner.prompt_cache_profile(model)
+    }
+
+    fn reasoning_replay_policy(&self, model: &str) -> reasoning_profile::ReasoningReplayPolicy {
+        self.inner.reasoning_replay_policy(model)
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {

@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use super::prompt_cache::{resolve_prompt_cache_profile, PromptCacheApiStyle, PromptCacheProfile};
 use super::reasoning_profile::{
     resolve_reasoning_profile, ReasoningApiStyle, ReasoningBudgetField, ReasoningEffortField,
-    ReasoningHistoryEncoding, ThinkingModeControl,
+    ReasoningHistoryEncoding, ReasoningReplayPolicy, ThinkingModeControl,
 };
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
@@ -31,8 +31,6 @@ use std::sync::Arc;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const MAX_COMPLETE_ATTEMPTS: u32 = 3;
-const MISSING_REASONING_CONTENT_PLACEHOLDER: &str =
-    "[reasoning content unavailable in local history]";
 
 // ---------------------------------------------------------------------------
 // OpenAI API wire types — request
@@ -670,7 +668,6 @@ fn convert_message(
     wire_role: &str,
     include_reasoning_content: bool,
     reasoning_history_encoding: ReasoningHistoryEncoding,
-    synthesize_missing_reasoning_content: bool,
     raw_tool_args: bool,
 ) -> OaiMessage {
     let has_images = msg.has_images();
@@ -748,11 +745,7 @@ fn convert_message(
             .reasoning_content
             .as_deref()
             .filter(|content| !content.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                synthesize_missing_reasoning_content
-                    .then(|| MISSING_REASONING_CONTENT_PLACEHOLDER.to_string())
-            });
+            .map(str::to_string);
         if let Some(reasoning) = reasoning {
             match reasoning_history_encoding {
                 ReasoningHistoryEncoding::ReasoningContent => {
@@ -846,8 +839,6 @@ fn build_request_body_with_config(
     let include_reasoning_content =
         reasoning_supported && reasoning_profile.should_replay_reasoning(requested_reasoning_mode);
     let reasoning_history_encoding = reasoning_profile.reasoning_history_encoding;
-    let synthesize_missing_reasoning_content =
-        include_reasoning_content && reasoning_profile.synthesize_missing_reasoning_history;
     let needs_completion_tokens = reasoning_profile.use_max_completion_tokens
         && is_reasoning_model(&request.model, Some(&provider_type));
     let suppress_temperature = reasoning_supported
@@ -877,7 +868,6 @@ fn build_request_body_with_config(
                 wire_role,
                 include_reasoning_content,
                 reasoning_history_encoding,
-                synthesize_missing_reasoning_content,
                 raw_tool_args,
             )
         })
@@ -1481,6 +1471,16 @@ impl LlmProvider for OpenAiProvider {
             PromptCacheApiStyle::OpenAiCompatible,
             model,
         )
+    }
+
+    fn reasoning_replay_policy(&self, model: &str) -> ReasoningReplayPolicy {
+        resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            model,
+        )
+        .replay_policy
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -2319,7 +2319,7 @@ data: [DONE]
     }
 
     #[test]
-    fn deepseek_thinking_history_replays_fallback_reasoning_for_legacy_assistant() {
+    fn deepseek_thinking_history_never_synthesizes_legacy_reasoning() {
         let assistant = Message {
             role: Role::Assistant,
             parts: vec![],
@@ -2353,10 +2353,7 @@ data: [DONE]
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(
-            body["messages"][1]["reasoning_content"],
-            "[reasoning content unavailable in local history]"
-        );
+        assert!(body["messages"][1].get("reasoning_content").is_none());
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_legacy");
     }
 
