@@ -33,10 +33,77 @@ pub enum SearchExecutionMode {
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchIntent {
     pub query: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, alias = "domains", skip_serializing_if = "Vec::is_empty")]
     pub allowed_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recency: Option<SearchRecency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<u32>,
+    #[serde(default)]
+    pub evidence_mode: EvidenceMode,
+    #[serde(default)]
+    pub privacy_mode: SearchPrivacyMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approximate_location: Option<ApproximateLocation>,
+}
+
+impl Default for WebSearchIntent {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            recency: None,
+            locale: None,
+            max_results: None,
+            evidence_mode: EvidenceMode::Citations,
+            privacy_mode: SearchPrivacyMode::ProviderDefault,
+            approximate_location: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchRecency {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EvidenceMode {
+    #[default]
+    Citations,
+    Sources,
+    CitationsAndSources,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchPrivacyMode {
+    #[default]
+    ProviderDefault,
+    ExternalWebOnly,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproximateLocation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +126,59 @@ pub struct SearchEvidence {
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub citations: Vec<SearchCitation>,
+}
+
+/// Compile only controls the selected endpoint explicitly supports. This is
+/// intentionally lossy for unsupported intent fields: adapters must not send
+/// optimistic OpenAI-shaped options to DeepSeek or Gemini endpoints.
+pub fn compile_hosted_search_tool(
+    dialect: NativeSearchDialect,
+    capability: NativeWebSearchCapability,
+    intent: &WebSearchIntent,
+) -> serde_json::Value {
+    match dialect {
+        NativeSearchDialect::OpenAiResponses => {
+            let mut tool = serde_json::json!({ "type": "web_search" });
+            if capability.supports_domains {
+                let mut filters = serde_json::Map::new();
+                if !intent.allowed_domains.is_empty() {
+                    filters.insert(
+                        "allowed_domains".to_string(),
+                        serde_json::json!(intent.allowed_domains),
+                    );
+                }
+                if !intent.blocked_domains.is_empty() {
+                    filters.insert(
+                        "blocked_domains".to_string(),
+                        serde_json::json!(intent.blocked_domains),
+                    );
+                }
+                if !filters.is_empty() {
+                    tool["filters"] = serde_json::Value::Object(filters);
+                }
+            }
+            if capability.supports_location {
+                if let Some(location) = intent.approximate_location.as_ref() {
+                    tool["user_location"] = serde_json::json!({
+                        "type": "approximate",
+                        "country": location.country,
+                        "region": location.region,
+                        "city": location.city,
+                        "timezone": location.timezone,
+                    });
+                }
+            }
+            if intent.privacy_mode == SearchPrivacyMode::ExternalWebOnly {
+                tool["external_web_access"] = serde_json::json!(true);
+            }
+            tool
+        }
+        NativeSearchDialect::DeepSeekResponses => serde_json::json!({ "type": "web_search" }),
+        NativeSearchDialect::AnthropicServerTool => {
+            serde_json::json!({ "type": "web_search_20260209", "name": "web_search" })
+        }
+        NativeSearchDialect::GeminiGoogleSearch => serde_json::json!({ "google_search": {} }),
+    }
 }
 
 /// Render provider citations through the same Markdown link path used by
@@ -179,6 +299,7 @@ impl NativeSearchPlan {
                 "type": "object",
                 "xNexaSearchMode": self.mode,
                 "xNexaSearchDialect": self.dialect,
+                "xNexaSearchCapability": self.capability,
             }),
         })
     }
@@ -189,6 +310,22 @@ pub fn marker_mode(tools: &[ToolDefinition]) -> Option<SearchExecutionMode> {
         .iter()
         .find(|tool| tool.name == NATIVE_WEB_SEARCH_MARKER)
         .and_then(|tool| tool.parameters.get("xNexaSearchMode"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+pub fn marker_dialect(tools: &[ToolDefinition]) -> Option<NativeSearchDialect> {
+    tools
+        .iter()
+        .find(|tool| tool.name == NATIVE_WEB_SEARCH_MARKER)
+        .and_then(|tool| tool.parameters.get("xNexaSearchDialect"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+pub fn marker_capability(tools: &[ToolDefinition]) -> Option<NativeWebSearchCapability> {
+    tools
+        .iter()
+        .find(|tool| tool.name == NATIVE_WEB_SEARCH_MARKER)
+        .and_then(|tool| tool.parameters.get("xNexaSearchCapability"))
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
@@ -283,12 +420,39 @@ mod tests {
 
     #[test]
     fn chat_completions_endpoints_do_not_claim_responses_search() {
-        for (provider, model) in [
-            (ProviderType::OpenAi, "gpt-5.6"),
-            (ProviderType::DeepSeek, "deepseek-v4-pro"),
-        ] {
-            let plan = NativeSearchPlan::resolve(SearchExecutionMode::Auto, provider, None, model);
-            assert_eq!(plan.dialect, None);
-        }
+        let plan = NativeSearchPlan::resolve(
+            SearchExecutionMode::Auto,
+            ProviderType::Custom,
+            Some("https://api.deepseek.com/v1"),
+            "deepseek-v4-pro",
+        );
+        assert_eq!(plan.dialect, None);
+    }
+
+    #[test]
+    fn responses_compiler_drops_controls_deepseek_does_not_support() {
+        let intent = WebSearchIntent {
+            allowed_domains: vec!["example.com".to_string()],
+            blocked_domains: vec!["blocked.example".to_string()],
+            locale: Some("en-US".to_string()),
+            recency: Some(SearchRecency::Week),
+            max_results: Some(8),
+            privacy_mode: SearchPrivacyMode::ExternalWebOnly,
+            ..WebSearchIntent::default()
+        };
+        let capability = NativeWebSearchCapability {
+            dialect: NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        assert_eq!(
+            compile_hosted_search_tool(NativeSearchDialect::DeepSeekResponses, capability, &intent),
+            serde_json::json!({ "type": "web_search" })
+        );
     }
 }

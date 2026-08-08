@@ -971,6 +971,308 @@ fn build_request_body_with_config(
     }
 }
 
+fn hosted_search_context(
+    request: &CompletionRequest,
+) -> Option<(
+    super::native_search::NativeSearchDialect,
+    super::native_search::SearchExecutionMode,
+    crate::model_catalog::NativeWebSearchCapability,
+)> {
+    let tools = request.tools.as_deref()?;
+    let dialect = super::native_search::marker_dialect(tools)?;
+    if !matches!(
+        dialect,
+        super::native_search::NativeSearchDialect::OpenAiResponses
+            | super::native_search::NativeSearchDialect::DeepSeekResponses
+    ) {
+        return None;
+    }
+    Some((
+        dialect,
+        super::native_search::marker_mode(tools)?,
+        super::native_search::marker_capability(tools)?,
+    ))
+}
+
+fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    for message in messages {
+        if message.role == Role::Tool {
+            items.push(serde_json::json!({
+                "type": "function_call_output",
+                "call_id": message.name,
+                "output": message.text_content(),
+            }));
+            continue;
+        }
+
+        let mut content = Vec::new();
+        for part in &message.parts {
+            match part {
+                ContentPart::Text { text } => content.push(serde_json::json!({
+                    "type": if message.role == Role::Assistant { "output_text" } else { "input_text" },
+                    "text": text,
+                })),
+                ContentPart::Image { media_type, data } => content.push(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{media_type};base64,{data}"),
+                })),
+            }
+        }
+        if !content.is_empty() {
+            items.push(serde_json::json!({
+                "type": "message",
+                "role": role_str(&message.role),
+                "content": content,
+            }));
+        }
+        for tool_call in message.tool_calls.as_deref().unwrap_or_default() {
+            items.push(serde_json::json!({
+                "type": "function_call",
+                "call_id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+            }));
+        }
+    }
+    items
+}
+
+fn responses_tools(
+    request: &CompletionRequest,
+    dialect: super::native_search::NativeSearchDialect,
+    mode: super::native_search::SearchExecutionMode,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> Vec<serde_json::Value> {
+    let mut tools = vec![super::native_search::compile_hosted_search_tool(
+        dialect,
+        capability,
+        &super::native_search::WebSearchIntent::default(),
+    )];
+    let include_local_search = mode == super::native_search::SearchExecutionMode::Hybrid;
+    tools.extend(
+        request
+            .tools
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|tool| !super::native_search::is_native_marker(tool))
+            .filter(|tool| {
+                include_local_search || tool.name != super::native_search::LOCAL_WEB_SEARCH_TOOL
+            })
+            .map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                })
+            }),
+    );
+    tools
+}
+
+fn build_responses_request(
+    request: &CompletionRequest,
+    dialect: super::native_search::NativeSearchDialect,
+    mode: super::native_search::SearchExecutionMode,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": request.model,
+        "input": responses_input_items(&request.messages),
+        "tools": responses_tools(request, dialect, mode, capability),
+        "parallel_tool_calls": request.parallel_tool_calls,
+        "store": false,
+    });
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_output_tokens"] = serde_json::json!(max_tokens);
+    }
+    if dialect == super::native_search::NativeSearchDialect::OpenAiResponses {
+        if let Some(effort) = request.reasoning_effort.as_ref() {
+            body["reasoning"] = serde_json::json!({ "effort": effort.to_string() });
+        } else if let Some(temperature) = request.temperature {
+            body["temperature"] = serde_json::json!(temperature);
+        }
+    }
+    body
+}
+
+fn parse_responses_completion(
+    value: serde_json::Value,
+    dialect: super::native_search::NativeSearchDialect,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> Result<CompletionResponse, CoreError> {
+    let output = value
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| CoreError::Llm("Responses payload did not contain output items".into()))?;
+    let mut content = String::new();
+    let mut thinking = Vec::new();
+    let mut tool_calls = Vec::new();
+    let mut query = None;
+    let mut citations = Vec::new();
+
+    for item in output {
+        match item.get("type").and_then(serde_json::Value::as_str) {
+            Some("web_search_call") => {
+                query = item
+                    .pointer("/action/query")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        item.pointer("/action/queries")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|queries| {
+                                queries
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            })
+                            .filter(|queries| !queries.is_empty())
+                    });
+            }
+            Some("message") => {
+                for part in item
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if part.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
+                        if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
+                            content.push_str(text);
+                        }
+                        if capability.supports_citations {
+                            for annotation in part
+                                .get("annotations")
+                                .and_then(serde_json::Value::as_array)
+                                .into_iter()
+                                .flatten()
+                            {
+                                if annotation.get("type").and_then(serde_json::Value::as_str)
+                                    != Some("url_citation")
+                                {
+                                    continue;
+                                }
+                                if let Some(url) =
+                                    annotation.get("url").and_then(serde_json::Value::as_str)
+                                {
+                                    citations.push(super::native_search::SearchCitation {
+                                        url: url.to_string(),
+                                        title: annotation
+                                            .get("title")
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(str::to_string),
+                                        start_index: annotation
+                                            .get("start_index")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .and_then(|value| u32::try_from(value).ok()),
+                                        end_index: annotation
+                                            .get("end_index")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .and_then(|value| u32::try_from(value).ok()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some("function_call") => tool_calls.push(ToolCallRequest {
+                id: item
+                    .get("call_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                arguments: item
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("{}")
+                    .to_string(),
+                thought_signature: None,
+            }),
+            Some("reasoning") => {
+                for summary in item
+                    .get("summary")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(text) = summary.get("text").and_then(serde_json::Value::as_str) {
+                        thinking.push(text.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if capability.supports_citations && !citations.is_empty() {
+        content.push_str(&super::native_search::render_citation_appendix(
+            &super::native_search::SearchEvidence {
+                dialect,
+                query,
+                citations,
+            },
+        ));
+    }
+    let usage_value = value.get("usage").cloned().unwrap_or_default();
+    let provider_raw = usage_value.as_object().map(|_| usage_value.clone());
+    let prompt_tokens = usage_value
+        .get("input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_default();
+    let completion_tokens = usage_value
+        .get("output_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_default();
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("completed");
+    let finish_reason = if !tool_calls.is_empty() {
+        FinishReason::ToolCalls
+    } else if status == "incomplete"
+        && value
+            .pointer("/incomplete_details/reason")
+            .and_then(serde_json::Value::as_str)
+            == Some("max_output_tokens")
+    {
+        FinishReason::Length
+    } else if status == "completed" {
+        FinishReason::Stop
+    } else {
+        FinishReason::Other
+    };
+    Ok(CompletionResponse {
+        content,
+        tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+        finish_reason,
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: usage_value
+                .get("total_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens)),
+            provider_raw,
+            ..Usage::default()
+        },
+        thinking: (!thinking.is_empty()).then(|| thinking.join("\n")),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -1042,6 +1344,50 @@ impl OpenAiProvider {
             Err(CoreError::Llm(message))
         }
     }
+
+    async fn complete_hosted_search(
+        &self,
+        request: &CompletionRequest,
+        dialect: super::native_search::NativeSearchDialect,
+        mode: super::native_search::SearchExecutionMode,
+        capability: crate::model_catalog::NativeWebSearchCapability,
+    ) -> Result<CompletionResponse, CoreError> {
+        let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
+        let body = build_responses_request(request, dialect, mode, capability);
+        let body_bytes = serialized_json_body(&body, "Responses hosted-search request")?;
+        let api_key = self.api_key()?;
+        info!(
+            "Responses hosted-search request to {url}, model={}, dialect={dialect:?}",
+            request.model
+        );
+        let response = with_request_timeout(
+            apply_openrouter_headers(
+                self.transport
+                    .client()
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes),
+                &self.config,
+            ),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
+        .map_err(|error| CoreError::Llm(format!("Responses request failed: {error}")))?;
+        let response = self.check_response(response).await?;
+        let value = response
+            .json::<serde_json::Value>()
+            .await
+            .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
+            .map_err(|error| {
+                CoreError::Llm(format!("Failed to parse Responses payload: {error}"))
+            })?;
+        let parsed = parse_responses_completion(value, dialect, capability)?;
+        self.transport.record_transport_success();
+        Ok(parsed)
+    }
 }
 
 #[async_trait]
@@ -1088,6 +1434,40 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let fallback_request;
+        let request = if let Some((dialect, mode, capability)) = hosted_search_context(request) {
+            match self
+                .complete_hosted_search(request, dialect, mode, capability)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if matches!(
+                        mode,
+                        super::native_search::SearchExecutionMode::Auto
+                            | super::native_search::SearchExecutionMode::Hybrid
+                    ) =>
+                {
+                    warn!(
+                        "Provider-hosted search failed for {dialect:?}; falling back to Nexa Router: {error}"
+                    );
+                    fallback_request = CompletionRequest {
+                        tools: request.tools.as_ref().map(|tools| {
+                            tools
+                                .iter()
+                                .filter(|tool| !super::native_search::is_native_marker(tool))
+                                .cloned()
+                                .collect()
+                        }),
+                        ..request.clone()
+                    };
+                    &fallback_request
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            request
+        };
         let url = format!("{}/chat/completions", self.base_url());
         let api_key = self.api_key()?;
         let body = build_request_body_with_config(request, false, Some(&self.config));
@@ -1229,6 +1609,12 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        if hosted_search_context(request).is_some() {
+            let response = self.complete(request).await?;
+            return Ok(Box::pin(futures::stream::iter(
+                completion_response_to_stream_chunks(response),
+            )));
+        }
         if requires_non_streaming_fallback(&request.model) {
             let response = self.complete(request).await?;
             return Ok(Box::pin(futures::stream::iter(
@@ -2802,5 +3188,98 @@ data: [DONE]
                 .total_tokens,
             7
         );
+    }
+
+    #[test]
+    fn responses_request_replaces_only_local_search_in_auto_mode() {
+        let plan = super::super::native_search::NativeSearchPlan::resolve(
+            super::super::native_search::SearchExecutionMode::Auto,
+            ProviderType::OpenAi,
+            Some("https://api.openai.com/v1"),
+            "gpt-5.6",
+        );
+        let mut request = endpoint_reasoning_request("gpt-5.6");
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "local".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "read".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("trusted marker"),
+        ]);
+        let (dialect, mode, capability) = hosted_search_context(&request).expect("context");
+        let body = build_responses_request(&request, dialect, mode, capability);
+        assert_eq!(body["tools"][0]["type"], "web_search");
+        assert_eq!(body["tools"][1]["name"], "read_file");
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn responses_parser_normalizes_openai_citations_but_not_deepseek_guesses() {
+        let payload = serde_json::json!({
+            "status": "completed",
+            "output": [
+                { "type": "web_search_call", "action": { "type": "search", "query": "Nexa" } },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Answer",
+                        "annotations": [{
+                            "type": "url_citation",
+                            "url": "https://example.com/evidence",
+                            "title": "Evidence",
+                            "start_index": 0,
+                            "end_index": 6
+                        }]
+                    }]
+                }
+            ],
+            "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 }
+        });
+        let openai_capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            supports_domains: true,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: true,
+            supports_citations: true,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let openai = parse_responses_completion(
+            payload.clone(),
+            super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            openai_capability,
+        )
+        .unwrap();
+        assert!(openai
+            .content
+            .contains("[Evidence](https://example.com/evidence)"));
+        assert_eq!(openai.usage.total_tokens, 7);
+
+        let deepseek_capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let deepseek = parse_responses_completion(
+            payload,
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            deepseek_capability,
+        )
+        .unwrap();
+        assert_eq!(deepseek.content, "Answer");
     }
 }
