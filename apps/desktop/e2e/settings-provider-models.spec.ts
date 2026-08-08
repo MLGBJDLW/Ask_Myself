@@ -598,6 +598,15 @@ test("settings exposes the secret-free registry and durable runtime rollback", a
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
 
+  const registryDisclosure = page.getByTestId("capability-registry-disclosure-trigger");
+  await expect(registryDisclosure).toBeVisible();
+  await expect(registryDisclosure).toHaveAttribute("aria-expanded", "false");
+  await expect(registryDisclosure).toHaveAttribute("aria-controls", /.+-panel$/);
+  await expect(registryDisclosure).toContainText("1 connections · 1 models · 1 routes");
+  await expect(page.getByTestId("capability-registry-panel")).toHaveCount(0);
+
+  await registryDisclosure.click();
+  await expect(registryDisclosure).toHaveAttribute("aria-expanded", "true");
   const registry = page.getByTestId("capability-registry-panel");
   await expect(registry).toBeVisible();
   await expect(registry.getByTestId("registry-connections")).toContainText("Alibaba Model Studio");
@@ -618,6 +627,39 @@ test("settings exposes the secret-free registry and durable runtime rollback", a
     expectedRevision: 3,
     scope: { kind: "agent", id: "cfg-qwen" },
   });
+});
+
+test("provider catalog prioritizes configured entries and reflows at 320px", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const providerCards = page.locator("[data-provider-preset-id]");
+  await expect(providerCards.nth(0)).toHaveAttribute("data-provider-preset-id", "anthropic");
+  await expect(providerCards.nth(1)).toHaveAttribute("data-provider-preset-id", "alibaba-model-studio");
+  await expect(providerCards.nth(0)).toContainText("Configured");
+  await expect(providerCards.nth(1)).toContainText("Configured");
+  await expect(providerCards.last()).toHaveAttribute("data-provider-preset-id", "custom");
+
+  const search = page.getByRole("searchbox", { name: "Search providers" });
+  await search.fill("qwen3.6-plus");
+  expect(await providerCards.count()).toBeGreaterThan(0);
+  await expect(page.locator('[data-provider-preset-id="alibaba-model-studio"]')).toBeVisible();
+  await expect(page.locator('[data-provider-preset-id="custom"]')).toHaveCount(0);
+
+  await search.fill("no-provider-can-match-this");
+  await expect(providerCards).toHaveCount(0);
+  await expect(page.getByText("No providers match this search.")).toBeVisible();
+  await search.press("Escape");
+  await expect(providerCards).not.toHaveCount(0);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  const providerGrid = providerCards.first().locator("xpath=..");
+  const gridSize = await providerGrid.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(gridSize.scrollWidth).toBeLessThanOrEqual(gridSize.clientWidth);
 });
 
 test("provider output limit is automatic when the explicit cap is cleared", async ({ page }) => {

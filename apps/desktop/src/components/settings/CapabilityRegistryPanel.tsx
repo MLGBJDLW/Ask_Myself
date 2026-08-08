@@ -29,6 +29,28 @@ interface CapabilityRegistryPanelProps {
   refreshToken: string;
 }
 
+export interface CapabilityRegistrySummary {
+  connectionCount: number;
+  modelCount: number;
+  capabilityCount: number;
+}
+
+export function summarizeCapabilityRegistry(
+  projection: CapabilityRegistryProjection,
+): CapabilityRegistrySummary {
+  const targetedDefinitionIds = new Set(
+    projection.modelTargets
+      .map((target) => target.modelDefinitionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  return {
+    connectionCount: projection.connections.length,
+    modelCount: projection.modelTargets.length + projection.modelDefinitions
+      .filter((definition) => !targetedDefinitionIds.has(definition.id)).length,
+    capabilityCount: projection.capabilities.length,
+  };
+}
+
 function displayToken(value: string): string {
   return value
     .replace(/_/g, ' ')
