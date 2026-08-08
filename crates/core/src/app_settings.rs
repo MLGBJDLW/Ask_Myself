@@ -551,8 +551,6 @@ pub struct CompanionSettings {
     pub display_mode: CompanionDisplayMode,
     #[serde(default)]
     pub interaction_mode: CompanionInteractionMode,
-    #[serde(default = "default_true")]
-    pub show_in_chat: bool,
     #[serde(default)]
     pub auto_show_on_start: bool,
     #[serde(default = "default_true")]
@@ -650,7 +648,6 @@ impl Default for CompanionSettings {
             selected_pet_id: None,
             display_mode: CompanionDisplayMode::Always,
             interaction_mode: CompanionInteractionMode::Smart,
-            show_in_chat: true,
             auto_show_on_start: false,
             continue_when_main_hidden: true,
             scale: default_companion_scale(),
@@ -1141,7 +1138,6 @@ mod tests {
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
         assert!(!config.companion.enabled);
-        assert!(config.companion.show_in_chat);
         assert_eq!(
             config.companion.interaction_mode,
             CompanionInteractionMode::Smart

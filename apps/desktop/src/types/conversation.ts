@@ -607,7 +607,6 @@ export interface CompanionSettings {
   selectedPetId: string | null;
   displayMode: CompanionDisplayMode;
   interactionMode: CompanionInteractionMode;
-  showInChat: boolean;
   autoShowOnStart: boolean;
   continueWhenMainHidden: boolean;
   scale: number;

@@ -196,6 +196,7 @@ test("desktop pet settings are visible and persist locally", async ({ page }) =>
   await expect(card.getByRole("heading", { name: "Desktop Pets" })).toBeVisible();
   await card.getByRole("button", { name: "Configure" }).click();
   await expect(card.getByText("Codex home")).toBeVisible();
+  await expect(card.getByText("Show the small status mirror in Chat")).toHaveCount(0);
   await card.getByRole("checkbox", { name: "Enable desktop pet" }).check();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { companion?: { enabled?: boolean } } }
