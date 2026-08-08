@@ -128,6 +128,8 @@ pub struct ModelCapabilities {
     pub batch: bool,
     #[serde(default)]
     pub dimension_override: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_web_search: Option<crate::model_catalog::NativeWebSearchCapability>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

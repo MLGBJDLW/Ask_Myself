@@ -145,15 +145,9 @@ struct GeminiRequestV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiSystemInstructionV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<GeminiToolSet>>,
+    tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GeminiToolSet {
-    function_declarations: Vec<GeminiFunctionDeclaration>,
 }
 
 #[derive(Serialize)]
@@ -207,6 +201,50 @@ struct GeminiCandidate {
     finish_reason: Option<String>,
     #[serde(default)]
     finish_message: Option<String>,
+    #[serde(default)]
+    grounding_metadata: Option<GeminiGroundingMetadata>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiGroundingMetadata {
+    #[serde(default)]
+    web_search_queries: Vec<String>,
+    #[serde(default)]
+    grounding_chunks: Vec<GeminiGroundingChunk>,
+    #[serde(default)]
+    grounding_supports: Vec<GeminiGroundingSupport>,
+}
+
+#[derive(Clone, Deserialize)]
+struct GeminiGroundingChunk {
+    #[serde(default)]
+    web: Option<GeminiGroundingWeb>,
+}
+
+#[derive(Clone, Deserialize)]
+struct GeminiGroundingWeb {
+    uri: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiGroundingSupport {
+    #[serde(default)]
+    segment: Option<GeminiGroundingSegment>,
+    #[serde(default)]
+    grounding_chunk_indices: Vec<usize>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiGroundingSegment {
+    #[serde(default)]
+    start_index: Option<u32>,
+    #[serde(default)]
+    end_index: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -466,17 +504,31 @@ fn clean_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn convert_tools(tools: &[ToolDefinition]) -> Vec<GeminiToolSet> {
-    vec![GeminiToolSet {
-        function_declarations: tools
-            .iter()
-            .map(|t| GeminiFunctionDeclaration {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: clean_schema_for_gemini(&t.parameters),
-            })
-            .collect(),
-    }]
+fn convert_tools(tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
+    let has_native_search = tools
+        .iter()
+        .any(crate::llm::native_search::is_native_marker);
+    let send_local_search = crate::llm::native_search::should_send_local_search(tools);
+    let declarations = tools
+        .iter()
+        .filter(|tool| !crate::llm::native_search::is_native_marker(tool))
+        .filter(|tool| {
+            send_local_search || tool.name != crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL
+        })
+        .map(|tool| GeminiFunctionDeclaration {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: clean_schema_for_gemini(&tool.parameters),
+        })
+        .collect::<Vec<_>>();
+    let mut converted = Vec::new();
+    if !declarations.is_empty() {
+        converted.push(serde_json::json!({ "functionDeclarations": declarations }));
+    }
+    if has_native_search {
+        converted.push(serde_json::json!({ "googleSearch": {} }));
+    }
+    converted
 }
 
 /// Returns `true` if the model supports extended thinking (`thinking_config`).
@@ -713,6 +765,60 @@ type GeminiExtractedResponse = (
     Usage,
     Option<String>,
 );
+
+fn extract_search_evidence(resp: &GeminiResponse) -> Option<super::native_search::SearchEvidence> {
+    let metadata = resp
+        .candidates
+        .as_ref()?
+        .first()?
+        .grounding_metadata
+        .as_ref()?;
+    let mut citations = Vec::new();
+    let mut cited_chunks = HashSet::new();
+    for support in &metadata.grounding_supports {
+        for index in &support.grounding_chunk_indices {
+            let Some(web) = metadata
+                .grounding_chunks
+                .get(*index)
+                .and_then(|chunk| chunk.web.as_ref())
+            else {
+                continue;
+            };
+            cited_chunks.insert(*index);
+            citations.push(super::native_search::SearchCitation {
+                url: web.uri.clone(),
+                title: web.title.clone(),
+                start_index: support
+                    .segment
+                    .as_ref()
+                    .and_then(|segment| segment.start_index),
+                end_index: support
+                    .segment
+                    .as_ref()
+                    .and_then(|segment| segment.end_index),
+            });
+        }
+    }
+    for (index, chunk) in metadata.grounding_chunks.iter().enumerate() {
+        let Some(web) = chunk.web.as_ref() else {
+            continue;
+        };
+        if cited_chunks.insert(index) {
+            citations.push(super::native_search::SearchCitation {
+                url: web.uri.clone(),
+                title: web.title.clone(),
+                start_index: None,
+                end_index: None,
+            });
+        }
+    }
+    (!citations.is_empty()).then(|| super::native_search::SearchEvidence {
+        dialect: crate::model_catalog::NativeSearchDialect::GeminiGoogleSearch,
+        query: (!metadata.web_search_queries.is_empty())
+            .then(|| metadata.web_search_queries.join(" | ")),
+        citations,
+    })
+}
 
 /// Extract text, tool calls, finish reason, and usage from a Gemini response.
 fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, CoreError> {
@@ -1027,13 +1133,19 @@ async fn emit_gemini_response_chunk(
     tool_call_state: &mut GeminiToolCallStreamState,
     saw_finish_reason: &mut bool,
 ) -> Result<bool, CoreError> {
+    let citation_appendix = extract_search_evidence(&resp)
+        .as_ref()
+        .map(super::native_search::render_citation_appendix)
+        .unwrap_or_default();
     let has_finish = resp
         .candidates
         .as_ref()
         .and_then(|candidates| candidates.first())
         .and_then(|candidate| candidate.finish_reason.as_ref())
         .is_some();
-    let (text_delta, tool_calls, finish_reason, usage, thinking_delta) = extract_response(&resp)?;
+    let (mut text_delta, tool_calls, finish_reason, usage, thinking_delta) =
+        extract_response(&resp)?;
+    text_delta.push_str(&citation_appendix);
     if has_finish {
         *saw_finish_reason = true;
     }
@@ -1349,7 +1461,10 @@ impl LlmProvider for GeminiProvider {
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
         self.transport.record_transport_success();
 
-        let (content, tool_calls, finish_reason, usage, thinking) = extract_response(&resp)?;
+        let (mut content, tool_calls, finish_reason, usage, thinking) = extract_response(&resp)?;
+        if let Some(evidence) = extract_search_evidence(&resp) {
+            content.push_str(&super::native_search::render_citation_appendix(&evidence));
+        }
 
         Ok(CompletionResponse {
             content,
@@ -1439,6 +1554,87 @@ impl LlmProvider for GeminiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_native_search_replaces_only_the_local_search_tool() {
+        let local = ToolDefinition {
+            name: crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+            description: "Local search".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let shell = ToolDefinition {
+            name: "run_shell".to_string(),
+            description: "Run shell".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let marker = crate::llm::native_search::NativeSearchPlan::resolve(
+            crate::llm::native_search::SearchExecutionMode::ProviderNative,
+            ProviderType::Google,
+            None,
+            "gemini-3.6-flash",
+        )
+        .marker()
+        .unwrap();
+
+        let tools = convert_tools(&[local, shell, marker]);
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["functionDeclarations"][0]["name"], "run_shell");
+        assert_eq!(tools[1], serde_json::json!({"googleSearch": {}}));
+    }
+
+    #[test]
+    fn hybrid_search_keeps_local_and_google_search_paths() {
+        let local = ToolDefinition {
+            name: crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+            description: "Local search".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let marker = crate::llm::native_search::NativeSearchPlan::resolve(
+            crate::llm::native_search::SearchExecutionMode::Hybrid,
+            ProviderType::Google,
+            None,
+            "gemini-3.6-flash",
+        )
+        .marker()
+        .unwrap();
+
+        let tools = convert_tools(&[local, marker]);
+
+        assert_eq!(tools[0]["functionDeclarations"][0]["name"], "web_search");
+        assert_eq!(tools[1], serde_json::json!({"googleSearch": {}}));
+    }
+
+    #[test]
+    fn grounding_metadata_normalizes_into_clickable_citations() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"text": "Grounded answer"}]},
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "webSearchQueries": ["nexa release"],
+                    "groundingChunks": [
+                        {"web": {"uri": "https://example.com/release", "title": "Release notes"}}
+                    ],
+                    "groundingSupports": [{
+                        "segment": {"startIndex": 0, "endIndex": 15},
+                        "groundingChunkIndices": [0]
+                    }]
+                }
+            }]
+        }))
+        .unwrap();
+
+        let evidence = extract_search_evidence(&response).expect("grounding evidence");
+        assert_eq!(evidence.query.as_deref(), Some("nexa release"));
+        assert_eq!(evidence.citations.len(), 1);
+        assert_eq!(evidence.citations[0].start_index, Some(0));
+        assert_eq!(evidence.citations[0].end_index, Some(15));
+        assert!(
+            crate::llm::native_search::render_citation_appendix(&evidence)
+                .contains("[Release notes](https://example.com/release)")
+        );
+    }
 
     #[test]
     fn test_convert_messages_keeps_only_leading_system_as_system_instruction() {

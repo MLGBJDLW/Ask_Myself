@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -77,7 +78,7 @@ struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<AnthropicTool>>,
+    tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<AnthropicToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,15 +137,6 @@ struct AnthropicImageSource {
     data: String,
 }
 
-#[derive(Serialize)]
-struct AnthropicTool {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
 // ---------------------------------------------------------------------------
 // Anthropic API wire types — response
 // ---------------------------------------------------------------------------
@@ -162,6 +154,8 @@ struct AnthropicResponse {
 enum AnthropicResponseBlock {
     Text {
         text: String,
+        #[serde(default)]
+        citations: Vec<AnthropicCitation>,
     },
     ToolUse {
         id: String,
@@ -171,6 +165,29 @@ enum AnthropicResponseBlock {
     Thinking {
         thinking: String,
     },
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicCitation {
+    WebSearchResultLocation {
+        url: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -249,6 +266,17 @@ enum AnthropicStreamContentBlock {
         #[allow(dead_code)]
         thinking: String,
     },
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -256,9 +284,20 @@ enum AnthropicStreamContentBlock {
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)]
 enum AnthropicStreamDelta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
-    ThinkingDelta { thinking: String },
+    TextDelta {
+        text: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    CitationsDelta {
+        citation: AnthropicCitation,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -479,27 +518,43 @@ fn add_cache_control_to_message_content(message: &mut AnthropicMessage) {
     }
 }
 
-fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<AnthropicTool> {
-    let len = tools.len();
-    tools
+fn convert_tools(tools: &[ToolDefinition], cache_tools: bool) -> Vec<serde_json::Value> {
+    let has_native_search = tools
         .iter()
-        .enumerate()
-        .map(|(i, t)| AnthropicTool {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            input_schema: t.parameters.clone(),
-            // Place cache_control breakpoint on the last tool definition.
-            // Anthropic caches everything UP TO the breakpoint, so this
-            // ensures all tool definitions (+ system prompt) are cached.
-            cache_control: if cache_tools && i == len - 1 {
-                Some(CacheControl {
-                    r#type: "ephemeral".to_string(),
-                })
-            } else {
-                None
-            },
+        .any(crate::llm::native_search::is_native_marker);
+    let send_local_search = crate::llm::native_search::should_send_local_search(tools);
+    let client_tools = tools
+        .iter()
+        .filter(|tool| !crate::llm::native_search::is_native_marker(tool))
+        .filter(|tool| {
+            send_local_search || tool.name != crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let client_len = client_tools.len();
+    let mut converted = client_tools
+        .into_iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            let mut value = serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.parameters,
+            });
+            // Anthropic caches everything up to the breakpoint. The built-in
+            // search tool does not consume a client cache breakpoint.
+            if cache_tools && index + 1 == client_len {
+                value["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    if has_native_search {
+        converted.push(serde_json::json!({
+            "type": "web_search_20260209",
+            "name": "web_search",
+        }));
+    }
+    converted
 }
 
 fn consume_cache_breakpoint(cache_control: &mut Option<CacheControl>, remaining: &mut usize) {
@@ -628,7 +683,7 @@ fn build_request_body(
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .filter(|tool| tool.cache_control.is_some())
+        .filter(|tool| tool.get("cache_control").is_some())
         .count();
     enforce_cache_breakpoint_limit(&mut system, &mut messages, tool_cache_breakpoints);
     let tool_choice = match anthropic_tools.as_ref() {
@@ -680,6 +735,8 @@ async fn parse_anthropic_stream(
     let mut current_tool_name: Option<String> = None;
     // Accumulate thinking content for token estimation.
     let mut thinking_text = String::new();
+    let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
+    let mut seen_citation_urls = HashSet::<String>::new();
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
@@ -765,6 +822,30 @@ async fn parse_anthropic_stream(
                                 return Ok(());
                             }
                         }
+                        AnthropicStreamContentBlock::ServerToolUse { id, name, input } => {
+                            current_tool_id.clear();
+                            current_tool_name = None;
+                            if name == super::native_search::LOCAL_WEB_SEARCH_TOOL {
+                                pending_server_searches.insert(id, input);
+                            }
+                        }
+                        AnthropicStreamContentBlock::WebSearchToolResult {
+                            tool_use_id,
+                            content,
+                        } => {
+                            current_tool_id.clear();
+                            current_tool_name = None;
+                            // Array content is a completed provider search. An
+                            // object is the documented in-band error shape, so
+                            // keep the query pending for Nexa Router fallback.
+                            if content.is_array() {
+                                pending_server_searches.remove(&tool_use_id);
+                            }
+                        }
+                        AnthropicStreamContentBlock::Unknown => {
+                            current_tool_id.clear();
+                            current_tool_name = None;
+                        }
                     }
                 }
                 AnthropicStreamEvent::ContentBlockDelta { delta, .. } => match delta {
@@ -811,9 +892,56 @@ async fn parse_anthropic_stream(
                             return Ok(());
                         }
                     }
+                    AnthropicStreamDelta::CitationsDelta { citation } => {
+                        if let AnthropicCitation::WebSearchResultLocation { url, title } = citation
+                        {
+                            if seen_citation_urls.insert(url.clone()) {
+                                let label = title
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .unwrap_or(&url);
+                                let chunk = StreamChunk {
+                                    delta: format!(" [{label}]({url})"),
+                                    tool_call_delta: None,
+                                    finish_reason: None,
+                                    usage: None,
+                                    thinking_delta: None,
+                                };
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    AnthropicStreamDelta::Unknown => {}
                 },
                 AnthropicStreamEvent::MessageDelta { delta, usage } => {
-                    let finish = delta.stop_reason.as_deref().map(parse_finish_reason);
+                    let mut finish = delta.stop_reason.as_deref().map(parse_finish_reason);
+                    if delta.stop_reason.is_some() && !pending_server_searches.is_empty() {
+                        for (id, input) in pending_server_searches.drain() {
+                            let chunk = StreamChunk {
+                                delta: String::new(),
+                                tool_call_delta: Some(ToolCallDelta {
+                                    id,
+                                    name: Some(
+                                        super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                                    ),
+                                    arguments_delta: serde_json::to_string(&input)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                    index: None,
+                                    thought_signature: None,
+                                }),
+                                finish_reason: None,
+                                usage: None,
+                                thinking_delta: None,
+                            };
+                            if tx.send(Ok(chunk)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        finish = Some(FinishReason::ToolCalls);
+                    }
                     let estimated_thinking = if !thinking_text.is_empty() {
                         Some(estimate_tokens(&thinking_text))
                     } else {
@@ -937,6 +1065,99 @@ impl AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_native_search_uses_server_tool_without_duplicate_local_search() {
+        let local = ToolDefinition {
+            name: crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+            description: "Local search".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let file_tool = ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read file".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let marker = crate::llm::native_search::NativeSearchPlan::resolve(
+            crate::llm::native_search::SearchExecutionMode::ProviderNative,
+            crate::llm::ProviderType::Anthropic,
+            None,
+            "claude-sonnet-5",
+        )
+        .marker()
+        .unwrap();
+
+        let tools = convert_tools(&[local, file_tool, marker], true);
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["name"], "read_file");
+        assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(tools[1]["type"], "web_search_20260209");
+        assert_eq!(tools[1]["name"], "web_search");
+    }
+
+    #[test]
+    fn server_search_blocks_and_citations_are_forward_compatible() {
+        let response: AnthropicResponse = serde_json::from_value(serde_json::json!({
+            "content": [
+                {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {"query": "Nexa"}
+                },
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [{
+                        "type": "web_search_result",
+                        "url": "https://example.com/nexa",
+                        "title": "Nexa"
+                    }]
+                },
+                {
+                    "type": "text",
+                    "text": "Grounded answer",
+                    "citations": [{
+                        "type": "web_search_result_location",
+                        "url": "https://example.com/nexa",
+                        "title": "Nexa",
+                        "cited_text": "Grounded answer",
+                        "encrypted_index": "opaque"
+                    }]
+                }
+            ],
+            "stop_reason": "end_turn"
+        }))
+        .expect("server search response");
+
+        assert_eq!(response.content.len(), 3);
+        let AnthropicResponseBlock::Text { citations, .. } = &response.content[2] else {
+            panic!("expected text block");
+        };
+        let evidence = crate::llm::native_search::SearchEvidence {
+            dialect: crate::model_catalog::NativeSearchDialect::AnthropicServerTool,
+            query: None,
+            citations: citations
+                .iter()
+                .filter_map(|citation| match citation {
+                    AnthropicCitation::WebSearchResultLocation { url, title } => {
+                        Some(crate::llm::native_search::SearchCitation {
+                            url: url.clone(),
+                            title: title.clone(),
+                            start_index: None,
+                            end_index: None,
+                        })
+                    }
+                    AnthropicCitation::Unknown => None,
+                })
+                .collect(),
+        };
+        assert!(
+            crate::llm::native_search::render_citation_appendix(&evidence)
+                .contains("[Nexa](https://example.com/nexa)")
+        );
+    }
 
     fn cacheable_message(
         role: Role,
@@ -1348,10 +1569,19 @@ impl LlmProvider for AnthropicProvider {
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut thinking_parts = Vec::new();
+        let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
+        let mut completed_server_searches = HashSet::<String>::new();
+        let mut citations = Vec::new();
 
         for block in resp.content {
             match block {
-                AnthropicResponseBlock::Text { text } => text_parts.push(text),
+                AnthropicResponseBlock::Text {
+                    text,
+                    citations: block_citations,
+                } => {
+                    text_parts.push(text);
+                    citations.extend(block_citations);
+                }
                 AnthropicResponseBlock::Thinking { thinking } => thinking_parts.push(thinking),
                 AnthropicResponseBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCallRequest {
@@ -1361,14 +1591,65 @@ impl LlmProvider for AnthropicProvider {
                         thought_signature: None,
                     });
                 }
+                AnthropicResponseBlock::ServerToolUse { id, name, input } => {
+                    if name == super::native_search::LOCAL_WEB_SEARCH_TOOL {
+                        pending_server_searches.insert(id, input);
+                    }
+                }
+                AnthropicResponseBlock::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                } => {
+                    if content.is_array() {
+                        completed_server_searches.insert(tool_use_id);
+                    }
+                }
+                AnthropicResponseBlock::Unknown => {}
             }
         }
 
-        let finish_reason = resp
-            .stop_reason
-            .as_deref()
-            .map(parse_finish_reason)
-            .unwrap_or(FinishReason::Other);
+        for completed in completed_server_searches {
+            pending_server_searches.remove(&completed);
+        }
+        if resp.stop_reason.is_some() {
+            tool_calls.extend(pending_server_searches.into_iter().map(|(id, input)| {
+                ToolCallRequest {
+                    id,
+                    name: super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                    arguments: serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string()),
+                    thought_signature: None,
+                }
+            }));
+        }
+
+        let evidence = super::native_search::SearchEvidence {
+            dialect: crate::model_catalog::NativeSearchDialect::AnthropicServerTool,
+            query: None,
+            citations: citations
+                .into_iter()
+                .filter_map(|citation| match citation {
+                    AnthropicCitation::WebSearchResultLocation { url, title } => {
+                        Some(super::native_search::SearchCitation {
+                            url,
+                            title,
+                            start_index: None,
+                            end_index: None,
+                        })
+                    }
+                    AnthropicCitation::Unknown => None,
+                })
+                .collect(),
+        };
+        let citation_appendix = super::native_search::render_citation_appendix(&evidence);
+
+        let finish_reason = if !tool_calls.is_empty() {
+            FinishReason::ToolCalls
+        } else {
+            resp.stop_reason
+                .as_deref()
+                .map(parse_finish_reason)
+                .unwrap_or(FinishReason::Other)
+        };
 
         let estimated_thinking = if !thinking_parts.is_empty() {
             let thinking_text = thinking_parts.join("");
@@ -1393,7 +1674,7 @@ impl LlmProvider for AnthropicProvider {
             .unwrap_or_default();
 
         Ok(CompletionResponse {
-            content: text_parts.join(""),
+            content: format!("{}{}", text_parts.join(""), citation_appendix),
             tool_calls: if tool_calls.is_empty() {
                 None
             } else {

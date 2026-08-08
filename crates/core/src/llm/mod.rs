@@ -13,6 +13,7 @@ pub mod anthropic;
 pub mod fallback;
 pub mod google;
 pub mod message_validation;
+pub mod native_search;
 pub mod ollama;
 pub mod openai;
 pub mod prompt_cache;
@@ -670,7 +671,8 @@ fn normalize_base_url(base_url: Option<String>) -> Option<String> {
 pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
     config.base_url = normalize_base_url(config.base_url);
 
-    let provider: Box<dyn LlmProvider> = match provider_adapter_for_type(config.provider_type) {
+    let adapter = provider_adapter_for_type(config.provider_type);
+    let provider: Box<dyn LlmProvider> = match adapter {
         ProviderAdapterKind::OpenAiCompatible => Box::new(openai::OpenAiProvider::new(config)?),
         ProviderAdapterKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(config)?),
         ProviderAdapterKind::Google => Box::new(google::GeminiProvider::new(config)?),

@@ -240,6 +240,10 @@ pub struct AgentConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Provider type hint — passed through to CompletionRequest.
     pub provider_type: Option<ProviderType>,
+    /// Provider-native web-search request policy resolved from the active
+    /// endpoint. The provider wire adapter consumes its private tool marker.
+    #[serde(default)]
+    pub native_search_plan: crate::llm::native_search::NativeSearchPlan,
     /// Classifies model requests for prompt-cache and usage analysis.
     #[serde(default)]
     pub request_kind: AgentRequestKind,
@@ -388,6 +392,7 @@ impl Default for AgentConfig {
             thinking_budget: None,
             reasoning_effort: None,
             provider_type: None,
+            native_search_plan: crate::llm::native_search::NativeSearchPlan::default(),
             request_kind: AgentRequestKind::MainAgentStep,
             summarization_model: None,
             summarization_provider_type: None,

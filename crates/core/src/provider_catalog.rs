@@ -11,7 +11,7 @@ use crate::llm::ProviderType;
 use crate::model_catalog::{
     load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CapabilityProbeResult,
     CatalogMergeInput, DiscoveredModel, ModelCatalogSnapshot, ModelDescriptor, ModelLimits,
-    MODEL_DESCRIPTOR_SCHEMA_VERSION,
+    NativeWebSearchCapability, MODEL_DESCRIPTOR_SCHEMA_VERSION,
 };
 use crate::provider_registry::provider_type_from_key;
 
@@ -112,6 +112,8 @@ pub struct ProviderModelPreset {
     pub supports_tools: Option<bool>,
     #[serde(default)]
     pub supports_structured_output: Option<bool>,
+    #[serde(default)]
+    pub native_web_search: Option<NativeWebSearchCapability>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,6 +159,8 @@ pub struct ProviderModelCatalogEntry {
     #[serde(default)]
     pub supports_structured_output: Option<bool>,
     #[serde(default)]
+    pub native_web_search: Option<NativeWebSearchCapability>,
+    #[serde(default)]
     pub reasoning_efforts: Vec<String>,
 }
 
@@ -198,6 +202,8 @@ pub struct ProviderPreset {
     pub description: String,
     #[serde(default)]
     pub capabilities: Option<ProviderCapabilities>,
+    #[serde(default)]
+    pub native_web_search: Option<NativeWebSearchCapability>,
 }
 
 const PROVIDER_PRESETS_JSON: &str = include_str!("../../../shared/provider-presets.json");
@@ -348,6 +354,7 @@ pub fn build_effective_model_catalog(
                 modalities: vec!["text".to_string()],
                 supports_tools: Some(false),
                 supports_structured_output: Some(false),
+                native_web_search: None,
                 reasoning_efforts: Vec::new(),
             });
         }
@@ -490,6 +497,7 @@ fn catalog_entry_from_preset(
         modalities,
         supports_tools: model.supports_tools,
         supports_structured_output: model.supports_structured_output,
+        native_web_search: model.native_web_search,
         reasoning_efforts,
     }
 }

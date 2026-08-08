@@ -106,15 +106,22 @@ impl AgentExecutor {
 
         // -- 4a. Stream LLM response (with rate-limit retry) ----------------
         let stream_recovery_policy = StreamRecoveryPolicy::default();
+        self.config.native_search_plan.validate()?;
+        let mut request_tools = (*tool_defs).clone();
+        if let Some(marker) = self.config.native_search_plan.marker() {
+            request_tools
+                .retain(|tool| tool.name != crate::llm::native_search::NATIVE_WEB_SEARCH_MARKER);
+            request_tools.push(marker);
+        }
         let current_request = CompletionRequest {
             model: model.to_string(),
             messages: (*messages).clone(),
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
-            tools: if tool_defs.is_empty() {
+            tools: if request_tools.is_empty() {
                 None
             } else {
-                Some((*tool_defs).clone())
+                Some(request_tools)
             },
             stop: None,
             thinking_budget: if !force_answer_only && self.config.reasoning_enabled.unwrap_or(false)

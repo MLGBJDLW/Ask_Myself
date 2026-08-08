@@ -182,6 +182,7 @@ fn endpoint_registry_resolves_provider_alias_and_normalized_base_url() {
         workspace_required: false,
         discovery_strategy: DiscoveryStrategy::OpenAiModels,
         health_probe: HealthProbe::Models,
+        native_web_search: None,
     };
     let case_sensitive_endpoint = ProviderEndpoint {
         id: "tenant-a".into(),
@@ -194,6 +195,7 @@ fn endpoint_registry_resolves_provider_alias_and_normalized_base_url() {
         workspace_required: false,
         discovery_strategy: DiscoveryStrategy::OpenAiModels,
         health_probe: HealthProbe::Models,
+        native_web_search: None,
     };
     let registry = EndpointRegistry::new(vec![ProviderDescriptor {
         id: "alibaba_model_studio".into(),
