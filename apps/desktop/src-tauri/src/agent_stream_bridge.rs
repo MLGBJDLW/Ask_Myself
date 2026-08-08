@@ -133,6 +133,21 @@ impl AgentStreamForwarder {
                                     }
                                 }
                                 other => {
+                                    if let AgentEvent::Done { message, .. } = &other {
+                                        if let Err(error) = self.db.record_project_turn_completion(
+                                            &self.conversation_id,
+                                            &self.turn_id,
+                                            &self.task_run_id,
+                                            &message.text_content(),
+                                        ) {
+                                            tracing::warn!(
+                                                conversation_id = %self.conversation_id,
+                                                turn_id = %self.turn_id,
+                                                error = %error,
+                                                "Failed to publish project workspace turn completion"
+                                            );
+                                        }
+                                    }
                                     let frontend_event = compact_agent_event_for_frontend(other);
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);

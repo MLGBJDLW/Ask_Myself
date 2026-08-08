@@ -47,6 +47,9 @@ use nexa_core::db::Database;
 use nexa_core::db_executor::DatabaseExecutor;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
 use nexa_core::error::CoreError;
+use nexa_core::event_claim_graph::{
+    CreateKnowledgeClaimInput, KnowledgeClaim, NarrativeEvidencePlan,
+};
 use nexa_core::evolution::{
     AgentProceduralMemory, AppliedSkillChange, SkillChangeProposal, SkillProposalStatus,
 };
@@ -75,6 +78,7 @@ use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::project_memory::{
     CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
 };
+use nexa_core::project_runtime::ProjectWorkspaceSnapshot;
 use nexa_core::provider_catalog::{
     build_effective_model_catalog, load_provider_presets, ProviderModelCatalogSnapshot,
     ProviderPreset,

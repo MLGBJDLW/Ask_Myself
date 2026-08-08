@@ -1390,6 +1390,118 @@ export interface UpdateProjectMemoryInput {
 export const listProjectMemories = (projectId: string) =>
   invoke<ProjectMemory[]>('list_project_memories_cmd', { projectId });
 
+export interface ConversationEpisode {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  turnId: string;
+  runId: string;
+  summary: string;
+  evidence: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectEvent {
+  id: string;
+  projectId: string;
+  conversationId?: string | null;
+  turnId?: string | null;
+  eventType: string;
+  title: string;
+  summary: string;
+  provenance: Record<string, unknown>;
+  confidence: number;
+  reviewState: 'observed' | 'needs_review' | 'accepted' | 'rejected';
+  validFrom?: string | null;
+  validTo?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectWorkspaceSnapshot {
+  projectId: string;
+  brief: string;
+  instructions: string;
+  episodes: ConversationEpisode[];
+  events: ProjectEvent[];
+}
+
+export const getProjectWorkspace = (projectId: string, query?: string) =>
+  invoke<ProjectWorkspaceSnapshot>('get_project_workspace_cmd', { projectId, query });
+
+export interface KnowledgeClaim {
+  id: string;
+  projectId?: string | null;
+  subject: string;
+  predicate: string;
+  object: string;
+  claimStatus: 'active' | 'contested' | 'superseded';
+  reviewState: 'needs_review' | 'accepted' | 'rejected';
+  confidence: number;
+  validFrom?: string | null;
+  validTo?: string | null;
+  provenance: Record<string, unknown>;
+  evidenceRefs: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeEvent {
+  id: string;
+  projectId?: string | null;
+  eventKind: string;
+  title: string;
+  description: string;
+  confidence: number;
+  reviewState: 'needs_review' | 'accepted' | 'rejected';
+  validFrom?: string | null;
+  validTo?: string | null;
+  provenance: Record<string, unknown>;
+  evidenceRefs: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NarrativeEvidencePlan {
+  query: string;
+  intent: 'factual' | 'temporal' | 'causal' | 'comparative' | 'decision_trace' | 'open_loop';
+  narrativeMode: string;
+  coreConclusion: string;
+  eventSequence: KnowledgeEvent[];
+  supportingClaims: KnowledgeClaim[];
+  opposingClaims: KnowledgeClaim[];
+  supersededClaims: KnowledgeClaim[];
+  openQuestions: KnowledgeClaim[];
+}
+
+export interface CreateKnowledgeClaimInput {
+  subject: string;
+  predicate: string;
+  object: string;
+  claimStatus?: 'active' | 'contested' | 'superseded' | null;
+  reviewState?: 'needs_review' | 'accepted' | 'rejected' | null;
+  confidence?: number | null;
+  validFrom?: string | null;
+  validTo?: string | null;
+  provenance?: Record<string, unknown> | null;
+  sourceRef?: string | null;
+  sourceExcerpt?: string | null;
+}
+
+export const getProjectNarrative = (projectId: string, query: string) =>
+  invoke<NarrativeEvidencePlan>('get_project_narrative_cmd', { projectId, query });
+
+export const createProjectKnowledgeClaim = (
+  projectId: string,
+  input: CreateKnowledgeClaimInput,
+) => invoke<KnowledgeClaim>('create_project_knowledge_claim_cmd', { projectId, input });
+
+export const reviewProjectKnowledgeClaim = (
+  id: string,
+  reviewState: 'needs_review' | 'accepted' | 'rejected',
+) => invoke<KnowledgeClaim>('review_project_knowledge_claim_cmd', { id, reviewState });
+
 export const createProjectMemory = (projectId: string, input: CreateProjectMemoryInput) =>
   invoke<ProjectMemory>('create_project_memory_cmd', { projectId, input });
 

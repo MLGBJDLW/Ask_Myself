@@ -1085,19 +1085,10 @@ export function ChatPage() {
     }
 
     try {
-      // If creating within a project, fetch project's system prompt as default
-      let systemPrompt = chat.customSystemPrompt || undefined;
-      if (projectId && !chat.customSystemPrompt) {
-        try {
-          const proj = await api.getProject(projectId);
-          if (proj.systemPrompt) systemPrompt = proj.systemPrompt;
-        } catch { /* ignore, use default */ }
-      }
-
       const conv = await api.createConversation(
         chat.agentConfig.provider,
         chat.agentConfig.model,
-        systemPrompt,
+        chat.customSystemPrompt || undefined,
         projectId ?? undefined,
         'default',
       );

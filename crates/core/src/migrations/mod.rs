@@ -2144,6 +2144,158 @@ Every answer that uses knowledge base search results.
          CREATE UNIQUE INDEX IF NOT EXISTS idx_context_compactions_generation
              ON context_compactions(conversation_id, checkpoint_generation);",
     ),
+    (
+        "v105_project_workspace_runtime",
+        "CREATE TABLE IF NOT EXISTS conversation_episodes (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+             turn_id TEXT NOT NULL,
+             run_id TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, turn_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_conversation_episodes_project_recent
+             ON conversation_episodes(project_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_conversation_episodes_conversation
+             ON conversation_episodes(conversation_id, created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS project_events (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+             turn_id TEXT,
+             event_type TEXT NOT NULL,
+             title TEXT NOT NULL,
+             summary TEXT NOT NULL DEFAULT '',
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'observed' CHECK (
+                 review_state IN ('observed', 'needs_review', 'accepted', 'rejected')
+             ),
+             valid_from TEXT,
+             valid_to TEXT,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, event_type, turn_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_project_events_project_recent
+             ON project_events(project_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_project_events_review
+             ON project_events(project_id, review_state, created_at DESC);",
+    ),
+    (
+        "v106_event_claim_graph",
+        "CREATE TABLE IF NOT EXISTS knowledge_events (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             event_kind TEXT NOT NULL,
+             title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             valid_from TEXT,
+             valid_to TEXT,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_events_project_time
+             ON knowledge_events(project_id, valid_from, created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS knowledge_claims (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             subject TEXT NOT NULL,
+             predicate TEXT NOT NULL,
+             object TEXT NOT NULL,
+             claim_status TEXT NOT NULL DEFAULT 'active' CHECK (
+                 claim_status IN ('active', 'contested', 'superseded')
+             ),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             valid_from TEXT,
+             valid_to TEXT,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_claims_project_review
+             ON knowledge_claims(project_id, review_state, claim_status, updated_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_claims_subject
+             ON knowledge_claims(project_id, subject, predicate);
+
+         CREATE TABLE IF NOT EXISTS knowledge_edges (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             source_kind TEXT NOT NULL CHECK (source_kind IN ('claim', 'event', 'entity')),
+             source_id TEXT NOT NULL,
+             target_kind TEXT NOT NULL CHECK (target_kind IN ('claim', 'event', 'entity')),
+             target_id TEXT NOT NULL,
+             relation_type TEXT NOT NULL CHECK (
+                 relation_type IN ('supports', 'opposes', 'supersedes', 'causes', 'precedes', 'mentions')
+             ),
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_edges_source
+             ON knowledge_edges(project_id, source_kind, source_id);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_edges_target
+             ON knowledge_edges(project_id, target_kind, target_id);
+
+         CREATE TABLE IF NOT EXISTS knowledge_evidence (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             claim_id TEXT REFERENCES knowledge_claims(id) ON DELETE CASCADE,
+             event_id TEXT REFERENCES knowledge_events(id) ON DELETE CASCADE,
+             source_type TEXT NOT NULL,
+             source_ref TEXT NOT NULL,
+             excerpt TEXT NOT NULL DEFAULT '',
+             locator_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(locator_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             CHECK ((claim_id IS NOT NULL) <> (event_id IS NOT NULL))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_claim
+             ON knowledge_evidence(project_id, claim_id);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_event
+             ON knowledge_evidence(project_id, event_id);
+
+         CREATE TABLE IF NOT EXISTS graph_versions (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             version INTEGER NOT NULL CHECK (version > 0),
+             change_summary TEXT NOT NULL,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, version)
+         );
+
+         CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             left_entity_id TEXT NOT NULL,
+             right_entity_id TEXT NOT NULL,
+             score REAL NOT NULL CHECK (score >= 0.0 AND score <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, left_entity_id, right_entity_id),
+             CHECK (left_entity_id <> right_entity_id)
+         );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2307,6 +2459,14 @@ mod tests {
         assert!(tables.contains(&"dream_artifacts".to_string()));
         assert!(tables.contains(&"ai_usage_records".to_string()));
         assert!(tables.contains(&"ai_model_pricing".to_string()));
+        assert!(tables.contains(&"conversation_episodes".to_string()));
+        assert!(tables.contains(&"project_events".to_string()));
+        assert!(tables.contains(&"knowledge_events".to_string()));
+        assert!(tables.contains(&"knowledge_claims".to_string()));
+        assert!(tables.contains(&"knowledge_edges".to_string()));
+        assert!(tables.contains(&"knowledge_evidence".to_string()));
+        assert!(tables.contains(&"graph_versions".to_string()));
+        assert!(tables.contains(&"entity_merge_candidates".to_string()));
     }
 
     #[test]

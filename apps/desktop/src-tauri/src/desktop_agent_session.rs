@@ -1456,6 +1456,24 @@ pub fn build_desktop_agent_turn_config(
         Some(message),
     )
     .unwrap_or_default();
+    let project_workspace = conversation.project_id.as_deref().and_then(|project_id| {
+        db.get_project_workspace_snapshot(project_id, Some(message))
+            .ok()
+    });
+    let project_instruction_section = project_workspace
+        .as_ref()
+        .map(nexa_core::project_runtime::build_project_instruction_section)
+        .unwrap_or_default();
+    let project_evidence_section = project_workspace
+        .as_ref()
+        .map(nexa_core::project_runtime::build_project_evidence_section)
+        .unwrap_or_default();
+    let narrative_evidence_section = conversation
+        .project_id
+        .as_deref()
+        .and_then(|project_id| db.build_project_narrative_plan(project_id, message, 8).ok())
+        .map(|plan| nexa_core::event_claim_graph::build_narrative_evidence_section(&plan))
+        .unwrap_or_default();
     let agent_memory_section =
         nexa_core::evolution::build_agent_procedural_memory_summary_for_query(db, Some(message))
             .unwrap_or_default();
@@ -1661,6 +1679,16 @@ pub fn build_desktop_agent_turn_config(
             current_turn_time_section,
         ),
         (
+            "project-instructions",
+            ContextItemRole::Instruction,
+            "project.instructions",
+            "live user-maintained project instructions",
+            ContextTrustLevel::UserSelected,
+            950,
+            ContextItemStability::StablePrefix,
+            project_instruction_section,
+        ),
+        (
             "execution-mode",
             ContextItemRole::Instruction,
             "runtime.execution_mode",
@@ -1759,6 +1787,26 @@ pub fn build_desktop_agent_turn_config(
             50,
             ContextItemStability::VolatileSuffix,
             project_memory_section,
+        ),
+        (
+            "project-workspace-evidence",
+            ContextItemRole::Evidence,
+            "project.workspace",
+            "query-relevant project episodes and observed events",
+            ContextTrustLevel::RetrievedEvidence,
+            55,
+            ContextItemStability::VolatileSuffix,
+            project_evidence_section,
+        ),
+        (
+            "event-claim-narrative",
+            ContextItemRole::Evidence,
+            "knowledge.event_claim_graph",
+            "query-classified event and claim narrative with review state",
+            ContextTrustLevel::RetrievedEvidence,
+            54,
+            ContextItemStability::VolatileSuffix,
+            narrative_evidence_section,
         ),
         (
             "procedural-memory",
@@ -2953,6 +3001,95 @@ mod tests {
         let sniffed_config = desktop_memory_extraction_provider_config(&db_config);
 
         assert_eq!(sniffed_config.provider_type, ProviderType::DeepSeek);
+    }
+
+    #[test]
+    fn project_workspace_instructions_are_live_and_episodes_are_evidence() {
+        let db = Database::open_memory().expect("open memory db");
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Workspace".to_string(),
+                description: Some("Ship an auditable runtime".to_string()),
+                icon: None,
+                color: None,
+                system_prompt: Some("Follow workspace instruction v1".to_string()),
+                source_scope: None,
+            })
+            .expect("create project");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: Some("Conversation-specific instruction".to_string()),
+                collection_context: None,
+                project_id: Some(project.id.clone()),
+                persona_id: None,
+            })
+            .expect("create conversation");
+        db.record_project_turn_completion(
+            &conversation.id,
+            "turn-observed",
+            "run-observed",
+            "Visible prior result with provenance",
+        )
+        .expect("record project episode");
+
+        let db_config = test_agent_config();
+        let app_cfg = AppConfig::default();
+        let request = |conversation: &Conversation| DesktopAgentTurnConfigRequest {
+            db: &db,
+            conversation,
+            turn_id: "turn-current",
+            message: "Use the prior result",
+            persona_id: None,
+            explicit_skill_ids: &[],
+            db_config: &db_config,
+            app_cfg: &app_cfg,
+            execution_mode: AgentExecutionMode::Normal,
+            power_mode: AgentPowerMode::Standard,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
+        };
+        let initial = build_desktop_agent_turn_config(request(&conversation)).executor_config;
+        assert!(initial
+            .system_prompt
+            .contains("Follow workspace instruction v1"));
+        let volatile = initial.volatile_system_sections.join("\n");
+        assert!(volatile.contains("Visible prior result with provenance"));
+        assert!(volatile.contains("turn:turn-observed"));
+        assert!(!initial
+            .system_prompt
+            .contains("Visible prior result with provenance"));
+
+        db.update_project(
+            &project.id,
+            &UpdateProjectInput {
+                name: None,
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: Some("Follow workspace instruction v2".to_string()),
+                source_scope: None,
+                archived: None,
+            },
+        )
+        .expect("update live project instruction");
+        let refreshed_conversation = db
+            .get_conversation(&conversation.id)
+            .expect("reload conversation");
+        let refreshed =
+            build_desktop_agent_turn_config(request(&refreshed_conversation)).executor_config;
+        assert!(refreshed
+            .system_prompt
+            .contains("Follow workspace instruction v2"));
+        assert!(!refreshed
+            .system_prompt
+            .contains("Follow workspace instruction v1"));
+        assert!(refreshed
+            .system_prompt
+            .contains("Conversation-specific instruction"));
     }
 
     #[test]

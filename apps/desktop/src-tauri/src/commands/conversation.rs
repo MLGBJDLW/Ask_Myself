@@ -61,6 +61,63 @@ pub async fn list_project_memories_cmd(
 }
 
 #[tauri::command]
+pub async fn get_project_workspace_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    query: Option<String>,
+) -> Result<ProjectWorkspaceSnapshot, String> {
+    let mut snapshot = state
+        .db
+        .get_project_workspace_snapshot(&project_id, query.as_deref())
+        .map_err(|e| e.to_string())?;
+    snapshot.episodes = state
+        .db
+        .list_project_episodes(&project_id, 100)
+        .map_err(|e| e.to_string())?;
+    snapshot.events = state
+        .db
+        .list_project_events(&project_id, 100)
+        .map_err(|e| e.to_string())?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn get_project_narrative_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    query: String,
+) -> Result<NarrativeEvidencePlan, String> {
+    state
+        .db
+        .build_project_narrative_plan(&project_id, &query, 30)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_project_knowledge_claim_cmd(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: CreateKnowledgeClaimInput,
+) -> Result<KnowledgeClaim, String> {
+    state
+        .db
+        .create_knowledge_claim(Some(&project_id), &input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn review_project_knowledge_claim_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    review_state: String,
+) -> Result<KnowledgeClaim, String> {
+    state
+        .db
+        .review_knowledge_claim(&id, &review_state)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn create_project_memory_cmd(
     state: tauri::State<'_, AppState>,
     project_id: String,
