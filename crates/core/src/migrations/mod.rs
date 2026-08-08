@@ -2296,6 +2296,36 @@ Every answer that uses knowledge base search results.
              CHECK (left_entity_id <> right_entity_id)
          );",
     ),
+    (
+        "v107_project_workspace_items",
+        "CREATE TABLE IF NOT EXISTS project_workspace_items (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+             turn_id TEXT,
+             run_id TEXT,
+             item_kind TEXT NOT NULL CHECK (
+                 item_kind IN ('decision', 'constraint', 'task', 'artifact', 'open_question', 'source')
+             ),
+             item_status TEXT NOT NULL DEFAULT 'active' CHECK (
+                 item_status IN ('active', 'open', 'completed', 'superseded')
+             ),
+             title TEXT NOT NULL,
+             summary TEXT NOT NULL DEFAULT '',
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             review_state TEXT NOT NULL DEFAULT 'observed' CHECK (
+                 review_state IN ('observed', 'needs_review', 'accepted', 'rejected')
+             ),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, item_kind, turn_id, title)
+         );
+         CREATE INDEX IF NOT EXISTS idx_project_workspace_items_project_kind
+             ON project_workspace_items(project_id, item_kind, item_status, updated_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_project_workspace_items_conversation
+             ON project_workspace_items(conversation_id, updated_at DESC);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2461,6 +2491,7 @@ mod tests {
         assert!(tables.contains(&"ai_model_pricing".to_string()));
         assert!(tables.contains(&"conversation_episodes".to_string()));
         assert!(tables.contains(&"project_events".to_string()));
+        assert!(tables.contains(&"project_workspace_items".to_string()));
         assert!(tables.contains(&"knowledge_events".to_string()));
         assert!(tables.contains(&"knowledge_claims".to_string()));
         assert!(tables.contains(&"knowledge_edges".to_string()));

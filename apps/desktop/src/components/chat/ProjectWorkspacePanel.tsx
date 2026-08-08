@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarDays, Check, FolderKanban, Network, Plus, RefreshCw, Save } from 'lucide-react';
+import { CalendarDays, Check, FolderKanban, ListChecks, Network, Plus, RefreshCw, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import * as api from '../../lib/api';
 import type { Project } from '../../types/project';
-import { useTranslation } from '../../i18n';
+import { useTranslation, type TranslationKey } from '../../i18n';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -15,7 +15,32 @@ interface ProjectWorkspacePanelProps {
   onClose: () => void;
 }
 
-type WorkspaceTab = 'overview' | 'knowledge' | 'timeline';
+type WorkspaceTab = 'overview' | 'state' | 'knowledge' | 'timeline';
+
+const EVENT_LABEL_KEYS: Record<string, TranslationKey> = {
+  turn_completed: 'project.workspaceEventTurnCompleted',
+  decision_made: 'project.workspaceEventDecision',
+  constraint_added: 'project.workspaceEventConstraint',
+  task_created: 'project.workspaceEventTaskCreated',
+  task_completed: 'project.workspaceEventTaskCompleted',
+  artifact_created: 'project.workspaceEventArtifact',
+  open_question_recorded: 'project.workspaceEventOpenQuestion',
+  source_added: 'project.workspaceEventSource',
+};
+
+const WORKSPACE_STATUS_KEYS: Record<api.ProjectWorkspaceItemStatus, TranslationKey> = {
+  active: 'project.workspaceStatusActive',
+  open: 'project.workspaceStatusOpen',
+  completed: 'project.workspaceStatusCompleted',
+  superseded: 'project.workspaceStatusSuperseded',
+};
+
+const REVIEW_STATE_KEYS: Record<api.ProjectEvent['reviewState'], TranslationKey> = {
+  observed: 'project.workspaceReviewObserved',
+  needs_review: 'project.workspaceReviewNeeded',
+  accepted: 'project.workspaceReviewAccepted',
+  rejected: 'project.workspaceReviewRejected',
+};
 
 export function ProjectWorkspacePanel({ projectId, open, onClose }: ProjectWorkspacePanelProps) {
   const { t } = useTranslation();
@@ -119,6 +144,7 @@ export function ProjectWorkspacePanel({ projectId, open, onClose }: ProjectWorks
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof FolderKanban }> = [
     { id: 'overview', label: t('project.workspaceOverview'), icon: FolderKanban },
+    { id: 'state', label: t('project.workspaceState'), icon: ListChecks },
     { id: 'knowledge', label: t('project.workspaceKnowledge'), icon: Network },
     { id: 'timeline', label: t('project.workspaceTimeline'), icon: CalendarDays },
   ];
@@ -135,7 +161,7 @@ export function ProjectWorkspacePanel({ projectId, open, onClose }: ProjectWorks
       }
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-1 p-1" role="tablist">
+        <div className="grid grid-cols-4 gap-1 rounded-lg bg-surface-1 p-1" role="tablist">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -194,6 +220,46 @@ export function ProjectWorkspacePanel({ projectId, open, onClose }: ProjectWorks
                 {t('common.save')}
               </Button>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'state' && (
+          <div className="max-h-[30rem] space-y-4 overflow-auto pr-1">
+            <WorkspaceItemGroup label={t('project.workspaceDecisions')} items={workspace?.decisions ?? []} />
+            <WorkspaceItemGroup label={t('project.workspaceConstraints')} items={workspace?.constraints ?? []} />
+            <WorkspaceItemGroup label={t('project.workspaceTasks')} items={workspace?.tasks ?? []} />
+            <WorkspaceItemGroup label={t('project.workspaceArtifacts')} items={workspace?.artifacts ?? []} />
+            <WorkspaceItemGroup label={t('project.workspaceOpenQuestions')} items={workspace?.openQuestions ?? []} />
+            <WorkspaceItemGroup label={t('project.workspaceSources')} items={workspace?.sources ?? []} />
+            {(workspace?.relatedChats.length ?? 0) > 0 && (
+              <section className="space-y-2">
+                <div className="text-xs font-medium text-text-secondary">{t('project.workspaceRelatedChats')}</div>
+                {workspace?.relatedChats.map((chat) => (
+                  <article key={chat.conversationId} className="rounded-md border border-border bg-surface-1 p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{chat.title}</span>
+                      <Badge variant="default">
+                        {t('project.workspaceEpisodeCount', { count: chat.episodeCount })}
+                      </Badge>
+                    </div>
+                    {chat.latestSummary && (
+                      <p className="mt-2 line-clamp-2 text-xs leading-5 text-text-secondary">{chat.latestSummary}</p>
+                    )}
+                  </article>
+                ))}
+              </section>
+            )}
+            {(workspace?.decisions.length ?? 0)
+              + (workspace?.constraints.length ?? 0)
+              + (workspace?.tasks.length ?? 0)
+              + (workspace?.artifacts.length ?? 0)
+              + (workspace?.openQuestions.length ?? 0)
+              + (workspace?.sources.length ?? 0)
+              + (workspace?.relatedChats.length ?? 0) === 0 && (
+              <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-xs text-text-tertiary">
+                {t('project.workspaceStateEmpty')}
+              </div>
+            )}
           </div>
         )}
 
@@ -261,18 +327,25 @@ export function ProjectWorkspacePanel({ projectId, open, onClose }: ProjectWorks
             ) : workspace?.events.map((event) => (
               <article key={event.id} className="rounded-md border border-border bg-surface-1 p-3">
                 <div className="flex items-center gap-2">
-                  <Badge variant="default">{event.eventType}</Badge>
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{event.title}</span>
-                  <span className="text-[10px] text-text-tertiary">{event.reviewState}</span>
+                  <Badge variant="default">
+                    {t(EVENT_LABEL_KEYS[event.eventType] ?? 'project.workspaceEventObserved')}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{event.summary}</span>
+                  <span className="text-[10px] text-text-tertiary">{t(REVIEW_STATE_KEYS[event.reviewState])}</span>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-text-secondary">{event.summary}</p>
-                <div className="mt-2 font-mono text-[10px] text-text-tertiary">{event.turnId ?? event.id}</div>
+                <details className="mt-2 text-[10px] text-text-tertiary">
+                  <summary className="cursor-pointer select-none">{t('project.workspaceProvenance')}</summary>
+                  <div className="mt-1 break-all font-mono">{event.turnId ?? event.id}</div>
+                </details>
               </article>
             ))}
             {workspace?.episodes.map((episode) => (
               <article key={episode.id} className="rounded-md border border-border/70 p-3">
                 <p className="text-xs leading-5 text-text-secondary">{episode.summary}</p>
-                <div className="mt-2 truncate font-mono text-[10px] text-text-tertiary">{episode.evidence.join(' · ')}</div>
+                <details className="mt-2 text-[10px] text-text-tertiary">
+                  <summary className="cursor-pointer select-none">{t('project.workspaceProvenance')}</summary>
+                  <div className="mt-1 break-all font-mono">{episode.evidence.join(' · ')}</div>
+                </details>
               </article>
             ))}
           </div>
@@ -288,6 +361,36 @@ function WorkspaceMetric({ label, value }: { label: string; value: number }) {
       <div className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</div>
       <div className="mt-1 text-lg font-semibold text-text-primary">{value}</div>
     </div>
+  );
+}
+
+function WorkspaceItemGroup({
+  label,
+  items,
+}: {
+  label: string;
+  items: api.ProjectWorkspaceItem[];
+}) {
+  const { t } = useTranslation();
+  if (items.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <div className="text-xs font-medium text-text-secondary">{label}</div>
+      {items.map((item) => (
+        <article key={item.id} className="rounded-md border border-border bg-surface-1 p-3">
+          <div className="flex items-start gap-2">
+            <p className="min-w-0 flex-1 text-xs leading-5 text-text-primary">{item.title}</p>
+            <Badge variant={item.status === 'completed' ? 'success' : 'default'}>
+              {t(WORKSPACE_STATUS_KEYS[item.status])}
+            </Badge>
+          </div>
+          <details className="mt-2 text-[10px] text-text-tertiary">
+            <summary className="cursor-pointer select-none">{t('project.workspaceProvenance')}</summary>
+            <div className="mt-1 break-all font-mono">{item.evidence.join(' · ')}</div>
+          </details>
+        </article>
+      ))}
+    </section>
   );
 }
 

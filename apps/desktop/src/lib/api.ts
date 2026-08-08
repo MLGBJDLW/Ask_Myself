@@ -1446,12 +1446,56 @@ export interface ProjectEvent {
   updatedAt: string;
 }
 
+export type ProjectWorkspaceItemKind =
+  | 'decision'
+  | 'constraint'
+  | 'task'
+  | 'artifact'
+  | 'open_question'
+  | 'source';
+
+export type ProjectWorkspaceItemStatus = 'active' | 'open' | 'completed' | 'superseded';
+
+export interface ProjectWorkspaceItem {
+  id: string;
+  projectId: string;
+  conversationId?: string | null;
+  turnId?: string | null;
+  runId?: string | null;
+  kind: ProjectWorkspaceItemKind;
+  status: ProjectWorkspaceItemStatus;
+  title: string;
+  summary: string;
+  evidence: string[];
+  provenance: Record<string, unknown>;
+  reviewState: 'observed' | 'needs_review' | 'accepted' | 'rejected';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelatedProjectChat {
+  conversationId: string;
+  title: string;
+  episodeCount: number;
+  latestSummary: string;
+  relevanceScore: number;
+  updatedAt: string;
+}
+
 export interface ProjectWorkspaceSnapshot {
   projectId: string;
   brief: string;
   instructions: string;
   episodes: ConversationEpisode[];
   events: ProjectEvent[];
+  decisions: ProjectWorkspaceItem[];
+  constraints: ProjectWorkspaceItem[];
+  tasks: ProjectWorkspaceItem[];
+  artifacts: ProjectWorkspaceItem[];
+  openQuestions: ProjectWorkspaceItem[];
+  sources: ProjectWorkspaceItem[];
+  sourceScope: string[];
+  relatedChats: RelatedProjectChat[];
 }
 
 export const getProjectWorkspace = (projectId: string, query?: string) =>

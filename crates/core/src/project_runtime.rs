@@ -15,6 +15,8 @@ use crate::error::CoreError;
 const MAX_EPISODE_CHARS: usize = 900;
 const MAX_BOOTSTRAP_EPISODES: usize = 4;
 const MAX_BOOTSTRAP_EVENTS: usize = 4;
+const MAX_BOOTSTRAP_ITEMS_PER_KIND: usize = 6;
+const MAX_RELATED_CHATS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +51,122 @@ pub struct ProjectEvent {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectWorkspaceItemKind {
+    Decision,
+    Constraint,
+    Task,
+    Artifact,
+    OpenQuestion,
+    Source,
+}
+
+impl ProjectWorkspaceItemKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Decision => "decision",
+            Self::Constraint => "constraint",
+            Self::Task => "task",
+            Self::Artifact => "artifact",
+            Self::OpenQuestion => "open_question",
+            Self::Source => "source",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, rusqlite::Error> {
+        match value {
+            "decision" => Ok(Self::Decision),
+            "constraint" => Ok(Self::Constraint),
+            "task" => Ok(Self::Task),
+            "artifact" => Ok(Self::Artifact),
+            "open_question" => Ok(Self::OpenQuestion),
+            "source" => Ok(Self::Source),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown project workspace item kind: {other}").into(),
+            )),
+        }
+    }
+
+    fn event_type(self, completed: bool) -> &'static str {
+        match (self, completed) {
+            (Self::Decision, _) => "decision_made",
+            (Self::Constraint, _) => "constraint_added",
+            (Self::Task, true) => "task_completed",
+            (Self::Task, false) => "task_created",
+            (Self::Artifact, _) => "artifact_created",
+            (Self::OpenQuestion, _) => "open_question_recorded",
+            (Self::Source, _) => "source_added",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectWorkspaceItemStatus {
+    Active,
+    Open,
+    Completed,
+    Superseded,
+}
+
+impl ProjectWorkspaceItemStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Open => "open",
+            Self::Completed => "completed",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, rusqlite::Error> {
+        match value {
+            "active" => Ok(Self::Active),
+            "open" => Ok(Self::Open),
+            "completed" => Ok(Self::Completed),
+            "superseded" => Ok(Self::Superseded),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown project workspace item status: {other}").into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectWorkspaceItem {
+    pub id: String,
+    pub project_id: String,
+    pub conversation_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub run_id: Option<String>,
+    pub kind: ProjectWorkspaceItemKind,
+    pub status: ProjectWorkspaceItemStatus,
+    pub title: String,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub provenance: serde_json::Value,
+    pub review_state: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedProjectChat {
+    pub conversation_id: String,
+    pub title: String,
+    pub episode_count: usize,
+    pub latest_summary: String,
+    pub relevance_score: usize,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectWorkspaceSnapshot {
@@ -57,6 +175,14 @@ pub struct ProjectWorkspaceSnapshot {
     pub instructions: String,
     pub episodes: Vec<ConversationEpisode>,
     pub events: Vec<ProjectEvent>,
+    pub decisions: Vec<ProjectWorkspaceItem>,
+    pub constraints: Vec<ProjectWorkspaceItem>,
+    pub tasks: Vec<ProjectWorkspaceItem>,
+    pub artifacts: Vec<ProjectWorkspaceItem>,
+    pub open_questions: Vec<ProjectWorkspaceItem>,
+    pub sources: Vec<ProjectWorkspaceItem>,
+    pub source_scope: Vec<String>,
+    pub related_chats: Vec<RelatedProjectChat>,
 }
 
 fn episode_from_row(row: &rusqlite::Row<'_>) -> Result<ConversationEpisode, rusqlite::Error> {
@@ -93,6 +219,226 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> Result<ProjectEvent, rusqlite::Err
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
+}
+
+fn workspace_item_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<ProjectWorkspaceItem, rusqlite::Error> {
+    let kind: String = row.get(5)?;
+    let status: String = row.get(6)?;
+    let evidence_json: String = row.get(9)?;
+    let provenance_json: String = row.get(10)?;
+    Ok(ProjectWorkspaceItem {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        conversation_id: row.get(2)?,
+        turn_id: row.get(3)?,
+        run_id: row.get(4)?,
+        kind: ProjectWorkspaceItemKind::from_db(&kind)?,
+        status: ProjectWorkspaceItemStatus::from_db(&status)?,
+        title: row.get(7)?,
+        summary: row.get(8)?,
+        evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+        provenance: serde_json::from_str(&provenance_json)
+            .unwrap_or_else(|_| serde_json::json!({})),
+        review_state: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtractedWorkspaceItem {
+    kind: ProjectWorkspaceItemKind,
+    status: ProjectWorkspaceItemStatus,
+    title: String,
+    extractor: &'static str,
+}
+
+fn workspace_heading_kind(value: &str) -> Option<ProjectWorkspaceItemKind> {
+    let heading = value
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .trim_end_matches([':', '：'])
+        .to_lowercase();
+    match heading.as_str() {
+        "decision" | "decisions" | "决定" | "决策" | "決定" | "決策" => {
+            Some(ProjectWorkspaceItemKind::Decision)
+        }
+        "constraint" | "constraints" | "约束" | "限制" | "約束" => {
+            Some(ProjectWorkspaceItemKind::Constraint)
+        }
+        "task" | "tasks" | "open task" | "open tasks" | "todo" | "todos" | "任务" | "待办"
+        | "任務" | "待辦" => Some(ProjectWorkspaceItemKind::Task),
+        "artifact" | "artifacts" | "outputs" | "产物" | "文件" | "產物" => {
+            Some(ProjectWorkspaceItemKind::Artifact)
+        }
+        "open question" | "open questions" | "questions" | "开放问题" | "待确认" | "開放問題"
+        | "待確認" => Some(ProjectWorkspaceItemKind::OpenQuestion),
+        "source" | "sources" | "references" | "来源" | "资料" | "來源" | "資料" => {
+            Some(ProjectWorkspaceItemKind::Source)
+        }
+        _ => None,
+    }
+}
+
+fn strip_list_marker(line: &str) -> Option<(&str, bool)> {
+    let trimmed = line.trim();
+    for (prefix, completed) in [
+        ("- [x] ", true),
+        ("- [X] ", true),
+        ("* [x] ", true),
+        ("* [X] ", true),
+        ("- [ ] ", false),
+        ("* [ ] ", false),
+        ("- ", false),
+        ("* ", false),
+        ("+ ", false),
+    ] {
+        if let Some(value) = trimmed.strip_prefix(prefix) {
+            return Some((value.trim(), completed));
+        }
+    }
+    let (number, value) = trimmed.split_once(". ")?;
+    number
+        .chars()
+        .all(|character| character.is_ascii_digit())
+        .then_some((value.trim(), false))
+}
+
+fn extract_visible_workspace_items(value: &str) -> Vec<ExtractedWorkspaceItem> {
+    let mut current_kind = None;
+    let mut items = Vec::new();
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            current_kind = workspace_heading_kind(trimmed);
+            continue;
+        }
+        if let Some((prefix, kind)) = [
+            ("decision:", ProjectWorkspaceItemKind::Decision),
+            ("constraint:", ProjectWorkspaceItemKind::Constraint),
+            ("task:", ProjectWorkspaceItemKind::Task),
+            ("artifact:", ProjectWorkspaceItemKind::Artifact),
+            ("open question:", ProjectWorkspaceItemKind::OpenQuestion),
+            ("source:", ProjectWorkspaceItemKind::Source),
+            ("决定：", ProjectWorkspaceItemKind::Decision),
+            ("约束：", ProjectWorkspaceItemKind::Constraint),
+            ("任务：", ProjectWorkspaceItemKind::Task),
+            ("产物：", ProjectWorkspaceItemKind::Artifact),
+            ("开放问题：", ProjectWorkspaceItemKind::OpenQuestion),
+            ("来源：", ProjectWorkspaceItemKind::Source),
+        ]
+        .into_iter()
+        .find(|(prefix, _)| trimmed.to_lowercase().starts_with(prefix))
+        {
+            let title = trimmed[prefix.len()..].trim();
+            if !title.is_empty() {
+                items.push(ExtractedWorkspaceItem {
+                    kind,
+                    status: if kind == ProjectWorkspaceItemKind::Task {
+                        ProjectWorkspaceItemStatus::Open
+                    } else {
+                        ProjectWorkspaceItemStatus::Active
+                    },
+                    title: compact_visible_output(title),
+                    extractor: "visible_label",
+                });
+            }
+            continue;
+        }
+        let Some(kind) = current_kind else {
+            continue;
+        };
+        let Some((title, completed)) = strip_list_marker(trimmed) else {
+            continue;
+        };
+        if title.is_empty() {
+            continue;
+        }
+        items.push(ExtractedWorkspaceItem {
+            kind,
+            status: if kind == ProjectWorkspaceItemKind::Task {
+                if completed {
+                    ProjectWorkspaceItemStatus::Completed
+                } else {
+                    ProjectWorkspaceItemStatus::Open
+                }
+            } else {
+                ProjectWorkspaceItemStatus::Active
+            },
+            title: compact_visible_output(title),
+            extractor: "visible_heading",
+        });
+    }
+    items
+}
+
+fn extract_plan_workspace_items(plan: Option<&serde_json::Value>) -> Vec<ExtractedWorkspaceItem> {
+    let Some(plan) = plan else {
+        return Vec::new();
+    };
+    let mut items = plan
+        .get("steps")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|step| {
+            let title = step.get("title")?.as_str()?.trim();
+            if title.is_empty() {
+                return None;
+            }
+            let completed =
+                step.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+            Some(ExtractedWorkspaceItem {
+                kind: ProjectWorkspaceItemKind::Task,
+                status: if completed {
+                    ProjectWorkspaceItemStatus::Completed
+                } else {
+                    ProjectWorkspaceItemStatus::Open
+                },
+                title: compact_visible_output(title),
+                extractor: "durable_task_plan",
+            })
+        })
+        .collect::<Vec<_>>();
+    items.extend(
+        plan.pointer("/ledger/openQuestions")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|title| ExtractedWorkspaceItem {
+                kind: ProjectWorkspaceItemKind::OpenQuestion,
+                status: ProjectWorkspaceItemStatus::Open,
+                title: compact_visible_output(title),
+                extractor: "durable_evidence_ledger",
+            }),
+    );
+    items
+}
+
+fn dedupe_workspace_items(items: Vec<ExtractedWorkspaceItem>) -> Vec<ExtractedWorkspaceItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert((item.kind, item.title.to_lowercase())))
+        .collect()
+}
+
+fn item_event_title(kind: ProjectWorkspaceItemKind, completed: bool) -> &'static str {
+    match (kind, completed) {
+        (ProjectWorkspaceItemKind::Decision, _) => "Decision recorded",
+        (ProjectWorkspaceItemKind::Constraint, _) => "Constraint recorded",
+        (ProjectWorkspaceItemKind::Task, true) => "Task completed",
+        (ProjectWorkspaceItemKind::Task, false) => "Task recorded",
+        (ProjectWorkspaceItemKind::Artifact, _) => "Artifact recorded",
+        (ProjectWorkspaceItemKind::OpenQuestion, _) => "Open question recorded",
+        (ProjectWorkspaceItemKind::Source, _) => "Source recorded",
+    }
 }
 
 fn compact_visible_output(value: &str) -> String {
@@ -144,19 +490,41 @@ impl Database {
             return Ok(None);
         }
 
+        let task_run = self.get_agent_task_run(run_id).ok();
+        let mut extracted = extract_visible_workspace_items(visible_output);
+        extracted.extend(extract_plan_workspace_items(
+            task_run.as_ref().and_then(|run| run.plan.as_ref()),
+        ));
+        let extracted = dedupe_workspace_items(extracted);
+
         let episode_id = Uuid::new_v4().to_string();
         let event_id = Uuid::new_v4().to_string();
-        let evidence = serde_json::to_string(&vec![
+        let mut evidence_refs = vec![
             format!("conversation:{conversation_id}"),
             format!("turn:{turn_id}"),
             format!("run:{run_id}"),
-        ])?;
+        ];
+        if let Some(user_message_id) = task_run.as_ref().map(|run| run.user_message_id.as_str()) {
+            evidence_refs.push(format!("message:{user_message_id}"));
+        }
+        let evidence = serde_json::to_string(&evidence_refs)?;
+        let provider = task_run
+            .as_ref()
+            .and_then(|run| run.provider.as_deref())
+            .unwrap_or(&conversation.provider);
+        let model = task_run
+            .as_ref()
+            .and_then(|run| run.model.as_deref())
+            .unwrap_or(&conversation.model);
         let provenance = serde_json::to_string(&serde_json::json!({
             "kind": "observed_turn_completion",
             "conversationId": conversation_id,
             "turnId": turn_id,
             "runId": run_id,
-            "contentBoundary": "visible_assistant_output"
+            "contentBoundary": "visible_assistant_output",
+            "author": "assistant",
+            "provider": provider,
+            "model": model
         }))?;
 
         let mut conn = self.conn();
@@ -199,6 +567,97 @@ impl Database {
                 provenance
             ],
         )?;
+        for item in &extracted {
+            let item_id = Uuid::new_v4().to_string();
+            let item_provenance = serde_json::to_string(&serde_json::json!({
+                "kind": "observed_workspace_item",
+                "extractor": item.extractor,
+                "conversationId": conversation_id,
+                "turnId": turn_id,
+                "runId": run_id,
+                "contentBoundary": if item.extractor.starts_with("visible_") {
+                    "visible_assistant_output"
+                } else {
+                    "durable_plan_state"
+                },
+                "author": "assistant",
+                "provider": provider,
+                "model": model
+            }))?;
+            tx.execute(
+                "INSERT INTO project_workspace_items
+                     (id, project_id, conversation_id, turn_id, run_id, item_kind, item_status,
+                      title, summary, evidence_json, provenance_json, review_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 'observed')
+                 ON CONFLICT(project_id, item_kind, turn_id, title) DO UPDATE SET
+                     run_id = excluded.run_id,
+                     item_status = excluded.item_status,
+                     summary = excluded.summary,
+                     evidence_json = excluded.evidence_json,
+                     provenance_json = excluded.provenance_json,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                params![
+                    item_id,
+                    project_id,
+                    conversation_id,
+                    turn_id,
+                    run_id,
+                    item.kind.as_str(),
+                    item.status.as_str(),
+                    item.title,
+                    evidence,
+                    item_provenance
+                ],
+            )?;
+        }
+        for kind in [
+            ProjectWorkspaceItemKind::Decision,
+            ProjectWorkspaceItemKind::Constraint,
+            ProjectWorkspaceItemKind::Task,
+            ProjectWorkspaceItemKind::Artifact,
+            ProjectWorkspaceItemKind::OpenQuestion,
+            ProjectWorkspaceItemKind::Source,
+        ] {
+            let items = extracted
+                .iter()
+                .filter(|item| item.kind == kind)
+                .collect::<Vec<_>>();
+            if items.is_empty() {
+                continue;
+            }
+            let completed = kind == ProjectWorkspaceItemKind::Task
+                && items
+                    .iter()
+                    .all(|item| item.status == ProjectWorkspaceItemStatus::Completed);
+            let event_summary = items
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            let structured_event_id = Uuid::new_v4().to_string();
+            let event_type = kind.event_type(completed);
+            tx.execute(
+                "INSERT INTO project_events
+                     (id, project_id, conversation_id, turn_id, event_type, title, summary,
+                      provenance_json, confidence, review_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1.0, 'observed')
+                 ON CONFLICT(project_id, event_type, turn_id) DO UPDATE SET
+                     title = excluded.title,
+                     summary = excluded.summary,
+                     provenance_json = excluded.provenance_json,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                params![
+                    structured_event_id,
+                    project_id,
+                    conversation_id,
+                    turn_id,
+                    event_type,
+                    item_event_title(kind, completed),
+                    event_summary,
+                    provenance
+                ],
+            )?;
+        }
         tx.commit()?;
         drop(conn);
 
@@ -267,6 +726,84 @@ impl Database {
         Ok(rows)
     }
 
+    pub fn list_project_workspace_items(
+        &self,
+        project_id: &str,
+        kind: Option<ProjectWorkspaceItemKind>,
+        limit: usize,
+    ) -> Result<Vec<ProjectWorkspaceItem>, CoreError> {
+        let conn = self.conn();
+        let mut statement = conn.prepare(
+            "SELECT id, project_id, conversation_id, turn_id, run_id, item_kind, item_status,
+                    title, summary, evidence_json, provenance_json, review_state,
+                    created_at, updated_at
+             FROM project_workspace_items
+             WHERE project_id = ?1 AND (?2 IS NULL OR item_kind = ?2)
+             ORDER BY CASE item_status
+                        WHEN 'open' THEN 0
+                        WHEN 'active' THEN 1
+                        WHEN 'completed' THEN 2
+                        ELSE 3
+                      END,
+                      updated_at DESC, id DESC
+             LIMIT ?3",
+        )?;
+        let kind = kind.map(ProjectWorkspaceItemKind::as_str);
+        let rows = statement
+            .query_map(
+                params![project_id, kind, limit.clamp(1, 200) as i64],
+                workspace_item_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_related_project_chats(
+        &self,
+        project_id: &str,
+        query: Option<&str>,
+    ) -> Result<Vec<RelatedProjectChat>, CoreError> {
+        let conn = self.conn();
+        let mut statement = conn.prepare(
+            "SELECT c.id, c.title, COUNT(e.id),
+                    COALESCE((
+                        SELECT latest.summary
+                        FROM conversation_episodes latest
+                        WHERE latest.conversation_id = c.id
+                        ORDER BY latest.updated_at DESC, latest.id DESC
+                        LIMIT 1
+                    ), ''),
+                    MAX(COALESCE(e.updated_at, c.updated_at))
+             FROM conversations c
+             LEFT JOIN conversation_episodes e ON e.conversation_id = c.id
+             WHERE c.project_id = ?1 AND c.archived_at IS NULL
+             GROUP BY c.id, c.title, c.updated_at",
+        )?;
+        let terms = query_terms(query.unwrap_or_default());
+        let mut rows = statement
+            .query_map(params![project_id], |row| {
+                let title: String = row.get(1)?;
+                let latest_summary: String = row.get(3)?;
+                Ok(RelatedProjectChat {
+                    conversation_id: row.get(0)?,
+                    title: title.clone(),
+                    episode_count: row.get::<_, i64>(2)?.max(0) as usize,
+                    relevance_score: relevance(&format!("{title} {latest_summary}"), &terms),
+                    latest_summary,
+                    updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.sort_by(|left, right| {
+            right
+                .relevance_score
+                .cmp(&left.relevance_score)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+        });
+        rows.truncate(MAX_RELATED_CHATS);
+        Ok(rows)
+    }
+
     pub fn get_project_workspace_snapshot(
         &self,
         project_id: &str,
@@ -290,12 +827,51 @@ impl Database {
                 .then_with(|| right.created_at.cmp(&left.created_at))
         });
         events.truncate(MAX_BOOTSTRAP_EVENTS);
+        let decisions = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::Decision),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let constraints = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::Constraint),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let tasks = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::Task),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let artifacts = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::Artifact),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let open_questions = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::OpenQuestion),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let sources = self.list_project_workspace_items(
+            project_id,
+            Some(ProjectWorkspaceItemKind::Source),
+            MAX_BOOTSTRAP_ITEMS_PER_KIND,
+        )?;
+        let related_chats = self.list_related_project_chats(project_id, query)?;
         Ok(ProjectWorkspaceSnapshot {
             project_id: project.id,
             brief: project.description,
             instructions: project.system_prompt,
             episodes,
             events,
+            decisions,
+            constraints,
+            tasks,
+            artifacts,
+            open_questions,
+            sources,
+            source_scope: project.source_scope.unwrap_or_default(),
+            related_chats,
         })
     }
 }
@@ -314,6 +890,13 @@ pub fn build_project_evidence_section(snapshot: &ProjectWorkspaceSnapshot) -> St
     if snapshot.brief.trim().is_empty()
         && snapshot.episodes.is_empty()
         && snapshot.events.is_empty()
+        && snapshot.decisions.is_empty()
+        && snapshot.constraints.is_empty()
+        && snapshot.tasks.is_empty()
+        && snapshot.artifacts.is_empty()
+        && snapshot.open_questions.is_empty()
+        && snapshot.sources.is_empty()
+        && snapshot.source_scope.is_empty()
     {
         return String::new();
     }
@@ -326,6 +909,8 @@ pub fn build_project_evidence_section(snapshot: &ProjectWorkspaceSnapshot) -> St
     if !snapshot.brief.trim().is_empty() {
         lines.push(format!("- Brief: {}", snapshot.brief.trim()));
     }
+    append_workspace_items(&mut lines, "Decision", &snapshot.decisions);
+    append_workspace_items(&mut lines, "Constraint", &snapshot.constraints);
     for episode in &snapshot.episodes {
         lines.push(format!(
             "- Episode [{} / {}]: {} (evidence: {})",
@@ -335,13 +920,29 @@ pub fn build_project_evidence_section(snapshot: &ProjectWorkspaceSnapshot) -> St
             episode.evidence.join(", ")
         ));
     }
-    for event in &snapshot.events {
+    append_workspace_items(&mut lines, "Task", &snapshot.tasks);
+    append_workspace_items(&mut lines, "Artifact", &snapshot.artifacts);
+    append_workspace_items(&mut lines, "Open question", &snapshot.open_questions);
+    append_workspace_items(&mut lines, "Source", &snapshot.sources);
+    if !snapshot.source_scope.is_empty() {
         lines.push(format!(
-            "- Event [{} / {}]: {} — {}",
-            event.event_type, event.review_state, event.title, event.summary
+            "- Linked source scope: {}",
+            snapshot.source_scope.join(", ")
         ));
     }
     lines.join("\n")
+}
+
+fn append_workspace_items(lines: &mut Vec<String>, label: &str, items: &[ProjectWorkspaceItem]) {
+    for item in items {
+        lines.push(format!(
+            "- {label} [{} / {}]: {} (evidence: {})",
+            item.status.as_str(),
+            item.review_state,
+            item.summary,
+            item.evidence.join(", ")
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +1004,64 @@ mod tests {
             events[0].provenance["contentBoundary"],
             "visible_assistant_output"
         );
+    }
+
+    #[test]
+    fn structured_workspace_items_are_extracted_and_idempotent() {
+        let db = Database::open_memory().unwrap();
+        let (project_id, conversation_id) = project_conversation(&db);
+        let visible_output = "# Decisions\n- Ship the append-safe design\n\n# Constraints\n- Preserve visible provenance\n\n# Tasks\n- [ ] Run remote checks\n- [x] Add focused tests\n\n# Artifacts\n- docs/design.md\n\n# Open questions\n- Is the release runner available?\n\n# Sources\n- https://example.com/spec";
+        db.record_project_turn_completion(
+            &conversation_id,
+            "turn-structured",
+            "run-structured",
+            visible_output,
+        )
+        .unwrap();
+        db.record_project_turn_completion(
+            &conversation_id,
+            "turn-structured",
+            "run-structured-retry",
+            visible_output,
+        )
+        .unwrap();
+
+        let snapshot = db
+            .get_project_workspace_snapshot(&project_id, Some("release runner"))
+            .unwrap();
+        assert_eq!(snapshot.decisions.len(), 1);
+        assert_eq!(snapshot.constraints.len(), 1);
+        assert_eq!(snapshot.tasks.len(), 2);
+        assert_eq!(snapshot.artifacts.len(), 1);
+        assert_eq!(snapshot.open_questions.len(), 1);
+        assert_eq!(snapshot.sources.len(), 1);
+        assert_eq!(snapshot.related_chats.len(), 1);
+        assert_eq!(snapshot.related_chats[0].episode_count, 1);
+        assert_eq!(
+            snapshot.decisions[0].run_id.as_deref(),
+            Some("run-structured-retry")
+        );
+        assert_eq!(snapshot.tasks[0].status, ProjectWorkspaceItemStatus::Open);
+        assert_eq!(
+            snapshot.tasks[1].status,
+            ProjectWorkspaceItemStatus::Completed
+        );
+    }
+
+    #[test]
+    fn durable_plan_state_extracts_tasks_and_open_questions() {
+        let plan = serde_json::json!({
+            "steps": [
+                { "title": "Compile the runtime", "status": "completed" },
+                { "title": "Run the UI checks", "status": "in_progress" }
+            ],
+            "ledger": { "openQuestions": ["Is CI authoritative?"] }
+        });
+        let items = extract_plan_workspace_items(Some(&plan));
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].kind, ProjectWorkspaceItemKind::Task);
+        assert_eq!(items[0].status, ProjectWorkspaceItemStatus::Completed);
+        assert_eq!(items[2].kind, ProjectWorkspaceItemKind::OpenQuestion);
     }
 
     #[test]
