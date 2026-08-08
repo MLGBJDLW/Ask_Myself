@@ -12,6 +12,7 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::{stream, stream::BoxStream, StreamExt};
 
+use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{
     CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderType,
     StreamChunk,
@@ -72,6 +73,21 @@ impl AutomaticFallbackProvider {
                 provider_type: fallback.provider_type,
             });
         }
+        let has_forbidden_route = routes.iter().any(|route| {
+            route.provider.reasoning_replay_policy(&route.model) == ReasoningReplayPolicy::Forbidden
+        });
+        let has_required_route = routes.iter().any(|route| {
+            route
+                .provider
+                .reasoning_replay_policy(&route.model)
+                .requires_tool_call_payload()
+        });
+        if has_forbidden_route && has_required_route {
+            return Err(CoreError::InvalidInput(
+                "Automatic fallback cannot mix reasoning-forbidden and reasoning-required routes"
+                    .to_string(),
+            ));
+        }
         Ok(Self {
             routes,
             active_position: AtomicUsize::new(0),
@@ -98,6 +114,40 @@ impl AutomaticFallbackProvider {
         } else {
             "fallback_invocation_failed_automatic_fallback"
         }
+    }
+
+    /// The request history is projected before a streaming route is known.
+    /// Apply the strictest replay contract reachable from the active route so
+    /// a permissive primary cannot bypass a stricter fallback's tool boundary.
+    fn conservative_reasoning_replay_policy(&self) -> ReasoningReplayPolicy {
+        let policies = self.routes[self.active_position()..]
+            .iter()
+            .map(|route| route.provider.reasoning_replay_policy(&route.model));
+        let mut merged = ReasoningReplayPolicy::NotRequired;
+        for policy in policies {
+            merged = match (merged, policy) {
+                (_, ReasoningReplayPolicy::OpaqueSignature)
+                | (ReasoningReplayPolicy::OpaqueSignature, _) => {
+                    ReasoningReplayPolicy::OpaqueSignature
+                }
+                (_, ReasoningReplayPolicy::RequiredAlways)
+                | (ReasoningReplayPolicy::RequiredAlways, _) => {
+                    ReasoningReplayPolicy::RequiredAlways
+                }
+                (_, ReasoningReplayPolicy::RequiredOnToolCall)
+                | (ReasoningReplayPolicy::RequiredOnToolCall, _) => {
+                    ReasoningReplayPolicy::RequiredOnToolCall
+                }
+                (_, ReasoningReplayPolicy::Forbidden) | (ReasoningReplayPolicy::Forbidden, _) => {
+                    ReasoningReplayPolicy::Forbidden
+                }
+                (_, ReasoningReplayPolicy::Unknown) | (ReasoningReplayPolicy::Unknown, _) => {
+                    ReasoningReplayPolicy::Unknown
+                }
+                _ => ReasoningReplayPolicy::NotRequired,
+            };
+        }
+        merged
     }
 
     fn select_route(&self, from_position: usize, to_position: usize) -> Result<(), CoreError> {
@@ -182,10 +232,7 @@ impl LlmProvider for AutomaticFallbackProvider {
         &self,
         _model: &str,
     ) -> super::reasoning_profile::ReasoningReplayPolicy {
-        let position = self.active_position();
-        self.routes[position]
-            .provider
-            .reasoning_replay_policy(&self.routes[position].model)
+        self.conservative_reasoning_replay_policy()
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -377,12 +424,17 @@ mod tests {
         name: &'static str,
         behavior: Behavior,
         models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
     }
 
     #[async_trait]
     impl LlmProvider for MockProvider {
         fn name(&self) -> &str {
             self.name
+        }
+
+        fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+            self.replay_policy
         }
 
         async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -453,6 +505,21 @@ mod tests {
             name,
             behavior,
             models,
+            replay_policy: ReasoningReplayPolicy::Unknown,
+        })
+    }
+
+    fn provider_with_policy(
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
+    ) -> Box<dyn LlmProvider> {
+        Box::new(MockProvider {
+            name,
+            behavior,
+            models,
+            replay_policy,
         })
     }
 
@@ -519,6 +586,40 @@ mod tests {
                 1,
                 "primary_invocation_failed_automatic_fallback".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn replay_policy_covers_strict_routes_reachable_before_output() {
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_policy(
+                "primary",
+                Behavior::Stream(vec![]),
+                Arc::clone(&models),
+                ReasoningReplayPolicy::NotRequired,
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider_with_policy(
+                    "deepseek",
+                    Behavior::Stream(vec![]),
+                    models,
+                    ReasoningReplayPolicy::RequiredOnToolCall,
+                ),
+                model: "deepseek-v4-pro".to_string(),
+                provider_type: ProviderType::DeepSeek,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        assert_eq!(
+            wrapper.reasoning_replay_policy("ignored"),
+            ReasoningReplayPolicy::RequiredOnToolCall
         );
     }
 

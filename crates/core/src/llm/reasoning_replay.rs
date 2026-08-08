@@ -19,6 +19,47 @@ pub fn sanitize_reasoning_text(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Return the exclusive end of one assistant/tool replay chain.
+///
+/// A chain starts with an assistant tool call and includes every following
+/// tool result, subsequent assistant tool call, and the final assistant
+/// response. Keeping this boundary shared prevents trimming and replay repair
+/// from retaining only a dependent suffix of a multi-tool turn.
+pub(crate) fn atomic_tool_replay_unit_end(messages: &[Message], start: usize) -> usize {
+    debug_assert!(
+        messages.get(start).is_some_and(|message| {
+            message.role == Role::Assistant
+                && message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+        }),
+        "atomic replay units must start at an assistant tool call"
+    );
+
+    let mut end = start + 1;
+    loop {
+        while end < messages.len() && messages[end].role == Role::Tool {
+            end += 1;
+        }
+        let Some(assistant) = messages
+            .get(end)
+            .filter(|message| message.role == Role::Assistant)
+        else {
+            break;
+        };
+        end += 1;
+        if !assistant
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+        {
+            break;
+        }
+    }
+    end
+}
+
 pub fn prepare_reasoning_replay_history(
     messages: &[Message],
     policy: ReasoningReplayPolicy,
@@ -43,18 +84,28 @@ pub fn prepare_reasoning_replay_history(
     let mut index = 0;
     while index < normalized.len() {
         let message = &normalized[index];
-        let missing_required_payload = message.role == Role::Assistant
+        let starts_tool_unit = message.role == Role::Assistant
             && message
                 .tool_calls
                 .as_ref()
-                .is_some_and(|calls| !calls.is_empty())
-            && message.reasoning_content.is_none();
-        if missing_required_payload {
-            omitted_units += 1;
-            index += 1;
-            while index < normalized.len() && normalized[index].role == Role::Tool {
-                index += 1;
+                .is_some_and(|calls| !calls.is_empty());
+        if starts_tool_unit {
+            let end = atomic_tool_replay_unit_end(&normalized, index);
+            let missing_required_payload = normalized[index..end].iter().any(|message| {
+                message.role == Role::Assistant
+                    && message
+                        .tool_calls
+                        .as_ref()
+                        .is_some_and(|calls| !calls.is_empty())
+                    && message.reasoning_content.is_none()
+            });
+            if missing_required_payload {
+                omitted_units += 1;
+                index = end;
+                continue;
             }
+            projected.extend_from_slice(&normalized[index..end]);
+            index = end;
             continue;
         }
         projected.push(message.clone());
@@ -147,6 +198,35 @@ mod tests {
         assert_eq!(
             projection.messages[0].reasoning_content.as_deref(),
             Some("captured")
+        );
+    }
+
+    #[test]
+    fn missing_payload_drops_the_entire_multi_tool_chain() {
+        let first_tool = Message::text_with_name(Role::Tool, "first result", "call-1");
+        let second_tool = Message::text_with_name(Role::Tool, "second result", "call-1");
+        let projection = prepare_reasoning_replay_history(
+            &[
+                Message::text(Role::User, "old question"),
+                tool_call_message(Some("captured first step")),
+                first_tool,
+                tool_call_message(None),
+                second_tool,
+                Message::text(Role::Assistant, "dependent final answer"),
+                Message::text(Role::User, "new question"),
+            ],
+            ReasoningReplayPolicy::RequiredOnToolCall,
+        );
+
+        assert_eq!(projection.omitted_units, 1);
+        assert!(!projection
+            .messages
+            .iter()
+            .any(|message| message.text_content().contains("result")
+                || message.text_content().contains("dependent final answer")));
+        assert_eq!(
+            projection.messages.last().map(Message::text_content),
+            Some("new question".to_string())
         );
     }
 

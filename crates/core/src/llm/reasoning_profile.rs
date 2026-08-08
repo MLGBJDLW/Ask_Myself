@@ -446,7 +446,7 @@ pub fn resolve_reasoning_profile(
 
     if provider == ProviderType::DeepSeek
         && is_deepseek_public_endpoint(provider, base_url)
-        && (model.contains("reasoner") || model.contains("r1") || model.contains("v4"))
+        && matches!(model.as_str(), "deepseek-v4-pro" | "deepseek-v4-flash")
     {
         let mut value = profile(
             key,
@@ -877,7 +877,7 @@ mod tests {
             ProviderType::DeepSeek,
             Some("https://api.deepseek.com/v1"),
             ReasoningApiStyle::OpenAiChatCompletions,
-            "deepseek-v4",
+            "deepseek-v4-pro",
         );
         let custom = resolve_reasoning_profile(
             ProviderType::DeepSeek,
@@ -898,5 +898,30 @@ mod tests {
         );
         assert_eq!(custom.replay_policy, ReasoningReplayPolicy::Unknown);
         assert_eq!(alibaba.replay_policy, ReasoningReplayPolicy::NotRequired);
+
+        for unknown_model in [
+            "deepseek-v4",
+            "deepseek-v4-pro-preview",
+            "deepseek-reasoner",
+        ] {
+            let unknown = resolve_reasoning_profile(
+                ProviderType::DeepSeek,
+                Some("https://api.deepseek.com/v1"),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                unknown_model,
+            );
+            assert_eq!(unknown.replay_policy, ReasoningReplayPolicy::Unknown);
+        }
+
+        let flash = resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "deepseek-v4-flash",
+        );
+        assert_eq!(
+            flash.replay_policy,
+            ReasoningReplayPolicy::RequiredOnToolCall
+        );
     }
 }

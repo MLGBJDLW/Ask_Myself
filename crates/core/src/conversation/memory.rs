@@ -454,8 +454,7 @@ struct MessageBlock {
 /// Keeps the leading system prompt block plus the newest messages that fit
 /// within `max_tokens - reserved_for_response`.
 ///
-/// Tool-call pairs (an assistant message with `tool_calls` and its
-/// subsequent `Tool` result messages) are treated as atomic blocks and
+/// Complete assistant/tool replay chains are treated as atomic blocks and
 /// will never be split.
 pub fn trim_to_context_window(
     messages: &[Message],
@@ -475,7 +474,7 @@ pub fn trim_to_context_window(
         .take_while(|message| message.role == Role::System)
         .count();
     let leading_system = &messages[..leading_system_count];
-    let conversation: Vec<&Message> = messages[leading_system_count..].iter().collect();
+    let conversation = &messages[leading_system_count..];
 
     // Always include the leading system prefix first. Later system messages are
     // timeline messages and must stay where they were appended.
@@ -517,14 +516,15 @@ pub fn trim_to_context_window(
 
 /// Group messages into atomic blocks.
 ///
-/// An assistant message with `tool_calls` + its following `Tool` messages
-/// form one indivisible block. Everything else is its own block.
-fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
+/// A complete assistant/tool chain, including later tool calls and the final
+/// assistant response, forms one indivisible block. Everything else is its own
+/// block.
+fn build_message_blocks(conversation: &[Message]) -> Vec<MessageBlock> {
     let mut blocks: Vec<MessageBlock> = Vec::new();
     let mut i = 0;
 
     while i < conversation.len() {
-        let msg = conversation[i];
+        let msg = &conversation[i];
 
         if msg.role == Role::System && !blocks.is_empty() {
             let cost = estimate_message_tokens(msg);
@@ -541,19 +541,17 @@ fn build_message_blocks(conversation: &[&Message]) -> Vec<MessageBlock> {
             let mut block_msgs = vec![msg.clone()];
             let mut cost = estimate_message_tokens(msg);
 
-            // Collect following tool result messages
-            let mut j = i + 1;
-            while j < conversation.len() && conversation[j].role == Role::Tool {
-                cost += estimate_message_tokens(conversation[j]);
-                block_msgs.push(conversation[j].clone());
-                j += 1;
+            let end = crate::llm::reasoning_replay::atomic_tool_replay_unit_end(conversation, i);
+            for chained in &conversation[i + 1..end] {
+                cost = cost.saturating_add(estimate_message_tokens(chained));
+                block_msgs.push(chained.clone());
             }
 
             blocks.push(MessageBlock {
                 messages: block_msgs,
                 token_cost: cost,
             });
-            i = j;
+            i = end;
         } else {
             // Standalone message
             blocks.push(MessageBlock {
@@ -917,6 +915,55 @@ mod tests {
         assert_eq!(
             has_tool_call_assistant, has_tool_result,
             "Tool call assistant and tool result must be kept or dropped together"
+        );
+    }
+
+    #[test]
+    fn test_trim_never_splits_a_multi_tool_replay_chain() {
+        let tool_call = |id: &str| Message {
+            role: Role::Assistant,
+            parts: vec![],
+            name: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: id.to_string(),
+                name: "lookup".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }]),
+            reasoning_content: Some(format!("reasoning for {id}")),
+            prompt_cache_hint: None,
+        };
+        let messages = vec![
+            msg(Role::System, "policy"),
+            msg(Role::User, "old request"),
+            tool_call("call-1"),
+            Message::text_with_name(Role::Tool, "first result", "call-1"),
+            tool_call("call-2"),
+            Message::text_with_name(Role::Tool, "second result", "call-2"),
+            msg(Role::Assistant, "final answer"),
+            msg(Role::User, "new request"),
+        ];
+        let chain_cost = messages[2..7]
+            .iter()
+            .map(estimate_message_tokens)
+            .sum::<u32>();
+        let tail_budget = estimate_message_tokens(&messages[0])
+            + estimate_message_tokens(&messages[7])
+            + chain_cost.saturating_sub(1);
+
+        let result = trim_to_context_window(&messages, tail_budget, 0);
+
+        assert!(!result.iter().any(|message| {
+            message.role == Role::Tool
+                || message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+                || message.text_content() == "final answer"
+        }));
+        assert_eq!(
+            result.last().map(Message::text_content),
+            Some("new request".to_string())
         );
     }
 }
