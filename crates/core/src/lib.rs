@@ -24,6 +24,7 @@ pub mod browser_runtime;
 pub mod cache;
 pub mod capability_package;
 pub mod capability_registry;
+pub mod companion;
 pub mod compile;
 pub mod context_maintenance;
 pub mod context_pack;

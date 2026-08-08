@@ -94,6 +94,17 @@ pub async fn get_project_narrative_cmd(
 }
 
 #[tauri::command]
+pub async fn get_companion_projection_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<CompanionProjection, String> {
+    state
+        .db
+        .get_companion_projection(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn create_project_knowledge_claim_cmd(
     state: tauri::State<'_, AppState>,
     project_id: String,

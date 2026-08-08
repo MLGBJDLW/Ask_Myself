@@ -8,6 +8,7 @@ import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { DecisionTray } from '../components/chat/DecisionTray';
+import { CompanionPet } from '../components/chat/CompanionPet';
 import {
   TerminalDock,
   TERMINAL_TOGGLE_EVENT,
@@ -1857,7 +1858,12 @@ export function ChatPage() {
                   </Button>
                 </div>
               </div>
-            ) : <ChatInput
+            ) : <>
+              <CompanionPet
+                taskRun={chat.taskRun}
+                onOpenTaskCenter={() => navigate('/tasks')}
+              />
+              <ChatInput
               onSend={handleComposerSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
@@ -1889,7 +1895,8 @@ export function ChatPage() {
                 await chat.reloadMessages();
               } : undefined}
               onBranchCheckpoint={handleCheckpointBranch}
-            />}
+              />
+            </>}
             {chat.activeId && !isArchivedConversation && (
               <ApprovalDialogMount conversationId={chat.activeId} />
             )}

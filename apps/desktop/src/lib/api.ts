@@ -1146,6 +1146,33 @@ export const getAgentTaskRunEvents = (runId: string) =>
 export const getAgentRunEvents = (runId: string) =>
   invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId });
 
+export type CompanionState =
+  | 'idle'
+  | 'thinking'
+  | 'searching'
+  | 'browsing'
+  | 'readingFiles'
+  | 'runningTool'
+  | 'coding'
+  | 'waitingForApproval'
+  | 'waitingForUser'
+  | 'reviewing'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'sleeping';
+
+export interface CompanionProjection {
+  runId: string;
+  state: CompanionState;
+  label: string;
+  sourceEventSeq?: number | null;
+  terminal: boolean;
+}
+
+export const getCompanionProjection = (runId: string) =>
+  invoke<CompanionProjection>('get_companion_projection_cmd', { runId });
+
 export const getRunUsageSnapshot = (runId: string) =>
   invoke<UsageSnapshot | null>('get_run_usage_snapshot_cmd', { runId });
 

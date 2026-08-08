@@ -33,6 +33,7 @@ use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermission
 use nexa_core::capability_registry::{
     CapabilityRegistryProjection, RegistryActivationRecord, RegistryReadMode, RegistryScope,
 };
+use nexa_core::companion::CompanionProjection;
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, validate_agent_config_credential_contract,

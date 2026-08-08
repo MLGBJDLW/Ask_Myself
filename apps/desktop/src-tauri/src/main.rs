@@ -423,6 +423,7 @@ fn main() {
             commands::list_project_memories_cmd,
             commands::get_project_workspace_cmd,
             commands::get_project_narrative_cmd,
+            commands::get_companion_projection_cmd,
             commands::create_project_knowledge_claim_cmd,
             commands::review_project_knowledge_claim_cmd,
             commands::create_project_memory_cmd,
