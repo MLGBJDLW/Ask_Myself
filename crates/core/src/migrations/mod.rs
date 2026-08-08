@@ -2341,8 +2341,11 @@ Every answer that uses knowledge base search results.
     ),
     (
         "v109_turn_launch_project",
-        "ALTER TABLE conversation_turns ADD COLUMN launch_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
-         UPDATE conversation_turns
+        "ALTER TABLE conversation_turns ADD COLUMN launch_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;",
+    ),
+    (
+        "v110_turn_launch_project_backfill",
+        "UPDATE conversation_turns
          SET launch_project_id = (
              SELECT conversations.project_id
              FROM conversations
@@ -2615,6 +2618,12 @@ mod tests {
             .map(|(_, sql)| *sql)
             .unwrap();
         conn.execute_batch(migration).unwrap();
+        let backfill = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v110_turn_launch_project_backfill")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(backfill).unwrap();
 
         let project_id: Option<String> = conn
             .query_row(
@@ -2632,6 +2641,48 @@ mod tests {
             .unwrap();
         assert_eq!(project_id.as_deref(), Some("project-1"));
         assert_eq!(plain_project_id, None);
+    }
+
+    #[test]
+    fn turn_launch_project_migration_recovers_after_column_only_partial_apply() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO projects (id, name) VALUES ('project-1', 'Project');
+             INSERT INTO conversations (id, provider, model, project_id)
+                 VALUES ('conversation-1', 'test', 'test', 'project-1');
+             INSERT INTO messages (id, conversation_id, role)
+                 VALUES ('message-1', 'conversation-1', 'user');
+             INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id)
+                 VALUES ('turn-1', 'conversation-1', NULL, 'message-1');
+             DROP INDEX idx_conversation_turns_launch_project;
+             DELETE FROM _migrations
+             WHERE name IN ('v109_turn_launch_project', 'v110_turn_launch_project_backfill');",
+        )
+        .expect("simulate interruption after the launch project column");
+
+        run_migrations(&conn).expect("partial launch project migration should recover");
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'turn-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_conversation_turns_launch_project'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project-1"));
+        assert!(index_exists);
     }
 
     #[test]
