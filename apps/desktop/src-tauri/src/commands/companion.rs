@@ -324,15 +324,12 @@ pub fn get_global_companion_projection_cmd(
             .and_then(|project_id| {
                 runs.iter().find(|item| {
                     item.project_id.as_deref() == Some(project_id)
-                        && is_active_status(&item.run.status)
+                        && (is_active_status(&item.run.status)
+                            || terminal_hold_is_active(&item.run, &config.companion))
                 })
             }),
         CompanionActiveRunPolicy::HighestPriority => unreachable!("handled above"),
-    }
-    .or_else(|| {
-        runs.first()
-            .filter(|item| terminal_hold_is_active(&item.run, &config.companion))
-    });
+    };
 
     selected
         .map(|item| state.db.get_companion_projection(&item.run.id))
