@@ -35,6 +35,9 @@ const ACTIVE_STATES = new Set<api.CompanionState>([
   'coding',
   'reviewing',
 ]);
+const COMPANION_STATES = new Set<api.CompanionState>(
+  Object.keys(STATE_LABEL_KEYS) as api.CompanionState[],
+);
 
 function fallbackProjection(taskRun?: AgentTaskRun | null): api.CompanionProjection {
   if (!taskRun) {
@@ -63,6 +66,24 @@ function fallbackProjection(taskRun?: AgentTaskRun | null): api.CompanionProject
   return { runId: taskRun.id, state, label: taskRun.title, sourceEventSeq: null, terminal: false };
 }
 
+function normalizeProjection(
+  value: unknown,
+  taskRun?: AgentTaskRun | null,
+): api.CompanionProjection {
+  const fallback = fallbackProjection(taskRun);
+  if (!value || typeof value !== 'object') return fallback;
+  const candidate = value as Partial<api.CompanionProjection>;
+  return {
+    runId: typeof candidate.runId === 'string' ? candidate.runId : fallback.runId,
+    state: typeof candidate.state === 'string' && COMPANION_STATES.has(candidate.state as api.CompanionState)
+      ? candidate.state as api.CompanionState
+      : fallback.state,
+    label: typeof candidate.label === 'string' ? candidate.label : fallback.label,
+    sourceEventSeq: typeof candidate.sourceEventSeq === 'number' ? candidate.sourceEventSeq : null,
+    terminal: typeof candidate.terminal === 'boolean' ? candidate.terminal : fallback.terminal,
+  };
+}
+
 export function CompanionPet({ taskRun, onOpenTaskCenter }: CompanionPetProps) {
   const { t } = useTranslation();
   const [projection, setProjection] = useState<api.CompanionProjection>(() => fallbackProjection(taskRun));
@@ -72,7 +93,7 @@ export function CompanionPet({ taskRun, onOpenTaskCenter }: CompanionPetProps) {
     setProjection(fallbackProjection(taskRun));
     if (!taskRun?.id) return () => { current = false; };
     api.getCompanionProjection(taskRun.id)
-      .then((next) => { if (current) setProjection(next); })
+      .then((next) => { if (current) setProjection(normalizeProjection(next, taskRun)); })
       .catch(() => { /* A pack or projection failure must never affect Agent Runtime. */ });
     return () => { current = false; };
   }, [taskRun?.id, taskRun?.updatedAt, taskRun]);
