@@ -167,6 +167,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        let _ = app.emit("companion://main-visibility", true);
     }
 }
 
@@ -848,16 +849,25 @@ fn main() {
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } if label == "main" => {
-            let minimize_to_tray = app_handle
+            let config = app_handle
                 .try_state::<AppState>()
-                .and_then(|state| state.db.load_app_config().ok())
-                .is_some_and(|config| {
-                    config.window_close_behavior == WindowCloseBehavior::MinimizeToTray
-                });
+                .and_then(|state| state.db.load_app_config().ok());
+            let minimize_to_tray = config.as_ref().is_some_and(|config| {
+                config.window_close_behavior == WindowCloseBehavior::MinimizeToTray
+            });
             if minimize_to_tray {
                 api.prevent_close();
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.hide();
+                }
+                let _ = app_handle.emit("companion://main-visibility", false);
+                if config
+                    .as_ref()
+                    .is_some_and(|config| !config.companion.continue_when_main_hidden)
+                {
+                    if let Err(error) = companion_window::hide_companion(app_handle) {
+                        log::warn!("Failed to hide Desktop Pet with the main window: {error}");
+                    }
                 }
             }
         }

@@ -104,6 +104,7 @@ export function CompanionWindowPage() {
   const [asset, setAsset] = useState<string | null>(null);
   const [projection, setProjection] = useState<api.CompanionProjection | null>(null);
   const [visible, setVisible] = useState(false);
+  const [mainWindowVisible, setMainWindowVisible] = useState<boolean | null>(null);
   const refreshTimer = useRef<number | null>(null);
 
   const refreshProjection = useCallback(async () => {
@@ -152,6 +153,7 @@ export function CompanionWindowPage() {
       listen('agent:event', scheduleProjectionRefresh),
       listen('companion://settings-changed', () => { void loadRuntime(); }),
       listen<boolean>('companion://visibility', (event) => setVisible(event.payload)),
+      listen<boolean>('companion://main-visibility', (event) => setMainWindowVisible(event.payload)),
     ]);
     return () => {
       if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
@@ -160,7 +162,18 @@ export function CompanionWindowPage() {
   }, [loadRuntime, refreshProjection, scheduleProjectionRefresh]);
 
   useEffect(() => {
-    if (!settings.enabled || settings.displayMode !== 'during_tasks') return;
+    if (!settings.enabled) return;
+    if (mainWindowVisible === false && !settings.continueWhenMainHidden) {
+      void api.hideCompanion();
+      return;
+    }
+    if (settings.displayMode === 'always') {
+      if (mainWindowVisible === true && !settings.continueWhenMainHidden) {
+        void api.showCompanion();
+      }
+      return;
+    }
+    if (settings.displayMode !== 'during_tasks') return;
     if (projection && !projection.terminal) {
       void api.showCompanion();
       return;
@@ -172,6 +185,8 @@ export function CompanionWindowPage() {
     projection?.runId,
     projection?.state,
     projection?.terminal,
+    mainWindowVisible,
+    settings.continueWhenMainHidden,
     settings.displayMode,
     settings.enabled,
     settings.failureHoldMs,

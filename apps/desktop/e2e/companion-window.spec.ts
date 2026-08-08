@@ -6,9 +6,13 @@ test.beforeEach(async ({ page }) => {
     let callbackSeq = 1;
     let listenerSeq = 1;
     const callbacks = new Map<number, (event: unknown) => void>();
-    const invoke = async (cmd: string) => {
+    const listeners = new Map<string, number>();
+    const companionInvocations: string[] = [];
+    const invoke = async (cmd: string, args?: { event?: string; handler?: number }) => {
       switch (cmd) {
-        case 'plugin:event|listen': return listenerSeq++;
+        case 'plugin:event|listen':
+          if (args?.event && typeof args.handler === 'number') listeners.set(args.event, args.handler);
+          return listenerSeq++;
         case 'plugin:event|unlisten': return null;
         case 'get_app_config_cmd':
           return {
@@ -19,7 +23,7 @@ test.beforeEach(async ({ page }) => {
               interactionMode: 'smart',
               showInChat: true,
               autoShowOnStart: true,
-              continueWhenMainHidden: true,
+              continueWhenMainHidden: localStorage.getItem('nexa-test-continue-hidden') !== 'false',
               scale: 2,
               animationFpsCap: 24,
               reducedMotion: false,
@@ -51,7 +55,11 @@ test.beforeEach(async ({ page }) => {
         case 'companion_renderer_ready_cmd':
           (window as unknown as { __companionReady?: boolean }).__companionReady = true;
           return null;
-        default: return null;
+        default:
+          if (cmd === 'show_companion_cmd' || cmd === 'hide_companion_cmd') {
+            companionInvocations.push(cmd);
+          }
+          return null;
       }
     };
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
@@ -70,6 +78,17 @@ test.beforeEach(async ({ page }) => {
     };
     (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
       unregisterListener: () => undefined,
+    };
+    (window as unknown as {
+      __companionInvocations?: string[];
+      __emitTauri?: (event: string, payload: unknown) => void;
+    }).__companionInvocations = companionInvocations;
+    (window as unknown as {
+      __emitTauri?: (event: string, payload: unknown) => void;
+    }).__emitTauri = (event, payload) => {
+      const callbackId = listeners.get(event);
+      if (callbackId === undefined) return;
+      callbacks.get(callbackId)?.({ event, payload });
     };
   });
 });
@@ -91,4 +110,28 @@ test('companion route is independent, task-aware, and privacy-safe', async ({ pa
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __companionReady?: boolean }
   ).__companionReady)).toBe(true);
+});
+
+test('continue-when-hidden gates automatic companion visibility', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nexa-test-continue-hidden', 'false'));
+  await page.goto('/companion');
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __companionReady?: boolean }
+  ).__companionReady)).toBe(true);
+
+  await page.evaluate(() => (
+    window as unknown as { __emitTauri?: (event: string, payload: unknown) => void }
+  ).__emitTauri?.('companion://main-visibility', false));
+  await expect.poll(() => page.evaluate(() => {
+    const calls = (window as unknown as { __companionInvocations?: string[] }).__companionInvocations ?? [];
+    return calls.at(-1);
+  })).toBe('hide_companion_cmd');
+
+  await page.evaluate(() => (
+    window as unknown as { __emitTauri?: (event: string, payload: unknown) => void }
+  ).__emitTauri?.('companion://main-visibility', true));
+  await expect.poll(() => page.evaluate(() => {
+    const calls = (window as unknown as { __companionInvocations?: string[] }).__companionInvocations ?? [];
+    return calls.at(-1);
+  })).toBe('show_companion_cmd');
 });
