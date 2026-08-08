@@ -646,9 +646,6 @@ impl Database {
         visible_output: &str,
     ) -> Result<Option<ConversationEpisode>, CoreError> {
         let conversation = self.get_conversation(conversation_id)?;
-        let Some(project_id) = conversation.project_id else {
-            return Ok(None);
-        };
         let summary = compact_visible_output(visible_output);
         if summary.is_empty() {
             return Ok(None);
@@ -663,8 +660,22 @@ impl Database {
         if !matches!(turn.status.as_str(), "success" | "cached") {
             return Ok(None);
         }
+        let Some(project_id) = turn.launch_project_id.clone() else {
+            return Ok(None);
+        };
 
-        let task_run = self.get_agent_task_run(run_id).ok();
+        let task_run = match self.get_agent_task_run(run_id) {
+            Ok(run) => {
+                if run.conversation_id != conversation_id || run.turn_id != turn_id {
+                    return Err(CoreError::InvalidInput(format!(
+                        "Agent task run {run_id} does not belong to conversation {conversation_id} turn {turn_id}"
+                    )));
+                }
+                Some(run)
+            }
+            Err(CoreError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
         let mut extracted = extract_visible_workspace_items(visible_output);
         extracted.extend(extract_plan_workspace_items(
             task_run.as_ref().and_then(|run| run.plan.as_ref()),
@@ -1481,6 +1492,99 @@ mod tests {
             .list_project_workspace_items(&project_id, None, 20)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn completion_publishes_only_to_the_turns_launch_project_after_a_move() {
+        let db = Database::open_memory().unwrap();
+        let (launch_project_id, conversation_id) = project_conversation(&db);
+        let destination = db
+            .create_project(&CreateProjectInput {
+                name: "Destination".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: Some("Different instructions".into()),
+                source_scope: None,
+            })
+            .unwrap();
+        let turn_id = successful_turn(&db, &conversation_id);
+
+        db.move_conversation_to_project(&conversation_id, &destination.id)
+            .unwrap();
+        db.record_project_turn_completion(
+            &conversation_id,
+            &turn_id,
+            "run-before-move",
+            "# Decisions\n- Keep launch-time project ownership",
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.list_project_episodes(&launch_project_id, 20)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(db
+            .list_project_episodes(&destination.id, 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_turn_launched_without_a_project_never_publishes_after_a_move() {
+        let db = Database::open_memory().unwrap();
+        let destination = db
+            .create_project(&CreateProjectInput {
+                name: "Destination".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".into(),
+                model: "test".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let turn_id = successful_turn(&db, &conversation.id);
+
+        db.move_conversation_to_project(&conversation.id, &destination.id)
+            .unwrap();
+        assert!(db
+            .record_project_turn_completion(
+                &conversation.id,
+                &turn_id,
+                "run-before-project",
+                "# Decisions\n- Do not publish this turn",
+            )
+            .unwrap()
+            .is_none());
+        assert!(db
+            .list_project_episodes(&destination.id, 20)
+            .unwrap()
+            .is_empty());
+
+        let next_turn_id = successful_turn(&db, &conversation.id);
+        db.record_project_turn_completion(
+            &conversation.id,
+            &next_turn_id,
+            "run-after-project",
+            "# Decisions\n- Publish the next turn",
+        )
+        .unwrap();
+        assert_eq!(
+            db.list_project_episodes(&destination.id, 20).unwrap().len(),
+            1
+        );
     }
 
     #[test]

@@ -185,6 +185,9 @@ pub struct ConversationSearchResult {
 pub struct ConversationTurn {
     pub id: String,
     pub conversation_id: String,
+    /// Project whose instructions, sources, and evidence were active when the
+    /// turn launched. Later conversation moves must not rewrite this boundary.
+    pub launch_project_id: Option<String>,
     pub user_message_id: String,
     pub assistant_message_id: Option<String>,
     pub status: String,
@@ -539,7 +542,7 @@ const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
             r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
             r.created_at, r.updated_at, r.started_at, r.finished_at,
             NULLIF(c.title, '') AS conversation_title,
-            c.project_id,
+            t.launch_project_id,
             NULLIF(p.name, '') AS project_name,
             COALESCE(m.content, '') AS user_message_content,
             COALESCE(ec.event_count, 0),
@@ -550,14 +553,15 @@ const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
             ak.kinds_json
      FROM agent_task_runs r
      JOIN conversations c ON c.id = r.conversation_id
-     LEFT JOIN projects p ON p.id = c.project_id
+     JOIN conversation_turns t ON t.id = r.turn_id
+     LEFT JOIN projects p ON p.id = t.launch_project_id
      LEFT JOIN messages m ON m.id = r.user_message_id
      LEFT JOIN event_counts ec ON ec.run_id = r.id
      LEFT JOIN subtask_counts sc ON sc.run_id = r.id
      LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
      WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
        AND (?5 IS NULL OR r.status = ?5)
-       AND (?6 IS NULL OR c.project_id = ?6)
+       AND (?6 IS NULL OR t.launch_project_id = ?6)
      ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
      LIMIT ?1"#;
 
@@ -1419,11 +1423,18 @@ impl Database {
     ) -> Result<ConversationTurn, CoreError> {
         let id = new_id();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
-             VALUES (?1, ?2, ?3, ?4, 'running')",
+        let affected = conn.execute(
+            "INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id, route_kind, status)
+             SELECT ?1, id, project_id, ?3, ?4, 'running'
+             FROM conversations WHERE id = ?2",
             rusqlite::params![&id, conversation_id, user_message_id, route_kind],
         )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Conversation {conversation_id}"
+            )));
+        }
         drop(conn);
         self.get_conversation_turn(&id)
     }
@@ -1511,32 +1522,33 @@ impl Database {
     pub fn get_conversation_turn(&self, id: &str) -> Result<ConversationTurn, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+            "SELECT id, conversation_id, launch_project_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
              FROM conversation_turns
              WHERE id = ?1",
             rusqlite::params![id],
             |row| {
-                let trace_json: Option<String> = row.get(6)?;
+                let trace_json: Option<String> = row.get(7)?;
                 Ok(ConversationTurn {
                     id: row.get(0)?,
                     conversation_id: row.get(1)?,
-                    user_message_id: row.get(2)?,
-                    assistant_message_id: row.get(3)?,
-                    status: row.get(4)?,
-                    route_kind: row.get(5)?,
+                    launch_project_id: row.get(2)?,
+                    user_message_id: row.get(3)?,
+                    assistant_message_id: row.get(4)?,
+                    status: row.get(5)?,
+                    route_kind: row.get(6)?,
                     trace: match trace_json {
                         Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
                             rusqlite::Error::FromSqlConversionFailure(
-                                6,
+                                7,
                                 rusqlite::types::Type::Text,
                                 Box::new(err),
                             )
                         })?),
                         None => None,
                     },
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    finished_at: row.get(9)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    finished_at: row.get(10)?,
                 })
             },
         )
@@ -1555,33 +1567,34 @@ impl Database {
     ) -> Result<Vec<ConversationTurn>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+            "SELECT id, conversation_id, launch_project_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
              FROM conversation_turns
              WHERE conversation_id = ?1
              ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
-            let trace_json: Option<String> = row.get(6)?;
+            let trace_json: Option<String> = row.get(7)?;
             Ok(ConversationTurn {
                 id: row.get(0)?,
                 conversation_id: row.get(1)?,
-                user_message_id: row.get(2)?,
-                assistant_message_id: row.get(3)?,
-                status: row.get(4)?,
-                route_kind: row.get(5)?,
+                launch_project_id: row.get(2)?,
+                user_message_id: row.get(3)?,
+                assistant_message_id: row.get(4)?,
+                status: row.get(5)?,
+                route_kind: row.get(6)?,
                 trace: match trace_json {
                     Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            6,
+                            7,
                             rusqlite::types::Type::Text,
                             Box::new(err),
                         )
                     })?),
                     None => None,
                 },
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })?;
 
@@ -1776,11 +1789,19 @@ impl Database {
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![&message.conversation_id],
         )?;
-        tx.execute(
-            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
-             VALUES (?1, ?2, ?3, NULL, 'running')",
+        let inserted_turn = tx.execute(
+            "INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id, route_kind, status)
+             SELECT ?1, id, project_id, ?3, NULL, 'running'
+             FROM conversations WHERE id = ?2",
             rusqlite::params![&turn_id, &message.conversation_id, &message.id],
         )?;
+        if inserted_turn == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Conversation {}",
+                message.conversation_id
+            )));
+        }
         tx.execute(
             "INSERT INTO agent_task_runs
              (id, conversation_id, turn_id, user_message_id, status, phase, title, provider, model, idempotency_key)
@@ -2192,7 +2213,7 @@ impl Database {
                     r.plan_json, r.artifacts_json, r.created_at, r.updated_at, r.started_at,
                     r.finished_at,
                     NULLIF(c.title, '') AS conversation_title,
-                    c.project_id,
+                    t.launch_project_id,
                     NULLIF(p.name, '') AS project_name,
                     COALESCE(m.content, '') AS user_message_content,
                     (SELECT COUNT(*) FROM agent_task_run_events e WHERE e.run_id = r.id) AS event_count,
@@ -2202,7 +2223,8 @@ impl Database {
                     (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id AND s.status IN ('queued', 'running')) AS subtask_running
              FROM agent_task_runs r
              JOIN conversations c ON c.id = r.conversation_id
-             LEFT JOIN projects p ON p.id = c.project_id
+             JOIN conversation_turns t ON t.id = r.turn_id
+             LEFT JOIN projects p ON p.id = t.launch_project_id
              LEFT JOIN messages m ON m.id = r.user_message_id
              ORDER BY datetime(r.updated_at) DESC, datetime(r.created_at) DESC, r.id DESC
              LIMIT ?1",
@@ -4795,13 +4817,33 @@ mod tests {
     #[test]
     fn test_agent_turn_launch_is_atomic_and_idempotent() {
         let db = Database::open_memory().unwrap();
+        let launch_project = db
+            .create_project(&CreateProjectInput {
+                name: "Launch project".to_string(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
+        let destination_project = db
+            .create_project(&CreateProjectInput {
+                name: "Destination project".to_string(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
         let conversation = db
             .create_conversation(&CreateConversationInput {
                 provider: "openai".to_string(),
                 model: "gpt-5".to_string(),
                 system_prompt: None,
                 collection_context: None,
-                project_id: None,
+                project_id: Some(launch_project.id.clone()),
                 persona_id: None,
             })
             .unwrap();
@@ -4831,6 +4873,16 @@ mod tests {
             )
             .unwrap();
         assert!(!first.reused);
+        assert_eq!(
+            db.get_conversation_turn(&first.turn_id)
+                .unwrap()
+                .launch_project_id
+                .as_deref(),
+            Some(launch_project.id.as_str())
+        );
+
+        db.move_conversation_to_project(&conversation.id, &destination_project.id)
+            .unwrap();
 
         let mut retried_message = message.clone();
         retried_message.id = "message-retry".to_string();
@@ -4848,6 +4900,13 @@ mod tests {
         assert_eq!(retry.run_id, first.run_id);
         assert_eq!(retry.turn_id, first.turn_id);
         assert_eq!(retry.user_message_id, first.user_message_id);
+        assert_eq!(
+            db.get_conversation_turn(&retry.turn_id)
+                .unwrap()
+                .launch_project_id
+                .as_deref(),
+            Some(launch_project.id.as_str())
+        );
         assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
         assert_eq!(
             db.get_conversation_turns(&conversation.id).unwrap().len(),

@@ -2339,6 +2339,19 @@ Every answer that uses knowledge base search results.
              ELSE 'legacy_ambiguous'
          END;",
     ),
+    (
+        "v109_turn_launch_project",
+        "ALTER TABLE conversation_turns ADD COLUMN launch_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+         UPDATE conversation_turns
+         SET launch_project_id = (
+             SELECT conversations.project_id
+             FROM conversations
+             WHERE conversations.id = conversation_turns.conversation_id
+         )
+         WHERE launch_project_id IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_conversation_turns_launch_project
+             ON conversation_turns(launch_project_id, created_at DESC);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2570,6 +2583,55 @@ mod tests {
                 .unwrap();
             assert_eq!(origin, expected, "origin for {id}");
         }
+    }
+
+    #[test]
+    fn turn_launch_project_migration_backfills_current_project_best_effort() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE conversations (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
+             );
+             CREATE TABLE conversation_turns (
+                 id TEXT PRIMARY KEY,
+                 conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO projects (id) VALUES ('project-1');
+             INSERT INTO conversations (id, project_id) VALUES
+                 ('project-conversation', 'project-1'),
+                 ('plain-conversation', NULL);
+             INSERT INTO conversation_turns (id, conversation_id) VALUES
+                 ('project-turn', 'project-conversation'),
+                 ('plain-turn', 'plain-conversation');",
+        )
+        .unwrap();
+        let migration = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v109_turn_launch_project")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(migration).unwrap();
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'project-turn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let plain_project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'plain-turn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project-1"));
+        assert_eq!(plain_project_id, None);
     }
 
     #[test]
