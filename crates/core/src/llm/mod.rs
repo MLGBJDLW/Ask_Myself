@@ -18,6 +18,7 @@ pub mod ollama;
 pub mod openai;
 pub mod prompt_cache;
 pub(crate) mod provider_boundary;
+pub mod provider_turn;
 pub mod reasoning_profile;
 pub mod reasoning_replay;
 pub mod streaming;
@@ -78,6 +79,12 @@ pub enum ContentPart {
         media_type: String,
         /// Base64-encoded image data
         data: String,
+    },
+    /// Provider-native replay sidecar. It is never rendered as user-visible
+    /// content; wire adapters consume it only when the route snapshot matches.
+    #[serde(rename = "providerTurn")]
+    ProviderTurn {
+        envelope: Box<provider_turn::ProviderTurnEnvelope>,
     },
 }
 
@@ -175,10 +182,38 @@ impl Message {
             .filter(|p| matches!(p, ContentPart::Image { .. }))
             .collect()
     }
+
+    pub fn provider_turn(&self) -> Option<&provider_turn::ProviderTurnEnvelope> {
+        self.parts.iter().find_map(|part| match part {
+            ContentPart::ProviderTurn { envelope } => Some(envelope.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn set_provider_turn(&mut self, envelope: provider_turn::ProviderTurnEnvelope) {
+        self.parts
+            .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
+        self.parts.push(ContentPart::ProviderTurn {
+            envelope: Box::new(envelope),
+        });
+    }
+
+    /// Remove secret-adjacent provider replay state before serializing a
+    /// message to the desktop UI or another display-only consumer.
+    pub fn without_provider_turn(mut self) -> Self {
+        self.parts
+            .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
+        if let Some(tool_calls) = self.tool_calls.as_mut() {
+            for tool_call in tool_calls {
+                tool_call.thought_signature = None;
+            }
+        }
+        self
+    }
 }
 
 /// A tool invocation requested by the model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRequest {
     pub id: String,
@@ -586,6 +621,22 @@ pub trait LlmProvider: Send + Sync {
         self.reasoning_replay_policy(model)
     }
 
+    /// Immutable identity of the concrete route that will receive this
+    /// request. Fallback adapters delegate this to their selected route.
+    fn route_snapshot(&self, request: &CompletionRequest) -> provider_turn::RouteSnapshot {
+        provider_turn::RouteSnapshot::unknown(
+            self.name(),
+            &request.model,
+            if request.reasoning_enabled == Some(false)
+                || request.reasoning_effort == Some(ReasoningEffort::None)
+            {
+                reasoning_profile::ReasoningReplayPolicy::NotRequired
+            } else {
+                self.reasoning_replay_policy(&request.model)
+            },
+        )
+    }
+
     /// List available models from this provider.
     async fn list_models(&self) -> Result<Vec<String>, CoreError>;
 
@@ -655,6 +706,10 @@ impl LlmProvider for MessageValidatingProvider {
         self.inner.reasoning_replay_history_policy(model)
     }
 
+    fn route_snapshot(&self, request: &CompletionRequest) -> provider_turn::RouteSnapshot {
+        self.inner.route_snapshot(request)
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         self.inner.list_models().await
     }
@@ -696,11 +751,22 @@ fn normalize_base_url(base_url: Option<String>) -> Option<String> {
 // Factory
 // ---------------------------------------------------------------------------
 
+fn provider_adapter_for_config(config: &ProviderConfig) -> ProviderAdapterKind {
+    if provider_boundary::is_deepseek_anthropic_endpoint(
+        config.provider_type,
+        config.base_url.as_deref(),
+    ) {
+        ProviderAdapterKind::Anthropic
+    } else {
+        provider_adapter_for_type(config.provider_type)
+    }
+}
+
 /// Create a provider instance from configuration.
 pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
     config.base_url = normalize_base_url(config.base_url);
 
-    let adapter = provider_adapter_for_type(config.provider_type);
+    let adapter = provider_adapter_for_config(&config);
     let provider: Box<dyn LlmProvider> = match adapter {
         ProviderAdapterKind::OpenAiCompatible => Box::new(openai::OpenAiProvider::new(config)?),
         ProviderAdapterKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(config)?),
@@ -881,6 +947,28 @@ mod tests {
             ProviderType::Anthropic,
             "gpt-5.5-pro"
         ));
+    }
+
+    #[test]
+    fn deepseek_anthropic_route_selects_the_block_adapter_only_at_exact_endpoint() {
+        let config = ProviderConfig {
+            provider_type: ProviderType::DeepSeek,
+            api_key: Some("test".to_string()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_string()),
+            org_id: None,
+            timeout_secs: None,
+        };
+        assert_eq!(
+            provider_adapter_for_config(&config),
+            ProviderAdapterKind::Anthropic
+        );
+        assert_eq!(
+            provider_adapter_for_config(&ProviderConfig {
+                base_url: Some("https://proxy.example.com/anthropic".to_string()),
+                ..config
+            }),
+            ProviderAdapterKind::OpenAiCompatible
+        );
     }
 
     #[tokio::test]

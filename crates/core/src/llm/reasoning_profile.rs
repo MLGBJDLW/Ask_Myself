@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::provider_boundary::{
-    endpoint_id, is_alibaba_chat_endpoint, is_azure_openai_endpoint, is_deepseek_public_endpoint,
+    endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
+    is_deepseek_anthropic_endpoint, is_deepseek_public_endpoint, is_google_public_endpoint,
     is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
     is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
     is_xai_public_endpoint, provider_id,
@@ -20,6 +21,7 @@ pub enum ReasoningApiStyle {
     OpenAiChatCompletions,
     OpenAiResponses,
     AnthropicMessages,
+    GeminiGenerateContent,
     Local,
 }
 
@@ -94,6 +96,16 @@ impl ReasoningReplayPolicy {
             self,
             Self::RequiredOnToolCall | Self::RequiredAlways | Self::OpaqueSignature
         )
+    }
+
+    pub fn authorizes_tool_call(self, payload_present: bool) -> bool {
+        match self {
+            Self::NotRequired => true,
+            Self::RequiredOnToolCall | Self::RequiredAlways | Self::OpaqueSignature => {
+                payload_present
+            }
+            Self::Forbidden | Self::Unknown => false,
+        }
     }
 }
 
@@ -283,6 +295,56 @@ pub fn resolve_reasoning_profile(
         api_style,
         model_id: model.to_string(),
     };
+    if api_style == ReasoningApiStyle::OpenAiResponses {
+        let mut value = ReasoningProfile::unsupported(key);
+        let trusted_codec = match provider {
+            ProviderType::DeepSeek => is_deepseek_public_endpoint(provider, base_url),
+            ProviderType::OpenAi => is_openai_public_endpoint(provider, base_url),
+            _ => false,
+        };
+        if !trusted_codec {
+            return value;
+        }
+        value.id = match provider {
+            ProviderType::DeepSeek => "deepseek-responses-replay-v1",
+            _ => "openai-responses-replay-v1",
+        }
+        .to_string();
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
+    if api_style == ReasoningApiStyle::AnthropicMessages {
+        let mut value = ReasoningProfile::unsupported(key);
+        let is_deepseek_compat = is_deepseek_anthropic_endpoint(provider, base_url);
+        if !is_anthropic_public_endpoint(provider, base_url) && !is_deepseek_compat {
+            return value;
+        }
+        value.id = if is_deepseek_compat {
+            "deepseek-anthropic-signed-thinking-v1"
+        } else {
+            "anthropic-signed-thinking-v1"
+        }
+        .to_string();
+        value.mode_control = ThinkingModeControl::ThinkingType;
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
+    if api_style == ReasoningApiStyle::GeminiGenerateContent {
+        let mut value = ReasoningProfile::unsupported(key);
+        if !is_google_public_endpoint(provider, base_url) {
+            return value;
+        }
+        value.id = "gemini-thought-signature-v1".to_string();
+        value.mode_control = ThinkingModeControl::ProviderDefault;
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
     if api_style != ReasoningApiStyle::OpenAiChatCompletions {
         return ReasoningProfile::unsupported(key);
     }
@@ -869,6 +931,55 @@ mod tests {
             "grok-4.20-multi-agent-0309",
         );
         assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+    }
+
+    #[test]
+    fn provider_native_replay_codecs_require_exact_official_endpoints() {
+        let deepseek_anthropic = resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com/anthropic"),
+            ReasoningApiStyle::AnthropicMessages,
+            "deepseek-v4",
+        );
+        assert_eq!(
+            deepseek_anthropic.id,
+            "deepseek-anthropic-signed-thinking-v1"
+        );
+        assert_eq!(
+            deepseek_anthropic.replay_policy,
+            ReasoningReplayPolicy::OpaqueSignature
+        );
+        assert_eq!(
+            deepseek_anthropic.key.endpoint_id,
+            "deepseek-anthropic-public"
+        );
+
+        let cases = [
+            (
+                ProviderType::OpenAi,
+                ReasoningApiStyle::OpenAiResponses,
+                "https://proxy.example.com/v1",
+                "gpt-5",
+            ),
+            (
+                ProviderType::Anthropic,
+                ReasoningApiStyle::AnthropicMessages,
+                "https://api.anthropic.com:8443",
+                "claude-sonnet-4-5",
+            ),
+            (
+                ProviderType::Google,
+                ReasoningApiStyle::GeminiGenerateContent,
+                "http://generativelanguage.googleapis.com/v1beta",
+                "gemini-3-flash",
+            ),
+        ];
+
+        for (provider, api_style, endpoint, model) in cases {
+            let profile = resolve_reasoning_profile(provider, Some(endpoint), api_style, model);
+            assert_eq!(profile.replay_policy, ReasoningReplayPolicy::Unknown);
+            assert_eq!(profile.confidence, CapabilityConfidence::Unknown);
+        }
     }
 
     #[test]

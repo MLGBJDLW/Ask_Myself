@@ -13,6 +13,28 @@ pub(super) struct AssistantTurnPersistenceContext<'a> {
 }
 
 impl AgentExecutor {
+    pub(super) fn persist_provider_sample_without_message(
+        &self,
+        db: &Database,
+        conversation_id: Option<&str>,
+        turn_id: Option<&str>,
+        envelope: &crate::llm::provider_turn::ProviderTurnEnvelope,
+    ) -> Result<(), CoreError> {
+        db.persist_provider_turn(
+            None,
+            envelope,
+            ProviderTurnPersistenceScope {
+                scope_id: turn_id
+                    .or(conversation_id)
+                    .unwrap_or(self.usage_scope_id.as_str()),
+                conversation_id,
+                conversation_turn_id: turn_id,
+                run_id: self.usage_run_id.as_deref(),
+                subtask_run_id: self.usage_subtask_run_id.as_deref(),
+            },
+        )
+    }
+
     pub(super) fn reasoning_replay_policy_for_request(
         &self,
         model: &str,
@@ -25,21 +47,6 @@ impl AgentExecutor {
             ReasoningReplayPolicy::NotRequired
         } else {
             self.provider.reasoning_replay_policy(model)
-        }
-    }
-
-    pub(super) fn reasoning_replay_history_policy_for_request(
-        &self,
-        model: &str,
-        force_reasoning_off: bool,
-    ) -> ReasoningReplayPolicy {
-        if force_reasoning_off
-            || self.config.reasoning_enabled == Some(false)
-            || self.config.reasoning_effort == Some(ReasoningEffort::None)
-        {
-            ReasoningReplayPolicy::NotRequired
-        } else {
-            self.provider.reasoning_replay_history_policy(model)
         }
     }
 
@@ -187,6 +194,11 @@ impl AgentExecutor {
             let display_thinking = reasoning_envelope
                 .as_ref()
                 .and_then(|envelope| envelope.display_text.clone());
+            let provider_turn = assistant_msg.provider_turn().cloned();
+            let mut artifacts = merge_reasoning_envelope_artifact(None, reasoning_envelope);
+            if let Some(envelope) = provider_turn.as_ref() {
+                artifacts = merge_provider_turn_envelope_artifact(artifacts, envelope);
+            }
             let conv_msg = ConversationMessage {
                 id: Uuid::new_v4().to_string(),
                 conversation_id: cid.to_string(),
@@ -194,14 +206,29 @@ impl AgentExecutor {
                 content: assistant_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: merge_reasoning_envelope_artifact(None, reasoning_envelope),
+                artifacts,
                 token_count: estimate_message_tokens_for_model(model, assistant_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
                 thinking: display_thinking,
                 image_attachments: None,
             };
-            if let Err(e) = db.add_message(&conv_msg) {
+            let persist_result = if let Some(envelope) = provider_turn.as_ref() {
+                db.persist_provider_turn(
+                    Some(&conv_msg),
+                    envelope,
+                    ProviderTurnPersistenceScope {
+                        scope_id: turn_id.or(conversation_id).unwrap_or(&self.usage_scope_id),
+                        conversation_id,
+                        conversation_turn_id: turn_id,
+                        run_id: self.usage_run_id.as_deref(),
+                        subtask_run_id: self.usage_subtask_run_id.as_deref(),
+                    },
+                )
+            } else {
+                db.add_message(&conv_msg)
+            };
+            if let Err(e) = persist_result {
                 warn!("Failed to save {warning_label}: {e}");
             } else {
                 *sort_order += 1;
@@ -224,7 +251,7 @@ impl AgentExecutor {
         tool_calls: &[ToolCallRequest],
         assistant_reasoning_content: Option<String>,
         iteration_thinking: &str,
-    ) {
+    ) -> Result<crate::llm::provider_turn::ProviderTurnEnvelope, CoreError> {
         let AssistantTurnPersistenceContext {
             db,
             conversation_id,
@@ -244,34 +271,65 @@ impl AgentExecutor {
                 Some(&trace),
             );
         }
-        if let Some(cid) = conversation_id {
-            let reasoning_envelope = self.reasoning_envelope_for_persistence(
-                model,
-                Some(iteration_thinking),
-                assistant_reasoning_content.as_deref(),
-                true,
-            );
-            let display_thinking = reasoning_envelope
-                .as_ref()
-                .and_then(|envelope| envelope.display_text.clone());
-            let conv_msg = ConversationMessage {
+        let envelope = assistant_msg.provider_turn().cloned().ok_or_else(|| {
+            CoreError::Internal(
+                "tool-call assistant message is missing its provider turn envelope".into(),
+            )
+        })?;
+        if envelope.tool_calls != tool_calls {
+            return Err(CoreError::Internal(
+                "provider turn tool ledger differs from assistant tool calls".into(),
+            ));
+        }
+        let reasoning_envelope = self.reasoning_envelope_for_persistence(
+            model,
+            Some(iteration_thinking),
+            assistant_reasoning_content.as_deref(),
+            true,
+        );
+        let display_thinking = reasoning_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.display_text.clone());
+        let message = conversation_id.map(|cid| {
+            let artifacts = merge_reasoning_envelope_artifact(None, reasoning_envelope);
+            ConversationMessage {
                 id: Uuid::new_v4().to_string(),
                 conversation_id: cid.to_string(),
                 role: Role::Assistant,
                 content: assistant_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: tool_calls.to_vec(),
-                artifacts: merge_reasoning_envelope_artifact(None, reasoning_envelope),
+                artifacts: merge_provider_turn_envelope_artifact(artifacts, &envelope),
                 token_count: estimate_message_tokens_for_model(model, assistant_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
                 thinking: display_thinking,
                 image_attachments: None,
-            };
-            if let Err(e) = db.add_message(&conv_msg) {
-                warn!("Failed to save intermediate assistant message: {e}");
             }
+        });
+        let scope_id = turn_id
+            .or(conversation_id)
+            .unwrap_or(self.usage_scope_id.as_str());
+        db.persist_provider_turn(
+            message.as_ref(),
+            &envelope,
+            ProviderTurnPersistenceScope {
+                scope_id,
+                conversation_id,
+                conversation_turn_id: turn_id,
+                run_id: self.usage_run_id.as_deref(),
+                subtask_run_id: self.usage_subtask_run_id.as_deref(),
+            },
+        )?;
+        if message.is_some() {
             *sort_order += 1;
         }
+        if !envelope.authorizes_tool_dispatch() {
+            return Err(CoreError::Agent(format!(
+                "provider turn {} is missing replay state required before tool dispatch",
+                envelope.sample_id
+            )));
+        }
+        Ok(envelope)
     }
 }

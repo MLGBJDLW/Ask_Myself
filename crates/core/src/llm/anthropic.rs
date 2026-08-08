@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use super::reasoning_profile::{resolve_reasoning_profile, ReasoningApiStyle};
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
@@ -109,6 +110,13 @@ enum AnthropicContent {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum AnthropicContentBlock {
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
+    },
     Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,6 +172,11 @@ enum AnthropicResponseBlock {
     },
     Thinking {
         thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
+    },
+    RedactedThinking {
+        data: String,
     },
     ServerToolUse {
         id: String,
@@ -266,6 +279,9 @@ enum AnthropicStreamContentBlock {
         #[allow(dead_code)]
         thinking: String,
     },
+    RedactedThinking {
+        data: String,
+    },
     ServerToolUse {
         id: String,
         name: String,
@@ -292,6 +308,9 @@ enum AnthropicStreamDelta {
     },
     ThinkingDelta {
         thinking: String,
+    },
+    SignatureDelta {
+        signature: String,
     },
     CitationsDelta {
         citation: AnthropicCitation,
@@ -326,6 +345,26 @@ fn parse_finish_reason(s: &str) -> FinishReason {
         "stop_sequence" => FinishReason::Stop,
         _ => FinishReason::Other,
     }
+}
+
+fn replayable_anthropic_thinking_blocks(
+    message: &Message,
+) -> Vec<super::provider_turn::AnthropicThinkingBlock> {
+    if let Some(envelope) = message.provider_turn() {
+        if let super::provider_turn::ProviderReplayPayload::AnthropicThinkingBlocks(blocks) =
+            &envelope.replay_payload
+        {
+            return blocks.clone();
+        }
+    }
+    message
+        .tool_calls
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|call| call.thought_signature.as_deref())
+        .find_map(super::provider_turn::decode_anthropic_thinking_blocks)
+        .unwrap_or_default()
 }
 
 /// Convert our unified messages to Anthropic format.
@@ -375,20 +414,21 @@ fn convert_messages(
                     let blocks: Vec<AnthropicContentBlock> = msg
                         .parts
                         .iter()
-                        .map(|p| match p {
-                            ContentPart::Text { text } => AnthropicContentBlock::Text {
+                        .filter_map(|p| match p {
+                            ContentPart::Text { text } => Some(AnthropicContentBlock::Text {
                                 text: text.clone(),
                                 cache_control: None,
-                            },
+                            }),
                             ContentPart::Image { media_type, data } => {
-                                AnthropicContentBlock::Image {
+                                Some(AnthropicContentBlock::Image {
                                     source: AnthropicImageSource {
                                         r#type: "base64".to_string(),
                                         media_type: media_type.clone(),
                                         data: data.clone(),
                                     },
-                                }
+                                })
                             }
+                            ContentPart::ProviderTurn { .. } => None,
                         })
                         .collect();
                     let mut message = AnthropicMessage {
@@ -414,6 +454,20 @@ fn convert_messages(
                 if let Some(ref calls) = msg.tool_calls {
                     // Build content blocks: text (if any) + tool_use blocks.
                     let mut blocks = Vec::new();
+                    blocks.extend(replayable_anthropic_thinking_blocks(msg).into_iter().map(
+                        |block| match block {
+                            super::provider_turn::AnthropicThinkingBlock::Thinking {
+                                thinking,
+                                signature,
+                            } => AnthropicContentBlock::Thinking {
+                                thinking,
+                                signature,
+                            },
+                            super::provider_turn::AnthropicThinkingBlock::RedactedThinking {
+                                data,
+                            } => AnthropicContentBlock::RedactedThinking { data },
+                        },
+                    ));
                     let text = msg.text_content();
                     if !text.is_empty() {
                         blocks.push(AnthropicContentBlock::Text {
@@ -510,8 +564,10 @@ fn add_cache_control_to_message_content(message: &mut AnthropicMessage) {
                         *target = Some(cache_control.clone());
                         break;
                     }
-                    AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolUse { .. } => {
-                    }
+                    AnthropicContentBlock::Image { .. }
+                    | AnthropicContentBlock::Thinking { .. }
+                    | AnthropicContentBlock::RedactedThinking { .. }
+                    | AnthropicContentBlock::ToolUse { .. } => {}
                 }
             }
         }
@@ -594,7 +650,10 @@ fn enforce_cache_breakpoint_limit(
                 | AnthropicContentBlock::ToolResult { cache_control, .. } => {
                     consume_cache_breakpoint(cache_control, &mut remaining);
                 }
-                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolUse { .. } => {}
+                AnthropicContentBlock::Image { .. }
+                | AnthropicContentBlock::Thinking { .. }
+                | AnthropicContentBlock::RedactedThinking { .. }
+                | AnthropicContentBlock::ToolUse { .. } => {}
             }
         }
     }
@@ -764,6 +823,10 @@ async fn parse_anthropic_stream(
     let mut current_tool_name: Option<String> = None;
     // Accumulate thinking content for token estimation.
     let mut thinking_text = String::new();
+    let mut current_thinking_text = String::new();
+    let mut current_thinking_signature = String::new();
+    let mut current_block_is_thinking = false;
+    let mut replay_thinking_blocks = Vec::new();
     let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
     let mut seen_citation_urls = HashSet::<String>::new();
 
@@ -825,12 +888,29 @@ async fn parse_anthropic_stream(
                         AnthropicStreamContentBlock::Text { .. } => {
                             current_tool_id.clear();
                             current_tool_name = None;
+                            current_block_is_thinking = false;
                         }
                         AnthropicStreamContentBlock::Thinking { .. } => {
                             current_tool_id.clear();
                             current_tool_name = None;
+                            current_thinking_text.clear();
+                            current_thinking_signature.clear();
+                            current_block_is_thinking = true;
+                        }
+                        AnthropicStreamContentBlock::RedactedThinking { data } => {
+                            current_tool_id.clear();
+                            current_tool_name = None;
+                            current_block_is_thinking = false;
+                            if !data.trim().is_empty() {
+                                replay_thinking_blocks.push(
+                                    super::provider_turn::AnthropicThinkingBlock::RedactedThinking {
+                                        data,
+                                    },
+                                );
+                            }
                         }
                         AnthropicStreamContentBlock::ToolUse { id, name } => {
+                            current_block_is_thinking = false;
                             current_tool_id = id.clone();
                             current_tool_name = Some(name.clone());
                             // Emit an initial tool call delta with the name.
@@ -841,7 +921,10 @@ async fn parse_anthropic_stream(
                                     name: Some(name),
                                     arguments_delta: String::new(),
                                     index: None,
-                                    thought_signature: None,
+                                    thought_signature:
+                                        super::provider_turn::encode_anthropic_thinking_blocks(
+                                            &replay_thinking_blocks,
+                                        ),
                                 }),
                                 finish_reason: None,
                                 usage: None,
@@ -852,6 +935,7 @@ async fn parse_anthropic_stream(
                             }
                         }
                         AnthropicStreamContentBlock::ServerToolUse { id, name, input } => {
+                            current_block_is_thinking = false;
                             current_tool_id.clear();
                             current_tool_name = None;
                             if name == super::native_search::LOCAL_WEB_SEARCH_TOOL {
@@ -862,6 +946,7 @@ async fn parse_anthropic_stream(
                             tool_use_id,
                             content,
                         } => {
+                            current_block_is_thinking = false;
                             current_tool_id.clear();
                             current_tool_name = None;
                             // Array content is a completed provider search. An
@@ -872,6 +957,7 @@ async fn parse_anthropic_stream(
                             }
                         }
                         AnthropicStreamContentBlock::Unknown => {
+                            current_block_is_thinking = false;
                             current_tool_id.clear();
                             current_tool_name = None;
                         }
@@ -892,6 +978,7 @@ async fn parse_anthropic_stream(
                     }
                     AnthropicStreamDelta::ThinkingDelta { thinking } => {
                         thinking_text.push_str(&thinking);
+                        current_thinking_text.push_str(&thinking);
                         let chunk = StreamChunk {
                             delta: String::new(),
                             tool_call_delta: None,
@@ -902,6 +989,9 @@ async fn parse_anthropic_stream(
                         if tx.send(Ok(chunk)).await.is_err() {
                             return Ok(());
                         }
+                    }
+                    AnthropicStreamDelta::SignatureDelta { signature } => {
+                        current_thinking_signature.push_str(&signature);
                     }
                     AnthropicStreamDelta::InputJsonDelta { partial_json } => {
                         let chunk = StreamChunk {
@@ -962,7 +1052,10 @@ async fn parse_anthropic_stream(
                                     arguments_delta: serde_json::to_string(&input)
                                         .unwrap_or_else(|_| "{}".to_string()),
                                     index: None,
-                                    thought_signature: None,
+                                    thought_signature:
+                                        super::provider_turn::encode_anthropic_thinking_blocks(
+                                            &replay_thinking_blocks,
+                                        ),
                                 }),
                                 finish_reason: None,
                                 usage: None,
@@ -1012,9 +1105,18 @@ async fn parse_anthropic_stream(
                 AnthropicStreamEvent::MessageStop => {
                     return Ok(());
                 }
-                AnthropicStreamEvent::ContentBlockStop { .. }
-                | AnthropicStreamEvent::Ping
-                | AnthropicStreamEvent::Unknown => {}
+                AnthropicStreamEvent::ContentBlockStop { .. } => {
+                    if current_block_is_thinking && !current_thinking_signature.trim().is_empty() {
+                        replay_thinking_blocks.push(
+                            super::provider_turn::AnthropicThinkingBlock::Thinking {
+                                thinking: current_thinking_text.clone(),
+                                signature: current_thinking_signature.clone(),
+                            },
+                        );
+                    }
+                    current_block_is_thinking = false;
+                }
+                AnthropicStreamEvent::Ping | AnthropicStreamEvent::Unknown => {}
             }
         }
     }
@@ -1051,6 +1153,20 @@ impl AnthropicProvider {
 
     fn base_url(&self) -> &str {
         self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
+    }
+
+    fn messages_url(&self) -> String {
+        let base_url = self.base_url().trim_end_matches('/');
+        if super::provider_boundary::is_deepseek_anthropic_endpoint(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+        ) {
+            // DeepSeek documents an Anthropic SDK base URL. The SDK posts to
+            // `/v1/messages` relative to that base rather than `/messages`.
+            format!("{base_url}/v1/messages")
+        } else {
+            format!("{base_url}/messages")
+        }
     }
 
     fn api_key(&self) -> Result<&str, CoreError> {
@@ -1097,6 +1213,23 @@ impl AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_anthropic_base_uses_the_sdk_v1_messages_path() {
+        let provider = AnthropicProvider::new(ProviderConfig {
+            provider_type: super::super::ProviderType::DeepSeek,
+            api_key: Some("test".to_string()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_string()),
+            org_id: None,
+            timeout_secs: None,
+        })
+        .expect("DeepSeek Anthropic provider");
+
+        assert_eq!(
+            provider.messages_url(),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+    }
 
     #[test]
     fn provider_native_search_uses_server_tool_without_duplicate_local_search() {
@@ -1151,6 +1284,37 @@ mod tests {
         .expect("auto mode may use Nexa Router");
         assert_eq!(fallbacks.len(), 1);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn signed_and_redacted_thinking_blocks_replay_in_provider_order() {
+        let replay_blocks = vec![
+            super::super::provider_turn::AnthropicThinkingBlock::Thinking {
+                thinking: "private".to_string(),
+                signature: "signed".to_string(),
+            },
+            super::super::provider_turn::AnthropicThinkingBlock::RedactedThinking {
+                data: "opaque".to_string(),
+            },
+        ];
+        let mut message = Message::text(Role::Assistant, "");
+        message.tool_calls = Some(vec![ToolCallRequest {
+            id: "toolu_1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: super::super::provider_turn::encode_anthropic_thinking_blocks(
+                &replay_blocks,
+            ),
+        }]);
+
+        let (_, messages) = convert_messages(&[message]);
+        let value = serde_json::to_value(messages).unwrap();
+
+        assert_eq!(value[0]["content"][0]["type"], "thinking");
+        assert_eq!(value[0]["content"][0]["signature"], "signed");
+        assert_eq!(value[0]["content"][1]["type"], "redacted_thinking");
+        assert_eq!(value[0]["content"][1]["data"], "opaque");
+        assert_eq!(value[0]["content"][2]["type"], "tool_use");
     }
 
     #[test]
@@ -1567,6 +1731,37 @@ impl LlmProvider for AnthropicProvider {
         )
     }
 
+    fn reasoning_replay_policy(
+        &self,
+        model: &str,
+    ) -> super::reasoning_profile::ReasoningReplayPolicy {
+        resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            ReasoningApiStyle::AnthropicMessages,
+            model,
+        )
+        .replay_policy
+    }
+
+    fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
+        let profile = resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            ReasoningApiStyle::AnthropicMessages,
+            &request.model,
+        );
+        let mut snapshot =
+            super::provider_turn::RouteSnapshot::from_profile_for_request(&profile, request);
+        if request.reasoning_enabled != Some(true)
+            && request.reasoning_effort.is_none()
+            && request.thinking_budget.is_none()
+        {
+            snapshot.replay_policy = super::reasoning_profile::ReasoningReplayPolicy::NotRequired;
+        }
+        snapshot
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         // Anthropic doesn't have a public list-models endpoint.
         // Return commonly available models.
@@ -1587,7 +1782,7 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, false);
@@ -1626,6 +1821,7 @@ impl LlmProvider for AnthropicProvider {
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut thinking_parts = Vec::new();
+        let mut thinking_blocks = Vec::new();
         let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
         let mut completed_server_searches = HashSet::<String>::new();
         let mut citations = Vec::new();
@@ -1640,7 +1836,27 @@ impl LlmProvider for AnthropicProvider {
                     text_parts.push(text);
                     citations.extend(block_citations);
                 }
-                AnthropicResponseBlock::Thinking { thinking } => thinking_parts.push(thinking),
+                AnthropicResponseBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    if let Some(signature) = signature.filter(|value| !value.trim().is_empty()) {
+                        thinking_blocks.push(
+                            super::provider_turn::AnthropicThinkingBlock::Thinking {
+                                thinking: thinking.clone(),
+                                signature,
+                            },
+                        );
+                    }
+                    thinking_parts.push(thinking);
+                }
+                AnthropicResponseBlock::RedactedThinking { data } => {
+                    if !data.trim().is_empty() {
+                        thinking_blocks.push(
+                            super::provider_turn::AnthropicThinkingBlock::RedactedThinking { data },
+                        );
+                    }
+                }
                 AnthropicResponseBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCallRequest {
                         id,
@@ -1681,6 +1897,10 @@ impl LlmProvider for AnthropicProvider {
                         thought_signature: None,
                     }),
             );
+        }
+        if let Some(first_tool_call) = tool_calls.first_mut() {
+            first_tool_call.thought_signature =
+                super::provider_turn::encode_anthropic_thinking_blocks(&thinking_blocks);
         }
 
         let evidence = super::native_search::SearchEvidence {
@@ -1755,7 +1975,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, true);
@@ -1809,7 +2029,7 @@ impl LlmProvider for AnthropicProvider {
 
     async fn health_check(&self) -> Result<(), CoreError> {
         // Verify API key by making a minimal request.
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(

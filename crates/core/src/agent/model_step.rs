@@ -74,6 +74,7 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) sort_order: &'a mut i64,
     pub(super) context_recovery_attempts: &'a mut u32,
     pub(super) force_non_streaming_llm: &'a mut bool,
+    pub(super) reasoning_disabled_for_tool_loop: &'a mut bool,
     pub(super) force_answer_only: bool,
 }
 
@@ -95,6 +96,9 @@ pub(super) struct ModelStepOutput {
     pub(super) prompt_cache_observation: Option<prompt_cache::PromptCacheTraceObservation>,
     pub(super) request_latency_ms: u64,
     pub(super) time_to_first_token_ms: Option<u64>,
+    pub(super) sample_id: String,
+    pub(super) route_snapshot: crate::llm::provider_turn::RouteSnapshot,
+    pub(super) reasoning_was_requested: bool,
 }
 
 impl AgentExecutor {
@@ -120,6 +124,7 @@ impl AgentExecutor {
             sort_order,
             context_recovery_attempts,
             force_non_streaming_llm,
+            reasoning_disabled_for_tool_loop,
             force_answer_only,
         } = ctx;
 
@@ -127,25 +132,9 @@ impl AgentExecutor {
         let stream_recovery_policy = StreamRecoveryPolicy::default();
         let request_tools =
             request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
-        let reasoning_replay_history_policy =
-            self.reasoning_replay_history_policy_for_request(model, force_answer_only);
-        let replay_projection = crate::llm::reasoning_replay::prepare_reasoning_replay_history(
-            messages,
-            reasoning_replay_history_policy,
-        );
-        if replay_projection.omitted_units > 0 {
-            append_developer_persisted_trace_status(
-                persisted_trace_items,
-                &format!(
-                    "reasoning_replay_boundary: omitted_units={}",
-                    replay_projection.omitted_units
-                ),
-                "warning",
-            );
-        }
-        let current_request = CompletionRequest {
+        let mut current_request = CompletionRequest {
             model: model.to_string(),
-            messages: replay_projection.messages,
+            messages: messages.to_vec(),
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             tools: if request_tools.is_empty() {
@@ -154,18 +143,21 @@ impl AgentExecutor {
                 Some(request_tools)
             },
             stop: None,
-            thinking_budget: if !force_answer_only && self.config.reasoning_enabled.unwrap_or(false)
+            thinking_budget: if !force_answer_only
+                && !*reasoning_disabled_for_tool_loop
+                && self.config.reasoning_enabled.unwrap_or(false)
             {
                 self.config.thinking_budget
             } else {
                 None
             },
-            reasoning_enabled: if force_answer_only {
+            reasoning_enabled: if force_answer_only || *reasoning_disabled_for_tool_loop {
                 Some(false)
             } else {
                 self.config.reasoning_enabled
             },
             reasoning_effort: if !force_answer_only
+                && !*reasoning_disabled_for_tool_loop
                 && self.config.reasoning_enabled.unwrap_or(false)
             {
                 self.config.reasoning_effort.clone()
@@ -177,6 +169,48 @@ impl AgentExecutor {
                 .and_then(crate::llm::prompt_cache::privacy_preserving_routing_session_id),
             parallel_tool_calls: true,
         };
+        let mut request_route_snapshot = self.provider.route_snapshot(&current_request);
+        let may_call_tools = current_request
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty());
+        if may_call_tools
+            && matches!(
+                request_route_snapshot.replay_policy,
+                ReasoningReplayPolicy::Unknown | ReasoningReplayPolicy::Forbidden
+            )
+        {
+            current_request.reasoning_enabled = Some(false);
+            current_request.reasoning_effort = None;
+            current_request.thinking_budget = None;
+            request_route_snapshot = self.provider.route_snapshot(&current_request);
+            append_developer_persisted_trace_status(
+                persisted_trace_items,
+                "provider_replay_preflight: reasoning disabled before request because the selected tool route has no replay guarantee",
+                "warning",
+            );
+        }
+        let replay_projection = crate::llm::reasoning_replay::prepare_provider_replay_history(
+            messages,
+            &request_route_snapshot,
+        );
+        if replay_projection.omitted_units > 0 {
+            append_developer_persisted_trace_status(
+                persisted_trace_items,
+                &format!(
+                    "provider_replay_boundary: omitted_units={}, provider={}, api_style={}",
+                    replay_projection.omitted_units,
+                    request_route_snapshot.provider_family,
+                    request_route_snapshot.api_style_id()
+                ),
+                "warning",
+            );
+        }
+        current_request.messages = replay_projection.messages;
+        let reasoning_was_requested = current_request.reasoning_enabled != Some(false)
+            && current_request.reasoning_effort != Some(ReasoningEffort::None);
+        let mut accepted_sample_id: String;
+        let mut accepted_route_snapshot: crate::llm::provider_turn::RouteSnapshot;
         self.begin_prompt_cache_observation(model, messages, tool_defs);
         let request_started_at = std::time::Instant::now();
         let mut time_to_first_token_ms = None;
@@ -203,8 +237,12 @@ impl AgentExecutor {
             let mut stream: futures::stream::BoxStream<'_, ProviderStreamEvent> =
                 if *force_non_streaming_llm {
                     info!("Initiating LLM completion in non-streaming mode");
+                    let candidate_sample_id = Uuid::new_v4().to_string();
                     match self.provider.complete(&current_request).await {
                         Ok(response) => {
+                            accepted_sample_id = candidate_sample_id;
+                            accepted_route_snapshot =
+                                self.provider.route_snapshot(&current_request);
                             let _ = tx
                                 .send(AgentEvent::ControllerStatus {
                                     code: "provider_connected".to_string(),
@@ -237,8 +275,12 @@ impl AgentExecutor {
                 } else {
                     loop {
                         info!("Initiating LLM stream, attempt {}", retry_count + 1);
+                        let candidate_sample_id = Uuid::new_v4().to_string();
                         match self.provider.stream_events(&current_request).await {
                             Ok(s) => {
+                                accepted_sample_id = candidate_sample_id;
+                                accepted_route_snapshot =
+                                    self.provider.route_snapshot(&current_request);
                                 info!("LLM stream connected");
                                 let _ = tx
                                     .send(AgentEvent::ControllerStatus {
@@ -702,7 +744,7 @@ impl AgentExecutor {
                 if !full_content.trim().is_empty() {
                     let draft_reasoning =
                         self.reasoning_content_for_iteration(&iteration_thinking, false);
-                    let draft_message = Message {
+                    let mut draft_message = Message {
                         role: Role::Assistant,
                         parts: vec![ContentPart::Text {
                             text: full_content.clone(),
@@ -712,6 +754,22 @@ impl AgentExecutor {
                         reasoning_content: draft_reasoning.clone(),
                         prompt_cache_hint: None,
                     };
+                    let mut draft_envelope =
+                        crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                            Uuid::new_v4().to_string(),
+                            accepted_sample_id.clone(),
+                            accepted_route_snapshot.clone(),
+                            draft_message.text_content(),
+                            crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
+                                &iteration_thinking,
+                            ))
+                            .as_deref(),
+                            draft_reasoning.as_deref(),
+                            Vec::new(),
+                            reasoning_was_requested,
+                        );
+                    draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
+                    draft_message.set_provider_turn(draft_envelope);
                     messages.push(draft_message.clone());
                     if has_effective_steering {
                         self.persist_stream_interrupted_assistant_draft(
@@ -836,8 +894,12 @@ impl AgentExecutor {
                             ))
                             .await;
 
+                        let candidate_sample_id = Uuid::new_v4().to_string();
                         match self.provider.complete(&current_request).await {
                             Ok(response) => {
+                                accepted_sample_id = candidate_sample_id;
+                                accepted_route_snapshot =
+                                    self.provider.route_snapshot(&current_request);
                                 time_to_first_token_ms.get_or_insert_with(|| {
                                     u64::try_from(request_started_at.elapsed().as_millis())
                                         .unwrap_or(u64::MAX)
@@ -927,45 +989,167 @@ impl AgentExecutor {
                 }
             }
 
-            let output_replay_policy =
-                self.reasoning_replay_policy_for_request(model, force_answer_only);
-            let missing_required_tool_reasoning = output_replay_policy.requires_tool_call_payload()
-                && !tool_calls.is_empty()
-                && crate::llm::reasoning_replay::sanitize_reasoning_text(Some(&iteration_thinking))
-                    .is_none();
-            if missing_required_tool_reasoning {
+            let current_accepted_route = &accepted_route_snapshot;
+            let output_payload = crate::llm::provider_turn::ProviderReplayPayload::capture(
+                current_accepted_route,
+                Some(&iteration_thinking),
+                &tool_calls,
+            );
+            let unsafe_tool_turn = !tool_calls.is_empty()
+                && !current_accepted_route
+                    .replay_policy
+                    .authorizes_tool_call(output_payload.is_present());
+            if unsafe_tool_turn {
+                let rejected_stream_sample =
+                    crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                        Uuid::new_v4().to_string(),
+                        accepted_sample_id.clone(),
+                        current_accepted_route.clone(),
+                        full_content.clone(),
+                        crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
+                            &iteration_thinking,
+                        ))
+                        .as_deref(),
+                        None,
+                        tool_calls.clone(),
+                        reasoning_was_requested,
+                    );
+                self.persist_provider_sample_without_message(
+                    db,
+                    conversation_id,
+                    turn_id,
+                    &rejected_stream_sample,
+                )?;
                 append_developer_persisted_trace_status(
                     persisted_trace_items,
-                    "reasoning_replay_recovery: streaming tool calls omitted required replay payload; retrying non-streaming before dispatch",
+                    "reasoning_replay_recovery: tool calls omitted required replay payload; starting a new reasoning-disabled sample before dispatch",
                     "warning",
                 );
                 let _ = tx
                     .send(AgentEvent::ControllerStatus {
                         code: "reasoning_replay_recovery".to_string(),
-                        content: "The provider omitted reasoning required for a safe tool replay. Retrying before any tool runs.".to_string(),
+                        content: "The provider omitted replay state required for a safe tool turn. Restarting this step before any tool runs.".to_string(),
                         tone: Some("warning".to_string()),
                     })
                     .await;
 
-                match self.provider.complete(&current_request).await {
-                    Ok(response) => {
-                        let recovered_tool_calls = response.tool_calls.unwrap_or_default();
-                        let recovered_thinking =
-                            crate::llm::reasoning_replay::sanitize_reasoning_text(
-                                response.thinking.as_deref(),
+                let required_route = current_accepted_route.clone();
+                let (response, reset_reason) = {
+                    let mut safe_request = current_request.clone();
+                    safe_request.reasoning_enabled = Some(false);
+                    safe_request.reasoning_effort = None;
+                    safe_request.thinking_budget = None;
+                    let safe_sample_id = Uuid::new_v4().to_string();
+                    match self.provider.complete(&safe_request).await {
+                        Ok(response) => {
+                            let safe_route = self.provider.route_snapshot(&safe_request);
+                            if !required_route.same_route_identity(&safe_route) {
+                                let route_changed_sample =
+                                    crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                                        Uuid::new_v4().to_string(),
+                                        safe_sample_id,
+                                        safe_route.clone(),
+                                        response.content.clone(),
+                                        response.thinking.as_deref(),
+                                        response.thinking.as_deref(),
+                                        response.tool_calls.clone().unwrap_or_default(),
+                                        false,
+                                    );
+                                self.persist_provider_sample_without_message(
+                                    db,
+                                    conversation_id,
+                                    turn_id,
+                                    &route_changed_sample,
+                                )?;
+                                let trace_message = format!(
+                                    "reasoning_replay_safe_restart_route_changed: from={}:{} to={}:{}",
+                                    required_route.provider_family,
+                                    required_route.api_style_id(),
+                                    safe_route.provider_family,
+                                    safe_route.api_style_id()
+                                );
+                                emit_error_and_finalize_turn(
+                                    tx,
+                                    db,
+                                    trace,
+                                    turn_id,
+                                    route_kind,
+                                    persisted_trace_items,
+                                    TurnErrorMessages {
+                                        frontend_message: "The provider could not safely restart the tool step on the same route. No tools were executed.".to_string(),
+                                        trace_message: trace_message.clone(),
+                                    },
+                                )
+                                .await;
+                                return Err(CoreError::Agent(trace_message));
+                            }
+                            let safe_tool_calls =
+                                response.tool_calls.as_deref().unwrap_or_default();
+                            let safe_payload =
+                                crate::llm::provider_turn::ProviderReplayPayload::capture(
+                                    &safe_route,
+                                    response.thinking.as_deref(),
+                                    safe_tool_calls,
+                                );
+                            if !safe_tool_calls.is_empty()
+                                && !safe_route
+                                    .replay_policy
+                                    .authorizes_tool_call(safe_payload.is_present())
+                            {
+                                let rejected_safe_restart =
+                                    crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                                        Uuid::new_v4().to_string(),
+                                        safe_sample_id,
+                                        safe_route.clone(),
+                                        response.content.clone(),
+                                        response.thinking.as_deref(),
+                                        None,
+                                        safe_tool_calls.to_vec(),
+                                        false,
+                                    );
+                                self.persist_provider_sample_without_message(
+                                    db,
+                                    conversation_id,
+                                    turn_id,
+                                    &rejected_safe_restart,
+                                )?;
+                                let trace_message = format!(
+                                    "reasoning_replay_safe_restart_payload_missing: provider={}, model={}, api_style={}",
+                                    safe_route.provider_family,
+                                    safe_route.model_id,
+                                    safe_route.api_style_id()
+                                );
+                                emit_error_and_finalize_turn(
+                                    tx,
+                                    db,
+                                    trace,
+                                    turn_id,
+                                    route_kind,
+                                    persisted_trace_items,
+                                    TurnErrorMessages {
+                                        frontend_message: "The provider's safe restart was still missing mandatory signed replay state. No tools were executed.".to_string(),
+                                        trace_message: trace_message.clone(),
+                                    },
+                                )
+                                .await;
+                                return Err(CoreError::Agent(trace_message));
+                            }
+                            accepted_sample_id = safe_sample_id;
+                            accepted_route_snapshot = safe_route;
+                            *reasoning_disabled_for_tool_loop = true;
+                            let reset_reason = "The provider omitted required replay state, so Nexa safely restarted the same route with reasoning disabled before any tool ran.".to_string();
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                "reasoning_replay_safe_restart: completed on the same route before tool dispatch",
+                                "warning",
                             );
-                        let recovered_replay_policy =
-                            self.reasoning_replay_policy_for_request(model, force_answer_only);
-                        if recovered_replay_policy.requires_tool_call_payload()
-                            && !recovered_tool_calls.is_empty()
-                            && recovered_thinking.is_none()
-                        {
-                            let frontend_message = "The provider returned tool calls without the reasoning payload required for safe replay. No tools were executed. Retry the turn or disable reasoning for this model step.";
+                            (response, reset_reason)
+                        }
+                        Err(error) => {
                             let trace_message = format!(
-                                "reasoning_replay_payload_missing: provider={}, model={}, tool_call_count={}",
+                                "reasoning_replay_safe_restart_failed: provider={}, model={}, error={error}",
                                 self.provider.name(),
-                                model,
-                                recovered_tool_calls.len()
+                                model
                             );
                             append_developer_persisted_trace_status(
                                 persisted_trace_items,
@@ -980,73 +1164,50 @@ impl AgentExecutor {
                                 route_kind,
                                 persisted_trace_items,
                                 TurnErrorMessages {
-                                    frontend_message: frontend_message.to_string(),
+                                    frontend_message: "The provider could not safely restart the incomplete tool step. No tools were executed.".to_string(),
                                     trace_message: trace_message.clone(),
                                 },
                             )
                             .await;
                             return Err(CoreError::Agent(trace_message));
                         }
+                    }
+                };
 
-                        let _ = tx
-                            .send(AgentEvent::StreamReset {
-                                reason: "Recovered a complete reasoning/tool-call response before tool dispatch.".to_string(),
-                            })
-                            .await;
-                        accumulated_content.truncate(accumulated_len_before_iteration);
-                        full_content = response.content;
-                        answer_delta_seen = !full_content.is_empty();
-                        accumulated_content.push_str(&full_content);
-                        iteration_thinking = recovered_thinking.unwrap_or_default();
-                        thinking_delta_seen = !iteration_thinking.is_empty();
-                        tool_calls = recovered_tool_calls;
-                        preparing_call_ids.clear();
-                        started_call_ids.clear();
-                        tool_run_started_ids.clear();
-                        chunk_usage = Some(response.usage);
-                        finish_reason = Some(response.finish_reason);
-                        if !iteration_thinking.is_empty() {
-                            let _ = tx
-                                .send(AgentEvent::Thinking {
-                                    content: iteration_thinking.clone(),
-                                })
-                                .await;
-                        }
-                        if !full_content.is_empty() {
-                            let _ = tx
-                                .send(AgentEvent::TextDelta {
-                                    delta: full_content.clone(),
-                                })
-                                .await;
-                        }
-                    }
-                    Err(error) => {
-                        let frontend_message = "The provider omitted reasoning required for safe tool replay, and the recovery request failed. No tools were executed.";
-                        let trace_message = format!(
-                            "reasoning_replay_recovery_failed: provider={}, model={}, error={error}",
-                            self.provider.name(),
-                            model
-                        );
-                        append_developer_persisted_trace_status(
-                            persisted_trace_items,
-                            &trace_message,
-                            "error",
-                        );
-                        emit_error_and_finalize_turn(
-                            tx,
-                            db,
-                            trace,
-                            turn_id,
-                            route_kind,
-                            persisted_trace_items,
-                            TurnErrorMessages {
-                                frontend_message: frontend_message.to_string(),
-                                trace_message: trace_message.clone(),
-                            },
-                        )
+                let recovered_tool_calls = response.tool_calls.unwrap_or_default();
+                let recovered_thinking = crate::llm::reasoning_replay::sanitize_reasoning_text(
+                    response.thinking.as_deref(),
+                );
+                let _ = tx
+                    .send(AgentEvent::StreamReset {
+                        reason: reset_reason,
+                    })
+                    .await;
+                accumulated_content.truncate(accumulated_len_before_iteration);
+                full_content = response.content;
+                answer_delta_seen = !full_content.is_empty();
+                accumulated_content.push_str(&full_content);
+                iteration_thinking = recovered_thinking.unwrap_or_default();
+                thinking_delta_seen = !iteration_thinking.is_empty();
+                tool_calls = recovered_tool_calls;
+                preparing_call_ids.clear();
+                started_call_ids.clear();
+                tool_run_started_ids.clear();
+                chunk_usage = Some(response.usage);
+                finish_reason = Some(response.finish_reason);
+                if !iteration_thinking.is_empty() {
+                    let _ = tx
+                        .send(AgentEvent::Thinking {
+                            content: iteration_thinking.clone(),
+                        })
                         .await;
-                        return Err(CoreError::Agent(trace_message));
-                    }
+                }
+                if !full_content.is_empty() {
+                    let _ = tx
+                        .send(AgentEvent::TextDelta {
+                            delta: full_content.clone(),
+                        })
+                        .await;
                 }
             }
 
@@ -1070,6 +1231,9 @@ impl AgentExecutor {
             request_latency_ms: u64::try_from(request_started_at.elapsed().as_millis())
                 .unwrap_or(u64::MAX),
             time_to_first_token_ms,
+            sample_id: accepted_sample_id,
+            route_snapshot: accepted_route_snapshot,
+            reasoning_was_requested,
         })))
     }
 }

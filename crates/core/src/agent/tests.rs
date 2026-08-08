@@ -501,17 +501,18 @@ impl LlmProvider for MissingRequiredReasoningProvider {
         Ok(vec!["deepseek-v4".to_string()])
     }
 
-    async fn complete(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<CompletionResponse, CoreError> {
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         self.complete_calls.fetch_add(1, Ordering::SeqCst);
         Ok(CompletionResponse {
             content: String::new(),
             tool_calls: Some(vec![ToolCallRequest {
                 id: "call-recovery".to_string(),
                 name: "recording_tool".to_string(),
-                arguments: r#"{"value":"unsafe"}"#.to_string(),
+                arguments: if request.reasoning_enabled == Some(false) {
+                    r#"{"value":"safe-restart"}"#.to_string()
+                } else {
+                    r#"{"value":"missing-replay"}"#.to_string()
+                },
                 thought_signature: None,
             }]),
             finish_reason: FinishReason::ToolCalls,
@@ -522,8 +523,21 @@ impl LlmProvider for MissingRequiredReasoningProvider {
 
     async fn stream(
         &self,
-        _request: &CompletionRequest,
+        request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        if request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+        {
+            return Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                delta: "final answer after safe restart".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            })])));
+        }
         Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
             delta: String::new(),
             tool_call_delta: Some(ToolCallDelta {
@@ -552,6 +566,29 @@ impl LlmProvider for MissingRequiredReasoningProvider {
 impl LlmProvider for ThinkingMockProvider {
     fn name(&self) -> &str {
         "thinking-mock"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::RequiredOnToolCall
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        crate::llm::provider_turn::RouteSnapshot {
+            provider_endpoint_id: "deepseek-public".to_string(),
+            provider_family: "deepseek".to_string(),
+            api_style: crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+            model_id: request.model.clone(),
+            reasoning_profile_id: "deepseek-chat-v1".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: if request.reasoning_enabled == Some(false) {
+                ReasoningReplayPolicy::NotRequired
+            } else {
+                ReasoningReplayPolicy::RequiredOnToolCall
+            },
+        }
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -1140,6 +1177,10 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
 impl LlmProvider for ToolingAnswerRecoveryProvider {
     fn name(&self) -> &str {
         "tooling-answer-recovery-mock"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::NotRequired
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -3855,6 +3896,13 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
         Some("first round reasoning")
     );
     assert_eq!(messages[0].tool_calls.len(), 1);
+    let provider_turn = crate::conversation::conversation_message_provider_turn(&messages[0])
+        .expect("streaming tool turn should persist its provider-native envelope");
+    assert!(matches!(
+        provider_turn.replay_payload,
+        crate::llm::provider_turn::ProviderReplayPayload::DeepSeekReasoningContent(ref value)
+            if value == "first round reasoning"
+    ));
     let first_reasoning_envelope = messages[0]
         .artifacts
         .as_ref()
@@ -4215,7 +4263,7 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
 }
 
 #[tokio::test]
-async fn missing_required_reasoning_fails_closed_before_tool_execution() {
+async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
     let executions = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
@@ -4236,6 +4284,62 @@ async fn missing_required_reasoning_fails_closed_before_tool_execution() {
     let db = Database::open_memory().expect("in-memory db");
     let (tx, _rx) = mpsc::channel(128);
 
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Use recording_tool once.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the same route should restart with reasoning disabled");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer after safe restart"
+    );
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        1,
+        "only the replay-safe restarted sample may execute"
+    );
+    assert_eq!(
+        db.count_provider_turns().unwrap(),
+        3,
+        "rejected stream, reasoning-disabled restart, and final answer keep distinct sample ids"
+    );
+}
+
+#[tokio::test]
+async fn provider_turn_commit_failure_blocks_all_tool_side_effects() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(MissingRequiredReasoningProvider {
+            complete_calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-v4".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    db.conn()
+        .execute("DROP TABLE provider_turn_envelopes", [])
+        .expect("fault injection should remove the pre-dispatch ledger");
+    let (tx, _rx) = mpsc::channel(128);
+
     let error = executor
         .run(
             vec![],
@@ -4249,16 +4353,13 @@ async fn missing_required_reasoning_fails_closed_before_tool_execution() {
             0,
         )
         .await
-        .expect_err("a second response without required reasoning must fail closed");
+        .expect_err("tool dispatch must fail when the provider turn cannot commit");
 
-    assert!(error
-        .to_string()
-        .contains("reasoning_replay_payload_missing"));
-    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+    assert!(error.to_string().contains("provider_turn_envelopes"));
     assert_eq!(
         executions.load(Ordering::SeqCst),
         0,
-        "required replay payload must be validated before tool dispatch"
+        "database failure before commit must permit zero tool executions"
     );
 }
 

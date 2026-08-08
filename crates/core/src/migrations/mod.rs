@@ -2361,6 +2361,83 @@ Every answer that uses knowledge base search results.
          SET thinking = NULL
          WHERE thinking = '[reasoning content unavailable in local history]';",
     ),
+    (
+        "v112_provider_turn_envelopes",
+        "CREATE TABLE IF NOT EXISTS provider_turn_envelopes (
+             turn_item_id TEXT PRIMARY KEY,
+             sample_id TEXT NOT NULL UNIQUE,
+             scope_id TEXT NOT NULL,
+             conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+             conversation_turn_id TEXT REFERENCES conversation_turns(id) ON DELETE SET NULL,
+             run_id TEXT,
+             subtask_run_id TEXT,
+             message_id TEXT UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+             provider_endpoint_id TEXT NOT NULL,
+             provider_family TEXT NOT NULL,
+             api_style TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             reasoning_profile_id TEXT NOT NULL,
+             reasoning_profile_version INTEGER NOT NULL CHECK (reasoning_profile_version > 0),
+             replay_policy TEXT NOT NULL,
+             visible_content TEXT NOT NULL DEFAULT '',
+             provider_items_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(provider_items_json)),
+             replay_payload_json TEXT NOT NULL CHECK (json_valid(replay_payload_json)),
+             tool_calls_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tool_calls_json)),
+             capture_status TEXT NOT NULL CHECK (capture_status IN (
+                 'captured', 'notRequested', 'notRequired', 'omittedByProvider',
+                 'missingFromLegacyHistory', 'interrupted', 'truncated', 'redacted'
+             )),
+             request_id TEXT,
+             response_id TEXT,
+             raw_response_digest TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_provider_turn_envelopes_conversation
+             ON provider_turn_envelopes(conversation_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_provider_turn_envelopes_subtask
+             ON provider_turn_envelopes(subtask_run_id, created_at);
+         CREATE TABLE IF NOT EXISTS provider_turn_legacy_boundaries (
+             message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+             reason TEXT NOT NULL DEFAULT 'provider_turn_envelope_missing',
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         INSERT OR IGNORE INTO provider_turn_legacy_boundaries (message_id)
+         SELECT id
+         FROM messages
+         WHERE role = 'assistant'
+           AND tool_calls_json IS NOT NULL
+           AND trim(tool_calls_json) NOT IN ('', '[]')
+           AND (
+               artifacts_json IS NULL
+               OR json_extract(artifacts_json, '$.providerTurnEnvelope') IS NULL
+           );
+         UPDATE messages
+         SET artifacts_json = CASE
+             WHEN artifacts_json IS NULL THEN json_object(
+                 'providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+             WHEN json_type(artifacts_json) = 'object' THEN json_set(
+                 artifacts_json,
+                 '$.providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+             ELSE json_object(
+                 'kind', 'assistantArtifacts',
+                 'version', 2,
+                 'legacyArtifacts', json(artifacts_json),
+                 'providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+         END
+         WHERE id IN (SELECT message_id FROM provider_turn_legacy_boundaries);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

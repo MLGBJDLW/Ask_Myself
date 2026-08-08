@@ -36,13 +36,14 @@ use nexa_core::capability_registry::{
 use nexa_core::companion::CompanionProjection;
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    conversation_message_llm_context_content, conversation_message_reasoning_replay,
-    validate_agent_config_credential_contract, AgentConfig as DbAgentConfig, AgentExecutionGraph,
-    AgentSubtaskRun, AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskArtifactVersion,
-    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, AgentTaskRunPageCursor,
-    AgentTaskRunSummaryPage, CheckpointBranch, CollectionContext, Conversation,
-    ConversationMessage, ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput,
-    CreateConversationInput, ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
+    conversation_message_llm_context_content, conversation_message_provider_turn,
+    conversation_message_reasoning_replay, validate_agent_config_credential_contract,
+    AgentConfig as DbAgentConfig, AgentExecutionGraph, AgentSubtaskRun, AgentTaskArtifact,
+    AgentTaskArtifactSummary, AgentTaskArtifactVersion, AgentTaskRun, AgentTaskRunEvent,
+    AgentTaskRunListItem, AgentTaskRunPageCursor, AgentTaskRunSummaryPage, CheckpointBranch,
+    CollectionContext, Conversation, ConversationMessage, ConversationStats, ConversationTurn,
+    CreateAgentTaskArtifactInput, CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
+    UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::db_executor::DatabaseExecutor;
@@ -597,6 +598,9 @@ fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
     };
     if msg.role == Role::Assistant {
         m.reasoning_content = conversation_message_reasoning_replay(msg);
+        if let Some(envelope) = conversation_message_provider_turn(msg) {
+            m.set_provider_turn(envelope);
+        }
     }
     m
 }
@@ -835,6 +839,60 @@ mod tests {
         assert_eq!(
             llm_message.text_content(),
             "retrieved context\n\nvisible user text"
+        );
+    }
+
+    #[test]
+    fn conv_message_to_llm_restores_provider_turn_after_restart() {
+        let tool_call = nexa_core::llm::ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        };
+        let envelope = nexa_core::llm::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-item-1",
+            "sample-1",
+            nexa_core::llm::provider_turn::RouteSnapshot {
+                provider_endpoint_id: "deepseek-public".to_string(),
+                provider_family: "deepseek".to_string(),
+                api_style:
+                    nexa_core::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+                model_id: "deepseek-reasoner".to_string(),
+                reasoning_profile_id: "deepseek-chat-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy:
+                    nexa_core::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+            },
+            "",
+            Some("display reasoning"),
+            Some("native replay reasoning"),
+            vec![tool_call.clone()],
+            true,
+        );
+        let msg = ConversationMessage {
+            id: "msg-provider-turn".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            role: Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls: vec![tool_call],
+            artifacts: nexa_core::conversation::merge_provider_turn_envelope_artifact(
+                None, &envelope,
+            ),
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: Some("display reasoning".to_string()),
+            image_attachments: None,
+        };
+
+        let llm_message = conv_message_to_llm(&msg);
+
+        assert_eq!(llm_message.provider_turn(), Some(&envelope));
+        assert_eq!(
+            llm_message.reasoning_content.as_deref(),
+            Some("native replay reasoning")
         );
     }
 

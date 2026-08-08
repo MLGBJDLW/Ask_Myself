@@ -195,18 +195,24 @@ fn compact_tool_run_for_frontend(mut run: ToolRunItem) -> ToolRunItem {
 }
 
 fn compact_message_for_frontend(mut message: Message) -> Message {
-    for part in &mut message.parts {
+    message.parts.retain_mut(|part| {
         match part {
             ContentPart::Text { text } => {
                 *text = truncate_task_event_text(text, MAX_FRONTEND_MESSAGE_TEXT_CHARS);
+                true
             }
             ContentPart::Image { data, .. } => {
                 if data.len() > MAX_TASK_EVENT_TEXT_CHARS {
                     *data = "[image data omitted from stream event]".to_string();
                 }
+                true
             }
+            // Provider replay envelopes can contain opaque signatures or
+            // encrypted state. They are durable backend protocol state, never
+            // a frontend stream payload.
+            ContentPart::ProviderTurn { .. } => false,
         }
-    }
+    });
     message.reasoning_content = message
         .reasoning_content
         .map(|text| truncate_task_event_text(&text, MAX_TASK_EVENT_TEXT_CHARS));
@@ -464,4 +470,40 @@ pub(crate) fn truncate_task_event_text(value: &str, max_chars: usize) -> String 
         .collect::<String>();
     out.push_str("\n[truncated]");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_core::llm::provider_turn::{ProviderTurnEnvelope, RouteSnapshot};
+    use nexa_core::llm::reasoning_profile::{ReasoningApiStyle, ReasoningReplayPolicy};
+    use nexa_core::llm::Role;
+
+    #[test]
+    fn frontend_messages_drop_provider_replay_envelopes() {
+        let mut message = Message::text(Role::Assistant, "visible answer");
+        message.set_provider_turn(ProviderTurnEnvelope::capture(
+            "turn-item",
+            "sample",
+            RouteSnapshot {
+                provider_endpoint_id: "openai-public".to_string(),
+                provider_family: "openai".to_string(),
+                api_style: ReasoningApiStyle::OpenAiResponses,
+                model_id: "gpt-5.6".to_string(),
+                reasoning_profile_id: "openai-responses-reasoning-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+            },
+            "visible answer",
+            None,
+            None,
+            Vec::new(),
+            true,
+        ));
+
+        let compacted = compact_message_for_frontend(message);
+
+        assert_eq!(compacted.text_content(), "visible answer");
+        assert!(compacted.provider_turn().is_none());
+    }
 }

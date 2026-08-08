@@ -192,20 +192,25 @@ fn role_label(role: &Role) -> &'static str {
 
 fn serialized_message_for_hash(message: &Message) -> String {
     let tool_calls = serde_json::to_string(&message.tool_calls).unwrap_or_default();
+    let provider_turn_digest = message
+        .provider_turn()
+        .map(|envelope| envelope.raw_response_digest.as_str())
+        .unwrap_or_default();
     let base = format!(
-        "role={};name={};text={};tool_calls={};reasoning={}",
+        "role={};name={};text={};tool_calls={};reasoning={};provider_turn={}",
         role_label(&message.role),
         message.name.as_deref().unwrap_or_default(),
         message.text_content(),
         tool_calls,
-        message.reasoning_content.as_deref().unwrap_or_default()
+        message.reasoning_content.as_deref().unwrap_or_default(),
+        provider_turn_digest,
     );
     let image_fingerprints = message
         .parts
         .iter()
         .filter_map(|part| match part {
             ContentPart::Image { media_type, data } => Some((media_type.as_str(), hash_text(data))),
-            ContentPart::Text { .. } => None,
+            ContentPart::Text { .. } | ContentPart::ProviderTurn { .. } => None,
         })
         .collect::<Vec<_>>();
     if image_fingerprints.is_empty() {

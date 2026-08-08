@@ -259,7 +259,13 @@ pub async fn get_conversation_cmd(
     id: String,
 ) -> Result<(Conversation, Vec<ConversationMessage>), String> {
     let conv = state.db.get_conversation(&id).map_err(|e| e.to_string())?;
-    let msgs = state.db.get_messages(&id).map_err(|e| e.to_string())?;
+    let msgs = state
+        .db
+        .get_messages(&id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(nexa_core::conversation::conversation_message_for_display)
+        .collect();
     Ok((conv, msgs))
 }
 
