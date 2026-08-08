@@ -2,7 +2,7 @@ import type { Skill } from "../types/extensions";
 import { buildWorkflowBatchPrompt } from "./workflowPrompts";
 
 export type SlashCommandKind = "command" | "skill" | "workflow";
-export type SlashCommandAction = "prompt" | "compact" | "openWorkflows" | "planMode";
+export type SlashCommandAction = "prompt" | "compact" | "openWorkflows" | "planMode" | "companion";
 export type SlashCommandExecutionMode = "normal" | "plan";
 
 export interface SlashWorkflowTemplate {
@@ -170,6 +170,18 @@ const COMMON_COMMANDS: Array<Omit<SlashCommandOption, "id" | "kind" | "sourceLab
     title: "Compact",
     description: "Compact the current conversation context.",
     action: "compact",
+  },
+  {
+    name: "pets",
+    title: "Desktop Pets",
+    description: "Control the local Desktop Pet without sending a message to the model.",
+    action: "companion",
+  },
+  {
+    name: "pet",
+    title: "Desktop Pet (alias)",
+    description: "Alias for /pets; accepts show, hide, settings, reset, or select <id>.",
+    action: "companion",
   },
 ];
 
@@ -397,7 +409,7 @@ export function resolveSlashCommandSelection(
 ): ResolvedSlashCommand {
   const remainder = input.trim();
 
-  if (option.action === "compact" || option.action === "openWorkflows") {
+  if (option.action === "compact" || option.action === "openWorkflows" || option.action === "companion") {
     return {
       command: option,
       message: remainder,

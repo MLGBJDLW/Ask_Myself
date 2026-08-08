@@ -12,6 +12,7 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::{stream, stream::BoxStream, StreamExt};
 
+use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{
     CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderType,
     StreamChunk,
@@ -89,6 +90,20 @@ impl AutomaticFallbackProvider {
         let mut request = request.clone();
         request.model = self.routes[position].model.clone();
         request.provider_type = Some(self.routes[position].provider_type);
+        let reasoning_off = request.reasoning_enabled == Some(false)
+            || request.reasoning_effort == Some(super::ReasoningEffort::None);
+        let replay_policy = if reasoning_off {
+            ReasoningReplayPolicy::NotRequired
+        } else {
+            self.routes[position]
+                .provider
+                .reasoning_replay_policy(&self.routes[position].model)
+        };
+        request.messages = super::reasoning_replay::prepare_reasoning_replay_history(
+            &request.messages,
+            replay_policy,
+        )
+        .messages;
         request
     }
 
@@ -176,6 +191,25 @@ impl LlmProvider for AutomaticFallbackProvider {
         self.routes[position]
             .provider
             .prompt_cache_profile(&self.routes[position].model)
+    }
+
+    fn reasoning_replay_policy(
+        &self,
+        _model: &str,
+    ) -> super::reasoning_profile::ReasoningReplayPolicy {
+        let position = self.active_position();
+        self.routes[position]
+            .provider
+            .reasoning_replay_policy(&self.routes[position].model)
+    }
+
+    fn reasoning_replay_history_policy(
+        &self,
+        _model: &str,
+    ) -> super::reasoning_profile::ReasoningReplayPolicy {
+        // `request_for_route` applies the concrete route contract immediately
+        // before opening that route.
+        ReasoningReplayPolicy::NotRequired
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -354,7 +388,7 @@ mod tests {
     use futures::stream;
 
     use super::*;
-    use crate::llm::{FinishReason, Usage};
+    use crate::llm::{FinishReason, Message, Role, ToolCallRequest, Usage};
 
     #[derive(Clone)]
     enum Behavior {
@@ -367,12 +401,18 @@ mod tests {
         name: &'static str,
         behavior: Behavior,
         models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
+        histories: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
     }
 
     #[async_trait]
     impl LlmProvider for MockProvider {
         fn name(&self) -> &str {
             self.name
+        }
+
+        fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+            self.replay_policy
         }
 
         async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -384,6 +424,9 @@ mod tests {
             request: &CompletionRequest,
         ) -> Result<CompletionResponse, CoreError> {
             self.models.lock().unwrap().push(request.model.clone());
+            if let Some(histories) = &self.histories {
+                histories.lock().unwrap().push(request.messages.clone());
+            }
             match self.behavior {
                 Behavior::CompleteTransient => {
                     Err(CoreError::TransientLlm("temporary outage".to_string()))
@@ -411,6 +454,9 @@ mod tests {
             request: &CompletionRequest,
         ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
             self.models.lock().unwrap().push(request.model.clone());
+            if let Some(histories) = &self.histories {
+                histories.lock().unwrap().push(request.messages.clone());
+            }
             let Behavior::Stream(events) = &self.behavior else {
                 unreachable!("completion fixture used for stream")
             };
@@ -443,6 +489,39 @@ mod tests {
             name,
             behavior,
             models,
+            replay_policy: ReasoningReplayPolicy::Unknown,
+            histories: None,
+        })
+    }
+
+    fn provider_with_policy(
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
+    ) -> Box<dyn LlmProvider> {
+        Box::new(MockProvider {
+            name,
+            behavior,
+            models,
+            replay_policy,
+            histories: None,
+        })
+    }
+
+    fn provider_with_policy_and_history(
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
+        histories: Arc<Mutex<Vec<Vec<Message>>>>,
+    ) -> Box<dyn LlmProvider> {
+        Box::new(MockProvider {
+            name,
+            behavior,
+            models,
+            replay_policy,
+            histories: Some(histories),
         })
     }
 
@@ -509,6 +588,125 @@ mod tests {
                 1,
                 "primary_invocation_failed_automatic_fallback".to_string()
             )]
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_policy_tracks_the_route_that_produced_output() {
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_policy(
+                "primary",
+                Behavior::Stream(vec![chunk("primary answer")]),
+                Arc::clone(&models),
+                ReasoningReplayPolicy::NotRequired,
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider_with_policy(
+                    "deepseek",
+                    Behavior::Stream(vec![]),
+                    models,
+                    ReasoningReplayPolicy::RequiredOnToolCall,
+                ),
+                model: "deepseek-v4-pro".to_string(),
+                provider_type: ProviderType::DeepSeek,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        assert_eq!(
+            wrapper.reasoning_replay_policy("ignored"),
+            ReasoningReplayPolicy::NotRequired
+        );
+        assert_eq!(
+            wrapper.reasoning_replay_history_policy("ignored"),
+            ReasoningReplayPolicy::NotRequired
+        );
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            wrapper.reasoning_replay_policy("ignored"),
+            ReasoningReplayPolicy::NotRequired
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_projects_history_for_the_concrete_selected_route() {
+        let primary_history = Arc::new(Mutex::new(Vec::new()));
+        let fallback_history = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_policy_and_history(
+                "primary",
+                Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    message: "primary unavailable".to_string(),
+                }]),
+                Arc::clone(&models),
+                ReasoningReplayPolicy::NotRequired,
+                Arc::clone(&primary_history),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider_with_policy_and_history(
+                    "deepseek",
+                    Behavior::Stream(vec![chunk("fallback answer")]),
+                    models,
+                    ReasoningReplayPolicy::RequiredOnToolCall,
+                    Arc::clone(&fallback_history),
+                ),
+                model: "deepseek-v4-pro".to_string(),
+                provider_type: ProviderType::DeepSeek,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }]);
+        let mut route_request = request();
+        route_request.messages = vec![
+            assistant,
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::Assistant, "dependent answer"),
+        ];
+
+        let events = wrapper
+            .stream_events(&route_request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        assert!(primary_history.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.role == Role::Tool));
+        let fallback_history = fallback_history.lock().unwrap();
+        let fallback = &fallback_history[0];
+        assert!(!fallback.iter().any(|message| message.role == Role::Tool));
+        assert!(fallback
+            .iter()
+            .any(|message| { message.text_content().contains("Provider replay boundary") }));
+        assert_eq!(
+            wrapper.reasoning_replay_policy("ignored"),
+            ReasoningReplayPolicy::RequiredOnToolCall
         );
     }
 

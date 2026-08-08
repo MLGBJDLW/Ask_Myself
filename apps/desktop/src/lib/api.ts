@@ -1170,8 +1170,86 @@ export interface CompanionProjection {
   terminal: boolean;
 }
 
+export type CompanionPackDialect = 'nexa_v1' | 'nexa_v2' | 'codex_tui_v1' | 'codex_desktop_v2';
+
+export interface NormalizedCompanionAnimation {
+  frames: number[];
+  fps: number;
+  looping: boolean;
+  fallback: string | null;
+}
+
+export interface NormalizedCompanionPack {
+  id: string;
+  displayName: string;
+  description: string | null;
+  dialect: CompanionPackDialect;
+  compatibility: 'native' | 'compatible' | 'experimental';
+  spritesheetPath: string;
+  contentHash: string;
+  frame: { width: number; height: number; columns: number; rows: number };
+  animations: Record<string, NormalizedCompanionAnimation>;
+  experimentalFeatures: string[];
+  managed: boolean;
+}
+
+export interface CompanionPackCatalog {
+  packs: NormalizedCompanionPack[];
+  errors: Array<{ manifestPath: string; message: string }>;
+}
+
+export interface CompanionAssetData {
+  dataUrl: string;
+  contentHash: string;
+}
+
 export const getCompanionProjection = (runId: string) =>
   invoke<CompanionProjection>('get_companion_projection_cmd', { runId });
+
+export const getGlobalCompanionProjection = () =>
+  invoke<CompanionProjection | null>('get_global_companion_projection_cmd');
+
+export const scanCompanionPacks = () =>
+  invoke<CompanionPackCatalog>('scan_companion_packs_cmd');
+
+export const importCompanionPack = (manifestPath: string) =>
+  invoke<NormalizedCompanionPack>('import_companion_pack_cmd', { manifestPath });
+
+export const readCompanionAsset = (petId: string, contentHash: string) =>
+  invoke<CompanionAssetData>('read_companion_asset_cmd', { petId, contentHash });
+
+export const deleteManagedCompanionPack = (petId: string) =>
+  invoke<void>('delete_managed_companion_pack_cmd', { petId });
+
+export interface CompanionWindowDiagnostics {
+  platform: string;
+  windowAvailable: boolean;
+  rendererReady: boolean;
+  visible: boolean;
+  clickThrough: boolean;
+  lastError: string | null;
+  limitations: string[];
+}
+
+export interface CompanionCommandResult {
+  message: string;
+  openSettings: boolean;
+}
+
+export const companionRendererReady = () =>
+  invoke<void>('companion_renderer_ready_cmd');
+
+export const showCompanion = () => invoke<void>('show_companion_cmd');
+export const hideCompanion = () => invoke<void>('hide_companion_cmd');
+export const toggleCompanion = () => invoke<void>('toggle_companion_cmd');
+export const persistCompanionPosition = () => invoke<void>('persist_companion_position_cmd');
+export const resetCompanionPosition = () => invoke<void>('reset_companion_position_cmd');
+export const setCompanionInteraction = (mode: 'smart' | 'locked' | 'click_through') =>
+  invoke<void>('set_companion_interaction_cmd', { mode });
+export const getCompanionWindowDiagnostics = () =>
+  invoke<CompanionWindowDiagnostics>('get_companion_window_diagnostics_cmd');
+export const executeCompanionCommand = (input: string) =>
+  invoke<CompanionCommandResult>('companion_command_cmd', { input });
 
 export const getRunUsageSnapshot = (runId: string) =>
   invoke<UsageSnapshot | null>('get_run_usage_snapshot_cmd', { runId });

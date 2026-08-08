@@ -206,18 +206,9 @@ impl AgentExecutor {
     pub(super) fn reasoning_content_for_iteration(
         &self,
         iteration_thinking: &str,
-        has_tool_calls: bool,
+        _has_tool_calls: bool,
     ) -> Option<String> {
-        if !iteration_thinking.is_empty() {
-            return Some(iteration_thinking.to_string());
-        }
-        if has_tool_calls
-            && self.config.reasoning_enabled.unwrap_or(false)
-            && matches!(self.config.provider_type, Some(ProviderType::DeepSeek))
-        {
-            return Some(MISSING_REASONING_CONTENT_PLACEHOLDER.to_string());
-        }
-        None
+        crate::llm::reasoning_replay::sanitize_reasoning_text(Some(iteration_thinking))
     }
 }
 

@@ -205,7 +205,8 @@ export function formatSkillSummary(names: string[]): string {
 }
 
 export function normalizeThinking(content: string): string {
-  return content.replace(/\r\n/g, '\n').trim();
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  return normalized === '[reasoning content unavailable in local history]' ? '' : normalized;
 }
 
 export function compactThinkingText(content: string): string {

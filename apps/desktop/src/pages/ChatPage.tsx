@@ -1861,10 +1861,14 @@ export function ChatPage() {
                 </div>
               </div>
             ) : <>
-              <CompanionPet
-                taskRun={chat.taskRun}
-                onOpenTaskCenter={() => navigate('/tasks')}
-              />
+              {(appConfig?.companion?.showInChat ?? true) && (
+                <CompanionPet
+                  taskRun={chat.taskRun}
+                  onOpenTaskCenter={() => {
+                    void api.showCompanion().catch(() => navigate('/settings'));
+                  }}
+                />
+              )}
               <ChatInput
               onSend={handleComposerSend}
               onStop={chat.stop}

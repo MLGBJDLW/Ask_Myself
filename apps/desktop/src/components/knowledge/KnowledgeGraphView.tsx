@@ -1179,7 +1179,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                         filter: url(#knowledge-transfer-glow);
                       }
                       .kg-edge-comet-core {
-                        fill: rgba(255, 255, 255, 0.98);
+                        fill: var(--graph-transfer-core);
                         filter: url(#knowledge-transfer-glow);
                       }
                       .kg-node-hit {
@@ -1193,25 +1193,37 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                         filter: url(#knowledge-node-glow);
                       }
                       .kg-label-chip {
+                        fill: var(--graph-label-background);
+                        stroke: var(--graph-label-border);
                         filter: url(#knowledge-label-shadow);
                       }
                     `}
                   </style>
                   <radialGradient id="knowledge-canvas-glow" cx="50%" cy="48%" r="62%">
-                    <stop offset="0%" stopColor="rgba(255,255,255,0.78)" />
-                    <stop offset="54%" stopColor="rgba(239,246,255,0.42)" />
-                    <stop offset="100%" stopColor="rgba(241,245,249,0)" />
+                    <stop offset="0%" stopColor="var(--graph-canvas-glow-center)" />
+                    <stop offset="54%" stopColor="var(--graph-canvas-glow-mid)" />
+                    <stop offset="100%" stopColor="var(--graph-canvas-glow-edge)" />
                   </radialGradient>
                   <filter id="knowledge-node-frost" x="-90%" y="-90%" width="280%" height="280%" colorInterpolationFilters="sRGB">
                     <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="9" result="noise" />
                     <feColorMatrix
                       in="noise"
                       type="matrix"
-                      values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.16 0"
-                      result="grain"
+                      values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.034 0.1144 0.0115 0 0"
+                      result="grain-mask"
                     />
-                    <feBlend in="SourceGraphic" in2="grain" mode="screen" result="frosted" />
-                    <feDropShadow in="frosted" dx="0" dy="4" stdDeviation="5" floodColor="#0f172a" floodOpacity="0.14" />
+                    <feFlood floodColor="var(--graph-node-frost)" result="grain-color" />
+                    <feComposite in="grain-color" in2="grain-mask" operator="in" result="grain" />
+                    <feComposite in="grain" in2="SourceAlpha" operator="in" result="masked-grain" />
+                    <feBlend in="SourceGraphic" in2="masked-grain" mode="screen" result="frosted" />
+                    <feDropShadow
+                      in="frosted"
+                      dx="0"
+                      dy="4"
+                      stdDeviation="5"
+                      floodColor="var(--graph-shadow-color)"
+                      floodOpacity="var(--graph-shadow-opacity)"
+                    />
                   </filter>
                   <filter id="knowledge-node-glow" x="-120%" y="-120%" width="340%" height="340%">
                     <feGaussianBlur stdDeviation="4" result="blur" />
@@ -1235,7 +1247,13 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                     </feMerge>
                   </filter>
                   <filter id="knowledge-label-shadow" x="-30%" y="-80%" width="160%" height="260%">
-                    <feDropShadow dx="0" dy="4" stdDeviation="4" floodColor="#0f172a" floodOpacity="0.12" />
+                    <feDropShadow
+                      dx="0"
+                      dy="4"
+                      stdDeviation="4"
+                      floodColor="var(--graph-shadow-color)"
+                      floodOpacity="var(--graph-shadow-opacity)"
+                    />
                   </filter>
                   {Object.values(RELATION_CATEGORY_STYLE).map((style) => (
                     <marker
@@ -1326,7 +1344,14 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                             className="kg-edge-line"
                           />
                           <g transform={`translate(${midpoint.x - 50} ${midpoint.y - 36})`}>
-                            <rect width="100" height="24" rx="7" fill="rgba(255,255,255,0.94)" stroke={color} strokeOpacity="0.45" />
+                            <rect
+                              width="100"
+                              height="24"
+                              rx="7"
+                              fill="var(--graph-suggestion-background)"
+                              stroke={color}
+                              strokeOpacity="0.45"
+                            />
                             <text x="50" y="16" textAnchor="middle" fill={color} className="text-[10px] font-semibold">
                               {label.slice(0, 14)}
                             </text>
@@ -1546,7 +1571,7 @@ export function KnowledgeGraphView({ onOpenInsights }: { onOpenInsights?: () => 
                               width={labelWidth}
                               height={graphMode === 'focus' ? 25 : 21}
                               rx={graphMode === 'focus' ? 8 : 6}
-                              className="kg-label-chip fill-surface-0 stroke-white"
+                              className="kg-label-chip"
                               opacity={selected || agentUsed || graphMode === 'focus' ? 0.94 : 0.76}
                             />
                             <text

@@ -278,6 +278,22 @@ impl AgentExecutor {
 
         if let Some(cid) = conversation_id {
             let assistant_message_id = Uuid::new_v4().to_string();
+            let reasoning_envelope = self.reasoning_envelope_for_persistence(
+                model,
+                assistant_reasoning_content.as_deref(),
+                assistant_reasoning_content.as_deref(),
+                assistant_msg
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|tool_calls| !tool_calls.is_empty()),
+            );
+            let display_thinking = reasoning_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.display_text.clone());
+            let artifacts = merge_reasoning_envelope_artifact(
+                build_assistant_artifacts(persisted_trace_items, proposed_plan_artifact.as_ref()),
+                reasoning_envelope,
+            );
             let conv_msg = ConversationMessage {
                 id: assistant_message_id.clone(),
                 conversation_id: cid.to_string(),
@@ -285,14 +301,11 @@ impl AgentExecutor {
                 content: final_text.clone(),
                 tool_call_id: None,
                 tool_calls: assistant_msg.tool_calls.clone().unwrap_or_default(),
-                artifacts: build_assistant_artifacts(
-                    persisted_trace_items,
-                    proposed_plan_artifact.as_ref(),
-                ),
+                artifacts,
                 token_count: estimate_message_tokens_for_model(model, &assistant_msg),
                 created_at: String::new(),
                 sort_order,
-                thinking: assistant_reasoning_content,
+                thinking: display_thinking,
                 image_attachments: None,
             };
             if let Err(e) = db.add_message(&conv_msg) {

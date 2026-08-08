@@ -127,6 +127,21 @@ test('resolves compact as a local command', () => {
   assertEqual(resolved.message, '', 'compact has no message body');
 });
 
+test('resolves both pet dialects as local-only commands', () => {
+  const options = buildSlashCommandOptions([], []);
+  for (const input of ['/pets show', '/pet select nexa-cat']) {
+    const resolved = resolveSlashCommandMessage(input, options);
+    assert(resolved, `${input} should resolve`);
+    assertEqual(resolved.localAction, 'companion', `${input} is handled locally`);
+    assertEqual(resolved.skillIds.length, 0, `${input} never pins a model skill`);
+  }
+  assertEqual(
+    resolveSlashCommandMessage('/pets show', options)?.message,
+    'show',
+    'pet action is passed to the native controller without slash syntax',
+  );
+});
+
 test('resolves goal into a goal-oriented prompt', () => {
   const options = buildSlashCommandOptions([], []);
   const resolved = resolveSlashCommandMessage('/goal ship offline sync', options);

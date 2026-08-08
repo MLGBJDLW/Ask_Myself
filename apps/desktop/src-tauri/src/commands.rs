@@ -36,13 +36,13 @@ use nexa_core::capability_registry::{
 use nexa_core::companion::CompanionProjection;
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
-    conversation_message_llm_context_content, validate_agent_config_credential_contract,
-    AgentConfig as DbAgentConfig, AgentExecutionGraph, AgentSubtaskRun, AgentTaskArtifact,
-    AgentTaskArtifactSummary, AgentTaskArtifactVersion, AgentTaskRun, AgentTaskRunEvent,
-    AgentTaskRunListItem, AgentTaskRunPageCursor, AgentTaskRunSummaryPage, CheckpointBranch,
-    CollectionContext, Conversation, ConversationMessage, ConversationStats, ConversationTurn,
-    CreateAgentTaskArtifactInput, CreateConversationInput, ImageAttachment, SaveAgentConfigInput,
-    UpdateAgentTaskArtifactInput,
+    conversation_message_llm_context_content, conversation_message_reasoning_replay,
+    validate_agent_config_credential_contract, AgentConfig as DbAgentConfig, AgentExecutionGraph,
+    AgentSubtaskRun, AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskArtifactVersion,
+    AgentTaskRun, AgentTaskRunEvent, AgentTaskRunListItem, AgentTaskRunPageCursor,
+    AgentTaskRunSummaryPage, CheckpointBranch, CollectionContext, Conversation,
+    ConversationMessage, ConversationStats, ConversationTurn, CreateAgentTaskArtifactInput,
+    CreateConversationInput, ImageAttachment, SaveAgentConfigInput, UpdateAgentTaskArtifactInput,
 };
 use nexa_core::db::Database;
 use nexa_core::db_executor::DatabaseExecutor;
@@ -108,6 +108,7 @@ use uuid::Uuid;
 mod agent_chat;
 mod app_config;
 mod approval;
+mod companion;
 mod conversation;
 mod knowledge;
 mod media;
@@ -125,6 +126,7 @@ mod workflows;
 pub use agent_chat::*;
 pub use app_config::*;
 pub use approval::*;
+pub use companion::*;
 pub use conversation::*;
 pub use knowledge::*;
 pub use media::*;
@@ -594,7 +596,7 @@ fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
         Some(msg.tool_calls.clone())
     };
     if msg.role == Role::Assistant {
-        m.reasoning_content = msg.thinking.clone();
+        m.reasoning_content = conversation_message_reasoning_replay(msg);
     }
     m
 }

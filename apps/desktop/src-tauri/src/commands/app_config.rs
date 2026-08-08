@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Emitter;
 
 // ── App Config ──────────────────────────────────────────────────────
 
@@ -9,10 +10,21 @@ pub fn get_app_config_cmd(state: tauri::State<'_, AppState>) -> Result<AppConfig
 
 #[tauri::command]
 pub fn save_app_config_cmd(
+    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     config: AppConfig,
 ) -> Result<(), String> {
-    state.db.save_app_config(&config).map_err(|e| e.to_string())
+    state
+        .db
+        .save_app_config(&config)
+        .map_err(|e| e.to_string())?;
+    crate::companion_window::apply_companion_settings(
+        &app_handle,
+        &config.companion,
+        config.companion.enabled,
+    );
+    let _ = app_handle.emit("companion://settings-changed", &config.companion);
+    Ok(())
 }
 
 #[derive(Serialize)]

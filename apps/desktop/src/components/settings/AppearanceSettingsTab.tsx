@@ -13,6 +13,7 @@ import { Input } from '../ui/Input';
 import { CollapsiblePanel, Section } from './SettingsSection';
 import { ToolApprovalControl, type ToolApprovalMode } from './ToolApprovalControl';
 import { UpdateSettingsPanel } from './UpdateSettingsPanel';
+import { CompanionSettingsCard } from '../../features/companion/CompanionSettingsCard';
 
 type UpdaterState = ReturnType<typeof useUpdater>;
 
@@ -151,6 +152,15 @@ export function AppearanceSettingsTab({
         </div>
 
         {/* Separator */}
+        <div className="border-t border-border" />
+
+        <CompanionSettingsCard
+          appConfig={appConfig}
+          loading={appConfigLoading}
+          onChange={onAppConfigChange}
+          onSave={(next) => onAppConfigSave(next)}
+        />
+
         <div className="border-t border-border" />
 
         {/* Language section */}

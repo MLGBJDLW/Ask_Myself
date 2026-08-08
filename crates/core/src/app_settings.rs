@@ -495,6 +495,191 @@ pub enum WindowCloseBehavior {
     MinimizeToTray,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionDisplayMode {
+    #[default]
+    Always,
+    DuringTasks,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionInteractionMode {
+    #[default]
+    Smart,
+    Locked,
+    ClickThrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionActiveRunPolicy {
+    #[default]
+    HighestPriority,
+    PinnedRun,
+    PinnedProject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionAnchor {
+    BottomLeft,
+    #[default]
+    BottomRight,
+    Free,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionLogicalPosition {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default = "default_companion_scale_factor")]
+    pub scale_factor: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub selected_pet_id: Option<String>,
+    #[serde(default)]
+    pub display_mode: CompanionDisplayMode,
+    #[serde(default)]
+    pub interaction_mode: CompanionInteractionMode,
+    #[serde(default = "default_true")]
+    pub show_in_chat: bool,
+    #[serde(default)]
+    pub auto_show_on_start: bool,
+    #[serde(default = "default_true")]
+    pub continue_when_main_hidden: bool,
+    #[serde(default = "default_companion_scale")]
+    pub scale: f32,
+    #[serde(default = "default_companion_fps_cap")]
+    pub animation_fps_cap: u8,
+    #[serde(default)]
+    pub reduced_motion: bool,
+    #[serde(default = "default_true")]
+    pub idle_actions: bool,
+    #[serde(default)]
+    pub auto_walk: bool,
+    #[serde(default = "default_true")]
+    pub show_bubbles: bool,
+    #[serde(default)]
+    pub bubble_task_titles: bool,
+    #[serde(default = "default_true")]
+    pub privacy_mode: bool,
+    #[serde(default = "default_success_hold_ms")]
+    pub success_hold_ms: u32,
+    #[serde(default = "default_failure_hold_ms")]
+    pub failure_hold_ms: u32,
+    #[serde(default = "default_true")]
+    pub always_on_top: bool,
+    #[serde(default)]
+    pub visible_on_all_workspaces: bool,
+    #[serde(default)]
+    pub lock_position: bool,
+    #[serde(default)]
+    pub active_run_policy: CompanionActiveRunPolicy,
+    #[serde(default)]
+    pub pinned_run_id: Option<String>,
+    #[serde(default)]
+    pub pinned_project_id: Option<String>,
+    #[serde(default)]
+    pub monitor_id: Option<String>,
+    #[serde(default)]
+    pub anchor: CompanionAnchor,
+    #[serde(default)]
+    pub position: Option<CompanionLogicalPosition>,
+    #[serde(default = "default_true")]
+    pub edge_snap: bool,
+    #[serde(default = "default_true")]
+    pub avoid_taskbar: bool,
+    #[serde(default = "default_true")]
+    pub allow_monitor_move: bool,
+    #[serde(default)]
+    pub codex_import_path: Option<String>,
+}
+
+impl CompanionSettings {
+    fn normalize(&mut self) {
+        self.scale = self.scale.clamp(0.5, 2.0);
+        self.animation_fps_cap = match self.animation_fps_cap {
+            0..=24 => 24,
+            25..=30 => 30,
+            _ => 60,
+        };
+        self.success_hold_ms = self.success_hold_ms.clamp(1_000, 30_000);
+        self.failure_hold_ms = self.failure_hold_ms.clamp(1_000, 30_000);
+        if let Some(position) = &mut self.position {
+            if !position.x.is_finite() || !position.y.is_finite() {
+                self.position = None;
+            } else {
+                position.scale_factor = if position.scale_factor.is_finite() {
+                    position.scale_factor.clamp(0.5, 8.0)
+                } else {
+                    default_companion_scale_factor()
+                };
+            }
+        }
+        for value in [
+            &mut self.selected_pet_id,
+            &mut self.pinned_run_id,
+            &mut self.pinned_project_id,
+            &mut self.monitor_id,
+            &mut self.codex_import_path,
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                *value = None;
+            }
+        }
+    }
+}
+
+impl Default for CompanionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            selected_pet_id: None,
+            display_mode: CompanionDisplayMode::Always,
+            interaction_mode: CompanionInteractionMode::Smart,
+            show_in_chat: true,
+            auto_show_on_start: false,
+            continue_when_main_hidden: true,
+            scale: default_companion_scale(),
+            animation_fps_cap: default_companion_fps_cap(),
+            reduced_motion: false,
+            idle_actions: true,
+            auto_walk: false,
+            show_bubbles: true,
+            bubble_task_titles: false,
+            privacy_mode: true,
+            success_hold_ms: default_success_hold_ms(),
+            failure_hold_ms: default_failure_hold_ms(),
+            always_on_top: true,
+            visible_on_all_workspaces: false,
+            lock_position: false,
+            active_run_policy: CompanionActiveRunPolicy::HighestPriority,
+            pinned_run_id: None,
+            pinned_project_id: None,
+            monitor_id: None,
+            anchor: CompanionAnchor::BottomRight,
+            position: None,
+            edge_snap: true,
+            avoid_taskbar: true,
+            allow_monitor_move: true,
+            codex_import_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -596,6 +781,26 @@ pub struct AppConfig {
     /// Background knowledge consolidation and review queue settings.
     #[serde(default)]
     pub dreaming: DreamingConfig,
+
+    /// Desktop Companion runtime, rendering, and pack-discovery settings.
+    #[serde(default)]
+    pub companion: CompanionSettings,
+}
+
+fn default_companion_scale() -> f32 {
+    1.0
+}
+fn default_companion_scale_factor() -> f64 {
+    1.0
+}
+fn default_companion_fps_cap() -> u8 {
+    24
+}
+fn default_success_hold_ms() -> u32 {
+    4_000
+}
+fn default_failure_hold_ms() -> u32 {
+    6_000
 }
 
 fn default_cache_ttl_hours() -> u32 {
@@ -741,11 +946,13 @@ impl Default for AppConfig {
             speech_to_text: SpeechToTextConfig::default(),
             web_search: WebSearchConfig::default(),
             dreaming: DreamingConfig::default(),
+            companion: CompanionSettings::default(),
         }
     }
 }
 
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
+    config.companion.normalize();
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
@@ -764,6 +971,7 @@ fn decrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreEr
     for provider in &mut config.web_search.custom_providers {
         provider.api_key = crate::crypto::decrypt_api_key(&provider.api_key)?;
     }
+    config.companion.normalize();
     Ok(config)
 }
 
@@ -932,6 +1140,38 @@ mod tests {
             .custom_providers
             .iter()
             .any(|provider| provider.preset == WebSearchCustomProviderPreset::AnySearch));
+        assert!(!config.companion.enabled);
+        assert!(config.companion.show_in_chat);
+        assert_eq!(
+            config.companion.interaction_mode,
+            CompanionInteractionMode::Smart
+        );
+        assert_eq!(config.companion.anchor, CompanionAnchor::BottomRight);
+    }
+
+    #[test]
+    fn companion_settings_are_backward_compatible_and_normalized_on_save() {
+        let legacy: AppConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("legacy app config should use companion defaults");
+        assert_eq!(legacy.companion, CompanionSettings::default());
+
+        let db = Database::open_memory().expect("open_memory");
+        let mut config = AppConfig::default();
+        config.companion.enabled = true;
+        config.companion.scale = 9.0;
+        config.companion.animation_fps_cap = 29;
+        config.companion.position = Some(CompanionLogicalPosition {
+            x: f64::NAN,
+            y: 42.0,
+            scale_factor: 1.0,
+        });
+        db.save_app_config(&config).expect("save normalized config");
+        let loaded = db.load_app_config().expect("load normalized config");
+
+        assert!(loaded.companion.enabled);
+        assert_eq!(loaded.companion.scale, 2.0);
+        assert_eq!(loaded.companion.animation_fps_cap, 30);
+        assert_eq!(loaded.companion.position, None);
     }
 
     #[test]

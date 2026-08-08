@@ -9,6 +9,7 @@ import chat from './chat.json';
 import citation from './citation.json';
 import cmd from './cmd.json';
 import common from './common.json';
+import companion from './companion.json';
 import errorBoundary from './errorBoundary.json';
 import evidence from './evidence.json';
 import knowledge from './knowledge.json';
@@ -41,6 +42,7 @@ export const fr: TranslationKeys = flattenTranslationNamespaces({
   citation,
   cmd,
   common,
+  companion,
   errorBoundary,
   evidence,
   knowledge,

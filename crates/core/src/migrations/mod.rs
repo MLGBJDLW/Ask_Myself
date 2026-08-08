@@ -2355,6 +2355,12 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_conversation_turns_launch_project
              ON conversation_turns(launch_project_id, created_at DESC);",
     ),
+    (
+        "v111_remove_legacy_reasoning_sentinel",
+        "UPDATE messages
+         SET thinking = NULL
+         WHERE thinking = '[reasoning content unavailable in local history]';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -3587,5 +3593,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 2);
+    }
+
+    #[test]
+    fn legacy_reasoning_sentinel_is_removed_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute(
+            "INSERT INTO conversations (id, provider, model) VALUES (?1, ?2, ?3)",
+            ("conv-reasoning", "deep_seek", "deepseek-v4"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, thinking) VALUES (?1, ?2, ?3, ?4)",
+            (
+                "message-reasoning",
+                "conv-reasoning",
+                "assistant",
+                crate::llm::reasoning_replay::LEGACY_MISSING_REASONING_SENTINEL,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM _migrations WHERE name = 'v111_remove_legacy_reasoning_sentinel'",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("reasoning cleanup should succeed");
+        run_migrations(&conn).expect("reasoning cleanup should remain idempotent");
+
+        let thinking: Option<String> = conn
+            .query_row(
+                "SELECT thinking FROM messages WHERE id = 'message-reasoning'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(thinking, None);
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _migrations WHERE name = 'v111_remove_legacy_reasoning_sentinel'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
     }
 }

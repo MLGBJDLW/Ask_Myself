@@ -588,6 +588,51 @@ export interface AppConfig {
   speechToText?: SpeechToTextConfig;
   webSearch?: WebSearchConfig;
   dreaming?: DreamingConfig;
+  companion?: CompanionSettings;
+}
+
+export type CompanionDisplayMode = 'always' | 'during_tasks' | 'manual';
+export type CompanionInteractionMode = 'smart' | 'locked' | 'click_through';
+export type CompanionActiveRunPolicy = 'highest_priority' | 'pinned_run' | 'pinned_project';
+export type CompanionAnchor = 'bottom_left' | 'bottom_right' | 'free';
+
+export interface CompanionLogicalPosition {
+  x: number;
+  y: number;
+  scaleFactor: number;
+}
+
+export interface CompanionSettings {
+  enabled: boolean;
+  selectedPetId: string | null;
+  displayMode: CompanionDisplayMode;
+  interactionMode: CompanionInteractionMode;
+  showInChat: boolean;
+  autoShowOnStart: boolean;
+  continueWhenMainHidden: boolean;
+  scale: number;
+  animationFpsCap: 24 | 30 | 60;
+  reducedMotion: boolean;
+  idleActions: boolean;
+  autoWalk: boolean;
+  showBubbles: boolean;
+  bubbleTaskTitles: boolean;
+  privacyMode: boolean;
+  successHoldMs: number;
+  failureHoldMs: number;
+  alwaysOnTop: boolean;
+  visibleOnAllWorkspaces: boolean;
+  lockPosition: boolean;
+  activeRunPolicy: CompanionActiveRunPolicy;
+  pinnedRunId: string | null;
+  pinnedProjectId: string | null;
+  monitorId: string | null;
+  anchor: CompanionAnchor;
+  position: CompanionLogicalPosition | null;
+  edgeSnap: boolean;
+  avoidTaskbar: boolean;
+  allowMonitorMove: boolean;
+  codexImportPath: string | null;
 }
 
 export interface DreamingConfig {

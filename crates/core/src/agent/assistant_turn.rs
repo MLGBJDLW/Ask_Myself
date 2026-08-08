@@ -13,6 +13,82 @@ pub(super) struct AssistantTurnPersistenceContext<'a> {
 }
 
 impl AgentExecutor {
+    pub(super) fn reasoning_replay_policy_for_request(
+        &self,
+        model: &str,
+        force_reasoning_off: bool,
+    ) -> ReasoningReplayPolicy {
+        if force_reasoning_off
+            || self.config.reasoning_enabled == Some(false)
+            || self.config.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            ReasoningReplayPolicy::NotRequired
+        } else {
+            self.provider.reasoning_replay_policy(model)
+        }
+    }
+
+    pub(super) fn reasoning_replay_history_policy_for_request(
+        &self,
+        model: &str,
+        force_reasoning_off: bool,
+    ) -> ReasoningReplayPolicy {
+        if force_reasoning_off
+            || self.config.reasoning_enabled == Some(false)
+            || self.config.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            ReasoningReplayPolicy::NotRequired
+        } else {
+            self.provider.reasoning_replay_history_policy(model)
+        }
+    }
+
+    pub(super) fn reasoning_envelope_for_persistence(
+        &self,
+        model: &str,
+        display_text: Option<&str>,
+        replay_text: Option<&str>,
+        has_tool_calls: bool,
+    ) -> Option<ReasoningEnvelope> {
+        let display_text = crate::llm::reasoning_replay::sanitize_reasoning_text(display_text);
+        let replay_text = crate::llm::reasoning_replay::sanitize_reasoning_text(replay_text);
+        let replay_policy = self.reasoning_replay_policy_for_request(model, false);
+        let required_for_replay = has_tool_calls && replay_policy.requires_tool_call_payload();
+        let status = if replay_text.is_some() {
+            ReasoningCaptureStatus::Captured
+        } else if required_for_replay {
+            ReasoningCaptureStatus::OmittedByProvider
+        } else if self.config.reasoning_enabled == Some(false) {
+            ReasoningCaptureStatus::NotRequested
+        } else {
+            ReasoningCaptureStatus::NotRequired
+        };
+
+        if display_text.is_none()
+            && replay_text.is_none()
+            && !required_for_replay
+            && matches!(
+                replay_policy,
+                ReasoningReplayPolicy::NotRequired | ReasoningReplayPolicy::Unknown
+            )
+        {
+            return None;
+        }
+
+        let source_field = replay_text
+            .is_some()
+            .then(|| "reasoning_content".to_string());
+        Some(ReasoningEnvelope {
+            display_text,
+            replay_payload: replay_text.map(serde_json::Value::String),
+            status,
+            required_for_replay,
+            source_field,
+            provider_id: self.provider.name().to_string(),
+            model_id: model.to_string(),
+        })
+    }
+
     pub(super) fn persist_steered_assistant_draft(
         &self,
         ctx: AssistantTurnPersistenceContext<'_>,
@@ -102,6 +178,15 @@ impl AgentExecutor {
             }
         }
         if let Some(cid) = conversation_id {
+            let reasoning_envelope = self.reasoning_envelope_for_persistence(
+                model,
+                Some(iteration_thinking),
+                assistant_reasoning_content.as_deref(),
+                false,
+            );
+            let display_thinking = reasoning_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.display_text.clone());
             let conv_msg = ConversationMessage {
                 id: Uuid::new_v4().to_string(),
                 conversation_id: cid.to_string(),
@@ -109,11 +194,11 @@ impl AgentExecutor {
                 content: assistant_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: None,
+                artifacts: merge_reasoning_envelope_artifact(None, reasoning_envelope),
                 token_count: estimate_message_tokens_for_model(model, assistant_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
-                thinking: assistant_reasoning_content,
+                thinking: display_thinking,
                 image_attachments: None,
             };
             if let Err(e) = db.add_message(&conv_msg) {
@@ -160,6 +245,15 @@ impl AgentExecutor {
             );
         }
         if let Some(cid) = conversation_id {
+            let reasoning_envelope = self.reasoning_envelope_for_persistence(
+                model,
+                Some(iteration_thinking),
+                assistant_reasoning_content.as_deref(),
+                true,
+            );
+            let display_thinking = reasoning_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.display_text.clone());
             let conv_msg = ConversationMessage {
                 id: Uuid::new_v4().to_string(),
                 conversation_id: cid.to_string(),
@@ -167,11 +261,11 @@ impl AgentExecutor {
                 content: assistant_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: tool_calls.to_vec(),
-                artifacts: None,
+                artifacts: merge_reasoning_envelope_artifact(None, reasoning_envelope),
                 token_count: estimate_message_tokens_for_model(model, assistant_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
-                thinking: assistant_reasoning_content,
+                thinking: display_thinking,
                 image_attachments: None,
             };
             if let Err(e) = db.add_message(&conv_msg) {
