@@ -3074,11 +3074,7 @@ mod tests {
                 persona_id: None,
             })
             .expect("create legacy project conversation");
-        db.conn()
-            .execute(
-                "UPDATE conversations SET system_prompt_origin = 'legacy_ambiguous' WHERE id = ?1",
-                [&legacy_snapshot.id],
-            )
+        db.mark_legacy_project_system_prompt_ambiguous(&legacy_snapshot.id)
             .expect("mark copied legacy project prompt");
         let observed_turn_id = successful_project_turn(&db, &conversation.id);
         db.record_project_turn_completion(

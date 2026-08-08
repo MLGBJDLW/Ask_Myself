@@ -1150,6 +1150,36 @@ impl Database {
         Ok(())
     }
 
+    /// Classify a project prompt imported from a schema that did not record
+    /// prompt ownership. Compatibility/import callers may use this to keep a
+    /// stored project snapshot editable without injecting it beside the live
+    /// project instructions.
+    pub fn mark_legacy_project_system_prompt_ambiguous(&self, id: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations
+             SET system_prompt_origin = 'legacy_ambiguous'
+             WHERE id = ?1 AND project_id IS NOT NULL",
+            rusqlite::params![id],
+        )?;
+        if affected == 0 {
+            let exists = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+                rusqlite::params![id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            return Err(if exists {
+                CoreError::InvalidInput(
+                    "Only project conversations can contain legacy project prompt snapshots."
+                        .to_string(),
+                )
+            } else {
+                CoreError::NotFound(format!("Conversation {id}"))
+            });
+        }
+        Ok(())
+    }
+
     /// Return only conversation-authored instructions when live project
     /// instructions are assembled separately. Legacy project snapshots remain
     /// stored and editable, but are not injected as a second instruction set.
@@ -4516,6 +4546,63 @@ mod tests {
         let updated = db.get_conversation(&conv.id).unwrap();
         assert_eq!(updated.title, "My manual title");
         assert!(!updated.title_is_auto);
+    }
+
+    #[test]
+    fn legacy_project_prompt_classification_fails_closed_until_explicit_resave() {
+        let db = Database::open_memory().unwrap();
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Prompt ownership".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: Some("Live project prompt".into()),
+                source_scope: None,
+            })
+            .unwrap();
+        let project_conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: Some("Copied legacy project prompt".into()),
+                collection_context: None,
+                project_id: Some(project.id),
+                persona_id: None,
+            })
+            .unwrap();
+
+        db.mark_legacy_project_system_prompt_ambiguous(&project_conversation.id)
+            .unwrap();
+        assert_eq!(
+            db.get_effective_conversation_system_prompt(&project_conversation)
+                .unwrap(),
+            ""
+        );
+
+        db.update_conversation_system_prompt(&project_conversation.id, "Explicit user override")
+            .unwrap();
+        let explicit = db.get_conversation(&project_conversation.id).unwrap();
+        assert_eq!(
+            db.get_effective_conversation_system_prompt(&explicit)
+                .unwrap(),
+            "Explicit user override"
+        );
+
+        let ordinary_conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: Some("Ordinary prompt".into()),
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            db.mark_legacy_project_system_prompt_ambiguous(&ordinary_conversation.id),
+            Err(CoreError::InvalidInput(_))
+        ));
     }
 
     #[test]
