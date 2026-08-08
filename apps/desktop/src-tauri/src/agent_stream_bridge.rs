@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use log::warn;
 use nexa_core::agent::AgentEvent;
 use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::db::Database;
@@ -140,11 +141,9 @@ impl AgentStreamForwarder {
                                             &self.task_run_id,
                                             &message.text_content(),
                                         ) {
-                                            tracing::warn!(
-                                                conversation_id = %self.conversation_id,
-                                                turn_id = %self.turn_id,
-                                                error = %error,
-                                                "Failed to publish project workspace turn completion"
+                                            warn!(
+                                                "Failed to publish project workspace turn completion for conversation {} turn {}: {}",
+                                                self.conversation_id, self.turn_id, error
                                             );
                                         }
                                     }

@@ -62,7 +62,7 @@ use nexa_core::interaction::{
     SubmitInteractionResponse,
 };
 use nexa_core::llm::{
-    create_provider, CompletionRequest, ContentPart, Message, ProviderConfig, ProviderType, Role,
+    create_provider, CompletionRequest, Message, ProviderConfig, ProviderType, Role,
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
