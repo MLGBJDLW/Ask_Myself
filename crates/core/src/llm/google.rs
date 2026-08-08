@@ -327,6 +327,23 @@ fn normalized_model_name(model: &str) -> &str {
     model.strip_prefix("models/").unwrap_or(model)
 }
 
+fn replayable_gemini_parts(message: &Message) -> Vec<GeminiPartV2> {
+    let Some(envelope) = message.provider_turn() else {
+        return Vec::new();
+    };
+    let super::provider_turn::ProviderReplayPayload::GeminiThoughtSignatures(payload) =
+        &envelope.replay_payload
+    else {
+        return Vec::new();
+    };
+    payload
+        .content_parts
+        .iter()
+        .cloned()
+        .filter_map(|part| serde_json::from_value(part).ok())
+        .collect()
+}
+
 /// Convert unified messages to Gemini format.
 /// Only the leading system prefix is extracted as top-level systemInstruction.
 fn convert_messages(
@@ -381,6 +398,31 @@ fn convert_messages(
                 push_or_merge_content(&mut contents, "user", parts);
             }
             Role::Assistant => {
+                if let Some(ref calls) = msg.tool_calls {
+                    for call in calls {
+                        tool_id_to_name.insert(call.id.clone(), call.name.clone());
+                    }
+                }
+                let exact_parts = replayable_gemini_parts(msg);
+                if !exact_parts.is_empty() {
+                    if contents.is_empty() {
+                        push_or_merge_content(
+                            &mut contents,
+                            "user",
+                            vec![GeminiPartV2::Text {
+                                text: "[Retained conversation context begins here.]".to_string(),
+                                thought_signature: None,
+                            }],
+                        );
+                    }
+                    // Signed Gemini parts are an ordered provider-native unit;
+                    // never merge or reconstruct them from normalized fields.
+                    contents.push(GeminiContentV2 {
+                        role: "model".to_string(),
+                        parts: exact_parts,
+                    });
+                    continue;
+                }
                 let mut parts: Vec<GeminiPartV2> = Vec::new();
                 let text = msg.text_content();
                 if !text.is_empty() {
@@ -391,7 +433,6 @@ fn convert_messages(
                 }
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
-                        tool_id_to_name.insert(tc.id.clone(), tc.name.clone());
                         let args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
                         parts.push(GeminiPartV2::FunctionCall {
@@ -841,9 +882,15 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
     let mut text_parts = Vec::new();
     let mut thinking_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut provider_content_parts = Vec::new();
+    let mut captured_signatures = Vec::<(usize, Option<String>, String)>::new();
     if let Some(candidate) = candidate {
         if let Some(ref content) = candidate.content {
             if let Some(ref parts) = content.parts {
+                provider_content_parts = parts
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
                 for (idx, part) in parts.iter().enumerate() {
                     match part {
                         GeminiPartV2::Thought {
@@ -852,7 +899,12 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                             thought_signature,
                         } if *thought => {
                             thinking_parts.push(text.clone());
-                            let _ = thought_signature;
+                            if let Some(signature) = thought_signature
+                                .as_ref()
+                                .filter(|signature| !signature.trim().is_empty())
+                            {
+                                captured_signatures.push((idx, None, signature.clone()));
+                            }
                         }
                         GeminiPartV2::Thought {
                             text,
@@ -864,7 +916,12 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                             thought_signature,
                         } => {
                             text_parts.push(text.clone());
-                            let _ = thought_signature;
+                            if let Some(signature) = thought_signature
+                                .as_ref()
+                                .filter(|signature| !signature.trim().is_empty())
+                            {
+                                captured_signatures.push((idx, None, signature.clone()));
+                            }
                         }
                         GeminiPartV2::FunctionCall {
                             function_call,
@@ -874,22 +931,22 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                                 .id
                                 .clone()
                                 .unwrap_or_else(|| format!("{SYNTHETIC_CALL_ID_PREFIX}{idx}"));
-                            let captured_signature =
-                                thought_signature.as_ref().and_then(|signature| {
-                                    super::provider_turn::encode_gemini_thought_signature(
-                                        &super::provider_turn::GeminiThoughtSignature {
-                                            tool_call_id: tool_call_id.clone(),
-                                            model_part_index: Some(idx),
-                                            signature: signature.clone(),
-                                        },
-                                    )
-                                });
+                            if let Some(signature) = thought_signature
+                                .as_ref()
+                                .filter(|signature| !signature.trim().is_empty())
+                            {
+                                captured_signatures.push((
+                                    idx,
+                                    Some(tool_call_id.clone()),
+                                    signature.clone(),
+                                ));
+                            }
                             tool_calls.push(ToolCallRequest {
                                 id: tool_call_id,
                                 name: function_call.name.clone(),
                                 arguments: serde_json::to_string(&function_call.args)
                                     .unwrap_or_default(),
-                                thought_signature: captured_signature,
+                                thought_signature: None,
                             });
                         }
                         GeminiPartV2::FunctionResponse { .. } | GeminiPartV2::InlineData { .. } => {
@@ -900,6 +957,28 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                     }
                 }
             }
+        }
+    }
+
+    if let Some(first_tool_call) = tool_calls.first_mut() {
+        if !captured_signatures.is_empty() && !provider_content_parts.is_empty() {
+            let fallback_tool_call_id = first_tool_call.id.clone();
+            let payload = super::provider_turn::GeminiThoughtSignatureSet {
+                signatures: captured_signatures
+                    .into_iter()
+                    .map(|(model_part_index, tool_call_id, signature)| {
+                        super::provider_turn::GeminiThoughtSignature {
+                            tool_call_id: tool_call_id
+                                .unwrap_or_else(|| fallback_tool_call_id.clone()),
+                            model_part_index: Some(model_part_index),
+                            signature,
+                        }
+                    })
+                    .collect(),
+                content_parts: provider_content_parts,
+            };
+            first_tool_call.thought_signature =
+                super::provider_turn::encode_gemini_thought_signatures(&payload);
         }
     }
 
@@ -1405,14 +1484,16 @@ impl LlmProvider for GeminiProvider {
             ReasoningApiStyle::GeminiGenerateContent,
             &request.model,
         );
+        let trusted_codec =
+            profile.confidence == super::reasoning_profile::CapabilityConfidence::Verified;
         let mut snapshot =
             super::provider_turn::RouteSnapshot::from_profile_for_request(&profile, request);
-        if uses_thinking_levels(&request.model) {
+        if trusted_codec && uses_thinking_levels(&request.model) {
             // Gemini 3 function-calling turns require a thought signature even
             // when the client does not request visible thinking.
             snapshot.replay_policy =
                 super::reasoning_profile::ReasoningReplayPolicy::OpaqueSignature;
-        } else {
+        } else if trusted_codec {
             // Gemini 2.5 signatures are optional, but any returned value is
             // still captured and replayed exactly.
             snapshot.replay_policy = super::reasoning_profile::ReasoningReplayPolicy::NotRequired;
@@ -2164,7 +2245,7 @@ mod tests {
         .expect("response");
 
         let (_, tool_calls, _, _, _) = extract_response(&response).expect("extract response");
-        let captured = super::super::provider_turn::decode_gemini_thought_signature(
+        let captured = super::super::provider_turn::decode_gemini_thought_signatures(
             tool_calls[0]
                 .thought_signature
                 .as_deref()
@@ -2172,13 +2253,59 @@ mod tests {
         )
         .expect("typed signature metadata");
 
-        assert_eq!(captured.tool_call_id, "fc_provider_1");
-        assert_eq!(captured.model_part_index, Some(1));
-        assert_eq!(captured.signature, "opaque-signature");
+        assert_eq!(captured.signatures[0].tool_call_id, "fc_provider_1");
+        assert_eq!(captured.signatures[0].model_part_index, Some(1));
+        assert_eq!(captured.signatures[0].signature, "opaque-signature");
+        assert_eq!(captured.content_parts.len(), 2);
+        assert_eq!(captured.content_parts[0]["text"], "I will inspect.");
+        assert_eq!(
+            captured.content_parts[1]["functionCall"]["id"],
+            "fc_provider_1"
+        );
+
+        let mut assistant =
+            Message::text(Role::Assistant, "normalized text must not replace parts");
+        assistant.tool_calls = Some(tool_calls.clone());
+        let envelope = super::super::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-item",
+            "sample",
+            super::super::provider_turn::RouteSnapshot {
+                provider_endpoint_id: "google-public".to_string(),
+                provider_family: "google".to_string(),
+                api_style: ReasoningApiStyle::GeminiGenerateContent,
+                model_id: "gemini-3-flash".to_string(),
+                reasoning_profile_id: "gemini-thought-signature-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy:
+                    super::super::reasoning_profile::ReasoningReplayPolicy::OpaqueSignature,
+            },
+            assistant.text_content(),
+            None,
+            None,
+            tool_calls,
+            true,
+        );
+        assistant.set_provider_turn(envelope);
+        let (_, replayed) = convert_messages(&[Message::text(Role::User, "inspect"), assistant]);
+        let replayed = serde_json::to_value(replayed).expect("replayed Gemini contents");
+        assert_eq!(
+            replayed[1]["parts"],
+            serde_json::json!([
+                {"text": "I will inspect."},
+                {
+                    "functionCall": {
+                        "id": "fc_provider_1",
+                        "name": "read_file",
+                        "args": {"path": "README.md"}
+                    },
+                    "thoughtSignature": "opaque-signature"
+                }
+            ])
+        );
     }
 
     #[test]
-    fn test_extract_response_does_not_move_text_signature_to_function_call() {
+    fn test_extract_response_keeps_text_signature_at_its_original_part() {
         let response: GeminiResponse = serde_json::from_value(serde_json::json!({
             "candidates": [{
                 "content": {"parts": [
@@ -2192,7 +2319,20 @@ mod tests {
 
         let (_, tool_calls, _, _, _) = extract_response(&response).expect("extract response");
 
-        assert_eq!(tool_calls[0].thought_signature, None);
+        let replay = super::super::provider_turn::decode_gemini_thought_signatures(
+            tool_calls[0]
+                .thought_signature
+                .as_deref()
+                .expect("ordered provider part carrier"),
+        )
+        .expect("typed Gemini replay payload");
+        assert_eq!(replay.signatures[0].model_part_index, Some(0));
+        assert_eq!(replay.signatures[0].signature, "signed-context");
+        assert_eq!(
+            replay.content_parts[0]["thoughtSignature"],
+            "signed-context"
+        );
+        assert!(replay.content_parts[1]["thoughtSignature"].is_null());
     }
 
     #[test]

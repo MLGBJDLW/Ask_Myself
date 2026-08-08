@@ -1506,10 +1506,16 @@ impl LlmProvider for OpenAiProvider {
     }
 
     fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
-        let api_style = if hosted_search_context(request).is_some() {
-            ReasoningApiStyle::OpenAiResponses
-        } else {
-            ReasoningApiStyle::OpenAiChatCompletions
+        let api_style = match hosted_search_context(request) {
+            Some((_dialect, mode, capability))
+                if !capability.can_mix_client_tools
+                    && hosted_search_requires_client_tools(request, mode)
+                    && mode != super::native_search::SearchExecutionMode::ProviderNative =>
+            {
+                ReasoningApiStyle::OpenAiChatCompletions
+            }
+            Some(_) => ReasoningApiStyle::OpenAiResponses,
+            None => ReasoningApiStyle::OpenAiChatCompletions,
         };
         let profile = resolve_reasoning_profile(
             self.config.provider_type,
@@ -1577,11 +1583,9 @@ impl LlmProvider for OpenAiProvider {
                                 | super::native_search::SearchExecutionMode::Hybrid
                         ) =>
                     {
-                        warn!(
-                        "Provider-hosted search failed for {dialect:?}; falling back to Nexa Router: {error}"
-                    );
-                        fallback_request = without_native_search_marker(request);
-                        &fallback_request
+                        return Err(CoreError::TransientLlm(format!(
+                            "Provider-hosted search failed for {dialect:?} before output; refusing an in-sample API-style switch: {error}"
+                        )));
                     }
                     Err(error) => return Err(error),
                 }

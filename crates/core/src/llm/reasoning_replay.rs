@@ -5,7 +5,8 @@ use super::{Message, Role};
 pub const LEGACY_MISSING_REASONING_SENTINEL: &str =
     "[reasoning content unavailable in local history]";
 
-const REPLAY_BOUNDARY_NOTE: &str = "## Provider replay boundary\nA legacy assistant/tool replay unit was omitted because its provider reasoning payload was not retained. Continue from the remaining verified conversation history.";
+const REPLAY_BOUNDARY_NOTE: &str = "## Provider replay boundary\nThe provider-native assistant/tool unit below cannot be replayed on this route. Nexa replaced it with a deterministic compact summary verified against the visible persisted history.";
+const MAX_BOUNDARY_FIELD_CHARS: usize = 1_500;
 
 #[derive(Debug, Clone)]
 pub struct ReasoningReplayProjection {
@@ -18,6 +19,82 @@ pub fn sanitize_reasoning_text(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != LEGACY_MISSING_REASONING_SENTINEL)
         .map(str::to_string)
+}
+
+fn bounded_visible_text(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= MAX_BOUNDARY_FIELD_CHARS {
+        return trimmed.to_string();
+    }
+    let mut bounded = trimmed
+        .chars()
+        .take(MAX_BOUNDARY_FIELD_CHARS)
+        .collect::<String>();
+    bounded.push_str("… [truncated at replay boundary]");
+    bounded
+}
+
+fn verified_compact_boundary(unit: &[Message]) -> Message {
+    let visible_projection = unit
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "role": format!("{:?}", message.role),
+                "name": &message.name,
+                "text": message.text_content(),
+                "tools": message.tool_calls.as_deref().unwrap_or_default().iter().map(|call| &call.name).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let digest = blake3::hash(
+        serde_json::to_vec(&visible_projection)
+            .unwrap_or_default()
+            .as_slice(),
+    )
+    .to_hex()
+    .to_string();
+    let mut lines = vec![
+        REPLAY_BOUNDARY_NOTE.to_string(),
+        format!("Visible-history digest: {}", &digest[..16]),
+    ];
+    for message in unit {
+        let text = bounded_visible_text(&message.text_content());
+        match message.role {
+            Role::Assistant
+                if message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty()) =>
+            {
+                let tools = message
+                    .tool_calls
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|call| call.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("- Assistant requested tools: {tools}"));
+                if !text.is_empty() {
+                    lines.push(format!("  Visible assistant context: {text}"));
+                }
+            }
+            Role::Tool => lines.push(format!(
+                "- Tool result{}: {text}",
+                message
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default()
+            )),
+            Role::Assistant if !text.is_empty() => {
+                lines.push(format!("- Assistant conclusion: {text}"));
+            }
+            _ => {}
+        }
+    }
+    Message::text(Role::System, lines.join("\n"))
 }
 
 /// Return the exclusive end of one assistant/tool replay chain.
@@ -81,6 +158,7 @@ pub fn prepare_reasoning_replay_history(
     }
 
     let mut projected = Vec::with_capacity(normalized.len());
+    let mut boundaries = Vec::new();
     let mut omitted_units = 0;
     let mut index = 0;
     while index < normalized.len() {
@@ -102,6 +180,7 @@ pub fn prepare_reasoning_replay_history(
             });
             if missing_required_payload {
                 omitted_units += 1;
+                boundaries.push(verified_compact_boundary(&normalized[index..end]));
                 index = end;
                 continue;
             }
@@ -113,15 +192,12 @@ pub fn prepare_reasoning_replay_history(
         index += 1;
     }
 
-    if omitted_units > 0 {
+    if !boundaries.is_empty() {
         let insertion_index = projected
             .iter()
             .take_while(|message| message.role == Role::System)
             .count();
-        projected.insert(
-            insertion_index,
-            Message::text(Role::System, REPLAY_BOUNDARY_NOTE),
-        );
+        projected.splice(insertion_index..insertion_index, boundaries);
     }
 
     ReasoningReplayProjection {
@@ -150,6 +226,7 @@ pub fn prepare_provider_replay_history(
     }
 
     let mut projected = Vec::with_capacity(normalized.len());
+    let mut boundaries = Vec::new();
     let mut omitted_units = 0;
     let mut index = 0;
     while index < normalized.len() {
@@ -176,6 +253,7 @@ pub fn prepare_provider_replay_history(
             });
             if invalid_envelope {
                 omitted_units += 1;
+                boundaries.push(verified_compact_boundary(&normalized[index..end]));
                 index = end;
                 continue;
             }
@@ -187,15 +265,12 @@ pub fn prepare_provider_replay_history(
         index += 1;
     }
 
-    if omitted_units > 0 {
+    if !boundaries.is_empty() {
         let insertion_index = projected
             .iter()
             .take_while(|message| message.role == Role::System)
             .count();
-        projected.insert(
-            insertion_index,
-            Message::text(Role::System, REPLAY_BOUNDARY_NOTE),
-        );
+        projected.splice(insertion_index..insertion_index, boundaries);
     }
 
     ReasoningReplayProjection {
@@ -299,8 +374,16 @@ mod tests {
         assert!(!projection
             .messages
             .iter()
-            .any(|message| message.text_content().contains("result")
-                || message.text_content().contains("dependent final answer")));
+            .any(|message| message.role == Role::Tool));
+        let boundary = projection
+            .messages
+            .iter()
+            .find(|message| message.text_content().contains("Provider replay boundary"))
+            .expect("verified compact boundary");
+        assert!(boundary.text_content().contains("first result"));
+        assert!(boundary.text_content().contains("second result"));
+        assert!(boundary.text_content().contains("dependent final answer"));
+        assert!(boundary.text_content().contains("Visible-history digest"));
         assert_eq!(
             projection.messages.last().map(Message::text_content),
             Some("new question".to_string())

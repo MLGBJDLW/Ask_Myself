@@ -14,8 +14,8 @@ fn provider_metadata(provider: ProviderType) -> ProviderMetadata {
     let (id, default_endpoint) = match provider {
         ProviderType::OpenAi => ("openai", "https://api.openai.com/v1"),
         ProviderType::OpenRouter => ("openrouter", "https://openrouter.ai/api/v1"),
-        ProviderType::Anthropic => ("anthropic", "https://api.anthropic.com"),
-        ProviderType::Google => ("google", ""),
+        ProviderType::Anthropic => ("anthropic", "https://api.anthropic.com/v1"),
+        ProviderType::Google => ("google", "https://generativelanguage.googleapis.com/v1beta"),
         ProviderType::DeepSeek => ("deepseek", "https://api.deepseek.com"),
         ProviderType::Ollama => ("ollama", ""),
         ProviderType::LmStudio => ("lmStudio", ""),
@@ -116,7 +116,17 @@ pub(super) fn is_moonshot_public_endpoint(provider: ProviderType, base_url: Opti
 }
 
 pub(super) fn is_anthropic_public_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
-    endpoint_matches(provider, base_url, &["api.anthropic.com"], &[""])
+    endpoint_matches(provider, base_url, &["api.anthropic.com"], &["/v1"])
+}
+
+pub(super) fn is_google_public_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
+    provider == ProviderType::Google
+        && endpoint_matches(
+            provider,
+            base_url,
+            &["generativelanguage.googleapis.com"],
+            &["/v1beta"],
+        )
 }
 
 pub(super) fn is_siliconflow_public_endpoint(
@@ -175,7 +185,8 @@ pub(super) fn endpoint_id(provider: ProviderType, base_url: Option<&str>) -> Str
         "openrouter.ai" if path_is(&url, &["/api/v1"]) => Some("openrouter-public"),
         "api.deepseek.com" if path_is(&url, &["", "/v1"]) => Some("deepseek-public"),
         "api.moonshot.ai" | "api.moonshot.cn" if path_is(&url, &["/v1"]) => Some("moonshot-public"),
-        "api.anthropic.com" if path_is(&url, &[""]) => Some("anthropic-public"),
+        "api.anthropic.com" if path_is(&url, &["/v1"]) => Some("anthropic-public"),
+        "generativelanguage.googleapis.com" if path_is(&url, &["/v1beta"]) => Some("google-public"),
         "token-plan.cn-beijing.maas.aliyuncs.com" if path_is(&url, &["/compatible-mode/v1"]) => {
             Some("token-plan-cn")
         }
@@ -287,8 +298,13 @@ mod tests {
             ),
             (
                 ProviderType::Anthropic,
-                "https://api.anthropic.com/v1",
+                "https://api.anthropic.com/v2",
                 is_anthropic_public_endpoint,
+            ),
+            (
+                ProviderType::Google,
+                "https://generativelanguage.googleapis.com:8443/v1beta",
+                is_google_public_endpoint,
             ),
             (
                 ProviderType::SiliconFlow,

@@ -109,6 +109,14 @@ pub struct GeminiThoughtSignature {
     pub signature: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiThoughtSignatureSet {
+    pub signatures: Vec<GeminiThoughtSignature>,
+    /// Exact ordered provider-native `Content.parts` for this model turn.
+    pub content_parts: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum ProviderReplayPayload {
@@ -116,7 +124,7 @@ pub enum ProviderReplayPayload {
     DeepSeekResponseItems(Vec<serde_json::Value>),
     AnthropicThinkingBlocks(Vec<AnthropicThinkingBlock>),
     OpenAiResponseItems(Vec<serde_json::Value>),
-    GeminiThoughtSignatures(Vec<GeminiThoughtSignature>),
+    GeminiThoughtSignatures(GeminiThoughtSignatureSet),
     OpenAiCompatibleReasoningContent {
         source_field: String,
         content: String,
@@ -134,7 +142,9 @@ impl ProviderReplayPayload {
             Self::DeepSeekResponseItems(items) | Self::OpenAiResponseItems(items) => {
                 !items.is_empty()
             }
-            Self::GeminiThoughtSignatures(signatures) => !signatures.is_empty(),
+            Self::GeminiThoughtSignatures(payload) => {
+                !payload.signatures.is_empty() && !payload.content_parts.is_empty()
+            }
             Self::None => false,
         }
     }
@@ -180,6 +190,13 @@ impl ProviderReplayPayload {
                 })
                 .unwrap_or(Self::None),
             ReasoningApiStyle::GeminiGenerateContent => {
+                if let Some(payload) = tool_calls
+                    .iter()
+                    .filter_map(|call| call.thought_signature.as_deref())
+                    .find_map(decode_gemini_thought_signatures)
+                {
+                    return Self::GeminiThoughtSignatures(payload);
+                }
                 let signatures = tool_calls
                     .iter()
                     .filter_map(|call| {
@@ -187,22 +204,22 @@ impl ProviderReplayPayload {
                             .as_deref()
                             .map(str::trim)
                             .filter(|signature| !signature.is_empty())
-                            .map(|signature| {
-                                let mut captured = decode_gemini_thought_signature(signature)
-                                    .unwrap_or_else(|| GeminiThoughtSignature {
-                                        tool_call_id: call.id.clone(),
-                                        model_part_index: None,
-                                        signature: signature.to_string(),
-                                    });
-                                captured.tool_call_id = call.id.clone();
-                                captured
+                            .map(|signature| GeminiThoughtSignature {
+                                tool_call_id: call.id.clone(),
+                                model_part_index: None,
+                                signature: signature.to_string(),
                             })
                     })
                     .collect::<Vec<_>>();
                 if signatures.is_empty() {
                     Self::None
                 } else {
-                    Self::GeminiThoughtSignatures(signatures)
+                    // Legacy signatures did not retain their ordered provider
+                    // parts and therefore cannot authorize required replay.
+                    Self::GeminiThoughtSignatures(GeminiThoughtSignatureSet {
+                        signatures,
+                        content_parts: Vec::new(),
+                    })
                 }
             }
             ReasoningApiStyle::OpenAiChatCompletions => {
@@ -230,7 +247,7 @@ pub enum ProviderReplayItem {
     DeepSeekResponseItem(serde_json::Value),
     AnthropicThinkingBlock(AnthropicThinkingBlock),
     OpenAiResponseItem(serde_json::Value),
-    GeminiThoughtSignature(GeminiThoughtSignature),
+    GeminiContentPart(serde_json::Value),
     OpenAiCompatibleReasoningContent {
         source_field: String,
         content: String,
@@ -258,10 +275,11 @@ impl ProviderReplayItem {
                 .cloned()
                 .map(Self::OpenAiResponseItem)
                 .collect(),
-            ProviderReplayPayload::GeminiThoughtSignatures(signatures) => signatures
+            ProviderReplayPayload::GeminiThoughtSignatures(payload) => payload
+                .content_parts
                 .iter()
                 .cloned()
-                .map(Self::GeminiThoughtSignature)
+                .map(Self::GeminiContentPart)
                 .collect(),
             ProviderReplayPayload::OpenAiCompatibleReasoningContent {
                 source_field,
@@ -391,23 +409,24 @@ pub fn decode_responses_reasoning_items(signature: &str) -> Option<Vec<serde_jso
         .and_then(|payload| serde_json::from_str(payload).ok())
 }
 
-pub fn encode_gemini_thought_signature(signature: &GeminiThoughtSignature) -> Option<String> {
-    (!signature.signature.trim().is_empty()).then(|| {
+pub fn encode_gemini_thought_signatures(payload: &GeminiThoughtSignatureSet) -> Option<String> {
+    (!payload.signatures.is_empty() && !payload.content_parts.is_empty()).then(|| {
         format!(
             "{GEMINI_THOUGHT_SIGNATURE_PREFIX}{}",
-            serde_json::to_string(signature).unwrap_or_default()
+            serde_json::to_string(payload).unwrap_or_default()
         )
     })
 }
 
-pub fn decode_gemini_thought_signature(signature: &str) -> Option<GeminiThoughtSignature> {
+pub fn decode_gemini_thought_signatures(signature: &str) -> Option<GeminiThoughtSignatureSet> {
     signature
         .strip_prefix(GEMINI_THOUGHT_SIGNATURE_PREFIX)
         .and_then(|payload| serde_json::from_str(payload).ok())
 }
 
 pub fn raw_gemini_thought_signature(signature: &str) -> String {
-    decode_gemini_thought_signature(signature)
+    decode_gemini_thought_signatures(signature)
+        .and_then(|captured| captured.signatures.into_iter().next())
         .map(|captured| captured.signature)
         .unwrap_or_else(|| signature.to_string())
 }
@@ -486,11 +505,25 @@ mod tests {
             ProviderReplayPayload::OpenAiResponseItems(response_items)
         );
 
+        let gemini_payload = GeminiThoughtSignatureSet {
+            signatures: vec![GeminiThoughtSignature {
+                tool_call_id: "call-g".to_string(),
+                model_part_index: Some(1),
+                signature: "thought-signature".to_string(),
+            }],
+            content_parts: vec![
+                serde_json::json!({"text": "working", "thought": true}),
+                serde_json::json!({
+                    "functionCall": {"id": "call-g", "name": "lookup", "args": {}},
+                    "thoughtSignature": "thought-signature"
+                }),
+            ],
+        };
         let gemini_call = ToolCallRequest {
             id: "call-g".to_string(),
             name: "lookup".to_string(),
             arguments: "{}".to_string(),
-            thought_signature: Some("thought-signature".to_string()),
+            thought_signature: encode_gemini_thought_signatures(&gemini_payload),
         };
         assert!(matches!(
             ProviderReplayPayload::capture(

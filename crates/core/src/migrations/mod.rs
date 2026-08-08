@@ -2410,7 +2410,33 @@ Every answer that uses knowledge base search results.
            AND (
                artifacts_json IS NULL
                OR json_extract(artifacts_json, '$.providerTurnEnvelope') IS NULL
-           );",
+           );
+         UPDATE messages
+         SET artifacts_json = CASE
+             WHEN artifacts_json IS NULL THEN json_object(
+                 'providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+             WHEN json_type(artifacts_json) = 'object' THEN json_set(
+                 artifacts_json,
+                 '$.providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+             ELSE json_object(
+                 'kind', 'assistantArtifacts',
+                 'version', 2,
+                 'legacyArtifacts', json(artifacts_json),
+                 'providerReplayBoundary', json_object(
+                     'reason', 'provider_turn_envelope_missing',
+                     'version', 1
+                 )
+             )
+         END
+         WHERE id IN (SELECT message_id FROM provider_turn_legacy_boundaries);",
     ),
 ];
 

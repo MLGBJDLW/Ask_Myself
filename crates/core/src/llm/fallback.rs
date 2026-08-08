@@ -99,6 +99,48 @@ impl AutomaticFallbackProvider {
         request
     }
 
+    /// Lock an in-progress tool loop to the route that produced its latest
+    /// replayable assistant tool-call turn. A final assistant answer closes
+    /// the routing boundary; steering user messages inside the loop do not.
+    fn locked_position_for_request(&self, request: &CompletionRequest) -> Option<usize> {
+        let locked_route = request.messages.iter().rev().find_map(|message| {
+            if message.role == super::Role::Assistant
+                && !message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+            {
+                return Some(None);
+            }
+            message
+                .provider_turn()
+                .filter(|envelope| !envelope.tool_calls.is_empty())
+                .map(|envelope| Some(&envelope.route))
+        })??;
+
+        self.routes
+            .iter()
+            .enumerate()
+            .find_map(|(position, route)| {
+                let mut route_request = request.clone();
+                route_request.model = route.model.clone();
+                route_request.provider_type = Some(route.provider_type);
+                route
+                    .provider
+                    .route_snapshot(&route_request)
+                    .same_route_identity(locked_route)
+                    .then_some(position)
+            })
+    }
+
+    fn route_window(&self, request: &CompletionRequest) -> (usize, usize) {
+        if let Some(locked_position) = self.locked_position_for_request(request) {
+            (locked_position, locked_position + 1)
+        } else {
+            (self.active_position(), self.routes.len())
+        }
+    }
+
     fn fallback_reason(&self, from_position: usize) -> &'static str {
         if self.routes[from_position].fallback_index == 0 {
             "primary_invocation_failed_automatic_fallback"
@@ -143,9 +185,10 @@ impl AutomaticFallbackProvider {
         &'a self,
         request: &CompletionRequest,
         start_position: usize,
+        end_position: usize,
     ) -> Result<(usize, BoxStream<'a, ProviderStreamEvent>), CoreError> {
         let mut last_retryable = None;
-        for position in start_position..self.routes.len() {
+        for position in start_position..end_position {
             let route_request = self.request_for_route(request, position);
             match self.routes[position]
                 .provider
@@ -168,6 +211,7 @@ struct FallbackStreamState<'a> {
     request: CompletionRequest,
     selected_position: usize,
     current_position: usize,
+    end_position: usize,
     current: BoxStream<'a, ProviderStreamEvent>,
     emitted_output: bool,
 }
@@ -205,7 +249,9 @@ impl LlmProvider for AutomaticFallbackProvider {
     }
 
     fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
-        let position = self.active_position();
+        let position = self
+            .locked_position_for_request(request)
+            .unwrap_or_else(|| self.active_position());
         let request = self.request_for_route(request, position);
         self.routes[position].provider.route_snapshot(&request)
     }
@@ -218,9 +264,15 @@ impl LlmProvider for AutomaticFallbackProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let selected_position = self.active_position();
+        let active_position = self.active_position();
+        let (selected_position, end_position) = self.route_window(request);
+        if selected_position != active_position {
+            return Err(CoreError::Conflict(
+                "The provider route changed after this tool loop was locked".to_string(),
+            ));
+        }
         let mut last_retryable = None;
-        for position in selected_position..self.routes.len() {
+        for position in selected_position..end_position {
             let route_request = self.request_for_route(request, position);
             match self.routes[position]
                 .provider
@@ -259,13 +311,22 @@ impl LlmProvider for AutomaticFallbackProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
-        let selected_position = self.active_position();
-        let (current_position, current) = self.open_stream_from(request, selected_position).await?;
+        let active_position = self.active_position();
+        let (selected_position, end_position) = self.route_window(request);
+        if selected_position != active_position {
+            return Err(CoreError::Conflict(
+                "The provider route changed after this tool loop was locked".to_string(),
+            ));
+        }
+        let (current_position, current) = self
+            .open_stream_from(request, selected_position, end_position)
+            .await?;
         let state = FallbackStreamState {
             owner: self,
             request: request.clone(),
             selected_position,
             current_position,
+            end_position,
             current,
             emitted_output: false,
         };
@@ -293,11 +354,15 @@ impl LlmProvider for AutomaticFallbackProvider {
                     }
                     Some(ProviderStreamEvent::RecoverableError { message })
                         if !state.emitted_output
-                            && state.current_position + 1 < state.owner.routes.len() =>
+                            && state.current_position + 1 < state.end_position =>
                     {
                         match state
                             .owner
-                            .open_stream_from(&state.request, state.current_position + 1)
+                            .open_stream_from(
+                                &state.request,
+                                state.current_position + 1,
+                                state.end_position,
+                            )
                             .await
                         {
                             Ok((position, stream)) => {
@@ -316,11 +381,15 @@ impl LlmProvider for AutomaticFallbackProvider {
                     }
                     Some(event) => return Some((event, Some(state))),
                     None if !state.emitted_output
-                        && state.current_position + 1 < state.owner.routes.len() =>
+                        && state.current_position + 1 < state.end_position =>
                     {
                         match state
                             .owner
-                            .open_stream_from(&state.request, state.current_position + 1)
+                            .open_stream_from(
+                                &state.request,
+                                state.current_position + 1,
+                                state.end_position,
+                            )
                             .await
                         {
                             Ok((position, stream)) => {
@@ -785,5 +854,69 @@ mod tests {
         assert_eq!(response.content, "fallback-model");
         assert_eq!(*primary_models.lock().unwrap(), vec!["primary-model"]);
         assert_eq!(*fallback_models.lock().unwrap(), vec!["fallback-model"]);
+    }
+
+    #[tokio::test]
+    async fn tool_loop_route_lock_forbids_cross_provider_fallback() {
+        let primary_models = Arc::new(Mutex::new(Vec::new()));
+        let fallback_models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::CompleteTransient,
+                Arc::clone(&primary_models),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::CompleteSuccess,
+                    Arc::clone(&fallback_models),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        let mut locked_request = request();
+        let locked_route = wrapper.route_snapshot(&locked_request);
+        let tool_call = ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![tool_call.clone()]);
+        assistant.set_provider_turn(super::super::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-item-1",
+            "sample-1",
+            locked_route,
+            "",
+            None,
+            None,
+            vec![tool_call],
+            false,
+        ));
+        locked_request.messages = vec![
+            Message::text(Role::User, "continue the task"),
+            assistant,
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::User, "steer the active tool loop"),
+        ];
+
+        let error = wrapper
+            .complete(&locked_request)
+            .await
+            .expect_err("locked tool loop must fail closed on its selected route");
+
+        assert!(matches!(error, CoreError::TransientLlm(_)));
+        assert_eq!(*primary_models.lock().unwrap(), vec!["primary-model"]);
+        assert!(fallback_models.lock().unwrap().is_empty());
     }
 }

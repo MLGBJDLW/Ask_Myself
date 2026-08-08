@@ -4303,7 +4303,7 @@ async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
         final_message.text_content(),
         "final answer after safe restart"
     );
-    assert_eq!(complete_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         executions.load(Ordering::SeqCst),
         1,
@@ -4311,8 +4311,8 @@ async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
     );
     assert_eq!(
         db.count_provider_turns().unwrap(),
-        4,
-        "stream, non-stream retry, safe restart, and final answer keep distinct sample ids"
+        3,
+        "rejected stream, reasoning-disabled restart, and final answer keep distinct sample ids"
     );
 }
 

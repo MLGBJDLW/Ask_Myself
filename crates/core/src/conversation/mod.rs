@@ -100,6 +100,7 @@ pub struct ConversationMessage {
 pub const LLM_CONTEXT_CONTENT_ARTIFACT_KEY: &str = "llmContextContent";
 pub const REASONING_ENVELOPE_ARTIFACT_KEY: &str = "reasoningEnvelope";
 pub const PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY: &str = "providerTurnEnvelope";
+pub const PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY: &str = "providerReplayBoundary";
 
 /// Stable persistence identity for provider samples created both by primary
 /// conversations and detached subagent executors.
@@ -146,12 +147,41 @@ pub fn conversation_message_reasoning_replay(message: &ConversationMessage) -> O
 pub fn conversation_message_provider_turn(
     message: &ConversationMessage,
 ) -> Option<ProviderTurnEnvelope> {
-    message
+    let stored = message
         .artifacts
         .as_ref()
         .and_then(|artifacts| artifacts.get(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY))
         .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|value| serde_json::from_value(value).ok());
+    if stored.is_some() {
+        return stored;
+    }
+    let is_legacy_boundary = message
+        .artifacts
+        .as_ref()
+        .and_then(|artifacts| artifacts.get(PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY))
+        .is_some();
+    if !is_legacy_boundary || message.tool_calls.is_empty() {
+        return None;
+    }
+
+    let mut envelope = ProviderTurnEnvelope::capture(
+        format!("legacy-{}", message.id),
+        format!("legacy-{}", message.id),
+        crate::llm::provider_turn::RouteSnapshot::unknown(
+            "legacy",
+            "unknown",
+            crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredAlways,
+        ),
+        message.content.clone(),
+        conversation_message_display_thinking(message).as_deref(),
+        None,
+        message.tool_calls.clone(),
+        false,
+    );
+    envelope.capture_status =
+        crate::llm::reasoning_profile::ReasoningCaptureStatus::MissingFromLegacyHistory;
+    Some(envelope)
 }
 
 /// Return the display projection without opaque provider replay payloads or
@@ -159,6 +189,7 @@ pub fn conversation_message_provider_turn(
 pub fn conversation_message_for_display(mut message: ConversationMessage) -> ConversationMessage {
     if let Some(serde_json::Value::Object(artifacts)) = message.artifacts.as_mut() {
         artifacts.remove(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY);
+        artifacts.remove(PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY);
     }
     for tool_call in &mut message.tool_calls {
         tool_call.thought_signature = None;
@@ -278,6 +309,38 @@ mod reasoning_envelope_tests {
             Some("visible summary")
         );
         assert_eq!(conversation_message_reasoning_replay(&message), None);
+    }
+
+    #[test]
+    fn durable_legacy_boundary_projects_a_missing_history_envelope() {
+        let mut message = assistant_message(
+            Some("legacy display thinking"),
+            Some(serde_json::json!({
+                "providerReplayBoundary": {
+                    "reason": "provider_turn_envelope_missing",
+                    "version": 1
+                }
+            })),
+        );
+        message.tool_calls = vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }];
+
+        let envelope = conversation_message_provider_turn(&message)
+            .expect("legacy migration boundary must be consumed during history hydration");
+
+        assert_eq!(
+            envelope.capture_status,
+            ReasoningCaptureStatus::MissingFromLegacyHistory
+        );
+        assert!(!envelope.authorizes_tool_dispatch());
+        let display = conversation_message_for_display(message);
+        assert!(display.artifacts.as_ref().is_none_or(|artifacts| artifacts
+            .get(PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY)
+            .is_none()));
     }
 }
 

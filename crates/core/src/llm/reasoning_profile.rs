@@ -7,10 +7,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::provider_boundary::{
-    endpoint_id, is_alibaba_chat_endpoint, is_azure_openai_endpoint, is_deepseek_public_endpoint,
-    is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
-    is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
-    is_xai_public_endpoint, provider_id,
+    endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
+    is_deepseek_public_endpoint, is_google_public_endpoint, is_minimax_public_endpoint,
+    is_mistral_public_endpoint, is_moonshot_public_endpoint, is_openai_public_endpoint,
+    is_openrouter_public_endpoint, is_siliconflow_public_endpoint, is_xai_public_endpoint,
+    provider_id,
 };
 use super::{ProviderType, ReasoningEffort};
 
@@ -286,6 +287,14 @@ pub fn resolve_reasoning_profile(
     };
     if api_style == ReasoningApiStyle::OpenAiResponses {
         let mut value = ReasoningProfile::unsupported(key);
+        let trusted_codec = match provider {
+            ProviderType::DeepSeek => is_deepseek_public_endpoint(provider, base_url),
+            ProviderType::OpenAi => is_openai_public_endpoint(provider, base_url),
+            _ => false,
+        };
+        if !trusted_codec {
+            return value;
+        }
         value.id = match provider {
             ProviderType::DeepSeek => "deepseek-responses-replay-v1",
             _ => "openai-responses-replay-v1",
@@ -298,6 +307,9 @@ pub fn resolve_reasoning_profile(
     }
     if api_style == ReasoningApiStyle::AnthropicMessages {
         let mut value = ReasoningProfile::unsupported(key);
+        if !is_anthropic_public_endpoint(provider, base_url) {
+            return value;
+        }
         value.id = "anthropic-signed-thinking-v1".to_string();
         value.mode_control = ThinkingModeControl::ThinkingType;
         value.preserve_reasoning_history = true;
@@ -307,6 +319,9 @@ pub fn resolve_reasoning_profile(
     }
     if api_style == ReasoningApiStyle::GeminiGenerateContent {
         let mut value = ReasoningProfile::unsupported(key);
+        if !is_google_public_endpoint(provider, base_url) {
+            return value;
+        }
         value.id = "gemini-thought-signature-v1".to_string();
         value.mode_control = ThinkingModeControl::ProviderDefault;
         value.preserve_reasoning_history = true;
@@ -900,6 +915,36 @@ mod tests {
             "grok-4.20-multi-agent-0309",
         );
         assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+    }
+
+    #[test]
+    fn provider_native_replay_codecs_require_exact_official_endpoints() {
+        let cases = [
+            (
+                ProviderType::OpenAi,
+                ReasoningApiStyle::OpenAiResponses,
+                "https://proxy.example.com/v1",
+                "gpt-5",
+            ),
+            (
+                ProviderType::Anthropic,
+                ReasoningApiStyle::AnthropicMessages,
+                "https://api.anthropic.com:8443",
+                "claude-sonnet-4-5",
+            ),
+            (
+                ProviderType::Google,
+                ReasoningApiStyle::GeminiGenerateContent,
+                "http://generativelanguage.googleapis.com/v1beta",
+                "gemini-3-flash",
+            ),
+        ];
+
+        for (provider, api_style, endpoint, model) in cases {
+            let profile = resolve_reasoning_profile(provider, Some(endpoint), api_style, model);
+            assert_eq!(profile.replay_policy, ReasoningReplayPolicy::Unknown);
+            assert_eq!(profile.confidence, CapabilityConfidence::Unknown);
+        }
     }
 
     #[test]
