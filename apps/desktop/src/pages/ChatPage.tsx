@@ -1089,7 +1089,10 @@ export function ChatPage() {
       const conv = await api.createConversation(
         chat.agentConfig.provider,
         chat.agentConfig.model,
-        chat.customSystemPrompt || undefined,
+        // A new conversation owns a fresh prompt. Reusing the active
+        // conversation's prompt can resurrect legacy project snapshots that
+        // the backend deliberately suppresses.
+        undefined,
         projectId ?? undefined,
         'default',
       );
@@ -1102,7 +1105,6 @@ export function ChatPage() {
     }
   }, [
     chat.agentConfig,
-    chat.customSystemPrompt,
     chat.setConversations,
     chat.createNewConversation,
     navigate,
