@@ -490,7 +490,7 @@ pub fn trim_to_context_window(
     }
 
     // Group conversation into atomic blocks
-    let blocks = build_message_blocks(&conversation);
+    let blocks = build_message_blocks(conversation);
 
     let remaining_budget = budget.saturating_sub(used);
     let mut kept_blocks: Vec<&MessageBlock> = Vec::new();

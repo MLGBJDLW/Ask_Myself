@@ -581,18 +581,15 @@ fn default_codex_animations() -> HashMap<String, NormalizedAnimation> {
     ])
 }
 
-fn normalize_nexa_v1(
-    manifest: CompanionPackManifest,
-) -> Result<
-    (
-        String,
-        String,
-        Option<String>,
-        CompanionFrameGrid,
-        HashMap<String, NormalizedAnimation>,
-    ),
-    CoreError,
-> {
+struct NormalizedNexaV1 {
+    id: String,
+    display_name: String,
+    description: Option<String>,
+    frame: CompanionFrameGrid,
+    animations: HashMap<String, NormalizedAnimation>,
+}
+
+fn normalize_nexa_v1(manifest: CompanionPackManifest) -> Result<NormalizedNexaV1, CoreError> {
     validate_companion_pack(&manifest, 1)?;
     let animations = manifest
         .animations
@@ -616,13 +613,13 @@ fn normalize_nexa_v1(
             )
         })
         .collect();
-    Ok((
-        manifest.id,
-        manifest.display_name,
-        None,
-        manifest.frame,
+    Ok(NormalizedNexaV1 {
+        id: manifest.id,
+        display_name: manifest.display_name,
+        description: None,
+        frame: manifest.frame,
         animations,
-    ))
+    })
 }
 
 fn resolve_pack_asset(package_root: &Path, relative: &str) -> Result<PathBuf, CoreError> {
@@ -710,16 +707,16 @@ pub fn load_companion_pack(
     {
         let manifest: CompanionPackManifest = serde_json::from_value(manifest_value)?;
         let relative_asset = manifest.spritesheet.clone();
-        let (id, display_name, description, frame, animations) = normalize_nexa_v1(manifest)?;
+        let normalized = normalize_nexa_v1(manifest)?;
         (
             CompanionPackDialect::NexaV1,
             "native".to_string(),
-            id,
-            display_name,
-            description,
+            normalized.id,
+            normalized.display_name,
+            normalized.description,
             relative_asset,
-            frame,
-            animations,
+            normalized.frame,
+            normalized.animations,
             Vec::new(),
         )
     } else if manifest_value
