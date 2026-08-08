@@ -1189,6 +1189,12 @@ fn parse_responses_completion(
                             })
                             .filter(|queries| !queries.is_empty())
                     });
+                if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+                    // DeepSeek Responses is stateless and requires hosted-tool
+                    // state to be replayed verbatim on the following function
+                    // tool round.
+                    reasoning_replay.push(item.clone());
+                }
             }
             Some("message") => {
                 for part in item
@@ -1257,10 +1263,11 @@ fn parse_responses_completion(
                 thought_signature: None,
             }),
             Some("reasoning") => {
-                if item
-                    .get("encrypted_content")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
+                if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses
+                    || item
+                        .get("encrypted_content")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
                 {
                     reasoning_replay.push(item.clone());
                 }
@@ -3298,6 +3305,50 @@ data: [DONE]
     }
 
     #[test]
+    fn deepseek_flash_responses_mix_hosted_search_with_client_tools() {
+        let plan = super::super::native_search::NativeSearchPlan::resolve(
+            super::super::native_search::SearchExecutionMode::ProviderNative,
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com"),
+            "deepseek-v4-flash",
+        );
+        let mut request = endpoint_reasoning_request("deepseek-v4-flash");
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "local".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "read".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("trusted DeepSeek Flash marker"),
+        ]);
+
+        let (dialect, mode, capability) = hosted_search_context(&request).expect("context");
+        assert_eq!(
+            dialect,
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses
+        );
+        assert_eq!(
+            mode,
+            super::super::native_search::SearchExecutionMode::ProviderNative
+        );
+        assert!(capability.can_mix_client_tools);
+        assert!(hosted_search_requires_client_tools(&request, mode));
+
+        let body = build_responses_request(&request, dialect, mode, capability);
+        let tools = body["tools"].as_array().expect("responses tools");
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["type"], "web_search");
+        assert_eq!(tools[1]["type"], "function");
+        assert_eq!(tools[1]["name"], "read_file");
+        assert!(body.get("include").is_none());
+    }
+
+    #[test]
     fn responses_tool_loop_replays_encrypted_reasoning_before_function_state() {
         let capability = crate::model_catalog::NativeWebSearchCapability {
             dialect: super::super::native_search::NativeSearchDialect::OpenAiResponses,
@@ -3342,6 +3393,60 @@ data: [DONE]
         assert_eq!(replay[0]["encrypted_content"], "encrypted-reasoning");
         assert_eq!(replay[1]["type"], "function_call");
         assert_eq!(replay[2]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn deepseek_responses_replay_reasoning_and_hosted_search_before_function_state() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let reasoning = serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_1",
+            "content": [{ "type": "reasoning_text", "text": "Need current evidence" }]
+        });
+        let hosted_search = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": { "type": "search", "query": "Nexa" }
+        });
+        let response = parse_responses_completion(
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    reasoning.clone(),
+                    hosted_search.clone(),
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                ]
+            }),
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            capability,
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.parts.clear();
+        assistant.tool_calls = response.tool_calls;
+        let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
+
+        let replay = responses_input_items(&[assistant, tool_result]);
+        assert_eq!(replay[0], reasoning);
+        assert_eq!(replay[1], hosted_search);
+        assert_eq!(replay[2]["type"], "function_call");
+        assert_eq!(replay[3]["type"], "function_call_output");
     }
 
     #[test]

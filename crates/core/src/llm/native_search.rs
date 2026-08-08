@@ -427,6 +427,27 @@ mod tests {
             "deepseek-v4-pro",
         );
         assert_eq!(plan.dialect, None);
+
+        let deepseek_pro = NativeSearchPlan::resolve(
+            SearchExecutionMode::Auto,
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com"),
+            "deepseek-v4-pro",
+        );
+        assert_eq!(deepseek_pro.dialect, None);
+        assert!(deepseek_pro.marker().is_none());
+
+        let deepseek_flash = NativeSearchPlan::resolve(
+            SearchExecutionMode::ProviderNative,
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com"),
+            "deepseek-v4-flash",
+        );
+        assert_eq!(
+            deepseek_flash.dialect,
+            Some(NativeSearchDialect::DeepSeekResponses)
+        );
+        assert!(deepseek_flash.marker().is_some());
     }
 
     #[test]

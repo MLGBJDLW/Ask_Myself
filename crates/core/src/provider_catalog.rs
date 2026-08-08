@@ -667,6 +667,26 @@ mod tests {
             .iter()
             .find(|model| model.id == "deepseek-v4-pro")
             .expect("deepseek-v4-pro should be listed");
+        let flash = deepseek
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash")
+            .expect("deepseek-v4-flash should be listed");
+        assert!(
+            deepseek.native_web_search.is_none(),
+            "Flash-only search must not leak through the provider preset"
+        );
+        assert!(
+            pro.native_web_search.is_none(),
+            "DeepSeek does not expose Responses for V4 Pro"
+        );
+        assert_eq!(
+            flash
+                .native_web_search
+                .expect("DeepSeek V4 Flash should expose Responses search")
+                .can_mix_client_tools,
+            true
+        );
         let reasoning = pro
             .capabilities
             .as_ref()

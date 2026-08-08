@@ -4,10 +4,10 @@ use super::steering::SteeringDrainContext;
 use super::*;
 use crate::llm::FinishReason;
 
-fn request_tools_with_native_search_marker(
+fn request_tools_with_native_search_plan(
     tool_defs: &[ToolDefinition],
-    marker: Option<ToolDefinition>,
-) -> Vec<ToolDefinition> {
+    plan: crate::llm::native_search::NativeSearchPlan,
+) -> Result<Vec<ToolDefinition>, CoreError> {
     let has_exposed_search = tool_defs
         .iter()
         .any(|tool| tool.name == crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL);
@@ -17,9 +17,10 @@ fn request_tools_with_native_search_marker(
         .cloned()
         .collect::<Vec<_>>();
     if has_exposed_search {
-        request_tools.extend(marker);
+        plan.validate()?;
+        request_tools.extend(plan.marker());
     }
-    request_tools
+    Ok(request_tools)
 }
 
 fn next_retry_at(delay: Duration) -> Option<String> {
@@ -124,11 +125,8 @@ impl AgentExecutor {
 
         // -- 4a. Stream LLM response (with rate-limit retry) ----------------
         let stream_recovery_policy = StreamRecoveryPolicy::default();
-        self.config.native_search_plan.validate()?;
-        let request_tools = request_tools_with_native_search_marker(
-            tool_defs,
-            self.config.native_search_plan.marker(),
-        );
+        let request_tools =
+            request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
         let current_request = CompletionRequest {
             model: model.to_string(),
             messages: (*messages).clone(),
@@ -950,20 +948,47 @@ mod tests {
     }
 
     #[test]
-    fn native_search_marker_requires_the_filtered_search_tool() {
-        let marker = tool(crate::llm::native_search::NATIVE_WEB_SEARCH_MARKER);
-        let visible = request_tools_with_native_search_marker(
-            &[tool(crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL)],
-            Some(marker.clone()),
-        );
-        assert!(visible
-            .iter()
-            .any(crate::llm::native_search::is_native_marker));
-
-        let hidden = request_tools_with_native_search_marker(&[tool("read_file")], Some(marker));
+    fn native_search_plan_is_validated_only_for_an_exposed_search_tool() {
+        let unsupported = crate::llm::native_search::NativeSearchPlan {
+            mode: crate::llm::native_search::SearchExecutionMode::ProviderNative,
+            ..crate::llm::native_search::NativeSearchPlan::default()
+        };
+        let hidden = request_tools_with_native_search_plan(&[tool("read_file")], unsupported)
+            .expect("ordinary routes must not validate a hidden search capability");
         assert!(!hidden
             .iter()
             .any(crate::llm::native_search::is_native_marker));
         assert_eq!(hidden[0].name, "read_file");
+
+        let error = request_tools_with_native_search_plan(
+            &[tool(crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL)],
+            unsupported,
+        )
+        .expect_err("an exposed provider-native search must remain fail-closed");
+        assert!(error.to_string().contains("unavailable"));
+
+        let supported = crate::llm::native_search::NativeSearchPlan {
+            mode: crate::llm::native_search::SearchExecutionMode::ProviderNative,
+            dialect: Some(crate::llm::native_search::NativeSearchDialect::OpenAiResponses),
+            capability: Some(crate::model_catalog::NativeWebSearchCapability {
+                dialect: crate::llm::native_search::NativeSearchDialect::OpenAiResponses,
+                supports_domains: true,
+                supports_recency: false,
+                supports_locale: false,
+                supports_location: true,
+                supports_citations: true,
+                supports_stream_events: true,
+                can_mix_client_tools: true,
+            }),
+            trusted_endpoint: true,
+        };
+        let visible = request_tools_with_native_search_plan(
+            &[tool(crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL)],
+            supported,
+        )
+        .expect("trusted exposed search");
+        assert!(visible
+            .iter()
+            .any(crate::llm::native_search::is_native_marker));
     }
 }

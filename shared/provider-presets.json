@@ -6910,16 +6910,6 @@
     "requiresApiKey": true,
     "icon": "🔎",
     "description": "DeepSeek V4 Pro/Flash",
-    "nativeWebSearch": {
-      "dialect": "deepSeekResponses",
-      "supportsDomains": false,
-      "supportsRecency": false,
-      "supportsLocale": false,
-      "supportsLocation": false,
-      "supportsCitations": false,
-      "supportsStreamEvents": true,
-      "canMixClientTools": false
-    },
     "capabilities": {
       "vision": false
     },
@@ -6927,16 +6917,6 @@
       {
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
-        "nativeWebSearch": {
-          "dialect": "deepSeekResponses",
-          "supportsDomains": false,
-          "supportsRecency": false,
-          "supportsLocale": false,
-          "supportsLocation": false,
-          "supportsCitations": false,
-          "supportsStreamEvents": true,
-          "canMixClientTools": false
-        },
         "tagKey": "providers.tagLatest",
         "source": "curated",
         "productReadiness": "known",
@@ -6965,7 +6945,7 @@
           "supportsLocation": false,
           "supportsCitations": false,
           "supportsStreamEvents": true,
-          "canMixClientTools": false
+          "canMixClientTools": true
         },
         "tagKey": "providers.tagFast",
         "capabilities": {
