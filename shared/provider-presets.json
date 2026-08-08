@@ -6918,7 +6918,7 @@
       "supportsLocation": false,
       "supportsCitations": false,
       "supportsStreamEvents": true,
-      "canMixClientTools": true
+      "canMixClientTools": false
     },
     "capabilities": {
       "vision": false
@@ -6935,7 +6935,7 @@
           "supportsLocation": false,
           "supportsCitations": false,
           "supportsStreamEvents": true,
-          "canMixClientTools": true
+          "canMixClientTools": false
         },
         "tagKey": "providers.tagLatest",
         "source": "curated",
@@ -6965,7 +6965,7 @@
           "supportsLocation": false,
           "supportsCitations": false,
           "supportsStreamEvents": true,
-          "canMixClientTools": true
+          "canMixClientTools": false
         },
         "tagKey": "providers.tagFast",
         "capabilities": {

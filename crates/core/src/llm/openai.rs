@@ -994,6 +994,49 @@ fn hosted_search_context(
     ))
 }
 
+fn hosted_search_requires_client_tools(
+    request: &CompletionRequest,
+    mode: super::native_search::SearchExecutionMode,
+) -> bool {
+    request
+        .tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|tool| !super::native_search::is_native_marker(tool))
+        .any(|tool| {
+            tool.name != super::native_search::LOCAL_WEB_SEARCH_TOOL
+                || mode == super::native_search::SearchExecutionMode::Hybrid
+        })
+}
+
+fn without_native_search_marker(request: &CompletionRequest) -> CompletionRequest {
+    CompletionRequest {
+        tools: request.tools.as_ref().map(|tools| {
+            tools
+                .iter()
+                .filter(|tool| !super::native_search::is_native_marker(tool))
+                .cloned()
+                .collect()
+        }),
+        ..request.clone()
+    }
+}
+
+const RESPONSES_REASONING_SIGNATURE_PREFIX: &str = "nexa.responses.reasoning.v1:";
+
+fn replayable_responses_reasoning(tool_calls: &[ToolCallRequest]) -> Vec<serde_json::Value> {
+    tool_calls
+        .iter()
+        .filter_map(|tool_call| tool_call.thought_signature.as_deref())
+        .find_map(|signature| {
+            signature
+                .strip_prefix(RESPONSES_REASONING_SIGNATURE_PREFIX)
+                .and_then(|payload| serde_json::from_str(payload).ok())
+        })
+        .unwrap_or_default()
+}
+
 fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
     let mut items = Vec::new();
     for message in messages {
@@ -1004,6 +1047,12 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
                 "output": message.text_content(),
             }));
             continue;
+        }
+
+        if message.role == Role::Assistant {
+            items.extend(replayable_responses_reasoning(
+                message.tool_calls.as_deref().unwrap_or_default(),
+            ));
         }
 
         let mut content = Vec::new();
@@ -1057,6 +1106,7 @@ fn responses_tools(
             .unwrap_or_default()
             .iter()
             .filter(|tool| !super::native_search::is_native_marker(tool))
+            .filter(|_| capability.can_mix_client_tools)
             .filter(|tool| {
                 include_local_search || tool.name != super::native_search::LOCAL_WEB_SEARCH_TOOL
             })
@@ -1089,6 +1139,12 @@ fn build_responses_request(
         body["max_output_tokens"] = serde_json::json!(max_tokens);
     }
     if dialect == super::native_search::NativeSearchDialect::OpenAiResponses {
+        if capability.can_mix_client_tools {
+            // Stateless Responses tool loops must replay encrypted reasoning
+            // items alongside function calls. The returned payload is kept in
+            // ToolCallRequest::thought_signature and never shown as reasoning.
+            body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
+        }
         if let Some(effort) = request.reasoning_effort.as_ref() {
             body["reasoning"] = serde_json::json!({ "effort": effort.to_string() });
         } else if let Some(temperature) = request.temperature {
@@ -1112,6 +1168,7 @@ fn parse_responses_completion(
     let mut tool_calls = Vec::new();
     let mut query = None;
     let mut citations = Vec::new();
+    let mut reasoning_replay = Vec::new();
 
     for item in output {
         match item.get("type").and_then(serde_json::Value::as_str) {
@@ -1200,6 +1257,13 @@ fn parse_responses_completion(
                 thought_signature: None,
             }),
             Some("reasoning") => {
+                if item
+                    .get("encrypted_content")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                {
+                    reasoning_replay.push(item.clone());
+                }
                 for summary in item
                     .get("summary")
                     .and_then(serde_json::Value::as_array)
@@ -1213,6 +1277,13 @@ fn parse_responses_completion(
             }
             _ => {}
         }
+    }
+
+    if !reasoning_replay.is_empty() && !tool_calls.is_empty() {
+        tool_calls[0].thought_signature = Some(format!(
+            "{RESPONSES_REASONING_SIGNATURE_PREFIX}{}",
+            serde_json::to_string(&reasoning_replay)?
+        ));
     }
 
     if capability.supports_citations && !citations.is_empty() {
@@ -1436,34 +1507,40 @@ impl LlmProvider for OpenAiProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let fallback_request;
         let request = if let Some((dialect, mode, capability)) = hosted_search_context(request) {
-            match self
-                .complete_hosted_search(request, dialect, mode, capability)
-                .await
+            if !capability.can_mix_client_tools
+                && hosted_search_requires_client_tools(request, mode)
             {
-                Ok(response) => return Ok(response),
-                Err(error)
-                    if matches!(
-                        mode,
-                        super::native_search::SearchExecutionMode::Auto
-                            | super::native_search::SearchExecutionMode::Hybrid
-                    ) =>
+                if mode == super::native_search::SearchExecutionMode::ProviderNative {
+                    return Err(CoreError::Llm(format!(
+                        "Provider-native search for {dialect:?} cannot be mixed with client tools on this endpoint. Use Auto, Hybrid, or Nexa Router."
+                    )));
+                }
+                warn!(
+                    "Provider-hosted search for {dialect:?} cannot mix client tools; using Nexa Router"
+                );
+                fallback_request = without_native_search_marker(request);
+                &fallback_request
+            } else {
+                match self
+                    .complete_hosted_search(request, dialect, mode, capability)
+                    .await
                 {
-                    warn!(
+                    Ok(response) => return Ok(response),
+                    Err(error)
+                        if matches!(
+                            mode,
+                            super::native_search::SearchExecutionMode::Auto
+                                | super::native_search::SearchExecutionMode::Hybrid
+                        ) =>
+                    {
+                        warn!(
                         "Provider-hosted search failed for {dialect:?}; falling back to Nexa Router: {error}"
                     );
-                    fallback_request = CompletionRequest {
-                        tools: request.tools.as_ref().map(|tools| {
-                            tools
-                                .iter()
-                                .filter(|tool| !super::native_search::is_native_marker(tool))
-                                .cloned()
-                                .collect()
-                        }),
-                        ..request.clone()
-                    };
-                    &fallback_request
+                        fallback_request = without_native_search_marker(request);
+                        &fallback_request
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
         } else {
             request
@@ -3217,6 +3294,68 @@ data: [DONE]
         assert_eq!(body["tools"][0]["type"], "web_search");
         assert_eq!(body["tools"][1]["name"], "read_file");
         assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
+    }
+
+    #[test]
+    fn responses_tool_loop_replays_encrypted_reasoning_before_function_state() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            supports_domains: true,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: true,
+            supports_citations: true,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let response = parse_responses_completion(
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "encrypted-reasoning",
+                        "summary": []
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                ]
+            }),
+            super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            capability,
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.parts.clear();
+        assistant.tool_calls = response.tool_calls;
+        let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
+
+        let replay = responses_input_items(&[assistant, tool_result]);
+        assert_eq!(replay[0]["type"], "reasoning");
+        assert_eq!(replay[0]["encrypted_content"], "encrypted-reasoning");
+        assert_eq!(replay[1]["type"], "function_call");
+        assert_eq!(replay[2]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn responses_without_client_tool_support_require_router_for_mixed_rounds() {
+        let mut request = endpoint_reasoning_request("deepseek-v4-pro");
+        request.tools = Some(vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "read".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }]);
+        assert!(hosted_search_requires_client_tools(
+            &request,
+            super::super::native_search::SearchExecutionMode::Auto,
+        ));
     }
 
     #[test]
