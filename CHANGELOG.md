@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.1...nexa-monorepo-v0.12.2) (2026-08-08)
+
+
+### Features
+
+* **reasoning:** add provider-native turn envelopes ([df897c4](https://github.com/MLGBJDLW/Nexa/commit/df897c4924dec27ebd11beb4710f4d829818ea97))
+* **reasoning:** persist provider-native turn envelopes ([a92a805](https://github.com/MLGBJDLW/Nexa/commit/a92a80502e1e11e183f116c4fa64053ea55cd4b1))
+
+
+### Bug Fixes
+
+* **agent:** gate tool effects on replay-safe persistence ([6e744ac](https://github.com/MLGBJDLW/Nexa/commit/6e744ac69f69e74eeeffc3f48af5279633105acb))
+* **desktop:** keep provider envelopes backend-only ([ae7330d](https://github.com/MLGBJDLW/Nexa/commit/ae7330d89898ed21f3e7e32c69f5609ffec330b2))
+* **gemini:** assemble streamed signed content parts ([f02edd8](https://github.com/MLGBJDLW/Nexa/commit/f02edd861e105820e2126bca085d4880fe5c4409))
+* **reasoning:** close provider replay review gaps ([0a9dbf3](https://github.com/MLGBJDLW/Nexa/commit/0a9dbf3bc7595dbbbefdfb7154e735fbea1afb7b))
+* **reasoning:** harden replay route boundaries ([36c7322](https://github.com/MLGBJDLW/Nexa/commit/36c7322a1ea7d7e3a5bed0ea6c592afa6f648c70))
+* **reasoning:** require native completion boundaries ([3c3cf24](https://github.com/MLGBJDLW/Nexa/commit/3c3cf241dd7110a5c30686712f5d647cb5cab5cc))
+
 ## [0.12.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.0...nexa-monorepo-v0.12.1) (2026-08-08)
 
 
