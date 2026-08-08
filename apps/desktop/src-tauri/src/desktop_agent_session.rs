@@ -1651,7 +1651,20 @@ pub fn build_desktop_agent_turn_config(
     } else {
         String::new()
     };
-    let base_system_prompt = build_system_prompt(Some(&conversation.system_prompt), &[]);
+    let conversation_system_prompt = db
+        .get_effective_conversation_system_prompt(conversation)
+        .unwrap_or_else(|error| {
+            warn!(
+                "Failed to resolve conversation instruction provenance for {}: {}",
+                conversation.id, error
+            );
+            if conversation.project_id.is_some() {
+                String::new()
+            } else {
+                conversation.system_prompt.clone()
+            }
+        });
+    let base_system_prompt = build_system_prompt(Some(&conversation_system_prompt), &[]);
     let context_budget = db_config
         .context_window
         .and_then(|window| u32::try_from(window).ok())
@@ -2841,6 +2854,31 @@ mod tests {
         }
     }
 
+    fn successful_project_turn(db: &Database, conversation_id: &str) -> String {
+        let user_message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::User,
+            content: "Use project context".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 0,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_message)
+            .expect("add project user message");
+        let turn = db
+            .create_conversation_turn(conversation_id, &user_message.id, None)
+            .expect("create project turn");
+        db.finalize_conversation_turn(&turn.id, "success", None, None)
+            .expect("finish project turn");
+        turn.id
+    }
+
     #[test]
     fn local_provider_detection_requires_an_exact_loopback_host() {
         let mut config = test_provider_config(ProviderType::Ollama);
@@ -3026,9 +3064,26 @@ mod tests {
                 persona_id: None,
             })
             .expect("create conversation");
+        let legacy_snapshot = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: Some("Follow workspace instruction v1".to_string()),
+                collection_context: None,
+                project_id: Some(project.id.clone()),
+                persona_id: None,
+            })
+            .expect("create legacy project conversation");
+        db.conn()
+            .execute(
+                "UPDATE conversations SET system_prompt_origin = 'legacy_ambiguous' WHERE id = ?1",
+                [&legacy_snapshot.id],
+            )
+            .expect("mark copied legacy project prompt");
+        let observed_turn_id = successful_project_turn(&db, &conversation.id);
         db.record_project_turn_completion(
             &conversation.id,
-            "turn-observed",
+            &observed_turn_id,
             "run-observed",
             "Visible prior result with provenance",
         )
@@ -3058,7 +3113,7 @@ mod tests {
             .contains("Follow workspace instruction v1"));
         let volatile = initial.volatile_system_sections.join("\n");
         assert!(volatile.contains("Visible prior result with provenance"));
-        assert!(volatile.contains("turn:turn-observed"));
+        assert!(volatile.contains(&format!("turn:{observed_turn_id}")));
         assert!(!initial
             .system_prompt
             .contains("Visible prior result with provenance"));
@@ -3090,6 +3145,31 @@ mod tests {
         assert!(refreshed
             .system_prompt
             .contains("Conversation-specific instruction"));
+
+        let legacy_after_project_edit = db
+            .get_conversation(&legacy_snapshot.id)
+            .expect("reload legacy project conversation");
+        let migrated =
+            build_desktop_agent_turn_config(request(&legacy_after_project_edit)).executor_config;
+        assert!(migrated
+            .system_prompt
+            .contains("Follow workspace instruction v2"));
+        assert!(!migrated
+            .system_prompt
+            .contains("Follow workspace instruction v1"));
+
+        db.update_conversation_system_prompt(&legacy_snapshot.id, "Explicit conversation override")
+            .expect("save explicit conversation prompt");
+        let explicit = db
+            .get_conversation(&legacy_snapshot.id)
+            .expect("reload explicit prompt");
+        let explicit_config = build_desktop_agent_turn_config(request(&explicit)).executor_config;
+        assert!(explicit_config
+            .system_prompt
+            .contains("Explicit conversation override"));
+        assert!(explicit_config
+            .system_prompt
+            .contains("Follow workspace instruction v2"));
     }
 
     #[test]

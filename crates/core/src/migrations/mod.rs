@@ -2326,6 +2326,19 @@ Every answer that uses knowledge base search results.
          CREATE INDEX IF NOT EXISTS idx_project_workspace_items_conversation
              ON project_workspace_items(conversation_id, updated_at DESC);",
     ),
+    (
+        "v108_conversation_system_prompt_origin",
+        "ALTER TABLE conversations ADD COLUMN system_prompt_origin TEXT NOT NULL DEFAULT 'legacy';
+         UPDATE conversations
+         SET system_prompt_origin = CASE
+             WHEN trim(system_prompt) = '' THEN 'none'
+             WHEN project_id IS NULL THEN 'user'
+             WHEN trim(system_prompt) = trim(COALESCE((
+                 SELECT projects.system_prompt FROM projects WHERE projects.id = conversations.project_id
+             ), '')) THEN 'project_snapshot'
+             ELSE 'legacy_ambiguous'
+         END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2515,6 +2528,48 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn conversation_prompt_origin_migration_fails_closed_for_legacy_project_prompts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, system_prompt TEXT NOT NULL DEFAULT '');
+             CREATE TABLE conversations (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT,
+                 system_prompt TEXT NOT NULL DEFAULT ''
+             );
+             INSERT INTO projects (id, system_prompt) VALUES ('project-1', 'Current project prompt');
+             INSERT INTO conversations (id, project_id, system_prompt) VALUES
+                 ('plain-user', NULL, 'Personal prompt'),
+                 ('project-empty', 'project-1', ''),
+                 ('project-copy', 'project-1', 'Current project prompt'),
+                 ('project-ambiguous', 'project-1', 'Older or custom prompt');",
+        )
+        .unwrap();
+        let migration = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v108_conversation_system_prompt_origin")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(migration).unwrap();
+
+        for (id, expected) in [
+            ("plain-user", "user"),
+            ("project-empty", "none"),
+            ("project-copy", "project_snapshot"),
+            ("project-ambiguous", "legacy_ambiguous"),
+        ] {
+            let origin: String = conn
+                .query_row(
+                    "SELECT system_prompt_origin FROM conversations WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(origin, expected, "origin for {id}");
+        }
     }
 
     #[test]

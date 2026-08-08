@@ -635,7 +635,9 @@ fn relevance(text: &str, terms: &HashSet<String>) -> usize {
 }
 
 impl Database {
-    /// Idempotently records the visible result of a completed project turn.
+    /// Idempotently records the visible result of a successful or cached
+    /// project turn. Cancelled, failed, and incomplete turns never publish
+    /// durable workspace facts.
     pub fn record_project_turn_completion(
         &self,
         conversation_id: &str,
@@ -652,8 +654,17 @@ impl Database {
             return Ok(None);
         }
 
+        let turn = self.get_conversation_turn(turn_id)?;
+        if turn.conversation_id != conversation_id {
+            return Err(CoreError::InvalidInput(format!(
+                "Conversation turn {turn_id} does not belong to conversation {conversation_id}"
+            )));
+        }
+        if !matches!(turn.status.as_str(), "success" | "cached") {
+            return Ok(None);
+        }
+
         let task_run = self.get_agent_task_run(run_id).ok();
-        let turn = self.get_conversation_turn(turn_id).ok();
         let mut extracted = extract_visible_workspace_items(visible_output);
         extracted.extend(extract_plan_workspace_items(
             task_run.as_ref().and_then(|run| run.plan.as_ref()),
@@ -661,9 +672,7 @@ impl Database {
         extracted.extend(extract_task_run_artifact_workspace_items(
             task_run.as_ref().and_then(|run| run.artifacts.as_ref()),
         ));
-        extracted.extend(extract_turn_artifact_workspace_items(
-            turn.as_ref().and_then(|turn| turn.trace.as_ref()),
-        ));
+        extracted.extend(extract_turn_artifact_workspace_items(turn.trace.as_ref()));
         let extracted = dedupe_workspace_items(extracted);
 
         let episode_id = Uuid::new_v4().to_string();
@@ -1203,20 +1212,49 @@ mod tests {
         (project.id, conversation.id)
     }
 
+    fn turn_with_status(db: &Database, conversation_id: &str, status: &str) -> String {
+        let user_message = crate::conversation::ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: crate::llm::Role::User,
+            content: "Project task".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 0,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&user_message).unwrap();
+        let turn = db
+            .create_conversation_turn(conversation_id, &user_message.id, None)
+            .unwrap();
+        db.finalize_conversation_turn(&turn.id, status, None, None)
+            .unwrap();
+        turn.id
+    }
+
+    fn successful_turn(db: &Database, conversation_id: &str) -> String {
+        turn_with_status(db, conversation_id, "success")
+    }
+
     #[test]
     fn completion_is_idempotent_and_keeps_durable_provenance() {
         let db = Database::open_memory().unwrap();
         let (project_id, conversation_id) = project_conversation(&db);
+        let turn_id = successful_turn(&db, &conversation_id);
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-1",
+            &turn_id,
             "run-1",
             "The visible answer is complete.",
         )
         .unwrap();
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-1",
+            &turn_id,
             "run-2",
             "The corrected visible answer is complete.",
         )
@@ -1238,17 +1276,18 @@ mod tests {
     fn structured_workspace_items_are_extracted_and_idempotent() {
         let db = Database::open_memory().unwrap();
         let (project_id, conversation_id) = project_conversation(&db);
+        let turn_id = successful_turn(&db, &conversation_id);
         let visible_output = "# Decisions\n- Ship the append-safe design\n\n# Constraints\n- Preserve visible provenance\n\n# Tasks\n- [ ] Run remote checks\n- [x] Add focused tests\n\n# Artifacts\n- docs/design.md\n\n# Open questions\n- Is the release runner available?\n\n# Sources\n- https://example.com/spec";
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-structured",
+            &turn_id,
             "run-structured",
             visible_output,
         )
         .unwrap();
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-structured",
+            &turn_id,
             "run-structured-retry",
             visible_output,
         )
@@ -1296,16 +1335,17 @@ mod tests {
     fn corrected_turn_supersedes_removed_workspace_items() {
         let db = Database::open_memory().unwrap();
         let (project_id, conversation_id) = project_conversation(&db);
+        let turn_id = successful_turn(&db, &conversation_id);
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-corrected",
+            &turn_id,
             "run-original",
             "# Decisions\n- Use the legacy route",
         )
         .unwrap();
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-corrected",
+            &turn_id,
             "run-corrected",
             "# Decisions\n- Use the append-safe route",
         )
@@ -1418,12 +1458,39 @@ mod tests {
     }
 
     #[test]
+    fn unsuccessful_turns_do_not_publish_project_facts() {
+        let db = Database::open_memory().unwrap();
+        let (project_id, conversation_id) = project_conversation(&db);
+        for status in ["cancelled", "max_iterations", "error"] {
+            let turn_id = turn_with_status(&db, &conversation_id, status);
+            assert!(db
+                .record_project_turn_completion(
+                    &conversation_id,
+                    &turn_id,
+                    &format!("run-{status}"),
+                    "# Decisions\n- Treat partial output as durable",
+                )
+                .unwrap()
+                .is_none());
+        }
+        assert!(db
+            .list_project_episodes(&project_id, 20)
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .list_project_workspace_items(&project_id, None, 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn bootstrap_separates_instructions_from_evidence() {
         let db = Database::open_memory().unwrap();
         let (project_id, conversation_id) = project_conversation(&db);
+        let turn_id = successful_turn(&db, &conversation_id);
         db.record_project_turn_completion(
             &conversation_id,
-            "turn-1",
+            &turn_id,
             "run-1",
             "Release checks passed with provenance.",
         )
@@ -1436,6 +1503,6 @@ mod tests {
         assert!(instructions.contains("Prefer auditable evidence"));
         assert!(!instructions.contains("Release checks passed"));
         assert!(evidence.contains("Release checks passed"));
-        assert!(evidence.contains("turn:turn-1"));
+        assert!(evidence.contains(&format!("turn:{turn_id}")));
     }
 }

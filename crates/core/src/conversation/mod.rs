@@ -856,6 +856,11 @@ impl Database {
     ) -> Result<Conversation, CoreError> {
         let id = new_id();
         let system_prompt = input.system_prompt.as_deref().unwrap_or("");
+        let system_prompt_origin = if system_prompt.trim().is_empty() {
+            "none"
+        } else {
+            "user"
+        };
         let collection_context_json =
             serialize_collection_context(input.collection_context.as_ref())?;
         let persona_id = input
@@ -866,13 +871,14 @@ impl Database {
             .map(str::to_string);
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json, project_id, persona_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO conversations (id, provider, model, system_prompt, system_prompt_origin, collection_context_json, project_id, persona_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 &id,
                 &input.provider,
                 &input.model,
                 system_prompt,
+                system_prompt_origin,
                 &collection_context_json,
                 &input.project_id,
                 &persona_id
@@ -1126,14 +1132,61 @@ impl Database {
         id: &str,
         system_prompt: &str,
     ) -> Result<(), CoreError> {
+        let origin = if system_prompt.trim().is_empty() {
+            "none"
+        } else {
+            "user"
+        };
         let conn = self.conn();
         let affected = conn.execute(
-            "UPDATE conversations SET system_prompt = ?2, updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![id, system_prompt],
+            "UPDATE conversations
+             SET system_prompt = ?2, system_prompt_origin = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![id, system_prompt, origin],
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("Conversation {id}")));
         }
+        Ok(())
+    }
+
+    /// Return only conversation-authored instructions when live project
+    /// instructions are assembled separately. Legacy project snapshots remain
+    /// stored and editable, but are not injected as a second instruction set.
+    pub fn get_effective_conversation_system_prompt(
+        &self,
+        conversation: &Conversation,
+    ) -> Result<String, CoreError> {
+        if conversation.project_id.is_none() {
+            return Ok(conversation.system_prompt.clone());
+        }
+        let conn = self.conn();
+        let origin: String = conn.query_row(
+            "SELECT system_prompt_origin FROM conversations WHERE id = ?1",
+            [&conversation.id],
+            |row| row.get(0),
+        )?;
+        Ok(if origin == "user" {
+            conversation.system_prompt.clone()
+        } else {
+            String::new()
+        })
+    }
+
+    fn copy_conversation_system_prompt_origin(
+        &self,
+        source_id: &str,
+        destination_id: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE conversations
+             SET system_prompt_origin = COALESCE((
+                 SELECT system_prompt_origin FROM conversations WHERE id = ?1
+             ), system_prompt_origin)
+             WHERE id = ?2",
+            rusqlite::params![source_id, destination_id],
+        )?;
         Ok(())
     }
 
@@ -3450,6 +3503,7 @@ impl Database {
             project_id: source.project_id.clone(),
             persona_id: source.persona_id.clone(),
         })?;
+        self.copy_conversation_system_prompt_origin(&source.id, &conversation.id)?;
         self.rename_conversation_by_user(
             &conversation.id,
             &checkpoint_branch_title(&source.title, &checkpoint.label),
