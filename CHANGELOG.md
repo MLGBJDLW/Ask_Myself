@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.12.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.0...nexa-monorepo-v0.12.1) (2026-08-08)
+
+
+### Features
+
+* **companion:** add independent desktop pet runtime ([609293a](https://github.com/MLGBJDLW/Nexa/commit/609293a4a36ef3cdc92f5df903c920865c9fe54d))
+* upgrade desktop companion and reasoning runtime ([cd3af59](https://github.com/MLGBJDLW/Nexa/commit/cd3af5932bd14e80eb4889fa311811b5ded1d4f5))
+
+
+### Bug Fixes
+
+* **ci:** satisfy companion clippy checks ([224a31b](https://github.com/MLGBJDLW/Nexa/commit/224a31b93e5868f02c07f75b2fe278b8f7dc0e6b))
+* **companion:** honor main window visibility setting ([028f4fa](https://github.com/MLGBJDLW/Nexa/commit/028f4fa84cfc339f444ce87f6c0ec34d2256bc66))
+* **companion:** scope terminal state to pinned project ([6832fa1](https://github.com/MLGBJDLW/Nexa/commit/6832fa1aa23b511a553b7a2a0595c4d1bc0c6432))
+* **desktop:** align macos private api feature ([f6f9372](https://github.com/MLGBJDLW/Nexa/commit/f6f93720251ab7743d17464a10dfd23c2afdbd54))
+* **graph:** mask themed node frost effects ([b11fe14](https://github.com/MLGBJDLW/Nexa/commit/b11fe1474a5ec9da9ef07bdb52c877ca9da891fa))
+* **reasoning:** bind replay checks to selected route ([ab08e17](https://github.com/MLGBJDLW/Nexa/commit/ab08e173a9696c17b7be0cba3c04ee4d387eefd4))
+* **reasoning:** fail closed on incomplete replay ([9beb471](https://github.com/MLGBJDLW/Nexa/commit/9beb471bb2f8206c5f43c6ea09a400231a5db39b))
+* **reasoning:** preserve replay contracts across fallbacks ([dbcd26b](https://github.com/MLGBJDLW/Nexa/commit/dbcd26b6c2126ff232bda8be2f39baa39328bf8e))
+
 ## [0.12.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.16...nexa-monorepo-v0.12.0) (2026-08-08)
 
 
