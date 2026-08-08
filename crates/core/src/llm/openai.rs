@@ -677,17 +677,18 @@ fn convert_message(
         let parts: Vec<OaiContentPart> = msg
             .parts
             .iter()
-            .map(|p| match p {
-                ContentPart::Text { text } => OaiContentPart::Text {
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(OaiContentPart::Text {
                     text: text.clone(),
                     cache_control: None,
-                },
+                }),
                 ContentPart::Image { media_type, data } => {
                     let url = format!("data:{media_type};base64,{data}");
-                    OaiContentPart::ImageUrl {
+                    Some(OaiContentPart::ImageUrl {
                         image_url: OaiImageUrl { url },
-                    }
+                    })
                 }
+                ContentPart::ProviderTurn { .. } => None,
             })
             .collect();
         if parts.is_empty() {
@@ -1013,17 +1014,23 @@ fn without_native_search_marker(request: &CompletionRequest) -> CompletionReques
     }
 }
 
-const RESPONSES_REASONING_SIGNATURE_PREFIX: &str = "nexa.responses.reasoning.v1:";
-
-fn replayable_responses_reasoning(tool_calls: &[ToolCallRequest]) -> Vec<serde_json::Value> {
-    tool_calls
+fn replayable_responses_reasoning(message: &Message) -> Vec<serde_json::Value> {
+    if let Some(envelope) = message.provider_turn() {
+        match &envelope.replay_payload {
+            super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(items)
+            | super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(items) => {
+                return items.clone();
+            }
+            _ => {}
+        }
+    }
+    message
+        .tool_calls
+        .as_deref()
+        .unwrap_or_default()
         .iter()
         .filter_map(|tool_call| tool_call.thought_signature.as_deref())
-        .find_map(|signature| {
-            signature
-                .strip_prefix(RESPONSES_REASONING_SIGNATURE_PREFIX)
-                .and_then(|payload| serde_json::from_str(payload).ok())
-        })
+        .find_map(super::provider_turn::decode_responses_reasoning_items)
         .unwrap_or_default()
 }
 
@@ -1039,10 +1046,20 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
             continue;
         }
 
+        let mut replayed_call_ids = std::collections::HashSet::new();
         if message.role == Role::Assistant {
-            items.extend(replayable_responses_reasoning(
-                message.tool_calls.as_deref().unwrap_or_default(),
-            ));
+            let replay_items = replayable_responses_reasoning(message);
+            replayed_call_ids.extend(replay_items.iter().filter_map(|item| {
+                (item.get("type").and_then(serde_json::Value::as_str) == Some("function_call"))
+                    .then(|| {
+                        item.get("call_id")
+                            .or_else(|| item.get("id"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .flatten()
+            }));
+            items.extend(replay_items);
         }
 
         let mut content = Vec::new();
@@ -1056,6 +1073,7 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}"),
                 })),
+                ContentPart::ProviderTurn { .. } => {}
             }
         }
         if !content.is_empty() {
@@ -1066,6 +1084,9 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
             }));
         }
         for tool_call in message.tool_calls.as_deref().unwrap_or_default() {
+            if replayed_call_ids.contains(tool_call.id.as_str()) {
+                continue;
+            }
             items.push(serde_json::json!({
                 "type": "function_call",
                 "call_id": tool_call.id,
@@ -1233,25 +1254,28 @@ fn parse_responses_completion(
                     }
                 }
             }
-            Some("function_call") => tool_calls.push(ToolCallRequest {
-                id: item
-                    .get("call_id")
-                    .or_else(|| item.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: item
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                arguments: item
-                    .get("arguments")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("{}")
-                    .to_string(),
-                thought_signature: None,
-            }),
+            Some("function_call") => {
+                reasoning_replay.push(item.clone());
+                tool_calls.push(ToolCallRequest {
+                    id: item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: item
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: item
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("{}")
+                        .to_string(),
+                    thought_signature: None,
+                });
+            }
             Some("reasoning") => {
                 if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses
                     || item
@@ -1277,10 +1301,8 @@ fn parse_responses_completion(
     }
 
     if !reasoning_replay.is_empty() && !tool_calls.is_empty() {
-        tool_calls[0].thought_signature = Some(format!(
-            "{RESPONSES_REASONING_SIGNATURE_PREFIX}{}",
-            serde_json::to_string(&reasoning_replay)?
-        ));
+        tool_calls[0].thought_signature =
+            super::provider_turn::encode_responses_reasoning_items(&reasoning_replay);
     }
 
     if capability.supports_citations && !citations.is_empty() {
@@ -1481,6 +1503,21 @@ impl LlmProvider for OpenAiProvider {
             model,
         )
         .replay_policy
+    }
+
+    fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
+        let api_style = if hosted_search_context(request).is_some() {
+            ReasoningApiStyle::OpenAiResponses
+        } else {
+            ReasoningApiStyle::OpenAiChatCompletions
+        };
+        let profile = resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            api_style,
+            &request.model,
+        );
+        super::provider_turn::RouteSnapshot::from_profile_for_request(&profile, request)
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {

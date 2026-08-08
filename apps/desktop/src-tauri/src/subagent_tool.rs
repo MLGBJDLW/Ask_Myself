@@ -17,8 +17,10 @@ use nexa_core::agent::{
     llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
     CancellationToken,
 };
-use nexa_core::conversation::conversation_message_llm_context_content;
 use nexa_core::conversation::memory::estimate_tokens_for_model;
+use nexa_core::conversation::{
+    conversation_message_llm_context_content, conversation_message_provider_turn,
+};
 use nexa_core::db::Database;
 use nexa_core::error::CoreError;
 use nexa_core::llm::message_validation::{
@@ -1262,6 +1264,9 @@ fn load_delegation_context_snapshot(
                 if message.role == Role::Assistant {
                     projected.reasoning_content =
                         nexa_core::conversation::conversation_message_reasoning_replay(&message);
+                    if let Some(envelope) = conversation_message_provider_turn(&message) {
+                        projected.set_provider_turn(envelope);
+                    }
                 }
                 let context = MessageNormalizationContext {
                     provider: None,

@@ -128,6 +128,7 @@ fn has_visible_content(message: &Message) -> bool {
     message.parts.iter().any(|part| match part {
         ContentPart::Text { text } => !text.trim().is_empty(),
         ContentPart::Image { data, .. } => !data.is_empty(),
+        ContentPart::ProviderTurn { .. } => false,
     })
 }
 

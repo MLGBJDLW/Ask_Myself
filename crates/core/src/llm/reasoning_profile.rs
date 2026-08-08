@@ -20,6 +20,7 @@ pub enum ReasoningApiStyle {
     OpenAiChatCompletions,
     OpenAiResponses,
     AnthropicMessages,
+    GeminiGenerateContent,
     Local,
 }
 
@@ -283,6 +284,36 @@ pub fn resolve_reasoning_profile(
         api_style,
         model_id: model.to_string(),
     };
+    if api_style == ReasoningApiStyle::OpenAiResponses {
+        let mut value = ReasoningProfile::unsupported(key);
+        value.id = match provider {
+            ProviderType::DeepSeek => "deepseek-responses-replay-v1",
+            _ => "openai-responses-replay-v1",
+        }
+        .to_string();
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
+    if api_style == ReasoningApiStyle::AnthropicMessages {
+        let mut value = ReasoningProfile::unsupported(key);
+        value.id = "anthropic-signed-thinking-v1".to_string();
+        value.mode_control = ThinkingModeControl::ThinkingType;
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
+    if api_style == ReasoningApiStyle::GeminiGenerateContent {
+        let mut value = ReasoningProfile::unsupported(key);
+        value.id = "gemini-thought-signature-v1".to_string();
+        value.mode_control = ThinkingModeControl::ProviderDefault;
+        value.preserve_reasoning_history = true;
+        value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
+        value.confidence = CapabilityConfidence::Verified;
+        return value;
+    }
     if api_style != ReasoningApiStyle::OpenAiChatCompletions {
         return ReasoningProfile::unsupported(key);
     }

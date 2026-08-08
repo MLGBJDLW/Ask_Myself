@@ -545,7 +545,7 @@ fn deterministic_advisor_view(messages: &[Message], privacy: &MoaPrivacyFilter) 
                     ContentPart::Image { .. } if *privacy == MoaPrivacyFilter::Off => {
                         Some(part.clone())
                     }
-                    ContentPart::Image { .. } => None,
+                    ContentPart::Image { .. } | ContentPart::ProviderTurn { .. } => None,
                 })
                 .collect(),
             name: None,

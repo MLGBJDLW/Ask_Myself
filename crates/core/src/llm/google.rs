@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use super::reasoning_profile::{resolve_reasoning_profile, ReasoningApiStyle};
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
@@ -363,17 +364,18 @@ fn convert_messages(
                 let parts: Vec<GeminiPartV2> = msg
                     .parts
                     .iter()
-                    .map(|p| match p {
-                        ContentPart::Text { text } => GeminiPartV2::Text {
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(GeminiPartV2::Text {
                             text: text.clone(),
                             thought_signature: None,
-                        },
-                        ContentPart::Image { media_type, data } => GeminiPartV2::InlineData {
+                        }),
+                        ContentPart::Image { media_type, data } => Some(GeminiPartV2::InlineData {
                             inline_data: GeminiBlob {
                                 mime_type: media_type.clone(),
                                 data: data.clone(),
                             },
-                        },
+                        }),
+                        ContentPart::ProviderTurn { .. } => None,
                     })
                     .collect();
                 push_or_merge_content(&mut contents, "user", parts);
@@ -398,7 +400,10 @@ fn convert_messages(
                                 name: tc.name.clone(),
                                 args,
                             },
-                            thought_signature: tc.thought_signature.clone(),
+                            thought_signature: tc
+                                .thought_signature
+                                .as_deref()
+                                .map(super::provider_turn::raw_gemini_thought_signature),
                         });
                     }
                 }
@@ -865,15 +870,26 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
                             function_call,
                             thought_signature,
                         } => {
+                            let tool_call_id = function_call
+                                .id
+                                .clone()
+                                .unwrap_or_else(|| format!("{SYNTHETIC_CALL_ID_PREFIX}{idx}"));
+                            let captured_signature =
+                                thought_signature.as_ref().and_then(|signature| {
+                                    super::provider_turn::encode_gemini_thought_signature(
+                                        &super::provider_turn::GeminiThoughtSignature {
+                                            tool_call_id: tool_call_id.clone(),
+                                            model_part_index: Some(idx),
+                                            signature: signature.clone(),
+                                        },
+                                    )
+                                });
                             tool_calls.push(ToolCallRequest {
-                                id: function_call
-                                    .id
-                                    .clone()
-                                    .unwrap_or_else(|| format!("{SYNTHETIC_CALL_ID_PREFIX}{idx}")),
+                                id: tool_call_id,
                                 name: function_call.name.clone(),
                                 arguments: serde_json::to_string(&function_call.args)
                                     .unwrap_or_default(),
-                                thought_signature: thought_signature.clone(),
+                                thought_signature: captured_signature,
                             });
                         }
                         GeminiPartV2::FunctionResponse { .. } | GeminiPartV2::InlineData { .. } => {
@@ -1367,6 +1383,41 @@ impl GeminiProvider {
 impl LlmProvider for GeminiProvider {
     fn name(&self) -> &str {
         "google"
+    }
+
+    fn reasoning_replay_policy(
+        &self,
+        model: &str,
+    ) -> super::reasoning_profile::ReasoningReplayPolicy {
+        resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            ReasoningApiStyle::GeminiGenerateContent,
+            model,
+        )
+        .replay_policy
+    }
+
+    fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
+        let profile = resolve_reasoning_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            ReasoningApiStyle::GeminiGenerateContent,
+            &request.model,
+        );
+        let mut snapshot =
+            super::provider_turn::RouteSnapshot::from_profile_for_request(&profile, request);
+        if uses_thinking_levels(&request.model) {
+            // Gemini 3 function-calling turns require a thought signature even
+            // when the client does not request visible thinking.
+            snapshot.replay_policy =
+                super::reasoning_profile::ReasoningReplayPolicy::OpaqueSignature;
+        } else {
+            // Gemini 2.5 signatures are optional, but any returned value is
+            // still captured and replayed exactly.
+            snapshot.replay_policy = super::reasoning_profile::ReasoningReplayPolicy::NotRequired;
+        }
+        snapshot
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -2090,6 +2141,40 @@ mod tests {
             extract_response(&response).expect("extract response");
 
         assert_eq!(tool_calls[0].id, "fc_provider_1");
+    }
+
+    #[test]
+    fn test_extract_response_retains_signed_part_position_for_replay() {
+        let response: GeminiResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [
+                    {"text": "I will inspect."},
+                    {
+                        "functionCall": {
+                            "id": "fc_provider_1",
+                            "name": "read_file",
+                            "args": {"path": "README.md"}
+                        },
+                        "thoughtSignature": "opaque-signature"
+                    }
+                ]},
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("response");
+
+        let (_, tool_calls, _, _, _) = extract_response(&response).expect("extract response");
+        let captured = super::super::provider_turn::decode_gemini_thought_signature(
+            tool_calls[0]
+                .thought_signature
+                .as_deref()
+                .expect("captured signature"),
+        )
+        .expect("typed signature metadata");
+
+        assert_eq!(captured.tool_call_id, "fc_provider_1");
+        assert_eq!(captured.model_part_index, Some(1));
+        assert_eq!(captured.signature, "opaque-signature");
     }
 
     #[test]

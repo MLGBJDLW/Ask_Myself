@@ -90,18 +90,10 @@ impl AutomaticFallbackProvider {
         let mut request = request.clone();
         request.model = self.routes[position].model.clone();
         request.provider_type = Some(self.routes[position].provider_type);
-        let reasoning_off = request.reasoning_enabled == Some(false)
-            || request.reasoning_effort == Some(super::ReasoningEffort::None);
-        let replay_policy = if reasoning_off {
-            ReasoningReplayPolicy::NotRequired
-        } else {
-            self.routes[position]
-                .provider
-                .reasoning_replay_policy(&self.routes[position].model)
-        };
-        request.messages = super::reasoning_replay::prepare_reasoning_replay_history(
+        let route_snapshot = self.routes[position].provider.route_snapshot(&request);
+        request.messages = super::reasoning_replay::prepare_provider_replay_history(
             &request.messages,
-            replay_policy,
+            &route_snapshot,
         )
         .messages;
         request
@@ -210,6 +202,12 @@ impl LlmProvider for AutomaticFallbackProvider {
         // `request_for_route` applies the concrete route contract immediately
         // before opening that route.
         ReasoningReplayPolicy::NotRequired
+    }
+
+    fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
+        let position = self.active_position();
+        let request = self.request_for_route(request, position);
+        self.routes[position].provider.route_snapshot(&request)
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {

@@ -1,3 +1,4 @@
+use super::provider_turn::RouteSnapshot;
 use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{Message, Role};
 
@@ -129,9 +130,85 @@ pub fn prepare_reasoning_replay_history(
     }
 }
 
+/// Project history for one concrete provider route. Required replay payloads
+/// must come from a compatible typed envelope; ambiguous legacy strings form
+/// a boundary instead of being reinterpreted as another provider dialect.
+pub fn prepare_provider_replay_history(
+    messages: &[Message],
+    route: &RouteSnapshot,
+) -> ReasoningReplayProjection {
+    if !route.replay_policy.requires_tool_call_payload() {
+        return prepare_reasoning_replay_history(messages, route.replay_policy);
+    }
+
+    let mut normalized = messages.to_vec();
+    for message in &mut normalized {
+        message.reasoning_content = sanitize_reasoning_text(message.reasoning_content.as_deref());
+        if let Some(envelope) = message.provider_turn() {
+            message.reasoning_content = envelope.replay_payload.reasoning_content();
+        }
+    }
+
+    let mut projected = Vec::with_capacity(normalized.len());
+    let mut omitted_units = 0;
+    let mut index = 0;
+    while index < normalized.len() {
+        let message = &normalized[index];
+        let starts_tool_unit = message.role == Role::Assistant
+            && message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty());
+        if starts_tool_unit {
+            let end = atomic_tool_replay_unit_end(&normalized, index);
+            let invalid_envelope = normalized[index..end].iter().any(|message| {
+                if message.role != Role::Assistant
+                    || !message
+                        .tool_calls
+                        .as_ref()
+                        .is_some_and(|calls| !calls.is_empty())
+                {
+                    return false;
+                }
+                message.provider_turn().is_none_or(|envelope| {
+                    !envelope.is_compatible_with(route) || !envelope.authorizes_tool_dispatch()
+                })
+            });
+            if invalid_envelope {
+                omitted_units += 1;
+                index = end;
+                continue;
+            }
+            projected.extend_from_slice(&normalized[index..end]);
+            index = end;
+            continue;
+        }
+        projected.push(message.clone());
+        index += 1;
+    }
+
+    if omitted_units > 0 {
+        let insertion_index = projected
+            .iter()
+            .take_while(|message| message.role == Role::System)
+            .count();
+        projected.insert(
+            insertion_index,
+            Message::text(Role::System, REPLAY_BOUNDARY_NOTE),
+        );
+    }
+
+    ReasoningReplayProjection {
+        messages: projected,
+        omitted_units,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::provider_turn::{ProviderTurnEnvelope, RouteSnapshot};
+    use crate::llm::reasoning_profile::ReasoningApiStyle;
     use crate::llm::ToolCallRequest;
 
     fn tool_call_message(reasoning: Option<&str>) -> Message {
@@ -240,5 +317,69 @@ mod tests {
         assert_eq!(projection.omitted_units, 0);
         assert_eq!(projection.messages.len(), 1);
         assert!(projection.messages[0].reasoning_content.is_none());
+    }
+
+    fn deepseek_route(model: &str) -> RouteSnapshot {
+        RouteSnapshot {
+            provider_endpoint_id: "deepseek-public".to_string(),
+            provider_family: "deepseek".to_string(),
+            api_style: ReasoningApiStyle::OpenAiChatCompletions,
+            model_id: model.to_string(),
+            reasoning_profile_id: "deepseek-chat-v1".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+        }
+    }
+
+    fn typed_tool_call_message(route: RouteSnapshot) -> Message {
+        let mut message = tool_call_message(Some("legacy display copy"));
+        let envelope = ProviderTurnEnvelope::capture(
+            "turn-item",
+            "sample",
+            route,
+            "",
+            Some("display reasoning"),
+            Some("native replay reasoning"),
+            message.tool_calls.clone().unwrap_or_default(),
+            true,
+        );
+        message.set_provider_turn(envelope);
+        message
+    }
+
+    #[test]
+    fn typed_envelope_replays_only_on_the_exact_route() {
+        let route = deepseek_route("deepseek-reasoner");
+        let tool = Message::text_with_name(Role::Tool, "result", "call-1");
+        let projection = prepare_provider_replay_history(
+            &[typed_tool_call_message(route.clone()), tool],
+            &route,
+        );
+
+        assert_eq!(projection.omitted_units, 0);
+        assert_eq!(
+            projection.messages[0].reasoning_content.as_deref(),
+            Some("native replay reasoning")
+        );
+    }
+
+    #[test]
+    fn route_mismatch_omits_the_entire_typed_tool_unit() {
+        let captured_route = deepseek_route("deepseek-reasoner");
+        let requested_route = deepseek_route("deepseek-chat");
+        let tool = Message::text_with_name(Role::Tool, "result", "call-1");
+        let projection = prepare_provider_replay_history(
+            &[typed_tool_call_message(captured_route), tool],
+            &requested_route,
+        );
+
+        assert_eq!(projection.omitted_units, 1);
+        assert!(projection.messages.iter().all(|message| {
+            message.role != Role::Tool
+                && !message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+        }));
     }
 }

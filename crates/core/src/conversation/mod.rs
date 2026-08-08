@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::interaction::SubmitInteractionResponse;
+use crate::llm::provider_turn::ProviderTurnEnvelope;
 use crate::llm::reasoning_profile::ReasoningEnvelope;
 use crate::llm::{Role, ToolCallRequest};
 
@@ -98,6 +99,18 @@ pub struct ConversationMessage {
 /// content that should be replayed to the LLM on later turns.
 pub const LLM_CONTEXT_CONTENT_ARTIFACT_KEY: &str = "llmContextContent";
 pub const REASONING_ENVELOPE_ARTIFACT_KEY: &str = "reasoningEnvelope";
+pub const PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY: &str = "providerTurnEnvelope";
+
+/// Stable persistence identity for provider samples created both by primary
+/// conversations and detached subagent executors.
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderTurnPersistenceScope<'a> {
+    pub scope_id: &'a str,
+    pub conversation_id: Option<&'a str>,
+    pub conversation_turn_id: Option<&'a str>,
+    pub run_id: Option<&'a str>,
+    pub subtask_run_id: Option<&'a str>,
+}
 
 pub fn conversation_message_llm_context_content(message: &ConversationMessage) -> &str {
     message
@@ -113,6 +126,9 @@ pub fn conversation_message_display_thinking(message: &ConversationMessage) -> O
 }
 
 pub fn conversation_message_reasoning_replay(message: &ConversationMessage) -> Option<String> {
+    if let Some(envelope) = conversation_message_provider_turn(message) {
+        return envelope.replay_payload.reasoning_content();
+    }
     if let Some(envelope) = message
         .artifacts
         .as_ref()
@@ -125,6 +141,57 @@ pub fn conversation_message_reasoning_replay(message: &ConversationMessage) -> O
     }
 
     conversation_message_display_thinking(message)
+}
+
+pub fn conversation_message_provider_turn(
+    message: &ConversationMessage,
+) -> Option<ProviderTurnEnvelope> {
+    message
+        .artifacts
+        .as_ref()
+        .and_then(|artifacts| artifacts.get(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+/// Return the display projection without opaque provider replay payloads or
+/// signatures. Internal replay callers continue to use the original row.
+pub fn conversation_message_for_display(mut message: ConversationMessage) -> ConversationMessage {
+    if let Some(serde_json::Value::Object(artifacts)) = message.artifacts.as_mut() {
+        artifacts.remove(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY);
+    }
+    for tool_call in &mut message.tool_calls {
+        tool_call.thought_signature = None;
+    }
+    message
+}
+
+pub fn merge_provider_turn_envelope_artifact(
+    artifacts: Option<serde_json::Value>,
+    envelope: &ProviderTurnEnvelope,
+) -> Option<serde_json::Value> {
+    let envelope = serde_json::to_value(envelope).ok()?;
+    match artifacts {
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+        Some(legacy) => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_string(), serde_json::json!("assistantArtifacts"));
+            map.insert("version".to_string(), serde_json::json!(2));
+            map.insert("legacyArtifacts".to_string(), legacy);
+            map.insert(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+        None => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_string(), serde_json::json!("assistantArtifacts"));
+            map.insert("version".to_string(), serde_json::json!(2));
+            map.insert(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY.to_string(), envelope);
+            Some(serde_json::Value::Object(map))
+        }
+    }
 }
 
 pub fn merge_reasoning_envelope_artifact(
@@ -3067,23 +3134,154 @@ fn agent_task_artifact_version_from_row(
 impl Database {
     /// Add a message to a conversation.
     pub fn add_message(&self, msg: &ConversationMessage) -> Result<(), CoreError> {
-        let role_str = role_to_str(&msg.role);
-        let tool_calls_json = if msg.tool_calls.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&msg.tool_calls)?)
-        };
-        let artifacts_json = match &msg.artifacts {
-            Some(value) => Some(serde_json::to_string(value)?),
-            None => None,
-        };
-        let image_attachments_json = match &msg.image_attachments {
-            Some(atts) if !atts.is_empty() => Some(serde_json::to_string(atts)?),
-            _ => None,
-        };
-
         let conn = self.conn();
+        insert_message(&conn, msg)?;
+
+        // Bump the conversation's updated_at.
         conn.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&msg.conversation_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Atomically persist the accepted provider-native sample and its visible
+    /// assistant message before any associated tool is allowed to run.
+    pub fn persist_provider_turn(
+        &self,
+        message: Option<&ConversationMessage>,
+        envelope: &ProviderTurnEnvelope,
+        scope: ProviderTurnPersistenceScope<'_>,
+    ) -> Result<(), CoreError> {
+        let provider_items_json = serde_json::to_string(&envelope.provider_items)?;
+        let replay_payload_json = serde_json::to_string(&envelope.replay_payload)?;
+        let tool_calls_json = serde_json::to_string(&envelope.tool_calls)?;
+        let capture_status = serde_json::to_value(envelope.capture_status)?
+            .as_str()
+            .ok_or_else(|| CoreError::Internal("invalid provider turn capture status".into()))?
+            .to_string();
+        let replay_policy = serde_json::to_value(envelope.route.replay_policy)?
+            .as_str()
+            .ok_or_else(|| CoreError::Internal("invalid provider turn replay policy".into()))?
+            .to_string();
+
+        if let Some(message) = message {
+            if scope.conversation_id != Some(message.conversation_id.as_str()) {
+                return Err(CoreError::Internal(
+                    "provider turn scope does not match assistant message conversation".into(),
+                ));
+            }
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(message) = message {
+            insert_message(&tx, message)?;
+            tx.execute(
+                "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![&message.conversation_id],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO provider_turn_envelopes (
+                 turn_item_id, sample_id, scope_id, conversation_id,
+                 conversation_turn_id, run_id, subtask_run_id, message_id,
+                 provider_endpoint_id, provider_family, api_style, model_id,
+                 reasoning_profile_id, reasoning_profile_version, replay_policy, visible_content,
+                 provider_items_json, replay_payload_json, tool_calls_json,
+                 capture_status, request_id, response_id, raw_response_digest
+             ) VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+             )",
+            rusqlite::params![
+                &envelope.turn_item_id,
+                &envelope.sample_id,
+                scope.scope_id,
+                scope.conversation_id,
+                scope.conversation_turn_id,
+                scope.run_id,
+                scope.subtask_run_id,
+                message.map(|message| message.id.as_str()),
+                &envelope.route.provider_endpoint_id,
+                &envelope.route.provider_family,
+                envelope.route.api_style_id(),
+                &envelope.route.model_id,
+                &envelope.route.reasoning_profile_id,
+                i64::from(envelope.route.reasoning_profile_version),
+                &replay_policy,
+                &envelope.visible_content,
+                &provider_items_json,
+                &replay_payload_json,
+                &tool_calls_json,
+                &capture_status,
+                &envelope.request_id,
+                &envelope.response_id,
+                &envelope.raw_response_digest,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return the provider-native sample linked to a persisted assistant
+    /// message. The artifact remains the portable projection used by exports.
+    #[cfg(test)]
+    fn get_provider_turn_for_message(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<ProviderTurnEnvelope>, CoreError> {
+        let conn = self.conn();
+        let artifacts_json = conn
+            .query_row(
+                "SELECT messages.artifacts_json
+                 FROM provider_turn_envelopes
+                 JOIN messages ON messages.id = provider_turn_envelopes.message_id
+                 WHERE provider_turn_envelopes.message_id = ?1",
+                rusqlite::params![message_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(artifacts_json) = artifacts_json else {
+            return Ok(None);
+        };
+        let artifacts = serde_json::from_str::<serde_json::Value>(&artifacts_json)?;
+        Ok(artifacts
+            .get(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()))
+    }
+
+    /// Test and diagnostics seam for verifying the durable pre-dispatch gate.
+    #[cfg(test)]
+    pub(crate) fn count_provider_turns(&self) -> Result<u64, CoreError> {
+        let conn = self.conn();
+        let count = conn.query_row("SELECT COUNT(*) FROM provider_turn_envelopes", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+}
+
+fn insert_message(conn: &rusqlite::Connection, msg: &ConversationMessage) -> Result<(), CoreError> {
+    let role_str = role_to_str(&msg.role);
+    let tool_calls_json = if msg.tool_calls.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&msg.tool_calls)?)
+    };
+    let artifacts_json = match &msg.artifacts {
+        Some(value) => Some(serde_json::to_string(value)?),
+        None => None,
+    };
+    let image_attachments_json = match &msg.image_attachments {
+        Some(atts) if !atts.is_empty() => Some(serde_json::to_string(atts)?),
+        _ => None,
+    };
+
+    conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, tool_call_id, tool_calls_json, artifacts_json, token_count, sort_order, thinking, image_attachments_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
@@ -3101,15 +3299,10 @@ impl Database {
             ],
         )?;
 
-        // Bump the conversation's updated_at.
-        conn.execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![&msg.conversation_id],
-        )?;
+    Ok(())
+}
 
-        Ok(())
-    }
-
+impl Database {
     /// Persist the canonical LLM replay content for an existing message while
     /// leaving its display content untouched.
     pub fn update_message_llm_context_content(
@@ -5893,6 +6086,139 @@ mod tests {
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(messages[1].tool_calls[0].name, "search");
         assert_eq!(messages[1].artifacts.as_ref().unwrap()["kind"], "plan");
+    }
+
+    fn test_provider_turn_envelope(
+        conversation_id: &str,
+        message_id: &str,
+    ) -> (ConversationMessage, ProviderTurnEnvelope) {
+        let tool_call = ToolCallRequest {
+            id: "call-provider-turn".to_string(),
+            name: "recording_tool".to_string(),
+            arguments: r#"{"value":"safe"}"#.to_string(),
+            thought_signature: None,
+        };
+        let envelope = ProviderTurnEnvelope::capture(
+            "turn-item-provider-turn",
+            "sample-provider-turn",
+            crate::llm::provider_turn::RouteSnapshot {
+                provider_endpoint_id: "deepseek-public".to_string(),
+                provider_family: "deepseek".to_string(),
+                api_style: crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+                model_id: "deepseek-reasoner".to_string(),
+                reasoning_profile_id: "deepseek-chat-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy:
+                    crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+            },
+            "",
+            Some("display reasoning"),
+            Some("provider replay reasoning"),
+            vec![tool_call.clone()],
+            true,
+        );
+        let message = ConversationMessage {
+            id: message_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls: vec![tool_call],
+            artifacts: merge_provider_turn_envelope_artifact(None, &envelope),
+            token_count: 1,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: Some("display reasoning".to_string()),
+            image_attachments: None,
+        };
+        (message, envelope)
+    }
+
+    #[test]
+    fn provider_turn_and_assistant_message_commit_atomically() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "deepseek".into(),
+                model: "deepseek-reasoner".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let (message, envelope) =
+            test_provider_turn_envelope(&conversation.id, "provider-turn-message");
+
+        db.persist_provider_turn(
+            Some(&message),
+            &envelope,
+            ProviderTurnPersistenceScope {
+                scope_id: &conversation.id,
+                conversation_id: Some(&conversation.id),
+                conversation_turn_id: None,
+                run_id: None,
+                subtask_run_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(db.count_provider_turns().unwrap(), 1);
+        assert_eq!(
+            db.get_provider_turn_for_message(&message.id).unwrap(),
+            Some(envelope)
+        );
+        assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn provider_turn_persistence_failure_rolls_back_assistant_message() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "deepseek".into(),
+                model: "deepseek-reasoner".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let (message, envelope) =
+            test_provider_turn_envelope(&conversation.id, "provider-turn-rollback-message");
+        db.conn()
+            .execute("DROP TABLE provider_turn_envelopes", [])
+            .unwrap();
+
+        assert!(db
+            .persist_provider_turn(
+                Some(&message),
+                &envelope,
+                ProviderTurnPersistenceScope {
+                    scope_id: &conversation.id,
+                    conversation_id: Some(&conversation.id),
+                    conversation_turn_id: None,
+                    run_id: None,
+                    subtask_run_id: None,
+                },
+            )
+            .is_err());
+        assert!(db.get_messages(&conversation.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn display_projection_excludes_provider_payloads_and_signatures() {
+        let (mut message, _) =
+            test_provider_turn_envelope("conversation-display", "provider-turn-display");
+        message.tool_calls[0].thought_signature = Some("opaque-secret".to_string());
+
+        let display = conversation_message_for_display(message);
+
+        assert!(display.tool_calls[0].thought_signature.is_none());
+        assert!(display
+            .artifacts
+            .as_ref()
+            .is_none_or(|artifacts| artifacts.get(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY).is_none()));
     }
 
     #[test]
