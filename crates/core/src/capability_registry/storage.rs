@@ -15,9 +15,9 @@ use crate::settings_schema_v2::{
 use super::resolver::{build_registry_projection, selected_profile_chain, stable_id};
 use super::types::{
     CapabilityRegistryProjection, ConnectionHealth, ConnectionRecord, ModelDefinitionRecord,
-    RegistryActivationRecord, RegistryReadMode, RegistryScope, RuntimeCapabilityFallback,
-    RuntimeCapabilityResolution, RuntimeRegistrySnapshot, RuntimeRouteTargetSnapshot,
-    CAPABILITY_REGISTRY_SCHEMA_VERSION,
+    ModelTargetRecord, RegistryActivationRecord, RegistryReadMode, RegistryScope,
+    RuntimeCapabilityFallback, RuntimeCapabilityResolution, RuntimeRegistrySnapshot,
+    RuntimeRouteTargetSnapshot, TargetAvailability, CAPABILITY_REGISTRY_SCHEMA_VERSION,
 };
 
 pub(crate) fn migrate_registry_on_open(
@@ -40,36 +40,15 @@ pub(crate) fn sync_registry_in_transaction(
     let scopes = terminal_scopes(&profiles);
     let mut merged_projection = empty_projection()?;
     let mut merged_capabilities = BTreeMap::new();
+    let mut merged_connections = BTreeMap::new();
+    let mut merged_definitions = BTreeMap::new();
     let mut merged_targets = BTreeMap::new();
 
     transaction.execute("UPDATE provider_connections SET enabled = 0", [])?;
     for scope in scopes {
         let selected = selected_profile_chain(&profiles, &scope);
-        let mut projection = build_registry_projection(&profiles, &selected, &health, Vec::new())?;
-        persist_projection(transaction, &mut projection)?;
-        for capability in &projection.capabilities {
-            let scope = capability.source.clone();
-            let (parity_status, parity) = legacy_shadow_parity(transaction, capability)?;
-            let read_mode = if registry_runtime_supported(&capability.capability_id)
-                && parity_status == "matched"
-                && capability
-                    .primary
-                    .as_ref()
-                    .is_some_and(|candidate| candidate.eligibility.eligible)
-            {
-                RegistryReadMode::Registry
-            } else {
-                RegistryReadMode::Legacy
-            };
-            upsert_activation(
-                transaction,
-                &capability.capability_id,
-                &scope,
-                read_mode,
-                capability.source_revision,
-                parity_status,
-                &parity,
-            )?;
+        let projection = build_registry_projection(&profiles, &selected, &health, Vec::new())?;
+        for capability in projection.capabilities {
             merged_capabilities.insert(
                 (
                     capability.capability_id.clone(),
@@ -79,13 +58,17 @@ pub(crate) fn sync_registry_in_transaction(
             );
         }
         for target in projection.model_targets {
-            merged_targets.insert(target.id.clone(), target);
+            merge_model_target(&mut merged_targets, target)?;
+        }
+        for connection in projection.connections {
+            merged_connections.insert(connection.id.clone(), connection);
+        }
+        for definition in projection.model_definitions {
+            merged_definitions.insert(definition.id.clone(), definition);
         }
         merged_projection
             .settings_revisions
             .extend(projection.settings_revisions);
-        merged_projection.connections = projection.connections;
-        merged_projection.model_definitions = projection.model_definitions;
     }
     merged_projection.settings_revisions.sort_by(|left, right| {
         scope_key(&left.scope)
@@ -97,11 +80,109 @@ pub(crate) fn sync_registry_in_transaction(
         .dedup_by(|left, right| {
             left.profile_id == right.profile_id && left.revision == right.revision
         });
-    merged_projection.model_targets = merged_targets.into_values().collect();
     merged_projection.capabilities = merged_capabilities.into_values().collect();
+    for candidate in merged_projection
+        .capabilities
+        .iter_mut()
+        .flat_map(|route| route.primary.iter_mut().chain(route.fallbacks.iter_mut()))
+    {
+        candidate.target = merged_targets
+            .get(&candidate.target.id)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::Conflict(format!(
+                    "Capability target {} disappeared while merging registry scopes",
+                    candidate.target.id
+                ))
+            })?;
+    }
+    merged_projection.connections = merged_connections.into_values().collect();
+    merged_projection.model_definitions = merged_definitions.into_values().collect();
+    merged_projection.model_targets = merged_targets.into_values().collect();
+    // Persist one coherent projection. Persisting the all-target projection
+    // once per terminal scope let a later, unrelated scope downgrade an
+    // explicitly selected target after an earlier binding had captured its
+    // revision. One transaction-wide write keeps target and route revisions
+    // atomic while preserving strict stale-reference validation at runtime.
+    persist_projection(transaction, &mut merged_projection)?;
+    for capability in &merged_projection.capabilities {
+        let scope = capability.source.clone();
+        let (parity_status, parity) = legacy_shadow_parity(transaction, capability)?;
+        let read_mode = if registry_runtime_supported(&capability.capability_id)
+            && parity_status == "matched"
+            && capability
+                .primary
+                .as_ref()
+                .is_some_and(|candidate| candidate.eligibility.eligible)
+        {
+            RegistryReadMode::Registry
+        } else {
+            RegistryReadMode::Legacy
+        };
+        upsert_activation(
+            transaction,
+            &capability.capability_id,
+            &scope,
+            read_mode,
+            capability.source_revision,
+            parity_status,
+            &parity,
+        )?;
+    }
     merged_projection.activations = read_activations(transaction)?;
     persist_builtin_snapshot(transaction, &merged_projection.model_definitions)?;
     Ok(merged_projection)
+}
+
+fn merge_model_target(
+    targets: &mut BTreeMap<String, ModelTargetRecord>,
+    incoming: ModelTargetRecord,
+) -> Result<(), CoreError> {
+    let Some(existing) = targets.get_mut(&incoming.id) else {
+        targets.insert(incoming.id.clone(), incoming);
+        return Ok(());
+    };
+    if existing.connection_id != incoming.connection_id
+        || existing.model_definition_id != incoming.model_definition_id
+        || !existing
+            .upstream_model_id
+            .eq_ignore_ascii_case(&incoming.upstream_model_id)
+    {
+        return Err(CoreError::Conflict(format!(
+            "Model target {} has conflicting identities across registry scopes",
+            incoming.id
+        )));
+    }
+    let merged_availability =
+        merge_target_availability(existing.availability, incoming.availability);
+    if merged_availability == incoming.availability && merged_availability != existing.availability
+    {
+        *existing = incoming;
+    } else {
+        existing.availability = merged_availability;
+    }
+    Ok(())
+}
+
+fn merge_target_availability(
+    existing: TargetAvailability,
+    incoming: TargetAvailability,
+) -> TargetAvailability {
+    if existing == TargetAvailability::Unavailable || incoming == TargetAvailability::Unavailable {
+        return TargetAvailability::Unavailable;
+    }
+    let rank = |availability| match availability {
+        TargetAvailability::Unavailable => 0,
+        TargetAvailability::Unknown => 1,
+        TargetAvailability::Discoverable => 2,
+        TargetAvailability::Callable => 3,
+        TargetAvailability::ProductReady => 4,
+    };
+    if rank(incoming) > rank(existing) {
+        incoming
+    } else {
+        existing
+    }
 }
 
 impl Database {
@@ -1666,6 +1747,96 @@ mod tests {
             .resolve_runtime_capability(&scope, "text_generation")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn refreshing_multiple_agents_keeps_every_binding_on_the_persisted_target_revision() {
+        let db = Database::open_memory().unwrap();
+        let first = db
+            .save_agent_config(&agent(
+                "open_ai",
+                "https://api.openai.com/v1",
+                "gpt-4.1",
+                "sk-first",
+            ))
+            .unwrap();
+        let mut second_input = agent(
+            "deep_seek",
+            "https://api.deepseek.com",
+            "deepseek-v4-flash",
+            "sk-second",
+        );
+        second_input.is_default = false;
+        let second = db.save_agent_config(&second_input).unwrap();
+
+        for (agent_id, expected_model) in [
+            (first.id.as_str(), "gpt-4.1"),
+            (second.id.as_str(), "deepseek-v4-flash"),
+        ] {
+            let scope = RegistryScope {
+                agent_id: Some(agent_id.to_string()),
+                ..RegistryScope::default()
+            };
+            let resolution = db
+                .resolve_runtime_capability(&scope, "text_generation")
+                .unwrap_or_else(|error| {
+                    panic!("agent {agent_id} should not have a stale registry binding: {error}")
+                })
+                .expect("text generation should remain registry-backed");
+            assert_eq!(resolution.model_id, expected_model);
+        }
+    }
+
+    #[test]
+    fn registry_refresh_repairs_a_preexisting_stale_binding_revision() {
+        let db = Database::open_memory().unwrap();
+        let saved = db
+            .save_agent_config(&agent(
+                "deep_seek",
+                "https://api.deepseek.com",
+                "deepseek-v4-flash",
+                "sk-repair",
+            ))
+            .unwrap();
+        let scope = RegistryScope {
+            agent_id: Some(saved.id.clone()),
+            ..RegistryScope::default()
+        };
+        {
+            let conn = db.conn();
+            let target_id: String = conn
+                .query_row(
+                    "SELECT primary_target_id FROM capability_bindings
+                     WHERE capability_id = 'text_generation'
+                       AND scope_kind = 'agent' AND scope_id = ?1",
+                    [&saved.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "UPDATE model_targets SET revision = revision + 1 WHERE id = ?1",
+                [&target_id],
+            )
+            .unwrap();
+        }
+        assert!(db
+            .resolve_runtime_capability(&scope, "text_generation")
+            .unwrap_err()
+            .to_string()
+            .contains("stale model-target revision"));
+
+        {
+            let mut conn = db.conn();
+            let transaction = conn.transaction().unwrap();
+            sync_registry_in_transaction(&transaction).unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let resolution = db
+            .resolve_runtime_capability(&scope, "text_generation")
+            .unwrap()
+            .expect("refresh should repair the activated registry route");
+        assert_eq!(resolution.model_id, "deepseek-v4-flash");
     }
 
     #[test]

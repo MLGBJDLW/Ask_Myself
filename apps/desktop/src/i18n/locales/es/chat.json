@@ -647,5 +647,19 @@
   ,"visionObservationUnavailable": "No structured observation is available for this route."
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
-  ,"visionObservationCacheDeleted": "Removed {count} cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result",
+  "companionIdle": "El compañero está descansando",
+  "companionThinking": "Pensando",
+  "companionSearching": "Buscando en la web",
+  "companionBrowsing": "Navegando",
+  "companionReadingFiles": "Leyendo archivos",
+  "companionRunningTool": "Ejecutando una herramienta",
+  "companionCoding": "Programando",
+  "companionWaitingForApproval": "Esperando aprobación",
+  "companionWaitingForUser": "Esperando tu respuesta",
+  "companionReviewing": "Revisando el resultado",
+  "companionSucceeded": "Tarea completada",
+  "companionFailed": "La tarea falló",
+  "companionCancelled": "Tarea cancelada",
+  "companionSleeping": "El compañero está durmiendo"
 }

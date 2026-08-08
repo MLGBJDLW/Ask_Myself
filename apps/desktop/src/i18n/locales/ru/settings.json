@@ -122,6 +122,16 @@
   "ghproxyHint": "Используется как резерв для встроенных загрузок с GitHub, включая OCR и FFmpeg. Пусто = отключено.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "Выполнение поиска",
+  "webSearchExecutionMode.desc": "Выберите, кто выполняет веб-поиск. Нативные режимы доступны только для точно совпадающих доверенных endpoint поставщика.",
+  "webSearchExecutionMode.auto": "Автоматически",
+  "webSearchExecutionMode.auto.desc": "Использует нативный поиск поставщика, если адаптер и endpoint доверенные; иначе использует Nexa Router.",
+  "webSearchExecutionMode.providerNative": "Нативный поиск поставщика",
+  "webSearchExecutionMode.providerNative.desc": "Требует серверный поиск выбранного поставщика модели и предотвращает повторный локальный вызов поиска.",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "Всегда использует локальный инструмент поиска Nexa и настроенную маршрутизацию поставщиков.",
+  "webSearchExecutionMode.hybrid": "Гибридный",
+  "webSearchExecutionMode.hybrid.desc": "Предоставляет модели нативный поиск и поиск Nexa, когда нужны более широкие доказательства.",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "Ищите поставщиков и модели. Настроенные варианты показаны первыми, пользовательские адреса — последними."
+  ,"providerSearchLabel": "Поиск поставщиков"
+  ,"providerSearchPlaceholder": "Поиск поставщиков или моделей"
+  ,"providerSearchNoResults": "Нет поставщиков, соответствующих поиску."
+  ,"providerCatalogResults": "Поставщиков: {count}"
+  ,"providerConfiguredSummary": "Настроено: {count}"
+  ,"providerDefaultSummary": "По умолчанию: {name}"
+  ,"providerConfiguredStatus": "Настроен"
+  ,"providerDefaultStatus": "По умолчанию"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "Расширенная маршрутизация возможностей"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "Проверяйте состояние подключений, модели и маршруты выполнения только при необходимости."
+  ,"capabilityRegistryAdvancedSummary": "Подключения: {connections} · модели: {models} · маршруты: {capabilities}"
+  ,"capabilityRegistryAdvancedLoading": "Загрузка сводки маршрутизации"
+  ,"capabilityRegistryAdvancedNeedsAttention": "Требует внимания"
 }

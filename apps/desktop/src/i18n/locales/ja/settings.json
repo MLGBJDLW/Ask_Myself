@@ -122,6 +122,16 @@
   "ghproxyHint": "OCRやFFmpegなど、組み込みのGitHubダウンロードのフォールバックに使用されます。空=無効。",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "検索の実行方法",
+  "webSearchExecutionMode.desc": "Web 検索の実行元を選択します。ネイティブモードは、完全一致する信頼済みプロバイダーのエンドポイントでのみ有効です。",
+  "webSearchExecutionMode.auto": "自動",
+  "webSearchExecutionMode.auto.desc": "アダプターとエンドポイントが信頼済みならプロバイダーのネイティブ検索を使い、それ以外は Nexa Router を使います。",
+  "webSearchExecutionMode.providerNative": "プロバイダーのネイティブ検索",
+  "webSearchExecutionMode.providerNative.desc": "選択したモデルプロバイダーのサーバー側検索を必須にし、ローカル検索の重複呼び出しを防ぎます。",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "常に Nexa のローカル検索ツールと設定済みの検索プロバイダー経路を使います。",
+  "webSearchExecutionMode.hybrid": "ハイブリッド",
+  "webSearchExecutionMode.hybrid.desc": "より幅広い根拠が必要な場合、ネイティブ検索と Nexa 検索の両方をモデルに提供します。",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "プロバイダーやモデルを検索できます。設定済み項目を先頭に、カスタムエンドポイントを最後に表示します。"
+  ,"providerSearchLabel": "プロバイダーを検索"
+  ,"providerSearchPlaceholder": "プロバイダーまたはモデルを検索"
+  ,"providerSearchNoResults": "検索条件に一致するプロバイダーはありません。"
+  ,"providerCatalogResults": "{count} 件のプロバイダー"
+  ,"providerConfiguredSummary": "{count} 件設定済み"
+  ,"providerDefaultSummary": "デフォルト：{name}"
+  ,"providerConfiguredStatus": "設定済み"
+  ,"providerDefaultStatus": "デフォルト"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "高度な機能ルーティング"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "必要な場合のみ、接続状態、モデルターゲット、実行時ルートを確認します。"
+  ,"capabilityRegistryAdvancedSummary": "接続 {connections} · モデル {models} · ルート {capabilities}"
+  ,"capabilityRegistryAdvancedLoading": "機能ルーティングの概要を読み込み中"
+  ,"capabilityRegistryAdvancedNeedsAttention": "確認が必要"
 }

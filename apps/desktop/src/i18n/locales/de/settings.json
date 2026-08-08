@@ -122,6 +122,16 @@
   "ghproxyHint": "Wird als Fallback für integrierte GitHub-Downloads wie OCR und FFmpeg verwendet. Leer = deaktiviert.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "Suchausführung",
+  "webSearchExecutionMode.desc": "Wählen Sie, wer die Websuche ausführt. Native Modi sind nur für exakt passende, vertrauenswürdige Anbieter-Endpunkte verfügbar.",
+  "webSearchExecutionMode.auto": "Automatisch",
+  "webSearchExecutionMode.auto.desc": "Verwendet die native Anbietersuche bei vertrauenswürdigem Adapter und Endpunkt, andernfalls Nexa Router.",
+  "webSearchExecutionMode.providerNative": "Nativ beim Anbieter",
+  "webSearchExecutionMode.providerNative.desc": "Erfordert die serverseitige Suche des gewählten Modellanbieters und verhindert doppelte lokale Suchaufrufe.",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "Verwendet immer Nexas lokales Suchwerkzeug und das konfigurierte Suchanbieter-Routing.",
+  "webSearchExecutionMode.hybrid": "Hybrid",
+  "webSearchExecutionMode.hybrid.desc": "Stellt native und Nexa-Suchpfade bereit, wenn das Modell breitere Belege benötigt.",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "Anbieter und Modelle durchsuchen. Konfigurierte Anbieter stehen oben, eigene Endpunkte zuletzt."
+  ,"providerSearchLabel": "Anbieter suchen"
+  ,"providerSearchPlaceholder": "Anbieter oder Modelle suchen"
+  ,"providerSearchNoResults": "Keine Anbieter entsprechen dieser Suche."
+  ,"providerCatalogResults": "{count} Anbieter"
+  ,"providerConfiguredSummary": "{count} konfiguriert"
+  ,"providerDefaultSummary": "Standard: {name}"
+  ,"providerConfiguredStatus": "Konfiguriert"
+  ,"providerDefaultStatus": "Standard"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "Erweitertes Fähigkeitsrouting"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "Verbindungsstatus, Modellziele und Laufzeitrouten nur bei Bedarf prüfen."
+  ,"capabilityRegistryAdvancedSummary": "{connections} Verbindungen · {models} Modelle · {capabilities} Routen"
+  ,"capabilityRegistryAdvancedLoading": "Routing-Zusammenfassung wird geladen"
+  ,"capabilityRegistryAdvancedNeedsAttention": "Aktion erforderlich"
 }

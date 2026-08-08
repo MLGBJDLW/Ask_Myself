@@ -55,6 +55,40 @@ pub enum HealthProbe {
     LightweightRequest,
 }
 
+/// Provider-owned web-search protocol exposed by one concrete endpoint.
+///
+/// This belongs to the endpoint rather than the provider identity because a
+/// provider can expose Chat Completions, Responses, Messages, and other wire
+/// surfaces with different server-tool capabilities.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeSearchDialect {
+    OpenAiResponses,
+    AnthropicServerTool,
+    GeminiGoogleSearch,
+    DeepSeekResponses,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWebSearchCapability {
+    pub dialect: NativeSearchDialect,
+    #[serde(default)]
+    pub supports_domains: bool,
+    #[serde(default)]
+    pub supports_recency: bool,
+    #[serde(default)]
+    pub supports_locale: bool,
+    #[serde(default)]
+    pub supports_location: bool,
+    #[serde(default)]
+    pub supports_citations: bool,
+    #[serde(default)]
+    pub supports_stream_events: bool,
+    #[serde(default)]
+    pub can_mix_client_tools: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderEndpoint {
@@ -68,6 +102,8 @@ pub struct ProviderEndpoint {
     pub workspace_required: bool,
     pub discovery_strategy: DiscoveryStrategy,
     pub health_probe: HealthProbe,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_web_search: Option<NativeWebSearchCapability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

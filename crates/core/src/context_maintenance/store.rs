@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::conversation::memory::estimate_tokens_for_model;
-use crate::conversation::{ConversationMessage, ImageAttachment};
+use crate::conversation::{ConversationMessage, ImageAttachment, LLM_CONTEXT_CONTENT_ARTIFACT_KEY};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{Role, ToolCallRequest};
@@ -13,36 +13,69 @@ use crate::usage_analytics::{
 };
 
 use super::model::{ContextCheckpointInput, ContextProjection};
-use super::planner::hash_field;
+use super::planner::hash_source_message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitOutcome {
-    Committed,
+    Committed { messages_after: usize },
     Superseded,
+}
+
+pub(crate) struct CompactionSnapshot {
+    pub messages: Vec<ConversationMessage>,
+    pub checkpoint_generation: u64,
+}
+
+pub(crate) fn load_compaction_snapshot(
+    database: &Database,
+    conversation_id: &str,
+) -> Result<CompactionSnapshot, CoreError> {
+    let checkpoint_generation = {
+        let conn = database.conn();
+        conn.query_row(
+            "SELECT COALESCE(cc.checkpoint_generation, 0)
+             FROM conversations c
+             LEFT JOIN context_compactions cc ON cc.id = c.active_context_compaction_id
+             WHERE c.id = ?1",
+            rusqlite::params![conversation_id],
+            |row| row.get::<_, u64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| CoreError::NotFound(format!("Conversation {conversation_id}")))?
+    };
+    Ok(CompactionSnapshot {
+        messages: database.get_messages(conversation_id)?,
+        checkpoint_generation,
+    })
 }
 
 pub(crate) fn commit_context_checkpoint(
     database: &Database,
     input: &ContextCheckpointInput,
-    expected_message_ids: &[String],
     cancellation: &CancellationToken,
 ) -> Result<CommitOutcome, CoreError> {
     let mut conn = database.conn();
-    let tx = conn.transaction()?;
-    let active_run = tx.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM agent_task_runs
-             WHERE conversation_id = ?1
-               AND status IN ('queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling')
-         )",
-        rusqlite::params![input.conversation_id],
-        |row| row.get::<_, bool>(0),
-    )?;
-    let (current_message_ids, current_snapshot_hash) =
-        current_snapshot(&tx, &input.conversation_id)?;
-    if active_run
-        || current_message_ids != expected_message_ids
-        || current_snapshot_hash != input.snapshot_hash
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let checkpoint_generation = tx
+        .query_row(
+            "SELECT COALESCE(cc.checkpoint_generation, 0)
+             FROM conversations c
+             LEFT JOIN context_compactions cc ON cc.id = c.active_context_compaction_id
+             WHERE c.id = ?1",
+            rusqlite::params![input.conversation_id],
+            |row| row.get::<_, u64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| CoreError::NotFound(format!("Conversation {}", input.conversation_id)))?;
+    if checkpoint_generation != input.expected_checkpoint_generation
+        || !source_prefix_matches(
+            &tx,
+            &input.conversation_id,
+            &input.source_message_ids,
+            input.source_start_sort_order,
+            input.source_boundary_sort_order,
+            &input.source_digest,
+        )?
     {
         return Ok(CommitOutcome::Superseded);
     }
@@ -52,26 +85,30 @@ pub(crate) fn commit_context_checkpoint(
         ));
     }
 
+    let source_message_ids_json = serde_json::to_string(&input.source_message_ids)?;
     let retained_tail_json = serde_json::to_string(&input.retained_tail_message_ids)?;
     let usage_json = input
         .usage
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
+    let next_generation = checkpoint_generation.saturating_add(1);
     tx.execute(
         "INSERT INTO context_compactions (
              id, operation_id, conversation_id, idempotency_key,
              snapshot_high_watermark, snapshot_hash, summary,
              retained_tail_json, retained_start_sort_order,
-             tokens_before, tokens_after, provider, model, usage_json, status
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'completed')",
+             tokens_before, tokens_after, provider, model, usage_json, status,
+             source_message_ids_json, source_start_sort_order,
+             source_boundary_sort_order, source_digest, checkpoint_generation
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'completed', ?15, ?16, ?17, ?18, ?19)",
         rusqlite::params![
             input.operation_id,
             input.operation_id,
             input.conversation_id,
             input.idempotency_key,
             input.snapshot_high_watermark,
-            input.snapshot_hash,
+            input.source_digest,
             input.summary,
             retained_tail_json,
             input.retained_start_sort_order,
@@ -80,6 +117,11 @@ pub(crate) fn commit_context_checkpoint(
             input.provider,
             input.model,
             usage_json,
+            source_message_ids_json,
+            input.source_start_sort_order,
+            input.source_boundary_sort_order,
+            input.source_digest,
+            next_generation,
         ],
     )?;
     if let Some(usage) = input.usage.as_ref() {
@@ -134,67 +176,77 @@ pub(crate) fn commit_context_checkpoint(
          WHERE id = ?1",
         rusqlite::params![input.conversation_id, input.operation_id],
     )?;
+    let messages_after = tx.query_row(
+        "SELECT COUNT(*) + 1 FROM messages
+         WHERE conversation_id = ?1 AND sort_order >= ?2",
+        rusqlite::params![input.conversation_id, input.retained_start_sort_order],
+        |row| row.get::<_, usize>(0),
+    )?;
     tx.commit()?;
-    Ok(CommitOutcome::Committed)
+    Ok(CommitOutcome::Committed { messages_after })
 }
 
-fn current_snapshot(
-    tx: &rusqlite::Transaction<'_>,
+fn source_prefix_matches(
+    conn: &rusqlite::Connection,
     conversation_id: &str,
-) -> Result<(Vec<String>, String), CoreError> {
-    let mut statement = tx.prepare(
-        "SELECT id, sort_order, role, content, tool_call_id, tool_calls_json,
-                artifacts_json, thinking, image_attachments_json
+    expected_ids: &[String],
+    source_start_sort_order: i64,
+    source_boundary_sort_order: i64,
+    expected_digest: &str,
+) -> Result<bool, CoreError> {
+    if expected_ids.is_empty() || source_boundary_sort_order < source_start_sort_order {
+        return Ok(false);
+    }
+    let mut statement = conn.prepare(
+        "SELECT id, sort_order, role, content, tool_call_id, tool_calls_json, artifacts_json
          FROM messages
-         WHERE conversation_id = ?1
+         WHERE conversation_id = ?1 AND sort_order >= ?2 AND sort_order <= ?3
          ORDER BY sort_order ASC",
     )?;
-    let rows = statement.query_map(rusqlite::params![conversation_id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, Option<String>>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-        ))
-    })?;
+    let rows = statement.query_map(
+        rusqlite::params![
+            conversation_id,
+            source_start_sort_order,
+            source_boundary_sort_order
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        },
+    )?;
     let mut message_ids = Vec::new();
     let mut hash = blake3::Hasher::new();
     for row in rows {
-        let (
-            id,
+        let (id, sort_order, role, content, tool_call_id, tool_calls_json, artifacts_json) = row?;
+        let canonical_content = artifacts_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|value| {
+                value
+                    .get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY)
+                    .and_then(|item| item.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or(content);
+        hash_source_message(
+            &mut hash,
+            &id,
             sort_order,
-            role,
-            content,
-            tool_call_id,
-            tool_calls_json,
-            artifacts_json,
-            thinking,
-            image_attachments_json,
-        ) = row?;
-        hash_field(&mut hash, id.as_bytes());
-        hash_field(&mut hash, &sort_order.to_le_bytes());
-        hash_field(&mut hash, role.as_bytes());
-        hash_field(&mut hash, content.as_bytes());
-        for optional in [
-            tool_call_id,
-            tool_calls_json,
-            thinking,
-            artifacts_json,
-            image_attachments_json,
-        ] {
-            hash_field(
-                &mut hash,
-                optional.as_deref().unwrap_or_default().as_bytes(),
-            );
-        }
+            &role,
+            &canonical_content,
+            tool_call_id.as_deref(),
+            tool_calls_json.as_deref().unwrap_or("[]"),
+        );
         message_ids.push(id);
     }
-    Ok((message_ids, hash.finalize().to_hex().to_string()))
+    Ok(message_ids == expected_ids && hash.finalize().to_hex().to_string() == expected_digest)
 }
 
 #[derive(Debug)]
@@ -204,6 +256,10 @@ struct ActiveCheckpoint {
     snapshot_high_watermark: i64,
     retained_start_sort_order: i64,
     retained_tail_message_ids: Vec<String>,
+    source_message_ids: Vec<String>,
+    source_start_sort_order: i64,
+    source_boundary_sort_order: i64,
+    source_digest: String,
 }
 
 pub fn load_context_projection(
@@ -218,6 +274,32 @@ pub fn load_context_projection(
             projected: false,
         });
     };
+
+    if !checkpoint.source_message_ids.is_empty() {
+        let source_is_current = {
+            let conn = database.conn();
+            source_prefix_matches(
+                &conn,
+                conversation_id,
+                &checkpoint.source_message_ids,
+                checkpoint.source_start_sort_order,
+                checkpoint.source_boundary_sort_order,
+                &checkpoint.source_digest,
+            )?
+        };
+        if !source_is_current {
+            tracing::warn!(
+                conversation_id,
+                checkpoint_id = %checkpoint.id,
+                "Active context checkpoint source changed; falling back to canonical transcript"
+            );
+            return Ok(ContextProjection {
+                messages: database.get_messages(conversation_id)?,
+                checkpoint_id: None,
+                projected: false,
+            });
+        }
+    }
 
     let tail = get_messages_from_sort_order(
         database,
@@ -281,7 +363,9 @@ fn active_checkpoint(
     let conn = database.conn();
     conn.query_row(
         "SELECT cc.id, cc.summary, cc.snapshot_high_watermark,
-                cc.retained_start_sort_order, cc.retained_tail_json
+                cc.retained_start_sort_order, cc.retained_tail_json,
+                cc.source_message_ids_json, cc.source_start_sort_order,
+                cc.source_boundary_sort_order, cc.source_digest
          FROM conversations c
          JOIN context_compactions cc ON cc.id = c.active_context_compaction_id
          WHERE c.id = ?1 AND cc.status = 'completed'",
@@ -293,18 +377,36 @@ fn active_checkpoint(
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
             ))
         },
     )
     .optional()?
     .map(
-        |(id, summary, snapshot_high_watermark, retained_start_sort_order, retained_json)| {
+        |(
+            id,
+            summary,
+            snapshot_high_watermark,
+            retained_start_sort_order,
+            retained_json,
+            source_ids_json,
+            source_start_sort_order,
+            source_boundary_sort_order,
+            source_digest,
+        )| {
             Ok(ActiveCheckpoint {
                 id,
                 summary,
                 snapshot_high_watermark,
                 retained_start_sort_order,
                 retained_tail_message_ids: serde_json::from_str(&retained_json)?,
+                source_message_ids: serde_json::from_str(&source_ids_json)?,
+                source_start_sort_order,
+                source_boundary_sort_order,
+                source_digest,
             })
         },
     )
@@ -417,6 +519,46 @@ mod tests {
             .expect("add message");
     }
 
+    fn checkpoint_input(
+        conversation_id: &str,
+        operation_id: &str,
+        source: &[ConversationMessage],
+        retained_tail_message_ids: Vec<String>,
+        retained_start_sort_order: i64,
+    ) -> ContextCheckpointInput {
+        ContextCheckpointInput {
+            operation_id: operation_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            idempotency_key: format!("request-{operation_id}"),
+            snapshot_high_watermark: source
+                .iter()
+                .map(|message| message.sort_order)
+                .chain(std::iter::once(retained_start_sort_order))
+                .max()
+                .unwrap_or_default(),
+            source_message_ids: source.iter().map(|message| message.id.clone()).collect(),
+            source_start_sort_order: source
+                .first()
+                .map(|message| message.sort_order)
+                .unwrap_or(0),
+            source_boundary_sort_order: source
+                .last()
+                .map(|message| message.sort_order)
+                .unwrap_or(0),
+            source_digest: super::super::planner::source_digest(source),
+            expected_checkpoint_generation: 0,
+            summary: "older context summary".to_string(),
+            retained_tail_message_ids,
+            retained_start_sort_order,
+            tokens_before: 40,
+            tokens_after: 24,
+            provider: "test".to_string(),
+            provider_type: None,
+            model: "test".to_string(),
+            usage: None,
+        }
+    }
+
     #[test]
     fn checkpoint_commit_preserves_canonical_transcript_and_projects_tail() {
         let database = Database::open_memory().expect("open database");
@@ -441,38 +583,24 @@ mod tests {
         let canonical_before = database
             .get_messages(&conversation.id)
             .expect("load canonical transcript");
-        let expected_ids = canonical_before
-            .iter()
-            .map(|message| message.id.clone())
-            .collect::<Vec<_>>();
-        let outcome = commit_context_checkpoint(
-            &database,
-            &ContextCheckpointInput {
-                operation_id: "ctx-test".to_string(),
-                conversation_id: conversation.id.clone(),
-                idempotency_key: "request-test".to_string(),
-                snapshot_high_watermark: 3,
-                snapshot_hash: super::super::planner::snapshot_hash(&canonical_before),
-                summary: "older context summary".to_string(),
-                retained_tail_message_ids: vec!["message-2".to_string(), "message-3".to_string()],
-                retained_start_sort_order: 2,
-                tokens_before: 40,
-                tokens_after: 24,
-                provider: "test".to_string(),
-                provider_type: Some(crate::llm::ProviderType::OpenAi),
-                model: "test".to_string(),
-                usage: Some(crate::llm::Usage {
-                    prompt_tokens: 120,
-                    completion_tokens: 30,
-                    total_tokens: 150,
-                    ..Default::default()
-                }),
-            },
-            &expected_ids,
-            &CancellationToken::new(),
-        )
-        .expect("commit checkpoint");
-        assert_eq!(outcome, CommitOutcome::Committed);
+        let mut input = checkpoint_input(
+            &conversation.id,
+            "ctx-test",
+            &canonical_before[..2],
+            vec!["message-2".to_string(), "message-3".to_string()],
+            2,
+        );
+        input.snapshot_high_watermark = 3;
+        input.provider_type = Some(crate::llm::ProviderType::OpenAi);
+        input.usage = Some(crate::llm::Usage {
+            prompt_tokens: 120,
+            completion_tokens: 30,
+            total_tokens: 150,
+            ..Default::default()
+        });
+        let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("commit checkpoint");
+        assert_eq!(outcome, CommitOutcome::Committed { messages_after: 3 });
         let recorded_usage = database
             .conn()
             .query_row(
@@ -542,28 +670,15 @@ mod tests {
         let canonical = database
             .get_messages(&conversation.id)
             .expect("load canonical transcript");
-        let error = commit_context_checkpoint(
-            &database,
-            &ContextCheckpointInput {
-                operation_id: "ctx-cancelled".to_string(),
-                conversation_id: conversation.id.clone(),
-                idempotency_key: "request-cancelled".to_string(),
-                snapshot_high_watermark: 0,
-                snapshot_hash: super::super::planner::snapshot_hash(&canonical),
-                summary: "summary".to_string(),
-                retained_tail_message_ids: vec!["message-0".to_string()],
-                retained_start_sort_order: 0,
-                tokens_before: 10,
-                tokens_after: 10,
-                provider: "test".to_string(),
-                provider_type: None,
-                model: "test".to_string(),
-                usage: None,
-            },
-            &["message-0".to_string()],
-            &cancellation,
-        )
-        .expect_err("cancelled commit must fail");
+        let input = checkpoint_input(
+            &conversation.id,
+            "ctx-cancelled",
+            &canonical,
+            vec!["message-0".to_string()],
+            0,
+        );
+        let error = commit_context_checkpoint(&database, &input, &cancellation)
+            .expect_err("cancelled commit must fail");
         assert!(matches!(error, CoreError::Cancelled(_)));
         let checkpoint_count = database
             .conn()
@@ -575,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_hash_supersedes_same_id_content_edits() {
+    fn source_digest_supersedes_same_id_canonical_content_edits() {
         let database = Database::open_memory().expect("open database");
         let conversation = database
             .create_conversation(&CreateConversationInput {
@@ -599,28 +714,137 @@ mod tests {
             )
             .expect("edit message in place");
 
-        let outcome = commit_context_checkpoint(
-            &database,
-            &ContextCheckpointInput {
-                operation_id: "ctx-superseded".to_string(),
-                conversation_id: conversation.id,
-                idempotency_key: "request-superseded".to_string(),
-                snapshot_high_watermark: 0,
-                snapshot_hash: super::super::planner::snapshot_hash(&snapshot),
-                summary: "summary".to_string(),
-                retained_tail_message_ids: vec!["message-0".to_string()],
-                retained_start_sort_order: 0,
-                tokens_before: 10,
-                tokens_after: 10,
-                provider: "test".to_string(),
-                provider_type: None,
-                model: "test".to_string(),
-                usage: None,
-            },
-            &["message-0".to_string()],
-            &CancellationToken::new(),
-        )
-        .expect("compare snapshot");
+        let input = checkpoint_input(
+            &conversation.id,
+            "ctx-superseded",
+            &snapshot,
+            vec!["message-0".to_string()],
+            0,
+        );
+        let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("compare snapshot");
         assert_eq!(outcome, CommitOutcome::Superseded);
+    }
+
+    #[test]
+    fn append_only_tail_growth_commits_without_replanning() {
+        let database = Database::open_memory().expect("open database");
+        let conversation = database
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        for (sort_order, role) in [
+            (0, Role::User),
+            (1, Role::Assistant),
+            (2, Role::User),
+            (3, Role::Assistant),
+        ] {
+            add_message(&database, &conversation.id, sort_order, role);
+        }
+        let snapshot = database.get_messages(&conversation.id).expect("snapshot");
+        let mut input = checkpoint_input(
+            &conversation.id,
+            "ctx-append",
+            &snapshot[..2],
+            vec!["message-2".to_string(), "message-3".to_string()],
+            2,
+        );
+        input.snapshot_high_watermark = 3;
+        add_message(&database, &conversation.id, 4, Role::User);
+
+        let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("append-only commit");
+        assert_eq!(outcome, CommitOutcome::Committed { messages_after: 4 });
+        let projection = load_context_projection(&database, &conversation.id).expect("projection");
+        assert_eq!(
+            projection
+                .messages
+                .last()
+                .map(|message| message.id.as_str()),
+            Some("message-4")
+        );
+    }
+
+    #[test]
+    fn volatile_thinking_and_artifact_updates_do_not_invalidate_source() {
+        let database = Database::open_memory().expect("open database");
+        let conversation = database
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        add_message(&database, &conversation.id, 0, Role::User);
+        add_message(&database, &conversation.id, 1, Role::Assistant);
+        let snapshot = database.get_messages(&conversation.id).expect("snapshot");
+        let input = checkpoint_input(
+            &conversation.id,
+            "ctx-volatile",
+            &snapshot[..1],
+            vec!["message-1".to_string()],
+            1,
+        );
+        database
+            .conn()
+            .execute(
+                "UPDATE messages SET thinking = 'late reasoning', artifacts_json = '{\"diagnostic\":true}' WHERE id = 'message-0'",
+                [],
+            )
+            .expect("update volatile fields");
+
+        let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("volatile update commit");
+        assert_eq!(outcome, CommitOutcome::Committed { messages_after: 2 });
+    }
+
+    #[test]
+    fn checkpoint_generation_rejects_a_stale_parallel_commit() {
+        let database = Database::open_memory().expect("open database");
+        let conversation = database
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        add_message(&database, &conversation.id, 0, Role::User);
+        add_message(&database, &conversation.id, 1, Role::Assistant);
+        let snapshot = database.get_messages(&conversation.id).expect("snapshot");
+        let first = checkpoint_input(
+            &conversation.id,
+            "ctx-generation-1",
+            &snapshot[..1],
+            vec!["message-1".to_string()],
+            1,
+        );
+        let second = checkpoint_input(
+            &conversation.id,
+            "ctx-generation-2",
+            &snapshot[..1],
+            vec!["message-1".to_string()],
+            1,
+        );
+        assert!(matches!(
+            commit_context_checkpoint(&database, &first, &CancellationToken::new()),
+            Ok(CommitOutcome::Committed { .. })
+        ));
+        assert_eq!(
+            commit_context_checkpoint(&database, &second, &CancellationToken::new())
+                .expect("stale generation comparison"),
+            CommitOutcome::Superseded,
+        );
     }
 }

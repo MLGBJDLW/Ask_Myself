@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from '../../i18n';
@@ -28,6 +28,18 @@ export function Section({
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(defaultOpen);
+  const disclosureId = useId();
+  const triggerId = `${disclosureId}-trigger`;
+  const panelId = `${disclosureId}-panel`;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const toggleOpen = () => {
+    if (open && panelRef.current?.contains(document.activeElement)) {
+      triggerRef.current?.focus();
+    }
+    setOpen((value) => !value);
+  };
 
   const header = (
     <div className="flex min-w-0 flex-1 items-start gap-2.5">
@@ -50,23 +62,27 @@ export function Section({
     >
       {collapsible ? (
         <button
+          ref={triggerRef}
+          id={triggerId}
           type="button"
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
           aria-expanded={open}
+          aria-controls={panelId}
           title={open ? t('common.collapse') : t('common.expand')}
-          className="flex w-full items-start justify-between gap-3 px-6 py-5 text-left transition-colors hover:bg-surface-2/60"
+          className="flex w-full items-start justify-between gap-3 px-4 py-5 text-left transition-colors hover:bg-surface-2/60 sm:px-6"
         >
           {header}
           <div className="flex shrink-0 items-center gap-2">
             {summary}
             <ChevronDown
+              aria-hidden="true"
               size={16}
               className={`mt-0.5 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`}
             />
           </div>
         </button>
       ) : (
-        <div className="px-6 pt-6">
+        <div className="px-4 pt-5 sm:px-6 sm:pt-6">
           <div className="mb-5 flex items-center gap-2.5">{header}</div>
         </div>
       )}
@@ -75,17 +91,21 @@ export function Section({
         <AnimatePresence initial={false}>
           {open && (
             <motion.div
+              ref={panelRef}
+              id={panelId}
+              role="region"
+              aria-labelledby={triggerId}
               {...getSoftCollapseMotion(!!shouldReduceMotion)}
               className="overflow-hidden"
             >
-              <div className="border-t border-border px-6 py-5">
+              <div className="border-t border-border px-4 py-5 sm:px-6">
                 {children}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       ) : (
-        <div className="px-6 pb-6">
+        <div className="px-4 pb-5 sm:px-6 sm:pb-6">
           {children}
         </div>
       )}
@@ -110,6 +130,7 @@ interface CollapsiblePanelProps {
   summary?: ReactNode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  testId?: string;
 }
 
 export function CollapsiblePanel({
@@ -120,13 +141,22 @@ export function CollapsiblePanel({
   summary,
   open: controlledOpen,
   onOpenChange,
+  testId,
 }: CollapsiblePanelProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const open = controlledOpen ?? internalOpen;
+  const disclosureId = useId();
+  const triggerId = `${disclosureId}-trigger`;
+  const panelId = `${disclosureId}-panel`;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const toggleOpen = () => {
     const next = !open;
+    if (!next && panelRef.current?.contains(document.activeElement)) {
+      triggerRef.current?.focus();
+    }
     if (controlledOpen === undefined) {
       setInternalOpen(next);
     }
@@ -136,9 +166,13 @@ export function CollapsiblePanel({
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface-1">
       <button
+        ref={triggerRef}
+        id={triggerId}
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
+        aria-controls={panelId}
+        data-testid={testId ? `${testId}-trigger` : undefined}
         title={open ? t('common.collapse') : t('common.expand')}
         className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2/70"
       >
@@ -151,6 +185,7 @@ export function CollapsiblePanel({
         <div className="flex shrink-0 items-center gap-2">
           {summary}
           <ChevronDown
+            aria-hidden="true"
             size={16}
             className={`mt-0.5 text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`}
           />
@@ -159,6 +194,11 @@ export function CollapsiblePanel({
       <AnimatePresence initial={false}>
         {open && (
           <motion.div
+            ref={panelRef}
+            id={panelId}
+            role="region"
+            aria-labelledby={triggerId}
+            data-testid={testId ? `${testId}-panel` : undefined}
             {...getSoftCollapseMotion(!!shouldReduceMotion)}
             className="overflow-hidden"
           >

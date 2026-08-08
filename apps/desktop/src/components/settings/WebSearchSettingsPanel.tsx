@@ -8,6 +8,7 @@ import type {
   WebSearchCustomProviderConfig,
   WebSearchCustomProviderPreset,
   WebSearchConfig,
+  WebSearchExecutionMode,
   WebSearchProviderHealth,
   WebSearchProviderMode,
   WebSearchProviderProfile,
@@ -27,6 +28,7 @@ interface WebSearchSettingsPanelProps {
 }
 
 const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
+  executionMode: 'auto',
   providerProfile: 'default',
   reranker: 'auto',
   providerMode: 'built_in_first',
@@ -100,6 +102,13 @@ const PROVIDER_MODE_OPTIONS: WebSearchProviderMode[] = [
   'custom_only',
 ];
 
+const EXECUTION_MODE_OPTIONS: WebSearchExecutionMode[] = [
+  'auto',
+  'providerNative',
+  'nexaRouter',
+  'hybrid',
+];
+
 const CUSTOM_PROVIDER_PRESETS: WebSearchCustomProviderPreset[] = [
   'brave',
   'tavily',
@@ -155,6 +164,20 @@ const PROVIDER_MODE_DESC_KEYS: Record<WebSearchProviderMode, TranslationKey> = {
   built_in_first: 'settings.webSearchProviderMode.built_in_first.desc',
   custom_first: 'settings.webSearchProviderMode.custom_first.desc',
   custom_only: 'settings.webSearchProviderMode.custom_only.desc',
+};
+
+const EXECUTION_MODE_LABEL_KEYS: Record<WebSearchExecutionMode, TranslationKey> = {
+  auto: 'settings.webSearchExecutionMode.auto',
+  providerNative: 'settings.webSearchExecutionMode.providerNative',
+  nexaRouter: 'settings.webSearchExecutionMode.nexaRouter',
+  hybrid: 'settings.webSearchExecutionMode.hybrid',
+};
+
+const EXECUTION_MODE_DESC_KEYS: Record<WebSearchExecutionMode, TranslationKey> = {
+  auto: 'settings.webSearchExecutionMode.auto.desc',
+  providerNative: 'settings.webSearchExecutionMode.providerNative.desc',
+  nexaRouter: 'settings.webSearchExecutionMode.nexaRouter.desc',
+  hybrid: 'settings.webSearchExecutionMode.hybrid.desc',
 };
 
 const CUSTOM_PROVIDER_LABEL_KEYS: Record<WebSearchCustomProviderPreset, TranslationKey> = {
@@ -277,6 +300,48 @@ export function WebSearchSettingsPanel({
       }
     >
       <div className="space-y-4">
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-text-primary">
+              {t('settings.webSearchExecutionMode')}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
+              {t('settings.webSearchExecutionMode.desc')}
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {EXECUTION_MODE_OPTIONS.map((mode) => (
+              <label
+                key={mode}
+                className={`cursor-pointer rounded-lg border p-3 transition-colors ${
+                  config.executionMode === mode
+                    ? 'border-accent bg-accent/10'
+                    : 'border-border bg-surface-2 hover:border-border-strong'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="web-search-execution-mode"
+                    value={mode}
+                    checked={config.executionMode === mode}
+                    onChange={() => updateConfig({ ...config, executionMode: mode })}
+                    className="mt-1"
+                  />
+                  <span className="min-w-0 space-y-1">
+                    <span className="block text-sm font-medium text-text-primary">
+                      {t(EXECUTION_MODE_LABEL_KEYS[mode])}
+                    </span>
+                    <span className="block text-xs leading-relaxed text-text-tertiary">
+                      {t(EXECUTION_MODE_DESC_KEYS[mode])}
+                    </span>
+                  </span>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
         <div className="grid gap-3 md:grid-cols-2">
           <label className="space-y-2">
             <span className="text-sm font-medium text-text-primary">

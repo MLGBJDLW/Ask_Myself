@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use log::warn;
 use nexa_core::agent::AgentEvent;
 use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::db::Database;
@@ -133,6 +134,19 @@ impl AgentStreamForwarder {
                                     }
                                 }
                                 other => {
+                                    if let AgentEvent::Done { message, .. } = &other {
+                                        if let Err(error) = self.db.record_project_turn_completion(
+                                            &self.conversation_id,
+                                            &self.turn_id,
+                                            &self.task_run_id,
+                                            &message.text_content(),
+                                        ) {
+                                            warn!(
+                                                "Failed to publish project workspace turn completion for conversation {} turn {}: {}",
+                                                self.conversation_id, self.turn_id, error
+                                            );
+                                        }
+                                    }
                                     let frontend_event = compact_agent_event_for_frontend(other);
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);

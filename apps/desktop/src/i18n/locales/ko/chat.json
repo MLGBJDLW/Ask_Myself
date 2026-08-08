@@ -647,5 +647,19 @@
   ,"visionObservationUnavailable": "No structured observation is available for this route."
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
-  ,"visionObservationCacheDeleted": "Removed {count} cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result",
+  "companionIdle": "컴패니언이 쉬고 있습니다",
+  "companionThinking": "생각하는 중",
+  "companionSearching": "웹 검색 중",
+  "companionBrowsing": "탐색 중",
+  "companionReadingFiles": "파일 읽는 중",
+  "companionRunningTool": "도구 실행 중",
+  "companionCoding": "코딩 중",
+  "companionWaitingForApproval": "승인 대기 중",
+  "companionWaitingForUser": "답변 대기 중",
+  "companionReviewing": "결과 검토 중",
+  "companionSucceeded": "작업 성공",
+  "companionFailed": "작업 실패",
+  "companionCancelled": "작업 취소됨",
+  "companionSleeping": "컴패니언이 자고 있습니다"
 }

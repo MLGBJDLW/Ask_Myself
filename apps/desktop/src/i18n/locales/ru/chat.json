@@ -647,5 +647,19 @@
   ,"visionObservationUnavailable": "No structured observation is available for this route."
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
-  ,"visionObservationCacheDeleted": "Removed {count} cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result",
+  "companionIdle": "Спутник отдыхает",
+  "companionThinking": "Размышляет",
+  "companionSearching": "Ищет в интернете",
+  "companionBrowsing": "Просматривает сайты",
+  "companionReadingFiles": "Читает файлы",
+  "companionRunningTool": "Запускает инструмент",
+  "companionCoding": "Пишет код",
+  "companionWaitingForApproval": "Ожидает подтверждения",
+  "companionWaitingForUser": "Ожидает вашего ответа",
+  "companionReviewing": "Проверяет результат",
+  "companionSucceeded": "Задача выполнена",
+  "companionFailed": "Задача завершилась с ошибкой",
+  "companionCancelled": "Задача отменена",
+  "companionSleeping": "Спутник спит"
 }

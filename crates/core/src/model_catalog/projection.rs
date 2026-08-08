@@ -6,7 +6,8 @@ use serde_json::Value;
 use super::{
     AuthStyle, CredentialKind, DiscoveryStrategy, EndpointTransport, HealthProbe, ModelAccess,
     ModelCapabilities, ModelCatalogSource, ModelDescriptor, ModelLifecycle, ModelModality,
-    ProductReadiness, ProviderDescriptor, ProviderEndpoint, ReasoningCapability,
+    NativeWebSearchCapability, ProductReadiness, ProviderDescriptor, ProviderEndpoint,
+    ReasoningCapability,
 };
 
 const TEXT_PRESETS: &str = include_str!("../../../../shared/provider-presets.json");
@@ -107,6 +108,14 @@ pub fn load_builtin_catalog() -> Result<BuiltinModelCatalog, String> {
                     .unwrap_or(false),
                 discovery_strategy: infer_discovery_strategy(surface, &api_style, requires_api_key),
                 health_probe: infer_health_probe(surface, requires_api_key),
+                native_web_search: preset
+                    .get("nativeWebSearch")
+                    .cloned()
+                    .map(serde_json::from_value::<NativeWebSearchCapability>)
+                    .transpose()
+                    .map_err(|error| {
+                        format!("invalid nativeWebSearch capability for {preset_id}: {error}")
+                    })?,
             };
             endpoints.push(endpoint.clone());
 
@@ -328,6 +337,11 @@ fn capabilities(
             .get("supportsDimensionOverride")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        native_web_search: model
+            .get("nativeWebSearch")
+            .or_else(|| preset.get("nativeWebSearch"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
     }
 }
 

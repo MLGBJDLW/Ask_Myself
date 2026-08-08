@@ -783,6 +783,7 @@ test.beforeEach(async ({ page }) => {
 test('floating plan capsule renders only the update_plan checklist', async ({ page }) => {
   await page.goto('/chat/conv-plan-progress');
 
+  await expect(page.locator('[data-companion-state]')).toBeVisible();
   const board = page.getByTestId('task-board');
   const collapsed = board.getByTestId('task-board-collapsed');
   const expanded = board.getByTestId('task-board-expanded');

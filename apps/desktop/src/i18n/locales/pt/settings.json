@@ -122,6 +122,16 @@
   "ghproxyHint": "Usado como fallback para downloads integrados do GitHub, como OCR e FFmpeg. Vazio = desativado.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "Execução da pesquisa",
+  "webSearchExecutionMode.desc": "Escolha quem executa a pesquisa web. Os modos nativos só são ativados para endpoints exatos e confiáveis do provedor.",
+  "webSearchExecutionMode.auto": "Automático",
+  "webSearchExecutionMode.auto.desc": "Usa a pesquisa nativa do provedor quando o adaptador e o endpoint são confiáveis; caso contrário, usa o Nexa Router.",
+  "webSearchExecutionMode.providerNative": "Nativa do provedor",
+  "webSearchExecutionMode.providerNative.desc": "Exige a pesquisa no servidor do provedor de modelo selecionado e evita uma chamada de pesquisa local duplicada.",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "Sempre usa a ferramenta de pesquisa local do Nexa e o roteamento de provedores configurado.",
+  "webSearchExecutionMode.hybrid": "Híbrido",
+  "webSearchExecutionMode.hybrid.desc": "Oferece os caminhos de pesquisa nativa e do Nexa quando o modelo precisa de mais evidências.",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "Pesquise provedores e modelos. Os configurados ficam no topo e os endpoints personalizados no final."
+  ,"providerSearchLabel": "Pesquisar provedores"
+  ,"providerSearchPlaceholder": "Pesquisar provedores ou modelos"
+  ,"providerSearchNoResults": "Nenhum provedor corresponde à pesquisa."
+  ,"providerCatalogResults": "{count} provedores"
+  ,"providerConfiguredSummary": "{count} configurados"
+  ,"providerDefaultSummary": "Padrão: {name}"
+  ,"providerConfiguredStatus": "Configurado"
+  ,"providerDefaultStatus": "Padrão"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "Roteamento avançado de capacidades"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "Consulte a integridade das conexões, os modelos e as rotas de execução somente quando necessário."
+  ,"capabilityRegistryAdvancedSummary": "{connections} conexões · {models} modelos · {capabilities} rotas"
+  ,"capabilityRegistryAdvancedLoading": "Carregando resumo de roteamento"
+  ,"capabilityRegistryAdvancedNeedsAttention": "Requer atenção"
 }

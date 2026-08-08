@@ -647,5 +647,19 @@
   ,"visionObservationUnavailable": "No structured observation is available for this route."
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
-  ,"visionObservationCacheDeleted": "Removed {count} cached result"
+  ,"visionObservationCacheDeleted": "Removed {count} cached result",
+  "companionIdle": "Companion 正在休息",
+  "companionThinking": "正在思考",
+  "companionSearching": "正在搜尋網路",
+  "companionBrowsing": "正在瀏覽",
+  "companionReadingFiles": "正在讀取檔案",
+  "companionRunningTool": "正在執行工具",
+  "companionCoding": "正在撰寫程式碼",
+  "companionWaitingForApproval": "正在等待核准",
+  "companionWaitingForUser": "正在等待你的回答",
+  "companionReviewing": "正在覆核結果",
+  "companionSucceeded": "任務已成功",
+  "companionFailed": "任務失敗",
+  "companionCancelled": "任務已取消",
+  "companionSleeping": "Companion 正在睡覺"
 }

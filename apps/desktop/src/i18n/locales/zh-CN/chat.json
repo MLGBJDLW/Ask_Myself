@@ -647,5 +647,19 @@
   "visionObservationUnavailable": "当前路由没有可用的结构化观察结果。",
   "visionObservationRerun": "重新运行",
   "visionObservationDeleteCache": "删除缓存结果",
-  "visionObservationCacheDeleted": "已删除 {count} 条缓存结果"
+  "visionObservationCacheDeleted": "已删除 {count} 条缓存结果",
+  "companionIdle": "Companion 正在休息",
+  "companionThinking": "正在思考",
+  "companionSearching": "正在搜索网络",
+  "companionBrowsing": "正在浏览",
+  "companionReadingFiles": "正在读取文件",
+  "companionRunningTool": "正在运行工具",
+  "companionCoding": "正在编写代码",
+  "companionWaitingForApproval": "正在等待审批",
+  "companionWaitingForUser": "正在等待你的回答",
+  "companionReviewing": "正在复核结果",
+  "companionSucceeded": "任务已成功",
+  "companionFailed": "任务失败",
+  "companionCancelled": "任务已取消",
+  "companionSleeping": "Companion 正在睡觉"
 }

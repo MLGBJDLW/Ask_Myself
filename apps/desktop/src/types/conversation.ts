@@ -609,6 +609,7 @@ export type WebSearchProviderProfile = 'default' | 'free' | 'free_verified' | 'm
 export type WebSearchReranker = 'auto' | 'none' | 'docs_first' | 'research' | 'news_balanced';
 export type WebSearchProviderHealth = 'healthy' | 'degraded' | 'blocked' | 'disabled';
 export type WebSearchProviderMode = 'built_in_first' | 'custom_first' | 'custom_only';
+export type WebSearchExecutionMode = 'auto' | 'providerNative' | 'nexaRouter' | 'hybrid';
 export type WebSearchCustomProviderPreset =
   | 'brave'
   | 'tavily'
@@ -628,6 +629,7 @@ export type WebSearchEngine =
   | 'searxng';
 
 export interface WebSearchConfig {
+  executionMode: WebSearchExecutionMode;
   providerProfile: WebSearchProviderProfile;
   reranker: WebSearchReranker;
   providerMode: WebSearchProviderMode;

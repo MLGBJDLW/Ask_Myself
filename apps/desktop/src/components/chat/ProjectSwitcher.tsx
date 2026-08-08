@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, Database, FolderOpen, Plus, ChevronDown, Check, Pencil, Save, Trash2, X } from 'lucide-react';
+import { Brain, Database, FolderKanban, FolderOpen, Plus, ChevronDown, Check, Pencil, Save, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import type { Project, CreateProjectInput, UpdateProjectInput } from '../../types/project';
@@ -15,6 +15,7 @@ import {
 } from '../../lib/projectIcons';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel';
+import { ProjectWorkspacePanel } from './ProjectWorkspacePanel';
 
 const PROJECT_STORAGE_KEY = 'active-project-id';
 
@@ -68,6 +69,7 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [showWorkspacePanel, setShowWorkspacePanel] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const loadProjects = useCallback(async () => {
@@ -438,6 +440,19 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
           {activeProjectId && (
             <button
               onClick={() => {
+                setShowWorkspacePanel(true);
+                setOpen(false);
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              <FolderKanban className="h-3 w-3 shrink-0" />
+              <span className="flex-1 text-left">{t('project.workspaceTitle')}</span>
+            </button>
+          )}
+
+          {activeProjectId && (
+            <button
+              onClick={() => {
                 setShowMemoryPanel(true);
                 setOpen(false);
               }}
@@ -518,6 +533,11 @@ export function ProjectSwitcher({ activeProjectId, onProjectChange }: ProjectSwi
         projectId={activeProjectId}
         open={showMemoryPanel}
         onClose={() => setShowMemoryPanel(false)}
+      />
+      <ProjectWorkspacePanel
+        projectId={activeProjectId}
+        open={showWorkspacePanel}
+        onClose={() => setShowWorkspacePanel(false)}
       />
       <ConfirmDialog
         open={!!deleteTarget}

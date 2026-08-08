@@ -2107,6 +2107,254 @@ Every answer that uses knowledge base search results.
              completed_at TEXT
          );",
     ),
+    (
+        "v099_context_compaction_source_fence",
+        "ALTER TABLE context_compactions ADD COLUMN source_message_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_message_ids_json));",
+    ),
+    (
+        "v100_context_compaction_source_start",
+        "ALTER TABLE context_compactions ADD COLUMN source_start_sort_order INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "v101_context_compaction_source_boundary",
+        "ALTER TABLE context_compactions ADD COLUMN source_boundary_sort_order INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "v102_context_compaction_source_digest",
+        "ALTER TABLE context_compactions ADD COLUMN source_digest TEXT NOT NULL DEFAULT '';",
+    ),
+    (
+        "v103_context_compaction_generation",
+        "ALTER TABLE context_compactions ADD COLUMN checkpoint_generation INTEGER NOT NULL DEFAULT 1 CHECK (checkpoint_generation > 0);",
+    ),
+    (
+        "v104_context_compaction_generation_index",
+        "WITH ranked AS (
+             SELECT id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY conversation_id
+                        ORDER BY created_at ASC, id ASC
+                    ) AS generation
+             FROM context_compactions
+         )
+         UPDATE context_compactions
+         SET checkpoint_generation = (
+             SELECT generation FROM ranked WHERE ranked.id = context_compactions.id
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_context_compactions_generation
+             ON context_compactions(conversation_id, checkpoint_generation);",
+    ),
+    (
+        "v105_project_workspace_runtime",
+        "CREATE TABLE IF NOT EXISTS conversation_episodes (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+             turn_id TEXT NOT NULL,
+             run_id TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, turn_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_conversation_episodes_project_recent
+             ON conversation_episodes(project_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_conversation_episodes_conversation
+             ON conversation_episodes(conversation_id, created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS project_events (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+             turn_id TEXT,
+             event_type TEXT NOT NULL,
+             title TEXT NOT NULL,
+             summary TEXT NOT NULL DEFAULT '',
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'observed' CHECK (
+                 review_state IN ('observed', 'needs_review', 'accepted', 'rejected')
+             ),
+             valid_from TEXT,
+             valid_to TEXT,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, event_type, turn_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_project_events_project_recent
+             ON project_events(project_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_project_events_review
+             ON project_events(project_id, review_state, created_at DESC);",
+    ),
+    (
+        "v106_event_claim_graph",
+        "CREATE TABLE IF NOT EXISTS knowledge_events (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             event_kind TEXT NOT NULL,
+             title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             valid_from TEXT,
+             valid_to TEXT,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_events_project_time
+             ON knowledge_events(project_id, valid_from, created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS knowledge_claims (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             subject TEXT NOT NULL,
+             predicate TEXT NOT NULL,
+             object TEXT NOT NULL,
+             claim_status TEXT NOT NULL DEFAULT 'active' CHECK (
+                 claim_status IN ('active', 'contested', 'superseded')
+             ),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             valid_from TEXT,
+             valid_to TEXT,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_claims_project_review
+             ON knowledge_claims(project_id, review_state, claim_status, updated_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_claims_subject
+             ON knowledge_claims(project_id, subject, predicate);
+
+         CREATE TABLE IF NOT EXISTS knowledge_edges (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             source_kind TEXT NOT NULL CHECK (source_kind IN ('claim', 'event', 'entity')),
+             source_id TEXT NOT NULL,
+             target_kind TEXT NOT NULL CHECK (target_kind IN ('claim', 'event', 'entity')),
+             target_id TEXT NOT NULL,
+             relation_type TEXT NOT NULL CHECK (
+                 relation_type IN ('supports', 'opposes', 'supersedes', 'causes', 'precedes', 'mentions')
+             ),
+             confidence REAL NOT NULL DEFAULT 0.75 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_edges_source
+             ON knowledge_edges(project_id, source_kind, source_id);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_edges_target
+             ON knowledge_edges(project_id, target_kind, target_id);
+
+         CREATE TABLE IF NOT EXISTS knowledge_evidence (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             claim_id TEXT REFERENCES knowledge_claims(id) ON DELETE CASCADE,
+             event_id TEXT REFERENCES knowledge_events(id) ON DELETE CASCADE,
+             source_type TEXT NOT NULL,
+             source_ref TEXT NOT NULL,
+             excerpt TEXT NOT NULL DEFAULT '',
+             locator_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(locator_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             CHECK ((claim_id IS NOT NULL) <> (event_id IS NOT NULL))
+         );
+         CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_claim
+             ON knowledge_evidence(project_id, claim_id);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_event
+             ON knowledge_evidence(project_id, event_id);
+
+         CREATE TABLE IF NOT EXISTS graph_versions (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             version INTEGER NOT NULL CHECK (version > 0),
+             change_summary TEXT NOT NULL,
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, version)
+         );
+
+         CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+             id TEXT PRIMARY KEY,
+             project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+             left_entity_id TEXT NOT NULL,
+             right_entity_id TEXT NOT NULL,
+             score REAL NOT NULL CHECK (score >= 0.0 AND score <= 1.0),
+             review_state TEXT NOT NULL DEFAULT 'needs_review' CHECK (
+                 review_state IN ('needs_review', 'accepted', 'rejected')
+             ),
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, left_entity_id, right_entity_id),
+             CHECK (left_entity_id <> right_entity_id)
+         );",
+    ),
+    (
+        "v107_project_workspace_items",
+        "CREATE TABLE IF NOT EXISTS project_workspace_items (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+             turn_id TEXT,
+             run_id TEXT,
+             item_kind TEXT NOT NULL CHECK (
+                 item_kind IN ('decision', 'constraint', 'task', 'artifact', 'open_question', 'source')
+             ),
+             item_status TEXT NOT NULL DEFAULT 'active' CHECK (
+                 item_status IN ('active', 'open', 'completed', 'superseded')
+             ),
+             title TEXT NOT NULL,
+             summary TEXT NOT NULL DEFAULT '',
+             evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+             provenance_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(provenance_json)),
+             review_state TEXT NOT NULL DEFAULT 'observed' CHECK (
+                 review_state IN ('observed', 'needs_review', 'accepted', 'rejected')
+             ),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+             UNIQUE(project_id, item_kind, turn_id, title)
+         );
+         CREATE INDEX IF NOT EXISTS idx_project_workspace_items_project_kind
+             ON project_workspace_items(project_id, item_kind, item_status, updated_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_project_workspace_items_conversation
+             ON project_workspace_items(conversation_id, updated_at DESC);",
+    ),
+    (
+        "v108_conversation_system_prompt_origin",
+        "ALTER TABLE conversations ADD COLUMN system_prompt_origin TEXT NOT NULL DEFAULT 'legacy';
+         UPDATE conversations
+         SET system_prompt_origin = CASE
+             WHEN trim(system_prompt) = '' THEN 'none'
+             WHEN project_id IS NULL THEN 'user'
+             WHEN trim(system_prompt) = trim(COALESCE((
+                 SELECT projects.system_prompt FROM projects WHERE projects.id = conversations.project_id
+             ), '')) THEN 'project_snapshot'
+             ELSE 'legacy_ambiguous'
+         END;",
+    ),
+    (
+        "v109_turn_launch_project",
+        "ALTER TABLE conversation_turns ADD COLUMN launch_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;",
+    ),
+    (
+        "v110_turn_launch_project_backfill",
+        "UPDATE conversation_turns
+         SET launch_project_id = (
+             SELECT conversations.project_id
+             FROM conversations
+             WHERE conversations.id = conversation_turns.conversation_id
+         )
+         WHERE launch_project_id IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_conversation_turns_launch_project
+             ON conversation_turns(launch_project_id, created_at DESC);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2270,6 +2518,15 @@ mod tests {
         assert!(tables.contains(&"dream_artifacts".to_string()));
         assert!(tables.contains(&"ai_usage_records".to_string()));
         assert!(tables.contains(&"ai_model_pricing".to_string()));
+        assert!(tables.contains(&"conversation_episodes".to_string()));
+        assert!(tables.contains(&"project_events".to_string()));
+        assert!(tables.contains(&"project_workspace_items".to_string()));
+        assert!(tables.contains(&"knowledge_events".to_string()));
+        assert!(tables.contains(&"knowledge_claims".to_string()));
+        assert!(tables.contains(&"knowledge_edges".to_string()));
+        assert!(tables.contains(&"knowledge_evidence".to_string()));
+        assert!(tables.contains(&"graph_versions".to_string()));
+        assert!(tables.contains(&"entity_merge_candidates".to_string()));
     }
 
     #[test]
@@ -2287,6 +2544,145 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn conversation_prompt_origin_migration_fails_closed_for_legacy_project_prompts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, system_prompt TEXT NOT NULL DEFAULT '');
+             CREATE TABLE conversations (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT,
+                 system_prompt TEXT NOT NULL DEFAULT ''
+             );
+             INSERT INTO projects (id, system_prompt) VALUES ('project-1', 'Current project prompt');
+             INSERT INTO conversations (id, project_id, system_prompt) VALUES
+                 ('plain-user', NULL, 'Personal prompt'),
+                 ('project-empty', 'project-1', ''),
+                 ('project-copy', 'project-1', 'Current project prompt'),
+                 ('project-ambiguous', 'project-1', 'Older or custom prompt');",
+        )
+        .unwrap();
+        let migration = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v108_conversation_system_prompt_origin")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(migration).unwrap();
+
+        for (id, expected) in [
+            ("plain-user", "user"),
+            ("project-empty", "none"),
+            ("project-copy", "project_snapshot"),
+            ("project-ambiguous", "legacy_ambiguous"),
+        ] {
+            let origin: String = conn
+                .query_row(
+                    "SELECT system_prompt_origin FROM conversations WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(origin, expected, "origin for {id}");
+        }
+    }
+
+    #[test]
+    fn turn_launch_project_migration_backfills_current_project_best_effort() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE conversations (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
+             );
+             CREATE TABLE conversation_turns (
+                 id TEXT PRIMARY KEY,
+                 conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO projects (id) VALUES ('project-1');
+             INSERT INTO conversations (id, project_id) VALUES
+                 ('project-conversation', 'project-1'),
+                 ('plain-conversation', NULL);
+             INSERT INTO conversation_turns (id, conversation_id) VALUES
+                 ('project-turn', 'project-conversation'),
+                 ('plain-turn', 'plain-conversation');",
+        )
+        .unwrap();
+        let migration = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v109_turn_launch_project")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(migration).unwrap();
+        let backfill = FUTURE_MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "v110_turn_launch_project_backfill")
+            .map(|(_, sql)| *sql)
+            .unwrap();
+        conn.execute_batch(backfill).unwrap();
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'project-turn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let plain_project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'plain-turn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project-1"));
+        assert_eq!(plain_project_id, None);
+    }
+
+    #[test]
+    fn turn_launch_project_migration_recovers_after_column_only_partial_apply() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO projects (id, name) VALUES ('project-1', 'Project');
+             INSERT INTO conversations (id, provider, model, project_id)
+                 VALUES ('conversation-1', 'test', 'test', 'project-1');
+             INSERT INTO messages (id, conversation_id, role)
+                 VALUES ('message-1', 'conversation-1', 'user');
+             INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id)
+                 VALUES ('turn-1', 'conversation-1', NULL, 'message-1');
+             DROP INDEX idx_conversation_turns_launch_project;
+             DELETE FROM _migrations
+             WHERE name IN ('v109_turn_launch_project', 'v110_turn_launch_project_backfill');",
+        )
+        .expect("simulate interruption after the launch project column");
+
+        run_migrations(&conn).expect("partial launch project migration should recover");
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT launch_project_id FROM conversation_turns WHERE id = 'turn-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_conversation_turns_launch_project'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project-1"));
+        assert!(index_exists);
     }
 
     #[test]
@@ -3084,6 +3480,11 @@ mod tests {
             "retained_tail_json",
             "retained_start_sort_order",
             "status",
+            "source_message_ids_json",
+            "source_start_sort_order",
+            "source_boundary_sort_order",
+            "source_digest",
+            "checkpoint_generation",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -3094,6 +3495,57 @@ mod tests {
                 .unwrap();
             assert!(exists, "context_compactions.{column} should exist");
         }
+    }
+
+    #[test]
+    fn context_compaction_source_fence_migration_backfills_distinct_generations() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        conn.execute_batch(
+            "DROP INDEX idx_context_compactions_generation;
+             DELETE FROM _migrations
+             WHERE name = 'v104_context_compaction_generation_index';
+             INSERT INTO conversations (id, provider, model)
+             VALUES ('conv-generation', 'open_ai', 'gpt-test');
+             INSERT INTO context_compactions (
+                 id, operation_id, conversation_id, idempotency_key,
+                 snapshot_high_watermark, snapshot_hash, summary,
+                 retained_tail_json, retained_start_sort_order,
+                 tokens_before, tokens_after, provider, model, status,
+                 checkpoint_generation, created_at
+             ) VALUES
+                 ('checkpoint-b', 'checkpoint-b', 'conv-generation', 'request-b',
+                  4, 'hash-b', 'summary-b', '[]', 3,
+                  100, 50, 'test', 'test', 'completed', 1, '2026-01-02 00:00:00'),
+                 ('checkpoint-a', 'checkpoint-a', 'conv-generation', 'request-a',
+                  2, 'hash-a', 'summary-a', '[]', 1,
+                  80, 40, 'test', 'test', 'completed', 1, '2026-01-01 00:00:00');",
+        )
+        .expect("simulate legacy checkpoints with duplicate default generations");
+
+        run_migrations(&conn).expect("generation migration should backfill before indexing");
+
+        let generations = conn
+            .prepare(
+                "SELECT id, checkpoint_generation
+                 FROM context_compactions
+                 WHERE conversation_id = 'conv-generation'
+                 ORDER BY checkpoint_generation",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            generations,
+            vec![
+                ("checkpoint-a".to_string(), 1),
+                ("checkpoint-b".to_string(), 2),
+            ]
+        );
     }
 
     #[test]

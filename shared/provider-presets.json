@@ -7,6 +7,16 @@
     "requiresApiKey": true,
     "icon": "🤖",
     "description": "GPT-5.6, GPT-5.5, GPT-5.4, GPT-4.1, o3/o4 series",
+    "nativeWebSearch": {
+      "dialect": "openAiResponses",
+      "supportsDomains": true,
+      "supportsRecency": false,
+      "supportsLocale": false,
+      "supportsLocation": true,
+      "supportsCitations": true,
+      "supportsStreamEvents": true,
+      "canMixClientTools": true
+    },
     "capabilities": {
       "vision": true
     },
@@ -14,6 +24,16 @@
       {
         "id": "gpt-5.6",
         "name": "GPT-5.6",
+        "nativeWebSearch": {
+          "dialect": "openAiResponses",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagLatest",
         "source": "curated",
         "productReadiness": "known",
@@ -38,6 +58,16 @@
       {
         "id": "gpt-5.6-sol",
         "name": "GPT-5.6 Sol",
+        "nativeWebSearch": {
+          "dialect": "openAiResponses",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagMostIntelligent",
         "capabilities": {
           "reasoning": {
@@ -59,6 +89,16 @@
       {
         "id": "gpt-5.6-terra",
         "name": "GPT-5.6 Terra",
+        "nativeWebSearch": {
+          "dialect": "openAiResponses",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
           "reasoning": {
@@ -80,6 +120,16 @@
       {
         "id": "gpt-5.6-luna",
         "name": "GPT-5.6 Luna",
+        "nativeWebSearch": {
+          "dialect": "openAiResponses",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagCheapest",
         "capabilities": {
           "reasoning": {
@@ -6286,6 +6336,16 @@
     "requiresApiKey": true,
     "icon": "🧠",
     "description": "Claude Fable 5, Sonnet 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5",
+    "nativeWebSearch": {
+      "dialect": "anthropicServerTool",
+      "supportsDomains": true,
+      "supportsRecency": false,
+      "supportsLocale": false,
+      "supportsLocation": true,
+      "supportsCitations": true,
+      "supportsStreamEvents": true,
+      "canMixClientTools": true
+    },
     "capabilities": {
       "vision": true
     },
@@ -6293,6 +6353,16 @@
       {
         "id": "claude-fable-5",
         "name": "Claude Fable 5",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagMostIntelligent",
         "source": "curated",
         "productReadiness": "known",
@@ -6316,6 +6386,16 @@
       {
         "id": "claude-sonnet-5",
         "name": "Claude Sonnet 5",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
           "reasoning": {
@@ -6337,6 +6417,16 @@
       {
         "id": "claude-mythos-5",
         "name": "Claude Mythos 5",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
@@ -6357,6 +6447,16 @@
       {
         "id": "claude-opus-4-8",
         "name": "Claude Opus 4.8",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagMostIntelligent",
         "capabilities": {
           "reasoning": {
@@ -6377,6 +6477,16 @@
       {
         "id": "claude-opus-4-7",
         "name": "Claude Opus 4.7",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "capabilities": {
           "reasoning": {
             "effortLevels": [
@@ -6396,6 +6506,16 @@
       {
         "id": "claude-opus-4-6",
         "name": "Claude Opus 4.6",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "capabilities": {
           "reasoning": {
             "thinkingBudget": {
@@ -6410,6 +6530,16 @@
       {
         "id": "claude-sonnet-4-6",
         "name": "Claude Sonnet 4.6",
+        "nativeWebSearch": {
+          "dialect": "anthropicServerTool",
+          "supportsDomains": true,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": true,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagBestBalance",
         "capabilities": {
           "reasoning": {
@@ -6525,6 +6655,16 @@
     "requiresApiKey": true,
     "icon": "✨",
     "description": "Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
+    "nativeWebSearch": {
+      "dialect": "geminiGoogleSearch",
+      "supportsDomains": false,
+      "supportsRecency": false,
+      "supportsLocale": false,
+      "supportsLocation": false,
+      "supportsCitations": true,
+      "supportsStreamEvents": true,
+      "canMixClientTools": false
+    },
     "capabilities": {
       "vision": true
     },
@@ -6532,6 +6672,16 @@
       {
         "id": "gemini-3.6-flash",
         "name": "Gemini 3.6 Flash",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagLatest",
         "source": "curated",
         "productReadiness": "known",
@@ -6554,6 +6704,16 @@
       {
         "id": "gemini-3.5-flash-lite",
         "name": "Gemini 3.5 Flash-Lite",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagCheapest",
         "capabilities": {
           "reasoning": {
@@ -6573,6 +6733,16 @@
       {
         "id": "gemini-3.5-flash",
         "name": "Gemini 3.5 Flash",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagBestBalance",
         "contextTokens": 1048576,
         "maxOutputTokens": 65536,
@@ -6594,6 +6764,16 @@
       {
         "id": "gemini-3.1-pro-preview",
         "name": "Gemini 3.1 Pro Preview",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
@@ -6612,6 +6792,16 @@
       {
         "id": "gemini-3.1-flash-lite",
         "name": "Gemini 3.1 Flash Lite",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagFast",
         "capabilities": {
           "reasoning": {
@@ -6684,6 +6874,16 @@
       {
         "id": "gemini-3-flash-preview",
         "name": "Gemini 3 Flash Preview",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagPreview",
         "capabilities": {
           "reasoning": {
@@ -6737,6 +6937,16 @@
       {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
+        "nativeWebSearch": {
+          "dialect": "deepSeekResponses",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": false,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "tagKey": "providers.tagFast",
         "capabilities": {
           "reasoning": {

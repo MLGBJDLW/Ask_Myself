@@ -33,6 +33,7 @@ use nexa_core::approval::{ApprovalDecision, SessionApprovalStore, ToolPermission
 use nexa_core::capability_registry::{
     CapabilityRegistryProjection, RegistryActivationRecord, RegistryReadMode, RegistryScope,
 };
+use nexa_core::companion::CompanionProjection;
 use nexa_core::conversation::memory::estimate_tokens;
 use nexa_core::conversation::{
     conversation_message_llm_context_content, validate_agent_config_credential_contract,
@@ -47,6 +48,9 @@ use nexa_core::db::Database;
 use nexa_core::db_executor::DatabaseExecutor;
 use nexa_core::embed::{EmbedderConfig, LocalEmbeddingModel};
 use nexa_core::error::CoreError;
+use nexa_core::event_claim_graph::{
+    CreateKnowledgeClaimInput, KnowledgeClaim, NarrativeEvidencePlan,
+};
 use nexa_core::evolution::{
     AgentProceduralMemory, AppliedSkillChange, SkillChangeProposal, SkillProposalStatus,
 };
@@ -58,7 +62,7 @@ use nexa_core::interaction::{
     SubmitInteractionResponse,
 };
 use nexa_core::llm::{
-    create_provider, CompletionRequest, ContentPart, Message, ProviderConfig, ProviderType, Role,
+    create_provider, CompletionRequest, Message, ProviderConfig, ProviderType, Role,
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
@@ -75,6 +79,7 @@ use nexa_core::project::{CreateProjectInput, Project, UpdateProjectInput};
 use nexa_core::project_memory::{
     CreateProjectMemoryInput, ProjectMemory, UpdateProjectMemoryInput,
 };
+use nexa_core::project_runtime::ProjectWorkspaceSnapshot;
 use nexa_core::provider_catalog::{
     build_effective_model_catalog, load_provider_presets, ProviderModelCatalogSnapshot,
     ProviderPreset,

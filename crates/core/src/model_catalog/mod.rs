@@ -33,5 +33,5 @@ pub use projection::{
 };
 pub use provider_endpoint::{
     AuthStyle, CredentialKind, DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe,
-    ProviderDescriptor, ProviderEndpoint,
+    NativeSearchDialect, NativeWebSearchCapability, ProviderDescriptor, ProviderEndpoint,
 };

@@ -122,6 +122,16 @@
   "ghproxyHint": "用於 OCR、FFmpeg 等內建 GitHub 下載的後備來源。留空 = 停用。",
   "webSearchTitle": "Web 搜尋",
   "webSearchDesc": "免 API Key 的公開網路搜尋路由、重排和 provider 健康狀態。",
+  "webSearchExecutionMode": "搜尋執行方式",
+  "webSearchExecutionMode.desc": "選擇由誰執行 Web 搜尋；只有精確匹配的可信 Provider 端點才能啟用原生模式。",
+  "webSearchExecutionMode.auto": "自動",
+  "webSearchExecutionMode.auto.desc": "適配器和端點可信時使用 Provider 原生搜尋，否則使用 Nexa Router。",
+  "webSearchExecutionMode.providerNative": "Provider 原生",
+  "webSearchExecutionMode.providerNative.desc": "強制使用目前模型 Provider 的伺服器端搜尋，並避免重複的本機搜尋呼叫。",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "一律使用 Nexa 本機搜尋工具和已設定的搜尋 Provider 路由。",
+  "webSearchExecutionMode.hybrid": "混合",
+  "webSearchExecutionMode.hybrid.desc": "需要更廣證據時，同時向模型提供原生與 Nexa 兩條搜尋路徑。",
   "webSearchProfile": "Provider 設定檔",
   "webSearchProfile.default": "預設",
   "webSearchProfile.default.desc": "快速的語言感知內建路由，不需要 API Key。",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "可依供應商或模型搜尋；已設定項目優先顯示，自訂端點固定保留在最後。"
+  ,"providerSearchLabel": "搜尋 AI 供應商"
+  ,"providerSearchPlaceholder": "搜尋供應商或模型"
+  ,"providerSearchNoResults": "沒有符合搜尋條件的供應商。"
+  ,"providerCatalogResults": "{count} 個供應商"
+  ,"providerConfiguredSummary": "已設定 {count} 個"
+  ,"providerDefaultSummary": "預設：{name}"
+  ,"providerConfiguredStatus": "已設定"
+  ,"providerDefaultStatus": "預設"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "進階能力路由"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "僅在需要時檢查連線健康、模型目標與執行階段路由。"
+  ,"capabilityRegistryAdvancedSummary": "{connections} 個連線 · {models} 個模型 · {capabilities} 條路由"
+  ,"capabilityRegistryAdvancedLoading": "正在載入能力路由摘要"
+  ,"capabilityRegistryAdvancedNeedsAttention": "需要處理"
 }

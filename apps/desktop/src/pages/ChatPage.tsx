@@ -8,6 +8,7 @@ import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { DecisionTray } from '../components/chat/DecisionTray';
+import { CompanionPet } from '../components/chat/CompanionPet';
 import {
   TerminalDock,
   TERMINAL_TOGGLE_EVENT,
@@ -1085,19 +1086,13 @@ export function ChatPage() {
     }
 
     try {
-      // If creating within a project, fetch project's system prompt as default
-      let systemPrompt = chat.customSystemPrompt || undefined;
-      if (projectId && !chat.customSystemPrompt) {
-        try {
-          const proj = await api.getProject(projectId);
-          if (proj.systemPrompt) systemPrompt = proj.systemPrompt;
-        } catch { /* ignore, use default */ }
-      }
-
       const conv = await api.createConversation(
         chat.agentConfig.provider,
         chat.agentConfig.model,
-        systemPrompt,
+        // A new conversation owns a fresh prompt. Reusing the active
+        // conversation's prompt can resurrect legacy project snapshots that
+        // the backend deliberately suppresses.
+        undefined,
         projectId ?? undefined,
         'default',
       );
@@ -1110,7 +1105,6 @@ export function ChatPage() {
     }
   }, [
     chat.agentConfig,
-    chat.customSystemPrompt,
     chat.setConversations,
     chat.createNewConversation,
     navigate,
@@ -1866,7 +1860,12 @@ export function ChatPage() {
                   </Button>
                 </div>
               </div>
-            ) : <ChatInput
+            ) : <>
+              <CompanionPet
+                taskRun={chat.taskRun}
+                onOpenTaskCenter={() => navigate('/tasks')}
+              />
+              <ChatInput
               onSend={handleComposerSend}
               onStop={chat.stop}
               isStreaming={chat.isStreaming}
@@ -1898,7 +1897,8 @@ export function ChatPage() {
                 await chat.reloadMessages();
               } : undefined}
               onBranchCheckpoint={handleCheckpointBranch}
-            />}
+              />
+            </>}
             {chat.activeId && !isArchivedConversation && (
               <ApprovalDialogMount conversationId={chat.activeId} />
             )}

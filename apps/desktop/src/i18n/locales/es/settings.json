@@ -122,6 +122,16 @@
   "ghproxyHint": "Se usa como respaldo para descargas integradas de GitHub, como OCR y FFmpeg. Vacío = desactivado.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "Ejecución de búsqueda",
+  "webSearchExecutionMode.desc": "Elige quién realiza la búsqueda web. Los modos nativos solo se habilitan para endpoints de proveedor exactos y confiables.",
+  "webSearchExecutionMode.auto": "Automático",
+  "webSearchExecutionMode.auto.desc": "Usa la búsqueda nativa del proveedor si el adaptador y el endpoint son confiables; de lo contrario, usa Nexa Router.",
+  "webSearchExecutionMode.providerNative": "Nativa del proveedor",
+  "webSearchExecutionMode.providerNative.desc": "Exige la búsqueda del servidor del proveedor del modelo seleccionado y evita una búsqueda local duplicada.",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "Usa siempre la herramienta de búsqueda local de Nexa y el enrutamiento de proveedores configurado.",
+  "webSearchExecutionMode.hybrid": "Híbrido",
+  "webSearchExecutionMode.hybrid.desc": "Ofrece las rutas de búsqueda nativa y de Nexa cuando el modelo necesita más evidencias.",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "Busca proveedores y modelos. Los configurados aparecen primero y los endpoints personalizados al final."
+  ,"providerSearchLabel": "Buscar proveedores"
+  ,"providerSearchPlaceholder": "Buscar proveedores o modelos"
+  ,"providerSearchNoResults": "Ningún proveedor coincide con la búsqueda."
+  ,"providerCatalogResults": "{count} proveedores"
+  ,"providerConfiguredSummary": "{count} configurados"
+  ,"providerDefaultSummary": "Predeterminado: {name}"
+  ,"providerConfiguredStatus": "Configurado"
+  ,"providerDefaultStatus": "Predeterminado"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "Enrutamiento avanzado de capacidades"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "Consulta el estado de conexiones, modelos y rutas de ejecución solo cuando lo necesites."
+  ,"capabilityRegistryAdvancedSummary": "{connections} conexiones · {models} modelos · {capabilities} rutas"
+  ,"capabilityRegistryAdvancedLoading": "Cargando resumen de enrutamiento"
+  ,"capabilityRegistryAdvancedNeedsAttention": "Requiere atención"
 }

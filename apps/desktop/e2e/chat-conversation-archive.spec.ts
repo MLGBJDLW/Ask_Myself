@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
+    localStorage.setItem('active-project-id', 'project-legacy');
 
     const nowIso = new Date().toISOString();
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -11,9 +12,9 @@ test.beforeEach(async ({ page }) => {
       title: 'Active conversation',
       provider: 'open_ai',
       model: 'gpt-4.1',
-      systemPrompt: '',
+      systemPrompt: 'Legacy copied project prompt',
       collectionContext: null,
-      projectId: null,
+      projectId: 'project-legacy',
       personaId: null,
       titleIsAuto: false,
       archivedAt: null,
@@ -59,6 +60,7 @@ test.beforeEach(async ({ page }) => {
     let active = [activeConversation];
     let archived = [archivedConversation];
     const commands: string[] = [];
+    const createConversationArgs: Array<Record<string, unknown>> = [];
 
     const defaultAgentConfig = {
       id: 'cfg-archive',
@@ -109,6 +111,18 @@ test.beforeEach(async ({ page }) => {
           return { completed: true, language: 'en', aiProvider: 'open_ai', sourceAdded: true };
         case 'list_conversations_cmd':
           return clone(active);
+        case 'create_conversation_cmd': {
+          createConversationArgs.push(clone(args));
+          const conversation = {
+            ...activeConversation,
+            id: 'conv-new',
+            title: '',
+            systemPrompt: String(args.systemPrompt ?? ''),
+            projectId: args.projectId == null ? null : String(args.projectId),
+          };
+          active = [conversation, ...active];
+          return clone(conversation);
+        }
         case 'list_archived_conversations_cmd':
           return clone(archived);
         case 'archive_conversation_cmd': {
@@ -150,10 +164,22 @@ test.beforeEach(async ({ page }) => {
         case 'list_user_memories_cmd':
         case 'list_skills_cmd':
         case 'list_mcp_servers_cmd':
-        case 'list_projects_cmd':
         case 'list_personas_cmd':
         case 'list_checkpoints_cmd':
           return [];
+        case 'list_projects_cmd':
+          return [{
+            id: 'project-legacy',
+            name: 'Legacy project',
+            description: '',
+            icon: 'folder',
+            color: '#3b82f6',
+            systemPrompt: 'Current live project prompt',
+            sourceScope: null,
+            archived: false,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          }];
         case 'get_index_stats':
           return { totalDocuments: 0, totalChunks: 0, ftsRows: 0 };
         case 'get_privacy_config':
@@ -184,6 +210,8 @@ test.beforeEach(async ({ page }) => {
     };
 
     (window as unknown as { __ARCHIVE_COMMANDS__: string[] }).__ARCHIVE_COMMANDS__ = commands;
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__ = createConversationArgs;
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
       invoke,
       metadata: { currentWindow: { label: 'main' } },
@@ -214,6 +242,19 @@ test('conversation actions offer archive and delete with reversible archive', as
   await expect(page.getByTestId('conversation-item-conv-active')).toBeHidden();
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
+
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__[0],
+  )).toMatchObject({
+    provider: 'open_ai',
+    model: 'gpt-4.1',
+  });
+  expect(await page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__[0]?.systemPrompt ?? null,
+  )).toBeNull();
 });
 
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {

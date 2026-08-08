@@ -122,6 +122,16 @@
   "ghproxyHint": "Used as fallback for built-in GitHub downloads such as OCR and FFmpeg. Empty = disabled.",
   "webSearchTitle": "Web search",
   "webSearchDesc": "No-key public search routing, reranking, and provider health.",
+  "webSearchExecutionMode": "Search execution",
+  "webSearchExecutionMode.desc": "Choose who performs web search. Native modes are enabled only for exact trusted provider endpoints.",
+  "webSearchExecutionMode.auto": "Auto",
+  "webSearchExecutionMode.auto.desc": "Use provider-native search when its wire adapter and endpoint are trusted; otherwise use Nexa Router.",
+  "webSearchExecutionMode.providerNative": "Provider native",
+  "webSearchExecutionMode.providerNative.desc": "Require the selected model provider's server-side search and prevent a duplicate local search call.",
+  "webSearchExecutionMode.nexaRouter": "Nexa Router",
+  "webSearchExecutionMode.nexaRouter.desc": "Always use Nexa's local search tool and configured search-provider routing.",
+  "webSearchExecutionMode.hybrid": "Hybrid",
+  "webSearchExecutionMode.hybrid.desc": "Expose both native and Nexa search paths when the model needs broader evidence.",
   "webSearchProfile": "Provider profile",
   "webSearchProfile.default": "Default",
   "webSearchProfile.default.desc": "Fast language-aware built-in routing. No API key required.",
@@ -887,4 +897,18 @@
   ,"visionSettingsSaved": "Image-understanding settings saved"
   ,"visionClearCache": "Clear cache"
   ,"visionCacheCleared": "Removed {count} cached observations"
+  ,"providerCatalogDesc": "Search providers and models. Configured providers stay at the top; custom endpoints remain available last."
+  ,"providerSearchLabel": "Search providers"
+  ,"providerSearchPlaceholder": "Search providers or models"
+  ,"providerSearchNoResults": "No providers match this search."
+  ,"providerCatalogResults": "{count} providers"
+  ,"providerConfiguredSummary": "{count} configured"
+  ,"providerDefaultSummary": "Default: {name}"
+  ,"providerConfiguredStatus": "Configured"
+  ,"providerDefaultStatus": "Default"
+  ,"capabilityRegistryAdvancedDisclosureTitle": "Advanced capability routing"
+  ,"capabilityRegistryAdvancedDisclosureDesc": "Inspect connection health, model targets, and runtime routes only when you need them."
+  ,"capabilityRegistryAdvancedSummary": "{connections} connections · {models} models · {capabilities} routes"
+  ,"capabilityRegistryAdvancedLoading": "Loading capability routing summary"
+  ,"capabilityRegistryAdvancedNeedsAttention": "Needs attention"
 }

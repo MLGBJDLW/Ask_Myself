@@ -185,6 +185,9 @@ pub struct ConversationSearchResult {
 pub struct ConversationTurn {
     pub id: String,
     pub conversation_id: String,
+    /// Project whose instructions, sources, and evidence were active when the
+    /// turn launched. Later conversation moves must not rewrite this boundary.
+    pub launch_project_id: Option<String>,
     pub user_message_id: String,
     pub assistant_message_id: Option<String>,
     pub status: String,
@@ -539,7 +542,7 @@ const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
             r.title, r.route_kind, r.summary, r.error_message, r.provider, r.model,
             r.created_at, r.updated_at, r.started_at, r.finished_at,
             NULLIF(c.title, '') AS conversation_title,
-            c.project_id,
+            t.launch_project_id,
             NULLIF(p.name, '') AS project_name,
             COALESCE(m.content, '') AS user_message_content,
             COALESCE(ec.event_count, 0),
@@ -550,14 +553,15 @@ const AGENT_TASK_RUN_SUMMARY_QUERY: &str = r#"WITH event_counts AS (
             ak.kinds_json
      FROM agent_task_runs r
      JOIN conversations c ON c.id = r.conversation_id
-     LEFT JOIN projects p ON p.id = c.project_id
+     JOIN conversation_turns t ON t.id = r.turn_id
+     LEFT JOIN projects p ON p.id = t.launch_project_id
      LEFT JOIN messages m ON m.id = r.user_message_id
      LEFT JOIN event_counts ec ON ec.run_id = r.id
      LEFT JOIN subtask_counts sc ON sc.run_id = r.id
      LEFT JOIN artifact_kinds ak ON ak.run_id = r.id
      WHERE (?2 IS NULL OR (r.updated_at, r.created_at, r.id) < (?2, ?3, ?4))
        AND (?5 IS NULL OR r.status = ?5)
-       AND (?6 IS NULL OR c.project_id = ?6)
+       AND (?6 IS NULL OR t.launch_project_id = ?6)
      ORDER BY r.updated_at DESC, r.created_at DESC, r.id DESC
      LIMIT ?1"#;
 
@@ -856,6 +860,11 @@ impl Database {
     ) -> Result<Conversation, CoreError> {
         let id = new_id();
         let system_prompt = input.system_prompt.as_deref().unwrap_or("");
+        let system_prompt_origin = if system_prompt.trim().is_empty() {
+            "none"
+        } else {
+            "user"
+        };
         let collection_context_json =
             serialize_collection_context(input.collection_context.as_ref())?;
         let persona_id = input
@@ -866,13 +875,14 @@ impl Database {
             .map(str::to_string);
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO conversations (id, provider, model, system_prompt, collection_context_json, project_id, persona_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO conversations (id, provider, model, system_prompt, system_prompt_origin, collection_context_json, project_id, persona_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 &id,
                 &input.provider,
                 &input.model,
                 system_prompt,
+                system_prompt_origin,
                 &collection_context_json,
                 &input.project_id,
                 &persona_id
@@ -1126,14 +1136,91 @@ impl Database {
         id: &str,
         system_prompt: &str,
     ) -> Result<(), CoreError> {
+        let origin = if system_prompt.trim().is_empty() {
+            "none"
+        } else {
+            "user"
+        };
         let conn = self.conn();
         let affected = conn.execute(
-            "UPDATE conversations SET system_prompt = ?2, updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![id, system_prompt],
+            "UPDATE conversations
+             SET system_prompt = ?2, system_prompt_origin = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![id, system_prompt, origin],
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("Conversation {id}")));
         }
+        Ok(())
+    }
+
+    /// Classify a project prompt imported from a schema that did not record
+    /// prompt ownership. Compatibility/import callers may use this to keep a
+    /// stored project snapshot editable without injecting it beside the live
+    /// project instructions.
+    pub fn mark_legacy_project_system_prompt_ambiguous(&self, id: &str) -> Result<(), CoreError> {
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE conversations
+             SET system_prompt_origin = 'legacy_ambiguous'
+             WHERE id = ?1 AND project_id IS NOT NULL",
+            rusqlite::params![id],
+        )?;
+        if affected == 0 {
+            let exists = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+                rusqlite::params![id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            return Err(if exists {
+                CoreError::InvalidInput(
+                    "Only project conversations can contain legacy project prompt snapshots."
+                        .to_string(),
+                )
+            } else {
+                CoreError::NotFound(format!("Conversation {id}"))
+            });
+        }
+        Ok(())
+    }
+
+    /// Return only conversation-authored instructions when live project
+    /// instructions are assembled separately. Legacy project snapshots remain
+    /// stored and editable, but are not injected as a second instruction set.
+    pub fn get_effective_conversation_system_prompt(
+        &self,
+        conversation: &Conversation,
+    ) -> Result<String, CoreError> {
+        if conversation.project_id.is_none() {
+            return Ok(conversation.system_prompt.clone());
+        }
+        let conn = self.conn();
+        let origin: String = conn.query_row(
+            "SELECT system_prompt_origin FROM conversations WHERE id = ?1",
+            [&conversation.id],
+            |row| row.get(0),
+        )?;
+        Ok(if origin == "user" {
+            conversation.system_prompt.clone()
+        } else {
+            String::new()
+        })
+    }
+
+    fn copy_conversation_system_prompt_origin(
+        &self,
+        source_id: &str,
+        destination_id: &str,
+    ) -> Result<(), CoreError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE conversations
+             SET system_prompt_origin = COALESCE((
+                 SELECT system_prompt_origin FROM conversations WHERE id = ?1
+             ), system_prompt_origin)
+             WHERE id = ?2",
+            rusqlite::params![source_id, destination_id],
+        )?;
         Ok(())
     }
 
@@ -1336,11 +1423,18 @@ impl Database {
     ) -> Result<ConversationTurn, CoreError> {
         let id = new_id();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
-             VALUES (?1, ?2, ?3, ?4, 'running')",
+        let affected = conn.execute(
+            "INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id, route_kind, status)
+             SELECT ?1, id, project_id, ?3, ?4, 'running'
+             FROM conversations WHERE id = ?2",
             rusqlite::params![&id, conversation_id, user_message_id, route_kind],
         )?;
+        if affected == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Conversation {conversation_id}"
+            )));
+        }
         drop(conn);
         self.get_conversation_turn(&id)
     }
@@ -1428,32 +1522,33 @@ impl Database {
     pub fn get_conversation_turn(&self, id: &str) -> Result<ConversationTurn, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+            "SELECT id, conversation_id, launch_project_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
              FROM conversation_turns
              WHERE id = ?1",
             rusqlite::params![id],
             |row| {
-                let trace_json: Option<String> = row.get(6)?;
+                let trace_json: Option<String> = row.get(7)?;
                 Ok(ConversationTurn {
                     id: row.get(0)?,
                     conversation_id: row.get(1)?,
-                    user_message_id: row.get(2)?,
-                    assistant_message_id: row.get(3)?,
-                    status: row.get(4)?,
-                    route_kind: row.get(5)?,
+                    launch_project_id: row.get(2)?,
+                    user_message_id: row.get(3)?,
+                    assistant_message_id: row.get(4)?,
+                    status: row.get(5)?,
+                    route_kind: row.get(6)?,
                     trace: match trace_json {
                         Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
                             rusqlite::Error::FromSqlConversionFailure(
-                                6,
+                                7,
                                 rusqlite::types::Type::Text,
                                 Box::new(err),
                             )
                         })?),
                         None => None,
                     },
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    finished_at: row.get(9)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    finished_at: row.get(10)?,
                 })
             },
         )
@@ -1472,33 +1567,34 @@ impl Database {
     ) -> Result<Vec<ConversationTurn>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
+            "SELECT id, conversation_id, launch_project_id, user_message_id, assistant_message_id, status, route_kind, trace_json, created_at, updated_at, finished_at
              FROM conversation_turns
              WHERE conversation_id = ?1
              ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
-            let trace_json: Option<String> = row.get(6)?;
+            let trace_json: Option<String> = row.get(7)?;
             Ok(ConversationTurn {
                 id: row.get(0)?,
                 conversation_id: row.get(1)?,
-                user_message_id: row.get(2)?,
-                assistant_message_id: row.get(3)?,
-                status: row.get(4)?,
-                route_kind: row.get(5)?,
+                launch_project_id: row.get(2)?,
+                user_message_id: row.get(3)?,
+                assistant_message_id: row.get(4)?,
+                status: row.get(5)?,
+                route_kind: row.get(6)?,
                 trace: match trace_json {
                     Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            6,
+                            7,
                             rusqlite::types::Type::Text,
                             Box::new(err),
                         )
                     })?),
                     None => None,
                 },
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })?;
 
@@ -1693,11 +1789,19 @@ impl Database {
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![&message.conversation_id],
         )?;
-        tx.execute(
-            "INSERT INTO conversation_turns (id, conversation_id, user_message_id, route_kind, status)
-             VALUES (?1, ?2, ?3, NULL, 'running')",
+        let inserted_turn = tx.execute(
+            "INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id, route_kind, status)
+             SELECT ?1, id, project_id, ?3, NULL, 'running'
+             FROM conversations WHERE id = ?2",
             rusqlite::params![&turn_id, &message.conversation_id, &message.id],
         )?;
+        if inserted_turn == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Conversation {}",
+                message.conversation_id
+            )));
+        }
         tx.execute(
             "INSERT INTO agent_task_runs
              (id, conversation_id, turn_id, user_message_id, status, phase, title, provider, model, idempotency_key)
@@ -2109,7 +2213,7 @@ impl Database {
                     r.plan_json, r.artifacts_json, r.created_at, r.updated_at, r.started_at,
                     r.finished_at,
                     NULLIF(c.title, '') AS conversation_title,
-                    c.project_id,
+                    t.launch_project_id,
                     NULLIF(p.name, '') AS project_name,
                     COALESCE(m.content, '') AS user_message_content,
                     (SELECT COUNT(*) FROM agent_task_run_events e WHERE e.run_id = r.id) AS event_count,
@@ -2119,7 +2223,8 @@ impl Database {
                     (SELECT COUNT(*) FROM agent_subtask_runs s WHERE s.parent_run_id = r.id AND s.status IN ('queued', 'running')) AS subtask_running
              FROM agent_task_runs r
              JOIN conversations c ON c.id = r.conversation_id
-             LEFT JOIN projects p ON p.id = c.project_id
+             JOIN conversation_turns t ON t.id = r.turn_id
+             LEFT JOIN projects p ON p.id = t.launch_project_id
              LEFT JOIN messages m ON m.id = r.user_message_id
              ORDER BY datetime(r.updated_at) DESC, datetime(r.created_at) DESC, r.id DESC
              LIMIT ?1",
@@ -3450,6 +3555,7 @@ impl Database {
             project_id: source.project_id.clone(),
             persona_id: source.persona_id.clone(),
         })?;
+        self.copy_conversation_system_prompt_origin(&source.id, &conversation.id)?;
         self.rename_conversation_by_user(
             &conversation.id,
             &checkpoint_branch_title(&source.title, &checkpoint.label),
@@ -4465,6 +4571,63 @@ mod tests {
     }
 
     #[test]
+    fn legacy_project_prompt_classification_fails_closed_until_explicit_resave() {
+        let db = Database::open_memory().unwrap();
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Prompt ownership".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: Some("Live project prompt".into()),
+                source_scope: None,
+            })
+            .unwrap();
+        let project_conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: Some("Copied legacy project prompt".into()),
+                collection_context: None,
+                project_id: Some(project.id),
+                persona_id: None,
+            })
+            .unwrap();
+
+        db.mark_legacy_project_system_prompt_ambiguous(&project_conversation.id)
+            .unwrap();
+        assert_eq!(
+            db.get_effective_conversation_system_prompt(&project_conversation)
+                .unwrap(),
+            ""
+        );
+
+        db.update_conversation_system_prompt(&project_conversation.id, "Explicit user override")
+            .unwrap();
+        let explicit = db.get_conversation(&project_conversation.id).unwrap();
+        assert_eq!(
+            db.get_effective_conversation_system_prompt(&explicit)
+                .unwrap(),
+            "Explicit user override"
+        );
+
+        let ordinary_conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: Some("Ordinary prompt".into()),
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            db.mark_legacy_project_system_prompt_ambiguous(&ordinary_conversation.id),
+            Err(CoreError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
     fn test_conversation_crud() {
         let db = Database::open_memory().unwrap();
 
@@ -4654,13 +4817,33 @@ mod tests {
     #[test]
     fn test_agent_turn_launch_is_atomic_and_idempotent() {
         let db = Database::open_memory().unwrap();
+        let launch_project = db
+            .create_project(&CreateProjectInput {
+                name: "Launch project".to_string(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
+        let destination_project = db
+            .create_project(&CreateProjectInput {
+                name: "Destination project".to_string(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: None,
+            })
+            .unwrap();
         let conversation = db
             .create_conversation(&CreateConversationInput {
                 provider: "openai".to_string(),
                 model: "gpt-5".to_string(),
                 system_prompt: None,
                 collection_context: None,
-                project_id: None,
+                project_id: Some(launch_project.id.clone()),
                 persona_id: None,
             })
             .unwrap();
@@ -4690,6 +4873,16 @@ mod tests {
             )
             .unwrap();
         assert!(!first.reused);
+        assert_eq!(
+            db.get_conversation_turn(&first.turn_id)
+                .unwrap()
+                .launch_project_id
+                .as_deref(),
+            Some(launch_project.id.as_str())
+        );
+
+        db.move_conversation_to_project(&conversation.id, &destination_project.id)
+            .unwrap();
 
         let mut retried_message = message.clone();
         retried_message.id = "message-retry".to_string();
@@ -4707,6 +4900,13 @@ mod tests {
         assert_eq!(retry.run_id, first.run_id);
         assert_eq!(retry.turn_id, first.turn_id);
         assert_eq!(retry.user_message_id, first.user_message_id);
+        assert_eq!(
+            db.get_conversation_turn(&retry.turn_id)
+                .unwrap()
+                .launch_project_id
+                .as_deref(),
+            Some(launch_project.id.as_str())
+        );
         assert_eq!(db.get_messages(&conversation.id).unwrap().len(), 1);
         assert_eq!(
             db.get_conversation_turns(&conversation.id).unwrap().len(),

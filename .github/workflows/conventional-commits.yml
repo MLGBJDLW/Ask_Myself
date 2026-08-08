@@ -6,6 +6,7 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
@@ -13,37 +14,41 @@ jobs:
     name: Validate commit subjects
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR commit subjects
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate PR title, commit subjects, and branch topology
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          api_url="https://api.github.com/repos/$REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100"
-          token_header="Authorization: Bearer ${GH_TOKEN}"
-          subjects=$(curl -fsSL \
-            -H "$token_header" \
-            -H "Accept: application/vnd.github+json" \
-            "$api_url" | jq -r '.[].commit.message | split("\n")[0]')
+          conventional_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: .+'
+          if [[ ! "$PR_TITLE" =~ $conventional_pattern ]]; then
+            echo "::error::PR title must use Conventional Commit syntax: $PR_TITLE"
+            exit 1
+          fi
+
+          subjects=$(gh api --paginate \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100" \
+            --jq '.[].commit.message | split("\n")[0]')
 
           if [ -z "$subjects" ]; then
             echo "::error::No commits were returned for PR #$PR_NUMBER."
             exit 1
           fi
 
-          conventional_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: .+'
-          imperative_pattern='^[A-Z][A-Za-z0-9 ,._()/-]+$'
           invalid=0
 
           while IFS= read -r subject; do
             if [[ "$subject" =~ $conventional_pattern ]]; then
-              continue
-            fi
-
-            if [[ "$subject" =~ $imperative_pattern ]]; then
-              echo "::warning::Non-conventional commit subject accepted: $subject"
               continue
             fi
 
@@ -53,5 +58,14 @@ jobs:
 
           if [ "$invalid" -ne 0 ]; then
             echo "::error::Use Conventional Commit subjects so release-please can detect releasable changes."
+            exit 1
+          fi
+
+          git fetch --no-tags origin master
+          base=$(git merge-base origin/master "$HEAD_SHA")
+          merge_commits=$(git rev-list --merges "$base..$HEAD_SHA")
+          if [ -n "$merge_commits" ]; then
+            echo "::error::Feature branches must not contain merge commits. Rebase onto origin/master instead."
+            git log --oneline --merges "$base..$HEAD_SHA"
             exit 1
           fi

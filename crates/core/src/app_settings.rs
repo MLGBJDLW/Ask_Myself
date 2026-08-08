@@ -254,6 +254,8 @@ impl SpeechToTextConfig {
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchConfig {
     #[serde(default)]
+    pub execution_mode: crate::llm::native_search::SearchExecutionMode,
+    #[serde(default)]
     pub provider_profile: WebSearchProviderProfile,
     #[serde(default)]
     pub reranker: WebSearchReranker,
@@ -266,6 +268,7 @@ pub struct WebSearchConfig {
 impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
+            execution_mode: crate::llm::native_search::SearchExecutionMode::Auto,
             provider_profile: WebSearchProviderProfile::Default,
             reranker: WebSearchReranker::Auto,
             provider_mode: WebSearchProviderMode::BuiltInFirst,
