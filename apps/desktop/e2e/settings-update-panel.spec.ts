@@ -102,6 +102,8 @@ test.beforeEach(async ({ page }) => {
             hfMirrorBaseUrl: "https://hf-mirror.com",
             ghproxyBaseUrl: "https://mirror.ghproxy.com",
           };
+        case "scan_companion_packs_cmd":
+          return { packs: [], errors: [] };
         case "save_app_config_cmd":
           (window as unknown as { __savedAppConfig?: unknown }).__savedAppConfig = _args.config;
           return null;
@@ -184,6 +186,20 @@ test("close-to-tray is visible in appearance and saves immediately", async ({ pa
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { windowCloseBehavior?: string } }
   ).__savedAppConfig?.windowCloseBehavior)).toBe("minimize_to_tray");
+});
+
+test("desktop pet settings are visible and persist locally", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Appearance" }).click();
+
+  const card = page.getByTestId("companion-settings-card");
+  await expect(card.getByRole("heading", { name: "Desktop Pets" })).toBeVisible();
+  await card.getByRole("button", { name: "Configure" }).click();
+  await expect(card.getByText("Codex home")).toBeVisible();
+  await card.getByRole("checkbox", { name: "Enable desktop pet" }).check();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { companion?: { enabled?: boolean } } }
+  ).__savedAppConfig?.companion?.enabled)).toBe(true);
 });
 
 test("unsupported stored update source falls back to GitHub", async ({ page }) => {

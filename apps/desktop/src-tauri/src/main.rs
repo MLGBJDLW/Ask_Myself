@@ -6,6 +6,7 @@ mod agent_task_events;
 mod app_events;
 mod browser;
 mod commands;
+mod companion_window;
 mod delegation_scheduler;
 mod desktop_agent_session;
 mod subagent_tool;
@@ -25,7 +26,7 @@ use nexa_core::db::Database;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 use tauri_plugin_window_state::StateFlags;
 use tokio::sync::Mutex as TokioMutex;
@@ -153,6 +154,12 @@ fn persisted_window_state_flags() -> StateFlags {
 }
 
 const TRAY_SHOW_ID: &str = "tray_show";
+const TRAY_SHOW_COMPANION_ID: &str = "tray_show_companion";
+const TRAY_HIDE_COMPANION_ID: &str = "tray_hide_companion";
+const TRAY_LOCK_COMPANION_ID: &str = "tray_lock_companion";
+const TRAY_UNLOCK_COMPANION_ID: &str = "tray_unlock_companion";
+const TRAY_RESET_COMPANION_ID: &str = "tray_reset_companion";
+const TRAY_COMPANION_SETTINGS_ID: &str = "tray_companion_settings";
 const TRAY_QUIT_ID: &str = "tray_quit";
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -165,8 +172,62 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "Show Nexa", true, None::<&str>)?;
+    let show_companion_item = MenuItem::with_id(
+        app,
+        TRAY_SHOW_COMPANION_ID,
+        "Show Desktop Pet",
+        true,
+        None::<&str>,
+    )?;
+    let hide_companion_item = MenuItem::with_id(
+        app,
+        TRAY_HIDE_COMPANION_ID,
+        "Hide Desktop Pet",
+        true,
+        None::<&str>,
+    )?;
+    let unlock_companion_item = MenuItem::with_id(
+        app,
+        TRAY_UNLOCK_COMPANION_ID,
+        "Unlock Desktop Pet",
+        true,
+        None::<&str>,
+    )?;
+    let lock_companion_item = MenuItem::with_id(
+        app,
+        TRAY_LOCK_COMPANION_ID,
+        "Lock Desktop Pet",
+        true,
+        None::<&str>,
+    )?;
+    let reset_companion_item = MenuItem::with_id(
+        app,
+        TRAY_RESET_COMPANION_ID,
+        "Reset Pet Position",
+        true,
+        None::<&str>,
+    )?;
+    let companion_settings_item = MenuItem::with_id(
+        app,
+        TRAY_COMPANION_SETTINGS_ID,
+        "Open Pet Settings",
+        true,
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit Nexa", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_item,
+            &show_companion_item,
+            &hide_companion_item,
+            &lock_companion_item,
+            &unlock_companion_item,
+            &reset_companion_item,
+            &companion_settings_item,
+            &quit_item,
+        ],
+    )?;
     let icon = app.default_window_icon().cloned();
 
     let mut tray = TrayIconBuilder::with_id("nexa-main")
@@ -175,6 +236,35 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_SHOW_ID => show_main_window(app),
+            TRAY_SHOW_COMPANION_ID => {
+                if let Err(error) = companion_window::show_companion(app) {
+                    log::warn!("Failed to show Desktop Pet from tray: {error}");
+                }
+            }
+            TRAY_HIDE_COMPANION_ID => {
+                if let Err(error) = companion_window::hide_companion(app) {
+                    log::warn!("Failed to hide Desktop Pet from tray: {error}");
+                }
+            }
+            TRAY_LOCK_COMPANION_ID => {
+                if let Err(error) = companion_window::lock_companion(app) {
+                    log::warn!("Failed to lock Desktop Pet from tray: {error}");
+                }
+            }
+            TRAY_UNLOCK_COMPANION_ID => {
+                if let Err(error) = companion_window::unlock_companion(app) {
+                    log::warn!("Failed to unlock Desktop Pet from tray: {error}");
+                }
+            }
+            TRAY_RESET_COMPANION_ID => {
+                if let Err(error) = companion_window::reset_companion_position(app) {
+                    log::warn!("Failed to reset Desktop Pet position from tray: {error}");
+                }
+            }
+            TRAY_COMPANION_SETTINGS_ID => {
+                show_main_window(app);
+                let _ = app.emit("companion://open-settings", ());
+            }
             TRAY_QUIT_ID => app.exit(0),
             _ => {}
         })
@@ -327,6 +417,11 @@ fn main() {
                 data_dir.join("browser-profiles"),
             ));
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
+            let companion_settings = db
+                .load_app_config()
+                .map(|config| config.companion)
+                .unwrap_or_default();
+            companion_window::create_companion_window(app, &companion_settings);
             install_tray(app)?;
 
             // Initialise the file watcher for auto-indexing.
@@ -424,6 +519,20 @@ fn main() {
             commands::get_project_workspace_cmd,
             commands::get_project_narrative_cmd,
             commands::get_companion_projection_cmd,
+            commands::scan_companion_packs_cmd,
+            commands::import_companion_pack_cmd,
+            commands::read_companion_asset_cmd,
+            commands::delete_managed_companion_pack_cmd,
+            commands::get_global_companion_projection_cmd,
+            commands::companion_command_cmd,
+            companion_window::companion_renderer_ready_cmd,
+            companion_window::show_companion_cmd,
+            companion_window::hide_companion_cmd,
+            companion_window::toggle_companion_cmd,
+            companion_window::set_companion_interaction_cmd,
+            companion_window::persist_companion_position_cmd,
+            companion_window::reset_companion_position_cmd,
+            companion_window::get_companion_window_diagnostics_cmd,
             commands::create_project_knowledge_claim_cmd,
             commands::review_project_knowledge_claim_cmd,
             commands::create_project_memory_cmd,

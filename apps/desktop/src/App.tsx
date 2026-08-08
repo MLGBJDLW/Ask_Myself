@@ -8,7 +8,9 @@ import {
   Route,
   RouterProvider,
   useLocation,
+  useNavigate,
 } from "react-router";
+import { listen } from "@tauri-apps/api/event";
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -32,6 +34,7 @@ const ChatPage = lazy(() => import("./pages/ChatPage").then((module) => ({ defau
 const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage").then((module) => ({ default: module.TaskCenterPage })));
 const WorkflowsPage = lazy(() => import("./pages/WorkflowsPage").then((module) => ({ default: module.WorkflowsPage })));
 const WizardPage = lazy(() => import("./pages/WizardPage").then((module) => ({ default: module.WizardPage })));
+const CompanionWindowPage = lazy(() => import("./pages/CompanionWindowPage").then((module) => ({ default: module.CompanionWindowPage })));
 
 /* ── Page transition wrapper ─────────────────────────────────────── */
 function PageTransition({ children }: { children: ReactNode }) {
@@ -88,6 +91,7 @@ function AppShell() {
   // `null` = still loading; `true`/`false` = known state.
   const [wizardCompleted, setWizardCompleted] = useState<boolean | null>(null);
   const location = useLocation();
+  const navigate = useNavigate();
 
   useAutoCompile();
   useAutoHealthCheck(wizardCompleted === true);
@@ -111,6 +115,11 @@ function AppShell() {
         .catch(() => {});
     }
   }, [location.pathname, wizardCompleted]);
+
+  useEffect(() => {
+    const unlisten = listen('companion://open-settings', () => navigate('/settings'));
+    return () => { void unlisten.then((callback) => callback()); };
+  }, [navigate]);
 
   return (
     <I18nProvider>
@@ -140,20 +149,32 @@ export type AppShellOutletContext = {
 
 const router = createBrowserRouter(
   createRoutesFromElements(
-    <Route element={<AppShell />}>
-      <Route path="/wizard" element={<Suspense fallback={<PageLoader />}><WizardPage /></Suspense>} />
-      <Route element={<Layout />}>
-        <Route path="/" element={<LazyPage><SearchPage /></LazyPage>} />
-        <Route path="/sources" element={<LazyPage><SourcesPage /></LazyPage>} />
-        <Route path="/playbooks" element={<Navigate to="/" replace />} />
-        <Route path="/knowledge" element={<LazyPage><KnowledgePage /></LazyPage>} />
-        <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
-        <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />
-        <Route path="/workflows" element={<LazyPage><WorkflowsPage /></LazyPage>} />
-        <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
-        <Route path="*" element={<LazyPage><NotFoundPage /></LazyPage>} />
+    <>
+      <Route
+        path="/companion"
+        element={(
+          <I18nProvider>
+            <MotionConfig reducedMotion="user">
+              <Suspense fallback={null}><CompanionWindowPage /></Suspense>
+            </MotionConfig>
+          </I18nProvider>
+        )}
+      />
+      <Route element={<AppShell />}>
+        <Route path="/wizard" element={<Suspense fallback={<PageLoader />}><WizardPage /></Suspense>} />
+        <Route element={<Layout />}>
+          <Route path="/" element={<LazyPage><SearchPage /></LazyPage>} />
+          <Route path="/sources" element={<LazyPage><SourcesPage /></LazyPage>} />
+          <Route path="/playbooks" element={<Navigate to="/" replace />} />
+          <Route path="/knowledge" element={<LazyPage><KnowledgePage /></LazyPage>} />
+          <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
+          <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />
+          <Route path="/workflows" element={<LazyPage><WorkflowsPage /></LazyPage>} />
+          <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
+          <Route path="*" element={<LazyPage><NotFoundPage /></LazyPage>} />
+        </Route>
       </Route>
-    </Route>
+    </>
   ),
 );
 

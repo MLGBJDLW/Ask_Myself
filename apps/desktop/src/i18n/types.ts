@@ -7,6 +7,7 @@ import type chat from './locales/en/chat.json';
 import type citation from './locales/en/citation.json';
 import type cmd from './locales/en/cmd.json';
 import type common from './locales/en/common.json';
+import type companion from './locales/en/companion.json';
 import type errorBoundary from './locales/en/errorBoundary.json';
 import type evidence from './locales/en/evidence.json';
 import type knowledge from './locales/en/knowledge.json';
@@ -54,6 +55,7 @@ export const translationNamespaces = [
   'citation',
   'cmd',
   'common',
+  'companion',
   'errorBoundary',
   'evidence',
   'knowledge',
@@ -89,6 +91,7 @@ type NamespaceKeyMap = {
   citation: typeof citation;
   cmd: typeof cmd;
   common: typeof common;
+  companion: typeof companion;
   errorBoundary: typeof errorBoundary;
   evidence: typeof evidence;
   knowledge: typeof knowledge;

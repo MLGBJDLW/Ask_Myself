@@ -1,0 +1,9 @@
+{
+  "identifier": "companion",
+  "description": "Least-privilege capability for the local Desktop Pet renderer",
+  "webviews": ["companion"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
+}

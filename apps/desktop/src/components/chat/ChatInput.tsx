@@ -886,6 +886,18 @@ export function ChatInput({
       requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
+    if (slashResolution?.localAction === "companion") {
+      if (attachments.length > 0) {
+        toast.error(t("chat.attachmentWhileRunning"));
+        return;
+      }
+      const commandInput = slashResolution.message;
+      clearDraft();
+      void api.executeCompanionCommand(commandInput)
+        .then((result) => toast.success(result.message))
+        .catch((error) => toast.error(String(error)));
+      return;
+    }
     if (slashResolution?.localAction === "compact") {
       if (isStreaming) {
         toast.error(t("chat.compactWhileRunning"));
