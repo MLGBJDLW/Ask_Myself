@@ -576,6 +576,16 @@ pub trait LlmProvider: Send + Sync {
         reasoning_profile::ReasoningReplayPolicy::Unknown
     }
 
+    /// Policy used to project history before a provider request is opened.
+    /// Providers that select among heterogeneous routes may defer projection
+    /// until the concrete route is known.
+    fn reasoning_replay_history_policy(
+        &self,
+        model: &str,
+    ) -> reasoning_profile::ReasoningReplayPolicy {
+        self.reasoning_replay_policy(model)
+    }
+
     /// List available models from this provider.
     async fn list_models(&self) -> Result<Vec<String>, CoreError>;
 
@@ -636,6 +646,13 @@ impl LlmProvider for MessageValidatingProvider {
 
     fn reasoning_replay_policy(&self, model: &str) -> reasoning_profile::ReasoningReplayPolicy {
         self.inner.reasoning_replay_policy(model)
+    }
+
+    fn reasoning_replay_history_policy(
+        &self,
+        model: &str,
+    ) -> reasoning_profile::ReasoningReplayPolicy {
+        self.inner.reasoning_replay_history_policy(model)
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {

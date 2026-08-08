@@ -28,6 +28,21 @@ impl AgentExecutor {
         }
     }
 
+    pub(super) fn reasoning_replay_history_policy_for_request(
+        &self,
+        model: &str,
+        force_reasoning_off: bool,
+    ) -> ReasoningReplayPolicy {
+        if force_reasoning_off
+            || self.config.reasoning_enabled == Some(false)
+            || self.config.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            ReasoningReplayPolicy::NotRequired
+        } else {
+            self.provider.reasoning_replay_history_policy(model)
+        }
+    }
+
     pub(super) fn reasoning_envelope_for_persistence(
         &self,
         model: &str,

@@ -127,11 +127,11 @@ impl AgentExecutor {
         let stream_recovery_policy = StreamRecoveryPolicy::default();
         let request_tools =
             request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
-        let reasoning_replay_policy =
-            self.reasoning_replay_policy_for_request(model, force_answer_only);
+        let reasoning_replay_history_policy =
+            self.reasoning_replay_history_policy_for_request(model, force_answer_only);
         let replay_projection = crate::llm::reasoning_replay::prepare_reasoning_replay_history(
             messages,
-            reasoning_replay_policy,
+            reasoning_replay_history_policy,
         );
         if replay_projection.omitted_units > 0 {
             append_developer_persisted_trace_status(
@@ -927,8 +927,9 @@ impl AgentExecutor {
                 }
             }
 
-            let missing_required_tool_reasoning = reasoning_replay_policy
-                .requires_tool_call_payload()
+            let output_replay_policy =
+                self.reasoning_replay_policy_for_request(model, force_answer_only);
+            let missing_required_tool_reasoning = output_replay_policy.requires_tool_call_payload()
                 && !tool_calls.is_empty()
                 && crate::llm::reasoning_replay::sanitize_reasoning_text(Some(&iteration_thinking))
                     .is_none();
@@ -953,7 +954,12 @@ impl AgentExecutor {
                             crate::llm::reasoning_replay::sanitize_reasoning_text(
                                 response.thinking.as_deref(),
                             );
-                        if !recovered_tool_calls.is_empty() && recovered_thinking.is_none() {
+                        let recovered_replay_policy =
+                            self.reasoning_replay_policy_for_request(model, force_answer_only);
+                        if recovered_replay_policy.requires_tool_call_payload()
+                            && !recovered_tool_calls.is_empty()
+                            && recovered_thinking.is_none()
+                        {
                             let frontend_message = "The provider returned tool calls without the reasoning payload required for safe replay. No tools were executed. Retry the turn or disable reasoning for this model step.";
                             let trace_message = format!(
                                 "reasoning_replay_payload_missing: provider={}, model={}, tool_call_count={}",

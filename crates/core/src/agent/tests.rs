@@ -422,6 +422,75 @@ struct MissingRequiredReasoningProvider {
     complete_calls: Arc<AtomicUsize>,
 }
 
+struct RouteAwareReplayPolicyProvider {
+    stream_calls: Arc<AtomicUsize>,
+    complete_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for RouteAwareReplayPolicyProvider {
+    fn name(&self) -> &str {
+        "route-aware-replay-policy-mock"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::NotRequired
+    }
+
+    fn reasoning_replay_history_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::RequiredOnToolCall
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["primary-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        self.complete_calls.fetch_add(1, Ordering::SeqCst);
+        Err(CoreError::Llm(
+            "permissive output must not enter reasoning recovery".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunks = if call_no == 0 {
+            vec![Ok(StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "call-primary".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"safe"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            })]
+        } else {
+            vec![Ok(StreamChunk {
+                delta: "final answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            })]
+        };
+        Ok(Box::pin(stream::iter(chunks)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl LlmProvider for MissingRequiredReasoningProvider {
     fn name(&self) -> &str {
@@ -4191,6 +4260,51 @@ async fn missing_required_reasoning_fails_closed_before_tool_execution() {
         0,
         "required replay payload must be validated before tool dispatch"
     );
+}
+
+#[tokio::test]
+async fn output_validation_uses_the_route_policy_not_the_history_policy() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let complete_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(RouteAwareReplayPolicyProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            complete_calls: Arc::clone(&complete_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("primary-model".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Use recording_tool once.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a permissive selected route may execute its tool without reasoning");
+
+    assert_eq!(final_message.text_content(), "final answer");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 }
 
 #[test]
