@@ -275,6 +275,7 @@ impl AgentExecutor {
             &verification_trace_status,
             verification_artifact_tone(&verification_artifact),
         );
+        let provider_turn = assistant_msg.provider_turn().cloned();
 
         if let Some(cid) = conversation_id {
             let assistant_message_id = Uuid::new_v4().to_string();
@@ -290,10 +291,13 @@ impl AgentExecutor {
             let display_thinking = reasoning_envelope
                 .as_ref()
                 .and_then(|envelope| envelope.display_text.clone());
-            let artifacts = merge_reasoning_envelope_artifact(
+            let mut artifacts = merge_reasoning_envelope_artifact(
                 build_assistant_artifacts(persisted_trace_items, proposed_plan_artifact.as_ref()),
                 reasoning_envelope,
             );
+            if let Some(envelope) = provider_turn.as_ref() {
+                artifacts = merge_provider_turn_envelope_artifact(artifacts, envelope);
+            }
             let conv_msg = ConversationMessage {
                 id: assistant_message_id.clone(),
                 conversation_id: cid.to_string(),
@@ -308,8 +312,20 @@ impl AgentExecutor {
                 thinking: display_thinking,
                 image_attachments: None,
             };
-            if let Err(e) = db.add_message(&conv_msg) {
-                warn!("Failed to save final assistant message: {e}");
+            if let Some(envelope) = provider_turn.as_ref() {
+                db.persist_provider_turn(
+                    Some(&conv_msg),
+                    envelope,
+                    ProviderTurnPersistenceScope {
+                        scope_id: turn_id.or(conversation_id).unwrap_or(&self.usage_scope_id),
+                        conversation_id,
+                        conversation_turn_id: turn_id,
+                        run_id: self.usage_run_id.as_deref(),
+                        subtask_run_id: self.usage_subtask_run_id.as_deref(),
+                    },
+                )?;
+            } else {
+                db.add_message(&conv_msg)?;
             }
             if let Some(tid) = turn_id {
                 let mut trace_payload = build_turn_trace_with_verification(
@@ -354,6 +370,18 @@ impl AgentExecutor {
                         .record_timeline_event(&task_run.id, &timeline_event);
                 }
             }
+        } else if let Some(envelope) = provider_turn.as_ref() {
+            db.persist_provider_turn(
+                None,
+                envelope,
+                ProviderTurnPersistenceScope {
+                    scope_id: &self.usage_scope_id,
+                    conversation_id: None,
+                    conversation_turn_id: None,
+                    run_id: self.usage_run_id.as_deref(),
+                    subtask_run_id: self.usage_subtask_run_id.as_deref(),
+                },
+            )?;
         }
 
         if !self.config.execution_mode.is_plan()
@@ -379,7 +407,7 @@ impl AgentExecutor {
 
         let _ = tx
             .send(AgentEvent::Done {
-                message: assistant_msg.clone(),
+                message: assistant_msg.clone().without_provider_turn(),
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
@@ -396,7 +424,7 @@ impl AgentExecutor {
             }
         }
 
-        Ok(assistant_msg)
+        Ok(assistant_msg.without_provider_turn())
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -564,6 +564,7 @@ impl AgentExecutor {
         let mut loop_guard = AgentLoopGuard::new();
         let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
+        let mut reasoning_disabled_for_tool_loop = false;
         let mut prompt_was_compacted = history_was_compacted;
 
         // Nexus owns reconnaissance waves at runtime. This is a deterministic
@@ -606,7 +607,7 @@ impl AgentExecutor {
                         .map_err(|error| CoreError::Internal(error.to_string()))?,
                     thought_signature: None,
                 };
-                let synthetic_assistant = Message {
+                let mut synthetic_assistant = Message {
                     role: Role::Assistant,
                     parts: vec![ContentPart::Text {
                         text: "Nexus is starting the independent reconnaissance wave compiled by Workflow IR."
@@ -617,8 +618,24 @@ impl AgentExecutor {
                     reasoning_content: None,
                     prompt_cache_hint: None,
                 };
+                let synthetic_route = crate::llm::provider_turn::RouteSnapshot::unknown(
+                    "nexaController",
+                    model,
+                    ReasoningReplayPolicy::NotRequired,
+                );
+                let synthetic_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                    Uuid::new_v4().to_string(),
+                    Uuid::new_v4().to_string(),
+                    synthetic_route,
+                    synthetic_assistant.text_content(),
+                    None,
+                    None,
+                    vec![call.clone()],
+                    false,
+                );
+                synthetic_assistant.set_provider_turn(synthetic_envelope);
                 messages.push(synthetic_assistant.clone());
-                self.persist_intermediate_tool_call_assistant(
+                let synthetic_envelope = self.persist_intermediate_tool_call_assistant(
                     assistant_turn::AssistantTurnPersistenceContext {
                         db,
                         conversation_id,
@@ -632,7 +649,10 @@ impl AgentExecutor {
                     std::slice::from_ref(&call),
                     None,
                     "Nexus runtime scheduled the first Workflow IR reconnaissance wave.",
-                );
+                )?;
+                if let Some(message) = messages.last_mut() {
+                    message.set_provider_turn(synthetic_envelope);
+                }
                 let status = format!(
                     "Nexus started {} independent reconnaissance workers from Workflow IR.",
                     node_ids.len()
@@ -870,6 +890,7 @@ impl AgentExecutor {
                     sort_order: &mut sort_order,
                     context_recovery_attempts: &mut context_recovery_attempts,
                     force_non_streaming_llm: &mut force_non_streaming_llm,
+                    reasoning_disabled_for_tool_loop: &mut reasoning_disabled_for_tool_loop,
                     force_answer_only,
                 })
                 .await;
@@ -900,6 +921,9 @@ impl AgentExecutor {
                 prompt_cache_observation,
                 request_latency_ms,
                 time_to_first_token_ms,
+                sample_id,
+                route_snapshot,
+                reasoning_was_requested,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart {
@@ -1084,7 +1108,7 @@ impl AgentExecutor {
             // -- 4c. Build assistant message -----------------------------------
             let assistant_reasoning_content =
                 self.reasoning_content_for_iteration(&iteration_thinking, !tool_calls.is_empty());
-            let assistant_msg = Message {
+            let mut assistant_msg = Message {
                 role: Role::Assistant,
                 parts: vec![ContentPart::Text { text: full_content }],
                 name: None,
@@ -1096,6 +1120,18 @@ impl AgentExecutor {
                 reasoning_content: assistant_reasoning_content.clone(),
                 prompt_cache_hint: None,
             };
+            let provider_turn_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                Uuid::new_v4().to_string(),
+                sample_id,
+                route_snapshot,
+                assistant_msg.text_content(),
+                crate::llm::reasoning_replay::sanitize_reasoning_text(Some(&iteration_thinking))
+                    .as_deref(),
+                assistant_reasoning_content.as_deref(),
+                tool_calls.clone(),
+                reasoning_was_requested,
+            );
+            assistant_msg.set_provider_turn(provider_turn_envelope);
             messages.push(assistant_msg.clone());
             let loop_guard_intervention =
                 loop_guard.observe_model_step(&assistant_msg.text_content(), &tool_calls);
@@ -1357,7 +1393,7 @@ impl AgentExecutor {
             }
 
             // -- 4d'. Save intermediate assistant message (with tool_calls) ----
-            self.persist_intermediate_tool_call_assistant(
+            let provider_turn_envelope = self.persist_intermediate_tool_call_assistant(
                 assistant_turn::AssistantTurnPersistenceContext {
                     db,
                     conversation_id,
@@ -1371,7 +1407,11 @@ impl AgentExecutor {
                 &tool_calls,
                 assistant_reasoning_content.clone(),
                 &iteration_thinking,
-            );
+            )?;
+            assistant_msg.set_provider_turn(provider_turn_envelope.clone());
+            if let Some(message) = messages.last_mut() {
+                message.set_provider_turn(provider_turn_envelope);
+            }
 
             last_tool_calls = Some(tool_calls.clone());
 

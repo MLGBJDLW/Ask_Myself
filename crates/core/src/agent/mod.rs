@@ -20,7 +20,8 @@ use crate::conversation::memory::{
 };
 use crate::conversation::summarizer;
 use crate::conversation::{
-    merge_reasoning_envelope_artifact, ConversationMessage, ImageAttachment,
+    merge_provider_turn_envelope_artifact, merge_reasoning_envelope_artifact, ConversationMessage,
+    ImageAttachment, ProviderTurnPersistenceScope,
 };
 use crate::db::Database;
 use crate::error::CoreError;
