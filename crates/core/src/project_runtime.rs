@@ -421,6 +421,168 @@ fn extract_plan_workspace_items(plan: Option<&serde_json::Value>) -> Vec<Extract
     items
 }
 
+fn artifact_labels(value: &serde_json::Value, fallback: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    match value {
+        serde_json::Value::String(label) if !label.trim().is_empty() => {
+            labels.push(compact_visible_output(label));
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                labels.extend(artifact_labels(value, fallback));
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["path", "absolutePath", "outputPath", "uri", "url"] {
+                if let Some(label) = map.get(key).and_then(serde_json::Value::as_str) {
+                    if !label.trim().is_empty() {
+                        labels.push(compact_visible_output(label));
+                    }
+                }
+            }
+            if let Some(paths) = map.get("paths").and_then(serde_json::Value::as_array) {
+                for path in paths.iter().filter_map(serde_json::Value::as_str) {
+                    if !path.trim().is_empty() {
+                        labels.push(compact_visible_output(path));
+                    }
+                }
+            }
+            if let Some(changes) = map.get("fileChanges").and_then(serde_json::Value::as_array) {
+                for change in changes {
+                    labels.extend(artifact_labels(change, fallback));
+                }
+            }
+            if labels.is_empty() {
+                for key in ["diff", "diffStats", "output", "result"] {
+                    if let Some(nested) = map.get(key) {
+                        let nested_labels = artifact_labels(nested, "");
+                        if !nested_labels.is_empty() {
+                            labels.extend(nested_labels);
+                            break;
+                        }
+                    }
+                }
+            }
+            if labels.is_empty() {
+                for key in ["title", "name"] {
+                    if let Some(label) = map.get(key).and_then(serde_json::Value::as_str) {
+                        if !label.trim().is_empty() {
+                            labels.push(compact_visible_output(label));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    if labels.is_empty() && !fallback.trim().is_empty() {
+        labels.push(compact_visible_output(fallback));
+    }
+    labels
+}
+
+fn task_artifact_title(key: &str) -> &str {
+    match key {
+        "files" => "Generated files",
+        "fileCheckpoints" => "File checkpoints",
+        "report" => "Task report",
+        "table" => "Generated table",
+        "proposedPlan" => "Proposed plan",
+        "savedArtifacts" => "Saved artifacts",
+        _ => "Task artifact",
+    }
+}
+
+fn extract_task_run_artifact_workspace_items(
+    artifacts: Option<&serde_json::Value>,
+) -> Vec<ExtractedWorkspaceItem> {
+    let Some(artifacts) = artifacts.and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    for key in [
+        "files",
+        "fileCheckpoints",
+        "report",
+        "table",
+        "proposedPlan",
+        "savedArtifacts",
+        "artifacts",
+    ] {
+        let Some(value) = artifacts.get(key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        items.extend(
+            artifact_labels(value, task_artifact_title(key))
+                .into_iter()
+                .map(|title| ExtractedWorkspaceItem {
+                    kind: ProjectWorkspaceItemKind::Artifact,
+                    status: ProjectWorkspaceItemStatus::Active,
+                    title,
+                    extractor: "durable_task_artifact",
+                }),
+        );
+    }
+    items
+}
+
+fn extract_turn_artifact_workspace_items(
+    trace: Option<&serde_json::Value>,
+) -> Vec<ExtractedWorkspaceItem> {
+    let Some(items) = trace
+        .and_then(|trace| trace.get("items"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut artifacts = Vec::new();
+    for item in items {
+        if item.get("kind").and_then(serde_json::Value::as_str) != Some("tool") {
+            continue;
+        }
+        let Some(tool_call) = item.get("toolCall") else {
+            continue;
+        };
+        if tool_call.get("status").and_then(serde_json::Value::as_str) != Some("done")
+            || tool_call
+                .get("isError")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            continue;
+        }
+        let tool_name = tool_call
+            .get("toolName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Task artifact");
+        let Some(payload) = tool_call
+            .get("artifacts")
+            .filter(|payload| !payload.is_null())
+        else {
+            continue;
+        };
+        let kind = payload
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if matches!(kind, "verification" | "diffStats" | "fileChangePreview") {
+            continue;
+        }
+        artifacts.extend(
+            artifact_labels(payload, tool_name)
+                .into_iter()
+                .map(|title| ExtractedWorkspaceItem {
+                    kind: ProjectWorkspaceItemKind::Artifact,
+                    status: ProjectWorkspaceItemStatus::Active,
+                    title,
+                    extractor: "durable_turn_artifact",
+                }),
+        );
+    }
+    artifacts
+}
+
 fn dedupe_workspace_items(items: Vec<ExtractedWorkspaceItem>) -> Vec<ExtractedWorkspaceItem> {
     let mut seen = HashSet::new();
     items
@@ -491,9 +653,16 @@ impl Database {
         }
 
         let task_run = self.get_agent_task_run(run_id).ok();
+        let turn = self.get_conversation_turn(turn_id).ok();
         let mut extracted = extract_visible_workspace_items(visible_output);
         extracted.extend(extract_plan_workspace_items(
             task_run.as_ref().and_then(|run| run.plan.as_ref()),
+        ));
+        extracted.extend(extract_task_run_artifact_workspace_items(
+            task_run.as_ref().and_then(|run| run.artifacts.as_ref()),
+        ));
+        extracted.extend(extract_turn_artifact_workspace_items(
+            turn.as_ref().and_then(|turn| turn.trace.as_ref()),
         ));
         let extracted = dedupe_workspace_items(extracted);
 
@@ -529,6 +698,24 @@ impl Database {
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        // A retried/recovered turn is a replacement projection. Retain old
+        // rows for audit, but remove them from current bootstrap state unless
+        // this completion publishes them again below.
+        tx.execute(
+            "UPDATE project_workspace_items
+             SET item_status = 'superseded',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE project_id = ?1 AND turn_id = ?2 AND item_status <> 'superseded'",
+            params![project_id, turn_id],
+        )?;
+        tx.execute(
+            "UPDATE project_events
+             SET valid_to = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE project_id = ?1 AND turn_id = ?2 AND event_type <> 'turn_completed'
+               AND valid_to IS NULL",
+            params![project_id, turn_id],
+        )?;
         tx.execute(
             "INSERT INTO conversation_episodes
                  (id, project_id, conversation_id, turn_id, run_id, summary, evidence_json)
@@ -575,10 +762,11 @@ impl Database {
                 "conversationId": conversation_id,
                 "turnId": turn_id,
                 "runId": run_id,
-                "contentBoundary": if item.extractor.starts_with("visible_") {
-                    "visible_assistant_output"
-                } else {
-                    "durable_plan_state"
+                "contentBoundary": match item.extractor {
+                    extractor if extractor.starts_with("visible_") => "visible_assistant_output",
+                    "durable_task_artifact" => "durable_task_state",
+                    "durable_turn_artifact" => "durable_turn_trace",
+                    _ => "durable_plan_state",
                 },
                 "author": "assistant",
                 "provider": provider,
@@ -645,6 +833,7 @@ impl Database {
                      title = excluded.title,
                      summary = excluded.summary,
                      provenance_json = excluded.provenance_json,
+                     valid_to = NULL,
                      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
                 params![
                     structured_event_id,
@@ -738,7 +927,8 @@ impl Database {
                     title, summary, evidence_json, provenance_json, review_state,
                     created_at, updated_at
              FROM project_workspace_items
-             WHERE project_id = ?1 AND (?2 IS NULL OR item_kind = ?2)
+             WHERE project_id = ?1 AND item_status <> 'superseded'
+               AND (?2 IS NULL OR item_kind = ?2)
              ORDER BY CASE item_status
                         WHEN 'open' THEN 0
                         WHEN 'active' THEN 1
@@ -852,11 +1042,55 @@ impl Database {
             Some(ProjectWorkspaceItemKind::OpenQuestion),
             MAX_BOOTSTRAP_ITEMS_PER_KIND,
         )?;
-        let sources = self.list_project_workspace_items(
+        let mut sources = self.list_project_workspace_items(
             project_id,
             Some(ProjectWorkspaceItemKind::Source),
             MAX_BOOTSTRAP_ITEMS_PER_KIND,
         )?;
+        let source_scope = project.source_scope.clone().unwrap_or_default();
+        for source_id in &source_scope {
+            if sources.iter().any(|item| {
+                item.evidence
+                    .iter()
+                    .any(|reference| reference == &format!("source:{source_id}"))
+            }) {
+                continue;
+            }
+            let linked_source = self.get_source(source_id).ok();
+            let title = linked_source
+                .as_ref()
+                .map(|source| source.root_path.trim())
+                .filter(|root| !root.is_empty())
+                .unwrap_or("Linked project source")
+                .to_string();
+            sources.push(ProjectWorkspaceItem {
+                id: format!("project-source:{project_id}:{source_id}"),
+                project_id: project_id.to_string(),
+                conversation_id: None,
+                turn_id: None,
+                run_id: None,
+                kind: ProjectWorkspaceItemKind::Source,
+                status: ProjectWorkspaceItemStatus::Active,
+                title: title.clone(),
+                summary: title,
+                evidence: vec![format!("source:{source_id}")],
+                provenance: serde_json::json!({
+                    "kind": "linked_project_source",
+                    "sourceId": source_id,
+                    "contentBoundary": "project_source_scope"
+                }),
+                review_state: "accepted".to_string(),
+                created_at: linked_source
+                    .as_ref()
+                    .map(|source| source.created_at.clone())
+                    .unwrap_or_else(|| project.created_at.clone()),
+                updated_at: linked_source
+                    .as_ref()
+                    .map(|source| source.updated_at.clone())
+                    .unwrap_or_else(|| project.updated_at.clone()),
+            });
+        }
+        sources.truncate(MAX_BOOTSTRAP_ITEMS_PER_KIND);
         let related_chats = self.list_related_project_chats(project_id, query)?;
         Ok(ProjectWorkspaceSnapshot {
             project_id: project.id,
@@ -870,7 +1104,7 @@ impl Database {
             artifacts,
             open_questions,
             sources,
-            source_scope: project.source_scope.unwrap_or_default(),
+            source_scope,
             related_chats,
         })
     }
@@ -924,12 +1158,6 @@ pub fn build_project_evidence_section(snapshot: &ProjectWorkspaceSnapshot) -> St
     append_workspace_items(&mut lines, "Artifact", &snapshot.artifacts);
     append_workspace_items(&mut lines, "Open question", &snapshot.open_questions);
     append_workspace_items(&mut lines, "Source", &snapshot.sources);
-    if !snapshot.source_scope.is_empty() {
-        lines.push(format!(
-            "- Linked source scope: {}",
-            snapshot.source_scope.join(", ")
-        ));
-    }
     lines.join("\n")
 }
 
@@ -1062,6 +1290,106 @@ mod tests {
         assert_eq!(items[0].kind, ProjectWorkspaceItemKind::Task);
         assert_eq!(items[0].status, ProjectWorkspaceItemStatus::Completed);
         assert_eq!(items[2].kind, ProjectWorkspaceItemKind::OpenQuestion);
+    }
+
+    #[test]
+    fn corrected_turn_supersedes_removed_workspace_items() {
+        let db = Database::open_memory().unwrap();
+        let (project_id, conversation_id) = project_conversation(&db);
+        db.record_project_turn_completion(
+            &conversation_id,
+            "turn-corrected",
+            "run-original",
+            "# Decisions\n- Use the legacy route",
+        )
+        .unwrap();
+        db.record_project_turn_completion(
+            &conversation_id,
+            "turn-corrected",
+            "run-corrected",
+            "# Decisions\n- Use the append-safe route",
+        )
+        .unwrap();
+
+        let decisions = db
+            .list_project_workspace_items(&project_id, Some(ProjectWorkspaceItemKind::Decision), 20)
+            .unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].title, "Use the append-safe route");
+        let superseded: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM project_workspace_items
+                 WHERE project_id = ?1 AND item_status = 'superseded'",
+                [&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded, 1);
+    }
+
+    #[test]
+    fn durable_task_and_turn_artifacts_are_projected() {
+        let task_items = extract_task_run_artifact_workspace_items(Some(&serde_json::json!({
+            "kind": "agentTaskArtifacts",
+            "files": [{ "path": "docs/report.md" }],
+            "verification": { "kind": "verification", "overallStatus": "passed" }
+        })));
+        assert_eq!(task_items.len(), 1);
+        assert_eq!(task_items[0].title, "docs/report.md");
+
+        let turn_items = extract_turn_artifact_workspace_items(Some(&serde_json::json!({
+            "items": [{
+                "kind": "tool",
+                "toolCall": {
+                    "toolName": "create_file",
+                    "status": "done",
+                    "isError": false,
+                    "artifacts": {
+                        "kind": "fileChangeSet",
+                        "diffStats": { "paths": ["docs/generated.md"] }
+                    }
+                }
+            }]
+        })));
+        assert_eq!(turn_items.len(), 1);
+        assert_eq!(turn_items[0].title, "docs/generated.md");
+    }
+
+    #[test]
+    fn snapshot_projects_linked_source_scope_as_current_sources() {
+        use crate::sources::CreateSourceInput;
+
+        let db = Database::open_memory().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: directory.path().to_string_lossy().into_owned(),
+                include_globs: vec!["**/*".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+        let project = db
+            .create_project(&CreateProjectInput {
+                name: "Sources".into(),
+                description: None,
+                icon: None,
+                color: None,
+                system_prompt: None,
+                source_scope: Some(vec![source.id.clone()]),
+            })
+            .unwrap();
+
+        let snapshot = db
+            .get_project_workspace_snapshot(&project.id, None)
+            .unwrap();
+        assert_eq!(snapshot.sources.len(), 1);
+        assert_eq!(snapshot.sources[0].title, source.root_path);
+        assert_eq!(
+            snapshot.sources[0].evidence,
+            vec![format!("source:{}", source.id)]
+        );
     }
 
     #[test]
