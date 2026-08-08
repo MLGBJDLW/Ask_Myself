@@ -695,7 +695,7 @@ impl AgentExecutor {
                         &mut started_call_ids,
                         &mut tool_run_started_ids,
                     )
-                    .await;
+                    .await?;
                 let summary = summaries.iter().find(|summary| summary.call_id == call.id);
                 workflow_ir.apply_reconnaissance_batch_result(
                     &node_ids,
@@ -1488,7 +1488,7 @@ impl AgentExecutor {
                     &mut started_call_ids,
                     &mut tool_run_started_ids,
                 )
-                .await;
+                .await?;
             for call in &tool_calls {
                 if let Some(summary) = dispatch_summaries
                     .iter()

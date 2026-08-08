@@ -1035,7 +1035,78 @@ fn replayable_responses_reasoning(message: &Message) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
-fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
+fn responses_call_id(item: &serde_json::Value) -> Option<&str> {
+    item.get("call_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|call_id| !call_id.trim().is_empty())
+}
+
+fn validate_responses_input_items(items: &[serde_json::Value]) -> Result<(), CoreError> {
+    let mut call_ids = std::collections::HashSet::new();
+    let mut output_ids = std::collections::HashSet::new();
+    let mut pending_call_ids = std::collections::HashSet::new();
+
+    for (index, item) in items.iter().enumerate() {
+        let item_type = item
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("missing");
+        match item_type {
+            "function_call" => {
+                let call_id = responses_call_id(item).ok_or_else(|| {
+                    CoreError::Llm(format!(
+                        "Responses input function_call at index {index} omitted call_id"
+                    ))
+                })?;
+                if !call_ids.insert(call_id.to_string()) {
+                    return Err(CoreError::Llm(format!(
+                        "Responses input contains duplicate function_call call_id {call_id}"
+                    )));
+                }
+                pending_call_ids.insert(call_id.to_string());
+            }
+            "function_call_output" => {
+                let call_id = responses_call_id(item).ok_or_else(|| {
+                    CoreError::Llm(format!(
+                        "Responses input function_call_output at index {index} omitted call_id"
+                    ))
+                })?;
+                if !call_ids.contains(call_id) {
+                    return Err(CoreError::Llm(format!(
+                        "Responses input contains orphan function_call_output for call_id {call_id}"
+                    )));
+                }
+                if !output_ids.insert(call_id.to_string()) {
+                    return Err(CoreError::Llm(format!(
+                        "Responses input contains duplicate function_call_output for call_id {call_id}"
+                    )));
+                }
+                pending_call_ids.remove(call_id);
+            }
+            "message" | "reasoning" | "web_search_call" if !pending_call_ids.is_empty() => {
+                let mut pending = pending_call_ids.iter().cloned().collect::<Vec<_>>();
+                pending.sort();
+                return Err(CoreError::Llm(format!(
+                    "Responses input places {item_type} before output for pending call_id(s): {}",
+                    pending.join(", ")
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    if pending_call_ids.is_empty() {
+        return Ok(());
+    }
+    let mut pending = pending_call_ids.into_iter().collect::<Vec<_>>();
+    pending.sort();
+    Err(CoreError::Llm(format!(
+        "Responses input ended without function_call_output for call_id(s): {}",
+        pending.join(", ")
+    )))
+}
+
+fn responses_input_items(messages: &[Message]) -> Result<Vec<serde_json::Value>, CoreError> {
     let mut items = Vec::new();
     for message in messages {
         if message.role == Role::Tool {
@@ -1048,19 +1119,22 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
         }
 
         let mut replayed_call_ids = std::collections::HashSet::new();
+        let mut replayed_message = false;
+        let mut replay_items = Vec::new();
         if message.role == Role::Assistant {
-            let replay_items = replayable_responses_reasoning(message);
+            replay_items = replayable_responses_reasoning(message);
+            replayed_message = replay_items.iter().any(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("message")
+            });
             replayed_call_ids.extend(replay_items.iter().filter_map(|item| {
                 (item.get("type").and_then(serde_json::Value::as_str) == Some("function_call"))
                     .then(|| {
                         item.get("call_id")
-                            .or_else(|| item.get("id"))
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_string)
                     })
                     .flatten()
             }));
-            items.extend(replay_items);
         }
 
         let mut content = Vec::new();
@@ -1077,12 +1151,30 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
                 ContentPart::ProviderTurn { .. } => {}
             }
         }
-        if !content.is_empty() {
-            items.push(serde_json::json!({
+        let generic_message = (!content.is_empty()
+            && !(message.role == Role::Assistant && replayed_message))
+            .then(|| {
+                serde_json::json!({
                 "type": "message",
                 "role": role_str(&message.role),
                 "content": content,
-            }));
+                })
+            });
+        if message.role == Role::Assistant {
+            let function_state = replay_items.split_off(
+                replay_items
+                    .iter()
+                    .position(|item| {
+                        item.get("type").and_then(serde_json::Value::as_str)
+                            == Some("function_call")
+                    })
+                    .unwrap_or(replay_items.len()),
+            );
+            items.extend(replay_items);
+            items.extend(generic_message);
+            items.extend(function_state);
+        } else {
+            items.extend(generic_message);
         }
         for tool_call in message.tool_calls.as_deref().unwrap_or_default() {
             if replayed_call_ids.contains(tool_call.id.as_str()) {
@@ -1096,7 +1188,8 @@ fn responses_input_items(messages: &[Message]) -> Vec<serde_json::Value> {
             }));
         }
     }
-    items
+    validate_responses_input_items(&items)?;
+    Ok(items)
 }
 
 fn responses_tools(
@@ -1139,10 +1232,11 @@ fn build_responses_request(
     dialect: super::native_search::NativeSearchDialect,
     mode: super::native_search::SearchExecutionMode,
     capability: crate::model_catalog::NativeWebSearchCapability,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, CoreError> {
+    let input = responses_input_items(&request.messages)?;
     let mut body = serde_json::json!({
         "model": request.model,
-        "input": responses_input_items(&request.messages),
+        "input": input,
         "tools": responses_tools(request, dialect, mode, capability),
         "parallel_tool_calls": request.parallel_tool_calls,
         "store": false,
@@ -1163,7 +1257,26 @@ fn build_responses_request(
             body["temperature"] = serde_json::json!(temperature);
         }
     }
-    body
+    Ok(body)
+}
+
+fn contextualize_hosted_search_error(
+    dialect: super::native_search::NativeSearchDialect,
+    error: CoreError,
+) -> CoreError {
+    let context = |message: String| {
+        format!(
+            "Provider-hosted search failed for {dialect:?} before output; refusing an in-sample API-style switch: {message}"
+        )
+    };
+    match error {
+        CoreError::TransientLlm(message) | CoreError::StreamIncomplete(message) => {
+            CoreError::TransientLlm(context(message))
+        }
+        CoreError::Llm(message) => CoreError::Llm(context(message)),
+        CoreError::RateLimited { retry_after_secs } => CoreError::RateLimited { retry_after_secs },
+        error => error,
+    }
 }
 
 fn parse_responses_completion(
@@ -1502,7 +1615,7 @@ impl OpenAiProvider {
         capability: crate::model_catalog::NativeWebSearchCapability,
     ) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
-        let body = build_responses_request(request, dialect, mode, capability);
+        let body = build_responses_request(request, dialect, mode, capability)?;
         let body_bytes = serialized_json_body(&body, "Responses hosted-search request")?;
         let api_key = self.api_key()?;
         info!(
@@ -1524,14 +1637,26 @@ impl OpenAiProvider {
         .send()
         .await
         .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
-        .map_err(|error| CoreError::Llm(format!("Responses request failed: {error}")))?;
+        .map_err(|error| {
+            let message = format!("Responses request failed: {error}");
+            if is_retriable_reqwest_error(&error) {
+                CoreError::TransientLlm(message)
+            } else {
+                CoreError::Llm(message)
+            }
+        })?;
         let response = self.check_response(response).await?;
         let value = response
             .json::<serde_json::Value>()
             .await
             .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
             .map_err(|error| {
-                CoreError::Llm(format!("Failed to parse Responses payload: {error}"))
+                let message = format!("Failed to parse Responses payload: {error}");
+                if is_retriable_reqwest_error(&error) {
+                    CoreError::TransientLlm(message)
+                } else {
+                    CoreError::Llm(message)
+                }
             })?;
         let parsed = parse_responses_completion(value, dialect, capability)?;
         self.transport.record_transport_success();
@@ -1642,9 +1767,7 @@ impl LlmProvider for OpenAiProvider {
                                 | super::native_search::SearchExecutionMode::Hybrid
                         ) =>
                     {
-                        return Err(CoreError::TransientLlm(format!(
-                            "Provider-hosted search failed for {dialect:?} before output; refusing an in-sample API-style switch: {error}"
-                        )));
+                        return Err(contextualize_hosted_search_error(dialect, error));
                     }
                     Err(error) => return Err(error),
                 }
@@ -3394,7 +3517,7 @@ data: [DONE]
             plan.marker().expect("trusted marker"),
         ]);
         let (dialect, mode, capability) = hosted_search_context(&request).expect("context");
-        let body = build_responses_request(&request, dialect, mode, capability);
+        let body = build_responses_request(&request, dialect, mode, capability).unwrap();
         assert_eq!(body["tools"][0]["type"], "web_search");
         assert_eq!(body["tools"][1]["name"], "read_file");
         assert_eq!(body["tools"].as_array().unwrap().len(), 2);
@@ -3436,7 +3559,7 @@ data: [DONE]
         assert!(capability.can_mix_client_tools);
         assert!(hosted_search_requires_client_tools(&request, mode));
 
-        let body = build_responses_request(&request, dialect, mode, capability);
+        let body = build_responses_request(&request, dialect, mode, capability).unwrap();
         let tools = body["tools"].as_array().expect("responses tools");
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["type"], "web_search");
@@ -3487,7 +3610,7 @@ data: [DONE]
         assistant.tool_calls = response.tool_calls;
         let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
 
-        let replay = responses_input_items(&[assistant, tool_result]);
+        let replay = responses_input_items(&[assistant, tool_result]).unwrap();
         assert_eq!(replay[0]["type"], "reasoning");
         assert_eq!(replay[0]["encrypted_content"], "encrypted-reasoning");
         assert_eq!(replay[1]["type"], "function_call");
@@ -3672,11 +3795,241 @@ data: [DONE]
         assistant.tool_calls = response.tool_calls;
         let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
 
-        let replay = responses_input_items(&[assistant, tool_result]);
+        let replay = responses_input_items(&[assistant, tool_result]).unwrap();
         assert_eq!(replay[0], reasoning);
         assert_eq!(replay[1], hosted_search);
         assert_eq!(replay[2]["type"], "function_call");
         assert_eq!(replay[3]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn deepseek_responses_replays_provider_message_exactly_once_before_function_state() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let response = parse_responses_completion(
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "status": "completed",
+                        "content": [{ "type": "reasoning_text", "text": "Need current evidence" }]
+                    },
+                    {
+                        "type": "web_search_call",
+                        "id": "ws_1",
+                        "status": "completed",
+                        "action": { "type": "search", "query": "Nexa" }
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": "I found the relevant file." }]
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                ]
+            }),
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            capability,
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, response.content);
+        assistant.tool_calls = response.tool_calls;
+        let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
+
+        let replay = responses_input_items(&[assistant, tool_result]).unwrap();
+        let replay_types = replay
+            .iter()
+            .map(|item| item["type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            replay_types,
+            vec![
+                "reasoning",
+                "web_search_call",
+                "message",
+                "function_call",
+                "function_call_output"
+            ]
+        );
+        assert_eq!(
+            replay_types
+                .iter()
+                .filter(|item_type| **item_type == "message")
+                .count(),
+            1,
+            "provider-native message must not be duplicated from generic assistant content"
+        );
+    }
+
+    #[test]
+    fn responses_replay_inserts_generic_message_before_unresolved_function_state() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            supports_domains: true,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: true,
+            supports_citations: true,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let response = parse_responses_completion(
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "status": "completed",
+                        "encrypted_content": "opaque",
+                        "summary": []
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                ]
+            }),
+            super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            capability,
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "Working on it.");
+        assistant.tool_calls = response.tool_calls;
+        let tool_result = Message::text_with_name(Role::Tool, "contents", "call_1");
+
+        let replay = responses_input_items(&[assistant, tool_result]).unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .map(|item| item["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "reasoning",
+                "message",
+                "function_call",
+                "function_call_output"
+            ]
+        );
+    }
+
+    #[test]
+    fn responses_wire_validation_accepts_parallel_call_batch() {
+        let items = vec![
+            serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+            serde_json::json!({"type": "function_call", "call_id": "call_2", "name": "read_file", "arguments": "{}"}),
+            serde_json::json!({"type": "function_call_output", "call_id": "call_1", "output": "a"}),
+            serde_json::json!({"type": "function_call_output", "call_id": "call_2", "output": "b"}),
+        ];
+
+        validate_responses_input_items(&items).expect("parallel call batches are valid");
+    }
+
+    #[test]
+    fn responses_wire_validation_rejects_broken_call_output_sequences() {
+        let cases = [
+            (
+                vec![serde_json::json!({"type": "function_call", "name": "read_file"})],
+                "omitted call_id",
+            ),
+            (
+                vec![
+                    serde_json::json!({"type": "function_call_output", "call_id": "orphan", "output": "x"}),
+                ],
+                "orphan function_call_output",
+            ),
+            (
+                vec![
+                    serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+                    serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+                ],
+                "duplicate function_call call_id call_1",
+            ),
+            (
+                vec![
+                    serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+                    serde_json::json!({"type": "function_call_output", "call_id": "call_1", "output": "x"}),
+                    serde_json::json!({"type": "function_call_output", "call_id": "call_1", "output": "x"}),
+                ],
+                "duplicate function_call_output",
+            ),
+            (
+                vec![
+                    serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+                    serde_json::json!({"type": "message", "role": "assistant", "content": []}),
+                    serde_json::json!({"type": "function_call_output", "call_id": "call_1", "output": "x"}),
+                ],
+                "message before output for pending call_id(s): call_1",
+            ),
+            (
+                vec![
+                    serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}),
+                ],
+                "ended without function_call_output for call_id(s): call_1",
+            ),
+        ];
+
+        for (items, expected) in cases {
+            let error = validate_responses_input_items(&items)
+                .expect_err("broken Responses history must fail before transport");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn hosted_search_context_preserves_retry_classification() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let deterministic = contextualize_hosted_search_error(
+            dialect,
+            CoreError::Llm("No tool output found for tool call call_1".to_string()),
+        );
+        assert!(matches!(
+            deterministic,
+            CoreError::Llm(ref message) if message.contains("No tool output found")
+        ));
+        let transient = contextualize_hosted_search_error(
+            dialect,
+            CoreError::TransientLlm("connection reset".to_string()),
+        );
+        assert!(matches!(
+            transient,
+            CoreError::TransientLlm(ref message) if message.contains("connection reset")
+        ));
+        let rate_limited = contextualize_hosted_search_error(
+            dialect,
+            CoreError::RateLimited {
+                retry_after_secs: 17,
+            },
+        );
+        assert!(matches!(
+            rate_limited,
+            CoreError::RateLimited {
+                retry_after_secs: 17
+            }
+        ));
     }
 
     #[test]
