@@ -101,6 +101,19 @@
   --duration-slow: 400ms;
 }
 
+:root {
+  --graph-canvas-glow-center: rgba(59, 130, 246, 0.14);
+  --graph-canvas-glow-mid: rgba(20, 184, 166, 0.07);
+  --graph-canvas-glow-edge: rgba(10, 10, 15, 0);
+  --graph-node-frost: rgba(255, 255, 255, 0.22);
+  --graph-label-background: rgba(18, 18, 26, 0.94);
+  --graph-label-border: rgba(255, 255, 255, 0.14);
+  --graph-transfer-core: rgba(240, 240, 245, 0.94);
+  --graph-suggestion-background: rgba(18, 18, 26, 0.96);
+  --graph-shadow-color: #000000;
+  --graph-shadow-opacity: 0.38;
+}
+
 .nexa-collapsible-motion {
   display: grid;
   grid-template-rows: 0fr;
@@ -219,6 +232,17 @@
   --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
   --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
   --shadow-glow: 0 0 20px rgba(13,148,136,0.1);
+
+  --graph-canvas-glow-center: rgba(255, 255, 255, 0.72);
+  --graph-canvas-glow-mid: rgba(219, 234, 254, 0.42);
+  --graph-canvas-glow-edge: rgba(241, 245, 249, 0);
+  --graph-node-frost: rgba(255, 255, 255, 0.72);
+  --graph-label-background: rgba(248, 250, 252, 0.94);
+  --graph-label-border: rgba(15, 23, 42, 0.16);
+  --graph-transfer-core: rgba(255, 255, 255, 0.98);
+  --graph-suggestion-background: rgba(248, 250, 252, 0.96);
+  --graph-shadow-color: #0f172a;
+  --graph-shadow-opacity: 0.14;
 }
 
 /* ── Midnight theme ───────────────────────────────────────────────── */
@@ -260,6 +284,17 @@
   --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
   --shadow-glow: 0 0 20px rgba(20,184,166,0.12);
+
+  --graph-canvas-glow-center: rgba(56, 189, 248, 0.16);
+  --graph-canvas-glow-mid: rgba(45, 212, 191, 0.08);
+  --graph-canvas-glow-edge: rgba(15, 23, 42, 0);
+  --graph-node-frost: rgba(226, 232, 240, 0.24);
+  --graph-label-background: rgba(30, 41, 59, 0.94);
+  --graph-label-border: rgba(148, 163, 184, 0.22);
+  --graph-transfer-core: rgba(226, 232, 240, 0.95);
+  --graph-suggestion-background: rgba(30, 41, 59, 0.96);
+  --graph-shadow-color: #020617;
+  --graph-shadow-opacity: 0.42;
 }
 
 /* ── Aurora theme ────────────────────────────────────────────────── */
@@ -301,6 +336,17 @@
   --shadow-md: 0 4px 14px rgba(0,0,0,0.42);
   --shadow-lg: 0 10px 30px rgba(0,0,0,0.52);
   --shadow-glow: 0 0 24px rgba(255,122,92,0.18);
+
+  --graph-canvas-glow-center: rgba(255, 122, 92, 0.16);
+  --graph-canvas-glow-mid: rgba(74, 222, 128, 0.07);
+  --graph-canvas-glow-edge: rgba(16, 20, 18, 0);
+  --graph-node-frost: rgba(236, 253, 245, 0.22);
+  --graph-label-background: rgba(22, 29, 25, 0.94);
+  --graph-label-border: rgba(167, 243, 208, 0.18);
+  --graph-transfer-core: rgba(236, 253, 245, 0.94);
+  --graph-suggestion-background: rgba(22, 29, 25, 0.96);
+  --graph-shadow-color: #06110b;
+  --graph-shadow-opacity: 0.4;
 }
 
 /* ── Bloom theme ─────────────────────────────────────────────────── */
@@ -342,6 +388,17 @@
   --shadow-md: 0 5px 14px rgba(40,48,38,0.09);
   --shadow-lg: 0 12px 24px rgba(40,48,38,0.12);
   --shadow-glow: 0 0 22px rgba(184,50,99,0.12);
+
+  --graph-canvas-glow-center: rgba(255, 255, 255, 0.68);
+  --graph-canvas-glow-mid: rgba(252, 231, 243, 0.38);
+  --graph-canvas-glow-edge: rgba(251, 252, 247, 0);
+  --graph-node-frost: rgba(255, 255, 255, 0.68);
+  --graph-label-background: rgba(251, 252, 247, 0.94);
+  --graph-label-border: rgba(40, 48, 38, 0.16);
+  --graph-transfer-core: rgba(255, 255, 255, 0.98);
+  --graph-suggestion-background: rgba(251, 252, 247, 0.96);
+  --graph-shadow-color: #283026;
+  --graph-shadow-opacity: 0.14;
 }
 
 /* Dream theme: a decorative, non-interactive wallpaper with translucent UI. */
@@ -383,6 +440,17 @@
   --shadow-md: 0 7px 20px rgba(10, 4, 18, 0.42);
   --shadow-lg: 0 16px 38px rgba(10, 4, 18, 0.52);
   --shadow-glow: 0 0 30px rgba(241, 120, 198, 0.18);
+
+  --graph-canvas-glow-center: rgba(241, 120, 198, 0.17);
+  --graph-canvas-glow-mid: rgba(159, 133, 255, 0.1);
+  --graph-canvas-glow-edge: rgba(19, 11, 31, 0);
+  --graph-node-frost: rgba(252, 231, 243, 0.24);
+  --graph-label-background: rgba(28, 16, 44, 0.94);
+  --graph-label-border: rgba(241, 120, 198, 0.22);
+  --graph-transfer-core: rgba(252, 231, 243, 0.95);
+  --graph-suggestion-background: rgba(28, 16, 44, 0.96);
+  --graph-shadow-color: #0a0412;
+  --graph-shadow-opacity: 0.44;
 }
 
 .app-theme-backdrop {
