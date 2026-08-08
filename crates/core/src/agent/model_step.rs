@@ -4,6 +4,24 @@ use super::steering::SteeringDrainContext;
 use super::*;
 use crate::llm::FinishReason;
 
+fn request_tools_with_native_search_marker(
+    tool_defs: &[ToolDefinition],
+    marker: Option<ToolDefinition>,
+) -> Vec<ToolDefinition> {
+    let has_exposed_search = tool_defs
+        .iter()
+        .any(|tool| tool.name == crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL);
+    let mut request_tools = tool_defs
+        .iter()
+        .filter(|tool| !crate::llm::native_search::is_native_marker(tool))
+        .cloned()
+        .collect::<Vec<_>>();
+    if has_exposed_search {
+        request_tools.extend(marker);
+    }
+    request_tools
+}
+
 fn next_retry_at(delay: Duration) -> Option<String> {
     chrono::Duration::from_std(delay)
         .ok()
@@ -107,12 +125,10 @@ impl AgentExecutor {
         // -- 4a. Stream LLM response (with rate-limit retry) ----------------
         let stream_recovery_policy = StreamRecoveryPolicy::default();
         self.config.native_search_plan.validate()?;
-        let mut request_tools = (*tool_defs).clone();
-        if let Some(marker) = self.config.native_search_plan.marker() {
-            request_tools
-                .retain(|tool| tool.name != crate::llm::native_search::NATIVE_WEB_SEARCH_MARKER);
-            request_tools.push(marker);
-        }
+        let request_tools = request_tools_with_native_search_marker(
+            tool_defs,
+            self.config.native_search_plan.marker(),
+        );
         let current_request = CompletionRequest {
             model: model.to_string(),
             messages: (*messages).clone(),
@@ -918,5 +934,36 @@ impl AgentExecutor {
                 .unwrap_or(u64::MAX),
             time_to_first_token_ms,
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: name.to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn native_search_marker_requires_the_filtered_search_tool() {
+        let marker = tool(crate::llm::native_search::NATIVE_WEB_SEARCH_MARKER);
+        let visible = request_tools_with_native_search_marker(
+            &[tool(crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL)],
+            Some(marker.clone()),
+        );
+        assert!(visible
+            .iter()
+            .any(crate::llm::native_search::is_native_marker));
+
+        let hidden = request_tools_with_native_search_marker(&[tool("read_file")], Some(marker));
+        assert!(!hidden
+            .iter()
+            .any(crate::llm::native_search::is_native_marker));
+        assert_eq!(hidden[0].name, "read_file");
     }
 }

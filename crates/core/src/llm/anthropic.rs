@@ -720,9 +720,38 @@ fn build_request_body(
 /// Unlike OpenAI, Anthropic uses named `event:` lines followed by `data:` lines.
 /// Events include `message_start`, `content_block_start`, `content_block_delta`,
 /// `message_delta`, `message_stop`, and `ping`.
+fn anthropic_search_mode(request: &CompletionRequest) -> super::native_search::SearchExecutionMode {
+    request
+        .tools
+        .as_deref()
+        .and_then(super::native_search::marker_mode)
+        .unwrap_or(super::native_search::SearchExecutionMode::NexaRouter)
+}
+
+fn drain_server_search_fallbacks(
+    pending: &mut HashMap<String, serde_json::Value>,
+    mode: super::native_search::SearchExecutionMode,
+) -> Result<Vec<(String, serde_json::Value)>, CoreError> {
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !matches!(
+        mode,
+        super::native_search::SearchExecutionMode::Auto
+            | super::native_search::SearchExecutionMode::Hybrid
+    ) {
+        return Err(CoreError::Llm(
+            "Anthropic provider-native web search failed, and local search fallback is disabled for the selected search mode."
+                .to_string(),
+        ));
+    }
+    Ok(pending.drain().collect())
+}
+
 async fn parse_anthropic_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    search_mode: super::native_search::SearchExecutionMode,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -919,7 +948,10 @@ async fn parse_anthropic_stream(
                 AnthropicStreamEvent::MessageDelta { delta, usage } => {
                     let mut finish = delta.stop_reason.as_deref().map(parse_finish_reason);
                     if delta.stop_reason.is_some() && !pending_server_searches.is_empty() {
-                        for (id, input) in pending_server_searches.drain() {
+                        for (id, input) in drain_server_search_fallbacks(
+                            &mut pending_server_searches,
+                            search_mode,
+                        )? {
                             let chunk = StreamChunk {
                                 delta: String::new(),
                                 tool_call_delta: Some(ToolCallDelta {
@@ -1094,6 +1126,31 @@ mod tests {
         assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
         assert_eq!(tools[1]["type"], "web_search_20260209");
         assert_eq!(tools[1]["name"], "web_search");
+    }
+
+    #[test]
+    fn provider_native_search_errors_do_not_fall_back_to_local_search() {
+        let mut pending = HashMap::from([(
+            "srvtoolu_1".to_string(),
+            serde_json::json!({"query": "Nexa"}),
+        )]);
+        let error = drain_server_search_fallbacks(
+            &mut pending,
+            crate::llm::native_search::SearchExecutionMode::ProviderNative,
+        )
+        .expect_err("provider-native mode must fail closed");
+        assert!(error
+            .to_string()
+            .contains("local search fallback is disabled"));
+        assert_eq!(pending.len(), 1);
+
+        let fallbacks = drain_server_search_fallbacks(
+            &mut pending,
+            crate::llm::native_search::SearchExecutionMode::Auto,
+        )
+        .expect("auto mode may use Nexa Router");
+        assert_eq!(fallbacks.len(), 1);
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -1572,6 +1629,7 @@ impl LlmProvider for AnthropicProvider {
         let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
         let mut completed_server_searches = HashSet::<String>::new();
         let mut citations = Vec::new();
+        let search_mode = anthropic_search_mode(request);
 
         for block in resp.content {
             match block {
@@ -1612,14 +1670,17 @@ impl LlmProvider for AnthropicProvider {
             pending_server_searches.remove(&completed);
         }
         if resp.stop_reason.is_some() {
-            tool_calls.extend(pending_server_searches.into_iter().map(|(id, input)| {
-                ToolCallRequest {
-                    id,
-                    name: super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
-                    arguments: serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string()),
-                    thought_signature: None,
-                }
-            }));
+            tool_calls.extend(
+                drain_server_search_fallbacks(&mut pending_server_searches, search_mode)?
+                    .into_iter()
+                    .map(|(id, input)| ToolCallRequest {
+                        id,
+                        name: super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                        arguments: serde_json::to_string(&input)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        thought_signature: None,
+                    }),
+            );
         }
 
         let evidence = super::native_search::SearchEvidence {
@@ -1727,8 +1788,9 @@ impl LlmProvider for AnthropicProvider {
         info!("Anthropic SSE stream started");
 
         let transport = Arc::clone(&self.transport);
+        let search_mode = anthropic_search_mode(request);
         tokio::spawn(async move {
-            if let Err(e) = parse_anthropic_stream(response, tx.clone()).await {
+            if let Err(e) = parse_anthropic_stream(response, tx.clone(), search_mode).await {
                 transport.record_transport_failure(&e.to_string());
                 error!("Anthropic SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
