@@ -1147,10 +1147,69 @@ struct GeminiToolCallStreamState {
     pending: Vec<ToolCallRequest>,
     provider_indices: HashMap<String, usize>,
     synthetic_indices: HashMap<String, usize>,
+    provider_parts: Vec<serde_json::Value>,
+    provider_part_indices: HashMap<String, usize>,
     next_synthetic_id: u64,
 }
 
 impl GeminiToolCallStreamState {
+    fn record_provider_parts(&mut self, response: &GeminiResponse) -> Result<(), CoreError> {
+        let Some(parts) = response
+            .candidates
+            .as_ref()
+            .and_then(|candidates| candidates.first())
+            .and_then(|candidate| candidate.content.as_ref())
+            .and_then(|content| content.parts.as_ref())
+        else {
+            return Ok(());
+        };
+
+        for (part_index, part) in parts.iter().enumerate() {
+            let mut encoded = serde_json::to_value(part)?;
+            let GeminiPartV2::FunctionCall { function_call, .. } = part else {
+                // Stream chunks are transport fragments. Keeping each non-call
+                // part separate preserves signed empty/text/thought boundaries.
+                self.provider_parts.push(encoded);
+                continue;
+            };
+
+            let provider_id = function_call
+                .id
+                .as_deref()
+                .filter(|provider_id| !provider_id.trim().is_empty());
+            let key = provider_id
+                .map(|provider_id| format!("id:{provider_id}"))
+                .unwrap_or_else(|| format!("position:{part_index}"));
+            if let Some(existing_index) = self.provider_part_indices.get(&key).copied() {
+                let existing = &self.provider_parts[existing_index];
+                let same_idless_call = provider_id.is_none()
+                    && existing.pointer("/functionCall/name")
+                        == encoded.pointer("/functionCall/name")
+                    && existing.pointer("/functionCall/args")
+                        == encoded.pointer("/functionCall/args");
+                if provider_id.is_some() || same_idless_call {
+                    // A provider may repeat a call snapshot. Retain its first
+                    // position and any signature delivered on an earlier chunk.
+                    if encoded.get("thoughtSignature").is_none() {
+                        if let Some(signature) = existing.get("thoughtSignature").cloned() {
+                            if let Some(object) = encoded.as_object_mut() {
+                                object.insert("thoughtSignature".to_string(), signature);
+                            }
+                        }
+                    }
+                    self.provider_parts[existing_index] = encoded;
+                    continue;
+                }
+            }
+
+            self.provider_part_indices
+                .insert(key, self.provider_parts.len());
+            self.provider_parts.push(encoded);
+        }
+
+        Ok(())
+    }
+
     fn record_snapshot(&mut self, mut tool_call: ToolCallRequest) -> Result<(), CoreError> {
         if tool_call.id.starts_with(SYNTHETIC_CALL_ID_PREFIX) {
             if let Some(index) = self.synthetic_indices.get(&tool_call.id).copied() {
@@ -1193,8 +1252,57 @@ impl GeminiToolCallStreamState {
     }
 
     fn take_pending(&mut self) -> Vec<ToolCallRequest> {
+        if let Some(first_tool_call) = self.pending.first() {
+            let fallback_tool_call_id = first_tool_call.id.clone();
+            let mut function_call_index = 0usize;
+            let signatures = self
+                .provider_parts
+                .iter()
+                .enumerate()
+                .filter_map(|(model_part_index, part)| {
+                    let internal_call_id = part.get("functionCall").is_some().then(|| {
+                        let call_id = self
+                            .pending
+                            .get(function_call_index)
+                            .map(|call| call.id.clone());
+                        function_call_index += 1;
+                        call_id
+                    });
+                    let signature = part
+                        .get("thoughtSignature")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|signature| !signature.trim().is_empty())?;
+                    let provider_call_id = part
+                        .pointer("/functionCall/id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|provider_id| !provider_id.trim().is_empty())
+                        .map(str::to_string);
+                    Some(super::provider_turn::GeminiThoughtSignature {
+                        tool_call_id: provider_call_id
+                            .or_else(|| internal_call_id.flatten())
+                            .unwrap_or_else(|| fallback_tool_call_id.clone()),
+                        model_part_index: Some(model_part_index),
+                        signature: signature.to_string(),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            if !signatures.is_empty() && !self.provider_parts.is_empty() {
+                let payload = super::provider_turn::GeminiThoughtSignatureSet {
+                    signatures,
+                    content_parts: self.provider_parts.clone(),
+                };
+                if let Some(first_tool_call) = self.pending.first_mut() {
+                    first_tool_call.thought_signature =
+                        super::provider_turn::encode_gemini_thought_signatures(&payload);
+                }
+            }
+        }
+
         self.provider_indices.clear();
         self.synthetic_indices.clear();
+        self.provider_parts.clear();
+        self.provider_part_indices.clear();
         std::mem::take(&mut self.pending)
     }
 }
@@ -1238,6 +1346,7 @@ async fn emit_gemini_response_chunk(
         .and_then(|candidates| candidates.first())
         .and_then(|candidate| candidate.finish_reason.as_ref())
         .is_some();
+    tool_call_state.record_provider_parts(&resp)?;
     let (mut text_delta, tool_calls, finish_reason, usage, thinking_delta) =
         extract_response(&resp)?;
     text_delta.push_str(&citation_appendix);
@@ -2504,6 +2613,86 @@ mod tests {
         assert_eq!(first.id, "call_0");
         assert_eq!(second.id, "call_1");
         assert_ne!(first.name, second.name);
+    }
+
+    #[tokio::test]
+    async fn test_streamed_replay_assembles_exact_order_without_fabricating_provider_ids() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tool_call_state = GeminiToolCallStreamState::default();
+        let mut saw_finish_reason = false;
+        let chunks = [
+            serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{
+                        "text": "",
+                        "thought": true,
+                        "thoughtSignature": "signed-thought"
+                    }]}
+                }]
+            }),
+            serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {"path": "README.md"}
+                        },
+                        "thoughtSignature": "signed-call"
+                    }]}
+                }]
+            }),
+            serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {"name": "list_files", "args": {}}
+                    }]},
+                    "finishReason": "STOP"
+                }]
+            }),
+        ];
+
+        for chunk in chunks {
+            let response = serde_json::from_value(chunk).expect("response chunk");
+            assert!(emit_gemini_response_chunk(
+                response,
+                &tx,
+                &mut tool_call_state,
+                &mut saw_finish_reason,
+            )
+            .await
+            .expect("emit response"));
+        }
+
+        let first = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        let second = rx.recv().await.unwrap().unwrap().tool_call_delta.unwrap();
+        assert_eq!(first.id, "call_0");
+        assert_eq!(second.id, "call_1");
+        let replay = super::super::provider_turn::decode_gemini_thought_signatures(
+            first
+                .thought_signature
+                .as_deref()
+                .expect("complete provider replay carrier"),
+        )
+        .expect("typed replay payload");
+        assert_eq!(replay.content_parts.len(), 3);
+        assert_eq!(
+            replay.content_parts[0]["thoughtSignature"],
+            "signed-thought"
+        );
+        assert_eq!(replay.content_parts[1]["thoughtSignature"], "signed-call");
+        assert_eq!(replay.content_parts[1]["functionCall"]["name"], "read_file");
+        assert_eq!(
+            replay.content_parts[2]["functionCall"]["name"],
+            "list_files"
+        );
+        assert!(replay.content_parts[1]["functionCall"].get("id").is_none());
+        assert!(replay.content_parts[2]["functionCall"].get("id").is_none());
+        assert_eq!(replay.signatures[0].model_part_index, Some(0));
+        assert_eq!(replay.signatures[1].model_part_index, Some(1));
+        assert_eq!(
+            rx.recv().await.unwrap().unwrap().finish_reason,
+            Some(FinishReason::Stop)
+        );
     }
 
     #[tokio::test]
