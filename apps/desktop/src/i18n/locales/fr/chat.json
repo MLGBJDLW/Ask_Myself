@@ -648,18 +648,18 @@
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
   ,"visionObservationCacheDeleted": "Removed {count} cached result",
-  "companionIdle": "Companion is resting",
-  "companionThinking": "Thinking",
-  "companionSearching": "Searching the web",
-  "companionBrowsing": "Browsing",
-  "companionReadingFiles": "Reading files",
-  "companionRunningTool": "Running a tool",
-  "companionCoding": "Coding",
-  "companionWaitingForApproval": "Waiting for approval",
-  "companionWaitingForUser": "Waiting for your answer",
-  "companionReviewing": "Reviewing the result",
-  "companionSucceeded": "Task succeeded",
-  "companionFailed": "Task failed",
-  "companionCancelled": "Task cancelled",
-  "companionSleeping": "Companion is sleeping"
+  "companionIdle": "Le compagnon se repose",
+  "companionThinking": "Réflexion",
+  "companionSearching": "Recherche sur le web",
+  "companionBrowsing": "Navigation",
+  "companionReadingFiles": "Lecture des fichiers",
+  "companionRunningTool": "Exécution d’un outil",
+  "companionCoding": "Programmation",
+  "companionWaitingForApproval": "En attente d’approbation",
+  "companionWaitingForUser": "En attente de votre réponse",
+  "companionReviewing": "Vérification du résultat",
+  "companionSucceeded": "Tâche réussie",
+  "companionFailed": "Échec de la tâche",
+  "companionCancelled": "Tâche annulée",
+  "companionSleeping": "Le compagnon dort"
 }

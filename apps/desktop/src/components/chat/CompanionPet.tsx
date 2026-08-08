@@ -38,7 +38,7 @@ const ACTIVE_STATES = new Set<api.CompanionState>([
 
 function fallbackProjection(taskRun?: AgentTaskRun | null): api.CompanionProjection {
   if (!taskRun) {
-    return { runId: '', state: 'idle', label: 'Idle', sourceEventSeq: null, terminal: false };
+    return { runId: '', state: 'idle', label: '', sourceEventSeq: null, terminal: false };
   }
   const status = taskRun.status.toLowerCase();
   if (status === 'completed' || status === 'succeeded') {
@@ -78,6 +78,7 @@ export function CompanionPet({ taskRun, onOpenTaskCenter }: CompanionPetProps) {
   }, [taskRun?.id, taskRun?.updatedAt, taskRun]);
 
   const stateLabel = t(STATE_LABEL_KEYS[projection.state]);
+  const detailLabel = projection.label.trim() || stateLabel;
   const animationClass = useMemo(() => {
     if (projection.state === 'waitingForApproval' || projection.state === 'waitingForUser') {
       return 'animate-pulse';
@@ -101,12 +102,14 @@ export function CompanionPet({ taskRun, onOpenTaskCenter }: CompanionPetProps) {
         type="button"
         onClick={onOpenTaskCenter}
         className="group relative mb-1 rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-        aria-label={`${stateLabel}: ${projection.label}`}
+        aria-label={detailLabel === stateLabel ? stateLabel : `${stateLabel}: ${detailLabel}`}
         title={stateLabel}
       >
         <span className="pointer-events-none absolute bottom-full right-0 z-10 mb-2 hidden max-w-64 rounded-lg border border-border bg-surface-2 px-3 py-2 text-left text-[11px] leading-4 text-text-secondary shadow-lg group-hover:block group-focus-visible:block">
           <span className="block font-medium text-text-primary">{stateLabel}</span>
-          <span className="mt-0.5 block line-clamp-2">{projection.label}</span>
+          {detailLabel !== stateLabel && (
+            <span className="mt-0.5 block line-clamp-2">{detailLabel}</span>
+          )}
         </span>
         <span
           className={`relative flex h-12 w-12 items-center justify-center rounded-[18px] border bg-gradient-to-br shadow-sm transition-transform motion-reduce:animate-none ${toneClass} ${animationClass}`}

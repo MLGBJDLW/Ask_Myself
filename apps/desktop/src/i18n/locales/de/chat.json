@@ -648,18 +648,18 @@
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
   ,"visionObservationCacheDeleted": "Removed {count} cached result",
-  "companionIdle": "Companion is resting",
-  "companionThinking": "Thinking",
-  "companionSearching": "Searching the web",
-  "companionBrowsing": "Browsing",
-  "companionReadingFiles": "Reading files",
-  "companionRunningTool": "Running a tool",
-  "companionCoding": "Coding",
-  "companionWaitingForApproval": "Waiting for approval",
-  "companionWaitingForUser": "Waiting for your answer",
-  "companionReviewing": "Reviewing the result",
-  "companionSucceeded": "Task succeeded",
-  "companionFailed": "Task failed",
-  "companionCancelled": "Task cancelled",
-  "companionSleeping": "Companion is sleeping"
+  "companionIdle": "Begleiter ruht sich aus",
+  "companionThinking": "Denkt nach",
+  "companionSearching": "Durchsucht das Web",
+  "companionBrowsing": "Surft",
+  "companionReadingFiles": "Liest Dateien",
+  "companionRunningTool": "Führt ein Werkzeug aus",
+  "companionCoding": "Programmiert",
+  "companionWaitingForApproval": "Wartet auf Freigabe",
+  "companionWaitingForUser": "Wartet auf Ihre Antwort",
+  "companionReviewing": "Prüft das Ergebnis",
+  "companionSucceeded": "Aufgabe erfolgreich",
+  "companionFailed": "Aufgabe fehlgeschlagen",
+  "companionCancelled": "Aufgabe abgebrochen",
+  "companionSleeping": "Begleiter schläft"
 }

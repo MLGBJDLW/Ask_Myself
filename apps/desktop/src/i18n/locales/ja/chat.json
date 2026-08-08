@@ -648,18 +648,18 @@
   ,"visionObservationRerun": "Rerun"
   ,"visionObservationDeleteCache": "Delete cached result"
   ,"visionObservationCacheDeleted": "Removed {count} cached result",
-  "companionIdle": "Companion is resting",
-  "companionThinking": "Thinking",
-  "companionSearching": "Searching the web",
-  "companionBrowsing": "Browsing",
-  "companionReadingFiles": "Reading files",
-  "companionRunningTool": "Running a tool",
-  "companionCoding": "Coding",
-  "companionWaitingForApproval": "Waiting for approval",
-  "companionWaitingForUser": "Waiting for your answer",
-  "companionReviewing": "Reviewing the result",
-  "companionSucceeded": "Task succeeded",
-  "companionFailed": "Task failed",
-  "companionCancelled": "Task cancelled",
-  "companionSleeping": "Companion is sleeping"
+  "companionIdle": "コンパニオンは休憩中です",
+  "companionThinking": "考えています",
+  "companionSearching": "Web を検索しています",
+  "companionBrowsing": "閲覧しています",
+  "companionReadingFiles": "ファイルを読んでいます",
+  "companionRunningTool": "ツールを実行しています",
+  "companionCoding": "コーディングしています",
+  "companionWaitingForApproval": "承認を待っています",
+  "companionWaitingForUser": "回答を待っています",
+  "companionReviewing": "結果を確認しています",
+  "companionSucceeded": "タスクが成功しました",
+  "companionFailed": "タスクに失敗しました",
+  "companionCancelled": "タスクをキャンセルしました",
+  "companionSleeping": "コンパニオンは眠っています"
 }
