@@ -751,11 +751,22 @@ fn normalize_base_url(base_url: Option<String>) -> Option<String> {
 // Factory
 // ---------------------------------------------------------------------------
 
+fn provider_adapter_for_config(config: &ProviderConfig) -> ProviderAdapterKind {
+    if provider_boundary::is_deepseek_anthropic_endpoint(
+        config.provider_type,
+        config.base_url.as_deref(),
+    ) {
+        ProviderAdapterKind::Anthropic
+    } else {
+        provider_adapter_for_type(config.provider_type)
+    }
+}
+
 /// Create a provider instance from configuration.
 pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider>, CoreError> {
     config.base_url = normalize_base_url(config.base_url);
 
-    let adapter = provider_adapter_for_type(config.provider_type);
+    let adapter = provider_adapter_for_config(&config);
     let provider: Box<dyn LlmProvider> = match adapter {
         ProviderAdapterKind::OpenAiCompatible => Box::new(openai::OpenAiProvider::new(config)?),
         ProviderAdapterKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(config)?),
@@ -936,6 +947,28 @@ mod tests {
             ProviderType::Anthropic,
             "gpt-5.5-pro"
         ));
+    }
+
+    #[test]
+    fn deepseek_anthropic_route_selects_the_block_adapter_only_at_exact_endpoint() {
+        let config = ProviderConfig {
+            provider_type: ProviderType::DeepSeek,
+            api_key: Some("test".to_string()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_string()),
+            org_id: None,
+            timeout_secs: None,
+        };
+        assert_eq!(
+            provider_adapter_for_config(&config),
+            ProviderAdapterKind::Anthropic
+        );
+        assert_eq!(
+            provider_adapter_for_config(&ProviderConfig {
+                base_url: Some("https://proxy.example.com/anthropic".to_string()),
+                ..config
+            }),
+            ProviderAdapterKind::OpenAiCompatible
+        );
     }
 
     #[tokio::test]

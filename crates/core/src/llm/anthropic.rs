@@ -1155,6 +1155,20 @@ impl AnthropicProvider {
         self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
+    fn messages_url(&self) -> String {
+        let base_url = self.base_url().trim_end_matches('/');
+        if super::provider_boundary::is_deepseek_anthropic_endpoint(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+        ) {
+            // DeepSeek documents an Anthropic SDK base URL. The SDK posts to
+            // `/v1/messages` relative to that base rather than `/messages`.
+            format!("{base_url}/v1/messages")
+        } else {
+            format!("{base_url}/messages")
+        }
+    }
+
     fn api_key(&self) -> Result<&str, CoreError> {
         self.config
             .api_key
@@ -1199,6 +1213,23 @@ impl AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_anthropic_base_uses_the_sdk_v1_messages_path() {
+        let provider = AnthropicProvider::new(ProviderConfig {
+            provider_type: super::super::ProviderType::DeepSeek,
+            api_key: Some("test".to_string()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_string()),
+            org_id: None,
+            timeout_secs: None,
+        })
+        .expect("DeepSeek Anthropic provider");
+
+        assert_eq!(
+            provider.messages_url(),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+    }
 
     #[test]
     fn provider_native_search_uses_server_tool_without_duplicate_local_search() {
@@ -1751,7 +1782,7 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, false);
@@ -1944,7 +1975,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
         let body = build_request_body(request, system, messages, true);
@@ -1998,7 +2029,7 @@ impl LlmProvider for AnthropicProvider {
 
     async fn health_check(&self) -> Result<(), CoreError> {
         // Verify API key by making a minimal request.
-        let url = format!("{}/messages", self.base_url());
+        let url = self.messages_url();
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(

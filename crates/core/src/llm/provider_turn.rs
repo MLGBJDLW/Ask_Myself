@@ -117,6 +117,58 @@ pub struct GeminiThoughtSignatureSet {
     pub content_parts: Vec<serde_json::Value>,
 }
 
+impl GeminiThoughtSignatureSet {
+    fn has_valid_signature_positions(&self) -> bool {
+        let signed_parts = self
+            .content_parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| {
+                part.get("thoughtSignature")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|signature| !signature.trim().is_empty())
+                    .map(|signature| (index, signature))
+            })
+            .collect::<Vec<_>>();
+        !signed_parts.is_empty()
+            && signed_parts.len() == self.signatures.len()
+            && signed_parts.iter().all(|(index, signature)| {
+                self.signatures.iter().any(|captured| {
+                    captured.model_part_index == Some(*index) && captured.signature == *signature
+                })
+            })
+    }
+
+    fn authorizes_tool_calls(&self, tool_calls: &[ToolCallRequest]) -> bool {
+        if !self.has_valid_signature_positions() {
+            return false;
+        }
+        let provider_calls = self
+            .content_parts
+            .iter()
+            .filter_map(|part| part.get("functionCall"))
+            .collect::<Vec<_>>();
+        provider_calls.len() == tool_calls.len()
+            && provider_calls
+                .iter()
+                .zip(tool_calls)
+                .all(|(provider_call, tool_call)| {
+                    provider_call
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(tool_call.name.as_str())
+                        && provider_call.get("args")
+                            == serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+                                .ok()
+                                .as_ref()
+                        && provider_call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(|provider_id| provider_id == tool_call.id)
+                })
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum ProviderReplayPayload {
@@ -142,9 +194,7 @@ impl ProviderReplayPayload {
             Self::DeepSeekResponseItems(items) | Self::OpenAiResponseItems(items) => {
                 !items.is_empty()
             }
-            Self::GeminiThoughtSignatures(payload) => {
-                !payload.signatures.is_empty() && !payload.content_parts.is_empty()
-            }
+            Self::GeminiThoughtSignatures(payload) => payload.has_valid_signature_positions(),
             Self::None => false,
         }
     }
@@ -156,6 +206,13 @@ impl ProviderReplayPayload {
                 (!content.trim().is_empty()).then(|| content.clone())
             }
             _ => None,
+        }
+    }
+
+    fn authorizes_tool_calls(&self, tool_calls: &[ToolCallRequest]) -> bool {
+        match self {
+            Self::GeminiThoughtSignatures(payload) => payload.authorizes_tool_calls(tool_calls),
+            _ => self.is_present(),
         }
     }
 
@@ -370,8 +427,10 @@ impl ProviderTurnEnvelope {
 
     pub fn authorizes_tool_dispatch(&self) -> bool {
         self.tool_calls.is_empty()
-            || !self.route.replay_policy.requires_tool_call_payload()
-            || self.replay_payload.is_present()
+            || self
+                .route
+                .replay_policy
+                .authorizes_tool_call(self.replay_payload.authorizes_tool_calls(&self.tool_calls))
     }
 
     pub fn is_compatible_with(&self, route: &RouteSnapshot) -> bool {
@@ -557,5 +616,79 @@ mod tests {
             ReasoningCaptureStatus::OmittedByProvider
         );
         assert!(!envelope.authorizes_tool_dispatch());
+
+        let unknown = ProviderTurnEnvelope::capture(
+            "unknown-item",
+            "unknown-sample",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::Unknown,
+                ..route(ReasoningApiStyle::OpenAiChatCompletions, "custom")
+            },
+            "",
+            None,
+            None,
+            vec![ToolCallRequest {
+                id: "unknown-call".to_string(),
+                name: "side_effect".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+            false,
+        );
+        assert!(!unknown.authorizes_tool_dispatch());
+    }
+
+    #[test]
+    fn moved_or_mismatched_gemini_parts_never_authorize_tools() {
+        let payload = GeminiThoughtSignatureSet {
+            signatures: vec![GeminiThoughtSignature {
+                tool_call_id: "call-g".to_string(),
+                model_part_index: Some(0),
+                signature: "opaque".to_string(),
+            }],
+            content_parts: vec![serde_json::json!({
+                "functionCall": {"id": "call-g", "name": "write_file", "args": {"path": "a"}},
+                "thoughtSignature": "opaque"
+            })],
+        };
+        let tool_call = ToolCallRequest {
+            id: "call-g".to_string(),
+            name: "write_file".to_string(),
+            arguments: r#"{"path":"a"}"#.to_string(),
+            thought_signature: encode_gemini_thought_signatures(&payload),
+        };
+        let envelope = ProviderTurnEnvelope::capture(
+            "gemini-item",
+            "gemini-sample",
+            route(ReasoningApiStyle::GeminiGenerateContent, "google"),
+            "",
+            None,
+            None,
+            vec![tool_call],
+            true,
+        );
+        assert!(envelope.authorizes_tool_dispatch());
+
+        let ProviderReplayPayload::GeminiThoughtSignatures(mut moved) =
+            envelope.replay_payload.clone()
+        else {
+            panic!("Gemini replay payload");
+        };
+        moved.signatures[0].model_part_index = Some(1);
+        let mut moved_envelope = envelope.clone();
+        moved_envelope.replay_payload = ProviderReplayPayload::GeminiThoughtSignatures(moved);
+        assert!(!moved_envelope.authorizes_tool_dispatch());
+
+        let ProviderReplayPayload::GeminiThoughtSignatures(mut mismatched) =
+            envelope.replay_payload.clone()
+        else {
+            panic!("Gemini replay payload");
+        };
+        mismatched.content_parts[0]["functionCall"]["name"] =
+            serde_json::Value::String("different_tool".to_string());
+        let mut mismatched_envelope = envelope;
+        mismatched_envelope.replay_payload =
+            ProviderReplayPayload::GeminiThoughtSignatures(mismatched);
+        assert!(!mismatched_envelope.authorizes_tool_dispatch());
     }
 }

@@ -170,15 +170,11 @@ impl AgentExecutor {
             parallel_tool_calls: true,
         };
         let mut request_route_snapshot = self.provider.route_snapshot(&current_request);
-        let reasoning_requested = current_request.reasoning_enabled == Some(true)
-            || current_request.reasoning_effort.is_some()
-            || current_request.thinking_budget.is_some();
         let may_call_tools = current_request
             .tools
             .as_ref()
             .is_some_and(|tools| !tools.is_empty());
-        if reasoning_requested
-            && may_call_tools
+        if may_call_tools
             && matches!(
                 request_route_snapshot.replay_policy,
                 ReasoningReplayPolicy::Unknown | ReasoningReplayPolicy::Forbidden
@@ -999,12 +995,11 @@ impl AgentExecutor {
                 Some(&iteration_thinking),
                 &tool_calls,
             );
-            let missing_required_tool_reasoning = current_accepted_route
-                .replay_policy
-                .requires_tool_call_payload()
-                && !tool_calls.is_empty()
-                && !output_payload.is_present();
-            if missing_required_tool_reasoning {
+            let unsafe_tool_turn = !tool_calls.is_empty()
+                && !current_accepted_route
+                    .replay_policy
+                    .authorizes_tool_call(output_payload.is_present());
+            if unsafe_tool_turn {
                 let rejected_stream_sample =
                     crate::llm::provider_turn::ProviderTurnEnvelope::capture(
                         Uuid::new_v4().to_string(),
@@ -1096,9 +1091,10 @@ impl AgentExecutor {
                                     response.thinking.as_deref(),
                                     safe_tool_calls,
                                 );
-                            if safe_route.replay_policy.requires_tool_call_payload()
-                                && !safe_tool_calls.is_empty()
-                                && !safe_payload.is_present()
+                            if !safe_tool_calls.is_empty()
+                                && !safe_route
+                                    .replay_policy
+                                    .authorizes_tool_call(safe_payload.is_present())
                             {
                                 let rejected_safe_restart =
                                     crate::llm::provider_turn::ProviderTurnEnvelope::capture(

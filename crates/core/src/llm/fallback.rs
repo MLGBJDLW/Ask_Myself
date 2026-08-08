@@ -110,6 +110,15 @@ impl AutomaticFallbackProvider {
                     .as_ref()
                     .is_some_and(|calls| !calls.is_empty())
             {
+                if message.provider_turn().is_some_and(|envelope| {
+                    matches!(
+                        envelope.capture_status,
+                        super::reasoning_profile::ReasoningCaptureStatus::Interrupted
+                            | super::reasoning_profile::ReasoningCaptureStatus::Truncated
+                    )
+                }) {
+                    return None;
+                }
                 return Some(None);
             }
             message
@@ -896,17 +905,32 @@ mod tests {
         assistant.set_provider_turn(super::super::provider_turn::ProviderTurnEnvelope::capture(
             "turn-item-1",
             "sample-1",
-            locked_route,
+            locked_route.clone(),
             "",
             None,
             None,
             vec![tool_call],
             false,
         ));
+        let mut interrupted = Message::text(Role::Assistant, "partial draft");
+        let mut interrupted_envelope = super::super::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-item-2",
+            "sample-2",
+            locked_route,
+            "partial draft",
+            None,
+            None,
+            Vec::new(),
+            false,
+        );
+        interrupted_envelope.capture_status =
+            super::super::reasoning_profile::ReasoningCaptureStatus::Interrupted;
+        interrupted.set_provider_turn(interrupted_envelope);
         locked_request.messages = vec![
             Message::text(Role::User, "continue the task"),
             assistant,
             Message::text_with_name(Role::Tool, "result", "call-1"),
+            interrupted,
             Message::text(Role::User, "steer the active tool loop"),
         ];
 

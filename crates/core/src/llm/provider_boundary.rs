@@ -106,6 +106,14 @@ pub(super) fn is_deepseek_public_endpoint(provider: ProviderType, base_url: Opti
     endpoint_matches(provider, base_url, &["api.deepseek.com"], &["", "/v1"])
 }
 
+pub(super) fn is_deepseek_anthropic_endpoint(
+    provider: ProviderType,
+    base_url: Option<&str>,
+) -> bool {
+    provider == ProviderType::DeepSeek
+        && endpoint_matches(provider, base_url, &["api.deepseek.com"], &["/anthropic"])
+}
+
 pub(super) fn is_moonshot_public_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
     endpoint_matches(
         provider,
@@ -184,6 +192,7 @@ pub(super) fn endpoint_id(provider: ProviderType, base_url: Option<&str>) -> Str
         "api.mistral.ai" if path_is(&url, &["/v1"]) => Some("mistral-public"),
         "openrouter.ai" if path_is(&url, &["/api/v1"]) => Some("openrouter-public"),
         "api.deepseek.com" if path_is(&url, &["", "/v1"]) => Some("deepseek-public"),
+        "api.deepseek.com" if path_is(&url, &["/anthropic"]) => Some("deepseek-anthropic-public"),
         "api.moonshot.ai" | "api.moonshot.cn" if path_is(&url, &["/v1"]) => Some("moonshot-public"),
         "api.anthropic.com" if path_is(&url, &["/v1"]) => Some("anthropic-public"),
         "generativelanguage.googleapis.com" if path_is(&url, &["/v1beta"]) => Some("google-public"),
@@ -228,6 +237,17 @@ mod tests {
 
     #[test]
     fn endpoint_identity_requires_the_canonical_security_boundary() {
+        assert_eq!(
+            endpoint_id(
+                ProviderType::DeepSeek,
+                Some("https://api.deepseek.com/anthropic")
+            ),
+            "deepseek-anthropic-public"
+        );
+        assert!(is_deepseek_anthropic_endpoint(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com/anthropic")
+        ));
         assert_eq!(
             endpoint_id(
                 ProviderType::Qwen,
@@ -290,6 +310,11 @@ mod tests {
                 ProviderType::DeepSeek,
                 "https://api.deepseek.com:8443/v1",
                 is_deepseek_public_endpoint,
+            ),
+            (
+                ProviderType::DeepSeek,
+                "http://api.deepseek.com/anthropic",
+                is_deepseek_anthropic_endpoint,
             ),
             (
                 ProviderType::Moonshot,

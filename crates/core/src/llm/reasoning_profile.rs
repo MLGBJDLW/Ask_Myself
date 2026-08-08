@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
-    is_deepseek_public_endpoint, is_google_public_endpoint, is_minimax_public_endpoint,
-    is_mistral_public_endpoint, is_moonshot_public_endpoint, is_openai_public_endpoint,
-    is_openrouter_public_endpoint, is_siliconflow_public_endpoint, is_xai_public_endpoint,
-    provider_id,
+    is_deepseek_anthropic_endpoint, is_deepseek_public_endpoint, is_google_public_endpoint,
+    is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
+    is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
+    is_xai_public_endpoint, provider_id,
 };
 use super::{ProviderType, ReasoningEffort};
 
@@ -96,6 +96,16 @@ impl ReasoningReplayPolicy {
             self,
             Self::RequiredOnToolCall | Self::RequiredAlways | Self::OpaqueSignature
         )
+    }
+
+    pub fn authorizes_tool_call(self, payload_present: bool) -> bool {
+        match self {
+            Self::NotRequired => true,
+            Self::RequiredOnToolCall | Self::RequiredAlways | Self::OpaqueSignature => {
+                payload_present
+            }
+            Self::Forbidden | Self::Unknown => false,
+        }
     }
 }
 
@@ -307,10 +317,16 @@ pub fn resolve_reasoning_profile(
     }
     if api_style == ReasoningApiStyle::AnthropicMessages {
         let mut value = ReasoningProfile::unsupported(key);
-        if !is_anthropic_public_endpoint(provider, base_url) {
+        let is_deepseek_compat = is_deepseek_anthropic_endpoint(provider, base_url);
+        if !is_anthropic_public_endpoint(provider, base_url) && !is_deepseek_compat {
             return value;
         }
-        value.id = "anthropic-signed-thinking-v1".to_string();
+        value.id = if is_deepseek_compat {
+            "deepseek-anthropic-signed-thinking-v1"
+        } else {
+            "anthropic-signed-thinking-v1"
+        }
+        .to_string();
         value.mode_control = ThinkingModeControl::ThinkingType;
         value.preserve_reasoning_history = true;
         value.replay_policy = ReasoningReplayPolicy::OpaqueSignature;
@@ -919,6 +935,25 @@ mod tests {
 
     #[test]
     fn provider_native_replay_codecs_require_exact_official_endpoints() {
+        let deepseek_anthropic = resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com/anthropic"),
+            ReasoningApiStyle::AnthropicMessages,
+            "deepseek-v4",
+        );
+        assert_eq!(
+            deepseek_anthropic.id,
+            "deepseek-anthropic-signed-thinking-v1"
+        );
+        assert_eq!(
+            deepseek_anthropic.replay_policy,
+            ReasoningReplayPolicy::OpaqueSignature
+        );
+        assert_eq!(
+            deepseek_anthropic.key.endpoint_id,
+            "deepseek-anthropic-public"
+        );
+
         let cases = [
             (
                 ProviderType::OpenAi,
