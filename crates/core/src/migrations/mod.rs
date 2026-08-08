@@ -2107,6 +2107,43 @@ Every answer that uses knowledge base search results.
              completed_at TEXT
          );",
     ),
+    (
+        "v099_context_compaction_source_fence",
+        "ALTER TABLE context_compactions ADD COLUMN source_message_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_message_ids_json));",
+    ),
+    (
+        "v100_context_compaction_source_start",
+        "ALTER TABLE context_compactions ADD COLUMN source_start_sort_order INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "v101_context_compaction_source_boundary",
+        "ALTER TABLE context_compactions ADD COLUMN source_boundary_sort_order INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "v102_context_compaction_source_digest",
+        "ALTER TABLE context_compactions ADD COLUMN source_digest TEXT NOT NULL DEFAULT '';",
+    ),
+    (
+        "v103_context_compaction_generation",
+        "ALTER TABLE context_compactions ADD COLUMN checkpoint_generation INTEGER NOT NULL DEFAULT 1 CHECK (checkpoint_generation > 0);",
+    ),
+    (
+        "v104_context_compaction_generation_index",
+        "WITH ranked AS (
+             SELECT id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY conversation_id
+                        ORDER BY created_at ASC, id ASC
+                    ) AS generation
+             FROM context_compactions
+         )
+         UPDATE context_compactions
+         SET checkpoint_generation = (
+             SELECT generation FROM ranked WHERE ranked.id = context_compactions.id
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_context_compactions_generation
+             ON context_compactions(conversation_id, checkpoint_generation);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -3084,6 +3121,11 @@ mod tests {
             "retained_tail_json",
             "retained_start_sort_order",
             "status",
+            "source_message_ids_json",
+            "source_start_sort_order",
+            "source_boundary_sort_order",
+            "source_digest",
+            "checkpoint_generation",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -3094,6 +3136,57 @@ mod tests {
                 .unwrap();
             assert!(exists, "context_compactions.{column} should exist");
         }
+    }
+
+    #[test]
+    fn context_compaction_source_fence_migration_backfills_distinct_generations() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        conn.execute_batch(
+            "DROP INDEX idx_context_compactions_generation;
+             DELETE FROM _migrations
+             WHERE name = 'v104_context_compaction_generation_index';
+             INSERT INTO conversations (id, provider, model)
+             VALUES ('conv-generation', 'open_ai', 'gpt-test');
+             INSERT INTO context_compactions (
+                 id, operation_id, conversation_id, idempotency_key,
+                 snapshot_high_watermark, snapshot_hash, summary,
+                 retained_tail_json, retained_start_sort_order,
+                 tokens_before, tokens_after, provider, model, status,
+                 checkpoint_generation, created_at
+             ) VALUES
+                 ('checkpoint-b', 'checkpoint-b', 'conv-generation', 'request-b',
+                  4, 'hash-b', 'summary-b', '[]', 3,
+                  100, 50, 'test', 'test', 'completed', 1, '2026-01-02 00:00:00'),
+                 ('checkpoint-a', 'checkpoint-a', 'conv-generation', 'request-a',
+                  2, 'hash-a', 'summary-a', '[]', 1,
+                  80, 40, 'test', 'test', 'completed', 1, '2026-01-01 00:00:00');",
+        )
+        .expect("simulate legacy checkpoints with duplicate default generations");
+
+        run_migrations(&conn).expect("generation migration should backfill before indexing");
+
+        let generations = conn
+            .prepare(
+                "SELECT id, checkpoint_generation
+                 FROM context_compactions
+                 WHERE conversation_id = 'conv-generation'
+                 ORDER BY checkpoint_generation",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            generations,
+            vec![
+                ("checkpoint-a".to_string(), 1),
+                ("checkpoint-b".to_string(), 2),
+            ]
+        );
     }
 
     #[test]

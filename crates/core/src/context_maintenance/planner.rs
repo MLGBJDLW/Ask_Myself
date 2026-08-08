@@ -19,9 +19,12 @@ pub(crate) enum PlanOutcome {
 
 #[derive(Debug)]
 pub(crate) struct CompactionPlan {
-    pub expected_message_ids: Vec<String>,
     pub snapshot_high_watermark: i64,
-    pub snapshot_hash: String,
+    pub source_message_ids: Vec<String>,
+    pub source_start_sort_order: i64,
+    pub source_boundary_sort_order: i64,
+    pub source_digest: String,
+    pub expected_checkpoint_generation: u64,
     pub summary_messages: Vec<Message>,
     pub extractive_fallback: String,
     pub retained_tail_message_ids: Vec<String>,
@@ -37,6 +40,7 @@ pub(crate) fn plan_compaction(
     model: &str,
     configured_context_window: Option<u32>,
     max_response_tokens: u32,
+    expected_checkpoint_generation: u64,
 ) -> PlanOutcome {
     let messages_before = messages.len();
     let tokens = messages
@@ -123,14 +127,28 @@ pub(crate) fn plan_compaction(
         .copied()
         .fold(0_u32, u32::saturating_add);
 
+    let source_messages = &messages[prefix_end..evict_end];
+
     PlanOutcome::Planned(CompactionPlan {
-        expected_message_ids: messages.iter().map(|message| message.id.clone()).collect(),
         snapshot_high_watermark: messages
             .iter()
             .map(|message| message.sort_order)
             .max()
             .unwrap_or_default(),
-        snapshot_hash: snapshot_hash(&messages),
+        source_message_ids: source_messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect(),
+        source_start_sort_order: source_messages
+            .first()
+            .map(|message| message.sort_order)
+            .unwrap_or_default(),
+        source_boundary_sort_order: source_messages
+            .last()
+            .map(|message| message.sort_order)
+            .unwrap_or_default(),
+        source_digest: source_digest(source_messages),
+        expected_checkpoint_generation,
         summary_messages,
         extractive_fallback,
         retained_tail_message_ids,
@@ -209,51 +227,38 @@ fn bounded_reference(text: &str, cap: usize) -> String {
     )
 }
 
-pub(crate) fn snapshot_hash(messages: &[ConversationMessage]) -> String {
+pub(crate) fn source_digest(messages: &[ConversationMessage]) -> String {
     let mut hash = blake3::Hasher::new();
     for message in messages {
-        hash_field(&mut hash, message.id.as_bytes());
-        hash_field(&mut hash, &message.sort_order.to_le_bytes());
-        hash_field(&mut hash, role_label(&message.role).as_bytes());
-        hash_field(&mut hash, message.content.as_bytes());
-        hash_field(
+        let tool_calls_json = serde_json::to_string(&message.tool_calls).unwrap_or_default();
+        hash_source_message(
             &mut hash,
-            message
-                .tool_call_id
-                .as_deref()
-                .unwrap_or_default()
-                .as_bytes(),
+            &message.id,
+            message.sort_order,
+            role_label(&message.role),
+            conversation_message_llm_context_content(message),
+            message.tool_call_id.as_deref(),
+            &tool_calls_json,
         );
-        if !message.tool_calls.is_empty() {
-            if let Ok(tool_calls) = serde_json::to_string(&message.tool_calls) {
-                hash_field(&mut hash, tool_calls.as_bytes());
-            }
-        } else {
-            hash_field(&mut hash, &[]);
-        }
-        if let Some(thinking) = message.thinking.as_deref() {
-            hash_field(&mut hash, thinking.as_bytes());
-        } else {
-            hash_field(&mut hash, &[]);
-        }
-        if let Some(artifacts) = message.artifacts.as_ref() {
-            hash_field(&mut hash, artifacts.to_string().as_bytes());
-        } else {
-            hash_field(&mut hash, &[]);
-        }
-        if let Some(attachments) = message
-            .image_attachments
-            .as_ref()
-            .filter(|attachments| !attachments.is_empty())
-        {
-            if let Ok(attachments) = serde_json::to_string(attachments) {
-                hash_field(&mut hash, attachments.as_bytes());
-            }
-        } else {
-            hash_field(&mut hash, &[]);
-        }
     }
     hash.finalize().to_hex().to_string()
+}
+
+pub(crate) fn hash_source_message(
+    hash: &mut blake3::Hasher,
+    id: &str,
+    sort_order: i64,
+    role: &str,
+    canonical_content: &str,
+    tool_call_id: Option<&str>,
+    tool_calls_json: &str,
+) {
+    hash_field(hash, id.as_bytes());
+    hash_field(hash, &sort_order.to_le_bytes());
+    hash_field(hash, role.as_bytes());
+    hash_field(hash, canonical_content.as_bytes());
+    hash_field(hash, tool_call_id.unwrap_or_default().as_bytes());
+    hash_field(hash, tool_calls_json.as_bytes());
 }
 
 pub(crate) fn hash_field(hash: &mut blake3::Hasher, value: &[u8]) {
@@ -308,7 +313,7 @@ mod tests {
             ));
         }
         let started = std::time::Instant::now();
-        let outcome = plan_compaction(messages, "gpt-4o", Some(16_000), 4_096);
+        let outcome = plan_compaction(messages, "gpt-4o", Some(16_000), 4_096, 0);
         assert!(matches!(outcome, PlanOutcome::Planned(_)));
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
     }
@@ -321,7 +326,7 @@ mod tests {
             message(2, Role::Assistant, "done".to_string()),
             message(3, Role::User, "latest".to_string()),
         ];
-        let PlanOutcome::Planned(plan) = plan_compaction(messages, "gpt-4o", Some(8_000), 1_000)
+        let PlanOutcome::Planned(plan) = plan_compaction(messages, "gpt-4o", Some(8_000), 1_000, 0)
         else {
             panic!("expected compaction plan");
         };

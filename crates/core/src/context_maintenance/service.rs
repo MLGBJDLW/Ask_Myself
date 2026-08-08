@@ -21,7 +21,7 @@ use super::model::{
     ContextCompactionResult,
 };
 use super::planner::{plan_compaction, PlanOutcome};
-use super::store::{commit_context_checkpoint, CommitOutcome};
+use super::store::{commit_context_checkpoint, load_compaction_snapshot, CommitOutcome};
 
 const OWNER: &str = "context_compaction";
 
@@ -210,7 +210,7 @@ impl ContextCompactionService {
                             .to_string(),
                     ));
                 }
-                database.get_messages(&conversation_id)
+                load_compaction_snapshot(database, &conversation_id)
             })
             .await?;
         self.database_metrics(operation_id, "compact.load_history", loaded.metrics)?;
@@ -222,10 +222,11 @@ impl ContextCompactionService {
         let plan_started = Instant::now();
         let plan = tokio::task::spawn_blocking(move || {
             plan_compaction(
-                loaded.value,
+                loaded.value.messages,
                 &model_for_plan,
                 context_window,
                 max_response_tokens,
+                loaded.value.checkpoint_generation,
             )
         })
         .await
@@ -322,7 +323,6 @@ impl ContextCompactionService {
         let tokens_after = plan
             .retained_tokens
             .saturating_add(estimate_tokens_for_model(&job.model, &checkpoint_text));
-        let projected_messages_after = plan.retained_tail_message_ids.len().saturating_add(1);
         ensure_not_cancelled(&cancellation)?;
 
         self.progress(
@@ -336,7 +336,11 @@ impl ContextCompactionService {
             conversation_id: job.request.conversation_id.clone(),
             idempotency_key: job.request.idempotency_key,
             snapshot_high_watermark: plan.snapshot_high_watermark,
-            snapshot_hash: plan.snapshot_hash,
+            source_message_ids: plan.source_message_ids,
+            source_start_sort_order: plan.source_start_sort_order,
+            source_boundary_sort_order: plan.source_boundary_sort_order,
+            source_digest: plan.source_digest,
+            expected_checkpoint_generation: plan.expected_checkpoint_generation,
             summary: checkpoint_text,
             retained_tail_message_ids: plan.retained_tail_message_ids,
             retained_start_sort_order: plan.retained_start_sort_order,
@@ -347,24 +351,19 @@ impl ContextCompactionService {
             model: job.model,
             usage: summary.usage,
         };
-        let expected_ids = plan.expected_message_ids;
         let commit_cancellation = cancellation.clone();
         let committed = self
             .inner
             .database
             .write(move |database| {
-                commit_context_checkpoint(
-                    database,
-                    &checkpoint,
-                    &expected_ids,
-                    &commit_cancellation,
-                )
+                commit_context_checkpoint(database, &checkpoint, &commit_cancellation)
             })
             .await?;
         self.database_metrics(operation_id, "compact.commit", committed.metrics)?;
-        if committed.value == CommitOutcome::Superseded {
-            return Err(OperationError::Superseded);
-        }
+        let messages_after = match committed.value {
+            CommitOutcome::Committed { messages_after } => messages_after,
+            CommitOutcome::Superseded => return Err(OperationError::Superseded),
+        };
         self.progress(
             operation_id,
             ContextCompactionPhase::Committing,
@@ -379,7 +378,7 @@ impl ContextCompactionService {
             conversation_id: job.request.conversation_id,
             checkpoint_id: Some(operation_id.to_string()),
             messages_before: plan.messages_before,
-            messages_after: projected_messages_after,
+            messages_after,
             tokens_before: plan.tokens_before,
             tokens_after,
             evicted_messages: plan.evicted_messages,
@@ -410,7 +409,8 @@ impl ContextCompactionService {
                     ActivityState::Superseded,
                     serde_json::json!({
                         "eventKind": "operationFailed",
-                        "reason": "conversation_changed",
+                        "reason": "The source messages changed while compacting. Please retry.",
+                        "diagnosticCode": "source_messages_changed",
                     }),
                 )?;
             }
