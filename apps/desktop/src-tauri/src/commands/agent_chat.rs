@@ -1244,6 +1244,34 @@ fn elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn initialization_frontend_message(error: &str) -> &'static str {
+    if error.contains("stale model-target revision") {
+        "The AI provider route changed while Nexa was refreshing it. Retry the message; if it repeats, open Settings > AI Providers and review items marked Needs attention."
+    } else if error.starts_with("Capability Registry resolution failed") {
+        "Nexa could not resolve the selected AI provider route. Open Settings > AI Providers and review items marked Needs attention."
+    } else if error.starts_with("Agent execution cancelled") {
+        "Agent execution cancelled during initialization."
+    } else {
+        "Agent execution failed during initialization. Open Task details for the recorded diagnostic."
+    }
+}
+
+#[cfg(test)]
+mod initialization_error_tests {
+    use super::initialization_frontend_message;
+
+    #[test]
+    fn stale_registry_failure_is_actionable_without_exposing_internal_ids() {
+        let message = initialization_frontend_message(
+            "Capability Registry resolution failed for run secret-run-id: Conflict: Capability target target:internal references a stale model-target revision",
+        );
+        assert!(message.contains("Retry the message"));
+        assert!(message.contains("Settings > AI Providers"));
+        assert!(!message.contains("secret-run-id"));
+        assert!(!message.contains("target:internal"));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_desktop_agent_initialization_failure(
     db: &Database,
@@ -1278,6 +1306,7 @@ fn finalize_desktop_agent_initialization_failure(
         let _ = db.transition_workflow_automation_run(run_id, status, Some(summary));
     }
     let payload = serde_json::json!({ "stage": "initialization", "reason": error });
+    let frontend_message = initialization_frontend_message(error);
     emit_terminal_agent_error_once(
         terminal_emitted,
         db,
@@ -1287,11 +1316,7 @@ fn finalize_desktop_agent_initialization_failure(
             conversation_id,
             task_run_id,
             turn_id,
-            message: if cancelled {
-                "Agent execution cancelled during initialization."
-            } else {
-                "Agent execution failed during initialization."
-            },
+            message: frontend_message,
             status,
             payload: Some(&payload),
         },
