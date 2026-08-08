@@ -1456,8 +1456,9 @@ mod tests {
                 persona_id: None,
             })
             .unwrap();
+        let turn_id = successful_turn(&db, &conversation.id);
         assert!(db
-            .record_project_turn_completion(&conversation.id, "turn-1", "run-1", "answer")
+            .record_project_turn_completion(&conversation.id, &turn_id, "run-1", "answer")
             .unwrap()
             .is_none());
 
