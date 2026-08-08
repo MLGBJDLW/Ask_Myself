@@ -243,7 +243,7 @@ test('conversation actions offer archive and delete with reversible archive', as
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
 
-  await page.getByRole('button', { name: 'New Chat' }).click();
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
       .__CREATE_CONVERSATION_ARGS__[0],
