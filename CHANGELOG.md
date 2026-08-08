@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.12.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.16...nexa-monorepo-v0.12.0) (2026-08-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pets:** introduces Companion Pack schema v1 and a durable Companion state contract.
+
+### Features
+
+* **pets:** add durable Companion state projection ([8005221](https://github.com/MLGBJDLW/Nexa/commit/8005221f92b82ad72b247b2075d6c3a693c18c80))
+* **project:** add workspace narrative runtime ([fe0256b](https://github.com/MLGBJDLW/Nexa/commit/fe0256b5df5adb49db6d53cee17345e8f5d94523))
+* **search:** add provider-native search dialects ([bab75cc](https://github.com/MLGBJDLW/Nexa/commit/bab75ccb699b55f7dbb62369170d0ca36cb89552))
+* **settings:** streamline AI provider management ([fb87256](https://github.com/MLGBJDLW/Nexa/commit/fb8725638b0b51467c45296a37433ed974db7c88))
+
+
+### Bug Fixes
+
+* **chat:** isolate new conversation prompts ([8985729](https://github.com/MLGBJDLW/Nexa/commit/8985729592c25ad25122f1e0c083803fdbe9cf08))
+* **context:** make compaction append-safe ([6c22bbe](https://github.com/MLGBJDLW/Nexa/commit/6c22bbe66e242363f24f17ef704ef4f55d90dca0))
+* **deps:** clear frontend audit gate ([0b9e6a2](https://github.com/MLGBJDLW/Nexa/commit/0b9e6a24f584d8a7bddd7d720350f15e86be8bdf))
+* **desktop:** restore Windows compilation ([fae6829](https://github.com/MLGBJDLW/Nexa/commit/fae682973b67491649ddc948d58566fc8da6336e))
+* **i18n:** localize upgraded workspace surfaces ([26563d9](https://github.com/MLGBJDLW/Nexa/commit/26563d99e7b2ac4152696a24447f260958f008ab))
+* **pets:** normalize missing Companion projections ([706e328](https://github.com/MLGBJDLW/Nexa/commit/706e3288cfc20e841cdc273c33f40f902f09c8a0))
+* **project:** bind turns to launch workspace ([6f54b59](https://github.com/MLGBJDLW/Nexa/commit/6f54b59e71126ea7708378b7b9108ab5b411581c))
+* **project:** persist structured workspace state ([db64cc0](https://github.com/MLGBJDLW/Nexa/commit/db64cc09d9e2b1638c97ba66903f6cd011c12579))
+* **project:** reconcile durable workspace state ([dab6588](https://github.com/MLGBJDLW/Nexa/commit/dab65881e71377b154f1e09c3477efca5590135f))
+* **project:** recover partial launch migrations ([bfb809c](https://github.com/MLGBJDLW/Nexa/commit/bfb809c72c8b933ffa38930fd73994f0bad37b6b))
+* **project:** trust authoritative turn state ([ada4ac0](https://github.com/MLGBJDLW/Nexa/commit/ada4ac0481fa04dc93958dbf6d55cacfe4887ed5))
+* **runtime:** keep capability registry revisions atomic ([09d1bb5](https://github.com/MLGBJDLW/Nexa/commit/09d1bb514c37fb11f65165714c8d360945b3901d))
+* **search:** align native response boundaries ([fcdb1f9](https://github.com/MLGBJDLW/Nexa/commit/fcdb1f95904cbaba8518b1cc967fd1612a5e0ef7))
+* **search:** complete Responses search adapters ([6b46032](https://github.com/MLGBJDLW/Nexa/commit/6b4603222e2f716d244524eec747ae1676910ec9))
+* **search:** enforce native search boundaries ([affa6dd](https://github.com/MLGBJDLW/Nexa/commit/affa6ddb8581e4f20e9b2a6de2e961e634fbc41b))
+* **search:** preserve Responses tool state ([efb4acc](https://github.com/MLGBJDLW/Nexa/commit/efb4acced69c597cc76607c7965b23cbb53d7280))
+* **storage:** preserve raw connection boundary ([9adcf22](https://github.com/MLGBJDLW/Nexa/commit/9adcf22f8c92bad24c31d7c5008a3c210e30fe5f))
+
 ## [0.11.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.11.15...nexa-monorepo-v0.11.16) (2026-08-07)
 
 
