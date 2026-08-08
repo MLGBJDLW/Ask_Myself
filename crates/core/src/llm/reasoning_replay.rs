@@ -223,7 +223,8 @@ pub fn prepare_provider_replay_history(
     messages: &[Message],
     route: &RouteSnapshot,
 ) -> ReasoningReplayProjection {
-    if !route.replay_policy.requires_tool_call_payload() {
+    let required_payload = route.replay_policy.requires_tool_call_payload();
+    if !required_payload && route.replay_policy != ReasoningReplayPolicy::NotRequired {
         return prepare_reasoning_replay_history(messages, route.replay_policy);
     }
 
@@ -257,9 +258,19 @@ pub fn prepare_provider_replay_history(
                 {
                     return false;
                 }
-                message.provider_turn().is_none_or(|envelope| {
-                    !envelope.is_compatible_with(route) || !envelope.authorizes_tool_dispatch()
-                })
+                if required_payload {
+                    message.provider_turn().is_none_or(|envelope| {
+                        !envelope.is_compatible_with(route) || !envelope.authorizes_tool_dispatch()
+                    })
+                } else {
+                    message.provider_turn().is_some_and(|envelope| {
+                        !matches!(
+                            &envelope.replay_payload,
+                            super::provider_turn::ProviderReplayPayload::None
+                        ) && (!envelope.is_compatible_with(route)
+                            || !envelope.authorizes_tool_dispatch())
+                    })
+                }
             });
             if invalid_envelope {
                 omitted_units += 1;
@@ -488,5 +499,62 @@ mod tests {
                     .as_ref()
                     .is_some_and(|calls| !calls.is_empty())
         }));
+    }
+
+    #[test]
+    fn optional_but_invalid_provider_payload_crosses_a_replay_boundary() {
+        let route = RouteSnapshot {
+            provider_endpoint_id: "google-public".to_string(),
+            provider_family: "google".to_string(),
+            api_style: ReasoningApiStyle::GeminiGenerateContent,
+            model_id: "gemini-2.5-flash".to_string(),
+            reasoning_profile_id: "gemini-thought-signature-v1".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: ReasoningReplayPolicy::NotRequired,
+        };
+        let payload = crate::llm::provider_turn::GeminiThoughtSignatureSet {
+            signatures: vec![crate::llm::provider_turn::GeminiThoughtSignature {
+                tool_call_id: "call-1".to_string(),
+                model_part_index: Some(1),
+                signature: "moved".to_string(),
+            }],
+            content_parts: vec![serde_json::json!({
+                "functionCall": {"id": "call-1", "name": "lookup", "args": {}},
+                "thoughtSignature": "moved"
+            })],
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: crate::llm::provider_turn::encode_gemini_thought_signatures(
+                &payload,
+            ),
+        }]);
+        assistant.set_provider_turn(ProviderTurnEnvelope::capture(
+            "optional-item",
+            "optional-sample",
+            route.clone(),
+            "",
+            None,
+            None,
+            assistant.tool_calls.clone().unwrap_or_default(),
+            false,
+        ));
+
+        let projection = prepare_provider_replay_history(
+            &[
+                assistant,
+                Message::text_with_name(Role::Tool, "result", "call-1"),
+            ],
+            &route,
+        );
+
+        assert_eq!(projection.omitted_units, 1);
+        assert!(projection
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool));
     }
 }

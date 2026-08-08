@@ -117,6 +117,130 @@ pub struct GeminiThoughtSignatureSet {
     pub content_parts: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponsesReplayPayload {
+    pub response_status: String,
+    pub items: Vec<serde_json::Value>,
+}
+
+impl ResponsesReplayPayload {
+    fn completed_item(item: &serde_json::Value) -> bool {
+        item.get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty())
+            && item.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+    }
+
+    fn is_structurally_complete(&self, encrypted_reasoning_required: bool) -> bool {
+        if self.response_status != "completed" || self.items.is_empty() {
+            return false;
+        }
+        let mut saw_reasoning = false;
+        let mut saw_function_call = false;
+        for item in &self.items {
+            match item.get("type").and_then(serde_json::Value::as_str) {
+                Some("reasoning") => {
+                    let has_state = if encrypted_reasoning_required {
+                        item.get("encrypted_content")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|content| !content.trim().is_empty())
+                    } else {
+                        item.get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|content| !content.is_empty())
+                    };
+                    if !Self::completed_item(item) || !has_state {
+                        return false;
+                    }
+                    saw_reasoning = true;
+                }
+                Some("web_search_call") => {
+                    if !Self::completed_item(item) {
+                        return false;
+                    }
+                }
+                Some("message") => {
+                    if !Self::completed_item(item)
+                        || !item
+                            .get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|content| !content.is_empty())
+                    {
+                        return false;
+                    }
+                }
+                Some("function_call") => {
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|call_id| !call_id.trim().is_empty());
+                    let name = item
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|name| !name.trim().is_empty());
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|arguments| {
+                            serde_json::from_str::<serde_json::Value>(arguments).ok()
+                        })
+                        .is_some_and(|arguments| arguments.is_object());
+                    if !saw_reasoning
+                        || !Self::completed_item(item)
+                        || !call_id
+                        || !name
+                        || !arguments
+                    {
+                        return false;
+                    }
+                    saw_function_call = true;
+                }
+                _ => return false,
+            }
+        }
+        saw_reasoning && saw_function_call
+    }
+
+    fn authorizes_tool_calls(
+        &self,
+        tool_calls: &[ToolCallRequest],
+        encrypted_reasoning_required: bool,
+    ) -> bool {
+        if !self.is_structurally_complete(encrypted_reasoning_required) {
+            return false;
+        }
+        let provider_calls = self
+            .items
+            .iter()
+            .filter(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+            })
+            .collect::<Vec<_>>();
+        provider_calls.len() == tool_calls.len()
+            && provider_calls
+                .iter()
+                .zip(tool_calls)
+                .all(|(provider_call, tool_call)| {
+                    provider_call
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(tool_call.id.as_str())
+                        && provider_call
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(tool_call.name.as_str())
+                        && provider_call
+                            .get("arguments")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|arguments| {
+                                serde_json::from_str::<serde_json::Value>(arguments).ok()
+                            })
+                            == serde_json::from_str::<serde_json::Value>(&tool_call.arguments).ok()
+                })
+    }
+}
+
 impl GeminiThoughtSignatureSet {
     fn has_valid_signature_positions(&self) -> bool {
         let signed_parts = self
@@ -130,7 +254,7 @@ impl GeminiThoughtSignatureSet {
                     .map(|signature| (index, signature))
             })
             .collect::<Vec<_>>();
-        !signed_parts.is_empty()
+        !self.content_parts.is_empty()
             && signed_parts.len() == self.signatures.len()
             && signed_parts.iter().all(|(index, signature)| {
                 self.signatures.iter().any(|captured| {
@@ -139,7 +263,11 @@ impl GeminiThoughtSignatureSet {
             })
     }
 
-    fn authorizes_tool_calls(&self, tool_calls: &[ToolCallRequest]) -> bool {
+    fn authorizes_tool_calls(
+        &self,
+        tool_calls: &[ToolCallRequest],
+        require_first_function_signature: bool,
+    ) -> bool {
         if !self.has_valid_signature_positions() {
             return false;
         }
@@ -148,6 +276,23 @@ impl GeminiThoughtSignatureSet {
             .iter()
             .filter_map(|part| part.get("functionCall"))
             .collect::<Vec<_>>();
+        if require_first_function_signature {
+            let signed_function_calls = self
+                .content_parts
+                .iter()
+                .filter(|part| part.get("functionCall").is_some())
+                .map(|part| {
+                    part.get("thoughtSignature")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|signature| !signature.trim().is_empty())
+                })
+                .collect::<Vec<_>>();
+            if signed_function_calls.first() != Some(&true)
+                || signed_function_calls.iter().skip(1).any(|signed| *signed)
+            {
+                return false;
+            }
+        }
         provider_calls.len() == tool_calls.len()
             && provider_calls
                 .iter()
@@ -173,9 +318,9 @@ impl GeminiThoughtSignatureSet {
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum ProviderReplayPayload {
     DeepSeekReasoningContent(String),
-    DeepSeekResponseItems(Vec<serde_json::Value>),
+    DeepSeekResponseItems(ResponsesReplayPayload),
     AnthropicThinkingBlocks(Vec<AnthropicThinkingBlock>),
-    OpenAiResponseItems(Vec<serde_json::Value>),
+    OpenAiResponseItems(ResponsesReplayPayload),
     GeminiThoughtSignatures(GeminiThoughtSignatureSet),
     OpenAiCompatibleReasoningContent {
         source_field: String,
@@ -191,10 +336,11 @@ impl ProviderReplayPayload {
             Self::DeepSeekReasoningContent(content)
             | Self::OpenAiCompatibleReasoningContent { content, .. } => !content.trim().is_empty(),
             Self::AnthropicThinkingBlocks(blocks) => !blocks.is_empty(),
-            Self::DeepSeekResponseItems(items) | Self::OpenAiResponseItems(items) => {
-                !items.is_empty()
+            Self::DeepSeekResponseItems(payload) => payload.is_structurally_complete(false),
+            Self::OpenAiResponseItems(payload) => payload.is_structurally_complete(true),
+            Self::GeminiThoughtSignatures(payload) => {
+                !payload.signatures.is_empty() && payload.has_valid_signature_positions()
             }
-            Self::GeminiThoughtSignatures(payload) => payload.has_valid_signature_positions(),
             Self::None => false,
         }
     }
@@ -209,9 +355,21 @@ impl ProviderReplayPayload {
         }
     }
 
-    fn authorizes_tool_calls(&self, tool_calls: &[ToolCallRequest]) -> bool {
+    fn authorizes_tool_calls(&self, route: &RouteSnapshot, tool_calls: &[ToolCallRequest]) -> bool {
         match self {
-            Self::GeminiThoughtSignatures(payload) => payload.authorizes_tool_calls(tool_calls),
+            Self::DeepSeekResponseItems(payload) => {
+                payload.authorizes_tool_calls(tool_calls, false)
+            }
+            Self::OpenAiResponseItems(payload) => payload.authorizes_tool_calls(tool_calls, true),
+            Self::GeminiThoughtSignatures(payload) => payload.authorizes_tool_calls(
+                tool_calls,
+                route
+                    .model_id
+                    .strip_prefix("models/")
+                    .unwrap_or(&route.model_id)
+                    .to_ascii_lowercase()
+                    .starts_with("gemini-3"),
+            ),
             _ => self.is_present(),
         }
     }
@@ -237,12 +395,12 @@ impl ProviderReplayPayload {
                 .iter()
                 .filter_map(|call| call.thought_signature.as_deref())
                 .find_map(decode_responses_reasoning_items)
-                .filter(|items| !items.is_empty())
-                .map(|items| {
+                .filter(|payload| !payload.items.is_empty())
+                .map(|payload| {
                     if route.provider_family == "deepseek" {
-                        Self::DeepSeekResponseItems(items)
+                        Self::DeepSeekResponseItems(payload)
                     } else {
-                        Self::OpenAiResponseItems(items)
+                        Self::OpenAiResponseItems(payload)
                     }
                 })
                 .unwrap_or(Self::None),
@@ -322,12 +480,14 @@ impl ProviderReplayItem {
                 .cloned()
                 .map(Self::AnthropicThinkingBlock)
                 .collect(),
-            ProviderReplayPayload::DeepSeekResponseItems(items) => items
+            ProviderReplayPayload::DeepSeekResponseItems(payload) => payload
+                .items
                 .iter()
                 .cloned()
                 .map(Self::DeepSeekResponseItem)
                 .collect(),
-            ProviderReplayPayload::OpenAiResponseItems(items) => items
+            ProviderReplayPayload::OpenAiResponseItems(payload) => payload
+                .items
                 .iter()
                 .cloned()
                 .map(Self::OpenAiResponseItem)
@@ -426,11 +586,17 @@ impl ProviderTurnEnvelope {
     }
 
     pub fn authorizes_tool_dispatch(&self) -> bool {
-        self.tool_calls.is_empty()
-            || self
-                .route
-                .replay_policy
-                .authorizes_tool_call(self.replay_payload.authorizes_tool_calls(&self.tool_calls))
+        if self.tool_calls.is_empty() {
+            return true;
+        }
+        let payload_supplied = !matches!(self.replay_payload, ProviderReplayPayload::None);
+        let payload_valid = self
+            .replay_payload
+            .authorizes_tool_calls(&self.route, &self.tool_calls);
+        if self.route.replay_policy == ReasoningReplayPolicy::NotRequired && payload_supplied {
+            return payload_valid;
+        }
+        self.route.replay_policy.authorizes_tool_call(payload_valid)
     }
 
     pub fn is_compatible_with(&self, route: &RouteSnapshot) -> bool {
@@ -453,23 +619,32 @@ pub fn decode_anthropic_thinking_blocks(signature: &str) -> Option<Vec<Anthropic
         .and_then(|payload| serde_json::from_str(payload).ok())
 }
 
-pub fn encode_responses_reasoning_items(items: &[serde_json::Value]) -> Option<String> {
-    (!items.is_empty()).then(|| {
+pub fn encode_responses_reasoning_items(payload: &ResponsesReplayPayload) -> Option<String> {
+    (!payload.items.is_empty()).then(|| {
         format!(
             "{RESPONSES_REASONING_SIGNATURE_PREFIX}{}",
-            serde_json::to_string(items).unwrap_or_else(|_| "[]".to_string())
+            serde_json::to_string(payload).unwrap_or_default()
         )
     })
 }
 
-pub fn decode_responses_reasoning_items(signature: &str) -> Option<Vec<serde_json::Value>> {
+pub fn decode_responses_reasoning_items(signature: &str) -> Option<ResponsesReplayPayload> {
     signature
         .strip_prefix(RESPONSES_REASONING_SIGNATURE_PREFIX)
-        .and_then(|payload| serde_json::from_str(payload).ok())
+        .and_then(|payload| {
+            serde_json::from_str(payload).ok().or_else(|| {
+                serde_json::from_str::<Vec<serde_json::Value>>(payload)
+                    .ok()
+                    .map(|items| ResponsesReplayPayload {
+                        response_status: "legacy_unknown".to_string(),
+                        items,
+                    })
+            })
+        })
 }
 
 pub fn encode_gemini_thought_signatures(payload: &GeminiThoughtSignatureSet) -> Option<String> {
-    (!payload.signatures.is_empty() && !payload.content_parts.is_empty()).then(|| {
+    (!payload.content_parts.is_empty()).then(|| {
         format!(
             "{GEMINI_THOUGHT_SIGNATURE_PREFIX}{}",
             serde_json::to_string(payload).unwrap_or_default()
@@ -545,15 +720,30 @@ mod tests {
             ProviderReplayPayload::AnthropicThinkingBlocks(anthropic_blocks)
         );
 
-        let response_items = vec![serde_json::json!({
-            "type": "reasoning",
-            "encrypted_content": "opaque"
-        })];
+        let response_payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-o",
+                    "status": "completed",
+                    "encrypted_content": "opaque"
+                }),
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": "fc-o",
+                    "status": "completed",
+                    "call_id": "call-o",
+                    "name": "lookup",
+                    "arguments": "{}"
+                }),
+            ],
+        };
         let response_call = ToolCallRequest {
             id: "call-o".to_string(),
             name: "lookup".to_string(),
             arguments: "{}".to_string(),
-            thought_signature: encode_responses_reasoning_items(&response_items),
+            thought_signature: encode_responses_reasoning_items(&response_payload),
         };
         assert_eq!(
             ProviderReplayPayload::capture(
@@ -561,7 +751,7 @@ mod tests {
                 None,
                 &[response_call],
             ),
-            ProviderReplayPayload::OpenAiResponseItems(response_items)
+            ProviderReplayPayload::OpenAiResponseItems(response_payload)
         );
 
         let gemini_payload = GeminiThoughtSignatureSet {
@@ -690,5 +880,134 @@ mod tests {
         mismatched_envelope.replay_payload =
             ProviderReplayPayload::GeminiThoughtSignatures(mismatched);
         assert!(!mismatched_envelope.authorizes_tool_dispatch());
+
+        let mut optional_route = route(ReasoningApiStyle::GeminiGenerateContent, "google");
+        optional_route.model_id = "gemini-2.5-flash".to_string();
+        optional_route.replay_policy = ReasoningReplayPolicy::NotRequired;
+        moved_envelope.route = optional_route;
+        assert!(!moved_envelope.authorizes_tool_dispatch());
+    }
+
+    #[test]
+    fn gemini_three_parallel_calls_reject_signatures_after_the_first_call() {
+        let payload = GeminiThoughtSignatureSet {
+            signatures: vec![
+                GeminiThoughtSignature {
+                    tool_call_id: "call-1".to_string(),
+                    model_part_index: Some(0),
+                    signature: "first".to_string(),
+                },
+                GeminiThoughtSignature {
+                    tool_call_id: "call-2".to_string(),
+                    model_part_index: Some(1),
+                    signature: "second".to_string(),
+                },
+            ],
+            content_parts: vec![
+                serde_json::json!({
+                    "functionCall": {"id": "call-1", "name": "read_file", "args": {}},
+                    "thoughtSignature": "first"
+                }),
+                serde_json::json!({
+                    "functionCall": {"id": "call-2", "name": "list_files", "args": {}},
+                    "thoughtSignature": "second"
+                }),
+            ],
+        };
+        let mut route = route(ReasoningApiStyle::GeminiGenerateContent, "google");
+        route.model_id = "gemini-3-flash".to_string();
+        let envelope = ProviderTurnEnvelope::capture(
+            "parallel-item",
+            "parallel-sample",
+            route,
+            "",
+            None,
+            None,
+            vec![
+                ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: encode_gemini_thought_signatures(&payload),
+                },
+                ToolCallRequest {
+                    id: "call-2".to_string(),
+                    name: "list_files".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: None,
+                },
+            ],
+            true,
+        );
+
+        assert!(!envelope.authorizes_tool_dispatch());
+    }
+
+    #[test]
+    fn incomplete_or_reasoning_missing_responses_payload_never_authorizes_tools() {
+        let payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-1",
+                    "status": "completed",
+                    "encrypted_content": "opaque"
+                }),
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "status": "completed",
+                    "call_id": "call-1",
+                    "name": "write_file",
+                    "arguments": "{\"path\":\"a\"}"
+                }),
+            ],
+        };
+        let tool_call = ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "write_file".to_string(),
+            arguments: r#"{"path":"a"}"#.to_string(),
+            thought_signature: encode_responses_reasoning_items(&payload),
+        };
+        let envelope = ProviderTurnEnvelope::capture(
+            "responses-item",
+            "responses-sample",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                ..route(ReasoningApiStyle::OpenAiResponses, "openai")
+            },
+            "",
+            None,
+            None,
+            vec![tool_call],
+            true,
+        );
+        assert!(envelope.authorizes_tool_dispatch());
+
+        for mutate in [
+            |payload: &mut ResponsesReplayPayload| {
+                payload.response_status = "incomplete".to_string();
+            },
+            |payload: &mut ResponsesReplayPayload| {
+                payload.items[0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("encrypted_content");
+            },
+            |payload: &mut ResponsesReplayPayload| {
+                payload.items[1]["status"] = serde_json::Value::String("in_progress".to_string());
+            },
+        ] {
+            let ProviderReplayPayload::OpenAiResponseItems(mut invalid) =
+                envelope.replay_payload.clone()
+            else {
+                panic!("OpenAI Responses payload");
+            };
+            mutate(&mut invalid);
+            let mut rejected = envelope.clone();
+            rejected.replay_payload = ProviderReplayPayload::OpenAiResponseItems(invalid);
+            assert!(!rejected.authorizes_tool_dispatch());
+        }
     }
 }

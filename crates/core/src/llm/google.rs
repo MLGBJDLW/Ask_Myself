@@ -352,6 +352,7 @@ fn convert_messages(
     let mut system_parts: Vec<GeminiPartV2> = Vec::new();
     let mut contents: Vec<GeminiContentV2> = Vec::new();
     let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
+    let mut tool_id_to_provider_id: HashMap<String, Option<String>> = HashMap::new();
 
     for (index, msg) in messages.iter().enumerate() {
         match msg.role {
@@ -405,6 +406,17 @@ fn convert_messages(
                 }
                 let exact_parts = replayable_gemini_parts(msg);
                 if !exact_parts.is_empty() {
+                    if let Some(calls) = msg.tool_calls.as_deref() {
+                        let provider_call_ids = exact_parts.iter().filter_map(|part| match part {
+                            GeminiPartV2::FunctionCall { function_call, .. } => {
+                                Some(function_call.id.clone())
+                            }
+                            _ => None,
+                        });
+                        for (call, provider_id) in calls.iter().zip(provider_call_ids) {
+                            tool_id_to_provider_id.insert(call.id.clone(), provider_id);
+                        }
+                    }
                     if contents.is_empty() {
                         push_or_merge_content(
                             &mut contents,
@@ -433,6 +445,7 @@ fn convert_messages(
                 }
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
+                        tool_id_to_provider_id.insert(tc.id.clone(), Some(tc.id.clone()));
                         let args: serde_json::Value =
                             serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
                         parts.push(GeminiPartV2::FunctionCall {
@@ -494,7 +507,7 @@ fn convert_messages(
 
                 let make_part = || GeminiPartV2::FunctionResponse {
                     function_response: GeminiFunctionResponse {
-                        id: Some(tool_ref.clone()),
+                        id: tool_id_to_provider_id.get(&tool_ref).cloned().flatten(),
                         name: tool_name.clone(),
                         response: response_val.clone(),
                     },
@@ -961,7 +974,7 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
     }
 
     if let Some(first_tool_call) = tool_calls.first_mut() {
-        if !captured_signatures.is_empty() && !provider_content_parts.is_empty() {
+        if !provider_content_parts.is_empty() {
             let fallback_tool_call_id = first_tool_call.id.clone();
             let payload = super::provider_turn::GeminiThoughtSignatureSet {
                 signatures: captured_signatures
@@ -1287,7 +1300,7 @@ impl GeminiToolCallStreamState {
                 })
                 .collect::<Vec<_>>();
 
-            if !signatures.is_empty() && !self.provider_parts.is_empty() {
+            if !self.provider_parts.is_empty() {
                 let payload = super::provider_turn::GeminiThoughtSignatureSet {
                     signatures,
                     content_parts: self.provider_parts.clone(),
@@ -2216,6 +2229,60 @@ mod tests {
             encoded[2]["parts"][0]["functionResponse"]["name"],
             "read_file"
         );
+    }
+
+    #[test]
+    fn test_convert_messages_does_not_copy_internal_ids_to_idless_provider_calls() {
+        let payload = super::super::provider_turn::GeminiThoughtSignatureSet {
+            signatures: Vec::new(),
+            content_parts: vec![serde_json::json!({
+                "functionCall": {"name": "read_file", "args": {"path": "README.md"}}
+            })],
+        };
+        let tool_call = ToolCallRequest {
+            id: "call_0".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"README.md"}"#.to_string(),
+            thought_signature: super::super::provider_turn::encode_gemini_thought_signatures(
+                &payload,
+            ),
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![tool_call.clone()]);
+        assistant.set_provider_turn(super::super::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-item",
+            "sample",
+            super::super::provider_turn::RouteSnapshot {
+                provider_endpoint_id: "google-public".to_string(),
+                provider_family: "google".to_string(),
+                api_style: ReasoningApiStyle::GeminiGenerateContent,
+                model_id: "gemini-2.5-flash".to_string(),
+                reasoning_profile_id: "gemini-thought-signature-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy: super::super::reasoning_profile::ReasoningReplayPolicy::NotRequired,
+            },
+            "",
+            None,
+            None,
+            vec![tool_call],
+            true,
+        ));
+        assert!(assistant
+            .provider_turn()
+            .expect("Gemini 2.5 provider envelope")
+            .authorizes_tool_dispatch());
+        let messages = vec![
+            Message::text(Role::User, "inspect"),
+            assistant,
+            Message::text_with_name(Role::Tool, r#"{"content":"ok"}"#, "call_0"),
+        ];
+
+        let (_, contents) = convert_messages(&messages);
+        let encoded = serde_json::to_value(contents).expect("Gemini contents");
+        assert!(encoded[1]["parts"][0]["functionCall"].get("id").is_none());
+        assert!(encoded[2]["parts"][0]["functionResponse"]
+            .get("id")
+            .is_none());
     }
 
     #[test]

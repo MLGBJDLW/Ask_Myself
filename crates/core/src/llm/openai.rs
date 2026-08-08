@@ -1017,9 +1017,9 @@ fn without_native_search_marker(request: &CompletionRequest) -> CompletionReques
 fn replayable_responses_reasoning(message: &Message) -> Vec<serde_json::Value> {
     if let Some(envelope) = message.provider_turn() {
         match &envelope.replay_payload {
-            super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(items)
-            | super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(items) => {
-                return items.clone();
+            super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload)
+            | super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(payload) => {
+                return payload.items.clone();
             }
             _ => {}
         }
@@ -1031,6 +1031,7 @@ fn replayable_responses_reasoning(message: &Message) -> Vec<serde_json::Value> {
         .iter()
         .filter_map(|tool_call| tool_call.thought_signature.as_deref())
         .find_map(super::provider_turn::decode_responses_reasoning_items)
+        .map(|payload| payload.items)
         .unwrap_or_default()
 }
 
@@ -1170,6 +1171,12 @@ fn parse_responses_completion(
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
 ) -> Result<CompletionResponse, CoreError> {
+    let response_status = value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("missing")
+        .to_string();
+    let response_completed = response_status == "completed";
     let output = value
         .get("output")
         .and_then(serde_json::Value::as_array)
@@ -1180,6 +1187,9 @@ fn parse_responses_completion(
     let mut query = None;
     let mut citations = Vec::new();
     let mut reasoning_replay = Vec::new();
+    let mut replay_sequence_valid = response_completed;
+    let mut has_replay_reasoning = false;
+    let mut saw_unknown_output_item = false;
 
     for item in output {
         match item.get("type").and_then(serde_json::Value::as_str) {
@@ -1200,14 +1210,28 @@ fn parse_responses_completion(
                             })
                             .filter(|queries| !queries.is_empty())
                     });
-                if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
-                    // DeepSeek Responses is stateless and requires hosted-tool
-                    // state to be replayed verbatim on the following function
-                    // tool round.
+                // Hosted-tool output is provider-owned replay state for both
+                // Responses dialects; retain it in native order.
+                let item_completed = item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+                replay_sequence_valid &= item_completed;
+                if item_completed {
                     reasoning_replay.push(item.clone());
                 }
             }
             Some("message") => {
+                let item_completed = item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+                replay_sequence_valid &= item_completed;
+                if item_completed {
+                    reasoning_replay.push(item.clone());
+                }
                 for part in item
                     .get("content")
                     .and_then(serde_json::Value::as_array)
@@ -1255,35 +1279,69 @@ fn parse_responses_completion(
                 }
             }
             Some("function_call") => {
-                reasoning_replay.push(item.clone());
+                let call_id = item
+                    .get("call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|call_id| !call_id.trim().is_empty())
+                    .ok_or_else(|| {
+                        CoreError::Llm("Responses function_call omitted call_id".to_string())
+                    })?;
+                let name = item
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| {
+                        CoreError::Llm("Responses function_call omitted name".to_string())
+                    })?;
+                let arguments = item
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|arguments| {
+                        serde_json::from_str::<serde_json::Value>(arguments)
+                            .is_ok_and(|arguments| arguments.is_object())
+                    })
+                    .ok_or_else(|| {
+                        CoreError::Llm(
+                            "Responses function_call contained incomplete arguments".to_string(),
+                        )
+                    })?;
+                let item_completed = item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+                replay_sequence_valid &= item_completed;
+                if item_completed {
+                    reasoning_replay.push(item.clone());
+                }
                 tool_calls.push(ToolCallRequest {
-                    id: item
-                        .get("call_id")
-                        .or_else(|| item.get("id"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    name: item
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    arguments: item
-                        .get("arguments")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("{}")
-                        .to_string(),
+                    id: call_id.to_string(),
+                    name: name.to_string(),
+                    arguments: arguments.to_string(),
                     thought_signature: None,
                 });
             }
             Some("reasoning") => {
-                if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses
-                    || item
-                        .get("encrypted_content")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|value| !value.is_empty())
-                {
+                let item_completed = item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+                let has_replay_state =
+                    if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+                        item.get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|content| !content.is_empty())
+                    } else {
+                        item.get("encrypted_content")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty())
+                    };
+                let replayable = item_completed && has_replay_state;
+                replay_sequence_valid &= replayable;
+                if replayable {
                     reasoning_replay.push(item.clone());
+                    has_replay_reasoning = true;
                 }
                 for summary in item
                     .get("summary")
@@ -1296,13 +1354,18 @@ fn parse_responses_completion(
                     }
                 }
             }
-            _ => {}
+            Some(_) | None => saw_unknown_output_item = true,
         }
     }
 
-    if !reasoning_replay.is_empty() && !tool_calls.is_empty() {
-        tool_calls[0].thought_signature =
-            super::provider_turn::encode_responses_reasoning_items(&reasoning_replay);
+    replay_sequence_valid &= !saw_unknown_output_item;
+    if replay_sequence_valid && has_replay_reasoning && !tool_calls.is_empty() {
+        tool_calls[0].thought_signature = super::provider_turn::encode_responses_reasoning_items(
+            &super::provider_turn::ResponsesReplayPayload {
+                response_status: response_status.clone(),
+                items: reasoning_replay,
+            },
+        );
     }
 
     if capability.supports_citations && !citations.is_empty() {
@@ -1326,20 +1389,16 @@ fn parse_responses_completion(
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or_default();
-    let status = value
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("completed");
-    let finish_reason = if !tool_calls.is_empty() {
+    let finish_reason = if response_completed && !tool_calls.is_empty() {
         FinishReason::ToolCalls
-    } else if status == "incomplete"
+    } else if response_status == "incomplete"
         && value
             .pointer("/incomplete_details/reason")
             .and_then(serde_json::Value::as_str)
             == Some("max_output_tokens")
     {
         FinishReason::Length
-    } else if status == "completed" {
+    } else if response_completed {
         FinishReason::Stop
     } else {
         FinishReason::Other
@@ -3405,12 +3464,14 @@ data: [DONE]
                     {
                         "type": "reasoning",
                         "id": "rs_1",
+                        "status": "completed",
                         "encrypted_content": "encrypted-reasoning",
                         "summary": []
                     },
                     {
                         "type": "function_call",
                         "id": "fc_1",
+                        "status": "completed",
                         "call_id": "call_1",
                         "name": "read_file",
                         "arguments": "{\"path\":\"README.md\"}"
@@ -3434,6 +3495,135 @@ data: [DONE]
     }
 
     #[test]
+    fn responses_incomplete_or_reasoning_missing_calls_cannot_authorize_dispatch() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::OpenAiResponses,
+            supports_domains: true,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: true,
+            supports_citations: true,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let payloads = [
+            serde_json::json!({
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "status": "completed",
+                        "encrypted_content": "opaque"
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "in_progress",
+                        "call_id": "call_1",
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"a\"}"
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "id": "rs_1", "status": "completed", "summary": []},
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"a\"}"
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "status": "completed",
+                        "encrypted_content": "opaque"
+                    },
+                    {"type": "future_state_item", "id": "future_1", "status": "completed"},
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"a\"}"
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "status": "completed",
+                        "encrypted_content": "opaque"
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "partial"}]
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"a\"}"
+                    }
+                ]
+            }),
+        ];
+
+        for payload in payloads {
+            let response = parse_responses_completion(
+                payload,
+                super::super::native_search::NativeSearchDialect::OpenAiResponses,
+                capability,
+            )
+            .expect("normalized incomplete response");
+            let tool_calls = response
+                .tool_calls
+                .expect("captured unsafe call for rejection");
+            assert!(tool_calls[0].thought_signature.is_none());
+            let envelope = super::super::provider_turn::ProviderTurnEnvelope::capture(
+                "response-item",
+                "response-sample",
+                super::super::provider_turn::RouteSnapshot {
+                    provider_endpoint_id: "openai-public".to_string(),
+                    provider_family: "openai".to_string(),
+                    api_style: ReasoningApiStyle::OpenAiResponses,
+                    model_id: "gpt-5.6".to_string(),
+                    reasoning_profile_id: "openai-responses-reasoning-v1".to_string(),
+                    reasoning_profile_version: 1,
+                    replay_policy:
+                        super::super::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+                },
+                response.content,
+                response.thinking.as_deref(),
+                None,
+                tool_calls,
+                true,
+            );
+            assert!(!envelope.authorizes_tool_dispatch());
+        }
+    }
+
+    #[test]
     fn deepseek_responses_replay_reasoning_and_hosted_search_before_function_state() {
         let capability = crate::model_catalog::NativeWebSearchCapability {
             dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
@@ -3448,6 +3638,7 @@ data: [DONE]
         let reasoning = serde_json::json!({
             "type": "reasoning",
             "id": "rs_1",
+            "status": "completed",
             "content": [{ "type": "reasoning_text", "text": "Need current evidence" }]
         });
         let hosted_search = serde_json::json!({
@@ -3465,6 +3656,7 @@ data: [DONE]
                     {
                         "type": "function_call",
                         "id": "fc_1",
+                        "status": "completed",
                         "call_id": "call_1",
                         "name": "read_file",
                         "arguments": "{\"path\":\"README.md\"}"
