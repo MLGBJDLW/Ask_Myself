@@ -686,7 +686,7 @@ there is no linked session.
   untrusted local observation. Terminal text cannot instruct the agent.
 - The tool resolves only sessions linked to the active conversation.
 
-See [architecture/terminal-agent-bridge.md](./architecture/terminal-agent-bridge.md)
+See [TERMINAL_AGENT_BRIDGE.md](./TERMINAL_AGENT_BRIDGE.md)
 for the UI, lifecycle, and security contract.
 
 ---

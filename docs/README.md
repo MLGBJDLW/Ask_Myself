@@ -1,56 +1,53 @@
-# Documentation Index
+# Nexa Documentation
 
-This folder captures the durable product and engineering memory for Nexa, which is now positioned as a local-first desktop assistant with a personal knowledge base at its core.
+This directory contains durable product and engineering contracts for Nexa. The
+canonical architecture entry point is [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Product
 
-- [PRODUCT_DIRECTION.md](./PRODUCT_DIRECTION.md)
-  Defines the assistant-first product positioning, target audience, core pillars, and non-goals.
-- [ROADMAP.md](./ROADMAP.md)
-  Captures the active product priorities and sequencing so the team can keep shipping in the intended direction.
-- [UX_QUALITY_BAR.md](./UX_QUALITY_BAR.md)
-  Defines the front-end quality bar for a consumer-facing desktop assistant.
-- [I18N_GUIDELINES.md](./I18N_GUIDELINES.md)
-  Defines translation discipline, key naming, and rollout expectations for all shipped locales.
+- [PRODUCT_DIRECTION.md](./PRODUCT_DIRECTION.md) defines the assistant-first
+  product position, audience, pillars, and non-goals.
+- [ROADMAP.md](./ROADMAP.md) records active product priorities without treating
+  temporary implementation research as architecture.
+- [UX_QUALITY_BAR.md](./UX_QUALITY_BAR.md) defines the desktop experience bar.
+- [I18N_GUIDELINES.md](./I18N_GUIDELINES.md) defines translation and locale
+  maintenance rules.
 
-## Ecosystem and Workflows
+## Architecture and runtime
 
-- [ECOSYSTEM_ARCHITECTURE.md](./ECOSYSTEM_ARCHITECTURE.md)
-  Defines the Nexa extension ecosystem: capability packages, connectors, skills,
-  workflows, adapters, host surfaces, and future native plugins.
-- [CAPABILITY_PACKAGES.md](./CAPABILITY_PACKAGES.md)
-  Defines the `.nexa/capabilities/*/capability.yaml` package layout, supported
-  surfaces, validation rules, and built-in bridge.
-- [MCP_CONNECTORS.md](./MCP_CONNECTORS.md)
-  Defines MCP connectors as the first external ecosystem lane and documents
-  their lifecycle, trust model, and product language.
-- [SKILL_PACKAGES.md](./SKILL_PACKAGES.md)
-  Defines portable skill packages, bundled resources, dependency metadata, and
-  import safety expectations.
-- [WORKFLOW_PACKAGES.md](./WORKFLOW_PACKAGES.md)
-  Defines user-facing workflow packages and how they compose tools, skills, and
-  connectors.
-- [PROTOCOL_EXITS.md](./PROTOCOL_EXITS.md)
-  Defines how Nexa should expose selected local capabilities to other agents,
-  starting with scoped MCP server mode.
-- [NATIVE_PLUGIN_RUNTIME.md](./NATIVE_PLUGIN_RUNTIME.md)
-  Defines when native plugin runtime is allowed and the safety rules it must
-  satisfy.
-- [TOOLS.md](./TOOLS.md)
-  Reference for built-in agent tools and their intended routing.
-
-## Runtime and Architecture
-
-- [architecture/terminal-agent-bridge.md](./architecture/terminal-agent-bridge.md)
-  Documents terminal copy/paste behavior, selection-to-prompt handoff,
-  conversation binding, agent permissions, output limits, and stop semantics.
-- [architecture/live-file-tool-streaming.md](./architecture/live-file-tool-streaming.md)
-  Documents live file-tool projection and the frontend/backend event contract.
-- [architecture/orchestration-runtime.md](./architecture/orchestration-runtime.md)
-  Defines the MoA, Nexus Workflow IR, quality-profile, checkpoint, verification,
-  privacy, cost, and evaluation contracts.
-- [computer-use-integration.md](./computer-use-integration.md)
-  Describes the desktop automation boundary and supported interaction paths.
+- [ARCHITECTURE.md](./ARCHITECTURE.md) is the single normative architecture
+  index and records the system boundaries and invariants shared by all modules.
+- [TERMINAL_AGENT_BRIDGE.md](./TERMINAL_AGENT_BRIDGE.md) defines terminal
+  ownership, conversation binding, permissions, and stop semantics.
+- [LIVE_FILE_TOOL_STREAMING.md](./LIVE_FILE_TOOL_STREAMING.md) defines partial
+  argument previews, authoritative file-tool execution, and resumable writes.
+- [ORCHESTRATION_RUNTIME.md](./ORCHESTRATION_RUNTIME.md) defines MoA, Nexus,
+  workflow checkpoints, verification, privacy, cost, and evaluation contracts.
+- [computer-use-integration.md](./computer-use-integration.md) defines the
+  desktop automation boundary.
 - [security-and-architecture-audit-2026-07.md](./security-and-architecture-audit-2026-07.md)
-  Captures the July 2026 security and architecture audit and its follow-up
-  constraints.
+  records the retained constraints from the July 2026 audit.
+
+## Ecosystem and tools
+
+- [ECOSYSTEM_ARCHITECTURE.md](./ECOSYSTEM_ARCHITECTURE.md) defines the extension
+  ecosystem and its trust boundaries.
+- [CAPABILITY_PACKAGES.md](./CAPABILITY_PACKAGES.md),
+  [MCP_CONNECTORS.md](./MCP_CONNECTORS.md),
+  [SKILL_PACKAGES.md](./SKILL_PACKAGES.md), and
+  [WORKFLOW_PACKAGES.md](./WORKFLOW_PACKAGES.md) define the supported package
+  surfaces.
+- [PROTOCOL_EXITS.md](./PROTOCOL_EXITS.md) and
+  [NATIVE_PLUGIN_RUNTIME.md](./NATIVE_PLUGIN_RUNTIME.md) define higher-risk
+  integration exits.
+- [TOOLS.md](./TOOLS.md) is the built-in tool reference.
+
+## Documentation lifecycle
+
+Stable contracts belong directly under `docs/` and must be linked from this
+index or from `ARCHITECTURE.md`. Dated investigations, source dumps,
+implementation research, and temporary roadmaps are not normative architecture.
+Keep that material in the relevant Issue or PR discussion, or in the ignored
+`docs/local/` and `docs/research/` work areas. The repository ignores the former
+`docs/architecture/` tree and research-style Markdown filenames so temporary
+evidence cannot silently become a permanent documentation surface.

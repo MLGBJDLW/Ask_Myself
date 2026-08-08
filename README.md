@@ -42,6 +42,7 @@ See the living docs:
 - [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/UX_QUALITY_BAR.md](docs/UX_QUALITY_BAR.md)
 - [docs/I18N_GUIDELINES.md](docs/I18N_GUIDELINES.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/ECOSYSTEM_ARCHITECTURE.md](docs/ECOSYSTEM_ARCHITECTURE.md)
 - [docs/README.md](docs/README.md)
 
@@ -88,7 +89,7 @@ Supported formats include:
 - Consumer-friendly investigation workspace in the Chat UI
 - Recall Mode entry in Search for vague memory lookup
 - Office-style document assistance through document and file tools
-- Configurable model providers across four built-in adapters — OpenAI-compatible, Anthropic, Google Gemini, and Ollama — with bundled presets for OpenAI, OpenRouter, Anthropic, Gemini (including Gemini 3.6 Flash and Gemini 3.5 Flash-Lite), DeepSeek, Qwen (including the dedicated Token Plan route for Qwen3.8 Max Preview), Zhipu, Moonshot, Doubao, Baichuan, Yi, LM Studio, Azure OpenAI, and other OpenAI-compatible endpoints
+- Cloud and local model connections projected from the shared Model Catalog, with endpoint-aware capabilities for chat, reasoning, tools, media, embeddings, and speech instead of README-pinned model versions
 - A compact split control below the prompt: model selection on the left and model-aware reasoning effort or thinking budget on the right
 - Archived conversation browsing with read-only replay, restore, delete, search, and direct-link handling
 - A conversation-linked terminal with selection-to-prompt, normal terminal copy/paste shortcuts, bounded output capture, and approval-gated agent interaction
@@ -189,7 +190,7 @@ See:
 
 ## Built-In Agent Tools
 
-The runtime currently exposes 50+ built-in tools, with additional tools available from enabled MCP connectors, including:
+The runtime exposes a catalog of built-in tools, with additional tools available from enabled MCP connectors, including:
 
 - Search tools
 - Collection management tools
