@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.2...nexa-monorepo-v0.12.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **agent:** enforce Responses tool history integrity ([e5f82b1](https://github.com/MLGBJDLW/Nexa/commit/e5f82b1a0271314983d6b52422a15302fee57823))
+* **agent:** finalize failed tool result turns ([f6bf2ec](https://github.com/MLGBJDLW/Nexa/commit/f6bf2ec6b8cd49f69d1b50090df62bd0fb9b9b0f))
+* **agent:** harden Responses history and architecture docs ([1f0a4db](https://github.com/MLGBJDLW/Nexa/commit/1f0a4dbae0cd8a7b00276f1bda58b3f3e61c7270))
+* **companion:** remove the chat status mirror ([bc5f0af](https://github.com/MLGBJDLW/Nexa/commit/bc5f0af69f43aa3be9827ec7d800a0e362f4507e))
+
 ## [0.12.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.1...nexa-monorepo-v0.12.2) (2026-08-08)
 
 
