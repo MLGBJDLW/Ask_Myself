@@ -467,6 +467,11 @@ function matchesSubagentToolName(name: string | null | undefined): boolean {
     'spawn_subagent',
     'spawn_subagent_batch',
     'judge_subagent_results',
+    'observe_subagent',
+    'wait_subagent',
+    'send_subagent_input',
+    'cancel_subagent',
+    'close_subagent',
   ]);
 }
 

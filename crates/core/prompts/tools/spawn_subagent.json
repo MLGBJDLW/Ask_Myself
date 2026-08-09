@@ -1,6 +1,6 @@
 {
   "name": "spawn_subagent",
-  "description": "Spawn a short-lived subagent to handle an isolated subtask, gather an independent perspective, or critique another result. You can call this tool multiple times in parallel, pass it explicit evidence and acceptance criteria, narrow its source scope or tool access, and then synthesize or adjudicate the returned results yourself.",
+  "description": "Start a short-lived subagent and immediately return its stable agent id. Use observe_subagent for incremental events and wait_subagent for the authoritative terminal result; use send_subagent_input, cancel_subagent, and close_subagent for lifecycle control. You can start multiple independent workers, pass explicit evidence and acceptance criteria, and narrow source scope or tool access.",
   "parameters": {
     "type": "object",
     "properties": {

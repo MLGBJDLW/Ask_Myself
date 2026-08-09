@@ -6,16 +6,20 @@ use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::delegation_scheduler::{
     BudgetSnapshot, DelegationLimitPolicy, DelegationScheduler as SubagentBudgetController,
+};
+use crate::subagent_lifecycle::{
+    RegisterSubagentRequest, SubagentEventBridge, SubagentLifecycleEventKind,
+    SubagentLifecycleRuntime, SubagentLifecycleStatus,
 };
 
 use nexa_core::agent::context::estimate_tool_tokens_for_model;
 use nexa_core::agent::{
     llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
-    CancellationToken,
+    AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::conversation::memory::estimate_tokens_for_model;
 use nexa_core::conversation::{
@@ -248,6 +252,26 @@ const SUBAGENT_TOOL_SPECS: &[SubagentToolSpec] = &[
         enabled_by_default: false,
     },
     SubagentToolSpec {
+        name: "observe_subagent",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "wait_subagent",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "send_subagent_input",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "cancel_subagent",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
+        name: "close_subagent",
+        enabled_by_default: false,
+    },
+    SubagentToolSpec {
         name: "compile_document",
         enabled_by_default: true,
     },
@@ -450,6 +474,20 @@ pub struct ObserveSubagentBatchTool {
     runtime: DelegationRuntime,
 }
 
+pub struct SubagentLifecycleTool {
+    runtime: DelegationRuntime,
+    action: SubagentLifecycleAction,
+}
+
+#[derive(Clone, Copy)]
+enum SubagentLifecycleAction {
+    Observe,
+    Wait,
+    SendInput,
+    Cancel,
+    Close,
+}
+
 struct DelegationBatchState {
     expected_workers: usize,
     results: BTreeMap<usize, SubagentRunArtifact>,
@@ -470,6 +508,7 @@ pub struct DelegationRuntime {
     context_snapshots: Arc<StdMutex<HashMap<String, Arc<DelegationContextSnapshot>>>>,
     batches: Arc<StdMutex<HashMap<String, DelegationBatchState>>>,
     batch_notify: Arc<tokio::sync::Notify>,
+    lifecycle: SubagentLifecycleRuntime,
     budget: SubagentBudgetController,
     cancel_token: CancellationToken,
     delegation_depth: u8,
@@ -499,6 +538,24 @@ impl ObserveSubagentBatchTool {
     }
 }
 
+impl SubagentLifecycleTool {
+    pub fn all(runtime: DelegationRuntime) -> Vec<Self> {
+        [
+            SubagentLifecycleAction::Observe,
+            SubagentLifecycleAction::Wait,
+            SubagentLifecycleAction::SendInput,
+            SubagentLifecycleAction::Cancel,
+            SubagentLifecycleAction::Close,
+        ]
+        .into_iter()
+        .map(|action| Self {
+            runtime: runtime.clone(),
+            action,
+        })
+        .collect()
+    }
+}
+
 impl DelegationRuntime {
     pub fn new(
         provider_config: ProviderConfig,
@@ -523,6 +580,7 @@ impl DelegationRuntime {
             context_snapshots: Arc::new(StdMutex::new(HashMap::new())),
             batches: Arc::new(StdMutex::new(HashMap::new())),
             batch_notify: Arc::new(tokio::sync::Notify::new()),
+            lifecycle: SubagentLifecycleRuntime::default(),
             budget,
             cancel_token,
             delegation_depth: 0,
@@ -561,6 +619,7 @@ impl DelegationRuntime {
             context_snapshots: Arc::clone(&self.context_snapshots),
             batches: Arc::clone(&self.batches),
             batch_notify: Arc::clone(&self.batch_notify),
+            lifecycle: self.lifecycle.clone(),
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth.saturating_add(1),
@@ -581,6 +640,7 @@ impl DelegationRuntime {
             context_snapshots: Arc::clone(&self.context_snapshots),
             batches: Arc::clone(&self.batches),
             batch_notify: Arc::clone(&self.batch_notify),
+            lifecycle: self.lifecycle.clone(),
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth,
@@ -792,6 +852,18 @@ struct ObserveSubagentBatchArgs {
     wait_ms: Option<u64>,
     #[serde(default)]
     cancel_remaining: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubagentLifecycleArgs {
+    agent_id: String,
+    #[serde(default)]
+    after_seq: Option<u64>,
+    #[serde(default)]
+    wait_ms: Option<u64>,
+    #[serde(default)]
+    input: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2054,6 +2126,44 @@ fn normalize_batch_task_args(
     Ok((worker_id, args))
 }
 
+async fn emit_subagent_lifecycle_event(
+    bridge: Option<&SubagentEventBridge>,
+    kind: SubagentLifecycleEventKind,
+    detail: serde_json::Value,
+) {
+    let Some(bridge) = bridge else {
+        return;
+    };
+    if let Err(error) = bridge.emit(kind, detail).await {
+        warn!("Failed to bridge subagent lifecycle event {kind:?}: {error}");
+    }
+}
+
+async fn flush_subagent_deltas(
+    bridge: Option<&SubagentEventBridge>,
+    pending_thinking: &mut String,
+    pending_output: &mut String,
+) {
+    if !pending_thinking.is_empty() {
+        let delta = std::mem::take(pending_thinking);
+        emit_subagent_lifecycle_event(
+            bridge,
+            SubagentLifecycleEventKind::ThinkingDelta,
+            serde_json::json!({ "delta": delta }),
+        )
+        .await;
+    }
+    if !pending_output.is_empty() {
+        let delta = std::mem::take(pending_output);
+        emit_subagent_lifecycle_event(
+            bridge,
+            SubagentLifecycleEventKind::OutputDelta,
+            serde_json::json!({ "delta": delta }),
+        )
+        .await;
+    }
+}
+
 async fn run_subagent_once(
     runtime: DelegationRuntime,
     db: Database,
@@ -2062,6 +2172,8 @@ async fn run_subagent_once(
     worker_id: Option<String>,
     args: SpawnSubagentArgs,
     batch_slots: Option<Arc<tokio::sync::Semaphore>>,
+    steering_rx: Option<mpsc::UnboundedReceiver<AgentSteeringMessage>>,
+    lifecycle_events: Option<SubagentEventBridge>,
 ) -> Result<SubagentRunArtifact, CoreError> {
     let launch_started = Instant::now();
     if runtime.delegation_depth >= MAX_SUBAGENT_DELEGATION_DEPTH {
@@ -2466,7 +2578,7 @@ async fn run_subagent_once(
             effective_model.as_deref().unwrap_or_default(),
         );
 
-    let executor = AgentExecutor::new(provider, tools, config)
+    let mut executor = AgentExecutor::new(provider, tools, config)
         .with_usage_identity(
             format!(
                 "subagent:{}",
@@ -2477,6 +2589,9 @@ async fn run_subagent_once(
         )
         .with_cancel_token(worker_cancel_token.clone())
         .with_skills_override(enabled_skills);
+    if let Some(steering_rx) = steering_rx {
+        executor = executor.with_steering_receiver(steering_rx);
+    }
 
     let (tx, event_rx) = mpsc::channel::<AgentEvent>(64);
     let (fatal_error_tx, mut fatal_error_rx) = mpsc::unbounded_channel::<String>();
@@ -2486,19 +2601,52 @@ async fn run_subagent_once(
     let telemetry_db = db.clone();
     let telemetry_identity = parent_task_run_id.clone().zip(subtask_run_id.clone());
     let telemetry_call_label = call_label.clone();
+    let lifecycle_capture = lifecycle_events.clone();
     let mut event_task = tokio::spawn(async move {
         let mut event_rx = event_rx;
         let mut capture = EventCapture::default();
         let mut provider_invocation_index = 0_u32;
         let mut active_provider_invocation_id: Option<String> = None;
         let mut first_provider_output_recorded = false;
+        let mut pending_thinking = String::new();
+        let mut pending_output = String::new();
+        let mut last_delta_flush = Instant::now();
 
-        while let Some(event) = event_rx.recv().await {
+        loop {
+            let event =
+                match tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => {
+                        flush_subagent_deltas(
+                            lifecycle_capture.as_ref(),
+                            &mut pending_thinking,
+                            &mut pending_output,
+                        )
+                        .await;
+                        break;
+                    }
+                    Err(_) => {
+                        flush_subagent_deltas(
+                            lifecycle_capture.as_ref(),
+                            &mut pending_thinking,
+                            &mut pending_output,
+                        )
+                        .await;
+                        last_delta_flush = Instant::now();
+                        continue;
+                    }
+                };
             let provider_connected = matches!(
                 &event,
                 AgentEvent::ControllerStatus { code, .. } if code == "provider_connected"
             );
             if provider_connected {
+                emit_subagent_lifecycle_event(
+                    lifecycle_capture.as_ref(),
+                    SubagentLifecycleEventKind::Connected,
+                    serde_json::json!({ "providerConnected": true }),
+                )
+                .await;
                 provider_invocation_index = provider_invocation_index.saturating_add(1);
                 let invocation_id = format!(
                     "subagent-provider:{}:{}",
@@ -2583,50 +2731,109 @@ async fn run_subagent_once(
                     }
                 }
             }
+            let should_flush_before_event = match &event {
+                AgentEvent::Thinking { .. } => !pending_output.is_empty(),
+                AgentEvent::TextDelta { .. } => !pending_thinking.is_empty(),
+                _ => !pending_thinking.is_empty() || !pending_output.is_empty(),
+            };
+            if should_flush_before_event {
+                flush_subagent_deltas(
+                    lifecycle_capture.as_ref(),
+                    &mut pending_thinking,
+                    &mut pending_output,
+                )
+                .await;
+                last_delta_flush = Instant::now();
+            }
             match event {
                 AgentEvent::ToolCallStart {
                     call_id,
                     tool_name,
                     arguments,
-                } => capture.tool_events.push(serde_json::json!({
-                    "phase": "start",
-                    "callId": call_id,
-                    "toolName": tool_name,
-                    "arguments": arguments,
-                })),
+                } => {
+                    let capture_detail = serde_json::json!({
+                        "phase": "start",
+                        "callId": &call_id,
+                        "toolName": &tool_name,
+                        "arguments": &arguments,
+                    });
+                    capture.tool_events.push(capture_detail);
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::ToolStarted,
+                        serde_json::json!({
+                            "phase": "start",
+                            "callId": call_id,
+                            "toolName": tool_name,
+                            "argsBytes": arguments.len(),
+                        }),
+                    )
+                    .await;
+                }
                 AgentEvent::ToolCallResult {
                     call_id,
                     tool_name,
                     content,
                     is_error,
                     artifacts,
-                } => capture.tool_events.push(serde_json::json!({
-                    "phase": "result",
-                    "callId": call_id,
-                    "toolName": tool_name,
-                    "content": content,
-                    "isError": is_error,
-                    "artifacts": artifacts,
-                })),
+                } => {
+                    let capture_detail = serde_json::json!({
+                        "phase": "result",
+                        "callId": &call_id,
+                        "toolName": &tool_name,
+                        "content": &content,
+                        "isError": is_error,
+                        "artifacts": &artifacts,
+                    });
+                    capture.tool_events.push(capture_detail);
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({
+                            "phase": "result",
+                            "callId": call_id,
+                            "toolName": tool_name,
+                            "contentBytes": content.len(),
+                            "isError": is_error,
+                            "hasArtifacts": artifacts.is_some(),
+                        }),
+                    )
+                    .await;
+                }
                 AgentEvent::Thinking { content } => {
                     if !content.trim().is_empty() {
+                        pending_thinking.push_str(&content);
                         capture.thinking.push(content);
                     }
                 }
                 AgentEvent::Status { content, tone } => {
                     if !content.trim().is_empty() {
-                        capture.tool_events.push(serde_json::json!({
+                        let detail = serde_json::json!({
                             "phase": "status",
                             "content": content,
                             "tone": tone,
-                        }));
+                        });
+                        capture.tool_events.push(detail.clone());
+                        emit_subagent_lifecycle_event(
+                            lifecycle_capture.as_ref(),
+                            SubagentLifecycleEventKind::Progress,
+                            detail,
+                        )
+                        .await;
                     }
                 }
                 AgentEvent::ConnectionState { state } => {
-                    capture.tool_events.push(serde_json::json!({
+                    let detail = serde_json::json!({
                         "phase": "connection",
                         "state": state,
-                    }));
+                    });
+                    capture.tool_events.push(detail.clone());
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        detail,
+                    )
+                    .await;
                 }
                 AgentEvent::Steering { content } => {
                     if !content.trim().is_empty() {
@@ -2644,10 +2851,22 @@ async fn run_subagent_once(
                     finish_reason,
                     ..
                 } => {
+                    flush_subagent_deltas(
+                        lifecycle_capture.as_ref(),
+                        &mut pending_thinking,
+                        &mut pending_output,
+                    )
+                    .await;
                     capture.usage_total = usage_total;
                     capture.finish_reason = finish_reason;
                 }
                 AgentEvent::Error { message } => {
+                    flush_subagent_deltas(
+                        lifecycle_capture.as_ref(),
+                        &mut pending_thinking,
+                        &mut pending_output,
+                    )
+                    .await;
                     capture.error_message = Some(message.clone());
                     capture.tool_events.push(serde_json::json!({
                         "phase": "error",
@@ -2657,20 +2876,123 @@ async fn run_subagent_once(
                     capture_cancel_token.cancel();
                     break;
                 }
-                AgentEvent::TextDelta { .. }
-                | AgentEvent::StreamBlockDelta { .. }
+                AgentEvent::TextDelta { delta } => {
+                    pending_output.push_str(&delta);
+                }
+                AgentEvent::ToolRunStarted { run } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::ToolStarted,
+                        serde_json::json!({ "phase": "runStarted", "run": run }),
+                    )
+                    .await;
+                }
+                AgentEvent::ToolRunUpdated { run } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({ "phase": "runUpdated", "run": run }),
+                    )
+                    .await;
+                }
+                AgentEvent::ToolRunCompleted { run } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({ "phase": "runCompleted", "run": run }),
+                    )
+                    .await;
+                }
+                AgentEvent::ToolCallPreparing {
+                    call_id,
+                    tool_name,
+                    args_bytes,
+                    index,
+                } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({
+                            "phase": "toolPreparing",
+                            "callId": call_id,
+                            "toolName": tool_name,
+                            "argsBytes": args_bytes,
+                            "index": index,
+                        }),
+                    )
+                    .await;
+                }
+                AgentEvent::ToolCallArgsDelta {
+                    call_id,
+                    tool_name,
+                    arguments_delta,
+                    index,
+                } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({
+                            "phase": "toolArgsDelta",
+                            "callId": call_id,
+                            "toolName": tool_name,
+                            "argsBytes": arguments_delta.len(),
+                            "index": index,
+                        }),
+                    )
+                    .await;
+                }
+                AgentEvent::ToolCallProgress {
+                    call_id,
+                    note,
+                    activity,
+                } => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({
+                            "phase": "toolProgress",
+                            "callId": call_id,
+                            "note": note,
+                            "activity": activity,
+                        }),
+                    )
+                    .await;
+                }
+                AgentEvent::ControllerStatus {
+                    code,
+                    content,
+                    tone,
+                } if code != "provider_connected" => {
+                    emit_subagent_lifecycle_event(
+                        lifecycle_capture.as_ref(),
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({
+                            "phase": "controller",
+                            "code": code,
+                            "content": content,
+                            "tone": tone,
+                        }),
+                    )
+                    .await;
+                }
+                AgentEvent::StreamBlockDelta { .. }
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::AutoCompacted { .. }
-                | AgentEvent::ToolRunStarted { .. }
-                | AgentEvent::ToolRunUpdated { .. }
-                | AgentEvent::ToolRunCompleted { .. }
-                | AgentEvent::ToolCallPreparing { .. }
-                | AgentEvent::ToolCallArgsDelta { .. }
-                | AgentEvent::ToolCallProgress { .. }
                 | AgentEvent::ApprovalRequested { .. }
                 | AgentEvent::ApprovalResolved { .. }
                 | AgentEvent::ControllerStatus { .. }
                 | AgentEvent::PlanUpdated { .. } => {}
+            }
+            if last_delta_flush.elapsed() >= Duration::from_millis(100)
+                && (!pending_thinking.is_empty() || !pending_output.is_empty())
+            {
+                flush_subagent_deltas(
+                    lifecycle_capture.as_ref(),
+                    &mut pending_thinking,
+                    &mut pending_output,
+                )
+                .await;
+                last_delta_flush = Instant::now();
             }
         }
 
@@ -2944,6 +3266,198 @@ async fn run_subagent_once(
     Ok(run)
 }
 
+fn isolated_subagent_runtime() -> Result<tokio::runtime::Runtime, CoreError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            CoreError::Internal(format!(
+                "Failed to build isolated subagent runtime: {error}"
+            ))
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_subagent_isolated(
+    runtime: DelegationRuntime,
+    db: Database,
+    inherited_source_scope: Vec<String>,
+    call_label: String,
+    worker_id: Option<String>,
+    args: SpawnSubagentArgs,
+    batch_slots: Option<Arc<tokio::sync::Semaphore>>,
+    steering_rx: Option<mpsc::UnboundedReceiver<AgentSteeringMessage>>,
+    lifecycle_events: Option<SubagentEventBridge>,
+) -> Result<SubagentRunArtifact, CoreError> {
+    let isolated_runtime = isolated_subagent_runtime()?;
+    let (result_tx, result_rx) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("nexa-subagent-worker".to_string())
+        .spawn(move || {
+            let result = isolated_runtime.block_on(run_subagent_once(
+                runtime,
+                db,
+                inherited_source_scope,
+                call_label,
+                worker_id,
+                args,
+                batch_slots,
+                steering_rx,
+                lifecycle_events,
+            ));
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| {
+            CoreError::Internal(format!("Failed to start isolated subagent thread: {error}"))
+        })?;
+    result_rx.await.map_err(|_| {
+        CoreError::Agent("Isolated subagent thread exited without a result".to_string())
+    })?
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_registered_subagent_isolated(
+    runtime: DelegationRuntime,
+    db: Database,
+    inherited_source_scope: Vec<String>,
+    call_label: String,
+    worker_id: Option<String>,
+    args: SpawnSubagentArgs,
+    batch_slots: Option<Arc<tokio::sync::Semaphore>>,
+    registration: crate::subagent_lifecycle::SubagentWorkerRegistration,
+) -> Result<SubagentRunArtifact, CoreError> {
+    let lifecycle = runtime.lifecycle.clone();
+    let agent_id = registration.agent_id.clone();
+    let cancellation = registration.cancel_token.clone();
+    if let Err(error) = registration.events.start().await {
+        let _ = lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Failed);
+        return Err(error);
+    }
+    lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Running)?;
+
+    let outcome = run_subagent_isolated(
+        runtime.scoped_to_worker(registration.cancel_token),
+        db,
+        inherited_source_scope,
+        call_label,
+        worker_id,
+        args,
+        batch_slots,
+        Some(registration.steering_rx),
+        Some(registration.events),
+    )
+    .await;
+    match &outcome {
+        Ok(run) => {
+            if let Err(error) = lifecycle
+                .finish(
+                    &agent_id,
+                    SubagentLifecycleStatus::Completed,
+                    serde_json::to_value(run).ok(),
+                    None,
+                )
+                .await
+            {
+                warn!("Failed to complete lifecycle for batch subagent {agent_id}: {error}");
+            }
+        }
+        Err(error) => {
+            let status = if cancellation.is_cancelled() {
+                SubagentLifecycleStatus::Cancelled
+            } else {
+                SubagentLifecycleStatus::Failed
+            };
+            if let Err(lifecycle_error) = lifecycle
+                .finish(&agent_id, status, None, Some(error.to_string()))
+                .await
+            {
+                warn!(
+                    "Failed to record lifecycle failure for batch subagent {agent_id}: {lifecycle_error}"
+                );
+            }
+        }
+    }
+    outcome
+}
+
+fn launch_detached_subagent(
+    runtime: DelegationRuntime,
+    db: Database,
+    inherited_source_scope: Vec<String>,
+    args: SpawnSubagentArgs,
+    registration: crate::subagent_lifecycle::SubagentWorkerRegistration,
+) -> Result<(), CoreError> {
+    let isolated_runtime = isolated_subagent_runtime()?;
+    let lifecycle = runtime.lifecycle.clone();
+    let agent_id = registration.agent_id.clone();
+    let cancellation = registration.cancel_token.clone();
+    let worker_runtime = runtime.scoped_to_worker(registration.cancel_token);
+    std::thread::Builder::new()
+        .name("nexa-subagent-worker".to_string())
+        .spawn(move || {
+            isolated_runtime.block_on(async move {
+                if let Err(error) = registration.events.start().await {
+                    warn!("Failed to start lifecycle for subagent {agent_id}: {error}");
+                    let _ = lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Failed);
+                    return;
+                }
+                let _ = lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Running);
+                let outcome = run_subagent_once(
+                    worker_runtime,
+                    db,
+                    inherited_source_scope,
+                    agent_id.clone(),
+                    Some(agent_id.clone()),
+                    args,
+                    None,
+                    Some(registration.steering_rx),
+                    Some(registration.events),
+                )
+                .await;
+                match outcome {
+                    Ok(run) => {
+                        let result = serde_json::to_value(&run).ok();
+                        if let Err(error) = lifecycle
+                            .finish(
+                                &agent_id,
+                                SubagentLifecycleStatus::Completed,
+                                result,
+                                None,
+                            )
+                            .await
+                        {
+                            warn!("Failed to complete lifecycle for subagent {agent_id}: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        let status = if cancellation.is_cancelled() {
+                            SubagentLifecycleStatus::Cancelled
+                        } else {
+                            SubagentLifecycleStatus::Failed
+                        };
+                        if let Err(lifecycle_error) = lifecycle
+                            .finish(
+                                &agent_id,
+                                status,
+                                None,
+                                Some(error.to_string()),
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to record lifecycle failure for subagent {agent_id}: {lifecycle_error}"
+                            );
+                        }
+                    }
+                }
+            });
+        })
+        .map_err(|error| {
+            CoreError::Internal(format!("Failed to start detached subagent thread: {error}"))
+        })?;
+    Ok(())
+}
+
 fn failed_subagent_run_artifact(
     label: String,
     fallback: SpawnSubagentArgs,
@@ -3167,6 +3681,11 @@ fn is_subagent_tool_name(name: &str) -> bool {
             | "spawn_subagent_batch"
             | "judge_subagent_results"
             | "observe_subagent_batch"
+            | "observe_subagent"
+            | "wait_subagent"
+            | "send_subagent_input"
+            | "cancel_subagent"
+            | "close_subagent"
     )
 }
 
@@ -3364,6 +3883,11 @@ fn build_subagent_executor_tools(
             "spawn_subagent_batch",
             "judge_subagent_results",
             "observe_subagent_batch",
+            "observe_subagent",
+            "wait_subagent",
+            "send_subagent_input",
+            "cancel_subagent",
+            "close_subagent",
         ]);
 
     if !runtime.can_delegate_further() {
@@ -3399,8 +3923,16 @@ fn build_subagent_executor_tools(
         .any(|name| name == "judge_subagent_results")
     {
         registry.register(Box::new(JudgeSubagentResultsTool::from_runtime(
-            child_runtime,
+            child_runtime.clone(),
         )));
+    }
+    for lifecycle_tool in SubagentLifecycleTool::all(child_runtime.clone()) {
+        if allowed_tool_names
+            .iter()
+            .any(|name| name == lifecycle_tool.name())
+        {
+            registry.register(Box::new(lifecycle_tool));
+        }
     }
     Ok(registry)
 }
@@ -3432,56 +3964,48 @@ impl Tool for SubagentTool {
             arguments,
             db,
             source_scope,
+            conversation_id,
+            turn_id,
+            activity_runtime,
+            event_tx,
             ..
         } = context;
         let args: SpawnSubagentArgs = serde_json::from_str(arguments).map_err(|e| {
             CoreError::InvalidInput(format!("Invalid spawn_subagent arguments: {e}"))
         })?;
         let args = normalize_spawn_args(args)?;
-        let fallback_task = args.task.clone();
-        let fallback_role_id = args.role_id.clone();
-        let fallback_role = args.role.clone();
-        let run = match run_subagent_once(
+        let agent_id = format!("subagent-{}", uuid::Uuid::new_v4());
+        let registration = self.runtime.lifecycle.register(RegisterSubagentRequest {
+            agent_id: agent_id.clone(),
+            parent_call_id: call_id.to_string(),
+            task: args.task.clone(),
+            role_id: args.role_id.clone(),
+            role: args.role.clone(),
+            conversation_id: conversation_id.map(str::to_string),
+            turn_id: turn_id.map(str::to_string),
+            task_run_id: self.runtime.parent_task_run_id.clone(),
+            cancel_token: self.runtime.cancel_token.child_token(),
+            activity_runtime: activity_runtime.cloned().unwrap_or_default(),
+            event_tx: event_tx.cloned(),
+        })?;
+        if let Err(error) = launch_detached_subagent(
             self.runtime.clone(),
             db.clone(),
             source_scope.to_vec(),
-            call_id.to_string(),
-            None,
-            args,
-            None,
-        )
-        .await
-        {
-            Ok(run) => run,
-            Err(err) => {
-                let preflight_failure = subagent_preflight_failure_from_error(&err);
-                let error_message = err.to_string();
-                return Ok(ToolResult {
-                    call_id: call_id.to_string(),
-                    content: format!("Subagent failed: {error_message}"),
-                    is_error: true,
-                    artifacts: Some(serde_json::json!({
-                        "kind": "subagent_result",
-                        "id": call_id,
-                        "status": "error",
-                        "task": fallback_task,
-                        "roleId": fallback_role_id,
-                        "role": fallback_role,
-                        "result": format!("Subagent failed: {error_message}"),
-                        "isError": true,
-                        "errorMessage": error_message,
-                        "preflightFailure": preflight_failure,
-                    })),
-                });
-            }
-        };
-
-        let mut content = String::from("Subagent result");
-        if let Some(role) = run.role_name.as_deref().or(run.role.as_deref()) {
-            content.push_str(&format!(" ({role})"));
+            args.clone(),
+            registration,
+        ) {
+            let _ = self
+                .runtime
+                .lifecycle
+                .set_status(&agent_id, SubagentLifecycleStatus::Failed);
+            let _ = self.runtime.lifecycle.close(&agent_id);
+            return Err(error);
         }
-        content.push_str(":\n");
-        content.push_str(&run.result);
+
+        let content = format!(
+            "Subagent {agent_id} spawned and is running. Use observe_subagent for incremental events, wait_subagent before consuming its final result, send_subagent_input to steer it, or cancel_subagent to stop it."
+        );
 
         Ok(ToolResult {
             call_id: call_id.to_string(),
@@ -3489,34 +4013,24 @@ impl Tool for SubagentTool {
             is_error: false,
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_result",
-                "id": run.id,
-                "sessionId": run.session_id,
-                "status": run.status,
-                "task": run.task,
-                "roleId": run.role_id,
-                "roleName": run.role_name,
-                "role": run.role,
-                "expectedOutput": run.expected_output,
-                "acceptanceCriteria": run.acceptance_criteria,
-                "evidenceChunkIds": run.evidence_chunk_ids,
-                "evidenceHandoff": run.evidence_handoff,
-                "requestedSourceScope": run.requested_source_scope,
-                "effectiveSourceScope": run.effective_source_scope,
-                "requestedAllowedTools": run.requested_allowed_tools,
-                "parallelGroup": run.parallel_group,
-                "deliverableStyle": run.deliverable_style,
-                "returnSections": run.return_sections,
-                "result": run.result,
-                "finishReason": run.finish_reason,
-                "usageTotal": run.usage_total,
-                "toolEvents": run.tool_events,
-                "thinking": run.thinking,
-                "sourceScopeApplied": run.source_scope_applied,
-                "allowedTools": run.allowed_tools,
-                "allowedSkills": run.allowed_skills,
-                "isError": run.is_error,
-                "errorMessage": run.error_message,
-                "preflightFailure": run.preflight_failure,
+                "id": agent_id,
+                "sessionId": args.task_id,
+                "status": "running",
+                "task": args.task,
+                "roleId": args.role_id,
+                "role": args.role,
+                "expectedOutput": args.expected_output,
+                "acceptanceCriteria": args.acceptance_criteria,
+                "parallelGroup": args.parallel_group,
+                "result": "",
+                "isError": false,
+                "lifecycleTools": {
+                    "observe": "observe_subagent",
+                    "wait": "wait_subagent",
+                    "sendInput": "send_subagent_input",
+                    "cancel": "cancel_subagent",
+                    "close": "close_subagent",
+                },
             })),
         })
     }
@@ -3549,6 +4063,10 @@ impl Tool for SubagentBatchTool {
             arguments,
             db,
             source_scope,
+            conversation_id,
+            turn_id,
+            activity_runtime,
+            event_tx,
             ..
         } = context;
         let mut args: SpawnSubagentBatchArgs = serde_json::from_str(arguments).map_err(|e| {
@@ -3621,6 +4139,10 @@ impl Tool for SubagentBatchTool {
         let runtime = self.runtime.clone();
         let db = db.clone();
         let inherited_source_scope = source_scope.to_vec();
+        let parent_conversation_id = conversation_id.map(str::to_string);
+        let parent_turn_id = turn_id.map(str::to_string);
+        let activity_runtime = activity_runtime.cloned().unwrap_or_default();
+        let event_tx = event_tx.cloned();
         let batch_parallel_group = parallel_group.clone();
         let worker_count = normalized_tasks.len();
         let batch_id = format!(
@@ -3634,17 +4156,17 @@ impl Tool for SubagentBatchTool {
         runtime.register_batch(&batch_id, worker_count);
         let batch_slots = Arc::new(tokio::sync::Semaphore::new(effective_parallel));
         let mut worker_cancel_tokens = Vec::with_capacity(worker_count);
+        let mut lifecycle_workers = Vec::with_capacity(worker_count);
         let mut pending = FuturesUnordered::new();
         for (index, (worker_id, task_args)) in normalized_tasks.into_iter().enumerate() {
             let db = db.clone();
             let inherited_source_scope = inherited_source_scope.clone();
             let batch_parallel_group = batch_parallel_group.clone();
             let worker_cancel = runtime.cancel_token.child_token();
-            let worker_runtime = runtime.scoped_to_worker(worker_cancel.clone());
             let batch_runtime = runtime.clone();
             let batch_slots = Arc::clone(&batch_slots);
             worker_cancel_tokens.push(worker_cancel.clone());
-            runtime.add_batch_cancel_token(&batch_id, worker_cancel);
+            runtime.add_batch_cancel_token(&batch_id, worker_cancel.clone());
             let worker_batch_id = batch_id.clone();
             let detached_label = worker_id
                 .clone()
@@ -3652,19 +4174,43 @@ impl Tool for SubagentBatchTool {
             let detached_fallback = task_args.clone();
             let detached_parallel_group = batch_parallel_group.clone();
             let batch_call_id = call_id.to_string();
+            let lifecycle_agent_id = format!("subagent-{}", uuid::Uuid::new_v4());
+            let registration = runtime.lifecycle.register(RegisterSubagentRequest {
+                agent_id: lifecycle_agent_id.clone(),
+                parent_call_id: call_id.to_string(),
+                task: task_args.task.clone(),
+                role_id: task_args.role_id.clone(),
+                role: task_args.role.clone(),
+                conversation_id: parent_conversation_id.clone(),
+                turn_id: parent_turn_id.clone(),
+                task_run_id: self.runtime.parent_task_run_id.clone(),
+                cancel_token: worker_cancel,
+                activity_runtime: activity_runtime.clone(),
+                event_tx: event_tx.clone(),
+            })?;
+            lifecycle_workers.push(serde_json::json!({
+                "agentId": &lifecycle_agent_id,
+                "workerId": &worker_id,
+                "task": &task_args.task,
+                "roleId": &task_args.role_id,
+                "role": &task_args.role,
+            }));
+            let lifecycle_for_join = runtime.lifecycle.clone();
+            let lifecycle_agent_id_for_join = lifecycle_agent_id.clone();
             let worker_task = tokio::spawn(async move {
                 let label = worker_id
                     .clone()
                     .unwrap_or_else(|| format!("{}-{}", batch_call_id, index + 1));
                 let fallback = task_args.clone();
-                let run = match run_subagent_once(
-                    worker_runtime,
+                let run = match run_registered_subagent_isolated(
+                    batch_runtime.clone(),
                     db,
                     inherited_source_scope,
                     label.clone(),
                     worker_id,
                     task_args,
                     Some(batch_slots),
+                    registration,
                 )
                 .await
                 {
@@ -3677,20 +4223,31 @@ impl Tool for SubagentBatchTool {
                 (index, run)
             });
             pending.push(async move {
-                worker_task.await.unwrap_or_else(|error| {
-                    let error = CoreError::Agent(format!(
-                        "Delegated worker task terminated unexpectedly: {error}"
-                    ));
-                    (
-                        index,
-                        failed_subagent_run_artifact(
-                            detached_label,
-                            detached_fallback,
-                            detached_parallel_group,
-                            &error,
-                        ),
-                    )
-                })
+                match worker_task.await {
+                    Ok(result) => result,
+                    Err(join_error) => {
+                        let error = CoreError::Agent(format!(
+                            "Delegated worker task terminated unexpectedly: {join_error}"
+                        ));
+                        let _ = lifecycle_for_join
+                            .finish(
+                                &lifecycle_agent_id_for_join,
+                                SubagentLifecycleStatus::Failed,
+                                None,
+                                Some(error.to_string()),
+                            )
+                            .await;
+                        (
+                            index,
+                            failed_subagent_run_artifact(
+                                detached_label,
+                                detached_fallback,
+                                detached_parallel_group,
+                                &error,
+                            ),
+                        )
+                    }
+                }
             });
         }
         let policy_deadline = match &completion_policy {
@@ -3797,6 +4354,7 @@ impl Tool for SubagentBatchTool {
             artifacts: Some(serde_json::json!({
                 "kind": "subagent_batch_result",
                 "batchId": &batch_id,
+                "lifecycleWorkers": lifecycle_workers,
                 "batchGoal": batch_goal,
                 "workflowTemplate": workflow_template_id,
                 "workflowTemplateLabel": workflow_template_label,
@@ -3942,6 +4500,231 @@ impl Tool for ObserveSubagentBatchTool {
                 "cancelRequested": args.cancel_remaining,
                 "runs": runs,
             })),
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for SubagentLifecycleTool {
+    fn name(&self) -> &str {
+        match self.action {
+            SubagentLifecycleAction::Observe => "observe_subagent",
+            SubagentLifecycleAction::Wait => "wait_subagent",
+            SubagentLifecycleAction::SendInput => "send_subagent_input",
+            SubagentLifecycleAction::Cancel => "cancel_subagent",
+            SubagentLifecycleAction::Close => "close_subagent",
+        }
+    }
+
+    fn description(&self) -> &str {
+        match self.action {
+            SubagentLifecycleAction::Observe => {
+                "Read a spawned subagent's current state and incremental lifecycle events without blocking the parent turn."
+            }
+            SubagentLifecycleAction::Wait => {
+                "Wait for a spawned subagent to settle, up to a bounded timeout, and return its authoritative result snapshot."
+            }
+            SubagentLifecycleAction::SendInput => {
+                "Steer an active spawned subagent with additional user-authored input."
+            }
+            SubagentLifecycleAction::Cancel => {
+                "Request cooperative cancellation of an active spawned subagent."
+            }
+            SubagentLifecycleAction::Close => {
+                "Release a terminal subagent handle after its result has been consumed."
+            }
+        }
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        let mut properties = serde_json::json!({
+            "agentId": {
+                "type": "string",
+                "description": "Stable agent id returned by spawn_subagent"
+            }
+        });
+        let required = if matches!(self.action, SubagentLifecycleAction::SendInput) {
+            properties["input"] = serde_json::json!({
+                "type": "string",
+                "description": "Additional instruction to inject at the next safe model boundary"
+            });
+            vec!["agentId", "input"]
+        } else {
+            if matches!(self.action, SubagentLifecycleAction::Observe) {
+                properties["afterSeq"] = serde_json::json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Return only lifecycle events after this cursor"
+                });
+                properties["waitMs"] = serde_json::json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2500,
+                    "description": "Optional long-poll duration for new events"
+                });
+            } else if matches!(self.action, SubagentLifecycleAction::Wait) {
+                properties["waitMs"] = serde_json::json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 120000,
+                    "default": 120000,
+                    "description": "Maximum time to wait for terminal state"
+                });
+            }
+            vec!["agentId"]
+        };
+        serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        })
+    }
+
+    fn categories(&self) -> &'static [ToolCategory] {
+        &[ToolCategory::SubAgent]
+    }
+
+    async fn execute(
+        &self,
+        context: nexa_core::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        let args: SubagentLifecycleArgs =
+            serde_json::from_str(context.arguments).map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid {} arguments: {error}", self.name()))
+            })?;
+        let agent_id = args.agent_id.trim();
+        if agent_id.is_empty() {
+            return Err(CoreError::InvalidInput(format!(
+                "{} requires agentId",
+                self.name()
+            )));
+        }
+
+        let (content, artifacts) = match self.action {
+            SubagentLifecycleAction::Observe => {
+                let observation = self
+                    .runtime
+                    .lifecycle
+                    .observe(
+                        agent_id,
+                        args.after_seq.unwrap_or(0),
+                        Duration::from_millis(args.wait_ms.unwrap_or(0).min(2_500)),
+                    )
+                    .await?;
+                let content = format!(
+                    "Subagent {agent_id} is {:?}; received {} lifecycle event(s), cursor {}.",
+                    observation.worker.status,
+                    observation.events.len(),
+                    observation.cursor,
+                );
+                (
+                    content,
+                    serde_json::json!({
+                        "kind": "subagent_observation",
+                        "observation": observation,
+                    }),
+                )
+            }
+            SubagentLifecycleAction::Wait => {
+                let wait_result = self
+                    .runtime
+                    .lifecycle
+                    .wait(
+                        agent_id,
+                        Duration::from_millis(args.wait_ms.unwrap_or(120_000).min(120_000)),
+                    )
+                    .await?;
+                let result_text = wait_result
+                    .worker
+                    .result
+                    .as_ref()
+                    .and_then(|value| value.get("result"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let mut content = format!(
+                    "Subagent {agent_id} is {:?}{}.",
+                    wait_result.worker.status,
+                    if wait_result.timed_out {
+                        " (wait timed out; worker remains active)"
+                    } else {
+                        ""
+                    }
+                );
+                if !result_text.is_empty() {
+                    content.push_str("\n\n");
+                    content.push_str(result_text);
+                }
+                (
+                    content,
+                    serde_json::json!({
+                        "kind": "subagent_wait_result",
+                        "worker": wait_result.worker,
+                        "timedOut": wait_result.timed_out,
+                    }),
+                )
+            }
+            SubagentLifecycleAction::SendInput => {
+                let input = args
+                    .input
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|input| !input.is_empty())
+                    .ok_or_else(|| {
+                        CoreError::InvalidInput("send_subagent_input requires input".into())
+                    })?;
+                let bridge = self
+                    .runtime
+                    .lifecycle
+                    .send_input(agent_id, input.to_string())?;
+                bridge
+                    .emit(
+                        SubagentLifecycleEventKind::InputAccepted,
+                        serde_json::json!({ "bytes": input.len() }),
+                    )
+                    .await?;
+                (
+                    format!("Input accepted for subagent {agent_id}."),
+                    serde_json::json!({
+                        "kind": "subagent_input_accepted",
+                        "agentId": agent_id,
+                    }),
+                )
+            }
+            SubagentLifecycleAction::Cancel => {
+                let bridge = self.runtime.lifecycle.cancel(agent_id)?;
+                bridge
+                    .emit(
+                        SubagentLifecycleEventKind::Progress,
+                        serde_json::json!({ "status": "cancelling" }),
+                    )
+                    .await?;
+                (
+                    format!("Cancellation requested for subagent {agent_id}."),
+                    serde_json::json!({
+                        "kind": "subagent_cancellation",
+                        "agentId": agent_id,
+                        "status": "cancelling",
+                    }),
+                )
+            }
+            SubagentLifecycleAction::Close => {
+                let snapshot = self.runtime.lifecycle.close(agent_id)?;
+                (
+                    format!("Closed terminal subagent handle {agent_id}."),
+                    serde_json::json!({
+                        "kind": "subagent_closed",
+                        "worker": snapshot,
+                    }),
+                )
+            }
+        };
+
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content,
+            is_error: false,
+            artifacts: Some(artifacts),
         })
     }
 }

@@ -77,7 +77,7 @@ use crate::browser::BrowserState;
 use crate::commands::TerminalState;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
-    SubagentTool,
+    SubagentLifecycleTool, SubagentTool,
 };
 use crate::terminal_agent_tool::TerminalAgentTool;
 
@@ -2239,6 +2239,9 @@ pub async fn build_desktop_agent_session_dependencies(
     tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
         delegation_runtime.clone(),
     )));
+    for lifecycle_tool in SubagentLifecycleTool::all(delegation_runtime.clone()) {
+        tools.register(Box::new(lifecycle_tool));
+    }
     if let Some(terminal_state) = terminal_state {
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
     }

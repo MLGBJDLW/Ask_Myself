@@ -1,4 +1,4 @@
-import type { ArtifactPayload, ConversationMessage } from '../types/conversation';
+import type { ActivityEvent, ArtifactPayload, ConversationMessage } from '../types/conversation';
 import type { ToolCallEvent } from './streaming/protocol';
 
 export interface SubagentUsage {
@@ -43,6 +43,8 @@ export interface SubagentBudgetSnapshot {
 
 export interface SubagentArtifact {
   kind: 'subagent_result';
+  id?: string | null;
+  status?: string | null;
   task: string;
   roleId?: string | null;
   roleName?: string | null;
@@ -69,6 +71,13 @@ export interface SubagentArtifact {
 
 export interface SubagentBatchArtifact {
   kind: 'subagent_batch_result';
+  lifecycleWorkers?: Array<{
+    agentId: string;
+    workerId?: string | null;
+    task: string;
+    roleId?: string | null;
+    role?: string | null;
+  }>;
   batchGoal?: string | null;
   workflowTemplate?: string | null;
   workflowTemplateLabel?: string | null;
@@ -155,6 +164,118 @@ export interface SubagentRun {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+export interface SubagentLifecycleProjection {
+  status: 'running' | 'done' | 'error' | null;
+  artifact: SubagentArtifact | null;
+  streamedResult: string;
+  thinking: string[];
+  errorMessage: string | null;
+}
+
+function lifecycleEnvelope(event: ActivityEvent): Record<string, unknown> | null {
+  const payload = asRecord(event.payload);
+  if (!payload) return null;
+  if (typeof payload.subagentEvent === 'string') return payload;
+  const detail = asRecord(payload.detail);
+  return detail && typeof detail.subagentEvent === 'string' ? detail : null;
+}
+
+export function projectSubagentLifecycle(
+  events: ActivityEvent[] | undefined,
+): SubagentLifecycleProjection {
+  let status: SubagentLifecycleProjection['status'] = null;
+  let artifact: SubagentArtifact | null = null;
+  let streamedResult = '';
+  const thinking: string[] = [];
+  let errorMessage: string | null = null;
+
+  for (const event of events ?? []) {
+    const envelope = lifecycleEnvelope(event);
+    if (!envelope) continue;
+    const kind = typeof envelope.subagentEvent === 'string' ? envelope.subagentEvent : '';
+    const detail = asRecord(envelope.detail);
+    if (kind === 'spawned' || kind === 'queued' || kind === 'connected') status = 'running';
+    if (kind === 'outputDelta') {
+      const delta = typeof event.payload.data === 'string'
+        ? event.payload.data
+        : typeof detail?.delta === 'string' ? detail.delta : '';
+      streamedResult += delta;
+    }
+    if (kind === 'thinkingDelta' && typeof detail?.delta === 'string') {
+      thinking.push(detail.delta);
+    }
+    if (kind === 'completed') {
+      status = 'done';
+      const run = asRecord(detail?.result);
+      artifact = run ? extractSubagentArtifact({ kind: 'subagent_result', ...run }) : artifact;
+    }
+    if (kind === 'failed' || kind === 'cancelled') {
+      status = 'error';
+      errorMessage = typeof detail?.errorMessage === 'string' ? detail.errorMessage : errorMessage;
+    }
+  }
+  return { status, artifact, streamedResult, thinking, errorMessage };
+}
+
+/** Project each worker independently when a batch shares one parent tool call. */
+export function projectSubagentLifecycleRuns(
+  events: ActivityEvent[] | undefined,
+): SubagentRun[] {
+  const grouped = new Map<string, ActivityEvent[]>();
+  for (const event of events ?? []) {
+    const envelope = lifecycleEnvelope(event);
+    const agentId = typeof envelope?.agentId === 'string' ? envelope.agentId : '';
+    if (!agentId) continue;
+    const group = grouped.get(agentId) ?? [];
+    group.push(event);
+    grouped.set(agentId, group);
+  }
+
+  const runs: SubagentRun[] = [];
+  for (const [agentId, workerEvents] of grouped) {
+    const projection = projectSubagentLifecycle(workerEvents);
+    let task = '';
+    let roleId: string | null = null;
+    let role: string | null = null;
+    for (const event of workerEvents) {
+      const envelope = lifecycleEnvelope(event);
+      if (envelope?.subagentEvent !== 'spawned') continue;
+      const detail = asRecord(envelope.detail);
+      task = typeof detail?.task === 'string' ? detail.task : task;
+      roleId = typeof detail?.roleId === 'string' ? detail.roleId : roleId;
+      role = typeof detail?.role === 'string' ? detail.role : role;
+    }
+
+    if (projection.artifact) {
+      runs.push({
+        ...buildRunFromArtifact(projection.artifact, agentId),
+        status: projection.status ?? 'done',
+        result: projection.artifact.result || projection.streamedResult || undefined,
+        thinking: projection.artifact.thinking
+          ?? (projection.thinking.length > 0 ? projection.thinking : null),
+        isError: projection.status === 'error',
+        content: projection.errorMessage ?? undefined,
+      });
+      continue;
+    }
+    if (!task) continue;
+    runs.push({
+      id: agentId,
+      status: projection.status ?? 'running',
+      task,
+      roleId,
+      role,
+      result: projection.streamedResult || undefined,
+      thinking: projection.thinking.length > 0 ? projection.thinking : null,
+      toolEvents: [],
+      sourceScopeApplied: false,
+      isError: projection.status === 'error',
+      content: projection.errorMessage ?? undefined,
+    });
+  }
+  return runs;
 }
 
 function asStringArray(value: unknown): string[] | null {
@@ -295,6 +416,8 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
 
   return {
     kind: 'subagent_result',
+    id: typeof record.id === 'string' ? record.id : null,
+    status: typeof record.status === 'string' ? record.status : null,
     task: record.task.trim(),
     roleId: typeof record.roleId === 'string' ? record.roleId : null,
     roleName: typeof record.roleName === 'string' ? record.roleName : null,
@@ -331,7 +454,11 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
 function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: string): SubagentRun {
   return {
     id,
-    status: 'done',
+    status: artifact.status === 'running' || artifact.status === 'queued'
+      ? 'running'
+      : artifact.status === 'error' || artifact.status === 'failed' || artifact.status === 'cancelled'
+        ? 'error'
+        : 'done',
     task: artifact.task,
     roleId: artifact.roleId ?? null,
     roleName: artifact.roleName ?? null,
@@ -381,9 +508,25 @@ export function extractSubagentBatchArtifact(value: unknown): SubagentBatchArtif
         content: typeof row.errorMessage === 'string' ? row.errorMessage : run.content,
       });
     });
+  const lifecycleWorkers = Array.isArray(record.lifecycleWorkers)
+    ? record.lifecycleWorkers.flatMap(item => {
+        const row = asRecord(item);
+        const agentId = typeof row?.agentId === 'string' ? row.agentId : '';
+        const task = typeof row?.task === 'string' ? row.task : '';
+        if (!agentId || !task) return [];
+        return [{
+          agentId,
+          workerId: typeof row?.workerId === 'string' ? row.workerId : null,
+          task,
+          roleId: typeof row?.roleId === 'string' ? row.roleId : null,
+          role: typeof row?.role === 'string' ? row.role : null,
+        }];
+      })
+    : undefined;
 
   return {
     kind: 'subagent_batch_result',
+    lifecycleWorkers,
     batchGoal: typeof record.batchGoal === 'string' ? record.batchGoal : null,
     workflowTemplate: typeof record.workflowTemplate === 'string' ? record.workflowTemplate : null,
     workflowTemplateLabel: typeof record.workflowTemplateLabel === 'string' ? record.workflowTemplateLabel : null,
@@ -449,19 +592,23 @@ export function extractSubagentJudgementArtifact(value: unknown): SubagentJudgem
 
 function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
   if (toolCall.toolName !== 'spawn_subagent') return null;
-  const artifact = extractSubagentArtifact(toolCall.artifacts);
+  const initialArtifact = extractSubagentArtifact(toolCall.artifacts);
+  const lifecycle = projectSubagentLifecycle(toolCall.activityEvents);
+  const artifact = lifecycle.artifact ?? initialArtifact;
   const parsedArgs = parseSubagentArguments(toolCall.arguments);
   const task = artifact?.task ?? parsedArgs?.task ?? 'Delegated task';
   return {
-    id: toolCall.callId,
-    status: toolCall.status === 'starting'
+    id: artifact?.id ?? toolCall.callId,
+    status: lifecycle.status ?? (artifact?.status === 'running' || artifact?.status === 'queued'
+      ? 'running'
+      : toolCall.status === 'starting'
       || toolCall.status === 'preparing'
       || toolCall.status === 'approvalPending'
       || toolCall.status === 'running'
       ? 'running'
       : toolCall.status === 'done'
         ? 'done'
-        : 'error',
+        : 'error'),
     task,
     roleId: artifact?.roleId ?? parsedArgs?.roleId ?? null,
     roleName: artifact?.roleName ?? null,
@@ -477,16 +624,16 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
     parallelGroup: artifact?.parallelGroup ?? parsedArgs?.parallelGroup ?? null,
     deliverableStyle: artifact?.deliverableStyle ?? parsedArgs?.deliverableStyle ?? null,
     returnSections: artifact?.returnSections ?? parsedArgs?.returnSections ?? null,
-    result: artifact?.result ?? undefined,
+    result: artifact?.result || lifecycle.streamedResult || undefined,
     finishReason: artifact?.finishReason ?? null,
     usageTotal: artifact?.usageTotal ?? null,
     toolEvents: artifact?.toolEvents ?? [],
-    thinking: artifact?.thinking ?? null,
+    thinking: artifact?.thinking ?? (lifecycle.thinking.length > 0 ? lifecycle.thinking : null),
     sourceScopeApplied: artifact?.sourceScopeApplied ?? false,
     allowedTools: artifact?.allowedTools ?? null,
     argumentsText: toolCall.arguments,
-    isError: toolCall.isError,
-    content: toolCall.content,
+    isError: lifecycle.status === 'error' ? true : toolCall.isError,
+    content: lifecycle.errorMessage ?? toolCall.content,
   };
 }
 
@@ -504,6 +651,8 @@ export function findVisibleSubagentRuns(
   const liveRuns = toolCalls.flatMap(toolCall => {
     const direct = buildRunFromToolCall(toolCall);
     if (direct) return [direct];
+    const lifecycleRuns = projectSubagentLifecycleRuns(toolCall.activityEvents);
+    if (lifecycleRuns.length > 0) return lifecycleRuns;
     const batch = extractSubagentBatchArtifact(toolCall.artifacts);
     return batch?.runs ?? [];
   });

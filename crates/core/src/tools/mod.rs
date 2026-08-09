@@ -325,6 +325,9 @@ pub struct ToolExecutionContext<'a> {
     pub tool_registry: Option<&'a ToolRegistry>,
     pub cancel_token: Option<&'a tokio_util::sync::CancellationToken>,
     pub activity_runtime: Option<&'a ActivityRuntime>,
+    /// Parent-turn event sink for tools that own work beyond their initial
+    /// invocation. Detached runtimes must clone the sender before returning.
+    pub event_tx: Option<&'a tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
 }
 
 impl<'a> ToolExecutionContext<'a> {
@@ -345,6 +348,7 @@ impl<'a> ToolExecutionContext<'a> {
             tool_registry: None,
             cancel_token: None,
             activity_runtime: None,
+            event_tx: None,
         }
     }
 
@@ -360,6 +364,14 @@ impl<'a> ToolExecutionContext<'a> {
 
     pub fn with_activity_runtime(mut self, activity_runtime: &'a ActivityRuntime) -> Self {
         self.activity_runtime = Some(activity_runtime);
+        self
+    }
+
+    pub fn with_event_tx(
+        mut self,
+        event_tx: &'a tokio::sync::mpsc::Sender<crate::agent::AgentEvent>,
+    ) -> Self {
+        self.event_tx = Some(event_tx);
         self
     }
 }
@@ -916,6 +928,7 @@ impl ToolRegistry {
                 tool_registry: ctx.tool_registry,
                 cancel_token: ctx.cancel_token,
                 activity_runtime: ctx.activity_runtime,
+                event_tx: ctx.event_tx,
             })
             .await;
         Ok(normalize_tool_execution_result(

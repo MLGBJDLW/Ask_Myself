@@ -247,6 +247,7 @@ mod tests {
                 turn_id: None,
                 tool_registry: Some(&registry),
                 cancel_token: None,
+                event_tx: None,
             })
             .await
             .unwrap();
