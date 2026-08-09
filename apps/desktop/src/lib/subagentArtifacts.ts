@@ -133,7 +133,7 @@ export interface PendingSubagentArgs {
 
 export interface SubagentRun {
   id: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'cancelled';
   task: string;
   roleId?: string | null;
   roleName?: string | null;
@@ -167,7 +167,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 export interface SubagentLifecycleProjection {
-  status: 'running' | 'done' | 'error' | null;
+  status: 'running' | 'done' | 'error' | 'cancelled' | null;
   artifact: SubagentArtifact | null;
   streamedResult: string;
   thinking: string[];
@@ -211,9 +211,13 @@ export function projectSubagentLifecycle(
       const run = asRecord(detail?.result);
       artifact = run ? extractSubagentArtifact({ kind: 'subagent_result', ...run }) : artifact;
     }
-    if (kind === 'failed' || kind === 'cancelled') {
+    if (kind === 'failed') {
       status = 'error';
       errorMessage = typeof detail?.errorMessage === 'string' ? detail.errorMessage : errorMessage;
+    }
+    if (kind === 'cancelled') {
+      status = 'cancelled';
+      errorMessage = null;
     }
   }
   return { status, artifact, streamedResult, thinking, errorMessage };
@@ -456,7 +460,9 @@ function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: 
     id,
     status: artifact.status === 'running' || artifact.status === 'queued'
       ? 'running'
-      : artifact.status === 'error' || artifact.status === 'failed' || artifact.status === 'cancelled'
+      : artifact.status === 'cancelled'
+        ? 'cancelled'
+        : artifact.status === 'error' || artifact.status === 'failed'
         ? 'error'
         : 'done',
     task: artifact.task,
@@ -503,7 +509,11 @@ export function extractSubagentBatchArtifact(value: unknown): SubagentBatchArtif
       );
       runs.push({
         ...run,
-        status: status === 'error' ? 'error' : status === 'running' ? 'running' : 'done',
+        status: status === 'error'
+          ? 'error'
+          : status === 'cancelled'
+            ? 'cancelled'
+            : status === 'running' ? 'running' : 'done',
         isError: row.isError === true,
         content: typeof row.errorMessage === 'string' ? row.errorMessage : run.content,
       });
@@ -606,6 +616,8 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
       || toolCall.status === 'approvalPending'
       || toolCall.status === 'running'
       ? 'running'
+      : toolCall.status === 'cancelled'
+        ? 'cancelled'
       : toolCall.status === 'done'
         ? 'done'
         : 'error'),

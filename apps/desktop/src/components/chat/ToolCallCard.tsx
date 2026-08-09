@@ -1364,11 +1364,13 @@ function buildSubagentRun(
   const parsedArgs = parseSubagentArguments(args);
   const task = artifact?.task ?? parsedArgs?.task;
   if (!task) return null;
-  const runStatus: 'running' | 'done' | 'error' = lifecycle.status
+  const runStatus: 'running' | 'done' | 'error' | 'cancelled' = lifecycle.status
     ?? (artifact?.status === 'running' || artifact?.status === 'queued'
       ? 'running'
       : isPendingToolCallStatus(status)
       ? 'running'
+      : status === 'cancelled'
+        ? 'cancelled'
       : status === 'done'
         ? 'done'
         : 'error');

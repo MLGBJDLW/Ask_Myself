@@ -75,6 +75,7 @@ use crate::app_events::emit_app_event;
 use crate::browser::agent_tool::NativeBrowserSessionTool;
 use crate::browser::BrowserState;
 use crate::commands::TerminalState;
+use crate::subagent_lifecycle::SubagentLifecycleRuntime;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
     SubagentLifecycleTool, SubagentTool,
@@ -242,6 +243,7 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub executor_config: AgentConfig,
     pub subagent_allowed_tools: Option<Vec<String>>,
     pub subagent_allowed_skill_ids: Option<Vec<String>>,
+    pub subagent_lifecycle: SubagentLifecycleRuntime,
     pub cancel_token: CancellationToken,
     pub plan_mode: bool,
     pub mcp_call_timeout_secs: u64,
@@ -2082,6 +2084,7 @@ pub async fn build_desktop_agent_session_dependencies(
         executor_config,
         subagent_allowed_tools,
         subagent_allowed_skill_ids,
+        subagent_lifecycle,
         cancel_token,
         plan_mode,
         mcp_call_timeout_secs,
@@ -2223,6 +2226,7 @@ pub async fn build_desktop_agent_session_dependencies(
         executor_config,
         subagent_allowed_tools,
         subagent_allowed_skill_ids,
+        subagent_lifecycle,
         cancel_token,
         Some(task_run_id.to_string()),
         Some(conversation_id.to_string()),

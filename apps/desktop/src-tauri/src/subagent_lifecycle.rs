@@ -249,6 +249,23 @@ impl SubagentLifecycleRuntime {
             .ok_or_else(|| CoreError::NotFound(format!("Subagent {agent_id}")))
     }
 
+    pub fn ensure_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let workers = self.workers()?;
+        let worker = workers
+            .get(agent_id)
+            .ok_or_else(|| CoreError::NotFound(format!("Subagent {agent_id}")))?;
+        if worker.conversation_id.as_deref() != conversation_id {
+            // Keep handles opaque across conversations rather than revealing
+            // that another chat owns a live worker.
+            return Err(CoreError::NotFound(format!("Subagent {agent_id}")));
+        }
+        Ok(())
+    }
+
     pub fn bridge(&self, agent_id: &str) -> Result<SubagentEventBridge, CoreError> {
         self.workers()?
             .get(agent_id)
@@ -723,6 +740,22 @@ mod tests {
             lifecycle.snapshot("agent-1").unwrap().status,
             SubagentLifecycleStatus::Queued
         );
+        drop(registration);
+    }
+
+    #[test]
+    fn lifecycle_handles_remain_scoped_to_their_parent_conversation() {
+        let lifecycle = SubagentLifecycleRuntime::default();
+        let mut request = request(ActivityRuntime::new());
+        request.conversation_id = Some("conversation-a".into());
+        let registration = lifecycle.register(request).unwrap();
+
+        assert!(lifecycle
+            .ensure_conversation("agent-1", Some("conversation-a"))
+            .is_ok());
+        assert!(lifecycle
+            .ensure_conversation("agent-1", Some("conversation-b"))
+            .is_err());
         drop(registration);
     }
 }

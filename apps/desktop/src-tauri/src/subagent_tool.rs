@@ -562,6 +562,7 @@ impl DelegationRuntime {
         base_config: AgentConfig,
         allowed_tools: Option<Vec<String>>,
         allowed_skill_ids: Option<Vec<String>>,
+        lifecycle: SubagentLifecycleRuntime,
         cancel_token: CancellationToken,
         parent_task_run_id: Option<String>,
         parent_conversation_id: Option<String>,
@@ -580,7 +581,7 @@ impl DelegationRuntime {
             context_snapshots: Arc::new(StdMutex::new(HashMap::new())),
             batches: Arc::new(StdMutex::new(HashMap::new())),
             batch_notify: Arc::new(tokio::sync::Notify::new()),
-            lifecycle: SubagentLifecycleRuntime::default(),
+            lifecycle,
             budget,
             cancel_token,
             delegation_depth: 0,
@@ -4600,6 +4601,9 @@ impl Tool for SubagentLifecycleTool {
                 self.name()
             )));
         }
+        self.runtime
+            .lifecycle
+            .ensure_conversation(agent_id, self.runtime.parent_conversation_id.as_deref())?;
 
         let (content, artifacts) = match self.action {
             SubagentLifecycleAction::Observe => {
@@ -5242,6 +5246,7 @@ mod tests {
             AgentConfig::default(),
             None,
             None,
+            SubagentLifecycleRuntime::default(),
             CancellationToken::new(),
             None,
             None,

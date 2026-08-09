@@ -52,6 +52,13 @@ assert(projection.streamedResult === 'Finding one. Finding two.', 'output deltas
 assert(projection.thinking.join('') === 'Checking source. ', 'thinking deltas should remain separate');
 assert(projection.artifact?.result === 'Verified result', 'terminal artifact should hydrate');
 
+const cancelled = projectSubagentLifecycle([
+  event(1, 'spawned', { task: 'Cancelled task' }, 'agent-cancelled'),
+  event(2, 'cancelled', { status: 'cancelled' }, 'agent-cancelled'),
+]);
+assert(cancelled.status === 'cancelled', 'cooperative cancellation must remain distinct from failure');
+assert(cancelled.errorMessage === null, 'cooperative cancellation must not manufacture an error');
+
 const toolCall: ToolCallEvent = {
   callId: 'parent-call-1',
   toolName: 'spawn_subagent',

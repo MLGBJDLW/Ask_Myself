@@ -395,6 +395,7 @@ fn main() {
             app.manage(AppState {
                 db: db.clone(),
                 db_executor,
+                subagent_lifecycle: subagent_lifecycle::SubagentLifecycleRuntime::default(),
                 context_compaction,
                 media_generation,
                 #[cfg(feature = "video")]

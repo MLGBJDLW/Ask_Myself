@@ -34,6 +34,12 @@ function statusCopy(status: SubagentRun['status'], t: TranslateFn) {
         icon: AlertTriangle,
         chipClassName: 'border-danger/25 bg-danger/10 text-danger',
       };
+    case 'cancelled':
+      return {
+        label: t('chat.toolBriefCancelled'),
+        icon: Flag,
+        chipClassName: 'border-border/60 bg-surface-1/70 text-text-muted',
+      };
     case 'done':
     default:
       return {
@@ -83,7 +89,9 @@ export function SubagentCard({
     ? truncate(run.result, compact ? 120 : 180)
     : run.content
       ? truncate(run.content, compact ? 120 : 180)
-      : t('chat.subagentInProgress');
+      : run.status === 'cancelled'
+        ? t('chat.toolBriefCancelled')
+        : t('chat.subagentInProgress');
   const displayRole = run.roleName?.trim() || run.role?.trim() || t('chat.helperDefaultLabel');
   const isRunning = run.status === 'running';
   const cardState = isRunning ? 'running' : run.status === 'error' ? 'error' : 'done';
