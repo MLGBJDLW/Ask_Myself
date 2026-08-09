@@ -2352,6 +2352,47 @@ test('Done message replaces an incomplete streamed answer as the terminal author
   streamStore.clearStream(conversationId);
 });
 
+test('a truncated Done preview preserves the complete ordered streamed answer', () => {
+  const conversationId = 'conversation-truncated-done';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'complete-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Complete streamed answer',
+    },
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: { role: 'assistant', parts: [{ type: 'text', text: 'Complete stre\n[truncated]' }] },
+      messageTruncated: true,
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'terminal state should exist');
+  assertEqual(
+    state.streamRounds[state.streamRounds.length - 1]?.reply,
+    'Complete streamed answer',
+    'ordered stream wins only when Done declares message truncation',
+  );
+  const finalReplyTrace = [...state.traceEvents].reverse().find(event => event.kind === 'reply');
+  assertEqual(
+    finalReplyTrace?.kind === 'reply' ? finalReplyTrace.text : '',
+    'Complete streamed answer',
+    'trace retains the complete streamed answer',
+  );
+  streamStore.clearStream(conversationId);
+});
+
 test('a newer launch status reopens a stream settled by awaiting user input', () => {
   const conversationId = 'conversation-fast-interaction-resume';
   streamStore.startStream(conversationId);

@@ -199,6 +199,7 @@ export function applyAgentRunEvent(
       applyDoneEvent(state, {
         status: runEvent.status ?? null,
         message: payload.message,
+        messageTruncated: payload.messageTruncated,
         usageTotal: payload.usageTotal,
         lastPromptTokens: payload.lastPromptTokens,
         contextBreakdown: payload.contextBreakdown,

@@ -144,6 +144,7 @@ export function applyDoneEvent(
   input: {
     status: string | null;
     message: unknown;
+    messageTruncated?: unknown;
     usageTotal?: unknown;
     lastPromptTokens?: unknown;
     contextBreakdown?: unknown;
@@ -153,7 +154,9 @@ export function applyDoneEvent(
 ): void {
   const finalThinking = state.thinkingText;
   const doneText = extractMessageText(input.message);
-  const finalReply = doneText ?? state.streamText;
+  const finalReply = input.messageTruncated === true && state.streamText.trim()
+    ? state.streamText
+    : doneText ?? state.streamText;
   const hasFinalRound = finalThinking.trim() || finalReply.trim();
   if (hasFinalRound) {
     replaceTerminalReplyTrace(state, finalReply);

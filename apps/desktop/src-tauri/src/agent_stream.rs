@@ -27,9 +27,11 @@ pub(crate) fn emit_agent_frontend_event(
     turn_id: Option<&str>,
     event: AgentEvent,
 ) {
+    let message_truncated = done_message_will_truncate(&event);
     let event = compact_agent_event_for_frontend(event);
-    let run_event =
+    let mut run_event =
         AgentRunEvent::from_agent_event(&event).with_context(Some(task_run_id), turn_id, Some(0));
+    mark_truncated_done_message(&mut run_event, message_truncated);
     if let Err(error) = event_outbox.submit(run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
@@ -46,10 +48,12 @@ pub(crate) fn emit_agent_frontend_event_with_presentation(
     display_kind: AgentRunDisplayKind,
     importance: AgentRunEventImportance,
 ) {
+    let message_truncated = done_message_will_truncate(&event);
     let event = compact_agent_event_for_frontend(event);
-    let run_event = AgentRunEvent::from_agent_event(&event)
+    let mut run_event = AgentRunEvent::from_agent_event(&event)
         .with_context(Some(task_run_id), turn_id, Some(0))
         .with_presentation(visibility, display_kind, importance);
+    mark_truncated_done_message(&mut run_event, message_truncated);
     if let Err(error) = event_outbox.submit(run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
@@ -184,6 +188,15 @@ fn compact_tool_run_for_frontend(mut run: ToolRunItem) -> ToolRunItem {
     run
 }
 
+fn done_message_will_truncate(event: &AgentEvent) -> bool {
+    let AgentEvent::Done { message, .. } = event else {
+        return false;
+    };
+    message.parts.iter().any(|part| {
+        matches!(part, ContentPart::Text { text } if text.chars().count() > MAX_FRONTEND_MESSAGE_TEXT_CHARS)
+    })
+}
+
 fn compact_message_for_frontend(mut message: Message) -> Message {
     message.parts.retain_mut(|part| {
         match part {
@@ -207,6 +220,18 @@ fn compact_message_for_frontend(mut message: Message) -> Message {
         .reasoning_content
         .map(|text| truncate_task_event_text(&text, MAX_TASK_EVENT_TEXT_CHARS));
     message
+}
+
+fn mark_truncated_done_message(run_event: &mut AgentRunEvent, message_truncated: bool) {
+    if !message_truncated {
+        return;
+    }
+    if let Some(payload) = run_event.payload.as_object_mut() {
+        payload.insert(
+            "messageTruncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
 }
 
 pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent {
@@ -469,5 +494,34 @@ mod tests {
 
         assert_eq!(compacted.text_content(), "visible answer");
         assert!(compacted.provider_turn().is_none());
+    }
+
+    #[test]
+    fn frontend_done_event_marks_truncated_message_text() {
+        let event = AgentEvent::Done {
+            message: Message::text(
+                Role::Assistant,
+                "x".repeat(MAX_FRONTEND_MESSAGE_TEXT_CHARS + 1),
+            ),
+            usage_total: nexa_core::llm::Usage::default(),
+            last_prompt_tokens: 0,
+            context_breakdown: None,
+            cached: false,
+            finish_reason: Some("stop".to_string()),
+        };
+        let message_truncated = done_message_will_truncate(&event);
+        let compacted = compact_agent_event_for_frontend(event);
+        let mut run_event = AgentRunEvent::from_agent_event(&compacted);
+        mark_truncated_done_message(&mut run_event, message_truncated);
+
+        assert!(message_truncated);
+        assert!(matches!(
+            compacted,
+            AgentEvent::Done { message, .. } if message.text_content().ends_with("[truncated]")
+        ));
+        assert_eq!(
+            run_event.payload.get("messageTruncated"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }

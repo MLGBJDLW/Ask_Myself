@@ -43,7 +43,10 @@ the dedicated database writer lane before main-window delivery.
 ## Completion and recovery
 
 `done.payload.message` is the immediate authoritative assistant answer and may
-replace an incomplete streamed preview. A recovery pass replays the ordered
+replace an incomplete streamed preview. When the native payload must be bounded,
+`done.payload.messageTruncated` is `true`; only then may the frontend retain a
+non-empty, fully ordered streamed preview instead of replacing it with the
+bounded message. A recovery pass replays the ordered
 durable ledger and confirms completion with the final assistant message joined
 through the conversation turn. A completed task without that message is not
 allowed to settle to a blank answer; recovery remains armed until the durable
