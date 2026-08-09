@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.5...nexa-monorepo-v0.12.6) (2026-08-09)
+
+
+### Bug Fixes
+
+* **storage:** make retired event migration executable ([8234f24](https://github.com/MLGBJDLW/Nexa/commit/8234f246017be60c629e80a58abf1054c9aef195))
+* **storage:** prevent startup event-ledger rewrite ([749510a](https://github.com/MLGBJDLW/Nexa/commit/749510acb9bc0442e5a3a8b9d7cd8f9ce9a8a3f9))
+* **storage:** retire startup event renumbering ([6115702](https://github.com/MLGBJDLW/Nexa/commit/61157022377a5422b091612201e205091fe2f3f8))
+* **streaming:** coalesce replaceable tool previews ([ace8328](https://github.com/MLGBJDLW/Nexa/commit/ace832886c3de0698aaf7eaf8f3b237f3392fa82))
+
 ## [0.12.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.4...nexa-monorepo-v0.12.5) (2026-08-09)
 
 
