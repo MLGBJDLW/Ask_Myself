@@ -548,15 +548,29 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_orchestrator_run_id,
         ));
     }
-    if resumes_interaction {
+    let resumed_event_outbox = if resumes_interaction {
         // Validate and persist the response before touching a live session.
         // A forged or stale response artifact must never abort unrelated work.
         if let Some(previous) = agent_state.sessions.take(&conversation_id).await {
+            if previous.handle.run_id != launch_record.run_id {
+                let active_run_id = previous.handle.run_id.clone();
+                agent_state.sessions.register(previous).await;
+                return Err(format!(
+                    "Interaction continuation run mismatch: active {active_run_id}, resumed {}",
+                    launch_record.run_id
+                ));
+            }
+            let event_outbox = Arc::clone(&previous.event_outbox);
             previous.cancel_token.cancel();
             previous.task.abort();
             let _ = previous.task.await;
+            Some(event_outbox)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
     let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
         task_orchestrator_run_id
     } else if resumes_interaction {
@@ -577,17 +591,21 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .map_err(|err| err.to_string())?;
         }
     }
-    let last_event_sequence = state
-        .db
-        .latest_agent_run_event_sequence(&launch_record.run_id)
-        .map_err(|error| error.to_string())?;
-    let stream_event_seq = Arc::new(spawn_agent_run_outbox(
-        app_handle.clone(),
-        state.db_executor.clone(),
-        conversation_id.clone(),
-        launch_record.run_id.clone(),
-        last_event_sequence,
-    ));
+    let stream_event_seq = if let Some(event_outbox) = resumed_event_outbox {
+        event_outbox
+    } else {
+        let last_event_sequence = state
+            .db
+            .latest_agent_run_event_sequence(&launch_record.run_id)
+            .map_err(|error| error.to_string())?;
+        Arc::new(spawn_agent_run_outbox(
+            app_handle.clone(),
+            state.db_executor.clone(),
+            conversation_id.clone(),
+            launch_record.run_id.clone(),
+            last_event_sequence,
+        ))
+    };
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,

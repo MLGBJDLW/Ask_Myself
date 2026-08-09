@@ -846,6 +846,43 @@ mod tests {
         assert!(receiver.try_recv().is_ok());
     }
 
+    #[test]
+    fn run_event_outbox_clones_share_one_ordered_producer_queue() {
+        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
+        let continuation = outbox.clone();
+        outbox
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::AwaitingUserInput,
+                "Waiting for your response",
+                Some("awaiting_user_input"),
+                None,
+            ))
+            .unwrap();
+        continuation
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::Responding,
+                "Interaction response accepted",
+                Some("running"),
+                None,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            receiver.try_recv().unwrap().label,
+            "Waiting for your response"
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap().label,
+            "Interaction response accepted"
+        );
+    }
+
     #[tokio::test]
     async fn session_manager_replaces_turns_and_routes_steering() {
         let manager = AgentSessionManager::new();
