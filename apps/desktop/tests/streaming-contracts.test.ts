@@ -2222,6 +2222,40 @@ test('live ordering buffers out-of-order events and drains them without losing o
   streamStore.clearStream(conversationId);
 });
 
+test('durable hydration replaces an unbound blank state created by a future event', () => {
+  const conversationId = 'conversation-unbound-gap-hydration';
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'responding',
+    status: 'running',
+    label: 'Future event',
+  })));
+  const blank = streamStore.getStream(conversationId);
+  assert(blank, 'future event should create a recoverable stream state');
+  assertEqual(blank.turnHandle, null, 'unsolicited event has no launch handle');
+  assertEqual(blank.traceEvents.length, 0, 'future event remains buffered without a prefix');
+
+  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'done',
+      phase: 'done',
+      status: 'completed',
+      payload: {
+        message: { role: 'assistant', parts: [{ type: 'text', text: 'Recovered answer' }] },
+        usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'durable hydration should replace the blank unbound state');
+  assertEqual(restored.isStreaming, false, 'durable terminal state settles the stream');
+  assertEqual(restored.streamRounds[0]?.reply, 'Recovered answer', 'durable answer is visible');
+  streamStore.clearStream(conversationId);
+});
+
 test('locally stopped streams consume suppressed events before the terminal', () => {
   const conversationId = 'conversation-stop-terminal-ordering';
   streamStore.startStream(conversationId);

@@ -76,10 +76,11 @@ type StoreListener = (conversationId: string) => void;
 
 function stateHasVisiblePreview(state: InternalStreamState | undefined): boolean {
   return Boolean(state && (
-    state.isStreaming ||
     state.traceEvents.length > 0 ||
     state.streamText.length > 0 ||
-    state.streamRounds.length > 0
+    state.streamRounds.length > 0 ||
+    state.thinkingText.length > 0 ||
+    state.toolCalls.length > 0
   ));
 }
 
@@ -233,7 +234,10 @@ class StreamStoreImpl {
     stateFactory: () => InternalStreamState,
   ): void {
     const existing = this._streams[conversationId];
-    if (existing?.isStreaming && stateHasVisiblePreview(existing)) {
+    if (
+      existing?.isStreaming
+      && (existing.turnHandle !== null || stateHasVisiblePreview(existing))
+    ) {
       return;
     }
     if (existing) clearStreamWatchdog(existing);
@@ -412,29 +416,25 @@ class StreamStoreImpl {
   private recoverMissingRunEvents(
     conversationId: string,
     state: InternalStreamState,
+    runIdHint?: string,
   ): void {
-    if (!state.turnHandle || this._gapRecoveries.has(conversationId)) return;
-    if (!state.isStreaming) {
-      this.recoverSettledRunEventGap(conversationId, state.turnHandle.runId);
-      return;
-    }
-    this._gapRecoveries.add(conversationId);
-    clearStreamWatchdog(state);
-    state._watchdogGeneration += 1;
-    const generation = state._watchdogGeneration;
-    void this.recoverSuspectedStall(conversationId, generation).finally(() => {
-      this._gapRecoveries.delete(conversationId);
-    });
+    const runId = state.turnHandle?.runId ?? runIdHint;
+    if (!runId || this._gapRecoveries.has(conversationId)) return;
+    this.recoverRunEventGap(conversationId, runId);
   }
 
-  private recoverSettledRunEventGap(conversationId: string, runId: string): void {
+  private recoverRunEventGap(conversationId: string, runId: string): void {
     this._gapRecoveries.add(conversationId);
     void withWatchdogRecoveryTimeout(
       getRecoveryRunEvents(runId),
       'Settled run-event gap recovery query',
     ).then(runEvents => {
       const state = this._streams[conversationId];
-      if (!state || state.turnHandle?.runId !== runId) return;
+      if (!state) return;
+      const boundRunId = state.turnHandle?.runId;
+      const pendingRunMatches = [...state._pendingRunEvents.values()]
+        .some(event => event.runId === runId);
+      if ((boundRunId && boundRunId !== runId) || (!boundRunId && !pendingRunMatches)) return;
       for (const runEvent of [...runEvents].sort((left, right) => left.eventSeq - right.eventSeq)) {
         this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
       }
@@ -767,7 +767,7 @@ class StreamStoreImpl {
     const enqueue = enqueueStreamRunEvent(state, runEvent);
     if (!enqueue.accepted) return;
     if (!enqueue.ready) {
-      this.recoverMissingRunEvents(conversationId, state);
+      this.recoverMissingRunEvents(conversationId, state, runEvent.runId);
       return;
     }
 
