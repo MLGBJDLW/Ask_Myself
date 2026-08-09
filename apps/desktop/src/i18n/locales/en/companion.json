@@ -33,6 +33,8 @@
   "privacy": "Hide task content in desktop bubbles",
   "alwaysOnTop": "Always on top",
   "lockPosition": "Lock position",
+  "idleActions": "Play idle gestures",
+  "autoWalk": "Walk around automatically",
   "anchor": "Anchor",
   "bottomLeft": "Bottom left",
   "bottomRight": "Bottom right",

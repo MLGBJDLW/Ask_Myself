@@ -33,6 +33,8 @@
   "privacy": "桌面气泡隐藏任务内容",
   "alwaysOnTop": "始终置顶",
   "lockPosition": "锁定位置",
+  "idleActions": "播放空闲动作",
+  "autoWalk": "自动走动",
   "anchor": "锚点",
   "bottomLeft": "左下角",
   "bottomRight": "右下角",

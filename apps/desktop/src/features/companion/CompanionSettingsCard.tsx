@@ -9,6 +9,7 @@ import type { AppConfig, CompanionSettings } from '../../types/conversation';
 import { Button } from '../../components/ui/Button';
 import { NexaSelect } from '../../components/ui/overlay/NexaSelect';
 import { DEFAULT_COMPANION_SETTINGS } from './defaults';
+import { decodeImageSource } from './runtime';
 
 interface CompanionSettingsCardProps {
   appConfig: AppConfig | null;
@@ -44,19 +45,30 @@ function Toggle({
 
 function CompanionPackPreview({ pack }: { pack: api.NormalizedCompanionPack | null }) {
   const { t } = useTranslation();
-  const [asset, setAsset] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{
+    pack: api.NormalizedCompanionPack;
+    asset: string;
+  } | null>(null);
 
   useEffect(() => {
     let current = true;
-    setAsset(null);
-    if (!pack) return () => { current = false; };
+    if (!pack) {
+      setPreview(null);
+      return () => { current = false; };
+    }
     void api.readCompanionAsset(pack.id, pack.contentHash)
-      .then((result) => { if (current) setAsset(result.dataUrl); })
-      .catch(() => { if (current) setAsset(null); });
+      .then(async (result) => {
+        await decodeImageSource(result.dataUrl);
+        if (current) setPreview({ pack, asset: result.dataUrl });
+      })
+      .catch(() => {
+        // Preserve the last decoded preview while a refresh or replacement
+        // asset is unavailable; never flash an empty placeholder mid-swap.
+      });
     return () => { current = false; };
   }, [pack]);
 
-  if (!pack || !asset) {
+  if (!pack || !preview) {
     return (
       <div className="flex h-28 w-28 items-center justify-center rounded-2xl border border-border bg-surface-1 text-text-tertiary">
         {pack ? <span className="px-2 text-center text-[10px]">{t('companion.previewUnavailable')}</span> : <Cat size={28} />}
@@ -68,11 +80,11 @@ function CompanionPackPreview({ pack }: { pack: api.NormalizedCompanionPack | nu
     <div
       className="h-28 w-28 rounded-2xl border border-border bg-center bg-no-repeat shadow-sm [image-rendering:pixelated]"
       style={{
-        backgroundImage: `url(${asset})`,
-        backgroundSize: `${pack.frame.columns * 100}% ${pack.frame.rows * 100}%`,
+        backgroundImage: `url(${preview.asset})`,
+        backgroundSize: `${preview.pack.frame.columns * 100}% ${preview.pack.frame.rows * 100}%`,
         backgroundPosition: '0 0',
       }}
-      aria-label={pack.displayName}
+      aria-label={preview.pack.displayName}
     />
   );
 }
@@ -243,6 +255,8 @@ export function CompanionSettingsCard({
             <div className="grid gap-3 md:grid-cols-3">
               <Toggle checked={settings.alwaysOnTop} label={t('companion.alwaysOnTop')} onChange={(alwaysOnTop) => update({ alwaysOnTop })} />
               <Toggle checked={settings.lockPosition} label={t('companion.lockPosition')} onChange={(lockPosition) => update({ lockPosition })} />
+              <Toggle checked={settings.idleActions} label={t('companion.idleActions')} onChange={(idleActions) => update({ idleActions })} />
+              <Toggle checked={settings.autoWalk} label={t('companion.autoWalk')} onChange={(autoWalk) => update({ autoWalk })} />
               <label className="text-xs text-text-secondary">{t('companion.anchor')}<NexaSelect className="mt-1 w-full" value={settings.anchor} onChange={(event) => update({ anchor: event.target.value as CompanionSettings['anchor'] })}><option value="bottom_left">{t('companion.bottomLeft')}</option><option value="bottom_right">{t('companion.bottomRight')}</option><option value="free">{t('companion.free')}</option></NexaSelect></label>
             </div>
           </section>
