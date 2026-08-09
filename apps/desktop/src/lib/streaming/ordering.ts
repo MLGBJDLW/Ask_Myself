@@ -50,6 +50,31 @@ export function enqueueStreamRunEvent(
   };
 }
 
+/**
+ * Align an empty ordering buffer to an authoritative durable ledger entry.
+ *
+ * Historical ledgers may contain intentional sequence gaps because ephemeral
+ * liveness events were not persisted. The database result is already the
+ * complete ordered source for replay, so those gaps must not strand later
+ * durable events. Live delivery never calls this helper and therefore keeps
+ * strict missing-event recovery.
+ */
+export function alignAuthoritativeReplayCursor(
+  state: StreamEventOrderingState,
+  event: AgentRunEvent,
+): boolean {
+  const eventSeq = parseStreamEventSeq(event.eventSeq);
+  if (eventSeq === null || state._pendingRunEvents.size > 0) return false;
+  if (state._orderedRunId !== null && state._orderedRunId !== event.runId) return false;
+  if (eventSeq <= state._lastEventSeq) return false;
+
+  state._orderedRunId = event.runId;
+  if (eventSeq > state._lastEventSeq + 1) {
+    state._lastEventSeq = eventSeq - 1;
+  }
+  return true;
+}
+
 export function takeNextStreamRunEvent(
   state: StreamEventOrderingState,
 ): AgentRunEvent | null {

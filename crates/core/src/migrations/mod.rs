@@ -2440,34 +2440,22 @@ Every answer that uses knowledge base search results.
     ),
     (
         "v113_normalize_agent_run_event_sequences",
-        "BEGIN IMMEDIATE;
-         CREATE TEMP TABLE agent_run_event_sequence_map (
-             run_id TEXT NOT NULL,
-             old_event_seq INTEGER NOT NULL,
-             new_event_seq INTEGER NOT NULL,
-             PRIMARY KEY (run_id, old_event_seq)
-         );
-         INSERT INTO agent_run_event_sequence_map (run_id, old_event_seq, new_event_seq)
-         SELECT current.run_id,
-                current.event_seq,
-                ROW_NUMBER() OVER (
-                    PARTITION BY current.run_id
-                    ORDER BY current.event_seq
-                )
-         FROM agent_run_events AS current;
-         UPDATE agent_run_events
-         SET event_seq = -event_seq
-         WHERE event_seq > 0;
-         UPDATE agent_run_events AS current
-         SET event_seq = (
-             SELECT sequence_map.new_event_seq
-             FROM agent_run_event_sequence_map AS sequence_map
-             WHERE sequence_map.run_id = current.run_id
-               AND sequence_map.old_event_seq = -current.event_seq
-         )
-         WHERE current.event_seq < 0;
-         DROP TABLE agent_run_event_sequence_map;
-         COMMIT;",
+        // Historical ledgers may contain intentional gaps where ephemeral
+        // heartbeats were never persisted. Authoritative replay handles those
+        // gaps without rewriting user history during application startup.
+        "UPDATE _migrations SET name = name WHERE 0;",
+    ),
+    (
+        "v114_bound_agent_run_event_storage",
+        // The table primary key already indexes (run_id, event_seq). Keep
+        // deletion ownership aligned with agent_task_runs without rewriting
+        // existing event history during application startup.
+        "DROP INDEX IF EXISTS idx_agent_run_events_run;
+         CREATE TRIGGER IF NOT EXISTS delete_agent_run_events_after_task_run
+         AFTER DELETE ON agent_task_runs
+         BEGIN
+             DELETE FROM agent_run_events WHERE run_id = OLD.id;
+         END;",
     ),
 ];
 
@@ -3750,7 +3738,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_agent_run_event_gaps_are_normalized_before_recovery() {
+    fn legacy_agent_run_event_gaps_are_preserved_without_rewriting_history() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("baseline migrations should succeed");
         conn.execute_batch(
@@ -3766,8 +3754,8 @@ mod tests {
         )
         .expect("simulate a pre-v113 ledger with keepalive gaps");
 
-        run_migrations(&conn).expect("legacy event sequences should be normalized");
-        run_migrations(&conn).expect("normalization should remain idempotent");
+        run_migrations(&conn).expect("legacy event sequences should remain readable");
+        run_migrations(&conn).expect("gap compatibility should remain idempotent");
 
         let run_gap = conn
             .prepare(
@@ -3791,8 +3779,8 @@ mod tests {
             run_gap,
             vec![
                 (1, "first".to_string(), "{}".to_string()),
-                (2, "second".to_string(), "{\"delta\":\"hello\"}".to_string()),
-                (3, "third".to_string(), "{\"message\":\"done\"}".to_string()),
+                (4, "second".to_string(), "{\"delta\":\"hello\"}".to_string()),
+                (7, "third".to_string(), "{\"message\":\"done\"}".to_string()),
             ]
         );
         let other_sequence: i64 = conn
@@ -3802,6 +3790,64 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(other_sequence, 1);
+        assert_eq!(other_sequence, 9);
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _migrations
+                 WHERE name = 'v113_normalize_agent_run_event_sequences'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn agent_run_event_storage_drops_duplicate_index_and_follows_run_deletion() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO conversations (id, provider, model)
+             VALUES ('conv-event-owner', 'open_ai', 'gpt-test');
+             INSERT INTO messages (id, conversation_id, role, content)
+             VALUES ('msg-event-owner', 'conv-event-owner', 'user', 'test');
+             INSERT INTO conversation_turns (id, conversation_id, user_message_id)
+             VALUES ('turn-event-owner', 'conv-event-owner', 'msg-event-owner');
+             INSERT INTO agent_task_runs
+                (id, conversation_id, turn_id, user_message_id, status, phase)
+             VALUES
+                ('run-event-owner', 'conv-event-owner', 'turn-event-owner',
+                 'msg-event-owner', 'completed', 'done');
+             INSERT INTO agent_run_events
+                (run_id, turn_id, event_seq, version, kind, phase, label, payload_json)
+             VALUES
+                ('run-event-owner', 'turn-event-owner', 1, 2, 'done', 'done',
+                 'done', '{\"message\":\"done\"}');",
+        )
+        .expect("insert owned run event");
+
+        let duplicate_index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_agent_run_events_run'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(duplicate_index_count, 0);
+
+        conn.execute(
+            "DELETE FROM agent_task_runs WHERE id = 'run-event-owner'",
+            [],
+        )
+        .expect("delete task run");
+        let remaining_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_run_events WHERE run_id = 'run-event-owner'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_events, 0);
     }
 }

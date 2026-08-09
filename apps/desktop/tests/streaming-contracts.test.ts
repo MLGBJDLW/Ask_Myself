@@ -685,6 +685,39 @@ test('durable replay restores direct canonical run events through live projectio
   streamStore.clearStream(conversationId);
 });
 
+test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', () => {
+  const conversationId = 'conversation-legacy-run-event-gaps';
+
+  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: { blockId: 'legacy-answer', channel: 'answer', offset: 0, delta: 'Legacy ' },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'outputDelta',
+      payload: { blockId: 'legacy-answer', channel: 'answer', offset: 7, delta: 'reply' },
+    }),
+    runEvent({
+      eventSeq: 7,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: { message: 'Legacy reply', messageTruncated: true },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'legacy durable replay should create stream state');
+  assertEqual(restored.isStreaming, false, 'legacy replay should consume its terminal event');
+  assertEqual(restored.streamRounds.length, 1, 'legacy replay should preserve the answer block');
+  assertEqual(restored.streamRounds[0].reply, 'Legacy reply', 'legacy replay should join gapped blocks');
+
+  streamStore.clearStream(conversationId);
+});
+
 test('canonical run event projection matches live stream dispatch for render state', () => {
   const conversationId = 'conversation-live-replay-equivalence';
   const runEvents = [

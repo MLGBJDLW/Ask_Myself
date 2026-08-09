@@ -35,10 +35,13 @@ protocol.
 
 ## Ordering and blocks
 
-The renderer advances a run only when the exact next `eventSeq` is available.
+Live delivery advances a run only when the exact next `eventSeq` is available.
 Future events remain buffered and trigger durable recovery; duplicates and
-post-terminal events are ignored. Answer and thinking block deltas also require
-the exact UTF-8 byte offset. Tool and reset boundaries rotate block identities.
+post-terminal events are ignored. A complete authoritative database replay may
+advance across a missing sequence because historical ledgers can contain gaps
+for events that were intentionally not retained. It never renumbers committed
+events. Answer and thinking block deltas also require the exact UTF-8 byte
+offset. Tool and reset boundaries rotate block identities.
 
 Ordering is also bound to `runId`. A different run may replace only a settled,
 unbound retained projection; an event from another run cannot enter a bound
@@ -51,6 +54,11 @@ after the bound run settles.
 Output is coalesced into bounded blocks before it enters the outbox, so model
 tokens do not perform synchronous SQLite work. Durable blocks are written on
 the dedicated database writer lane before main-window delivery.
+
+Replaceable `ToolRunUpdated` previews are likewise coalesced by `callId` on the
+stream cadence. A semantic boundary flushes the latest preview before the next
+tool lifecycle event. Provider argument fragments therefore do not create one
+durable row per transport chunk.
 
 ## Completion and recovery
 

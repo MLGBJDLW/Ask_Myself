@@ -12,7 +12,11 @@ import {
 import { isTaskTimelineEvent } from './taskTimeline';
 import { applyTerminalProjection } from './terminalProjection';
 import { createToolCall, insertPendingToolCall, type ToolPreparingPayload } from './toolProjection';
-import { enqueueStreamRunEvent, takeNextStreamRunEvent } from './ordering';
+import {
+  alignAuthoritativeReplayCursor,
+  enqueueStreamRunEvent,
+  takeNextStreamRunEvent,
+} from './ordering';
 
 export type DurableReplayProjectionState = InternalStreamState;
 
@@ -26,6 +30,7 @@ export function applyDurableRunEventsToState(
 ): void {
   const ordered = [...events].sort((a, b) => a.eventSeq - b.eventSeq);
   for (const event of ordered) {
+    alignAuthoritativeReplayCursor(state, event);
     enqueueStreamRunEvent(state, event);
     let ready: AgentRunEvent | null;
     while ((ready = takeNextStreamRunEvent(state)) !== null) {
