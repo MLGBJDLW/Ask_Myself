@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { RUN_EVENT_FIXTURE_INIT_SCRIPT } from './run-event-fixture';
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem("nexa-locale", "en");
     history.replaceState(
@@ -63,6 +65,17 @@ test.beforeEach(async ({ page }) => {
       localStorage.getItem("e2e-route-skip-thinking") === "1";
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      const convert = (window as unknown as {
+        __toRunEventFixture?: (
+          name: string,
+          value: Record<string, unknown>,
+        ) => { eventName: string; payload: Record<string, unknown> };
+      }).__toRunEventFixture;
+      const converted = convert?.(eventName, payload);
+      if (converted) {
+        eventName = converted.eventName;
+        payload = converted.payload;
+      }
       for (const [listenerId, listener] of listeners.entries()) {
         if (listener.event !== eventName) continue;
         const callback = callbackMap.get(listener.handlerId);
@@ -224,25 +237,25 @@ test.beforeEach(async ({ page }) => {
           messagesByConversation[conversationId] = [userMessage];
 
           queueMicrotask(() => {
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "status",
               content: "Loading tools and MCP servers",
               tone: "muted",
             });
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "status",
               content: "排队中",
               tone: "muted",
             });
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "status",
               content: "已使用上下文",
               tone: "muted",
             });
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "controllerStatus",
               code: "route_selected",
@@ -250,7 +263,7 @@ test.beforeEach(async ({ page }) => {
               tone: "muted",
             });
             if (localStorage.getItem("e2e-connection-state") === "1") {
-              emitEvent("agent:event", {
+              emitEvent("agent://run-event", {
                 conversationId,
                 type: "connectionState",
                 state: {
@@ -271,7 +284,7 @@ test.beforeEach(async ({ page }) => {
 
           if (!skipThinking) {
             setTimeout(() => {
-              emitEvent("agent:event", {
+              emitEvent("agent://run-event", {
                 conversationId,
                 type: "thinking",
                 content: "Checking the retry path first.",
@@ -322,14 +335,14 @@ test.beforeEach(async ({ page }) => {
             });
 
             setTimeout(() => {
-              emitEvent("agent:event", {
+              emitEvent("agent://run-event", {
                 conversationId,
                 type: "toolRunUpdated",
                 run: contextToolRun("running"),
               });
             }, thinkingDelayMs + 20);
             setTimeout(() => {
-              emitEvent("agent:event", {
+              emitEvent("agent://run-event", {
                 conversationId,
                 type: "toolRunCompleted",
                 run: contextToolRun("completed"),
@@ -338,7 +351,7 @@ test.beforeEach(async ({ page }) => {
           }
 
           setTimeout(() => {
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "textDelta",
               delta: assistantMessage.content,
@@ -350,7 +363,7 @@ test.beforeEach(async ({ page }) => {
               userMessage,
               assistantMessage,
             ];
-            emitEvent("agent:event", {
+            emitEvent("agent://run-event", {
               conversationId,
               type: "done",
               message: assistantMessage,

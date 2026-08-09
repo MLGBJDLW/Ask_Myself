@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { RUN_EVENT_FIXTURE_INIT_SCRIPT } from './run-event-fixture';
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
 
@@ -81,6 +83,17 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      const convert = (window as unknown as {
+        __toRunEventFixture?: (
+          name: string,
+          value: Record<string, unknown>,
+        ) => { eventName: string; payload: Record<string, unknown> };
+      }).__toRunEventFixture;
+      const converted = convert?.(eventName, payload);
+      if (converted) {
+        eventName = converted.eventName;
+        payload = converted.payload;
+      }
       for (const [listenerId, listener] of listeners.entries()) {
         if (listener.event !== eventName) continue;
         const callback = callbackMap.get(listener.handlerId);
@@ -215,7 +228,7 @@ test.beforeEach(async ({ page }) => {
           conversations[conversationId].updatedAt = new Date().toISOString();
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'thinking',
               content: 'Investigating retries only for chat A.',
@@ -223,7 +236,7 @@ test.beforeEach(async ({ page }) => {
           }, 20);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: toolCallId,
@@ -233,7 +246,7 @@ test.beforeEach(async ({ page }) => {
           }, 70);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: toolCallId,
@@ -296,7 +309,7 @@ test.beforeEach(async ({ page }) => {
             ];
             conversations[conversationId].updatedAt = new Date().toISOString();
 
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'done',
               message: finalAssistantMessage,
