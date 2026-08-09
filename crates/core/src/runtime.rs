@@ -63,6 +63,13 @@ impl AgentRunEventOutbox {
         *terminal_submitted = terminal;
         Ok(())
     }
+
+    pub fn is_closed_for_submission(&self) -> bool {
+        self.terminal_submitted
+            .lock()
+            .map(|terminal_submitted| *terminal_submitted)
+            .unwrap_or(true)
+    }
 }
 
 /// Runtime-owned control plane for one active turn.
@@ -144,7 +151,9 @@ impl AgentSessionManager {
             ));
         };
         if turn.is_finished() {
-            active.remove(session_id);
+            if turn.event_outbox.is_closed_for_submission() {
+                active.remove(session_id);
+            }
             return Err(CoreError::NotFound(
                 "No running agent turn for this session.".to_string(),
             ));
@@ -154,19 +163,22 @@ impl AgentSessionManager {
 
     pub async fn take(&self, session_id: &str) -> Option<ActiveAgentTurn> {
         let turn = self.active.lock().await.remove(session_id)?;
-        (!turn.is_finished()).then_some(turn)
+        (!turn.is_finished() || !turn.event_outbox.is_closed_for_submission()).then_some(turn)
     }
 
     pub async fn contains(&self, session_id: &str) -> bool {
         let mut active = self.active.lock().await;
-        if active
-            .get(session_id)
-            .is_some_and(ActiveAgentTurn::is_finished)
-        {
-            active.remove(session_id);
+        if let Some(turn) = active.get(session_id) {
+            if turn.is_finished() {
+                if turn.event_outbox.is_closed_for_submission() {
+                    active.remove(session_id);
+                }
+                return false;
+            }
+        } else {
             return false;
         }
-        active.contains_key(session_id)
+        true
     }
 
     /// Claim the one frontend-paint metric allowed for an active turn.
@@ -195,8 +207,10 @@ impl AgentSessionManager {
     /// Returns `None` only while another runtime operation holds the manager.
     pub fn try_is_empty(&self) -> Option<bool> {
         self.active.try_lock().ok().map(|mut active| {
-            active.retain(|_, turn| !turn.is_finished());
-            active.is_empty()
+            active.retain(|_, turn| {
+                !turn.is_finished() || !turn.event_outbox.is_closed_for_submission()
+            });
+            !active.values().any(|turn| !turn.is_finished())
         })
     }
 }
@@ -944,6 +958,34 @@ mod tests {
         active.cancel();
         active.abort();
         assert!(!manager.contains("session-1").await);
+    }
+
+    #[tokio::test]
+    async fn session_manager_retains_open_outbox_after_suspended_task_finishes() {
+        let manager = AgentSessionManager::new();
+        let (outbox, _receiver) = AgentRunEventOutbox::channel();
+        let outbox = Arc::new(outbox);
+        let (steering_tx, _steering_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .register(ActiveAgentTurn {
+                handle: AgentTurnHandle::running("session-1", "run-1", "turn-1"),
+                cancel_token: CancellationToken::new(),
+                task: tokio::spawn(async {}),
+                steering_tx,
+                event_outbox: Arc::clone(&outbox),
+                orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
+            })
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(!manager.contains("session-1").await);
+        assert!(manager.try_is_empty().unwrap());
+        let retained = manager
+            .take("session-1")
+            .await
+            .expect("finished suspended turn should retain its open outbox");
+        assert!(Arc::ptr_eq(&retained.event_outbox, &outbox));
     }
 
     #[test]

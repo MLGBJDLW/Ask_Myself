@@ -1,6 +1,6 @@
 //! Single-owner ordered delivery for the public RunEvent protocol.
 
-use log::{error, warn};
+use log::error;
 use nexa_core::agent_run::{AgentRunEvent, AgentRunEventKind, AgentRunEventPersistence};
 use nexa_core::db_executor::DatabaseExecutor;
 use nexa_core::runtime::AgentRunEventOutbox;
@@ -20,14 +20,8 @@ pub(crate) fn spawn_agent_run_outbox(
     let (outbox, mut receiver) = AgentRunEventOutbox::channel();
     tauri::async_runtime::spawn(async move {
         let mut sequence = initial_sequence;
-        let mut terminal_delivered = false;
 
         while let Some(mut event) = receiver.recv().await {
-            if terminal_delivered {
-                warn!("Discarding RunEvent after terminal event for {task_run_id}");
-                continue;
-            }
-
             sequence = sequence.saturating_add(1);
             event.event_seq = sequence;
             if let Err(contract_error) = event.validate_durable_contract() {
@@ -87,7 +81,9 @@ pub(crate) fn spawn_agent_run_outbox(
             if let Some(task_run) = snapshot {
                 emit_agent_task_run_snapshot(&app_handle, &conversation_id, task_run);
             }
-            terminal_delivered = event.is_terminal();
+            if event.is_terminal() {
+                break;
+            }
         }
     });
     outbox
