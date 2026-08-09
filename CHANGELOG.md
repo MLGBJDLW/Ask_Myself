@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.6...nexa-monorepo-v0.12.7) (2026-08-09)
+
+
+### Bug Fixes
+
+* **streaming:** forward Responses deltas live ([01f5d16](https://github.com/MLGBJDLW/Nexa/commit/01f5d166ace561c959074b86413b75748b81a4a1))
+* **streaming:** show live Responses thinking and replies ([f5e5466](https://github.com/MLGBJDLW/Nexa/commit/f5e5466cf22f3625b0c1ebddadfaccebc375b92f))
+
 ## [0.12.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.5...nexa-monorepo-v0.12.6) (2026-08-09)
 
 
