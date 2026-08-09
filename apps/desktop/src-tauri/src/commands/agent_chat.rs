@@ -479,6 +479,19 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         user_artifacts.as_ref(),
     )?;
     let resumes_interaction = interaction_response.is_some();
+    let mut resumed_turn = if let Some(response) = interaction_response.as_ref() {
+        let resumed_run_id = state
+            .db
+            .get_interaction_request_run_id(&response.interaction_id)
+            .map_err(|error| error.to_string())?;
+        agent_state
+            .sessions
+            .take_for_run(&conversation_id, &resumed_run_id)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
 
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
@@ -531,7 +544,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
-    let launch_record = state
+    let launch_record = match state
         .db
         .create_agent_turn_and_run_with_interaction_response(
             &user_msg,
@@ -540,34 +553,36 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             Some(&db_config.model),
             &idempotency_key,
             interaction_response.as_ref(),
-        )
-        .map_err(|e| e.to_string())?;
-    if launch_record.reused {
-        return Ok(desktop_agent_chat_launch(
-            &launch_record,
-            task_orchestrator_run_id,
-        ));
-    }
-    let resumed_event_outbox = if resumes_interaction {
-        // Validate and persist the response before touching a live session.
-        // A forged or stale response artifact must never abort unrelated work.
-        if let Some(previous) = agent_state.sessions.take(&conversation_id).await {
-            if previous.handle.run_id != launch_record.run_id {
-                let active_run_id = previous.handle.run_id.clone();
+        ) {
+        Ok(launch_record) => launch_record,
+        Err(error) => {
+            if let Some(previous) = resumed_turn.take() {
                 agent_state.sessions.register(previous).await;
-                return Err(format!(
-                    "Interaction continuation run mismatch: active {active_run_id}, resumed {}",
-                    launch_record.run_id
-                ));
             }
-            let event_outbox = Arc::clone(&previous.event_outbox);
-            previous.cancel_token.cancel();
-            previous.task.abort();
-            let _ = previous.task.await;
-            Some(event_outbox)
-        } else {
-            None
+            return Err(error.to_string());
         }
+    };
+    if launch_record.reused {
+        let continuation_is_already_running = resumed_turn
+            .as_ref()
+            .is_some_and(|previous| !previous.is_finished());
+        if !resumes_interaction || continuation_is_already_running {
+            if let Some(previous) = resumed_turn.take() {
+                agent_state.sessions.register(previous).await;
+            }
+            return Ok(desktop_agent_chat_launch(
+                &launch_record,
+                task_orchestrator_run_id,
+            ));
+        }
+    }
+    let resumed_event_outbox = if let Some(previous) = resumed_turn.take() {
+        debug_assert_eq!(previous.handle.run_id, launch_record.run_id);
+        let event_outbox = Arc::clone(&previous.event_outbox);
+        previous.cancel_token.cancel();
+        previous.task.abort();
+        let _ = previous.task.await;
+        Some(event_outbox)
     } else {
         None
     };

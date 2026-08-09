@@ -166,6 +166,27 @@ impl AgentSessionManager {
         (!turn.is_finished() || !turn.event_outbox.is_closed_for_submission()).then_some(turn)
     }
 
+    pub async fn take_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Option<ActiveAgentTurn>, CoreError> {
+        let mut active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return Ok(None);
+        };
+        if turn.handle.run_id != run_id {
+            return Err(CoreError::InvalidInput(format!(
+                "Interaction continuation run mismatch: active {}, resumed {run_id}",
+                turn.handle.run_id
+            )));
+        }
+        let turn = active
+            .remove(session_id)
+            .expect("validated agent session should remain registered");
+        Ok((!turn.is_finished() || !turn.event_outbox.is_closed_for_submission()).then_some(turn))
+    }
+
     pub async fn contains(&self, session_id: &str) -> bool {
         let mut active = self.active.lock().await;
         if let Some(turn) = active.get(session_id) {
@@ -930,6 +951,10 @@ mod tests {
             .await;
 
         assert!(first_cancel_observer.is_cancelled());
+        assert!(manager
+            .take_for_run("session-1", "run-other")
+            .await
+            .is_err());
         manager
             .steer("session-1", "keep going")
             .await
