@@ -2443,7 +2443,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         conversation_id.clone(),
         stream.task_run_id.clone(),
         turn_id.clone(),
-        Arc::clone(&stream.event_seq),
+        stream.event_seq.as_ref().clone(),
         Arc::clone(&stream.terminal_emitted),
         stream.launch_started,
     )
