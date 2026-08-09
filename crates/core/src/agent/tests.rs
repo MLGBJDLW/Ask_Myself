@@ -427,6 +427,142 @@ struct RouteAwareReplayPolicyProvider {
     complete_calls: Arc<AtomicUsize>,
 }
 
+struct UnknownReplayThinkingProvider {
+    attempt_tool_call: bool,
+    stream_calls: Arc<AtomicUsize>,
+    complete_calls: Arc<AtomicUsize>,
+    request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
+    rejected_reasoning_seen_in_history: Arc<Mutex<Vec<bool>>>,
+}
+
+impl UnknownReplayThinkingProvider {
+    fn observe_request(&self, request: &CompletionRequest) {
+        self.request_reasoning
+            .lock()
+            .unwrap()
+            .push(request.reasoning_enabled);
+        self.rejected_reasoning_seen_in_history
+            .lock()
+            .unwrap()
+            .push(request.messages.iter().any(|message| {
+                message.reasoning_content.as_deref()
+                    == Some("visible reasoning from an unverified route")
+                    || message
+                        .text_content()
+                        .contains("visible reasoning from an unverified route")
+            }));
+    }
+}
+
+#[async_trait]
+impl LlmProvider for UnknownReplayThinkingProvider {
+    fn name(&self) -> &str {
+        "unknown-replay-thinking-mock"
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        crate::llm::provider_turn::RouteSnapshot {
+            provider_endpoint_id: "custom-compatible-endpoint".to_string(),
+            provider_family: "openai-compatible".to_string(),
+            api_style: crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+            model_id: request.model.clone(),
+            reasoning_profile_id: "custom-compatible-v1".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: if request.reasoning_enabled == Some(false) {
+                ReasoningReplayPolicy::NotRequired
+            } else {
+                ReasoningReplayPolicy::Unknown
+            },
+        }
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["custom-reasoner".to_string()])
+    }
+
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        self.complete_calls.fetch_add(1, Ordering::SeqCst);
+        self.observe_request(request);
+        Ok(CompletionResponse {
+            content: String::new(),
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call-safe-restart".to_string(),
+                name: "recording_tool".to_string(),
+                arguments: r#"{"value":"safe-restart"}"#.to_string(),
+                thought_signature: None,
+            }]),
+            finish_reason: FinishReason::ToolCalls,
+            usage: Usage::default(),
+            thinking: None,
+        })
+    }
+
+    async fn stream(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.observe_request(request);
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunks = if !self.attempt_tool_call {
+            vec![
+                Ok(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: Some("visible reasoning from an unverified route".to_string()),
+                }),
+                Ok(StreamChunk {
+                    delta: "final answer with visible reasoning".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                }),
+            ]
+        } else if call_no == 0 {
+            vec![
+                Ok(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: Some("visible reasoning from an unverified route".to_string()),
+                }),
+                Ok(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "call-unverified".to_string(),
+                        name: Some("recording_tool".to_string()),
+                        arguments_delta: r#"{"value":"must-not-run"}"#.to_string(),
+                        index: Some(0),
+                        thought_signature: None,
+                    }),
+                    finish_reason: Some(FinishReason::ToolCalls),
+                    usage: None,
+                    thinking_delta: None,
+                }),
+            ]
+        } else {
+            vec![Ok(StreamChunk {
+                delta: "final answer after verified restart".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            })]
+        };
+        Ok(Box::pin(stream::iter(chunks)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl LlmProvider for RouteAwareReplayPolicyProvider {
     fn name(&self) -> &str {
@@ -4314,6 +4450,162 @@ async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
         3,
         "rejected stream, reasoning-disabled restart, and final answer keep distinct sample ids"
     );
+}
+
+#[tokio::test]
+async fn unknown_replay_route_keeps_current_reasoning_visible_but_never_replays_it() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let complete_calls = Arc::new(AtomicUsize::new(0));
+    let request_reasoning = Arc::new(Mutex::new(Vec::new()));
+    let rejected_reasoning_seen_in_history = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(UnknownReplayThinkingProvider {
+            attempt_tool_call: true,
+            stream_calls: Arc::clone(&stream_calls),
+            complete_calls: Arc::clone(&complete_calls),
+            request_reasoning: Arc::clone(&request_reasoning),
+            rejected_reasoning_seen_in_history: Arc::clone(&rejected_reasoning_seen_in_history),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("custom-reasoner".to_string()),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(crate::llm::ReasoningEffort::High),
+            thinking_budget: Some(2_048),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Use recording_tool safely.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the unknown route should restart safely after displaying reasoning");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer after verified restart"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        1,
+        "only the reasoning-disabled replacement tool call may execute"
+    );
+    assert_eq!(
+        *request_reasoning.lock().unwrap(),
+        vec![Some(true), Some(false), Some(false)],
+        "reasoning stays enabled for the visible sample, then remains disabled through the tool loop"
+    );
+    assert!(
+        rejected_reasoning_seen_in_history
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|seen| !seen),
+        "reasoning from the rejected sample must never enter provider history"
+    );
+
+    let mut visible_reasoning_index = None;
+    let mut reset_index = None;
+    let mut event_index = 0usize;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::Thinking { content }
+                if content == "visible reasoning from an unverified route" =>
+            {
+                visible_reasoning_index = Some(event_index);
+            }
+            AgentEvent::StreamReset { .. } => reset_index = Some(event_index),
+            _ => {}
+        }
+        event_index += 1;
+    }
+    assert!(
+        visible_reasoning_index
+            .is_some_and(|thinking| { reset_index.is_some_and(|reset| thinking < reset) }),
+        "the current sample's reasoning must be emitted before the unsafe tool turn is reset"
+    );
+}
+
+#[tokio::test]
+async fn unknown_replay_route_with_available_tools_keeps_reasoning_visible_for_final_answer() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let complete_calls = Arc::new(AtomicUsize::new(0));
+    let request_reasoning = Arc::new(Mutex::new(Vec::new()));
+    let rejected_reasoning_seen_in_history = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(UnknownReplayThinkingProvider {
+            attempt_tool_call: false,
+            stream_calls: Arc::clone(&stream_calls),
+            complete_calls: Arc::clone(&complete_calls),
+            request_reasoning: Arc::clone(&request_reasoning),
+            rejected_reasoning_seen_in_history,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("custom-reasoner".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Answer normally; tools remain available.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("unknown replay must not disable current-turn reasoning");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer with visible reasoning"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(*request_reasoning.lock().unwrap(), vec![Some(true)]);
+    let mut visible_reasoning = false;
+    while let Ok(event) = rx.try_recv() {
+        visible_reasoning |= matches!(
+            event,
+            AgentEvent::Thinking { content }
+                if content == "visible reasoning from an unverified route"
+        );
+    }
+    assert!(visible_reasoning);
 }
 
 #[tokio::test]

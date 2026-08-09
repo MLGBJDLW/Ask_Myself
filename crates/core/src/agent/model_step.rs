@@ -169,27 +169,11 @@ impl AgentExecutor {
                 .and_then(crate::llm::prompt_cache::privacy_preserving_routing_session_id),
             parallel_tool_calls: true,
         };
-        let mut request_route_snapshot = self.provider.route_snapshot(&current_request);
-        let may_call_tools = current_request
-            .tools
-            .as_ref()
-            .is_some_and(|tools| !tools.is_empty());
-        if may_call_tools
-            && matches!(
-                request_route_snapshot.replay_policy,
-                ReasoningReplayPolicy::Unknown | ReasoningReplayPolicy::Forbidden
-            )
-        {
-            current_request.reasoning_enabled = Some(false);
-            current_request.reasoning_effort = None;
-            current_request.thinking_budget = None;
-            request_route_snapshot = self.provider.route_snapshot(&current_request);
-            append_developer_persisted_trace_status(
-                persisted_trace_items,
-                "provider_replay_preflight: reasoning disabled before request because the selected tool route has no replay guarantee",
-                "warning",
-            );
-        }
+        // Generation, display, and replay are separate trust boundaries. Let the
+        // selected route produce reasoning for this sample so the user can see it;
+        // the post-sample replay gate below still rejects any tool turn whose
+        // provider-native continuation payload cannot be verified.
+        let request_route_snapshot = self.provider.route_snapshot(&current_request);
         let replay_projection = crate::llm::reasoning_replay::prepare_provider_replay_history(
             messages,
             &request_route_snapshot,
