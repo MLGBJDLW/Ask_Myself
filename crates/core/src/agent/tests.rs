@@ -4389,6 +4389,24 @@ async fn tool_result_commit_failure_terminates_before_the_next_model_request() {
             persona_id: None,
         })
         .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "Use mock_tool once.".to_string(),
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
     db.conn()
         .execute_batch(
             "CREATE TRIGGER fail_tool_result_message
@@ -4405,13 +4423,13 @@ async fn tool_result_commit_failure_terminates_before_the_next_model_request() {
         .run(
             vec![],
             vec![ContentPart::Text {
-                text: "Use mock_tool once.".to_string(),
+                text: user_message.content.clone(),
             }],
             &db,
             Some(&conversation.id),
-            None,
+            Some(&turn.id),
             tx,
-            0,
+            1,
         )
         .await
         .expect_err("a tool result that cannot commit must terminate the turn");
@@ -4436,6 +4454,14 @@ async fn tool_result_commit_failure_terminates_before_the_next_model_request() {
         )
         .expect("count tool results");
     assert_eq!(persisted_tool_results, 0);
+    let finalized_turn = db
+        .get_conversation_turn(&turn.id)
+        .expect("finalized conversation turn");
+    assert_eq!(finalized_turn.status, "error");
+    assert!(
+        finalized_turn.trace.is_some(),
+        "error trace must be durable"
+    );
 }
 
 #[tokio::test]
