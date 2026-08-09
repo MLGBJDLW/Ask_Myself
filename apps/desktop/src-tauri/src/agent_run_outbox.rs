@@ -18,6 +18,7 @@ pub(crate) fn spawn_agent_run_outbox(
     initial_sequence: u64,
 ) -> AgentRunEventOutbox {
     let (outbox, mut receiver) = AgentRunEventOutbox::channel();
+    let failure_handle = outbox.failure_handle();
     tauri::async_runtime::spawn(async move {
         let mut sequence = initial_sequence;
 
@@ -26,6 +27,7 @@ pub(crate) fn spawn_agent_run_outbox(
             event.event_seq = sequence;
             if let Err(contract_error) = event.validate_durable_contract() {
                 error!("Rejecting invalid RunEvent {task_run_id}#{sequence}: {contract_error}");
+                failure_handle.fail_closed();
                 emit_fail_closed_terminal(
                     &app_handle,
                     &conversation_id,
@@ -63,6 +65,7 @@ pub(crate) fn spawn_agent_run_outbox(
                         error!(
                             "Stopping RunEvent outbox after persistence failure for {task_run_id}#{sequence}: {persist_error}"
                         );
+                        failure_handle.fail_closed();
                         emit_fail_closed_terminal(
                             &app_handle,
                             &conversation_id,

@@ -639,7 +639,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         None,
     );
 
-    let cancel_token = CancellationToken::new();
+    let cancel_token = stream_event_seq.turn_cancellation_token();
     let cancel_token_clone = cancel_token.clone();
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
     let db = state.db.clone();

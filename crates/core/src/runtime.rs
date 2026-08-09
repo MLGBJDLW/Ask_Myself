@@ -26,16 +26,37 @@ pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
 #[derive(Clone)]
 pub struct AgentRunEventOutbox {
     sender: tokio::sync::mpsc::UnboundedSender<AgentRunEvent>,
+    failure_handle: AgentRunEventOutboxFailureHandle,
+}
+
+/// Sender-free control plane retained by the outbox actor. Keeping this handle
+/// alive cannot keep the producer channel open.
+#[derive(Clone)]
+pub struct AgentRunEventOutboxFailureHandle {
     terminal_submitted: Arc<Mutex<bool>>,
+    cancellation: CancellationToken,
+}
+
+impl AgentRunEventOutboxFailureHandle {
+    pub fn fail_closed(&self) {
+        if let Ok(mut terminal_submitted) = self.terminal_submitted.lock() {
+            *terminal_submitted = true;
+        }
+        self.cancellation.cancel();
+    }
 }
 
 impl AgentRunEventOutbox {
     pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<AgentRunEvent>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let failure_handle = AgentRunEventOutboxFailureHandle {
+            terminal_submitted: Arc::new(Mutex::new(false)),
+            cancellation: CancellationToken::new(),
+        };
         (
             Self {
                 sender,
-                terminal_submitted: Arc::new(Mutex::new(false)),
+                failure_handle,
             },
             receiver,
         )
@@ -47,10 +68,10 @@ impl AgentRunEventOutbox {
                 "Run Event producers must submit an unsequenced event".to_string(),
             ));
         }
-        let mut terminal_submitted = self
-            .terminal_submitted
-            .lock()
-            .map_err(|_| CoreError::Internal("Run Event outbox state is poisoned".to_string()))?;
+        let mut terminal_submitted =
+            self.failure_handle.terminal_submitted.lock().map_err(|_| {
+                CoreError::Internal("Run Event outbox state is poisoned".to_string())
+            })?;
         if *terminal_submitted {
             return Err(CoreError::InvalidInput(
                 "Run Event outbox is closed after its terminal event".to_string(),
@@ -65,10 +86,22 @@ impl AgentRunEventOutbox {
     }
 
     pub fn is_closed_for_submission(&self) -> bool {
-        self.terminal_submitted
+        self.failure_handle
+            .terminal_submitted
             .lock()
             .map(|terminal_submitted| *terminal_submitted)
             .unwrap_or(true)
+    }
+
+    pub fn failure_handle(&self) -> AgentRunEventOutboxFailureHandle {
+        self.failure_handle.clone()
+    }
+
+    /// One executor-scoped child of the run lifetime. Cancelling a suspended
+    /// executor does not poison a later continuation, while fail-closed outbox
+    /// cancellation reaches every child for this run.
+    pub fn turn_cancellation_token(&self) -> CancellationToken {
+        self.failure_handle.cancellation.child_token()
     }
 }
 
@@ -916,6 +949,33 @@ mod tests {
             receiver.try_recv().unwrap().label,
             "Interaction response accepted"
         );
+    }
+
+    #[test]
+    fn run_event_outbox_failure_closes_submission_and_cancels_turn_children() {
+        let (outbox, _receiver) = AgentRunEventOutbox::channel();
+        let suspended_turn = outbox.turn_cancellation_token();
+        suspended_turn.cancel();
+        let existing_turn = outbox.turn_cancellation_token();
+        let failure_handle = outbox.failure_handle();
+
+        assert!(!existing_turn.is_cancelled());
+        failure_handle.fail_closed();
+
+        assert!(outbox.is_closed_for_submission());
+        assert!(existing_turn.is_cancelled());
+        assert!(outbox.turn_cancellation_token().is_cancelled());
+        assert!(outbox
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::Responding,
+                "late",
+                Some("running"),
+                None,
+            ))
+            .is_err());
     }
 
     #[tokio::test]
