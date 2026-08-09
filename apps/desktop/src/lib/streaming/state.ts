@@ -20,6 +20,7 @@ export interface InternalStreamState extends StreamState {
   _watchdogGeneration: number;
   _watchdogRecoveryAttempt: number;
   _watchdogMissingRunConfirmations: number;
+  _runEventGapRecoveryAttempt: number;
   _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
   _launchStartedAt: number | null;
   _frontendPaintScheduled: boolean;
@@ -65,6 +66,7 @@ export function createDefaultState(): InternalStreamState {
     _watchdogGeneration: 0,
     _watchdogRecoveryAttempt: 0,
     _watchdogMissingRunConfirmations: 0,
+    _runEventGapRecoveryAttempt: 0,
     _toolPreparingTimers: {},
     _launchStartedAt: null,
     _frontendPaintScheduled: false,

@@ -53,6 +53,7 @@ export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEven
 const TOOL_PREPARING_DELAY_MS = 150;
 const MAX_RETAINED_STREAMS = 32;
 const WATCHDOG_RECOVERY_QUERY_TIMEOUT_MS = 10_000;
+const MAX_RUN_EVENT_GAP_RECOVERY_ATTEMPTS = 3;
 
 async function withWatchdogRecoveryTimeout<T>(query: Promise<T>, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -438,11 +439,50 @@ class StreamStoreImpl {
       for (const runEvent of [...runEvents].sort((left, right) => left.eventSeq - right.eventSeq)) {
         this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
       }
+      this.retryRunEventGapIfNeeded(conversationId, runId);
     }).catch(() => {
-      // Local stop/awaiting-input projection remains valid; a later event can retry recovery.
+      this.retryRunEventGapIfNeeded(conversationId, runId);
     }).finally(() => {
       this._gapRecoveries.delete(conversationId);
     });
+  }
+
+  private retryRunEventGapIfNeeded(conversationId: string, runId: string): void {
+    const state = this._streams[conversationId];
+    if (!state) return;
+    const pendingRunMatches = [...state._pendingRunEvents.values()]
+      .some(event => event.runId === runId);
+    if (!pendingRunMatches) {
+      state._runEventGapRecoveryAttempt = 0;
+      return;
+    }
+
+    state._runEventGapRecoveryAttempt += 1;
+    if (state._runEventGapRecoveryAttempt > MAX_RUN_EVENT_GAP_RECOVERY_ATTEMPTS) {
+      state._pendingRunEvents.clear();
+      clearStreamWatchdog(state);
+      clearToolPreparingTimers(state);
+      const message = 'The response stream could not recover a missing event. Reload this conversation.';
+      applyTerminalProjection(state, {
+        toolStatus: 'error',
+        message,
+        toolFallbackMessage: 'Interrupted',
+        traceTone: 'error',
+        errorMessage: message,
+      });
+      this.finishTurnTiming(state);
+      this.touch(conversationId);
+      this.evictCompletedStreams(conversationId);
+      this.notifyImmediately(conversationId);
+      return;
+    }
+
+    const delayMs = Math.min(250 * (2 ** (state._runEventGapRecoveryAttempt - 1)), 2_000);
+    armStreamWatchdog(state, () => {
+      const current = this._streams[conversationId];
+      if (!current) return;
+      this.recoverMissingRunEvents(conversationId, current, runId);
+    }, delayMs);
   }
 
   private watchdogStateIsCurrent(
@@ -777,6 +817,9 @@ class StreamStoreImpl {
         state._pendingRunEvents.clear();
         break;
       }
+    }
+    if (state._pendingRunEvents.size === 0) {
+      state._runEventGapRecoveryAttempt = 0;
     }
   }
 
