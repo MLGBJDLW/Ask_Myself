@@ -2333,6 +2333,58 @@ test('binding a new launch rejects a stopped run terminal that arrived during th
   streamStore.clearStream(conversationId);
 });
 
+test('a bound launch rejects stopped run events that arrive after the handshake', () => {
+  const conversationId = 'conversation-stop-relaunch-after-bind';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        phase: 'responding',
+        status: 'cancelling',
+        label: 'Stop requested',
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'new-run-answer',
+          channel: 'answer',
+          offset: 0,
+          delta: 'Fresh answer',
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'bound launch state should remain available');
+  assertEqual(current.streamText, 'Fresh answer', 'the retired run cannot claim ordering');
+  assert(
+    !current.traceEvents.some(event => event.kind === 'status' && event.text === 'Stop requested'),
+    'the retired run event never enters the live projection',
+  );
+  streamStore.clearStream(conversationId);
+});
+
 test('durable hydration replaces an unbound blank state created by a future event', () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({

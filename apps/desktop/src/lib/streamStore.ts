@@ -825,6 +825,16 @@ class StreamStoreImpl {
       state.isStreaming = true;
       this._streams[conversationId] = state;
     }
+    if (
+      state.isStreaming
+      && state.turnHandle?.runId
+      && state.turnHandle.runId !== runEvent.runId
+    ) {
+      // Once the launch handshake binds a run, that identity is authoritative.
+      // In particular, a late stop event from the retired run must not claim
+      // ordering before the new run's first event arrives.
+      return;
+    }
 
     let enqueue = enqueueStreamRunEvent(state, runEvent);
     if (enqueue.runChanged) {
