@@ -2438,6 +2438,39 @@ Every answer that uses knowledge base search results.
          END
          WHERE id IN (SELECT message_id FROM provider_turn_legacy_boundaries);",
     ),
+    (
+        "v113_normalize_agent_run_event_sequences",
+        "BEGIN IMMEDIATE;
+         CREATE TEMP TABLE agent_run_event_sequence_map (
+             run_id TEXT NOT NULL,
+             old_event_seq INTEGER NOT NULL,
+             new_event_seq INTEGER NOT NULL,
+             PRIMARY KEY (run_id, old_event_seq)
+         );
+         INSERT INTO agent_run_event_sequence_map (run_id, old_event_seq, new_event_seq)
+         SELECT current.run_id,
+                current.event_seq,
+                (
+                    SELECT COUNT(*)
+                    FROM agent_run_events AS preceding
+                    WHERE preceding.run_id = current.run_id
+                      AND preceding.event_seq <= current.event_seq
+                )
+         FROM agent_run_events AS current;
+         UPDATE agent_run_events
+         SET event_seq = -event_seq
+         WHERE event_seq > 0;
+         UPDATE agent_run_events AS current
+         SET event_seq = (
+             SELECT sequence_map.new_event_seq
+             FROM agent_run_event_sequence_map AS sequence_map
+             WHERE sequence_map.run_id = current.run_id
+               AND sequence_map.old_event_seq = -current.event_seq
+         )
+         WHERE current.event_seq < 0;
+         DROP TABLE agent_run_event_sequence_map;
+         COMMIT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -3716,5 +3749,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn legacy_agent_run_event_gaps_are_normalized_before_recovery() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO agent_run_events
+                 (run_id, turn_id, event_seq, version, kind, phase, label, payload_json)
+             VALUES
+                 ('run-gap', 'turn-gap', 1, 2, 'status', 'routing', 'first', '{}'),
+                 ('run-gap', 'turn-gap', 4, 2, 'outputDelta', 'responding', 'second', '{\"delta\":\"hello\"}'),
+                 ('run-gap', 'turn-gap', 7, 2, 'done', 'done', 'third', '{\"message\":\"done\"}'),
+                 ('run-other', 'turn-other', 9, 2, 'status', 'routing', 'only', '{}');
+             DELETE FROM _migrations
+             WHERE name = 'v113_normalize_agent_run_event_sequences';",
+        )
+        .expect("simulate a pre-v113 ledger with keepalive gaps");
+
+        run_migrations(&conn).expect("legacy event sequences should be normalized");
+        run_migrations(&conn).expect("normalization should remain idempotent");
+
+        let run_gap = conn
+            .prepare(
+                "SELECT event_seq, label, payload_json
+                 FROM agent_run_events
+                 WHERE run_id = 'run-gap'
+                 ORDER BY event_seq",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            run_gap,
+            vec![
+                (1, "first".to_string(), "{}".to_string()),
+                (2, "second".to_string(), "{\"delta\":\"hello\"}".to_string()),
+                (3, "third".to_string(), "{\"message\":\"done\"}".to_string()),
+            ]
+        );
+        let other_sequence: i64 = conn
+            .query_row(
+                "SELECT event_seq FROM agent_run_events WHERE run_id = 'run-other'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(other_sequence, 1);
     }
 }
