@@ -8,7 +8,6 @@ import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
 import { ApprovalDialog } from '../components/chat/ApprovalDialog';
 import { DecisionTray } from '../components/chat/DecisionTray';
-import { CompanionPet } from '../components/chat/CompanionPet';
 import {
   TerminalDock,
   TERMINAL_TOGGLE_EVENT,
@@ -1861,14 +1860,6 @@ export function ChatPage() {
                 </div>
               </div>
             ) : <>
-              {(appConfig?.companion?.showInChat ?? true) && (
-                <CompanionPet
-                  taskRun={chat.taskRun}
-                  onOpenTaskCenter={() => {
-                    void api.showCompanion().catch(() => navigate('/settings'));
-                  }}
-                />
-              )}
               <ChatInput
               onSend={handleComposerSend}
               onStop={chat.stop}

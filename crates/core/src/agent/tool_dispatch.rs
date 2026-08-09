@@ -128,7 +128,7 @@ impl AgentExecutor {
         tool_dispatch_block: Option<ToolDispatchBlock>,
         started_call_ids: &mut HashSet<String>,
         tool_run_started_ids: &mut HashSet<String>,
-    ) -> Vec<ToolDispatchSummary> {
+    ) -> Result<Vec<ToolDispatchSummary>, CoreError> {
         let ToolDispatchContext {
             db,
             tx,
@@ -1071,9 +1071,7 @@ impl AgentExecutor {
                     thinking: None,
                     image_attachments: None,
                 };
-                if let Err(e) = db.add_message(&tool_conv_msg) {
-                    warn!("Failed to save tool result message: {e}");
-                }
+                db.add_message(&tool_conv_msg)?;
                 *sort_order += 1;
             }
 
@@ -1112,7 +1110,7 @@ impl AgentExecutor {
                 messages.push(message);
             }
         }
-        summaries
+        Ok(summaries)
     }
 }
 

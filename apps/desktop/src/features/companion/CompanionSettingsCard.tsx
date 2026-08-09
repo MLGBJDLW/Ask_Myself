@@ -210,8 +210,7 @@ export function CompanionSettingsCard({
                 </NexaSelect>
               </label>
             </div>
-            <div className="grid gap-2 md:grid-cols-3">
-              <Toggle checked={settings.showInChat} label={t('companion.showInChat')} onChange={(showInChat) => update({ showInChat })} />
+            <div className="grid gap-2 md:grid-cols-2">
               <Toggle checked={settings.autoShowOnStart} label={t('companion.autoShow')} onChange={(autoShowOnStart) => update({ autoShowOnStart })} />
               <Toggle checked={settings.continueWhenMainHidden} label={t('companion.continueHidden')} onChange={(continueWhenMainHidden) => update({ continueWhenMainHidden })} />
             </div>

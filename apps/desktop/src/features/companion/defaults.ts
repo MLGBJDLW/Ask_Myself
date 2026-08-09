@@ -5,7 +5,6 @@ export const DEFAULT_COMPANION_SETTINGS: CompanionSettings = {
   selectedPetId: null,
   displayMode: 'always',
   interactionMode: 'smart',
-  showInChat: true,
   autoShowOnStart: false,
   continueWhenMainHidden: true,
   scale: 1,

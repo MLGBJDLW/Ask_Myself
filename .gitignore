@@ -58,6 +58,9 @@ $null
 docs/pre/
 docs/local/
 /docs/research/
+docs/architecture/
+docs/**/*-primary-source-research.md
+docs/**/*-implementation-research.md
 .serena
 
 # Tauri-generated schemas (regenerated each build)

@@ -4364,6 +4364,107 @@ async fn provider_turn_commit_failure_blocks_all_tool_side_effects() {
 }
 
 #[tokio::test]
+async fn tool_result_commit_failure_terminates_before_the_next_model_request() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(MockProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "Use mock_tool once.".to_string(),
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_tool_result_message
+             BEFORE INSERT ON messages
+             WHEN NEW.role = 'tool'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected tool-result persistence failure');
+             END;",
+        )
+        .expect("fault injection trigger");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("a tool result that cannot commit must terminate the turn");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected tool-result persistence failure"),
+        "{error}"
+    );
+    assert_eq!(
+        stream_calls.load(Ordering::SeqCst),
+        1,
+        "the unpersisted tool result must never reach a follow-up model request"
+    );
+    let persisted_tool_results = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE role = 'tool'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count tool results");
+    assert_eq!(persisted_tool_results, 0);
+    let finalized_turn = db
+        .get_conversation_turn(&turn.id)
+        .expect("finalized conversation turn");
+    assert_eq!(finalized_turn.status, "error");
+    assert!(
+        finalized_turn.trace.is_some(),
+        "error trace must be durable"
+    );
+}
+
+#[tokio::test]
 async fn output_validation_uses_the_route_policy_not_the_history_policy() {
     let executions = Arc::new(AtomicUsize::new(0));
     let stream_calls = Arc::new(AtomicUsize::new(0));

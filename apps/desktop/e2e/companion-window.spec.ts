@@ -21,7 +21,6 @@ test.beforeEach(async ({ page }) => {
               selectedPetId: null,
               displayMode: 'always',
               interactionMode: 'smart',
-              showInChat: true,
               autoShowOnStart: true,
               continueWhenMainHidden: localStorage.getItem('nexa-test-continue-hidden') !== 'false',
               scale: 2,

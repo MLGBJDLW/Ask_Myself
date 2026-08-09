@@ -43,6 +43,33 @@ fn awaiting_user_input_interaction_id(
     })
 }
 
+async fn emit_tool_dispatch_failure(
+    tx: &mpsc::Sender<AgentEvent>,
+    db: &Database,
+    trace: &mut Option<AgentTrace>,
+    turn_id: Option<&str>,
+    route_kind: AgentRouteKind,
+    persisted_trace_items: &mut Vec<PersistedTraceItem>,
+    error: &CoreError,
+) {
+    let frontend_message = "Nexa stopped the turn because a tool result could not be saved. No follow-up model request was sent.";
+    let trace_message = format!("tool_result_persistence_failed: {error}");
+    append_persisted_trace_status(persisted_trace_items, frontend_message, "error");
+    emit_error_and_finalize_turn(
+        tx,
+        db,
+        trace,
+        turn_id,
+        route_kind,
+        persisted_trace_items,
+        TurnErrorMessages {
+            frontend_message: frontend_message.to_string(),
+            trace_message,
+        },
+    )
+    .await;
+}
+
 impl AgentExecutor {
     /// Run the agent loop for a single user turn.
     ///
@@ -669,7 +696,7 @@ impl AgentExecutor {
                 turn_state.transition_to(TurnPhase::ToolDispatch);
                 let mut started_call_ids = HashSet::new();
                 let mut tool_run_started_ids = HashSet::new();
-                let summaries = self
+                let summaries = match self
                     .dispatch_tool_calls(
                         tool_dispatch::ToolDispatchContext {
                             db,
@@ -695,7 +722,24 @@ impl AgentExecutor {
                         &mut started_call_ids,
                         &mut tool_run_started_ids,
                     )
-                    .await;
+                    .await
+                {
+                    Ok(summaries) => summaries,
+                    Err(error) => {
+                        emit_tool_dispatch_failure(
+                            &tx,
+                            db,
+                            &mut trace,
+                            turn_id,
+                            route_plan.kind,
+                            &mut persisted_trace_items,
+                            &error,
+                        )
+                        .await;
+                        turn_state.finish(TurnOutcome::Failed);
+                        return Err(error);
+                    }
+                };
                 let summary = summaries.iter().find(|summary| summary.call_id == call.id);
                 workflow_ir.apply_reconnaissance_batch_result(
                     &node_ids,
@@ -1462,7 +1506,7 @@ impl AgentExecutor {
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             turn_state.transition_to(TurnPhase::ToolDispatch);
-            let dispatch_summaries = self
+            let dispatch_summaries = match self
                 .dispatch_tool_calls(
                     tool_dispatch::ToolDispatchContext {
                         db,
@@ -1488,7 +1532,24 @@ impl AgentExecutor {
                     &mut started_call_ids,
                     &mut tool_run_started_ids,
                 )
-                .await;
+                .await
+            {
+                Ok(summaries) => summaries,
+                Err(error) => {
+                    emit_tool_dispatch_failure(
+                        &tx,
+                        db,
+                        &mut trace,
+                        turn_id,
+                        route_plan.kind,
+                        &mut persisted_trace_items,
+                        &error,
+                    )
+                    .await;
+                    turn_state.finish(TurnOutcome::Failed);
+                    return Err(error);
+                }
+            };
             for call in &tool_calls {
                 if let Some(summary) = dispatch_summaries
                     .iter()
