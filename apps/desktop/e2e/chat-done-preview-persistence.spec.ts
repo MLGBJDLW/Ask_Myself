@@ -57,6 +57,16 @@ test.beforeEach(async ({ page }) => {
     let callbackSeq = 1;
     let listenerSeq = 1;
     let refreshDelayActive = false;
+    let refreshReleased = false;
+    let releaseRefresh: (() => void) | null = null;
+
+    (window as unknown as { __releaseDonePreviewRefresh?: () => void })
+      .__releaseDonePreviewRefresh = () => {
+        refreshReleased = true;
+        const release = releaseRefresh;
+        releaseRefresh = null;
+        release?.();
+      };
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
       const convert = (window as unknown as {
@@ -133,11 +143,16 @@ test.beforeEach(async ({ page }) => {
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const payload = [clone(conversations[id]), clone(messagesByConversation[id] ?? [])] as const;
-          if (!refreshDelayActive) {
+          if (!refreshDelayActive || refreshReleased) {
             return payload;
           }
           return await new Promise<typeof payload>((resolve) => {
-            setTimeout(() => resolve(payload), 700);
+            const release = () => resolve(payload);
+            releaseRefresh = release;
+            if (refreshReleased) {
+              releaseRefresh = null;
+              release();
+            }
           });
         }
         case 'list_sources':
@@ -496,6 +511,21 @@ test('keeps live thinking and file edit badges mounted until persisted messages 
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 4_000 });
   await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
+  const settledLiveCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });
+  await expect(settledLiveCreateFile).toHaveCount(1);
+  await expect(settledLiveCreateFile).toHaveAttribute('data-tool-state', 'done');
+  await expect(settledLiveCreateFile).toHaveAttribute('aria-busy', 'false');
+  await expect(settledLiveCreateFile.getByTestId('tool-card-status')).toHaveCount(1);
+  await expect(settledLiveCreateFile.locator('.animate-spin')).toHaveCount(0);
+  await expect(settledLiveCreateFile).not.toContainText('content');
+
+  await page.evaluate(() => {
+    (window as unknown as { __releaseDonePreviewRefresh?: () => void })
+      .__releaseDonePreviewRefresh?.();
+  });
+  await expect(settledLiveCreateFile).toHaveCount(0);
+  await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
+
   const persistedCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });
   await expect(persistedCreateFile).toHaveCount(1);
   await expect(persistedCreateFile).toHaveAttribute('data-tool-state', 'done');

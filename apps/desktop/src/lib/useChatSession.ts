@@ -442,6 +442,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
   const turns = activeId ? (turnCache[activeId] ?? []) : [];
   const taskRuns = activeId ? (taskRunCache[activeId] ?? []) : [];
+  const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
 
   const setMessagesForConversation = useCallback((
     conversationId: string,
@@ -781,9 +782,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           if (activeId === completedConversationId) {
             setCustomSystemPrompt(conv.systemPrompt ?? '');
           }
-          if (hasPersistedResultAfterLatestUserMessage(msgs)) {
-            requestAnimationFrame(() => streamStore.clearPreview(completedConversationId));
-          }
         }
       }).catch((e) => {
         console.error('Failed to refresh messages after streaming:', e);
@@ -834,6 +832,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
     return () => { cancelled = true; };
   }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
+
+  // Retire the live projection only after React has committed the durable
+  // messages. Clearing it from the fetch callback can race the state commit
+  // and leave a transient blank turn on slower renderers.
+  useEffect(() => {
+    if (activeId && !isStreaming && hasPersistedStreamResult) {
+      streamStore.clearPreview(activeId);
+    }
+  }, [activeId, hasPersistedStreamResult, isStreaming]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1435,7 +1442,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const isViewingStreamingConversation =
     activeId != null && streamHasVisiblePreview(activeId);
-  const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
   const shouldShowLivePreview =
     isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
   const activeConversation = activeId
