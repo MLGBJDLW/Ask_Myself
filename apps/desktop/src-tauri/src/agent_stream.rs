@@ -27,11 +27,7 @@ pub(crate) fn emit_agent_frontend_event(
     turn_id: Option<&str>,
     event: AgentEvent,
 ) {
-    let message_truncated = done_message_will_truncate(&event);
-    let event = compact_agent_event_for_frontend(event);
-    let mut run_event =
-        AgentRunEvent::from_agent_event(&event).with_context(Some(task_run_id), turn_id, Some(0));
-    mark_truncated_done_message(&mut run_event, message_truncated);
+    let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
     if let Err(error) = event_outbox.submit(run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
@@ -48,12 +44,8 @@ pub(crate) fn emit_agent_frontend_event_with_presentation(
     display_kind: AgentRunDisplayKind,
     importance: AgentRunEventImportance,
 ) {
-    let message_truncated = done_message_will_truncate(&event);
-    let event = compact_agent_event_for_frontend(event);
-    let mut run_event = AgentRunEvent::from_agent_event(&event)
-        .with_context(Some(task_run_id), turn_id, Some(0))
-        .with_presentation(visibility, display_kind, importance);
-    mark_truncated_done_message(&mut run_event, message_truncated);
+    let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
+    let run_event = run_event.with_presentation(visibility, display_kind, importance);
     if let Err(error) = event_outbox.submit(run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
@@ -234,6 +226,19 @@ fn mark_truncated_done_message(run_event: &mut AgentRunEvent, message_truncated:
     }
 }
 
+pub(crate) fn prepare_agent_run_event_for_frontend(
+    task_run_id: &str,
+    turn_id: Option<&str>,
+    event: AgentEvent,
+) -> (AgentEvent, AgentRunEvent) {
+    let message_truncated = done_message_will_truncate(&event);
+    let event = compact_agent_event_for_frontend(event);
+    let mut run_event =
+        AgentRunEvent::from_agent_event(&event).with_context(Some(task_run_id), turn_id, Some(0));
+    mark_truncated_done_message(&mut run_event, message_truncated);
+    (event, run_event)
+}
+
 pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent {
     match event {
         AgentEvent::ToolCallStart {
@@ -343,15 +348,6 @@ impl StreamBlockEmitter {
         self.thinking_block_id = new_stream_block_id(StreamBlockChannel::Thinking);
         self.answer_offset = 0;
         self.thinking_offset = 0;
-    }
-
-    pub(crate) fn next_run_event(
-        &self,
-        task_run_id: &str,
-        turn_id: Option<&str>,
-        event: &AgentEvent,
-    ) -> AgentRunEvent {
-        AgentRunEvent::from_agent_event(event).with_context(Some(task_run_id), turn_id, Some(0))
     }
 
     pub(crate) fn emit_event(&self, conversation_id: &str, run_event: AgentRunEvent) {
@@ -509,12 +505,9 @@ mod tests {
             cached: false,
             finish_reason: Some("stop".to_string()),
         };
-        let message_truncated = done_message_will_truncate(&event);
-        let compacted = compact_agent_event_for_frontend(event);
-        let mut run_event = AgentRunEvent::from_agent_event(&compacted);
-        mark_truncated_done_message(&mut run_event, message_truncated);
+        let (compacted, run_event) =
+            prepare_agent_run_event_for_frontend("run-1", Some("turn-1"), event);
 
-        assert!(message_truncated);
         assert!(matches!(
             compacted,
             AgentEvent::Done { message, .. } if message.text_content().ends_with("[truncated]")

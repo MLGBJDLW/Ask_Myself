@@ -11,7 +11,7 @@ use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::agent_stream::{
-    agent_event_rotates_stream_blocks, compact_agent_event_for_frontend, PendingStreamDelta,
+    agent_event_rotates_stream_blocks, prepare_agent_run_event_for_frontend, PendingStreamDelta,
     StreamBlockEmitter,
 };
 use crate::agent_task_events::{
@@ -153,14 +153,14 @@ impl AgentStreamForwarder {
                                             );
                                         }
                                     }
-                                    let frontend_event = compact_agent_event_for_frontend(other);
+                                    let (frontend_event, run_event) =
+                                        prepare_agent_run_event_for_frontend(
+                                            &self.task_run_id,
+                                            Some(&self.turn_id),
+                                            other,
+                                        );
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
-                                    let run_event = stream_emitter.next_run_event(
-                                        &self.task_run_id,
-                                        Some(&self.turn_id),
-                                        &frontend_event,
-                                    );
                                     if run_event.is_terminal() {
                                         if self.terminal_emitted.swap(true, Ordering::SeqCst) {
                                             continue;
