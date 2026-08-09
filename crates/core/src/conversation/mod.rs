@@ -2240,6 +2240,65 @@ impl Database {
         Ok(())
     }
 
+    /// Project RunEvent progress without regressing an authoritative terminal row.
+    ///
+    /// The outbox and turn finalizer run asynchronously. Keeping the terminal
+    /// guard in this SQL statement makes their ordering irrelevant and preserves
+    /// paused checkpoints plus final summaries written by the finalizer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn project_agent_task_run_progress(
+        &self,
+        run_id: &str,
+        status: Option<&str>,
+        phase: Option<&str>,
+        route_kind: Option<&str>,
+        summary: Option<&str>,
+        plan: Option<&serde_json::Value>,
+        artifacts: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let plan_json = match plan {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let artifacts_json = match artifacts {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = COALESCE(?2, status),
+                 phase = COALESCE(?3, phase),
+                 route_kind = COALESCE(?4, route_kind),
+                 summary = COALESCE(?5, summary),
+                 plan_json = COALESCE(?6, plan_json),
+                 artifacts_json = COALESCE(?7, artifacts_json),
+                 updated_at = datetime('now')
+             WHERE id = ?1
+               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled', 'paused')",
+            rusqlite::params![
+                run_id,
+                status,
+                phase,
+                route_kind,
+                summary,
+                plan_json,
+                artifacts_json
+            ],
+        )?;
+        if affected == 0 {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_task_runs WHERE id = ?1)",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+            }
+        }
+        Ok(())
+    }
+
     /// Finalize a task run and preserve its final artifacts.
     pub fn finish_agent_task_run(
         &self,
@@ -2268,6 +2327,46 @@ impl Database {
         )?;
         if affected == 0 {
             return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+        }
+        Ok(())
+    }
+
+    /// Project a terminal RunEvent only while the task run is still active.
+    pub(crate) fn project_agent_task_run_finished(
+        &self,
+        run_id: &str,
+        status: &str,
+        summary: Option<&str>,
+        error_message: Option<&str>,
+        artifacts: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let artifacts_json = match artifacts {
+            Some(value) => Some(serde_json::to_string(value)?),
+            None => None,
+        };
+        let conn = self.conn();
+        let affected = conn.execute(
+            "UPDATE agent_task_runs
+             SET status = ?2,
+                 phase = 'done',
+                 summary = COALESCE(?3, summary),
+                 error_message = COALESCE(?4, error_message),
+                 artifacts_json = COALESCE(?5, artifacts_json),
+                 finished_at = COALESCE(finished_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ?1
+               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled', 'paused')",
+            rusqlite::params![run_id, status, summary, error_message, artifacts_json],
+        )?;
+        if affected == 0 {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_task_runs WHERE id = ?1)",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(CoreError::NotFound(format!("Agent task run {run_id}")));
+            }
         }
         Ok(())
     }
