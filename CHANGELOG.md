@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.12.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.4...nexa-monorepo-v0.12.5) (2026-08-09)
+
+
+### Bug Fixes
+
+* **interactions:** keep sibling requests suspended ([ccd8f4e](https://github.com/MLGBJDLW/Nexa/commit/ccd8f4e7c4cea653b1e5a8bb8f1193b76c66037f))
+* **interactions:** validate resume ownership first ([2ae2213](https://github.com/MLGBJDLW/Nexa/commit/2ae221398185dd83d25fa4f07f65bdb838ff637b))
+* **streaming:** bind launch identity after stop ([4cb53f4](https://github.com/MLGBJDLW/Nexa/commit/4cb53f4f3c888bcd1b8a915a42cfcdacd2b1a5bd))
+* **streaming:** bind ordering to run identity ([ffae068](https://github.com/MLGBJDLW/Nexa/commit/ffae06884708d65c7b1676bd867ff74845f4e16e))
+* **streaming:** cancel turns when outbox fails closed ([563bc98](https://github.com/MLGBJDLW/Nexa/commit/563bc9830a360f892bf1943347f4edf710acf94b))
+* **streaming:** clone outbox handle for desktop forwarder ([e9aa256](https://github.com/MLGBJDLW/Nexa/commit/e9aa2564dda28034415db762e7f5153177cd5457))
+* **streaming:** consume settled event sequences ([766ff8e](https://github.com/MLGBJDLW/Nexa/commit/766ff8eee68444586d882c5c471f2f45534de613))
+* **streaming:** enforce ordered canonical projection ([2c21e9a](https://github.com/MLGBJDLW/Nexa/commit/2c21e9a4f9e7f6ef162a6c710f0dfbd16661e538))
+* **streaming:** hand off durable preview atomically ([dc3aecb](https://github.com/MLGBJDLW/Nexa/commit/dc3aecbe4305be463743fd5d0709baf70159e781))
+* **streaming:** normalize legacy event ledgers ([e480c95](https://github.com/MLGBJDLW/Nexa/commit/e480c959d4b0acc8236cdfc4d1e30f1d8ab7f544))
+* **streaming:** preserve complete long replies ([cff72ab](https://github.com/MLGBJDLW/Nexa/commit/cff72ab6e2cfcd80dad334c3260c2f87100d4f19))
+* **streaming:** recover unbound event gaps ([1604c0d](https://github.com/MLGBJDLW/Nexa/commit/1604c0d93768ea0dad14cfb77abba034ea8cdcdd))
+* **streaming:** reject retired run events ([e0131af](https://github.com/MLGBJDLW/Nexa/commit/e0131af9004d0e4717bbd19d534c00303ac2d958))
+* **streaming:** restore ordered run event delivery ([6e64d8b](https://github.com/MLGBJDLW/Nexa/commit/6e64d8b7859823dc7f6cb71d45392f7d7bf12001))
+* **streaming:** retain bound run identity ([25adc97](https://github.com/MLGBJDLW/Nexa/commit/25adc97ff1cf6ac3db44ceb93a1fcf0e4414c8e3))
+* **streaming:** retain suspended run outboxes ([00aefde](https://github.com/MLGBJDLW/Nexa/commit/00aefdeb9f544b6859e4f2bf9dec10f5b61004ad))
+* **streaming:** retain terminal truncation metadata ([65acbd7](https://github.com/MLGBJDLW/Nexa/commit/65acbd785b8c40025a6e5402fa4fe83fb0e5b59e))
+* **streaming:** retry unbound gap recovery ([43d9a89](https://github.com/MLGBJDLW/Nexa/commit/43d9a89b2e755ab7474ae4246de445a1eb215277))
+* **streaming:** reuse outbox across interaction resume ([902bf5d](https://github.com/MLGBJDLW/Nexa/commit/902bf5d9ddff00ead586af789811b898ea237eea))
+* **streaming:** serialize native run event delivery ([2e59856](https://github.com/MLGBJDLW/Nexa/commit/2e59856eacb15a6645b52305bd8e418421e2cce8))
+* **tasks:** preserve authoritative terminal projection ([0a126ac](https://github.com/MLGBJDLW/Nexa/commit/0a126ac117b73f2e36d26aebc93211736c1e86b7))
+
+
+### Performance Improvements
+
+* **streaming:** rank legacy ledgers in one pass ([8734a41](https://github.com/MLGBJDLW/Nexa/commit/8734a412c6cf65abbd35c070dcd3e3321bb06a05))
+
 ## [0.12.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.3...nexa-monorepo-v0.12.4) (2026-08-09)
 
 
