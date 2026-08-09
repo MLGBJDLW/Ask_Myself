@@ -190,6 +190,8 @@ test.beforeEach(async ({ page }) => {
           return 0;
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');
+          const runId = 'run-created-live';
+          const turnId = 'turn-created-live';
           const userText = String(args.message ?? '');
           const toolCallId = nextId('tool-search');
           const toolArgs = JSON.stringify({ query: 'retry notes' });
@@ -215,6 +217,8 @@ test.beforeEach(async ({ page }) => {
           queueMicrotask(() => {
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'thinking',
               content: 'Planning the lookup first.',
             });
@@ -223,6 +227,8 @@ test.beforeEach(async ({ page }) => {
           queueMicrotask(() => {
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'toolCallStart',
               callId: toolCallId,
               toolName: 'search_knowledge_base',
@@ -233,6 +239,8 @@ test.beforeEach(async ({ page }) => {
           setTimeout(() => {
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'toolCallResult',
               callId: toolCallId,
               toolName: 'search_knowledge_base',
@@ -240,23 +248,37 @@ test.beforeEach(async ({ page }) => {
               isError: false,
               artifacts: null,
             });
-          }, 90);
+          }, 1_600);
 
           setTimeout(() => {
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'thinking',
               content: 'Drafting the answer now.',
             });
-          }, 140);
+          }, 2_000);
 
           setTimeout(() => {
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'textDelta',
-              delta: 'Final answer: keep the timeout guard and surface retry limits.',
+              delta: 'Final answer: keep the timeout guard',
             });
-          }, 190);
+          }, 2_600);
+
+          setTimeout(() => {
+            emitEvent('agent://run-event', {
+              conversationId,
+              runId,
+              turnId,
+              type: 'textDelta',
+              delta: ' and surface retry limits.',
+            });
+          }, 4_500);
 
           setTimeout(() => {
             const assistantToolMessage: Message = {
@@ -312,6 +334,8 @@ test.beforeEach(async ({ page }) => {
 
             emitEvent('agent://run-event', {
               conversationId,
+              runId,
+              turnId,
               type: 'done',
               message: finalAssistantMessage,
               usageTotal: {
@@ -324,7 +348,7 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 240);
+          }, 5_500);
 
           return {
             sessionId: conversationId,
@@ -364,10 +388,13 @@ test.beforeEach(async ({ page }) => {
 test('keeps the first live thinking and tool call visible when a new conversation is auto-created', async ({ page }) => {
   await page.goto('/chat');
 
+  const chatLog = page.getByLabel('Chat messages');
   await expect(page.getByText('Planning the lookup first.').first()).toBeVisible();
+  await expect(chatLog.getByTestId('tool-call-card')).toBeVisible();
+  await expect(chatLog.getByText('Final answer: keep the timeout guard', { exact: true })).toBeVisible();
+  await expect(chatLog.getByText('Final answer: keep the timeout guard and surface retry limits.', { exact: true })).not.toBeVisible();
   await expect(page.getByText('Final answer: keep the timeout guard and surface retry limits.')).toBeVisible();
 
-  const chatLog = page.getByLabel('Chat messages');
   await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(chatLog.getByText('Planning the lookup first.')).toBeVisible();
   await expect(chatLog.getByTestId('tool-call-card')).toBeVisible();
