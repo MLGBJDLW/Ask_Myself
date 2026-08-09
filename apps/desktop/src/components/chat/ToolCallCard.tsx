@@ -62,9 +62,11 @@ import {
   extractSubagentBatchArtifact,
   extractSubagentJudgementArtifact,
   parseSubagentArguments,
+  projectSubagentLifecycle,
+  projectSubagentLifecycleRuns,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
-import type { ArtifactPayload, CapabilityOwner, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
+import type { ActivityEvent, ArtifactPayload, CapabilityOwner, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
 import type { VerificationOverallStatus } from '../../lib/taskArtifacts';
 import { SubagentCard } from './SubagentCard';
 import { QuestionRequestPanel } from './QuestionRequestPanel';
@@ -268,6 +270,7 @@ interface ToolCallCardProps {
   capabilities?: ToolRunCapabilities;
   durationMs?: number;
   progressNote?: string;
+  activityEvents?: ActivityEvent[];
   content?: string;
   isError?: boolean;
   artifacts?: ArtifactPayload;
@@ -1352,18 +1355,25 @@ function buildSubagentRun(
   content: string | undefined,
   isError: boolean | undefined,
   artifacts: ArtifactPayload | undefined,
+  activityEvents: ActivityEvent[] | undefined,
 ) {
   if (toolName !== 'spawn_subagent') return null;
-  const artifact = extractSubagentArtifact(artifacts);
+  const initialArtifact = extractSubagentArtifact(artifacts);
+  const lifecycle = projectSubagentLifecycle(activityEvents);
+  const artifact = lifecycle.artifact ?? initialArtifact;
   const parsedArgs = parseSubagentArguments(args);
   const task = artifact?.task ?? parsedArgs?.task;
   if (!task) return null;
-  const runStatus: 'running' | 'done' | 'error' =
-    isPendingToolCallStatus(status)
+  const runStatus: 'running' | 'done' | 'error' | 'cancelled' = lifecycle.status
+    ?? (artifact?.status === 'running' || artifact?.status === 'queued'
       ? 'running'
+      : isPendingToolCallStatus(status)
+      ? 'running'
+      : status === 'cancelled'
+        ? 'cancelled'
       : status === 'done'
         ? 'done'
-        : 'error';
+        : 'error');
   return {
     id: `${toolName}-${task}`,
     status: runStatus,
@@ -1382,16 +1392,16 @@ function buildSubagentRun(
     parallelGroup: artifact?.parallelGroup ?? parsedArgs?.parallelGroup ?? null,
     deliverableStyle: artifact?.deliverableStyle ?? parsedArgs?.deliverableStyle ?? null,
     returnSections: artifact?.returnSections ?? parsedArgs?.returnSections ?? null,
-    result: artifact?.result ?? undefined,
+    result: artifact?.result || lifecycle.streamedResult || undefined,
     finishReason: artifact?.finishReason ?? null,
     usageTotal: artifact?.usageTotal ?? null,
     toolEvents: artifact?.toolEvents ?? [],
-    thinking: artifact?.thinking ?? null,
+    thinking: artifact?.thinking ?? (lifecycle.thinking.length > 0 ? lifecycle.thinking : null),
     sourceScopeApplied: artifact?.sourceScopeApplied ?? false,
     allowedTools: artifact?.allowedTools ?? null,
     argumentsText: args,
-    isError,
-    content,
+    isError: lifecycle.status === 'error' ? true : isError,
+    content: lifecycle.errorMessage ?? content,
   };
 }
 
@@ -1524,6 +1534,7 @@ export function ToolCallCard({
   capabilities,
   durationMs,
   progressNote,
+  activityEvents,
   content,
   isError,
   artifacts,
@@ -1611,10 +1622,23 @@ export function ToolCallCard({
     status,
   });
   const subagentRun = useMemo(
-    () => buildSubagentRun(safeToolName, args, status, content, isError, artifacts),
-    [safeToolName, args, status, content, isError, artifacts],
+    () => buildSubagentRun(
+      safeToolName,
+      args,
+      status,
+      content,
+      isError,
+      artifacts,
+      activityEvents,
+    ),
+    [safeToolName, args, status, content, isError, artifacts, activityEvents],
   );
   const subagentBatch = useMemo(() => extractSubagentBatchArtifact(artifacts), [artifacts]);
+  const visibleSubagentBatchRuns = useMemo(() => {
+    if (safeToolName !== 'spawn_subagent_batch') return [];
+    const lifecycleRuns = projectSubagentLifecycleRuns(activityEvents);
+    return lifecycleRuns.length > 0 ? lifecycleRuns : subagentBatch?.runs ?? [];
+  }, [activityEvents, safeToolName, subagentBatch]);
   const subagentJudgement = useMemo(() => extractSubagentJudgementArtifact(artifacts), [artifacts]);
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
@@ -1888,9 +1912,9 @@ export function ToolCallCard({
                   />
                 ) : subagentRun ? (
                   <SubagentCard run={subagentRun} compact defaultOpen />
-                ) : subagentBatch ? (
+                ) : visibleSubagentBatchRuns.length > 0 ? (
                   <div className="space-y-2">
-                    {subagentBatch.runs.map((run) => (
+                    {visibleSubagentBatchRuns.map((run) => (
                       <SubagentCard key={run.id} run={run} compact defaultOpen />
                     ))}
                   </div>
@@ -2051,9 +2075,9 @@ export function ToolCallCard({
                   />
                 ) : subagentRun ? (
                   <SubagentCard run={subagentRun} compact defaultOpen />
-                ) : subagentBatch ? (
+                ) : visibleSubagentBatchRuns.length > 0 ? (
                   <div className="space-y-1.5">
-                    {subagentBatch.runs.map((run) => (
+                    {visibleSubagentBatchRuns.map((run) => (
                       <SubagentCard key={run.id} run={run} compact defaultOpen />
                     ))}
                   </div>

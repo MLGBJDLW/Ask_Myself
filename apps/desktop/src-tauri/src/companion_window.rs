@@ -13,8 +13,10 @@ use tauri::{
 use crate::commands::AppState;
 
 pub const COMPANION_WINDOW_LABEL: &str = "companion";
-const COMPANION_WIDTH: f64 = 240.0;
-const COMPANION_HEIGHT: f64 = 260.0;
+// This viewport is the single size authority. The renderer fills it and never
+// applies the user scale a second time.
+const COMPANION_WIDTH: f64 = 144.0;
+const COMPANION_HEIGHT: f64 = 168.0;
 const WORK_AREA_MARGIN: i32 = 12;
 
 #[derive(Debug, Default)]
@@ -461,7 +463,7 @@ mod tests {
             position: PhysicalPosition::new(-1920, 0),
             size: PhysicalSize::new(1920, 1040),
         };
-        let bounds = work_area_bounds(&work_area, PhysicalSize::new(240, 260));
-        assert_eq!(bounds, (-1908, 12, -252, 768));
+        let bounds = work_area_bounds(&work_area, PhysicalSize::new(144, 168));
+        assert_eq!(bounds, (-1908, 12, -156, 860));
     }
 }

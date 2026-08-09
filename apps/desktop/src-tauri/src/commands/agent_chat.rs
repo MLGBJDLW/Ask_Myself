@@ -606,6 +606,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
     let db = state.db.clone();
     let db_executor = state.db_executor.clone();
+    let subagent_lifecycle = state.subagent_lifecycle.clone();
     let conv_id = conversation_id.clone();
     let turn_id = launch_record.turn_id.clone();
     let task_run_id = launch_record.run_id.clone();
@@ -892,6 +893,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     subagent_allowed_skill_ids: effective_db_config
                         .subagent_allowed_skill_ids
                         .clone(),
+                    subagent_lifecycle,
                     cancel_token: cancel_token_clone.clone(),
                     plan_mode: execution_mode.is_plan(),
                     mcp_call_timeout_secs: DEFAULT_MCP_CALL_TIMEOUT_SECS,

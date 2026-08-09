@@ -149,6 +149,7 @@ const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 pub struct AppState {
     pub db: Arc<Database>,
     pub db_executor: DatabaseExecutor,
+    pub subagent_lifecycle: crate::subagent_lifecycle::SubagentLifecycleRuntime,
     pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
     pub media_generation: nexa_core::media_generation::MediaGenerationRuntime,
     /// Guard: true while whisper transcription is in progress.

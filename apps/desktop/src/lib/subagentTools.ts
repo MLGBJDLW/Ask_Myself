@@ -99,6 +99,11 @@ const TOOL_GROUP_BY_NAME: Record<string, SubagentToolGroupId> = {
   spawn_subagent: 'delegation',
   spawn_subagent_batch: 'delegation',
   judge_subagent_results: 'delegation',
+  observe_subagent: 'delegation',
+  wait_subagent: 'delegation',
+  send_subagent_input: 'delegation',
+  cancel_subagent: 'delegation',
+  close_subagent: 'delegation',
 };
 
 export function getSubagentToolGroup(tool: Pick<SubagentToolDescriptor, 'name' | 'source'>): SubagentToolGroupId {
@@ -349,6 +354,41 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
     name: 'judge_subagent_results',
     label: 'Judge Results',
     description: 'Adjudicate or rank delegated worker results with a rubric.',
+    enabledByDefault: false,
+    source: 'delegation',
+  },
+  {
+    name: 'observe_subagent',
+    label: 'Observe Subagent',
+    description: 'Read incremental lifecycle events from a spawned worker.',
+    enabledByDefault: false,
+    source: 'delegation',
+  },
+  {
+    name: 'wait_subagent',
+    label: 'Wait for Subagent',
+    description: 'Wait for a spawned worker and consume its authoritative result.',
+    enabledByDefault: false,
+    source: 'delegation',
+  },
+  {
+    name: 'send_subagent_input',
+    label: 'Steer Subagent',
+    description: 'Send additional input to an active spawned worker.',
+    enabledByDefault: false,
+    source: 'delegation',
+  },
+  {
+    name: 'cancel_subagent',
+    label: 'Cancel Subagent',
+    description: 'Request cooperative cancellation of a spawned worker.',
+    enabledByDefault: false,
+    source: 'delegation',
+  },
+  {
+    name: 'close_subagent',
+    label: 'Close Subagent',
+    description: 'Release a terminal spawned-worker handle.',
     enabledByDefault: false,
     source: 'delegation',
   },

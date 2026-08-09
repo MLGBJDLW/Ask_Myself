@@ -1,6 +1,6 @@
 {
   "name": "spawn_subagent_batch",
-  "description": "Spawn a batch of short-lived subagents for parallel fan-out research, critique, comparison, or templated workflows. Provide explicit tasks, or set workflow_template plus batch_goal to expand a built-in role-based workflow under one shared budget.",
+  "description": "Spawn a batch of short-lived subagents for parallel fan-out research, critique, comparison, or templated workflows. Every worker publishes an independent lifecycle stream and stable agentId while the batch completion policy is pending. Provide explicit tasks, or set workflow_template plus batch_goal to expand a built-in role-based workflow under one shared budget.",
   "parameters": {
     "type": "object",
     "properties": {

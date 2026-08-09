@@ -164,8 +164,47 @@ test.beforeEach(async ({ page }) => {
               arguments: JSON.stringify({ query: 'connection lost' }),
             });
           }, 30);
-          return null;
+          return {
+            sessionId: 'session-inline-error',
+            runId: 'run-inline-error',
+            turnId: 'turn-inline-error',
+            state: 'running',
+          };
         }
+        case 'get_agent_task_runs_cmd':
+          return [{
+            id: 'run-inline-error',
+            conversationId: 'conv-inline-error',
+            turnId: 'turn-inline-error',
+            userMessageId: 'user-inline-error',
+            status: 'failed',
+            phase: 'done',
+            title: 'Inline error recovery',
+            errorMessage: 'Backend confirmed worker failure.',
+            provider: 'open_ai',
+            model: 'gpt-4.1',
+            createdAt: nowIso,
+            updatedAt: new Date().toISOString(),
+          }];
+        case 'get_agent_run_events_cmd':
+          return [{
+            version: 2,
+            runId: 'run-inline-error',
+            turnId: 'turn-inline-error',
+            eventSeq: 1,
+            kind: 'error',
+            phase: 'done',
+            visibility: 'user',
+            persistence: 'durable',
+            displayKind: 'error',
+            importance: 'high',
+            label: 'Backend confirmed worker failure.',
+            status: 'failed',
+            payload: { message: 'Backend confirmed worker failure.' },
+            createdAt: new Date().toISOString(),
+          }];
+        case 'get_agent_task_run_events_cmd':
+          return [];
         default:
           return null;
       }
@@ -192,11 +231,12 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('surfaces timeout state without falling back to a separate error bubble', async ({ page }) => {
+test('recovers a stalled stream from confirmed durable backend failure', async ({ page }) => {
   await page.goto('/chat');
 
   await expect(page.getByText('Investigating the failing connection path.').first()).toBeVisible();
   await expect(page.getByLabel('Chat messages').getByTestId('tool-call-card')).toBeVisible();
-  await expect(page.getByText('Connection lost', { exact: true })).toBeVisible();
+  await expect(page.getByText('Backend confirmed worker failure.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Connection lost', { exact: true })).toHaveCount(0);
   await expect(page.getByText('An error occurred')).toHaveCount(0);
 });

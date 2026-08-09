@@ -9,6 +9,7 @@ mod commands;
 mod companion_window;
 mod delegation_scheduler;
 mod desktop_agent_session;
+mod subagent_lifecycle;
 mod subagent_tool;
 mod terminal_agent_tool;
 
@@ -394,6 +395,7 @@ fn main() {
             app.manage(AppState {
                 db: db.clone(),
                 db_executor,
+                subagent_lifecycle: subagent_lifecycle::SubagentLifecycleRuntime::default(),
                 context_compaction,
                 media_generation,
                 #[cfg(feature = "video")]

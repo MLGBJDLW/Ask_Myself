@@ -27,7 +27,15 @@ export const toolRenderers: ToolRendererDescriptor[] = [
   },
   {
     kind: 'subagent',
-    matches: (name) => name === 'spawn_subagent' || name === 'spawn_subagent_batch',
+    matches: (name) => [
+      'spawn_subagent',
+      'spawn_subagent_batch',
+      'observe_subagent',
+      'wait_subagent',
+      'send_subagent_input',
+      'cancel_subagent',
+      'close_subagent',
+    ].includes(name),
   },
   {
     kind: 'image',

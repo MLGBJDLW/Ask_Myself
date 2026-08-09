@@ -15,6 +15,9 @@ export interface InternalStreamState extends StreamState {
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: StreamTimeoutHandle | null;
+  _watchdogGeneration: number;
+  _watchdogRecoveryAttempt: number;
+  _watchdogMissingRunConfirmations: number;
   _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
   _launchStartedAt: number | null;
   _frontendPaintScheduled: boolean;
@@ -55,6 +58,9 @@ export function createDefaultState(): InternalStreamState {
     _activeRoundId: null,
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,
+    _watchdogGeneration: 0,
+    _watchdogRecoveryAttempt: 0,
+    _watchdogMissingRunConfirmations: 0,
     _toolPreparingTimers: {},
     _launchStartedAt: null,
     _frontendPaintScheduled: false,

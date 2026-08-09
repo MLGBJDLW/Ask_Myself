@@ -278,6 +278,7 @@ impl Tool for WebResearchContextTool {
             tool_registry,
             cancel_token,
             activity_runtime,
+            event_tx,
         } = context;
         let args: WebResearchContextArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
@@ -372,6 +373,7 @@ impl Tool for WebResearchContextTool {
                         tool_registry,
                         cancel_token,
                         activity_runtime,
+                        event_tx,
                     })
                     .await
                 {

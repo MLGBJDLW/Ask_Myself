@@ -29,6 +29,33 @@ fn next_retry_at(delay: Duration) -> Option<String> {
         .map(|delay| (chrono::Utc::now() + delay).to_rfc3339())
 }
 
+fn effective_sample_replay_policy(
+    route_policy: ReasoningReplayPolicy,
+    iteration_thinking: &str,
+    output_payload: &crate::llm::provider_turn::ProviderReplayPayload,
+    tool_calls: &[ToolCallRequest],
+) -> ReasoningReplayPolicy {
+    let sample_contains_reasoning_state = !iteration_thinking.trim().is_empty()
+        || output_payload.is_present()
+        || tool_calls.iter().any(|call| {
+            call.thought_signature
+                .as_deref()
+                .is_some_and(|signature| !signature.trim().is_empty())
+        });
+
+    if !tool_calls.is_empty()
+        && matches!(
+            route_policy,
+            ReasoningReplayPolicy::Unknown | ReasoningReplayPolicy::Forbidden
+        )
+        && !sample_contains_reasoning_state
+    {
+        ReasoningReplayPolicy::NotRequired
+    } else {
+        route_policy
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn connection_state_event(
     provider_id: &str,
@@ -169,27 +196,11 @@ impl AgentExecutor {
                 .and_then(crate::llm::prompt_cache::privacy_preserving_routing_session_id),
             parallel_tool_calls: true,
         };
-        let mut request_route_snapshot = self.provider.route_snapshot(&current_request);
-        let may_call_tools = current_request
-            .tools
-            .as_ref()
-            .is_some_and(|tools| !tools.is_empty());
-        if may_call_tools
-            && matches!(
-                request_route_snapshot.replay_policy,
-                ReasoningReplayPolicy::Unknown | ReasoningReplayPolicy::Forbidden
-            )
-        {
-            current_request.reasoning_enabled = Some(false);
-            current_request.reasoning_effort = None;
-            current_request.thinking_budget = None;
-            request_route_snapshot = self.provider.route_snapshot(&current_request);
-            append_developer_persisted_trace_status(
-                persisted_trace_items,
-                "provider_replay_preflight: reasoning disabled before request because the selected tool route has no replay guarantee",
-                "warning",
-            );
-        }
+        // Generation, display, and replay are separate trust boundaries. Let the
+        // selected route produce reasoning for this sample so the user can see it;
+        // the post-sample replay gate below still rejects any tool turn whose
+        // provider-native continuation payload cannot be verified.
+        let request_route_snapshot = self.provider.route_snapshot(&current_request);
         let replay_projection = crate::llm::reasoning_replay::prepare_provider_replay_history(
             messages,
             &request_route_snapshot,
@@ -989,12 +1000,26 @@ impl AgentExecutor {
                 }
             }
 
-            let current_accepted_route = &accepted_route_snapshot;
             let output_payload = crate::llm::provider_turn::ProviderReplayPayload::capture(
-                current_accepted_route,
+                &accepted_route_snapshot,
                 Some(&iteration_thinking),
                 &tool_calls,
             );
+            let effective_replay_policy = effective_sample_replay_policy(
+                accepted_route_snapshot.replay_policy,
+                &iteration_thinking,
+                &output_payload,
+                &tool_calls,
+            );
+            if effective_replay_policy != accepted_route_snapshot.replay_policy {
+                accepted_route_snapshot.replay_policy = effective_replay_policy;
+                append_developer_persisted_trace_status(
+                    persisted_trace_items,
+                    "provider_replay_sample: no reasoning state was present, so this tool sample requires no reasoning replay",
+                    "info",
+                );
+            }
+            let current_accepted_route = &accepted_route_snapshot;
             let unsafe_tool_turn = !tool_calls.is_empty()
                 && !current_accepted_route
                     .replay_policy
@@ -1241,6 +1266,49 @@ impl AgentExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_sample_without_reasoning_state_does_not_require_replay() {
+        let tool_call = ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"README.md"}"#.to_string(),
+            thought_signature: None,
+        };
+
+        assert_eq!(
+            effective_sample_replay_policy(
+                ReasoningReplayPolicy::Unknown,
+                "",
+                &crate::llm::provider_turn::ProviderReplayPayload::None,
+                std::slice::from_ref(&tool_call),
+            ),
+            ReasoningReplayPolicy::NotRequired
+        );
+        assert_eq!(
+            effective_sample_replay_policy(
+                ReasoningReplayPolicy::Unknown,
+                "visible reasoning",
+                &crate::llm::provider_turn::ProviderReplayPayload::None,
+                std::slice::from_ref(&tool_call),
+            ),
+            ReasoningReplayPolicy::Unknown
+        );
+
+        let signed_call = ToolCallRequest {
+            thought_signature: Some("unverified-signature".to_string()),
+            ..tool_call
+        };
+        assert_eq!(
+            effective_sample_replay_policy(
+                ReasoningReplayPolicy::Forbidden,
+                "",
+                &crate::llm::provider_turn::ProviderReplayPayload::None,
+                &[signed_call],
+            ),
+            ReasoningReplayPolicy::Forbidden
+        );
+    }
 
     fn tool(name: &str) -> ToolDefinition {
         ToolDefinition {

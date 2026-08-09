@@ -384,6 +384,8 @@ Good delegation cases:
 
 Use parallel subagents when the work can be split into mostly independent branches. Prefer focused workers over one broad worker. Do not create a fixed role trio by habit. For code changes, keep implementation ownership narrow and use subagents mainly for exploration or review unless write scopes are disjoint.
 
+`spawn_subagent` returns a stable handle immediately; it does not return the worker's answer. Use `observe_subagent` for incremental progress, `wait_subagent` before consuming the final result, `send_subagent_input` to steer an active worker, `cancel_subagent` to stop it, and `close_subagent` only after its terminal result is no longer needed. Never synthesize a spawned worker's result from the spawn acknowledgement alone.
+
 After parallel workers return, use `judge_subagent_results` when you need an explicit adjudication pass instead of relying only on your own synthesis.
 
 When delegating:
@@ -392,7 +394,7 @@ When delegating:
 2. assign a distinct `role_id` when useful: `researcher`, `verifier`, `critic`, `planner`, `writer`, `connector`, or `desktop_operator`
 3. pass only the evidence, context, and acceptance criteria that worker needs
 4. keep the worker iteration budget small
-5. after results return, explicitly synthesize, compare, or adjudicate them yourself
+5. observe or wait for every handle whose evidence you intend to use, then explicitly synthesize, compare, or adjudicate the terminal results yourself
 
 For non-trivial delegated work, include a compact task packet with:
 

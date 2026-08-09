@@ -137,7 +137,13 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
         | "session_search"
         | "tool_search"
         | "code_intelligence" => ToolRenderKind::Search,
-        "spawn_subagent" | "spawn_subagent_batch" => ToolRenderKind::Subagent,
+        "spawn_subagent"
+        | "spawn_subagent_batch"
+        | "observe_subagent"
+        | "wait_subagent"
+        | "send_subagent_input"
+        | "cancel_subagent"
+        | "close_subagent" => ToolRenderKind::Subagent,
         "generate_image" => ToolRenderKind::Image,
         "update_plan" => ToolRenderKind::Plan,
         "record_verification" => ToolRenderKind::Verification,
@@ -183,6 +189,7 @@ pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
         | "list_sources"
         | "spawn_subagent"
         | "spawn_subagent_batch"
+        | "send_subagent_input"
         | "tool_search"
         | "code_intelligence" => ToolInputStreamingMode::UiPreview,
         _ => ToolInputStreamingMode::None,
@@ -654,6 +661,26 @@ pub fn infer_tool_access_profile(
             false,
             ApprovalRisk::Low,
             "Reads and adjudicates subagent outputs without directly changing user data.",
+        ),
+        "observe_subagent" | "wait_subagent" | "close_subagent" => (
+            "delegation",
+            true,
+            false,
+            false,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Observes or releases a bounded delegated-agent lifecycle handle.",
+        ),
+        "send_subagent_input" | "cancel_subagent" => (
+            "delegation",
+            true,
+            true,
+            true,
+            false,
+            false,
+            ApprovalRisk::Low,
+            "Steers or cooperatively cancels an already-authorized delegated agent.",
         ),
         tool if tool == "mcp_tool" || tool.starts_with("mcp__") => (
             "mcp",
