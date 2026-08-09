@@ -2385,6 +2385,58 @@ test('a bound launch rejects stopped run events that arrive after the handshake'
   streamStore.clearStream(conversationId);
 });
 
+test('a settled bound launch rejects a retired run terminal', () => {
+  const conversationId = 'conversation-stop-relaunch-after-settle';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'done',
+        phase: 'done',
+        status: 'completed',
+        payload: {
+          message: { role: 'assistant', parts: [{ type: 'text', text: 'Fresh answer' }] },
+          usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'error',
+        phase: 'done',
+        status: 'cancelled',
+        payload: { message: 'Retired run cancelled' },
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'settled bound launch should remain available');
+  assertEqual(current.streamRounds[0]?.reply, 'Fresh answer', 'the current answer remains authoritative');
+  assert(
+    !current.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Retired run cancelled'),
+    'the retired terminal never replaces the settled projection',
+  );
+  streamStore.clearStream(conversationId);
+});
+
 test('durable hydration replaces an unbound blank state created by a future event', () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({

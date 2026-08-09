@@ -826,13 +826,13 @@ class StreamStoreImpl {
       this._streams[conversationId] = state;
     }
     if (
-      state.isStreaming
-      && state.turnHandle?.runId
+      state.turnHandle?.runId
       && state.turnHandle.runId !== runEvent.runId
     ) {
-      // Once the launch handshake binds a run, that identity is authoritative.
-      // In particular, a late stop event from the retired run must not claim
-      // ordering before the new run's first event arrives.
+      // Once the launch handshake binds a run, that identity remains
+      // authoritative for the lifetime of the retained projection. A late
+      // event from the retired run must not claim ordering either before the
+      // new run's first event or after the new run settles.
       return;
     }
 

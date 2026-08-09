@@ -40,12 +40,13 @@ Future events remain buffered and trigger durable recovery; duplicates and
 post-terminal events are ignored. Answer and thinking block deltas also require
 the exact UTF-8 byte offset. Tool and reset boundaries rotate block identities.
 
-Ordering is also bound to `runId`. A different run may replace only a settled
-retained projection; an event from another run cannot enter a live projection.
-The launch handshake is authoritative: if a stopped run races into a freshly
-reset state before the new handle arrives, binding the handle discards that
-claim and recovers the new run ledger. After binding, events from any other
-run are rejected before they can enter the ordering buffer.
+Ordering is also bound to `runId`. A different run may replace only a settled,
+unbound retained projection; an event from another run cannot enter a bound
+projection. The launch handshake is authoritative: if a stopped run races into
+a freshly reset state before the new handle arrives, binding the handle
+discards that claim and recovers the new run ledger. After binding, events from
+any other run are rejected before they can enter the ordering buffer, including
+after the bound run settles.
 
 Output is coalesced into bounded blocks before it enters the outbox, so model
 tokens do not perform synchronous SQLite work. Durable blocks are written on
