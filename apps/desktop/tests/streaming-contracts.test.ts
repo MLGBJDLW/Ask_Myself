@@ -2222,6 +2222,50 @@ test('live ordering buffers out-of-order events and drains them without losing o
   streamStore.clearStream(conversationId);
 });
 
+test('locally stopped streams consume suppressed events before the terminal', () => {
+  const conversationId = 'conversation-stop-terminal-ordering';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'responding',
+    status: 'running',
+    label: 'Agent running',
+  })));
+  streamStore.stopStream(conversationId);
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'responding',
+    status: 'cancelling',
+    label: 'Stop requested',
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 3,
+    kind: 'error',
+    phase: 'done',
+    status: 'cancelled',
+    payload: { message: 'Backend confirmed cancellation' },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'cancelled stream state should exist');
+  assertEqual(state.isStreaming, false, 'authoritative cancellation remains terminal');
+  assertEqual(state.error, null, 'cancelled terminal does not surface as a failure');
+  assert(
+    state.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Backend confirmed cancellation'),
+    'terminal event is applied after the visually suppressed stop status',
+  );
+  assert(
+    !state.traceEvents.some(event => event.kind === 'status' && event.text === 'Stop requested'),
+    'late nonterminal status is consumed without changing the settled projection',
+  );
+
+  streamStore.clearStream(conversationId);
+});
+
 test('block projection buffers future UTF-8 byte offsets for answer and thinking', () => {
   const state = createDefaultState();
   const prefix = '你🙂';

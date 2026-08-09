@@ -413,12 +413,34 @@ class StreamStoreImpl {
     conversationId: string,
     state: InternalStreamState,
   ): void {
-    if (!state.turnHandle || !state.isStreaming || this._gapRecoveries.has(conversationId)) return;
+    if (!state.turnHandle || this._gapRecoveries.has(conversationId)) return;
+    if (!state.isStreaming) {
+      this.recoverSettledRunEventGap(conversationId, state.turnHandle.runId);
+      return;
+    }
     this._gapRecoveries.add(conversationId);
     clearStreamWatchdog(state);
     state._watchdogGeneration += 1;
     const generation = state._watchdogGeneration;
     void this.recoverSuspectedStall(conversationId, generation).finally(() => {
+      this._gapRecoveries.delete(conversationId);
+    });
+  }
+
+  private recoverSettledRunEventGap(conversationId: string, runId: string): void {
+    this._gapRecoveries.add(conversationId);
+    void withWatchdogRecoveryTimeout(
+      getRecoveryRunEvents(runId),
+      'Settled run-event gap recovery query',
+    ).then(runEvents => {
+      const state = this._streams[conversationId];
+      if (!state || state.turnHandle?.runId !== runId) return;
+      for (const runEvent of [...runEvents].sort((left, right) => left.eventSeq - right.eventSeq)) {
+        this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
+      }
+    }).catch(() => {
+      // Local stop/awaiting-input projection remains valid; a later event can retry recovery.
+    }).finally(() => {
       this._gapRecoveries.delete(conversationId);
     });
   }
@@ -741,12 +763,6 @@ class StreamStoreImpl {
       state.isStreaming = true;
       this._streams[conversationId] = state;
     }
-
-    const incomingIsTerminal = runEvent.kind === 'done' || runEvent.kind === 'error';
-    const incomingReopensAwaiting = runEvent.kind === 'status'
-      && runEvent.phase !== 'awaiting_user_input'
-      && ['queued', 'running', 'recovering'].includes(runEvent.status ?? '');
-    if (!state.isStreaming && !incomingIsTerminal && !incomingReopensAwaiting) return;
 
     const enqueue = enqueueStreamRunEvent(state, runEvent);
     if (!enqueue.accepted) return;
