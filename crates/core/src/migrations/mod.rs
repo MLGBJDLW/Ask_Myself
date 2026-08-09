@@ -2443,7 +2443,7 @@ Every answer that uses knowledge base search results.
         // Historical ledgers may contain intentional gaps where ephemeral
         // heartbeats were never persisted. Authoritative replay handles those
         // gaps without rewriting user history during application startup.
-        "SELECT 1;",
+        "UPDATE _migrations SET name = name WHERE 0;",
     ),
     (
         "v114_bound_agent_run_event_storage",
