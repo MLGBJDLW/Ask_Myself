@@ -2857,6 +2857,7 @@ data: [DONE]
             mode: super::super::native_search::SearchExecutionMode::ProviderNative,
             dialect: Some(super::super::native_search::NativeSearchDialect::DeepSeekResponses),
             capability: Some(capability),
+            trusted_endpoint: true,
         };
         let mut request = endpoint_reasoning_request("deepseek-v4-flash");
         request.tools = Some(vec![
