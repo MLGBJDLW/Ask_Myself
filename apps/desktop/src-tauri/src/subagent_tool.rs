@@ -3986,7 +3986,7 @@ impl Tool for SubagentTool {
             task_run_id: self.runtime.parent_task_run_id.clone(),
             cancel_token: self.runtime.cancel_token.child_token(),
             activity_runtime: activity_runtime.cloned().unwrap_or_default(),
-            event_tx: event_tx.cloned(),
+            event_tx: event_tx.map(|sender| sender.downgrade()),
         })?;
         if let Err(error) = launch_detached_subagent(
             self.runtime.clone(),
@@ -4142,7 +4142,7 @@ impl Tool for SubagentBatchTool {
         let parent_conversation_id = conversation_id.map(str::to_string);
         let parent_turn_id = turn_id.map(str::to_string);
         let activity_runtime = activity_runtime.cloned().unwrap_or_default();
-        let event_tx = event_tx.cloned();
+        let event_tx = event_tx.map(|sender| sender.downgrade());
         let batch_parallel_group = parallel_group.clone();
         let worker_count = normalized_tasks.len();
         let batch_id = format!(

@@ -109,7 +109,7 @@ pub struct RegisterSubagentRequest {
     pub task_run_id: Option<String>,
     pub cancel_token: CancellationToken,
     pub activity_runtime: ActivityRuntime,
-    pub event_tx: Option<mpsc::Sender<AgentEvent>>,
+    pub event_tx: Option<mpsc::WeakSender<AgentEvent>>,
 }
 
 pub struct SubagentWorkerRegistration {
@@ -133,7 +133,7 @@ struct SubagentWorkerState {
     cancel_token: CancellationToken,
     steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
     activity_runtime: ActivityRuntime,
-    event_tx: Option<mpsc::Sender<AgentEvent>>,
+    event_tx: Option<mpsc::WeakSender<AgentEvent>>,
     conversation_id: Option<String>,
     turn_id: Option<String>,
     task_run_id: Option<String>,
@@ -480,7 +480,7 @@ pub struct SubagentEventBridge {
     turn_id: Option<String>,
     task_run_id: Option<String>,
     activity_runtime: ActivityRuntime,
-    event_tx: Option<mpsc::Sender<AgentEvent>>,
+    event_tx: Option<mpsc::WeakSender<AgentEvent>>,
 }
 
 impl SubagentEventBridge {
@@ -559,7 +559,10 @@ impl SubagentEventBridge {
     }
 
     async fn forward(&self, kind: SubagentLifecycleEventKind, event: ActivityEvent) {
-        let Some(event_tx) = self.event_tx.as_ref() else {
+        // Detached workers must not keep the parent turn's event stream open.
+        // Upgrade only while the parent owns a strong sender; durable Activity
+        // events remain observable after the live stream closes.
+        let Some(event_tx) = self.event_tx.as_ref().and_then(mpsc::WeakSender::upgrade) else {
             return;
         };
         let note = format!("Subagent {}: {:?}", self.agent_id, kind);
@@ -703,5 +706,23 @@ mod tests {
             .events
             .iter()
             .any(|event| { event.payload["subagentEvent"] == serde_json::json!("spawned") }));
+    }
+
+    #[tokio::test]
+    async fn detached_lifecycle_does_not_keep_parent_event_stream_open() {
+        let lifecycle = SubagentLifecycleRuntime::default();
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let mut request = request(ActivityRuntime::new());
+        request.event_tx = Some(event_tx.downgrade());
+
+        let registration = lifecycle.register(request).unwrap();
+        drop(event_tx);
+
+        assert!(event_rx.recv().await.is_none());
+        assert_eq!(
+            lifecycle.snapshot("agent-1").unwrap().status,
+            SubagentLifecycleStatus::Queued
+        );
+        drop(registration);
     }
 }
