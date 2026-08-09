@@ -20,6 +20,7 @@ import {
   taskBehavior,
   type CompanionBehaviorState,
 } from '../features/companion/runtime';
+import { useTranslation } from '../i18n';
 import * as api from '../lib/api';
 import type { CompanionSettings } from '../types/conversation';
 
@@ -152,6 +153,7 @@ function Sprite({
 }
 
 export function CompanionWindowPage() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<CompanionSettings>(DEFAULT_COMPANION_SETTINGS);
   const [runtime, setRuntime] = useState<DecodedCompanionRuntime | null>(null);
   const [runtimeLoaded, setRuntimeLoaded] = useState(false);
@@ -203,9 +205,9 @@ export function CompanionWindowPage() {
         ?? null;
       setSettings(nextSettings);
       if (!nextPack) {
-        runtimeRef.current = null;
-        setRuntime(null);
-        setRuntimeLoaded(true);
+        // Keep an already committed runtime visible. On first launch there is
+        // no decoded frame to show, so leave the native window hidden.
+        if (runtimeRef.current) setRuntimeLoaded(true);
         return;
       }
       const currentRuntime = runtimeRef.current;
@@ -225,7 +227,11 @@ export function CompanionWindowPage() {
       setRuntimeLoaded(true);
     } catch (error) {
       console.error('[companion] failed to load decoded runtime', error);
-      if (runtimeRequest.current === request) setRuntimeLoaded(true);
+      // A failed refresh must not replace a committed pet. A failed first
+      // decode must not announce readiness and expose the fallback surface.
+      if (runtimeRequest.current === request && runtimeRef.current) {
+        setRuntimeLoaded(true);
+      }
     }
   }, []);
 
@@ -531,8 +537,12 @@ export function CompanionWindowPage() {
   };
 
   const label = settings.privacyMode
-    ? projection?.terminal ? 'Task finished' : projection ? 'Nexa is working' : 'Ready'
-    : projection?.label ?? 'Ready';
+    ? projection?.terminal
+      ? t('companion.taskFinished')
+      : projection
+        ? t('companion.working')
+        : t('companion.ready')
+    : projection?.label ?? t('companion.ready');
 
   return (
     <main
@@ -577,14 +587,14 @@ export function CompanionWindowPage() {
       {contextMenuOpen && (
         <div className="companion-context-menu" role="menu" onPointerDown={event => event.stopPropagation()}>
           <button type="button" role="menuitem" onClick={() => { setContextMenuOpen(false); void api.executeCompanionCommand('settings'); }}>
-            Settings
+            {t('companion.configure')}
           </button>
           {settings.interactionMode === 'locked' ? (
-            <button type="button" role="menuitem" onClick={() => setInteractionMode('smart')}>Unlock position</button>
+            <button type="button" role="menuitem" onClick={() => setInteractionMode('smart')}>{t('companion.unlockPosition')}</button>
           ) : (
-            <button type="button" role="menuitem" onClick={() => setInteractionMode('locked')}>Lock position</button>
+            <button type="button" role="menuitem" onClick={() => setInteractionMode('locked')}>{t('companion.lockPosition')}</button>
           )}
-          <button type="button" role="menuitem" onClick={() => setInteractionMode('click_through')}>Click through</button>
+          <button type="button" role="menuitem" onClick={() => setInteractionMode('click_through')}>{t('companion.interactionClickThrough')}</button>
         </div>
       )}
     </main>

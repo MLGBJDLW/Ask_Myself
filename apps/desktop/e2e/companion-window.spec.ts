@@ -80,6 +80,9 @@ test.beforeEach(async ({ page }) => {
         case 'read_companion_asset_cmd': {
           assetReads += 1;
           await new Promise(resolve => window.setTimeout(resolve, 80));
+          if (localStorage.getItem('nexa-test-asset-failure') === 'true') {
+            throw new Error('simulated companion asset failure');
+          }
           lifecycleMarks.push({ kind: `decoded-source-${String(args.contentHash ?? '')}`, at: performance.now() });
           const color = String(args.contentHash ?? '').endsWith('2') ? '%23ec4899' : '%238b5cf6';
           return {
@@ -199,6 +202,22 @@ test('companion route is independent, task-aware, and privacy-safe', async ({ pa
   expect(lifecycleMarks.find(mark => mark.kind === 'renderer-ready')?.at).toBeGreaterThanOrEqual(
     lifecycleMarks.find(mark => mark.kind === 'decoded-source-pack-1')?.at ?? Number.POSITIVE_INFINITY,
   );
+});
+
+test('does not announce renderer readiness when the first asset cannot decode', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nexa-test-asset-failure', 'true'));
+  await page.goto('/companion');
+  await page.waitForTimeout(250);
+
+  await expect(page.locator('.companion-sprite')).toHaveCount(0);
+  expect(await page.evaluate(() => (
+    window as unknown as { __companionReady?: boolean }
+  ).__companionReady ?? false)).toBe(false);
+  expect(await page.evaluate(() => (
+    (window as unknown as {
+      __companionLifecycleMarks?: Array<{ kind: string; at: number }>;
+    }).__companionLifecycleMarks?.some(mark => mark.kind === 'renderer-ready') ?? false
+  ))).toBe(false);
 });
 
 test('decoded pack refresh is atomic and pointer behaviors are reachable', async ({ page }) => {
