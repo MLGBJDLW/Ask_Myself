@@ -1,8 +1,5 @@
-import type { AgentFrontendEvent } from '../../types';
 import type { TraceReplyEvent, TraceThinkingEvent } from './protocol';
 import type { StreamTerminalProjectionState } from './terminalProjection';
-
-type RawFrontendEvent = AgentFrontendEvent & Record<string, unknown>;
 
 export function appendThinkingTraceEvent(state: StreamTerminalProjectionState, delta: string): void {
   if (!delta) return;
@@ -42,6 +39,43 @@ export function appendReplyTraceEvent(state: StreamTerminalProjectionState, delt
 
 function utf8ByteLength(text: string): number {
   return new TextEncoder().encode(text).length;
+}
+
+function pendingBlocks(
+  state: StreamTerminalProjectionState,
+  channel: 'answer' | 'thinking',
+): Map<string, Map<number, string>> {
+  return channel === 'answer'
+    ? state._pendingAnswerBlockDeltas
+    : state._pendingThinkingBlockDeltas;
+}
+
+function bufferBlockDelta(
+  state: StreamTerminalProjectionState,
+  channel: 'answer' | 'thinking',
+  blockId: string,
+  offset: number,
+  delta: string,
+): void {
+  const blocks = pendingBlocks(state, channel);
+  const pending = blocks.get(blockId) ?? new Map<number, string>();
+  if (!pending.has(offset)) pending.set(offset, delta);
+  blocks.set(blockId, pending);
+}
+
+function takeBufferedBlockDelta(
+  state: StreamTerminalProjectionState,
+  channel: 'answer' | 'thinking',
+  blockId: string,
+  offset: number,
+): string | null {
+  const blocks = pendingBlocks(state, channel);
+  const pending = blocks.get(blockId);
+  const delta = pending?.get(offset);
+  if (delta === undefined) return null;
+  pending?.delete(offset);
+  if (pending?.size === 0) blocks.delete(blockId);
+  return delta;
 }
 
 function upsertThinkingBlockTraceEvent(
@@ -123,7 +157,6 @@ export function applyStreamBlockDelta(
 ): void {
   if (!blockId || !delta) return;
   const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? offset : 0;
-  const deltaBytes = utf8ByteLength(delta);
 
   if (channel === 'answer') {
     state.isThinking = false;
@@ -132,92 +165,62 @@ export function applyStreamBlockDelta(
       state._activeRoundAcceptingStarts = false;
     }
     if (state._activeAnswerBlockId !== blockId) {
+      if (normalizedOffset !== 0) {
+        bufferBlockDelta(state, channel, blockId, normalizedOffset, delta);
+        return;
+      }
       state._activeAnswerBlockId = blockId;
       state._activeAnswerOffset = 0;
       state.streamText = '';
     }
     if (normalizedOffset < state._activeAnswerOffset) return;
+    if (normalizedOffset > state._activeAnswerOffset) {
+      bufferBlockDelta(state, channel, blockId, normalizedOffset, delta);
+      return;
+    }
     state.thinkingText = '';
-    state.streamText += delta;
-    state._activeAnswerOffset = normalizedOffset + deltaBytes;
-    upsertReplyBlockTraceEvent(state, blockId, normalizedOffset, delta);
+    let nextDelta: string | null = delta;
+    while (nextDelta !== null) {
+      const nextOffset = state._activeAnswerOffset;
+      state.streamText += nextDelta;
+      state._activeAnswerOffset = nextOffset + utf8ByteLength(nextDelta);
+      upsertReplyBlockTraceEvent(state, blockId, nextOffset, nextDelta);
+      nextDelta = takeBufferedBlockDelta(
+        state,
+        channel,
+        blockId,
+        state._activeAnswerOffset,
+      );
+    }
     return;
   }
 
   state.isThinking = true;
   if (state._activeThinkingBlockId !== blockId) {
+    if (normalizedOffset !== 0) {
+      bufferBlockDelta(state, channel, blockId, normalizedOffset, delta);
+      return;
+    }
     state._activeThinkingBlockId = blockId;
     state._activeThinkingOffset = 0;
     state.thinkingText = '';
   }
   if (normalizedOffset < state._activeThinkingOffset) return;
-  state.thinkingText += delta;
-  state._activeThinkingOffset = normalizedOffset + deltaBytes;
-  upsertThinkingBlockTraceEvent(state, blockId, normalizedOffset, delta);
-}
-
-export function applyStreamBlockDeltaEvent(
-  state: StreamTerminalProjectionState,
-  event: AgentFrontendEvent,
-  raw: RawFrontendEvent,
-): void {
-  const blockId = (typeof event.blockId === 'string' ? event.blockId : '')
-    || (typeof raw.blockId === 'string' ? raw.blockId : '');
-  const rawChannel = event.channel ?? raw.channel;
-  const channel = rawChannel === 'answer' || rawChannel === 'thinking'
-    ? rawChannel
-    : null;
-  const offsetRaw = event.offset ?? raw.offset;
-  const offset = typeof offsetRaw === 'number'
-    ? offsetRaw
-    : Number.parseInt(String(offsetRaw ?? '0'), 10);
-  const delta = typeof event.delta === 'string'
-    ? event.delta
-    : (typeof raw.delta === 'string' ? raw.delta : '');
-  if (channel && blockId && delta) {
-    applyStreamBlockDelta(
+  if (normalizedOffset > state._activeThinkingOffset) {
+    bufferBlockDelta(state, channel, blockId, normalizedOffset, delta);
+    return;
+  }
+  let nextDelta: string | null = delta;
+  while (nextDelta !== null) {
+    const nextOffset = state._activeThinkingOffset;
+    state.thinkingText += nextDelta;
+    state._activeThinkingOffset = nextOffset + utf8ByteLength(nextDelta);
+    upsertThinkingBlockTraceEvent(state, blockId, nextOffset, nextDelta);
+    nextDelta = takeBufferedBlockDelta(
       state,
       channel,
       blockId,
-      Number.isFinite(offset) ? offset : 0,
-      delta,
+      state._activeThinkingOffset,
     );
   }
-}
-
-export function applyThinkingEvent(
-  state: StreamTerminalProjectionState,
-  event: AgentFrontendEvent,
-  raw: RawFrontendEvent,
-): void {
-  try {
-    const delta = typeof event.content === 'string'
-      ? event.content
-      : (typeof raw.content === 'string' ? raw.content : '');
-    if (!delta) return;
-    state.isThinking = true;
-    state.thinkingText += delta;
-    appendThinkingTraceEvent(state, delta);
-  } catch (err) {
-    console.error('[streamStore] thinking error:', err);
-  }
-}
-
-export function applyTextDeltaEvent(
-  state: StreamTerminalProjectionState,
-  event: AgentFrontendEvent,
-  raw: RawFrontendEvent,
-): void {
-  state.isThinking = false;
-  if (state._activeRoundId) {
-    state._activeRoundId = null;
-    state._activeRoundAcceptingStarts = false;
-  }
-  const delta = typeof event.delta === 'string'
-    ? event.delta
-    : (typeof raw.delta === 'string' ? raw.delta : '');
-  if (!delta) return;
-  state.thinkingText = '';
-  state.streamText += delta;
-  appendReplyTraceEvent(state, delta);
 }

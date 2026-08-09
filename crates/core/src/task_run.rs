@@ -247,7 +247,7 @@ impl<'a> AgentTaskRuntime<'a> {
         }
 
         match event.kind {
-            AgentRunEventKind::ApprovalRequested => self.db.update_agent_task_run_progress(
+            AgentRunEventKind::ApprovalRequested => self.db.project_agent_task_run_progress(
                 run_id,
                 Some(TaskRunStatus::WaitingApproval.as_str()),
                 Some("approval"),
@@ -256,7 +256,7 @@ impl<'a> AgentTaskRuntime<'a> {
                 None,
                 None,
             ),
-            AgentRunEventKind::ApprovalResolved => self.db.update_agent_task_run_progress(
+            AgentRunEventKind::ApprovalResolved => self.db.project_agent_task_run_progress(
                 run_id,
                 Some(TaskRunStatus::Running.as_str()),
                 Some("tooling"),
@@ -268,7 +268,7 @@ impl<'a> AgentTaskRuntime<'a> {
             AgentRunEventKind::ToolPreparing
             | AgentRunEventKind::ToolStarted
             | AgentRunEventKind::ToolProgress
-            | AgentRunEventKind::ToolCompleted => self.db.update_agent_task_run_progress(
+            | AgentRunEventKind::ToolCompleted => self.db.project_agent_task_run_progress(
                 run_id,
                 Some(TaskRunStatus::Running.as_str()),
                 Some("tooling"),
@@ -277,7 +277,7 @@ impl<'a> AgentTaskRuntime<'a> {
                 None,
                 None,
             ),
-            AgentRunEventKind::PlanUpdated => self.db.update_agent_task_run_progress(
+            AgentRunEventKind::PlanUpdated => self.db.project_agent_task_run_progress(
                 run_id,
                 Some(TaskRunStatus::Running.as_str()),
                 Some(event.phase.as_str()),
@@ -293,7 +293,7 @@ impl<'a> AgentTaskRuntime<'a> {
                 } else {
                     TaskRunStatus::Running
                 };
-                self.db.update_agent_task_run_progress(
+                self.db.project_agent_task_run_progress(
                     run_id,
                     Some(status.as_str()),
                     Some(event.phase.as_str()),
@@ -303,7 +303,7 @@ impl<'a> AgentTaskRuntime<'a> {
                     None,
                 )
             }
-            AgentRunEventKind::RecoveryAttempt => self.db.update_agent_task_run_progress(
+            AgentRunEventKind::RecoveryAttempt => self.db.project_agent_task_run_progress(
                 run_id,
                 Some(TaskRunStatus::Running.as_str()),
                 Some("recovering"),
@@ -316,10 +316,16 @@ impl<'a> AgentTaskRuntime<'a> {
                 let (status, summary) = match event.status.as_deref() {
                     Some("cancelled") => (TaskRunStatus::Cancelled, "Agent execution cancelled"),
                     Some("timed_out") => (TaskRunStatus::TimedOut, "Agent execution timed out"),
+                    Some("paused") => (TaskRunStatus::Paused, event.label.as_str()),
                     _ => (TaskRunStatus::Completed, event.label.as_str()),
                 };
-                self.db
-                    .finish_agent_task_run(run_id, status.as_str(), Some(summary), None, None)
+                self.db.project_agent_task_run_finished(
+                    run_id,
+                    status.as_str(),
+                    Some(summary),
+                    None,
+                    None,
+                )
             }
             AgentRunEventKind::Error => {
                 let (status, summary) = match event.status.as_deref() {
@@ -327,7 +333,7 @@ impl<'a> AgentTaskRuntime<'a> {
                     Some("timed_out") => (TaskRunStatus::TimedOut, "Agent execution timed out"),
                     _ => (TaskRunStatus::Failed, "Agent execution failed"),
                 };
-                self.db.finish_agent_task_run(
+                self.db.project_agent_task_run_finished(
                     run_id,
                     status.as_str(),
                     Some(summary),
@@ -525,6 +531,94 @@ mod tests {
         let run = runtime.apply_run_event(&run_id, &done_event).unwrap();
         assert_eq!(run.status, "cancelled");
         assert!(db.get_agent_task_run_events(&run_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_preserves_authoritative_terminal_status_and_summary() {
+        let db = Database::open_memory().unwrap();
+        let runtime = AgentTaskRuntime::new(&db);
+
+        let (direct_pause_run_id, direct_pause_turn_id) = create_started_run(&db, "direct-pause");
+        let direct_pause = AgentRunEvent::terminal_status(
+            &direct_pause_run_id,
+            Some(&direct_pause_turn_id),
+            1,
+            "Paused with a resumable checkpoint",
+            "paused",
+            None,
+        );
+        let run = runtime
+            .apply_run_event(&direct_pause_run_id, &direct_pause)
+            .unwrap();
+        assert_eq!(run.status, TaskRunStatus::Paused.as_str());
+
+        let (paused_run_id, paused_turn_id) = create_started_run(&db, "paused-authority");
+        let checkpoint = serde_json::json!({ "checkpointId": "checkpoint-1" });
+        runtime
+            .finish_run(
+                &paused_run_id,
+                TaskRunStatus::Paused,
+                Some("Paused with a resumable checkpoint"),
+                None,
+                Some(&checkpoint),
+            )
+            .unwrap();
+        let stale_status = AgentRunEvent::status_update(
+            &paused_run_id,
+            Some(&paused_turn_id),
+            2,
+            crate::agent_run::AgentRunPhase::Responding,
+            "Pause checkpoint saved",
+            Some("running"),
+            None,
+        );
+        runtime
+            .apply_run_event(&paused_run_id, &stale_status)
+            .unwrap();
+        let paused_terminal = AgentRunEvent::terminal_status(
+            &paused_run_id,
+            Some(&paused_turn_id),
+            3,
+            "Paused with a resumable checkpoint",
+            "paused",
+            Some(&checkpoint),
+        );
+        let run = runtime
+            .apply_run_event(&paused_run_id, &paused_terminal)
+            .unwrap();
+        assert_eq!(run.status, TaskRunStatus::Paused.as_str());
+        assert_eq!(
+            run.summary.as_deref(),
+            Some("Paused with a resumable checkpoint")
+        );
+        assert_eq!(run.artifacts.as_ref(), Some(&checkpoint));
+
+        let (completed_run_id, completed_turn_id) = create_started_run(&db, "completed-authority");
+        runtime
+            .finish_run(
+                &completed_run_id,
+                TaskRunStatus::Completed,
+                Some("Task completed with verification gap"),
+                None,
+                None,
+            )
+            .unwrap();
+        let generic_done = AgentRunEvent::terminal_status(
+            &completed_run_id,
+            Some(&completed_turn_id),
+            4,
+            "Final answer produced",
+            "completed",
+            None,
+        );
+        let run = runtime
+            .apply_run_event(&completed_run_id, &generic_done)
+            .unwrap();
+        assert_eq!(run.status, TaskRunStatus::Completed.as_str());
+        assert_eq!(
+            run.summary.as_deref(),
+            Some("Task completed with verification gap")
+        );
     }
 
     #[test]

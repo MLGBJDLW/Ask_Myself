@@ -1,20 +1,15 @@
-use std::sync::Arc;
-
 use log::warn;
 use nexa_core::agent::{AgentEvent, StreamBlockChannel, ToolRunItem};
 use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
 };
-use nexa_core::db::Database;
 use nexa_core::llm::{ContentPart, Message};
-use nexa_core::runtime::AgentRunEventSequencer;
-use nexa_core::task_run::AgentTaskRuntime;
+use nexa_core::runtime::AgentRunEventOutbox;
 use serde::Serialize;
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use crate::agent_task_events::persist_durable_run_event;
-use crate::app_events::emit_app_event;
+use crate::app_events::emit_main_window_event;
 
 /// Envelope for agent stream events sent to frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -26,28 +21,21 @@ struct AgentFrontendEvent {
 }
 
 pub(crate) fn emit_agent_frontend_event(
-    handle: &AppHandle,
-    event_seq: &AgentRunEventSequencer,
+    event_outbox: &AgentRunEventOutbox,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
     event: AgentEvent,
-) -> AgentRunEvent {
-    let event = compact_agent_event_for_frontend(event);
-    let event_seq = event_seq.next();
-    let run_event = AgentRunEvent::from_agent_event(&event).with_context(
-        Some(task_run_id),
-        turn_id,
-        Some(event_seq),
-    );
-    emit_agent_run_frontend_event(handle, conversation_id, &run_event);
-    run_event
+) {
+    let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
+    if let Err(error) = event_outbox.submit(run_event) {
+        warn!("Failed to submit RunEvent for {conversation_id}: {error}");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_agent_frontend_event_with_presentation(
-    handle: &AppHandle,
-    event_seq: &AgentRunEventSequencer,
+    event_outbox: &AgentRunEventOutbox,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
@@ -55,14 +43,12 @@ pub(crate) fn emit_agent_frontend_event_with_presentation(
     visibility: AgentRunEventVisibility,
     display_kind: AgentRunDisplayKind,
     importance: AgentRunEventImportance,
-) -> AgentRunEvent {
-    let event = compact_agent_event_for_frontend(event);
-    let event_seq = event_seq.next();
-    let run_event = AgentRunEvent::from_agent_event(&event)
-        .with_context(Some(task_run_id), turn_id, Some(event_seq))
-        .with_presentation(visibility, display_kind, importance);
-    emit_agent_run_frontend_event(handle, conversation_id, &run_event);
-    run_event
+) {
+    let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
+    let run_event = run_event.with_presentation(visibility, display_kind, importance);
+    if let Err(error) = event_outbox.submit(run_event) {
+        warn!("Failed to submit RunEvent for {conversation_id}: {error}");
+    }
 }
 
 pub(crate) fn emit_agent_run_frontend_event(
@@ -74,7 +60,7 @@ pub(crate) fn emit_agent_run_frontend_event(
         conversation_id: conversation_id.to_string(),
         run_event: run_event.clone(),
     };
-    emit_app_event(handle, "agent:event", &payload);
+    emit_main_window_event(handle, "agent://run-event", &payload);
 }
 
 pub(crate) enum PendingStreamDelta {
@@ -194,6 +180,15 @@ fn compact_tool_run_for_frontend(mut run: ToolRunItem) -> ToolRunItem {
     run
 }
 
+fn done_message_will_truncate(event: &AgentEvent) -> bool {
+    let AgentEvent::Done { message, .. } = event else {
+        return false;
+    };
+    message.parts.iter().any(|part| {
+        matches!(part, ContentPart::Text { text } if text.chars().count() > MAX_FRONTEND_MESSAGE_TEXT_CHARS)
+    })
+}
+
 fn compact_message_for_frontend(mut message: Message) -> Message {
     message.parts.retain_mut(|part| {
         match part {
@@ -217,6 +212,31 @@ fn compact_message_for_frontend(mut message: Message) -> Message {
         .reasoning_content
         .map(|text| truncate_task_event_text(&text, MAX_TASK_EVENT_TEXT_CHARS));
     message
+}
+
+fn mark_truncated_done_message(run_event: &mut AgentRunEvent, message_truncated: bool) {
+    if !message_truncated {
+        return;
+    }
+    if let Some(payload) = run_event.payload.as_object_mut() {
+        payload.insert(
+            "messageTruncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+}
+
+pub(crate) fn prepare_agent_run_event_for_frontend(
+    task_run_id: &str,
+    turn_id: Option<&str>,
+    event: AgentEvent,
+) -> (AgentEvent, AgentRunEvent) {
+    let message_truncated = done_message_will_truncate(&event);
+    let event = compact_agent_event_for_frontend(event);
+    let mut run_event =
+        AgentRunEvent::from_agent_event(&event).with_context(Some(task_run_id), turn_id, Some(0));
+    mark_truncated_done_message(&mut run_event, message_truncated);
+    (event, run_event)
 }
 
 pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent {
@@ -305,7 +325,7 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
 }
 
 pub(crate) struct StreamBlockEmitter {
-    event_seq: Arc<AgentRunEventSequencer>,
+    event_outbox: AgentRunEventOutbox,
     answer_block_id: String,
     thinking_block_id: String,
     answer_offset: usize,
@@ -313,9 +333,9 @@ pub(crate) struct StreamBlockEmitter {
 }
 
 impl StreamBlockEmitter {
-    pub(crate) fn new(event_seq: Arc<AgentRunEventSequencer>) -> Self {
+    pub(crate) fn new(event_outbox: AgentRunEventOutbox) -> Self {
         Self {
-            event_seq,
+            event_outbox,
             answer_block_id: new_stream_block_id(StreamBlockChannel::Answer),
             thinking_block_id: new_stream_block_id(StreamBlockChannel::Thinking),
             answer_offset: 0,
@@ -330,35 +350,16 @@ impl StreamBlockEmitter {
         self.thinking_offset = 0;
     }
 
-    pub(crate) fn next_run_event(
-        &self,
-        task_run_id: &str,
-        turn_id: Option<&str>,
-        event: &AgentEvent,
-    ) -> AgentRunEvent {
-        let event_seq = self.event_seq.next();
-        AgentRunEvent::from_agent_event(event).with_context(
-            Some(task_run_id),
-            turn_id,
-            Some(event_seq),
-        )
-    }
-
-    pub(crate) fn emit_event(
-        &self,
-        handle: &AppHandle,
-        conversation_id: &str,
-        run_event: AgentRunEvent,
-    ) {
-        emit_agent_run_frontend_event(handle, conversation_id, &run_event);
+    pub(crate) fn emit_event(&self, conversation_id: &str, run_event: AgentRunEvent) {
+        if let Err(error) = self.event_outbox.submit(run_event) {
+            warn!("Failed to submit RunEvent for {conversation_id}: {error}");
+        }
     }
 
     pub(crate) fn flush_pending(
         &mut self,
         pending: &mut Option<PendingStreamDelta>,
         conversation_id: &str,
-        handle: &AppHandle,
-        db: &Database,
         task_run_id: &str,
         turn_id: Option<&str>,
     ) {
@@ -368,8 +369,6 @@ impl StreamBlockEmitter {
         match delta {
             PendingStreamDelta::Text(delta) if !delta.is_empty() => self.emit_block_delta(
                 conversation_id,
-                handle,
-                db,
                 task_run_id,
                 turn_id,
                 StreamBlockChannel::Answer,
@@ -377,8 +376,6 @@ impl StreamBlockEmitter {
             ),
             PendingStreamDelta::Thinking(content) if !content.is_empty() => self.emit_block_delta(
                 conversation_id,
-                handle,
-                db,
                 task_run_id,
                 turn_id,
                 StreamBlockChannel::Thinking,
@@ -388,12 +385,9 @@ impl StreamBlockEmitter {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emit_block_delta(
         &mut self,
         conversation_id: &str,
-        handle: &AppHandle,
-        db: &Database,
         task_run_id: &str,
         turn_id: Option<&str>,
         channel: StreamBlockChannel,
@@ -404,25 +398,18 @@ impl StreamBlockEmitter {
             StreamBlockChannel::Thinking => (self.thinking_block_id.clone(), self.thinking_offset),
         };
         for chunk in split_text_by_utf8_bytes(&delta, MAX_STREAM_BLOCK_DELTA_BYTES) {
-            let event_seq = self.event_seq.next();
             let run_event = AgentRunEvent::output_delta(
                 task_run_id,
                 turn_id,
-                event_seq,
+                0,
                 &block_id,
                 channel,
                 current_offset,
                 chunk,
             );
-            let payload = AgentFrontendEvent {
-                conversation_id: conversation_id.to_string(),
-                run_event: run_event.clone(),
-            };
-            persist_durable_run_event(db, &run_event);
-            emit_app_event(handle, "agent:event", &payload);
-
-            if let Err(err) = AgentTaskRuntime::new(db).apply_run_event(task_run_id, &run_event) {
-                warn!("Failed to record stream block event for {task_run_id}: {err}");
+            if let Err(error) = self.event_outbox.submit(run_event) {
+                warn!("Failed to submit stream block for {conversation_id}: {error}");
+                break;
             }
             current_offset += chunk.len();
         }
@@ -453,9 +440,7 @@ pub(crate) fn agent_event_rotates_stream_blocks(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::StreamReset { .. }
-            | AgentEvent::ToolCallStart { .. }
             | AgentEvent::ToolRunStarted { .. }
-            | AgentEvent::ToolCallResult { .. }
             | AgentEvent::ToolRunCompleted { .. }
     )
 }
@@ -505,5 +490,31 @@ mod tests {
 
         assert_eq!(compacted.text_content(), "visible answer");
         assert!(compacted.provider_turn().is_none());
+    }
+
+    #[test]
+    fn frontend_done_event_marks_truncated_message_text() {
+        let event = AgentEvent::Done {
+            message: Message::text(
+                Role::Assistant,
+                "x".repeat(MAX_FRONTEND_MESSAGE_TEXT_CHARS + 1),
+            ),
+            usage_total: nexa_core::llm::Usage::default(),
+            last_prompt_tokens: 0,
+            context_breakdown: None,
+            cached: false,
+            finish_reason: Some("stop".to_string()),
+        };
+        let (compacted, run_event) =
+            prepare_agent_run_event_for_frontend("run-1", Some("turn-1"), event);
+
+        assert!(matches!(
+            compacted,
+            AgentEvent::Done { message, .. } if message.text_content().ends_with("[truncated]")
+        ));
+        assert_eq!(
+            run_event.payload.get("messageTruncated"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }

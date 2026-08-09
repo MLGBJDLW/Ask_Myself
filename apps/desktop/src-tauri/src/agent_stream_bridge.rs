@@ -6,17 +6,16 @@ use log::warn;
 use nexa_core::agent::AgentEvent;
 use nexa_core::agent_run::AgentRunPhase;
 use nexa_core::db::Database;
-use nexa_core::runtime::{AgentRunEventSequencer, TurnLaunchStage};
+use nexa_core::runtime::{AgentRunEventOutbox, TurnLaunchStage};
 use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::agent_stream::{
-    agent_event_rotates_stream_blocks, compact_agent_event_for_frontend, PendingStreamDelta,
+    agent_event_rotates_stream_blocks, prepare_agent_run_event_for_frontend, PendingStreamDelta,
     StreamBlockEmitter,
 };
 use crate::agent_task_events::{
     emit_agent_task_run_update, record_internal_agent_run_status_event,
-    record_task_progress_for_agent_event,
 };
 
 const STREAM_FLUSH_INTERVAL_MS: u64 = 16;
@@ -27,7 +26,7 @@ pub(crate) struct AgentStreamForwarder {
     conversation_id: String,
     task_run_id: String,
     turn_id: String,
-    event_seq: Arc<AgentRunEventSequencer>,
+    event_outbox: AgentRunEventOutbox,
     terminal_emitted: Arc<AtomicBool>,
     launch_started: Instant,
 }
@@ -39,7 +38,7 @@ impl AgentStreamForwarder {
         conversation_id: String,
         task_run_id: String,
         turn_id: String,
-        event_seq: Arc<AgentRunEventSequencer>,
+        event_outbox: AgentRunEventOutbox,
         terminal_emitted: Arc<AtomicBool>,
         launch_started: Instant,
     ) -> Self {
@@ -49,7 +48,7 @@ impl AgentStreamForwarder {
             conversation_id,
             task_run_id,
             turn_id,
-            event_seq,
+            event_outbox,
             terminal_emitted,
             launch_started,
         }
@@ -57,7 +56,7 @@ impl AgentStreamForwarder {
 
     pub(crate) async fn run(self, mut rx: mpsc::Receiver<AgentEvent>) {
         let mut pending_delta: Option<PendingStreamDelta> = None;
-        let mut stream_emitter = StreamBlockEmitter::new(Arc::clone(&self.event_seq));
+        let mut stream_emitter = StreamBlockEmitter::new(self.event_outbox.clone());
         let mut reasoning_phase_recorded = false;
         let mut generating_phase_recorded = false;
         let mut provider_connected_recorded = false;
@@ -133,6 +132,13 @@ impl AgentStreamForwarder {
                                         None => pending_delta = Some(PendingStreamDelta::Thinking(content)),
                                     }
                                 }
+                                AgentEvent::ToolCallPreparing { .. }
+                                | AgentEvent::ToolCallArgsDelta { .. }
+                                | AgentEvent::ToolCallStart { .. }
+                                | AgentEvent::ToolCallProgress { .. }
+                                | AgentEvent::ToolCallResult { .. } => {
+                                    // ToolRun is the only public tool lifecycle.
+                                }
                                 other => {
                                     if let AgentEvent::Done { message, .. } = &other {
                                         if let Err(error) = self.db.record_project_turn_completion(
@@ -147,14 +153,14 @@ impl AgentStreamForwarder {
                                             );
                                         }
                                     }
-                                    let frontend_event = compact_agent_event_for_frontend(other);
+                                    let (frontend_event, run_event) =
+                                        prepare_agent_run_event_for_frontend(
+                                            &self.task_run_id,
+                                            Some(&self.turn_id),
+                                            other,
+                                        );
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
-                                    let run_event = stream_emitter.next_run_event(
-                                        &self.task_run_id,
-                                        Some(&self.turn_id),
-                                        &frontend_event,
-                                    );
                                     if run_event.is_terminal() {
                                         if self.terminal_emitted.swap(true, Ordering::SeqCst) {
                                             continue;
@@ -162,15 +168,7 @@ impl AgentStreamForwarder {
                                     } else if self.terminal_emitted.load(Ordering::SeqCst) {
                                         continue;
                                     }
-                                    record_task_progress_for_agent_event(
-                                        &self.db,
-                                        &self.app_handle,
-                                        &self.conversation_id,
-                                        &self.task_run_id,
-                                        &run_event,
-                                    );
                                     stream_emitter.emit_event(
-                                        &self.app_handle,
                                         &self.conversation_id,
                                         run_event,
                                     );
@@ -227,12 +225,10 @@ impl AgentStreamForwarder {
             "elapsedMs": elapsed_ms,
         });
         record_internal_agent_run_status_event(
-            &self.db,
-            &self.app_handle,
             &self.conversation_id,
             &self.task_run_id,
             Some(&self.turn_id),
-            &self.event_seq,
+            &self.event_outbox,
             AgentRunPhase::Routing,
             stage.as_str(),
             None,
@@ -248,8 +244,6 @@ impl AgentStreamForwarder {
         stream_emitter.flush_pending(
             pending_delta,
             &self.conversation_id,
-            &self.app_handle,
-            &self.db,
             &self.task_run_id,
             Some(&self.turn_id),
         );

@@ -36,6 +36,9 @@ import { formatElapsedDuration, resolveElapsedDurationMs } from '../src/lib/useE
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
+import { parseAgentFrontendEvent } from '../src/lib/streaming/runEventWire';
+import { applyStreamBlockDelta } from '../src/lib/streaming/blockProjection';
+import { createDefaultState } from '../src/lib/streaming/state';
 import { upsertBoundedConversationCache } from '../src/lib/boundedConversationCache';
 import {
   isTaskTimelineEvent,
@@ -54,6 +57,7 @@ import type {
   AgentRunPhase,
   AgentTaskRun,
   AgentTaskRunEvent,
+  ApprovalRequest,
   ToolRunItem,
 } from '../src/types/conversation';
 import type {
@@ -112,8 +116,11 @@ function runEvent(input: {
     phase: input.phase ?? 'responding',
     label: input.label ?? input.kind,
     status: input.status ?? 'running',
-    visibility: input.visibility,
-    payload: input.payload ?? null,
+    visibility: input.visibility ?? 'user',
+    persistence: 'durable',
+    displayKind: input.kind === 'done' ? 'completion' : input.kind === 'error' ? 'error' : 'status',
+    importance: input.kind === 'error' ? 'high' : 'normal',
+    payload: input.payload ?? {},
     createdAt: `2026-01-01T00:00:${String(input.eventSeq).padStart(2, '0')}.000Z`,
   };
 }
@@ -121,10 +128,41 @@ function runEvent(input: {
 function frontendEvent(runEvent: AgentRunEvent): AgentFrontendEvent {
   return {
     conversationId: 'conversation-1',
-    type: 'status',
     runEvent,
   };
 }
+
+test('runtime wire schema accepts only the canonical Run Event envelope', () => {
+  const canonical = frontendEvent(runEvent({ eventSeq: 1, kind: 'status' }));
+  assert(parseAgentFrontendEvent(canonical), 'canonical envelope should parse');
+  assertEqual(
+    parseAgentFrontendEvent({ ...canonical, type: 'status' }),
+    null,
+    'legacy top-level fields must be rejected',
+  );
+  assertEqual(
+    parseAgentFrontendEvent({
+      conversationId: 'conversation-1',
+      runEvent: { ...canonical.runEvent, eventSeq: 0 },
+    }),
+    null,
+    'non-positive event sequences must be rejected',
+  );
+  assertEqual(
+    parseAgentFrontendEvent({
+      conversationId: 'conversation-1',
+      runEvent: { ...canonical.runEvent, legacyType: 'status' },
+    }),
+    null,
+    'unknown Run Event fields must be rejected',
+  );
+  const { persistence: _removedPersistence, ...withoutPersistence } = canonical.runEvent;
+  assertEqual(
+    parseAgentFrontendEvent({ conversationId: 'conversation-1', runEvent: withoutPersistence }),
+    null,
+    'required presentation and persistence metadata must be present',
+  );
+});
 
 function taskEvent(input: {
   id: string;
@@ -212,7 +250,7 @@ function toolRun(input: {
   };
 }
 
-function approvalRequest(id = 'approval-1'): NonNullable<AgentFrontendEvent['request']> {
+function approvalRequest(id = 'approval-1'): ApprovalRequest {
   return {
     id,
     toolName: 'write_file',
@@ -2131,19 +2169,24 @@ test('dispatches cancelled done terminal events without surfacing failed state',
 test('done message supplies the final reply when a thinking-only round is active', () => {
   const conversationId = 'conversation-thinking-then-done-message';
   streamStore.startStream(conversationId);
-  streamStore.dispatch(conversationId, {
-    conversationId,
-    type: 'thinking',
-    content: 'Preparing the final answer',
-  } as AgentFrontendEvent);
-  streamStore.dispatch(conversationId, {
-    conversationId,
-    type: 'done',
-    message: {
-      role: 'assistant',
-      parts: [{ type: 'text', text: 'Final answer' }],
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'thinking',
+    payload: { content: 'Preparing the final answer' },
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: {
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Final answer' }],
+      },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     },
-  } as unknown as AgentFrontendEvent);
+  })));
 
   const restored = streamStore.getStream(conversationId);
   assert(restored, 'done event should retain terminal preview state');
@@ -2154,7 +2197,7 @@ test('done message supplies the final reply when a thinking-only round is active
   streamStore.clearStream(conversationId);
 });
 
-test('live ordering ignores duplicate and late events while marking gaps', () => {
+test('live ordering buffers out-of-order events and drains them without losing output', () => {
   const conversationId = 'conversation-live-ordering';
   const event = (eventSeq: number, offset: number, delta: string): AgentFrontendEvent => frontendEvent(runEvent({
     eventSeq,
@@ -2169,24 +2212,399 @@ test('live ordering ignores duplicate and late events while marking gaps', () =>
 
   streamStore.startStream(conversationId);
   streamStore.dispatch(conversationId, event(1, 0, 'A'));
-  streamStore.dispatch(conversationId, event(1, 1, 'duplicate'));
-  streamStore.dispatch(conversationId, event(3, 1, 'C'));
-  streamStore.dispatch(conversationId, event(2, 2, 'late'));
+  streamStore.dispatch(conversationId, event(3, 2, 'C'));
+  streamStore.dispatch(conversationId, event(2, 1, 'B'));
 
   const state = streamStore.getStream(conversationId);
   assert(state, 'ordered stream state should exist');
-  assertEqual(state.streamText, 'AC', 'duplicate and late deltas are ignored');
+  assertEqual(state.streamText, 'ABC', 'the missing event is applied before the buffered successor');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('a settled retained projection is replaced when a background run starts at sequence one', () => {
+  const conversationId = 'conversation-background-run-replacement';
+  const eventForRun = (runId: string, event: AgentRunEvent): AgentFrontendEvent => ({
+    conversationId,
+    runEvent: { ...event, runId, turnId: `${runId}-turn` },
+  });
+
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, eventForRun('old-run', runEvent({
+    eventSeq: 1,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: { role: 'assistant', parts: [{ type: 'text', text: 'Old answer' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    },
+  })));
+  streamStore.dispatch(conversationId, eventForRun('new-run', runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'routing',
+    status: 'queued',
+    payload: {},
+  })));
+  streamStore.dispatch(conversationId, eventForRun('new-run', runEvent({
+    eventSeq: 2,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'new-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'New answer',
+    },
+  })));
+  streamStore.dispatch(conversationId, eventForRun('old-run', runEvent({
+    eventSeq: 2,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'late-old-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Late old suffix',
+    },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'replacement run state should exist');
+  assertEqual(state.streamRounds.length, 0, 'old terminal projection is discarded');
+  assertEqual(
+    state.streamText,
+    'New answer',
+    'new run starts from its own sequence and rejects late events from the retired run',
+  );
+  streamStore.clearStream(conversationId);
+});
+
+test('binding a new launch rejects a stopped run terminal that arrived during the handshake', () => {
+  const conversationId = 'conversation-stop-relaunch-race';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'done',
+        phase: 'done',
+        status: 'cancelled',
+        payload: { finishReason: 'cancelled' },
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+
+  const rebound = streamStore.getStream(conversationId);
+  assert(rebound, 'rebound launch state should exist');
+  assertEqual(rebound.isStreaming, true, 'the authoritative launch reopens a clean live state');
+  assertEqual(rebound.turnHandle?.runId, 'new-run', 'the launch handle owns the replacement state');
+  assertEqual(rebound.streamRounds.length, 0, 'the stopped run terminal projection is discarded');
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'new-run-answer',
+          channel: 'answer',
+          offset: 0,
+          delta: 'Fresh answer',
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'new launch state should remain available');
+  assertEqual(current.streamText, 'Fresh answer', 'new run events project after authoritative binding');
+  streamStore.clearStream(conversationId);
+});
+
+test('a bound launch rejects stopped run events that arrive after the handshake', () => {
+  const conversationId = 'conversation-stop-relaunch-after-bind';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'status',
+        phase: 'responding',
+        status: 'cancelling',
+        label: 'Stop requested',
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'new-run-answer',
+          channel: 'answer',
+          offset: 0,
+          delta: 'Fresh answer',
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'bound launch state should remain available');
+  assertEqual(current.streamText, 'Fresh answer', 'the retired run cannot claim ordering');
   assert(
-    state.traceEvents.some(trace =>
-      trace.kind === 'status' && trace.text.includes('Stream event gap detected')),
-    'gap should be marked in trace events',
+    !current.traceEvents.some(event => event.kind === 'status' && event.text === 'Stop requested'),
+    'the retired run event never enters the live projection',
+  );
+  streamStore.clearStream(conversationId);
+});
+
+test('a settled bound launch rejects a retired run terminal', () => {
+  const conversationId = 'conversation-stop-relaunch-after-settle';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'done',
+        phase: 'done',
+        status: 'completed',
+        payload: {
+          message: { role: 'assistant', parts: [{ type: 'text', text: 'Fresh answer' }] },
+          usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'error',
+        phase: 'done',
+        status: 'cancelled',
+        payload: { message: 'Retired run cancelled' },
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'settled bound launch should remain available');
+  assertEqual(current.streamRounds[0]?.reply, 'Fresh answer', 'the current answer remains authoritative');
+  assert(
+    !current.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Retired run cancelled'),
+    'the retired terminal never replaces the settled projection',
+  );
+  streamStore.clearStream(conversationId);
+});
+
+test('durable hydration replaces an unbound blank state created by a future event', () => {
+  const conversationId = 'conversation-unbound-gap-hydration';
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'responding',
+    status: 'running',
+    label: 'Future event',
+  })));
+  const blank = streamStore.getStream(conversationId);
+  assert(blank, 'future event should create a recoverable stream state');
+  assertEqual(blank.turnHandle, null, 'unsolicited event has no launch handle');
+  assertEqual(blank.traceEvents.length, 0, 'future event remains buffered without a prefix');
+
+  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'done',
+      phase: 'done',
+      status: 'completed',
+      payload: {
+        message: { role: 'assistant', parts: [{ type: 'text', text: 'Recovered answer' }] },
+        usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      },
+    }),
+  ]);
+
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'durable hydration should replace the blank unbound state');
+  assertEqual(restored.isStreaming, false, 'durable terminal state settles the stream');
+  assertEqual(restored.streamRounds[0]?.reply, 'Recovered answer', 'durable answer is visible');
+  streamStore.clearStream(conversationId);
+});
+
+test('locally stopped streams consume suppressed events before the terminal', () => {
+  const conversationId = 'conversation-stop-terminal-ordering';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'responding',
+    status: 'running',
+    label: 'Agent running',
+  })));
+  streamStore.stopStream(conversationId);
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'responding',
+    status: 'cancelling',
+    label: 'Stop requested',
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 3,
+    kind: 'error',
+    phase: 'done',
+    status: 'cancelled',
+    payload: { message: 'Backend confirmed cancellation' },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'cancelled stream state should exist');
+  assertEqual(state.isStreaming, false, 'authoritative cancellation remains terminal');
+  assertEqual(state.error, null, 'cancelled terminal does not surface as a failure');
+  assert(
+    state.traceEvents.some(event =>
+      event.kind === 'status' && event.text === 'Backend confirmed cancellation'),
+    'terminal event is applied after the visually suppressed stop status',
   );
   assert(
-    !visibleTraceEventsForTimeline(state.traceEvents).some(trace =>
-      trace.kind === 'status' && trace.text.includes('Stream event gap detected')),
-    'gap bookkeeping should not be rendered in the timeline',
+    !state.traceEvents.some(event => event.kind === 'status' && event.text === 'Stop requested'),
+    'late nonterminal status is consumed without changing the settled projection',
   );
 
+  streamStore.clearStream(conversationId);
+});
+
+test('block projection buffers future UTF-8 byte offsets for answer and thinking', () => {
+  const state = createDefaultState();
+  const prefix = '你🙂';
+  const prefixBytes = new TextEncoder().encode(prefix).length;
+
+  applyStreamBlockDelta(state, 'answer', 'answer-cjk', prefixBytes, '好');
+  assertEqual(state.streamText, '', 'future answer fragment waits for its prefix');
+  applyStreamBlockDelta(state, 'answer', 'answer-cjk', 0, prefix);
+  assertEqual(state.streamText, '你🙂好', 'answer fragments drain by UTF-8 byte offset');
+
+  applyStreamBlockDelta(state, 'thinking', 'thinking-cjk', prefixBytes, '完');
+  assertEqual(state.thinkingText, '', 'future thinking fragment waits for its prefix');
+  applyStreamBlockDelta(state, 'thinking', 'thinking-cjk', 0, prefix);
+  assertEqual(state.thinkingText, '你🙂完', 'thinking fragments drain by UTF-8 byte offset');
+});
+
+test('Done message replaces an incomplete streamed answer as the terminal authority', () => {
+  const conversationId = 'conversation-authoritative-done';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'partial-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Partial',
+    },
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: { role: 'assistant', parts: [{ type: 'text', text: 'Complete answer' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'terminal state should exist');
+  assertEqual(
+    state.streamRounds[state.streamRounds.length - 1]?.reply,
+    'Complete answer',
+    'Done replaces partial output',
+  );
+  const finalReplyTrace = [...state.traceEvents].reverse().find(event => event.kind === 'reply');
+  assertEqual(finalReplyTrace?.kind === 'reply' ? finalReplyTrace.text : '', 'Complete answer', 'trace uses Done authority');
+  streamStore.clearStream(conversationId);
+});
+
+test('a truncated Done preview preserves the complete ordered streamed answer', () => {
+  const conversationId = 'conversation-truncated-done';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'complete-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Complete streamed answer',
+    },
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: { role: 'assistant', parts: [{ type: 'text', text: 'Complete stre\n[truncated]' }] },
+      messageTruncated: true,
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'terminal state should exist');
+  assertEqual(
+    state.streamRounds[state.streamRounds.length - 1]?.reply,
+    'Complete streamed answer',
+    'ordered stream wins only when Done declares message truncation',
+  );
+  const finalReplyTrace = [...state.traceEvents].reverse().find(event => event.kind === 'reply');
+  assertEqual(
+    finalReplyTrace?.kind === 'reply' ? finalReplyTrace.text : '',
+    'Complete streamed answer',
+    'trace retains the complete streamed answer',
+  );
   streamStore.clearStream(conversationId);
 });
 

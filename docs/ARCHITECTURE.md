@@ -49,6 +49,9 @@ successful tool execution or model response.
 
 ## Normative runtime contracts
 
+- [Agent Streaming Protocol](./AGENT_STREAMING_PROTOCOL.md) defines the single
+  event owner, versioned wire schema, ordered delivery, block offsets, terminal
+  authority, recovery, and window-scoped projection channels.
 - [Terminal and Agent Bridge](./TERMINAL_AGENT_BRIDGE.md) defines the boundary
   between the user-owned PTY and approval-gated agent interaction.
 - [Live File-Tool Streaming](./LIVE_FILE_TOOL_STREAMING.md) separates partial

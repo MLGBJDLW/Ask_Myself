@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_run_outbox::spawn_agent_run_outbox;
 use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
@@ -18,8 +19,8 @@ use nexa_core::mixture_of_agents::{
 };
 use nexa_core::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 use nexa_core::runtime::{
-    ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
-    RuntimeTerminalStatus, StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
+    ActiveAgentTurn, AgentRunEventOutbox, AgentTurnHandle, AgentTurnState, RuntimeTerminalStatus,
+    StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
 };
 use nexa_core::vision_router::VisionTurnOverride;
 
@@ -478,6 +479,19 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         user_artifacts.as_ref(),
     )?;
     let resumes_interaction = interaction_response.is_some();
+    let mut resumed_turn = if let Some(response) = interaction_response.as_ref() {
+        let resumed_run_id = state
+            .db
+            .get_interaction_request_run_id(&response.interaction_id)
+            .map_err(|error| error.to_string())?;
+        agent_state
+            .sessions
+            .take_for_run(&conversation_id, &resumed_run_id)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
 
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
@@ -530,7 +544,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
-    let launch_record = state
+    let launch_record = match state
         .db
         .create_agent_turn_and_run_with_interaction_response(
             &user_msg,
@@ -539,23 +553,41 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             Some(&db_config.model),
             &idempotency_key,
             interaction_response.as_ref(),
-        )
-        .map_err(|e| e.to_string())?;
-    if launch_record.reused {
+        ) {
+        Ok(launch_record) => launch_record,
+        Err(error) => {
+            if let Some(previous) = resumed_turn.take() {
+                agent_state.sessions.register(previous).await;
+            }
+            return Err(error.to_string());
+        }
+    };
+    let continuation_is_already_running = resumed_turn
+        .as_ref()
+        .is_some_and(|previous| !previous.is_finished());
+    if reused_launch_needs_no_executor(
+        &launch_record,
+        resumes_interaction,
+        continuation_is_already_running,
+    ) {
+        if let Some(previous) = resumed_turn.take() {
+            agent_state.sessions.register(previous).await;
+        }
         return Ok(desktop_agent_chat_launch(
             &launch_record,
             task_orchestrator_run_id,
         ));
     }
-    if resumes_interaction {
-        // Validate and persist the response before touching a live session.
-        // A forged or stale response artifact must never abort unrelated work.
-        if let Some(previous) = agent_state.sessions.take(&conversation_id).await {
-            previous.cancel_token.cancel();
-            previous.task.abort();
-            let _ = previous.task.await;
-        }
-    }
+    let resumed_event_outbox = if let Some(previous) = resumed_turn.take() {
+        debug_assert_eq!(previous.handle.run_id, launch_record.run_id);
+        let event_outbox = Arc::clone(&previous.event_outbox);
+        previous.cancel_token.cancel();
+        previous.task.abort();
+        let _ = previous.task.await;
+        Some(event_outbox)
+    } else {
+        None
+    };
     let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
         task_orchestrator_run_id
     } else if resumes_interaction {
@@ -576,11 +608,21 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .map_err(|err| err.to_string())?;
         }
     }
-    let last_event_sequence = state
-        .db
-        .latest_agent_run_event_sequence(&launch_record.run_id)
-        .map_err(|error| error.to_string())?;
-    let stream_event_seq = Arc::new(AgentRunEventSequencer::new(last_event_sequence));
+    let stream_event_seq = if let Some(event_outbox) = resumed_event_outbox {
+        event_outbox
+    } else {
+        let last_event_sequence = state
+            .db
+            .latest_agent_run_event_sequence(&launch_record.run_id)
+            .map_err(|error| error.to_string())?;
+        Arc::new(spawn_agent_run_outbox(
+            app_handle.clone(),
+            state.db_executor.clone(),
+            conversation_id.clone(),
+            launch_record.run_id.clone(),
+            last_event_sequence,
+        ))
+    };
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,
@@ -589,8 +631,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         &launch_record.run_id,
     );
     record_internal_agent_run_status_event(
-        &state.db,
-        &app_handle,
         &conversation_id,
         &launch_record.run_id,
         Some(&launch_record.turn_id),
@@ -601,7 +641,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         None,
     );
 
-    let cancel_token = CancellationToken::new();
+    let cancel_token = stream_event_seq.turn_cancellation_token();
     let cancel_token_clone = cancel_token.clone();
     let (steering_tx, steering_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSteeringMessage>();
     let db = state.db.clone();
@@ -641,8 +681,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .map_err(|error| error.to_string())?;
             emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             record_internal_agent_run_status_event(
-                &db,
-                &handle,
                 &conv_id,
                 &task_run_id,
                 Some(&turn_id),
@@ -1203,7 +1241,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             cancel_token,
             task,
             steering_tx,
-            event_sequencer: Arc::clone(&stream_event_seq),
+            event_outbox: Arc::clone(&stream_event_seq),
             orchestrator_run_id: task_orchestrator_run_id,
             frontend_paint_recorded: AtomicBool::new(false),
         })
@@ -1214,12 +1252,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
 #[allow(clippy::too_many_arguments)]
 fn record_turn_launch_metric(
-    db: &Database,
-    app_handle: &AppHandle,
+    _db: &Database,
+    _app_handle: &AppHandle,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
-    event_seq: &AgentRunEventSequencer,
+    event_seq: &AgentRunEventOutbox,
     stage: TurnLaunchStage,
     elapsed_ms: u64,
 ) {
@@ -1229,8 +1267,6 @@ fn record_turn_launch_metric(
         "elapsedMs": elapsed_ms,
     });
     record_internal_agent_run_status_event(
-        db,
-        app_handle,
         conversation_id,
         task_run_id,
         turn_id,
@@ -1244,6 +1280,17 @@ fn record_turn_launch_metric(
 
 fn elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn reused_launch_needs_no_executor(
+    launch: &nexa_core::conversation::AgentTurnLaunchRecord,
+    resumes_interaction: bool,
+    continuation_is_already_running: bool,
+) -> bool {
+    launch.reused
+        && (!resumes_interaction
+            || continuation_is_already_running
+            || launch.status == "awaiting_user_input")
 }
 
 fn initialization_frontend_message(error: &str) -> &'static str {
@@ -1260,7 +1307,8 @@ fn initialization_frontend_message(error: &str) -> &'static str {
 
 #[cfg(test)]
 mod initialization_error_tests {
-    use super::initialization_frontend_message;
+    use super::{initialization_frontend_message, reused_launch_needs_no_executor};
+    use nexa_core::conversation::AgentTurnLaunchRecord;
 
     #[test]
     fn stale_registry_failure_is_actionable_without_exposing_internal_ids() {
@@ -1272,6 +1320,29 @@ mod initialization_error_tests {
         assert!(!message.contains("secret-run-id"));
         assert!(!message.contains("target:internal"));
     }
+
+    #[test]
+    fn reused_interaction_with_active_siblings_stays_suspended() {
+        let launch = AgentTurnLaunchRecord {
+            conversation_id: "conversation-1".to_string(),
+            user_message_id: "message-1".to_string(),
+            user_message_sort_order: 1,
+            turn_id: "turn-1".to_string(),
+            run_id: "run-1".to_string(),
+            status: "awaiting_user_input".to_string(),
+            reused: true,
+        };
+
+        assert!(reused_launch_needs_no_executor(&launch, true, false));
+        assert!(!reused_launch_needs_no_executor(
+            &AgentTurnLaunchRecord {
+                status: "queued".to_string(),
+                ..launch
+            },
+            true,
+            false,
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1282,7 +1353,7 @@ fn finalize_desktop_agent_initialization_failure(
     task_run_id: &str,
     task_orchestrator_run_id: Option<&str>,
     turn_id: &str,
-    event_seq: &AgentRunEventSequencer,
+    event_seq: &AgentRunEventOutbox,
     terminal_emitted: &AtomicBool,
     error: &str,
 ) {

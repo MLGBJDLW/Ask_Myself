@@ -1,12 +1,16 @@
+import type { AgentRunEvent } from '../../types/conversation';
+
 export interface StreamEventOrderingState {
+  _orderedRunId: string | null;
   _lastEventSeq: number;
-  _eventSeqGapRecorded: boolean;
+  _pendingRunEvents: Map<number, AgentRunEvent>;
 }
 
-export interface StreamEventOrderingDecision {
+export interface StreamEventEnqueueResult {
   accepted: boolean;
-  eventSeq: number | null;
-  gapDetected: boolean;
+  ready: boolean;
+  runChanged: boolean;
+  missingRange: { from: number; to: number } | null;
 }
 
 export function parseStreamEventSeq(value: unknown): number | null {
@@ -16,26 +20,43 @@ export function parseStreamEventSeq(value: unknown): number | null {
   return Number.isFinite(eventSeq) && eventSeq > 0 ? eventSeq : null;
 }
 
-export function applyStreamEventOrdering(
+export function enqueueStreamRunEvent(
   state: StreamEventOrderingState,
-  eventSeqRaw: unknown,
-): StreamEventOrderingDecision {
-  const eventSeq = parseStreamEventSeq(eventSeqRaw);
+  event: AgentRunEvent,
+): StreamEventEnqueueResult {
+  const eventSeq = parseStreamEventSeq(event.eventSeq);
   if (eventSeq === null) {
-    return { accepted: true, eventSeq: null, gapDetected: false };
+    return { accepted: false, ready: false, runChanged: false, missingRange: null };
   }
 
-  if (eventSeq <= state._lastEventSeq) {
-    return { accepted: false, eventSeq, gapDetected: false };
+  if (state._orderedRunId !== null && state._orderedRunId !== event.runId) {
+    return { accepted: false, ready: false, runChanged: true, missingRange: null };
+  }
+  state._orderedRunId = event.runId;
+
+  if (eventSeq <= state._lastEventSeq || state._pendingRunEvents.has(eventSeq)) {
+    return { accepted: false, ready: false, runChanged: false, missingRange: null };
   }
 
-  const gapDetected = state._lastEventSeq > 0
-    && eventSeq > state._lastEventSeq + 1
-    && !state._eventSeqGapRecorded;
-  if (gapDetected) {
-    state._eventSeqGapRecorded = true;
-  }
-  state._lastEventSeq = eventSeq;
+  state._pendingRunEvents.set(eventSeq, event);
+  const expectedSeq = state._lastEventSeq + 1;
+  const ready = eventSeq === expectedSeq;
 
-  return { accepted: true, eventSeq, gapDetected };
+  return {
+    accepted: true,
+    ready,
+    runChanged: false,
+    missingRange: ready ? null : { from: expectedSeq, to: eventSeq - 1 },
+  };
+}
+
+export function takeNextStreamRunEvent(
+  state: StreamEventOrderingState,
+): AgentRunEvent | null {
+  const expectedSeq = state._lastEventSeq + 1;
+  const event = state._pendingRunEvents.get(expectedSeq);
+  if (!event) return null;
+  state._pendingRunEvents.delete(expectedSeq);
+  state._lastEventSeq = expectedSeq;
+  return event;
 }

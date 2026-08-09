@@ -51,7 +51,7 @@ use nexa_core::quality_profile::{
     resolve_orchestration_profile, CustomOrchestrationOptions, OrchestrationProfile,
     OrchestrationProfileInput,
 };
-use nexa_core::runtime::AgentRunEventSequencer;
+use nexa_core::runtime::AgentRunEventOutbox;
 use nexa_core::skills::Skill;
 use nexa_core::tools::ToolRegistry;
 use nexa_core::vision_router::{
@@ -65,13 +65,10 @@ use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
-use crate::agent_stream::{
-    emit_agent_frontend_event, emit_agent_frontend_event_with_presentation,
-    emit_agent_run_frontend_event,
-};
+use crate::agent_stream::{emit_agent_frontend_event, emit_agent_frontend_event_with_presentation};
 use crate::agent_stream_bridge::AgentStreamForwarder;
-use crate::agent_task_events::{emit_agent_task_run_update, persist_durable_run_event};
-use crate::app_events::emit_app_event;
+use crate::agent_task_events::emit_agent_task_run_update;
+use crate::app_events::{emit_app_event, emit_main_window_event};
 use crate::browser::agent_tool::NativeBrowserSessionTool;
 use crate::browser::BrowserState;
 use crate::commands::TerminalState;
@@ -114,7 +111,7 @@ pub struct DesktopAgentTurnRuntime {
 pub struct DesktopAgentTurnStream {
     pub app_handle: AppHandle,
     pub task_run_id: String,
-    pub event_seq: Arc<AgentRunEventSequencer>,
+    pub event_seq: Arc<AgentRunEventOutbox>,
     pub terminal_emitted: Arc<AtomicBool>,
     pub launch_started: Instant,
 }
@@ -233,7 +230,7 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub db: &'a Database,
     pub mcp_manager: &'a Arc<tokio::sync::Mutex<McpManager>>,
     pub app_handle: &'a AppHandle,
-    pub event_seq: &'a AgentRunEventSequencer,
+    pub event_seq: &'a AgentRunEventOutbox,
     pub conversation_id: &'a str,
     pub task_run_id: &'a str,
     pub turn_id: &'a str,
@@ -273,7 +270,7 @@ pub struct DesktopAgentStopFinalization<'a> {
     pub task_run_id: &'a str,
     pub task_orchestrator_run_id: Option<&'a str>,
     pub turn_id: &'a str,
-    pub event_seq: &'a AgentRunEventSequencer,
+    pub event_seq: &'a AgentRunEventOutbox,
     pub reason: &'a str,
     pub summary: &'a str,
 }
@@ -308,7 +305,7 @@ struct DesktopApprovalCallbackInput {
     conversation_id: String,
     task_run_id: String,
     turn_id: String,
-    event_seq: Arc<AgentRunEventSequencer>,
+    event_seq: Arc<AgentRunEventOutbox>,
     approval_runtime: DesktopAgentApprovalRuntime,
 }
 
@@ -381,7 +378,7 @@ pub fn request_desktop_running_agent_stop(
     let task_run_id = task_state.handle.run_id.clone();
     let task_orchestrator_run_id = task_state.orchestrator_run_id.clone();
     let turn_id = task_state.handle.turn_id.clone();
-    let stream_event_seq = Arc::clone(&task_state.event_sequencer);
+    let stream_event_seq = Arc::clone(&task_state.event_outbox);
     if let Err(error) = db.cancel_interactions_for_stopped_run(&task_run_id) {
         warn!("Failed to cancel interactions for stopped run {task_run_id}: {error}");
     }
@@ -394,8 +391,7 @@ pub fn request_desktop_running_agent_stop(
         None,
         None,
     );
-    let run_event = emit_agent_frontend_event(
-        &app_handle,
+    emit_agent_frontend_event(
         stream_event_seq.as_ref(),
         &conversation_id,
         &task_run_id,
@@ -405,7 +401,6 @@ pub fn request_desktop_running_agent_stop(
             tone: Some("muted".to_string()),
         },
     );
-    persist_durable_run_event(&db, &run_event);
     emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
 
     task_state.cancel_token.cancel();
@@ -2123,7 +2118,6 @@ pub async fn build_desktop_agent_session_dependencies(
     let tool_registry_started = Instant::now();
     let package_assembler = PackageRuntimeAssembler::database_builtin(db);
     emit_agent_frontend_event_with_presentation(
-        app_handle,
         event_seq,
         conversation_id,
         task_run_id,
@@ -2291,7 +2285,6 @@ pub async fn build_desktop_agent_session_dependencies(
             "Plan mode tool registry filtered from {before_count} to {after_count} read-only tools"
         );
         emit_agent_frontend_event(
-            app_handle,
             event_seq,
             conversation_id,
             task_run_id,
@@ -2365,7 +2358,6 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
             let (tx, rx) = tokio::sync::oneshot::channel();
             pending.lock().await.insert(req.id.clone(), tx);
             emit_agent_frontend_event(
-                &handle,
                 event_seq.as_ref(),
                 &conv,
                 &task_run_id,
@@ -2451,7 +2443,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         conversation_id.clone(),
         stream.task_run_id.clone(),
         turn_id.clone(),
-        Arc::clone(&stream.event_seq),
+        stream.event_seq.as_ref().clone(),
         Arc::clone(&stream.terminal_emitted),
         stream.launch_started,
     )
@@ -2493,15 +2485,14 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
                     }
                 } => break (None, true),
                 _ = keepalive.tick() => {
-                    emit_agent_frontend_event(
+                    emit_main_window_event(
                         &stream.app_handle,
-                        stream.event_seq.as_ref(),
-                        &conversation_id,
-                        &stream.task_run_id,
-                        Some(&turn_id),
-                        AgentEvent::Thinking {
-                            content: String::new(),
-                        },
+                        "agent://heartbeat",
+                        &serde_json::json!({
+                            "conversationId": conversation_id,
+                            "runId": stream.task_run_id,
+                            "turnId": turn_id,
+                        }),
                     );
                 }
             }
@@ -2668,13 +2659,14 @@ pub fn finalize_desktop_agent_stop(finalization: DesktopAgentStopFinalization<'_
     let run_event = AgentRunEvent::terminal_status(
         task_run_id,
         Some(turn_id),
-        event_seq.next(),
+        0,
         summary,
         "cancelled",
         Some(&artifacts),
     );
-    emit_agent_run_frontend_event(app_handle, conversation_id, &run_event);
-    persist_durable_run_event(db, &run_event);
+    if let Err(error) = event_seq.submit(run_event) {
+        warn!("Failed to submit terminal stop RunEvent for {conversation_id}: {error}");
+    }
     emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
 }
 

@@ -1308,6 +1308,24 @@ impl Database {
         })
     }
 
+    pub fn get_interaction_request_run_id(
+        &self,
+        interaction_id: &str,
+    ) -> Result<String, CoreError> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT run_id FROM interaction_requests WHERE id = ?1",
+            rusqlite::params![interaction_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("Interaction request {interaction_id}"))
+            }
+            other => CoreError::Database(other),
+        })
+    }
+
     pub fn list_interaction_requests(
         &self,
         conversation_id: Option<&str>,

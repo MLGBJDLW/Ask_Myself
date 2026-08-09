@@ -5,13 +5,11 @@ use nexa_core::agent_run::{
 };
 use nexa_core::conversation::AgentTaskRun;
 use nexa_core::db::Database;
-use nexa_core::runtime::AgentRunEventSequencer;
-use nexa_core::task_run::AgentTaskRuntime;
+use nexa_core::runtime::AgentRunEventOutbox;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::agent_stream::emit_agent_run_frontend_event;
-use crate::app_events::emit_app_event;
+use crate::app_events::{emit_main_window_event, emit_window_event};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,74 +27,50 @@ pub(crate) fn emit_agent_task_run_update(
     task_run_id: &str,
 ) {
     match db.get_agent_task_run(task_run_id) {
-        Ok(task_run) => {
-            let payload = AgentTaskRunUpdatedEvent {
-                conversation_id: conversation_id.to_string(),
-                event_type: "taskRunUpdated",
-                task_run,
-            };
-            emit_app_event(app_handle, "agent:event", &payload);
-        }
+        Ok(task_run) => emit_agent_task_run_snapshot(app_handle, conversation_id, task_run),
         Err(err) => warn!("Failed to load task run {task_run_id} for event: {err}"),
     }
 }
 
-pub(crate) fn persist_durable_run_event(db: &Database, run_event: &AgentRunEvent) {
-    if !run_event.is_durable() {
-        return;
-    }
-    if let Err(err) = db.save_agent_run_event(run_event) {
-        warn!(
-            "Failed to persist durable run event {}#{}: {err}",
-            run_event.run_id, run_event.event_seq
-        );
-    }
+pub(crate) fn emit_agent_task_run_snapshot(
+    app_handle: &AppHandle,
+    conversation_id: &str,
+    task_run: AgentTaskRun,
+) {
+    let task_run_id = task_run.id.clone();
+    let payload = AgentTaskRunUpdatedEvent {
+        conversation_id: conversation_id.to_string(),
+        event_type: "taskRunUpdated",
+        task_run,
+    };
+    emit_main_window_event(app_handle, "agent://task-snapshot", &payload);
+    emit_window_event(
+        app_handle,
+        "companion",
+        "companion://projection-changed",
+        &serde_json::json!({ "runId": task_run_id }),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_internal_agent_run_status_event(
-    db: &Database,
-    app_handle: &AppHandle,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
-    event_seq: &AgentRunEventSequencer,
+    event_outbox: &AgentRunEventOutbox,
     phase: AgentRunPhase,
     label: &str,
     status: Option<&str>,
     payload: Option<&serde_json::Value>,
 ) {
-    let next_seq = event_seq.next();
-    let run_event = AgentRunEvent::status_update(
-        task_run_id,
-        turn_id,
-        next_seq,
-        phase,
-        label,
-        status,
-        payload,
-    )
-    .with_presentation(
-        AgentRunEventVisibility::Internal,
-        AgentRunDisplayKind::Status,
-        AgentRunEventImportance::Low,
-    );
-    emit_agent_run_frontend_event(app_handle, conversation_id, &run_event);
-    record_task_progress_for_agent_event(db, app_handle, conversation_id, task_run_id, &run_event);
-}
-
-pub(crate) fn record_task_progress_for_agent_event(
-    db: &Database,
-    app_handle: &AppHandle,
-    conversation_id: &str,
-    task_run_id: &str,
-    run_event: &AgentRunEvent,
-) {
-    persist_durable_run_event(db, run_event);
-    match AgentTaskRuntime::new(db).apply_run_event(task_run_id, run_event) {
-        Ok(_) => {
-            emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
-        }
-        Err(err) => warn!("Failed to apply task event for {task_run_id}: {err}"),
+    let run_event =
+        AgentRunEvent::status_update(task_run_id, turn_id, 0, phase, label, status, payload)
+            .with_presentation(
+                AgentRunEventVisibility::Internal,
+                AgentRunDisplayKind::Status,
+                AgentRunEventImportance::Low,
+            );
+    if let Err(error) = event_outbox.submit(run_event) {
+        warn!("Failed to submit internal RunEvent for {conversation_id}: {error}");
     }
 }

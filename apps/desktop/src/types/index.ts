@@ -64,7 +64,6 @@ export type {
   AgentConfig,
   SaveAgentConfigInput,
   ProviderType,
-  AgentEvent,
   AgentFrontendEvent,
   ToolRunStatus,
   ToolRenderKind,

@@ -12,6 +12,7 @@ import {
 import { isTaskTimelineEvent } from './taskTimeline';
 import { applyTerminalProjection } from './terminalProjection';
 import { createToolCall, insertPendingToolCall, type ToolPreparingPayload } from './toolProjection';
+import { enqueueStreamRunEvent, takeNextStreamRunEvent } from './ordering';
 
 export type DurableReplayProjectionState = InternalStreamState;
 
@@ -25,11 +26,17 @@ export function applyDurableRunEventsToState(
 ): void {
   const ordered = [...events].sort((a, b) => a.eventSeq - b.eventSeq);
   for (const event of ordered) {
-    if (event.eventSeq <= state._lastEventSeq) continue;
-    state._lastEventSeq = event.eventSeq;
-    applyAgentRunEvent(state, event, {
-      scheduleToolPreparing: payload => applyToolPreparingReplay(state, payload),
-    });
+    enqueueStreamRunEvent(state, event);
+    let ready: AgentRunEvent | null;
+    while ((ready = takeNextStreamRunEvent(state)) !== null) {
+      applyAgentRunEvent(state, ready, {
+        scheduleToolPreparing: payload => applyToolPreparingReplay(state, payload),
+      });
+      if (ready.kind === 'done' || ready.kind === 'error') {
+        state._pendingRunEvents.clear();
+        return;
+      }
+    }
   }
 }
 
@@ -57,7 +64,7 @@ export function projectRunEventsToStreamState(
   state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
   applyDurableRunEventsToState(state, runEvents);
 
-  if (options.interruptActive && taskRunIsActive(taskRun) && state.isStreaming) {
+  if (options.interruptActive === true && taskRunIsActive(taskRun) && state.isStreaming) {
     applyTerminalProjection(state, {
       toolStatus: 'cancelled',
       message: 'Previous run interrupted when the app closed.',

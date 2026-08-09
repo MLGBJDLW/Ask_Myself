@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::agent::power_mode::AgentPowerMode;
 use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
@@ -22,35 +22,86 @@ use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
 
-/// Runtime-owned monotonic sequence for all events in one agent run.
-///
-/// Hosts receive already-sequenced events and never allocate ordering tokens
-/// themselves. Wrap one sequencer in an `Arc` when a run has multiple event
-/// producers (streaming, approval, cancellation, and finalization).
-#[derive(Debug)]
-pub struct AgentRunEventSequencer {
-    last_sequence: AtomicU64,
+/// The only producer interface for one run's ordered event ledger.
+#[derive(Clone)]
+pub struct AgentRunEventOutbox {
+    sender: tokio::sync::mpsc::UnboundedSender<AgentRunEvent>,
+    failure_handle: AgentRunEventOutboxFailureHandle,
 }
 
-impl AgentRunEventSequencer {
-    pub fn new(last_sequence: u64) -> Self {
-        Self {
-            last_sequence: AtomicU64::new(last_sequence),
+/// Sender-free control plane retained by the outbox actor. Keeping this handle
+/// alive cannot keep the producer channel open.
+#[derive(Clone)]
+pub struct AgentRunEventOutboxFailureHandle {
+    terminal_submitted: Arc<Mutex<bool>>,
+    cancellation: CancellationToken,
+}
+
+impl AgentRunEventOutboxFailureHandle {
+    pub fn fail_closed(&self) {
+        if let Ok(mut terminal_submitted) = self.terminal_submitted.lock() {
+            *terminal_submitted = true;
         }
-    }
-
-    pub fn next(&self) -> u64 {
-        self.last_sequence.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    pub fn current(&self) -> u64 {
-        self.last_sequence.load(Ordering::SeqCst)
+        self.cancellation.cancel();
     }
 }
 
-impl Default for AgentRunEventSequencer {
-    fn default() -> Self {
-        Self::new(0)
+impl AgentRunEventOutbox {
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<AgentRunEvent>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let failure_handle = AgentRunEventOutboxFailureHandle {
+            terminal_submitted: Arc::new(Mutex::new(false)),
+            cancellation: CancellationToken::new(),
+        };
+        (
+            Self {
+                sender,
+                failure_handle,
+            },
+            receiver,
+        )
+    }
+
+    pub fn submit(&self, event: AgentRunEvent) -> Result<(), CoreError> {
+        if event.event_seq != 0 {
+            return Err(CoreError::InvalidInput(
+                "Run Event producers must submit an unsequenced event".to_string(),
+            ));
+        }
+        let mut terminal_submitted =
+            self.failure_handle.terminal_submitted.lock().map_err(|_| {
+                CoreError::Internal("Run Event outbox state is poisoned".to_string())
+            })?;
+        if *terminal_submitted {
+            return Err(CoreError::InvalidInput(
+                "Run Event outbox is closed after its terminal event".to_string(),
+            ));
+        }
+        let terminal = event.is_terminal();
+        self.sender.send(event).map_err(|_| {
+            CoreError::Internal("Run Event outbox actor is unavailable".to_string())
+        })?;
+        *terminal_submitted = terminal;
+        Ok(())
+    }
+
+    pub fn is_closed_for_submission(&self) -> bool {
+        self.failure_handle
+            .terminal_submitted
+            .lock()
+            .map(|terminal_submitted| *terminal_submitted)
+            .unwrap_or(true)
+    }
+
+    pub fn failure_handle(&self) -> AgentRunEventOutboxFailureHandle {
+        self.failure_handle.clone()
+    }
+
+    /// One executor-scoped child of the run lifetime. Cancelling a suspended
+    /// executor does not poison a later continuation, while fail-closed outbox
+    /// cancellation reaches every child for this run.
+    pub fn turn_cancellation_token(&self) -> CancellationToken {
+        self.failure_handle.cancellation.child_token()
     }
 }
 
@@ -63,7 +114,7 @@ pub struct ActiveAgentTurn {
     pub cancel_token: CancellationToken,
     pub task: tokio::task::JoinHandle<()>,
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
-    pub event_sequencer: Arc<AgentRunEventSequencer>,
+    pub event_outbox: Arc<AgentRunEventOutbox>,
     pub orchestrator_run_id: Option<String>,
     pub frontend_paint_recorded: AtomicBool,
 }
@@ -133,7 +184,9 @@ impl AgentSessionManager {
             ));
         };
         if turn.is_finished() {
-            active.remove(session_id);
+            if turn.event_outbox.is_closed_for_submission() {
+                active.remove(session_id);
+            }
             return Err(CoreError::NotFound(
                 "No running agent turn for this session.".to_string(),
             ));
@@ -143,19 +196,43 @@ impl AgentSessionManager {
 
     pub async fn take(&self, session_id: &str) -> Option<ActiveAgentTurn> {
         let turn = self.active.lock().await.remove(session_id)?;
-        (!turn.is_finished()).then_some(turn)
+        (!turn.is_finished() || !turn.event_outbox.is_closed_for_submission()).then_some(turn)
+    }
+
+    pub async fn take_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Option<ActiveAgentTurn>, CoreError> {
+        let mut active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return Ok(None);
+        };
+        if turn.handle.run_id != run_id {
+            return Err(CoreError::InvalidInput(format!(
+                "Interaction continuation run mismatch: active {}, resumed {run_id}",
+                turn.handle.run_id
+            )));
+        }
+        let turn = active
+            .remove(session_id)
+            .expect("validated agent session should remain registered");
+        Ok((!turn.is_finished() || !turn.event_outbox.is_closed_for_submission()).then_some(turn))
     }
 
     pub async fn contains(&self, session_id: &str) -> bool {
         let mut active = self.active.lock().await;
-        if active
-            .get(session_id)
-            .is_some_and(ActiveAgentTurn::is_finished)
-        {
-            active.remove(session_id);
+        if let Some(turn) = active.get(session_id) {
+            if turn.is_finished() {
+                if turn.event_outbox.is_closed_for_submission() {
+                    active.remove(session_id);
+                }
+                return false;
+            }
+        } else {
             return false;
         }
-        active.contains_key(session_id)
+        true
     }
 
     /// Claim the one frontend-paint metric allowed for an active turn.
@@ -184,8 +261,10 @@ impl AgentSessionManager {
     /// Returns `None` only while another runtime operation holds the manager.
     pub fn try_is_empty(&self) -> Option<bool> {
         self.active.try_lock().ok().map(|mut active| {
-            active.retain(|_, turn| !turn.is_finished());
-            active.is_empty()
+            active.retain(|_, turn| {
+                !turn.is_finished() || !turn.event_outbox.is_closed_for_submission()
+            });
+            !active.values().any(|turn| !turn.is_finished())
         })
     }
 }
@@ -815,24 +894,88 @@ mod tests {
     }
 
     #[test]
-    fn run_event_sequencer_allocates_one_monotonic_sequence_across_producers() {
-        let sequencer = std::sync::Arc::new(AgentRunEventSequencer::default());
-        let mut producers = Vec::new();
-        for _ in 0..4 {
-            let sequencer = std::sync::Arc::clone(&sequencer);
-            producers.push(std::thread::spawn(move || {
-                (0..25).map(|_| sequencer.next()).collect::<Vec<_>>()
-            }));
-        }
+    fn run_event_outbox_accepts_one_terminal_and_rejects_later_events() {
+        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
+        let event =
+            AgentRunEvent::terminal_status("run-1", Some("turn-1"), 0, "done", "completed", None);
+        outbox
+            .submit(event)
+            .expect("terminal event should be accepted");
+        assert!(outbox
+            .submit(AgentRunEvent::terminal_status(
+                "run-1",
+                Some("turn-1"),
+                0,
+                "late",
+                "completed",
+                None
+            ))
+            .is_err());
+        assert!(receiver.try_recv().is_ok());
+    }
 
-        let mut allocated = producers
-            .into_iter()
-            .flat_map(|producer| producer.join().expect("event producer should finish"))
-            .collect::<Vec<_>>();
-        allocated.sort_unstable();
+    #[test]
+    fn run_event_outbox_clones_share_one_ordered_producer_queue() {
+        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
+        let continuation = outbox.clone();
+        outbox
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::AwaitingUserInput,
+                "Waiting for your response",
+                Some("awaiting_user_input"),
+                None,
+            ))
+            .unwrap();
+        continuation
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::Responding,
+                "Interaction response accepted",
+                Some("running"),
+                None,
+            ))
+            .unwrap();
 
-        assert_eq!(allocated, (1..=100).collect::<Vec<_>>());
-        assert_eq!(sequencer.current(), 100);
+        assert_eq!(
+            receiver.try_recv().unwrap().label,
+            "Waiting for your response"
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap().label,
+            "Interaction response accepted"
+        );
+    }
+
+    #[test]
+    fn run_event_outbox_failure_closes_submission_and_cancels_turn_children() {
+        let (outbox, _receiver) = AgentRunEventOutbox::channel();
+        let suspended_turn = outbox.turn_cancellation_token();
+        suspended_turn.cancel();
+        let existing_turn = outbox.turn_cancellation_token();
+        let failure_handle = outbox.failure_handle();
+
+        assert!(!existing_turn.is_cancelled());
+        failure_handle.fail_closed();
+
+        assert!(outbox.is_closed_for_submission());
+        assert!(existing_turn.is_cancelled());
+        assert!(outbox.turn_cancellation_token().is_cancelled());
+        assert!(outbox
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::Responding,
+                "late",
+                Some("running"),
+                None,
+            ))
+            .is_err());
     }
 
     #[tokio::test]
@@ -847,7 +990,7 @@ mod tests {
                 cancel_token: first_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: first_tx,
-                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })
@@ -861,13 +1004,17 @@ mod tests {
                 cancel_token: second_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: second_tx,
-                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })
             .await;
 
         assert!(first_cancel_observer.is_cancelled());
+        assert!(manager
+            .take_for_run("session-1", "run-other")
+            .await
+            .is_err());
         manager
             .steer("session-1", "keep going")
             .await
@@ -896,6 +1043,34 @@ mod tests {
         active.cancel();
         active.abort();
         assert!(!manager.contains("session-1").await);
+    }
+
+    #[tokio::test]
+    async fn session_manager_retains_open_outbox_after_suspended_task_finishes() {
+        let manager = AgentSessionManager::new();
+        let (outbox, _receiver) = AgentRunEventOutbox::channel();
+        let outbox = Arc::new(outbox);
+        let (steering_tx, _steering_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .register(ActiveAgentTurn {
+                handle: AgentTurnHandle::running("session-1", "run-1", "turn-1"),
+                cancel_token: CancellationToken::new(),
+                task: tokio::spawn(async {}),
+                steering_tx,
+                event_outbox: Arc::clone(&outbox),
+                orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
+            })
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(!manager.contains("session-1").await);
+        assert!(manager.try_is_empty().unwrap());
+        let retained = manager
+            .take("session-1")
+            .await
+            .expect("finished suspended turn should retain its open outbox");
+        assert!(Arc::ptr_eq(&retained.event_outbox, &outbox));
     }
 
     #[test]

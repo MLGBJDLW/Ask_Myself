@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { RUN_EVENT_FIXTURE_INIT_SCRIPT } from './run-event-fixture';
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
 
@@ -55,8 +57,29 @@ test.beforeEach(async ({ page }) => {
     let callbackSeq = 1;
     let listenerSeq = 1;
     let refreshDelayActive = false;
+    let refreshReleased = false;
+    let releaseRefresh: (() => void) | null = null;
+
+    (window as unknown as { __releaseDonePreviewRefresh?: () => void })
+      .__releaseDonePreviewRefresh = () => {
+        refreshReleased = true;
+        const release = releaseRefresh;
+        releaseRefresh = null;
+        release?.();
+      };
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      const convert = (window as unknown as {
+        __toRunEventFixture?: (
+          name: string,
+          value: Record<string, unknown>,
+        ) => { eventName: string; payload: Record<string, unknown> };
+      }).__toRunEventFixture;
+      const converted = convert?.(eventName, payload);
+      if (converted) {
+        eventName = converted.eventName;
+        payload = converted.payload;
+      }
       for (const [listenerId, listener] of listeners.entries()) {
         if (listener.event !== eventName) continue;
         const callback = callbackMap.get(listener.handlerId);
@@ -120,11 +143,16 @@ test.beforeEach(async ({ page }) => {
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const payload = [clone(conversations[id]), clone(messagesByConversation[id] ?? [])] as const;
-          if (!refreshDelayActive) {
+          if (!refreshDelayActive || refreshReleased) {
             return payload;
           }
           return await new Promise<typeof payload>((resolve) => {
-            setTimeout(() => resolve(payload), 700);
+            const release = () => resolve(payload);
+            releaseRefresh = release;
+            if (refreshReleased) {
+              releaseRefresh = null;
+              release();
+            }
           });
         }
         case 'list_sources':
@@ -296,7 +324,7 @@ test.beforeEach(async ({ page }) => {
           conversations[conversationId].updatedAt = new Date().toISOString();
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'thinking',
               content: 'Checking the retry note first.',
@@ -304,7 +332,7 @@ test.beforeEach(async ({ page }) => {
           }, 20);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: toolCallId,
@@ -314,7 +342,7 @@ test.beforeEach(async ({ page }) => {
           }, 60);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: toolCallId,
@@ -326,7 +354,7 @@ test.beforeEach(async ({ page }) => {
           }, 100);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: createToolCallId,
@@ -336,7 +364,7 @@ test.beforeEach(async ({ page }) => {
           }, 70);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: createToolCallId,
@@ -348,7 +376,7 @@ test.beforeEach(async ({ page }) => {
           }, 2_600);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: editToolCallId,
@@ -358,7 +386,7 @@ test.beforeEach(async ({ page }) => {
           }, 75);
 
           setTimeout(() => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: editToolCallId,
@@ -380,7 +408,7 @@ test.beforeEach(async ({ page }) => {
               editToolMessage,
               finalAssistantMessage,
             ];
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'done',
               message: {
@@ -483,6 +511,21 @@ test('keeps live thinking and file edit badges mounted until persisted messages 
   await expect(page.getByText('Final answer: keep retries bounded and show the limit.')).toBeVisible({ timeout: 4_000 });
   await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
   await expect(chatLog.getByRole('button', { name: /Read file/i })).toHaveCount(1);
+  const settledLiveCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });
+  await expect(settledLiveCreateFile).toHaveCount(1);
+  await expect(settledLiveCreateFile).toHaveAttribute('data-tool-state', 'done');
+  await expect(settledLiveCreateFile).toHaveAttribute('aria-busy', 'false');
+  await expect(settledLiveCreateFile.getByTestId('tool-card-status')).toHaveCount(1);
+  await expect(settledLiveCreateFile.locator('.animate-spin')).toHaveCount(0);
+  await expect(settledLiveCreateFile).not.toContainText('content');
+
+  await page.evaluate(() => {
+    (window as unknown as { __releaseDonePreviewRefresh?: () => void })
+      .__releaseDonePreviewRefresh?.();
+  });
+  await expect(settledLiveCreateFile).toHaveCount(0);
+  await page.locator('button').filter({ hasText: /Thinking completed|Thought for/ }).first().click();
+
   const persistedCreateFile = chatLog.getByRole('button', { name: /Create File.*\+3.*-0/i });
   await expect(persistedCreateFile).toHaveCount(1);
   await expect(persistedCreateFile).toHaveAttribute('data-tool-state', 'done');

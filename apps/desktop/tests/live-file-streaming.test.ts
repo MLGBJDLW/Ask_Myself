@@ -55,8 +55,17 @@ streamStore.startStream(conversationId);
 
 const started: AgentFrontendEvent = {
   conversationId,
-  type: 'toolRunStarted',
-  run: preparingFileRun(2, 'first\nsecond'),
+  runEvent: {
+    version: 2,
+    runId: 'run-live-file',
+    turnId: 'turn-live-file',
+    eventSeq: 1,
+    kind: 'toolStarted',
+    phase: 'tooling',
+    label: 'create_file',
+    status: 'preparing',
+    payload: { run: preparingFileRun(2, 'first\nsecond') },
+  },
 };
 streamStore.dispatch(conversationId, started);
 
@@ -75,8 +84,17 @@ assert(
 
 const updated: AgentFrontendEvent = {
   conversationId,
-  type: 'toolRunUpdated',
-  run: preparingFileRun(3, 'first\nsecond\nthird'),
+  runEvent: {
+    version: 2,
+    runId: 'run-live-file',
+    turnId: 'turn-live-file',
+    eventSeq: 2,
+    kind: 'toolProgress',
+    phase: 'tooling',
+    label: 'create_file',
+    status: 'preparing',
+    payload: { run: preparingFileRun(3, 'first\nsecond\nthird') },
+  },
 };
 streamStore.dispatch(conversationId, updated);
 

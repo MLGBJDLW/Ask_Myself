@@ -6,16 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use crate::agent_stream::emit_agent_frontend_event_with_presentation;
 #[cfg(test)]
 use crate::agent_stream::{
     compact_agent_event_for_frontend, split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS,
     MAX_FRONTEND_TOOL_CONTENT_CHARS,
 };
-use crate::agent_stream::{
-    emit_agent_frontend_event_with_presentation, emit_agent_run_frontend_event,
-};
 use crate::agent_task_events::{
-    emit_agent_task_run_update, persist_durable_run_event, record_internal_agent_run_status_event,
+    emit_agent_task_run_update, record_internal_agent_run_status_event,
 };
 use crate::app_events::emit_app_event;
 use nexa_core::agent::power_mode::AgentPowerMode;
@@ -86,7 +84,7 @@ use nexa_core::provider_catalog::{
     ProviderPreset,
 };
 use nexa_core::provider_registry::provider_type_for_parts;
-use nexa_core::runtime::AgentRunEventSequencer;
+use nexa_core::runtime::AgentRunEventOutbox;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::settings_schema_v2::{
     CapabilityBindingV2, SettingsMigrationReportV2, SettingsProfileV2, SettingsSchemaStateV2,
@@ -182,26 +180,29 @@ struct TerminalAgentError<'a> {
 
 fn emit_terminal_agent_error_once(
     terminal_emitted: &AtomicBool,
-    db: &Database,
-    app_handle: &AppHandle,
-    stream_event_seq: &AgentRunEventSequencer,
+    _db: &Database,
+    _app_handle: &AppHandle,
+    stream_event_seq: &AgentRunEventOutbox,
     error: TerminalAgentError<'_>,
 ) {
     if terminal_emitted.swap(true, Ordering::SeqCst) {
         return;
     }
 
-    let event_seq = stream_event_seq.next();
     let run_event = AgentRunEvent::terminal_error(
         error.task_run_id,
         Some(error.turn_id),
-        event_seq,
+        0,
         error.message,
         error.status,
         error.payload,
     );
-    emit_agent_run_frontend_event(app_handle, error.conversation_id, &run_event);
-    persist_durable_run_event(db, &run_event);
+    if let Err(submit_error) = stream_event_seq.submit(run_event) {
+        warn!(
+            "Failed to submit terminal RunEvent for {}: {submit_error}",
+            error.conversation_id
+        );
+    }
 }
 
 /// State for the MCP server manager.

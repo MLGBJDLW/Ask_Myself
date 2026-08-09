@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { RUN_EVENT_FIXTURE_INIT_SCRIPT } from './run-event-fixture';
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
     (window as unknown as { __AUTO_SPEECH_TEXTS__: string[] }).__AUTO_SPEECH_TEXTS__ = [];
@@ -59,6 +61,17 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      const convert = (window as unknown as {
+        __toRunEventFixture?: (
+          name: string,
+          value: Record<string, unknown>,
+        ) => { eventName: string; payload: Record<string, unknown> };
+      }).__toRunEventFixture;
+      const converted = convert?.(eventName, payload);
+      if (converted) {
+        eventName = converted.eventName;
+        payload = converted.payload;
+      }
       for (const [listenerId, listener] of listeners.entries()) {
         if (listener.event !== eventName) continue;
         const callback = callbackMap.get(listener.handlerId);
@@ -296,14 +309,14 @@ test.beforeEach(async ({ page }) => {
 
           streamSteps = [
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'thinking',
               content: 'Need to search the knowledge base first.',
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: firstToolCallId,
@@ -312,7 +325,7 @@ test.beforeEach(async ({ page }) => {
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: firstToolCallId,
@@ -323,14 +336,14 @@ test.beforeEach(async ({ page }) => {
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'thinking',
               content: 'Now compare the two candidate files.',
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallStart',
               callId: secondToolCallId,
@@ -339,7 +352,7 @@ test.beforeEach(async ({ page }) => {
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'toolCallResult',
               callId: secondToolCallId,
@@ -350,14 +363,14 @@ test.beforeEach(async ({ page }) => {
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'textDelta',
               delta: 'Final answer: add the timeout guard from the second file.',
             });
             },
             () => {
-            emitEvent('agent:event', {
+            emitEvent('agent://run-event', {
               conversationId,
               type: 'done',
               message: finalAssistantMessage,

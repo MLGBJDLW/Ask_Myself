@@ -417,6 +417,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     options?: ChatSendOptions;
   } | null>(null);
   const knownStreamConversationsRef = useRef<Set<string>>(new Set());
+  const conversationHydrationGenerationRef = useRef(0);
+  const completionHydrationGenerationRef = useRef(0);
   const suppressedLiveUsageRef = useRef<Set<string>>(new Set());
   const compactionUsageRef = useRef<Map<string, UsageSnapshot>>(new Map());
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
@@ -440,6 +442,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const messages = activeId ? (messageCache[activeId] ?? []) : [];
   const turns = activeId ? (turnCache[activeId] ?? []) : [];
   const taskRuns = activeId ? (taskRunCache[activeId] ?? []) : [];
+  const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
 
   const setMessagesForConversation = useCallback((
     conversationId: string,
@@ -625,6 +628,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   /* ── Load messages when conversation changes ────────────────────── */
   useEffect(() => {
+    const generation = ++conversationHydrationGenerationRef.current;
     if (!activeId) {
       setOpenedConversation(null);
       setUsageSnapshot(null);
@@ -656,7 +660,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           api.getAgentTaskRuns(activeId),
           api.getConversationUsageSnapshot(activeId),
         ]);
-        if (cancelled) return;
+        if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
         setOpenedConversation(conv);
         // Safety net (also covers pre-Tier-B persisted rows): preserve any
         // imageAttachments present in prior in-memory state when the backend
@@ -672,7 +676,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             api.getAgentRunEvents(resumableRun.id).catch(() => []),
           ])
             .then(([taskEvents, runEvents]) => {
-              if (cancelled) return;
+              if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
               streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
               const restoredStream = streamStore.getStream(activeId);
               if (restoredStream?.isStreaming) {
@@ -702,7 +706,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           defaultAgentConfigRef.current,
         );
         const cw = await resolveContextWindowForConfig(selectedConfig);
-        if (!cancelled) {
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
           const resolvedContextWindow = cw || defaultContextWindow;
           if (selectedConfig) {
             setAgentConfig(selectedConfig);
@@ -714,20 +718,23 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setContextWindow(resolvedContextWindow);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
           setContextWindow(defaultContextWindow);
         }
       } finally {
-        if (!cancelled) setLoadingMsgs(false);
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
+          setLoadingMsgs(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, defaultContextWindow, externalSystemPrompt, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
+    const generation = ++completionHydrationGenerationRef.current;
     let cancelled = false;
     const completedConversationId = activeId
       && !isStreaming
@@ -743,7 +750,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         api.getAgentTaskRuns(completedConversationId),
         api.getConversationUsageSnapshot(completedConversationId),
       ]).then(([[conv, msgs], conversationTurns, agentTaskRuns, durableUsage]) => {
-        if (!cancelled) {
+        if (!cancelled && generation === completionHydrationGenerationRef.current) {
           // Safety net (also covers pre-Tier-B persisted rows): preserve any
           // imageAttachments present in prior in-memory state when the backend
           // response lacks them (e.g. optimistic temp-* ids or legacy rows).
@@ -774,9 +781,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           };
           if (activeId === completedConversationId) {
             setCustomSystemPrompt(conv.systemPrompt ?? '');
-          }
-          if (msgs.some(msg => msg.role === 'assistant' || msg.role === 'tool')) {
-            requestAnimationFrame(() => streamStore.clearPreview(completedConversationId));
           }
         }
       }).catch((e) => {
@@ -828,6 +832,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     }
     return () => { cancelled = true; };
   }, [activeId, isStreaming, loadConversations, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation, t]);
+
+  // Retire the live projection only after React has committed the durable
+  // messages. Clearing it from the fetch callback can race the state commit
+  // and leave a transient blank turn on slower renderers.
+  useEffect(() => {
+    if (activeId && !isStreaming && hasPersistedStreamResult) {
+      streamStore.clearPreview(activeId);
+    }
+  }, [activeId, hasPersistedStreamResult, isStreaming]);
 
   /* ── Sync stream errors to chatError ────────────────────────────── */
   useEffect(() => {
@@ -1429,7 +1442,6 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   const isViewingStreamingConversation =
     activeId != null && streamHasVisiblePreview(activeId);
-  const hasPersistedStreamResult = hasPersistedResultAfterLatestUserMessage(messages);
   const shouldShowLivePreview =
     isViewingStreamingConversation && (isStreaming || !hasPersistedStreamResult);
   const activeConversation = activeId
