@@ -17,10 +17,11 @@ use super::reasoning_profile::{
 };
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
-    configured_request_timeout, send_stream_start_request, serialized_json_body,
-    streaming::parse_sse_stream, with_request_timeout, CompletionRequest, CompletionResponse,
-    ContentPart, FinishReason, LlmProvider, Message, ProviderConfig, ProviderType, Role,
-    StreamChunk, ToolCallRequest, ToolDefinition, Usage,
+    configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
+    serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
+    CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
+    ProviderType, Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
+    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 #[cfg(test)]
 use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
@@ -1456,14 +1457,34 @@ fn parse_responses_completion(
                     reasoning_replay.push(item.clone());
                     has_replay_reasoning = true;
                 }
-                for summary in item
-                    .get("summary")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(text) = summary.get("text").and_then(serde_json::Value::as_str) {
-                        thinking.push(text.to_string());
+                if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+                    for content in item
+                        .get("content")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if content.get("type").and_then(serde_json::Value::as_str)
+                            == Some("reasoning_text")
+                        {
+                            if let Some(text) =
+                                content.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                thinking.push(text.to_string());
+                            }
+                        }
+                    }
+                } else {
+                    for summary in item
+                        .get("summary")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(text) = summary.get("text").and_then(serde_json::Value::as_str)
+                        {
+                            thinking.push(text.to_string());
+                        }
                     }
                 }
             }
@@ -1533,6 +1554,253 @@ fn parse_responses_completion(
         },
         thinking: (!thinking.is_empty()).then(|| thinking.join("\n")),
     })
+}
+
+#[derive(Default)]
+struct ResponsesStreamProjection {
+    answer: String,
+    thinking: String,
+    terminal_seen: bool,
+}
+
+fn streamed_completion_suffix(
+    streamed: &str,
+    completed: &str,
+    channel: &str,
+) -> Result<String, CoreError> {
+    if streamed.is_empty() {
+        return Ok(completed.to_string());
+    }
+    completed
+        .strip_prefix(streamed)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CoreError::StreamIncomplete(format!(
+                "Responses {channel} deltas did not match the completed response"
+            ))
+        })
+}
+
+fn project_responses_stream_event(
+    value: serde_json::Value,
+    projection: &mut ResponsesStreamProjection,
+    dialect: super::native_search::NativeSearchDialect,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> Result<Vec<StreamChunk>, CoreError> {
+    let event_type = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    match event_type {
+        "response.output_text.delta" => {
+            let delta = value
+                .get("delta")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if delta.is_empty() {
+                return Ok(Vec::new());
+            }
+            projection.answer.push_str(delta);
+            Ok(vec![StreamChunk {
+                delta: delta.to_string(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            }])
+        }
+        "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+            let visible_reasoning_event = match dialect {
+                super::native_search::NativeSearchDialect::DeepSeekResponses => {
+                    "response.reasoning_text.delta"
+                }
+                _ => "response.reasoning_summary_text.delta",
+            };
+            if event_type != visible_reasoning_event {
+                return Ok(Vec::new());
+            }
+            let delta = value
+                .get("delta")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if delta.is_empty() {
+                return Ok(Vec::new());
+            }
+            projection.thinking.push_str(delta);
+            Ok(vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: Some(delta.to_string()),
+            }])
+        }
+        "response.completed" | "response.incomplete" => {
+            let response = value.get("response").cloned().ok_or_else(|| {
+                CoreError::StreamIncomplete(format!(
+                    "{event_type} omitted the authoritative response payload"
+                ))
+            })?;
+            let mut completed = parse_responses_completion(response, dialect, capability)?;
+            completed.content =
+                streamed_completion_suffix(&projection.answer, &completed.content, "answer")?;
+            completed.thinking = match completed.thinking {
+                Some(thinking) => Some(streamed_completion_suffix(
+                    &projection.thinking,
+                    &thinking,
+                    "thinking",
+                )?),
+                None => None,
+            }
+            .filter(|thinking| !thinking.is_empty());
+            projection.terminal_seen = true;
+            completion_response_to_stream_chunks(completed)
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+        }
+        "response.failed" => {
+            let message = value
+                .pointer("/response/error/message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Responses stream failed");
+            Err(CoreError::Llm(message.to_string()))
+        }
+        "error" => {
+            let message = value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    value
+                        .pointer("/error/message")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or("Responses stream returned an error event");
+            Err(CoreError::Llm(message.to_string()))
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn drain_responses_sse_lines(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    while let Some(relative_newline) = buffer[start..].iter().position(|byte| *byte == b'\n') {
+        let newline = start + relative_newline;
+        let mut bytes = &buffer[start..newline];
+        if bytes.ends_with(b"\r") {
+            bytes = &bytes[..bytes.len().saturating_sub(1)];
+        }
+        lines.push(String::from_utf8_lossy(bytes).into_owned());
+        start = newline + 1;
+    }
+    if start > 0 {
+        buffer.drain(..start);
+    }
+    lines
+}
+
+async fn dispatch_responses_sse_data(
+    data_lines: &mut Vec<String>,
+    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    projection: &mut ResponsesStreamProjection,
+    dialect: super::native_search::NativeSearchDialect,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> Result<bool, CoreError> {
+    if data_lines.is_empty() {
+        return Ok(false);
+    }
+    let data = data_lines.join("\n");
+    data_lines.clear();
+    let data = data.trim();
+    if data == "[DONE]" {
+        return if projection.terminal_seen {
+            Ok(true)
+        } else {
+            Err(CoreError::StreamIncomplete(
+                "Responses stream ended before a terminal response event".to_string(),
+            ))
+        };
+    }
+    let value = serde_json::from_str::<serde_json::Value>(data)
+        .map_err(|error| CoreError::Llm(format!("Responses SSE JSON parse error: {error}")))?;
+    let chunks = project_responses_stream_event(value, projection, dialect, capability)?;
+    for chunk in chunks {
+        if tx.send(Ok(chunk)).await.is_err() {
+            return Ok(true);
+        }
+    }
+    Ok(projection.terminal_seen)
+}
+
+async fn parse_responses_sse_stream(
+    response: reqwest::Response,
+    tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    dialect: super::native_search::NativeSearchDialect,
+    capability: crate::model_catalog::NativeWebSearchCapability,
+) -> Result<(), CoreError> {
+    let mut byte_stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let mut data_lines = Vec::new();
+    let mut projection = ResponsesStreamProjection::default();
+
+    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
+        &mut byte_stream,
+        DEFAULT_STREAM_IDLE_TIMEOUT,
+        "Responses SSE stream",
+    )
+    .await?
+    {
+        let chunk = chunk_result.map_err(|error| {
+            let message = error.to_string();
+            if is_retriable_reqwest_error(&error) {
+                CoreError::StreamIncomplete(format!("Responses stream interrupted: {message}"))
+            } else {
+                CoreError::Llm(format!("Responses stream read error: {message}"))
+            }
+        })?;
+        buffer.extend_from_slice(&chunk);
+        for line in drain_responses_sse_lines(&mut buffer) {
+            if line.is_empty() {
+                if dispatch_responses_sse_data(
+                    &mut data_lines,
+                    &tx,
+                    &mut projection,
+                    dialect,
+                    capability,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+            if let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
+                data_lines.push(data.to_string());
+            }
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer);
+        if let Some(data) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            data_lines.push(data.to_string());
+        }
+    }
+    if dispatch_responses_sse_data(&mut data_lines, &tx, &mut projection, dialect, capability)
+        .await?
+        || projection.terminal_seen
+    {
+        return Ok(());
+    }
+    Err(CoreError::StreamIncomplete(
+        "Responses stream ended without a terminal response event".to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1661,6 +1929,55 @@ impl OpenAiProvider {
         let parsed = parse_responses_completion(value, dialect, capability)?;
         self.transport.record_transport_success();
         Ok(parsed)
+    }
+
+    async fn stream_hosted_search(
+        &self,
+        request: &CompletionRequest,
+        dialect: super::native_search::NativeSearchDialect,
+        mode: super::native_search::SearchExecutionMode,
+        capability: crate::model_catalog::NativeWebSearchCapability,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
+        let mut body = build_responses_request(request, dialect, mode, capability)?;
+        body["stream"] = serde_json::json!(true);
+        let body_bytes = serialized_json_body(&body, "Responses streaming request")?;
+        let api_key = self.api_key()?;
+        info!(
+            "Responses streaming request to {url}, model={}, dialect={dialect:?}",
+            request.model
+        );
+        let response = send_stream_start_request(
+            apply_openrouter_headers(
+                self.transport
+                    .client()
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes),
+                &self.config,
+            ),
+            self.request_timeout,
+            "Responses streaming request",
+        )
+        .await
+        .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))?;
+        let response = self.check_response(response).await?;
+        let (tx, rx) = mpsc::channel(64);
+        let transport = Arc::clone(&self.transport);
+        tokio::spawn(async move {
+            if let Err(error) =
+                parse_responses_sse_stream(response, tx.clone(), dialect, capability).await
+            {
+                transport.record_transport_failure(&error.to_string());
+                let _ = tx.send(Err(error)).await;
+            } else {
+                transport.record_transport_success();
+            }
+        });
+        Ok(Box::pin(futures::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        })))
     }
 }
 
@@ -1916,7 +2233,28 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        if hosted_search_context(request).is_some() {
+        if let Some((dialect, mode, capability)) = hosted_search_context(request) {
+            if capability.supports_stream_events
+                && (capability.can_mix_client_tools
+                    || !hosted_search_requires_client_tools(request, mode))
+            {
+                return match self
+                    .stream_hosted_search(request, dialect, mode, capability)
+                    .await
+                {
+                    Ok(stream) => Ok(stream),
+                    Err(error)
+                        if matches!(
+                            mode,
+                            super::native_search::SearchExecutionMode::Auto
+                                | super::native_search::SearchExecutionMode::Hybrid
+                        ) =>
+                    {
+                        Err(contextualize_hosted_search_error(dialect, error))
+                    }
+                    Err(error) => Err(error),
+                };
+            }
             let response = self.complete(request).await?;
             return Ok(Box::pin(futures::stream::iter(
                 completion_response_to_stream_chunks(response),
@@ -2083,6 +2421,79 @@ mod tests {
         socket
             .write_all(
                 br#"data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+"#,
+            )
+            .await?;
+        socket.flush().await?;
+        socket.shutdown().await
+    }
+
+    async fn serve_delayed_responses_sse_response(
+        listener: tokio::net::TcpListener,
+    ) -> std::io::Result<()> {
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        let mut headers_end = None;
+
+        while headers_end.is_none() {
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await?;
+            if n == 0 {
+                return Ok(());
+            }
+            request.extend_from_slice(&buf[..n]);
+            headers_end = request.windows(4).position(|window| window == b"\r\n\r\n");
+        }
+
+        let headers_end = headers_end.expect("headers end") + 4;
+        let content_length = String::from_utf8_lossy(&request[..headers_end])
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while request.len() < headers_end + content_length {
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+        }
+
+        let body = &request[headers_end..headers_end + content_length];
+        let body: serde_json::Value = serde_json::from_slice(body).expect("Responses request JSON");
+        assert_eq!(body["stream"], true, "Responses request must opt into SSE");
+
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+        socket
+            .write_all(
+                br#"data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"plan","sequence_number":1}
+
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"hello","sequence_number":2}
+
+"#,
+            )
+            .await?;
+        socket.flush().await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+        socket
+            .write_all(
+                br#"data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":" world","sequence_number":3}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"plan"}],"summary":[]},{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world","annotations":[]}]}],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}},"sequence_number":4}
 
 data: [DONE]
 
@@ -2414,6 +2825,90 @@ data: [DONE]
 
         server.await.expect("server task").expect("server result");
         assert_eq!(text, "hello world");
+    }
+
+    #[tokio::test]
+    async fn responses_stream_exposes_reasoning_and_answer_before_completion() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(serve_delayed_responses_sse_response(listener));
+
+        let provider = OpenAiProvider::new(ProviderConfig {
+            provider_type: ProviderType::DeepSeek,
+            base_url: Some(format!("http://{addr}/v1")),
+            api_key: Some("test-key".to_string()),
+            org_id: None,
+            timeout_secs: Some(2),
+        })
+        .expect("provider");
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let plan = super::super::native_search::NativeSearchPlan {
+            mode: super::super::native_search::SearchExecutionMode::ProviderNative,
+            dialect: Some(super::super::native_search::NativeSearchDialect::DeepSeekResponses),
+            capability: Some(capability),
+            trusted_endpoint: true,
+        };
+        let mut request = endpoint_reasoning_request("deepseek-v4-flash");
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "search".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("DeepSeek Responses marker"),
+        ]);
+
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            provider.stream(&request),
+        )
+        .await
+        .expect("stream() must return before the terminal Responses event")
+        .expect("start Responses stream");
+
+        let thinking = tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
+            .await
+            .expect("reasoning delta should arrive before completion")
+            .expect("reasoning chunk")
+            .expect("valid reasoning chunk");
+        assert_eq!(thinking.thinking_delta.as_deref(), Some("plan"));
+
+        let first_answer =
+            tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
+                .await
+                .expect("answer delta should arrive before completion")
+                .expect("answer chunk")
+                .expect("valid answer chunk");
+        assert_eq!(first_answer.delta, "hello");
+
+        let mut answer = first_answer.delta;
+        let mut finish_reason = None;
+        let mut trailing_thinking = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.expect("valid Responses stream chunk");
+            answer.push_str(&chunk.delta);
+            trailing_thinking.push_str(chunk.thinking_delta.as_deref().unwrap_or_default());
+            finish_reason = chunk.finish_reason.or(finish_reason);
+        }
+
+        server.await.expect("server task").expect("server result");
+        assert_eq!(answer, "hello world");
+        assert!(
+            trailing_thinking.is_empty(),
+            "the completed response must not repeat streamed thinking"
+        );
+        assert_eq!(finish_reason, Some(FinishReason::Stop));
     }
 
     #[test]
@@ -3790,6 +4285,7 @@ data: [DONE]
             capability,
         )
         .unwrap();
+        assert_eq!(response.thinking.as_deref(), Some("Need current evidence"));
         let mut assistant = Message::text(Role::Assistant, "");
         assistant.parts.clear();
         assistant.tool_calls = response.tool_calls;
