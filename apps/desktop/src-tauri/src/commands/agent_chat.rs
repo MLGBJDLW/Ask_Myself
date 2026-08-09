@@ -562,19 +562,21 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             return Err(error.to_string());
         }
     };
-    if launch_record.reused {
-        let continuation_is_already_running = resumed_turn
-            .as_ref()
-            .is_some_and(|previous| !previous.is_finished());
-        if !resumes_interaction || continuation_is_already_running {
-            if let Some(previous) = resumed_turn.take() {
-                agent_state.sessions.register(previous).await;
-            }
-            return Ok(desktop_agent_chat_launch(
-                &launch_record,
-                task_orchestrator_run_id,
-            ));
+    let continuation_is_already_running = resumed_turn
+        .as_ref()
+        .is_some_and(|previous| !previous.is_finished());
+    if reused_launch_needs_no_executor(
+        &launch_record,
+        resumes_interaction,
+        continuation_is_already_running,
+    ) {
+        if let Some(previous) = resumed_turn.take() {
+            agent_state.sessions.register(previous).await;
         }
+        return Ok(desktop_agent_chat_launch(
+            &launch_record,
+            task_orchestrator_run_id,
+        ));
     }
     let resumed_event_outbox = if let Some(previous) = resumed_turn.take() {
         debug_assert_eq!(previous.handle.run_id, launch_record.run_id);
@@ -1280,6 +1282,17 @@ fn elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn reused_launch_needs_no_executor(
+    launch: &nexa_core::conversation::AgentTurnLaunchRecord,
+    resumes_interaction: bool,
+    continuation_is_already_running: bool,
+) -> bool {
+    launch.reused
+        && (!resumes_interaction
+            || continuation_is_already_running
+            || launch.status == "awaiting_user_input")
+}
+
 fn initialization_frontend_message(error: &str) -> &'static str {
     if error.contains("stale model-target revision") {
         "The AI provider route changed while Nexa was refreshing it. Retry the message; if it repeats, open Settings > AI Providers and review items marked Needs attention."
@@ -1294,7 +1307,8 @@ fn initialization_frontend_message(error: &str) -> &'static str {
 
 #[cfg(test)]
 mod initialization_error_tests {
-    use super::initialization_frontend_message;
+    use super::{initialization_frontend_message, reused_launch_needs_no_executor};
+    use nexa_core::conversation::AgentTurnLaunchRecord;
 
     #[test]
     fn stale_registry_failure_is_actionable_without_exposing_internal_ids() {
@@ -1305,6 +1319,29 @@ mod initialization_error_tests {
         assert!(message.contains("Settings > AI Providers"));
         assert!(!message.contains("secret-run-id"));
         assert!(!message.contains("target:internal"));
+    }
+
+    #[test]
+    fn reused_interaction_with_active_siblings_stays_suspended() {
+        let launch = AgentTurnLaunchRecord {
+            conversation_id: "conversation-1".to_string(),
+            user_message_id: "message-1".to_string(),
+            user_message_sort_order: 1,
+            turn_id: "turn-1".to_string(),
+            run_id: "run-1".to_string(),
+            status: "awaiting_user_input".to_string(),
+            reused: true,
+        };
+
+        assert!(reused_launch_needs_no_executor(&launch, true, false));
+        assert!(!reused_launch_needs_no_executor(
+            &AgentTurnLaunchRecord {
+                status: "queued".to_string(),
+                ..launch
+            },
+            true,
+            false,
+        ));
     }
 }
 
