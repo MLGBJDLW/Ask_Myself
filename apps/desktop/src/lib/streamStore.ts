@@ -128,7 +128,7 @@ class StreamStoreImpl {
   private _recency = new Map<string, number>();
   private _recencyTick = 0;
   private _listeners = new Set<StoreListener>();
-  private _gapRecoveries = new Set<string>();
+  private _gapRecoveries = new Map<string, string>();
   private _notifications = new ConversationFrameBatcher(
     conversationId => this.notify(conversationId),
   );
@@ -297,12 +297,32 @@ class StreamStoreImpl {
 
   /** Bind the authoritative runtime identity returned by the launch handshake. */
   bindTurnHandle(conversationId: string, handle: AgentTurnHandle): void {
-    const state = this._streams[conversationId];
+    let state = this._streams[conversationId];
     if (!state) return;
+    const runWasClaimedByAnotherLaunch = state._orderedRunId !== null
+      && state._orderedRunId !== handle.runId;
+    if (runWasClaimedByAnotherLaunch) {
+      clearStreamWatchdog(state);
+      clearToolPreparingTimers(state);
+      const replacement = createDefaultState();
+      replacement.isStreaming = true;
+      replacement._launchStartedAt = state._launchStartedAt;
+      replacement.turnTiming = state.turnTiming ? {
+        ...state.turnTiming,
+        firstEventAtEpochMs: null,
+        firstVisibleOutputAtEpochMs: null,
+        finishedAtEpochMs: null,
+        finishedAtMonotonicMs: null,
+      } : null;
+      this._streams[conversationId] = replacement;
+      state = replacement;
+    }
     state.turnHandle = handle;
     if (state.isStreaming) {
       this.resetTimeout(conversationId);
-      if (state._pendingRunEvents.size > 0) this.recoverMissingRunEvents(conversationId, state);
+      if (runWasClaimedByAnotherLaunch || state._pendingRunEvents.size > 0) {
+        this.recoverMissingRunEvents(conversationId, state, handle.runId);
+      }
     }
     this.notify(conversationId);
     this.scheduleFrontendFirstPaint(conversationId, state);
@@ -420,12 +440,12 @@ class StreamStoreImpl {
     runIdHint?: string,
   ): void {
     const runId = state.turnHandle?.runId ?? runIdHint;
-    if (!runId || this._gapRecoveries.has(conversationId)) return;
+    if (!runId || this._gapRecoveries.get(conversationId) === runId) return;
     this.recoverRunEventGap(conversationId, runId);
   }
 
   private recoverRunEventGap(conversationId: string, runId: string): void {
-    this._gapRecoveries.add(conversationId);
+    this._gapRecoveries.set(conversationId, runId);
     void withWatchdogRecoveryTimeout(
       getRecoveryRunEvents(runId),
       'Settled run-event gap recovery query',
@@ -443,7 +463,9 @@ class StreamStoreImpl {
     }).catch(() => {
       this.retryRunEventGapIfNeeded(conversationId, runId);
     }).finally(() => {
-      this._gapRecoveries.delete(conversationId);
+      if (this._gapRecoveries.get(conversationId) === runId) {
+        this._gapRecoveries.delete(conversationId);
+      }
     });
   }
 

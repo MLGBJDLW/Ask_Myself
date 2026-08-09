@@ -2279,6 +2279,60 @@ test('a settled retained projection is replaced when a background run starts at 
   streamStore.clearStream(conversationId);
 });
 
+test('binding a new launch rejects a stopped run terminal that arrived during the handshake', () => {
+  const conversationId = 'conversation-stop-relaunch-race';
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'done',
+        phase: 'done',
+        status: 'cancelled',
+        payload: { finishReason: 'cancelled' },
+      }),
+      runId: 'stopped-run',
+      turnId: 'stopped-turn',
+    },
+  });
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'new-run',
+    turnId: 'new-turn',
+    state: 'starting',
+  });
+
+  const rebound = streamStore.getStream(conversationId);
+  assert(rebound, 'rebound launch state should exist');
+  assertEqual(rebound.isStreaming, true, 'the authoritative launch reopens a clean live state');
+  assertEqual(rebound.turnHandle?.runId, 'new-run', 'the launch handle owns the replacement state');
+  assertEqual(rebound.streamRounds.length, 0, 'the stopped run terminal projection is discarded');
+
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'new-run-answer',
+          channel: 'answer',
+          offset: 0,
+          delta: 'Fresh answer',
+        },
+      }),
+      runId: 'new-run',
+      turnId: 'new-turn',
+    },
+  });
+
+  const current = streamStore.getStream(conversationId);
+  assert(current, 'new launch state should remain available');
+  assertEqual(current.streamText, 'Fresh answer', 'new run events project after authoritative binding');
+  streamStore.clearStream(conversationId);
+});
+
 test('durable hydration replaces an unbound blank state created by a future event', () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
