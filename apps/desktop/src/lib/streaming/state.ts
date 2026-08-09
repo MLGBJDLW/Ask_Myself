@@ -1,4 +1,4 @@
-import type { AgentTaskRun } from '../../types/conversation';
+import type { AgentRunEvent, AgentTaskRun } from '../../types/conversation';
 import type { StreamState } from './protocol';
 import type { StreamTimeoutHandle } from './watchdog';
 
@@ -7,11 +7,13 @@ export interface InternalStreamState extends StreamState {
   _roundSeq: number;
   _traceSeq: number;
   _lastEventSeq: number;
-  _eventSeqGapRecorded: boolean;
+  _pendingRunEvents: Map<number, AgentRunEvent>;
   _activeAnswerBlockId: string | null;
   _activeAnswerOffset: number;
   _activeThinkingBlockId: string | null;
   _activeThinkingOffset: number;
+  _pendingAnswerBlockDeltas: Map<string, Map<number, string>>;
+  _pendingThinkingBlockDeltas: Map<string, Map<number, string>>;
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
   _timeoutId: StreamTimeoutHandle | null;
@@ -50,11 +52,13 @@ export function createDefaultState(): InternalStreamState {
     _roundSeq: 0,
     _traceSeq: 0,
     _lastEventSeq: 0,
-    _eventSeqGapRecorded: false,
+    _pendingRunEvents: new Map(),
     _activeAnswerBlockId: null,
     _activeAnswerOffset: 0,
     _activeThinkingBlockId: null,
     _activeThinkingOffset: 0,
+    _pendingAnswerBlockDeltas: new Map(),
+    _pendingThinkingBlockDeltas: new Map(),
     _activeRoundId: null,
     _activeRoundAcceptingStarts: false,
     _timeoutId: null,

@@ -417,6 +417,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     options?: ChatSendOptions;
   } | null>(null);
   const knownStreamConversationsRef = useRef<Set<string>>(new Set());
+  const conversationHydrationGenerationRef = useRef(0);
+  const completionHydrationGenerationRef = useRef(0);
   const suppressedLiveUsageRef = useRef<Set<string>>(new Set());
   const compactionUsageRef = useRef<Map<string, UsageSnapshot>>(new Map());
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
@@ -625,6 +627,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
   /* ── Load messages when conversation changes ────────────────────── */
   useEffect(() => {
+    const generation = ++conversationHydrationGenerationRef.current;
     if (!activeId) {
       setOpenedConversation(null);
       setUsageSnapshot(null);
@@ -656,7 +659,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           api.getAgentTaskRuns(activeId),
           api.getConversationUsageSnapshot(activeId),
         ]);
-        if (cancelled) return;
+        if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
         setOpenedConversation(conv);
         // Safety net (also covers pre-Tier-B persisted rows): preserve any
         // imageAttachments present in prior in-memory state when the backend
@@ -672,7 +675,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             api.getAgentRunEvents(resumableRun.id).catch(() => []),
           ])
             .then(([taskEvents, runEvents]) => {
-              if (cancelled) return;
+              if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
               streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
               const restoredStream = streamStore.getStream(activeId);
               if (restoredStream?.isStreaming) {
@@ -702,7 +705,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           defaultAgentConfigRef.current,
         );
         const cw = await resolveContextWindowForConfig(selectedConfig);
-        if (!cancelled) {
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
           const resolvedContextWindow = cw || defaultContextWindow;
           if (selectedConfig) {
             setAgentConfig(selectedConfig);
@@ -714,20 +717,23 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setContextWindow(resolvedContextWindow);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
           setContextWindow(defaultContextWindow);
         }
       } finally {
-        if (!cancelled) setLoadingMsgs(false);
+        if (!cancelled && generation === conversationHydrationGenerationRef.current) {
+          setLoadingMsgs(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeId, defaultContextWindow, externalSystemPrompt, isStreaming, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, defaultContextWindow, externalSystemPrompt, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
+    const generation = ++completionHydrationGenerationRef.current;
     let cancelled = false;
     const completedConversationId = activeId
       && !isStreaming
@@ -743,7 +749,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         api.getAgentTaskRuns(completedConversationId),
         api.getConversationUsageSnapshot(completedConversationId),
       ]).then(([[conv, msgs], conversationTurns, agentTaskRuns, durableUsage]) => {
-        if (!cancelled) {
+        if (!cancelled && generation === completionHydrationGenerationRef.current) {
           // Safety net (also covers pre-Tier-B persisted rows): preserve any
           // imageAttachments present in prior in-memory state when the backend
           // response lacks them (e.g. optimistic temp-* ids or legacy rows).
@@ -775,7 +781,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           if (activeId === completedConversationId) {
             setCustomSystemPrompt(conv.systemPrompt ?? '');
           }
-          if (msgs.some(msg => msg.role === 'assistant' || msg.role === 'tool')) {
+          if (hasPersistedResultAfterLatestUserMessage(msgs)) {
             requestAnimationFrame(() => streamStore.clearPreview(completedConversationId));
           }
         }

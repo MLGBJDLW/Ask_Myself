@@ -24,6 +24,8 @@ export interface StreamTerminalProjectionState {
   _activeAnswerOffset: number;
   _activeThinkingBlockId: string | null;
   _activeThinkingOffset: number;
+  _pendingAnswerBlockDeltas: Map<string, Map<number, string>>;
+  _pendingThinkingBlockDeltas: Map<string, Map<number, string>>;
   _activeRoundId: string | null;
   _activeRoundAcceptingStarts: boolean;
 }
@@ -88,6 +90,8 @@ export function resetActiveStreamBlocks(state: StreamTerminalProjectionState): v
   state._activeAnswerOffset = 0;
   state._activeThinkingBlockId = null;
   state._activeThinkingOffset = 0;
+  state._pendingAnswerBlockDeltas.clear();
+  state._pendingThinkingBlockDeltas.clear();
 }
 
 export function applyStreamResetProjection(

@@ -808,61 +808,6 @@ export interface UsageSnapshot {
   providerRaw: unknown;
 }
 
-export interface AgentEvent {
-  type:
-    | 'textDelta'
-    | 'streamBlockDelta'
-    | 'streamReset'
-    | 'toolCallPreparing'
-    | 'toolCallStart'
-    | 'toolCallArgsDelta'
-    | 'toolCallProgress'
-    | 'toolCallResult'
-    | 'toolRunStarted'
-    | 'toolRunUpdated'
-    | 'toolRunCompleted'
-    | 'thinking'
-    | 'status'
-    | 'connectionState'
-    | 'steering'
-    | 'done'
-    | 'error'
-    | 'autoCompacted'
-    | 'usageUpdate'
-    | 'approvalRequested'
-    | 'approvalResolved'
-    | 'taskRunUpdated'
-    | 'taskRunEvent';
-  delta?: string;
-  blockId?: string;
-  channel?: 'answer' | 'thinking';
-  offset?: number;
-  reason?: string;
-  callId?: string;
-  toolName?: string;
-  /** Number of argument characters assembled when the backend entered preparing state. */
-  argsBytes?: number;
-  arguments?: string;
-  /** Legacy appended arguments fragment for streaming tool calls. */
-  argumentsDelta?: string;
-  /** Optional ordering index for argument deltas. */
-  index?: number;
-  /** Progress heartbeat note from a long-running tool. */
-  note?: string;
-  run?: ToolRunItem;
-  content?: string;
-  tone?: 'muted' | 'success' | 'error';
-  state?: ProviderConnectionState;
-  isError?: boolean;
-  artifacts?: ArtifactPayload;
-  // `Done` events carry a full ConversationMessage; `Error` events carry a plain string.
-  message?: ConversationMessage | string;
-  usageTotal?: UsageTotal;
-  contextBreakdown?: ContextUsageBreakdown;
-  taskRun?: AgentTaskRun;
-  taskEvent?: AgentTaskRunEvent;
-}
-
 export type ProviderConnectionStatus =
   | 'degraded'
   | 'reconnecting'
@@ -1063,37 +1008,19 @@ export interface ToolPermissionPolicyList {
 
 export interface AgentFrontendEvent {
   conversationId: string;
-  runEvent?: AgentRunEvent;
-  type?: AgentEvent['type'];
-  eventSeq?: number;
-  summary?: string;
-  delta?: string;
-  blockId?: string;
-  channel?: 'answer' | 'thinking';
-  offset?: number;
-  reason?: string;
-  callId?: string;
-  toolName?: string;
-  argsBytes?: number;
-  arguments?: string;
-  argumentsDelta?: string;
-  index?: number;
-  note?: string;
-  activity?: ActivityEvent;
-  run?: ToolRunItem;
-  content?: string;
-  tone?: 'muted' | 'success' | 'error';
-  state?: ProviderConnectionState;
-  isError?: boolean;
-  artifacts?: ArtifactPayload;
-  message?: ConversationMessage | string;
-  usageTotal?: UsageTotal;
-  contextBreakdown?: ContextUsageBreakdown;
-  request?: ApprovalRequest;
-  requestId?: string;
-  decision?: ApprovalDecisionValue;
-  taskRun?: AgentTaskRun;
-  taskEvent?: AgentTaskRunEvent;
+  runEvent: AgentRunEvent;
+}
+
+export interface AgentTaskSnapshotEvent {
+  conversationId: string;
+  type: 'taskRunUpdated';
+  taskRun: AgentTaskRun;
+}
+
+export interface AgentHeartbeatEvent {
+  conversationId: string;
+  runId: string;
+  turnId: string;
 }
 
 export type ActivityEventKind =

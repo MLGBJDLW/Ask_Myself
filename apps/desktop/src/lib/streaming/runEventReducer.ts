@@ -1,7 +1,5 @@
-import type { AgentFrontendEvent } from '../../types';
 import type {
   AgentRunEvent,
-  ApprovalRequest,
   ToolRunItem,
 } from '../../types/conversation';
 import {
@@ -28,9 +26,6 @@ import {
   applyStreamResetProjection,
 } from './terminalProjection';
 import {
-  applyToolCallProgressEvent,
-  applyToolCallResultEvent,
-  applyToolCallStartEvent,
   applyToolRunEvent,
   type ToolPreparingPayload,
 } from './toolProjection';
@@ -54,19 +49,6 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function projectionEvent(
-  runEvent: AgentRunEvent,
-  payload: PayloadRecord,
-  fields: Partial<AgentFrontendEvent> = {},
-): AgentFrontendEvent & PayloadRecord {
-  return {
-    conversationId: '',
-    runEvent,
-    ...payload,
-    ...fields,
-  } as AgentFrontendEvent & PayloadRecord;
 }
 
 function toolRun(payload: PayloadRecord): ToolRunItem | null {
@@ -120,11 +102,13 @@ export function applyAgentRunEvent(
     }
 
     case 'status': {
-      const event = projectionEvent(runEvent, payload, {
-        content: stringValue(payload.content) ?? runEvent.label,
-        tone: presentationTone(payload),
-      });
-      applyStatusEvent(state, event, event);
+      applyStatusEvent(
+        state,
+        stringValue(payload.content) ?? runEvent.label,
+        presentationTone(payload),
+        runEvent.visibility ?? 'user',
+        runEvent.displayKind ?? 'status',
+      );
       return;
     }
 
@@ -136,10 +120,7 @@ export function applyAgentRunEvent(
     case 'recoveryAttempt': {
       const connection = asRecord(payload.state);
       if (typeof connection.state === 'string') {
-        const event = projectionEvent(runEvent, payload, {
-          state: connection as unknown as AgentFrontendEvent['state'],
-        });
-        applyConnectionStateEvent(state, event, event, runEvent.label);
+        applyConnectionStateEvent(state, connection);
         return;
       }
       appendStatusTraceEvent(
@@ -181,71 +162,60 @@ export function applyAgentRunEvent(
         return;
       }
 
-      const event = projectionEvent(runEvent, payload, {
-        callId: stringValue(payload.callId),
-        toolName: stringValue(payload.toolName),
-        arguments: stringValue(payload.arguments),
-        content: stringValue(payload.content),
-        isError: typeof payload.isError === 'boolean' ? payload.isError : undefined,
-      });
-      if (runEvent.kind === 'toolStarted') applyToolCallStartEvent(state, event, event);
-      if (runEvent.kind === 'toolProgress') applyToolCallProgressEvent(state, event, event);
-      if (runEvent.kind === 'toolCompleted') applyToolCallResultEvent(state, event, event);
+      // The public Run Event protocol exposes one typed ToolRun lifecycle.
+      // Legacy ToolCall fragments are provider/core assembly details and are
+      // deliberately ignored at this seam.
       return;
     }
 
     case 'approvalRequested': {
-      const event = projectionEvent(runEvent, payload, {
-        request: payload.request as ApprovalRequest | undefined,
-      });
-      applyApprovalRequestedEvent(state, event, event);
+      applyApprovalRequestedEvent(state, payload.request);
       return;
     }
 
     case 'approvalResolved': {
-      const event = projectionEvent(runEvent, payload, {
-        requestId: stringValue(payload.requestId),
-      });
-      applyApprovalResolvedEvent(state, event, event);
+      applyApprovalResolvedEvent(state, stringValue(payload.requestId));
       return;
     }
 
     case 'usageUpdated': {
-      const event = projectionEvent(runEvent, payload, {
-        usageTotal: payload.usageTotal as AgentFrontendEvent['usageTotal'],
-        contextBreakdown: payload.contextBreakdown as AgentFrontendEvent['contextBreakdown'],
-      });
-      applyUsageUpdateEvent(state, event, event);
+      applyUsageUpdateEvent(
+        state,
+        payload.usageTotal,
+        payload.lastPromptTokens,
+        payload.contextBreakdown,
+      );
       return;
     }
 
     case 'autoCompacted': {
-      const event = projectionEvent(runEvent, payload, {
-        summary: stringValue(payload.summary),
-      });
-      applyAutoCompactedEvent(state, event, event);
+      applyAutoCompactedEvent(state, stringValue(payload.summary) ?? '');
       return;
     }
 
     case 'done': {
       clearStreamWatchdog(state);
       clearToolPreparingTimers(state);
-      const event = projectionEvent(runEvent, payload, {
-        message: payload.message as AgentFrontendEvent['message'],
-        usageTotal: payload.usageTotal as AgentFrontendEvent['usageTotal'],
-        contextBreakdown: payload.contextBreakdown as AgentFrontendEvent['contextBreakdown'],
+      applyDoneEvent(state, {
+        status: runEvent.status ?? null,
+        message: payload.message,
+        usageTotal: payload.usageTotal,
+        lastPromptTokens: payload.lastPromptTokens,
+        contextBreakdown: payload.contextBreakdown,
+        cached: payload.cached,
+        finishReason: payload.finishReason,
       });
-      applyDoneEvent(state, event, event);
       return;
     }
 
     case 'error': {
       clearStreamWatchdog(state);
       clearToolPreparingTimers(state);
-      const event = projectionEvent(runEvent, payload, {
-        message: stringValue(payload.message) ?? runEvent.label,
-      });
-      applyErrorEvent(state, event, event);
+      applyErrorEvent(
+        state,
+        stringValue(payload.message) ?? runEvent.label,
+        runEvent.status ?? null,
+      );
     }
   }
 }
