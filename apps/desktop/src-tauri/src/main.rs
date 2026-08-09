@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_run_outbox;
 mod agent_stream;
 mod agent_stream_bridge;
 mod agent_task_events;

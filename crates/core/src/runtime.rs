@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::agent::power_mode::AgentPowerMode;
 use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
@@ -22,35 +22,46 @@ use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
 
-/// Runtime-owned monotonic sequence for all events in one agent run.
-///
-/// Hosts receive already-sequenced events and never allocate ordering tokens
-/// themselves. Wrap one sequencer in an `Arc` when a run has multiple event
-/// producers (streaming, approval, cancellation, and finalization).
-#[derive(Debug)]
-pub struct AgentRunEventSequencer {
-    last_sequence: AtomicU64,
+/// The only producer interface for one run's ordered event ledger.
+#[derive(Clone)]
+pub struct AgentRunEventOutbox {
+    sender: tokio::sync::mpsc::UnboundedSender<AgentRunEvent>,
+    terminal_submitted: Arc<Mutex<bool>>,
 }
 
-impl AgentRunEventSequencer {
-    pub fn new(last_sequence: u64) -> Self {
-        Self {
-            last_sequence: AtomicU64::new(last_sequence),
+impl AgentRunEventOutbox {
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<AgentRunEvent>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                sender,
+                terminal_submitted: Arc::new(Mutex::new(false)),
+            },
+            receiver,
+        )
+    }
+
+    pub fn submit(&self, event: AgentRunEvent) -> Result<(), CoreError> {
+        if event.event_seq != 0 {
+            return Err(CoreError::InvalidInput(
+                "Run Event producers must submit an unsequenced event".to_string(),
+            ));
         }
-    }
-
-    pub fn next(&self) -> u64 {
-        self.last_sequence.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    pub fn current(&self) -> u64 {
-        self.last_sequence.load(Ordering::SeqCst)
-    }
-}
-
-impl Default for AgentRunEventSequencer {
-    fn default() -> Self {
-        Self::new(0)
+        let mut terminal_submitted = self
+            .terminal_submitted
+            .lock()
+            .map_err(|_| CoreError::Internal("Run Event outbox state is poisoned".to_string()))?;
+        if *terminal_submitted {
+            return Err(CoreError::InvalidInput(
+                "Run Event outbox is closed after its terminal event".to_string(),
+            ));
+        }
+        let terminal = event.is_terminal();
+        self.sender.send(event).map_err(|_| {
+            CoreError::Internal("Run Event outbox actor is unavailable".to_string())
+        })?;
+        *terminal_submitted = terminal;
+        Ok(())
     }
 }
 
@@ -63,7 +74,7 @@ pub struct ActiveAgentTurn {
     pub cancel_token: CancellationToken,
     pub task: tokio::task::JoinHandle<()>,
     pub steering_tx: tokio::sync::mpsc::UnboundedSender<AgentSteeringMessage>,
-    pub event_sequencer: Arc<AgentRunEventSequencer>,
+    pub event_outbox: Arc<AgentRunEventOutbox>,
     pub orchestrator_run_id: Option<String>,
     pub frontend_paint_recorded: AtomicBool,
 }
@@ -815,24 +826,24 @@ mod tests {
     }
 
     #[test]
-    fn run_event_sequencer_allocates_one_monotonic_sequence_across_producers() {
-        let sequencer = std::sync::Arc::new(AgentRunEventSequencer::default());
-        let mut producers = Vec::new();
-        for _ in 0..4 {
-            let sequencer = std::sync::Arc::clone(&sequencer);
-            producers.push(std::thread::spawn(move || {
-                (0..25).map(|_| sequencer.next()).collect::<Vec<_>>()
-            }));
-        }
-
-        let mut allocated = producers
-            .into_iter()
-            .flat_map(|producer| producer.join().expect("event producer should finish"))
-            .collect::<Vec<_>>();
-        allocated.sort_unstable();
-
-        assert_eq!(allocated, (1..=100).collect::<Vec<_>>());
-        assert_eq!(sequencer.current(), 100);
+    fn run_event_outbox_accepts_one_terminal_and_rejects_later_events() {
+        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
+        let event =
+            AgentRunEvent::terminal_status("run-1", Some("turn-1"), 0, "done", "completed", None);
+        outbox
+            .submit(event)
+            .expect("terminal event should be accepted");
+        assert!(outbox
+            .submit(AgentRunEvent::terminal_status(
+                "run-1",
+                Some("turn-1"),
+                0,
+                "late",
+                "completed",
+                None
+            ))
+            .is_err());
+        assert!(receiver.try_recv().is_ok());
     }
 
     #[tokio::test]
@@ -847,7 +858,7 @@ mod tests {
                 cancel_token: first_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: first_tx,
-                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })
@@ -861,7 +872,7 @@ mod tests {
                 cancel_token: second_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: second_tx,
-                event_sequencer: Arc::new(AgentRunEventSequencer::default()),
+                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })

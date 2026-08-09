@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_run_outbox::spawn_agent_run_outbox;
 use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
@@ -18,8 +19,8 @@ use nexa_core::mixture_of_agents::{
 };
 use nexa_core::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 use nexa_core::runtime::{
-    ActiveAgentTurn, AgentRunEventSequencer, AgentTurnHandle, AgentTurnState,
-    RuntimeTerminalStatus, StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
+    ActiveAgentTurn, AgentRunEventOutbox, AgentTurnHandle, AgentTurnState, RuntimeTerminalStatus,
+    StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
 };
 use nexa_core::vision_router::VisionTurnOverride;
 
@@ -580,7 +581,13 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .db
         .latest_agent_run_event_sequence(&launch_record.run_id)
         .map_err(|error| error.to_string())?;
-    let stream_event_seq = Arc::new(AgentRunEventSequencer::new(last_event_sequence));
+    let stream_event_seq = Arc::new(spawn_agent_run_outbox(
+        app_handle.clone(),
+        state.db_executor.clone(),
+        conversation_id.clone(),
+        launch_record.run_id.clone(),
+        last_event_sequence,
+    ));
     let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,
@@ -589,8 +596,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         &launch_record.run_id,
     );
     record_internal_agent_run_status_event(
-        &state.db,
-        &app_handle,
         &conversation_id,
         &launch_record.run_id,
         Some(&launch_record.turn_id),
@@ -641,8 +646,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .map_err(|error| error.to_string())?;
             emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             record_internal_agent_run_status_event(
-                &db,
-                &handle,
                 &conv_id,
                 &task_run_id,
                 Some(&turn_id),
@@ -1203,7 +1206,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             cancel_token,
             task,
             steering_tx,
-            event_sequencer: Arc::clone(&stream_event_seq),
+            event_outbox: Arc::clone(&stream_event_seq),
             orchestrator_run_id: task_orchestrator_run_id,
             frontend_paint_recorded: AtomicBool::new(false),
         })
@@ -1214,12 +1217,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
 #[allow(clippy::too_many_arguments)]
 fn record_turn_launch_metric(
-    db: &Database,
-    app_handle: &AppHandle,
+    _db: &Database,
+    _app_handle: &AppHandle,
     conversation_id: &str,
     task_run_id: &str,
     turn_id: Option<&str>,
-    event_seq: &AgentRunEventSequencer,
+    event_seq: &AgentRunEventOutbox,
     stage: TurnLaunchStage,
     elapsed_ms: u64,
 ) {
@@ -1229,8 +1232,6 @@ fn record_turn_launch_metric(
         "elapsedMs": elapsed_ms,
     });
     record_internal_agent_run_status_event(
-        db,
-        app_handle,
         conversation_id,
         task_run_id,
         turn_id,
@@ -1282,7 +1283,7 @@ fn finalize_desktop_agent_initialization_failure(
     task_run_id: &str,
     task_orchestrator_run_id: Option<&str>,
     turn_id: &str,
-    event_seq: &AgentRunEventSequencer,
+    event_seq: &AgentRunEventOutbox,
     terminal_emitted: &AtomicBool,
     error: &str,
 ) {

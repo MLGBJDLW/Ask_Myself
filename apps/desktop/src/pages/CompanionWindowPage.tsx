@@ -295,7 +295,7 @@ export function CompanionWindowPage() {
 
   useEffect(() => {
     const unlisten = Promise.all([
-      listen('agent:event', scheduleProjectionRefresh),
+      listen('companion://projection-changed', scheduleProjectionRefresh),
       listen('companion://settings-changed', () => { void loadRuntime(); }),
       listen<boolean>('companion://visibility', event => setVisible(event.payload)),
       listen<boolean>('companion://main-visibility', event => setMainWindowVisible(event.payload)),

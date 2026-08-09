@@ -927,9 +927,8 @@ pub async fn pause_agent_task_run_cmd(
 
     if let Some(task_state) = agent_state.sessions.take(&run.conversation_id).await {
         if task_state.handle.run_id == run_id {
-            let stream_event_seq = Arc::clone(&task_state.event_sequencer);
-            let run_event = emit_agent_frontend_event_with_presentation(
-                &app_handle,
+            let stream_event_seq = Arc::clone(&task_state.event_outbox);
+            emit_agent_frontend_event_with_presentation(
                 stream_event_seq.as_ref(),
                 &run.conversation_id,
                 &run_id,
@@ -942,7 +941,6 @@ pub async fn pause_agent_task_run_cmd(
                 AgentRunDisplayKind::Status,
                 AgentRunEventImportance::Low,
             );
-            persist_durable_run_event(&state.db, &run_event);
             emit_agent_task_run_update(&state.db, &app_handle, &run.conversation_id, &run_id);
             task_state.cancel_token.cancel();
             let abort_task = task_state.task;
@@ -971,13 +969,14 @@ pub async fn pause_agent_task_run_cmd(
                     let run_event = AgentRunEvent::terminal_status(
                         &run_id,
                         Some(&turn_id),
-                        stream_event_seq.next(),
+                        0,
                         "Paused with a resumable checkpoint",
                         "paused",
                         Some(&artifacts),
                     );
-                    emit_agent_run_frontend_event(&handle, &conv_id, &run_event);
-                    persist_durable_run_event(&db, &run_event);
+                    if let Err(error) = stream_event_seq.submit(run_event) {
+                        warn!("Failed to submit paused terminal RunEvent for {conv_id}: {error}");
+                    }
                     emit_agent_task_run_update(&db, &handle, &conv_id, &run_id);
                 }
             });
