@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.3...nexa-monorepo-v0.12.4) (2026-08-09)
+
+
+### Features
+
+* **agent:** add non-blocking subagent lifecycle ([59a0ff5](https://github.com/MLGBJDLW/Nexa/commit/59a0ff5953bba0f90120f55e9d959edd30a64e48))
+* **companion:** rebuild renderer and behavior runtime ([c65dc3b](https://github.com/MLGBJDLW/Nexa/commit/c65dc3b5d874d4b13dd1ca8ee2b4e639055ef25f))
+* **runtime:** upgrade reasoning, subagents, and Companion ([9a1c23e](https://github.com/MLGBJDLW/Nexa/commit/9a1c23ea738501ed52c46eff721964e7c620e063))
+
+
+### Bug Fixes
+
+* **agent:** preserve lifecycle controls across turns ([8d4a800](https://github.com/MLGBJDLW/Nexa/commit/8d4a8008aba2e22659a4488f3d2b353b6bed005e))
+* **agent:** preserve reasoning across replay trust boundaries ([12af72b](https://github.com/MLGBJDLW/Nexa/commit/12af72b9dfc2031294cc611fcf2dc0b90587a2d7))
+* **agent:** release parent stream after subagent spawn ([31c5d69](https://github.com/MLGBJDLW/Nexa/commit/31c5d69346191f7897b89c9880c89c8026c375dc))
+* **agent:** scope replay guard to reasoning-bearing tools ([284b0f4](https://github.com/MLGBJDLW/Nexa/commit/284b0f485a05579395905edbad4f6c01afda3237))
+* **chat:** recover stalled streams from durable state ([19c19ec](https://github.com/MLGBJDLW/Nexa/commit/19c19ec2ffe54e8fdf41f9a2efd8144f9af39c19))
+* **companion:** gate startup on decoded localized runtime ([fee8900](https://github.com/MLGBJDLW/Nexa/commit/fee8900b5b84b3b4b91e81afe75edc28f4417c9e))
+
 ## [0.12.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.2...nexa-monorepo-v0.12.3) (2026-08-09)
 
 
