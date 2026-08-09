@@ -2450,11 +2450,9 @@ Every answer that uses knowledge base search results.
          INSERT INTO agent_run_event_sequence_map (run_id, old_event_seq, new_event_seq)
          SELECT current.run_id,
                 current.event_seq,
-                (
-                    SELECT COUNT(*)
-                    FROM agent_run_events AS preceding
-                    WHERE preceding.run_id = current.run_id
-                      AND preceding.event_seq <= current.event_seq
+                ROW_NUMBER() OVER (
+                    PARTITION BY current.run_id
+                    ORDER BY current.event_seq
                 )
          FROM agent_run_events AS current;
          UPDATE agent_run_events
