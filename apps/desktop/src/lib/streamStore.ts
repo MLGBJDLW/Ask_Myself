@@ -804,7 +804,19 @@ class StreamStoreImpl {
       this._streams[conversationId] = state;
     }
 
-    const enqueue = enqueueStreamRunEvent(state, runEvent);
+    let enqueue = enqueueStreamRunEvent(state, runEvent);
+    if (enqueue.runChanged) {
+      // A live run owns its route identity. A different run may replace only
+      // a settled retained projection (for example, a background workflow
+      // that has no local startStream handshake).
+      if (state.isStreaming) return;
+      clearStreamWatchdog(state);
+      clearToolPreparingTimers(state);
+      state = createDefaultState();
+      state.isStreaming = true;
+      this._streams[conversationId] = state;
+      enqueue = enqueueStreamRunEvent(state, runEvent);
+    }
     if (!enqueue.accepted) return;
     if (!enqueue.ready) {
       this.recoverMissingRunEvents(conversationId, state, runEvent.runId);

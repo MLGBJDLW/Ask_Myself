@@ -10,6 +10,10 @@ monotonic `eventSeq`, validates protocol version 2, commits durable events, and
 then delivers them to the main window. A terminal `done` or `error` is the last
 accepted event for the run.
 
+If validation or durable persistence fails, the outbox fails closed and cancels
+the run cancellation domain before emitting its ephemeral failure terminal. A
+continuing executor cannot invoke more tools after the ledger becomes unsafe.
+
 Provider-native replay envelopes remain backend-only durable state. They are
 never compacted into the public stream payload and are not replaced by this
 presentation protocol.
@@ -35,6 +39,9 @@ The renderer advances a run only when the exact next `eventSeq` is available.
 Future events remain buffered and trigger durable recovery; duplicates and
 post-terminal events are ignored. Answer and thinking block deltas also require
 the exact UTF-8 byte offset. Tool and reset boundaries rotate block identities.
+
+Ordering is also bound to `runId`. A different run may replace only a settled
+retained projection; an event from another run cannot enter a live projection.
 
 Output is coalesced into bounded blocks before it enters the outbox, so model
 tokens do not perform synchronous SQLite work. Durable blocks are written on

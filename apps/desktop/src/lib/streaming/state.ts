@@ -6,6 +6,7 @@ export interface InternalStreamState extends StreamState {
   _toolCallSeq: number;
   _roundSeq: number;
   _traceSeq: number;
+  _orderedRunId: string | null;
   _lastEventSeq: number;
   _pendingRunEvents: Map<number, AgentRunEvent>;
   _activeAnswerBlockId: string | null;
@@ -52,6 +53,7 @@ export function createDefaultState(): InternalStreamState {
     _toolCallSeq: 0,
     _roundSeq: 0,
     _traceSeq: 0,
+    _orderedRunId: null,
     _lastEventSeq: 0,
     _pendingRunEvents: new Map(),
     _activeAnswerBlockId: null,

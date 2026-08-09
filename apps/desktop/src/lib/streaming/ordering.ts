@@ -1,6 +1,7 @@
 import type { AgentRunEvent } from '../../types/conversation';
 
 export interface StreamEventOrderingState {
+  _orderedRunId: string | null;
   _lastEventSeq: number;
   _pendingRunEvents: Map<number, AgentRunEvent>;
 }
@@ -8,6 +9,7 @@ export interface StreamEventOrderingState {
 export interface StreamEventEnqueueResult {
   accepted: boolean;
   ready: boolean;
+  runChanged: boolean;
   missingRange: { from: number; to: number } | null;
 }
 
@@ -24,11 +26,16 @@ export function enqueueStreamRunEvent(
 ): StreamEventEnqueueResult {
   const eventSeq = parseStreamEventSeq(event.eventSeq);
   if (eventSeq === null) {
-    return { accepted: false, ready: false, missingRange: null };
+    return { accepted: false, ready: false, runChanged: false, missingRange: null };
   }
 
+  if (state._orderedRunId !== null && state._orderedRunId !== event.runId) {
+    return { accepted: false, ready: false, runChanged: true, missingRange: null };
+  }
+  state._orderedRunId = event.runId;
+
   if (eventSeq <= state._lastEventSeq || state._pendingRunEvents.has(eventSeq)) {
-    return { accepted: false, ready: false, missingRange: null };
+    return { accepted: false, ready: false, runChanged: false, missingRange: null };
   }
 
   state._pendingRunEvents.set(eventSeq, event);
@@ -38,6 +45,7 @@ export function enqueueStreamRunEvent(
   return {
     accepted: true,
     ready,
+    runChanged: false,
     missingRange: ready ? null : { from: expectedSeq, to: eventSeq - 1 },
   };
 }

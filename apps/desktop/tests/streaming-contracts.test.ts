@@ -2222,6 +2222,63 @@ test('live ordering buffers out-of-order events and drains them without losing o
   streamStore.clearStream(conversationId);
 });
 
+test('a settled retained projection is replaced when a background run starts at sequence one', () => {
+  const conversationId = 'conversation-background-run-replacement';
+  const eventForRun = (runId: string, event: AgentRunEvent): AgentFrontendEvent => ({
+    conversationId,
+    runEvent: { ...event, runId, turnId: `${runId}-turn` },
+  });
+
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, eventForRun('old-run', runEvent({
+    eventSeq: 1,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: {
+      message: { role: 'assistant', parts: [{ type: 'text', text: 'Old answer' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    },
+  })));
+  streamStore.dispatch(conversationId, eventForRun('new-run', runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'routing',
+    status: 'queued',
+    payload: {},
+  })));
+  streamStore.dispatch(conversationId, eventForRun('new-run', runEvent({
+    eventSeq: 2,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'new-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'New answer',
+    },
+  })));
+  streamStore.dispatch(conversationId, eventForRun('old-run', runEvent({
+    eventSeq: 2,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'late-old-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Late old suffix',
+    },
+  })));
+
+  const state = streamStore.getStream(conversationId);
+  assert(state, 'replacement run state should exist');
+  assertEqual(state.streamRounds.length, 0, 'old terminal projection is discarded');
+  assertEqual(
+    state.streamText,
+    'New answer',
+    'new run starts from its own sequence and rejects late events from the retired run',
+  );
+  streamStore.clearStream(conversationId);
+});
+
 test('durable hydration replaces an unbound blank state created by a future event', () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
