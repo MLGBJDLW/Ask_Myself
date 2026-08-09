@@ -12,5 +12,5 @@
     "@resvg/resvg-js": "^2.6.2",
     "png2icons": "^2.0.1"
   },
-  "version": "0.12.4"
+  "version": "0.12.5"
 }
