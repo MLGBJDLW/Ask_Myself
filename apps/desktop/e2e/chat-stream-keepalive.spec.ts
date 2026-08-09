@@ -175,6 +175,7 @@ test.beforeEach(async ({ page }) => {
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');
           const userText = String(args.message ?? '');
+          const exerciseDurableRecovery = localStorage.getItem('e2e-watchdog-silent') === '1';
           const userMessage: Message = {
             id: nextId('m-user'),
             conversationId,
@@ -207,47 +208,7 @@ test.beforeEach(async ({ page }) => {
           messagesByConversation[conversationId] = [userMessage];
           conversations[conversationId].updatedAt = new Date().toISOString();
 
-          queueMicrotask(() => {
-            emitEvent('agent:event', {
-              conversationId,
-              type: 'thinking',
-              content: 'Reasoning through the timeout path.',
-            });
-          });
-
-          setTimeout(() => {
-            emitEvent('agent:event', {
-              conversationId,
-              type: 'thinking',
-              content: '',
-            });
-          }, 80);
-
-          setTimeout(() => {
-            emitEvent('agent:event', {
-              conversationId,
-              type: 'thinking',
-              content: '',
-            });
-          }, 160);
-
-          setTimeout(() => {
-            emitEvent('agent:event', {
-              conversationId,
-              type: 'thinking',
-              content: '',
-            });
-          }, 240);
-
-          setTimeout(() => {
-            emitEvent('agent:event', {
-              conversationId,
-              type: 'textDelta',
-              delta: assistantMessage.content,
-            });
-          }, 300);
-
-          setTimeout(() => {
+          const finishStream = () => {
             messagesByConversation[conversationId] = [userMessage, assistantMessage];
             conversations[conversationId].updatedAt = new Date().toISOString();
             emitEvent('agent:event', {
@@ -264,10 +225,79 @@ test.beforeEach(async ({ page }) => {
               finishReason: 'stop',
               cached: false,
             });
-          }, 330);
+          };
 
-          return null;
+          if (exerciseDurableRecovery) {
+            setTimeout(() => {
+              emitEvent('agent:event', {
+                conversationId,
+                type: 'textDelta',
+                delta: assistantMessage.content,
+              });
+            }, 1_200);
+            setTimeout(finishStream, 1_240);
+          } else {
+            queueMicrotask(() => {
+              emitEvent('agent:event', {
+                conversationId,
+                type: 'thinking',
+                content: 'Reasoning through the timeout path.',
+              });
+            });
+
+            for (const delay of [80, 160, 240]) {
+              setTimeout(() => {
+                emitEvent('agent:event', {
+                  conversationId,
+                  type: 'thinking',
+                  content: '',
+                });
+              }, delay);
+            }
+
+            setTimeout(() => {
+              emitEvent('agent:event', {
+                conversationId,
+                type: 'textDelta',
+                delta: assistantMessage.content,
+              });
+            }, 300);
+            setTimeout(finishStream, 330);
+          }
+
+          return {
+            sessionId: 'session-keepalive',
+            runId: 'run-keepalive',
+            turnId: 'turn-keepalive',
+            state: 'running',
+          };
         }
+        case 'get_agent_task_runs_cmd': {
+          const recoveryWindow = window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number };
+          recoveryWindow.__E2E_WATCHDOG_QUERY_COUNT__ = (
+            recoveryWindow.__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
+          ) + 1;
+          if (
+            localStorage.getItem('e2e-watchdog-silent') === '1'
+            && recoveryWindow.__E2E_WATCHDOG_QUERY_COUNT__ === 4
+          ) return [];
+          return [{
+            id: 'run-keepalive',
+            conversationId: 'conv-keepalive',
+            turnId: 'turn-keepalive',
+            userMessageId: 'm-user-keepalive',
+            status: 'running',
+            phase: 'responding',
+            title: 'Durable watchdog recovery',
+            provider: 'open_ai',
+            model: 'gpt-4.1',
+            createdAt: nowIso,
+            updatedAt: new Date().toISOString(),
+          }];
+        }
+        case 'get_agent_run_events_cmd':
+        case 'get_agent_task_run_events_cmd':
+          return [];
         default:
           return null;
       }
@@ -299,6 +329,26 @@ test('keeps a live stream active when keepalive events arrive during a long sile
 
   await expect(page.getByText('Reasoning through the timeout path.').first()).toBeVisible();
   await page.waitForTimeout(220);
+  await expect(page.getByText('Connection lost')).toHaveCount(0);
+  await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
+});
+
+test('queries durable state and preserves an active backend turn after live silence', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-watchdog-silent', '1');
+  });
+  await page.goto('/chat');
+
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })
+      .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
+  ))).toBeGreaterThan(0);
+  await expect(page.getByText('Provider connection recovered')).toBeVisible();
+  await page.waitForTimeout(650);
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })
+      .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
+  ))).toBeGreaterThanOrEqual(4);
   await expect(page.getByText('Connection lost')).toHaveCount(0);
   await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
 });
