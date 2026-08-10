@@ -102,7 +102,7 @@ pub struct AgentTaskRuntime<'a> {
 pub(crate) enum AgentRunFailClosedOutcome {
     Claimed {
         event_seq: u64,
-        snapshot: AgentTaskRun,
+        snapshot: Box<AgentTaskRun>,
     },
     AlreadyClosed {
         event_seq: u64,
@@ -351,7 +351,7 @@ impl<'a> AgentTaskRuntime<'a> {
         transaction.commit()?;
         Ok(AgentRunFailClosedOutcome::Claimed {
             event_seq,
-            snapshot,
+            snapshot: Box::new(snapshot),
         })
     }
 

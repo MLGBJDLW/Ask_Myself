@@ -212,17 +212,19 @@ impl AgentRunEventOutboxes {
             drop(failure_requests);
         } else {
             spawn_outbox_actor(
-                self.inner.database.clone(),
-                Arc::clone(&self.inner.delivery),
-                conversation_id.to_string(),
-                run_id.to_string(),
-                Arc::clone(&outbox),
+                AgentRunEventOutboxActorContext {
+                    database: self.inner.database.clone(),
+                    delivery: Arc::clone(&self.inner.delivery),
+                    conversation_id: conversation_id.to_string(),
+                    run_id: run_id.to_string(),
+                    _outbox_lifetime: Arc::clone(&outbox),
+                    terminal_submitted,
+                    cancellation,
+                    completion: completion_sender,
+                    durability: durability_sender,
+                },
                 initial_sequence,
                 receiver,
-                terminal_submitted,
-                cancellation,
-                completion_sender,
-                durability_sender,
                 failure_requests,
             );
         }
@@ -647,6 +649,18 @@ pub struct AgentRunEventOutbox {
     failure_request: tokio::sync::watch::Sender<Option<AgentRunEventOutboxFailureRequest>>,
 }
 
+struct AgentRunEventOutboxActorContext {
+    database: DatabaseExecutor,
+    delivery: Arc<dyn AgentRunEventDelivery>,
+    conversation_id: String,
+    run_id: String,
+    _outbox_lifetime: Arc<AgentRunEventOutbox>,
+    terminal_submitted: Arc<Mutex<bool>>,
+    cancellation: CancellationToken,
+    completion: tokio::sync::watch::Sender<AgentRunEventOutboxOutcome>,
+    durability: tokio::sync::watch::Sender<AgentRunEventOutboxDurability>,
+}
+
 impl AgentRunEventOutbox {
     pub fn submit(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
         if event.event_seq != 0 {
@@ -818,24 +832,15 @@ impl AgentRunEventOutbox {
 }
 
 fn spawn_outbox_actor(
-    database: DatabaseExecutor,
-    delivery: Arc<dyn AgentRunEventDelivery>,
-    conversation_id: String,
-    run_id: String,
-    outbox_lifetime: Arc<AgentRunEventOutbox>,
+    actor: AgentRunEventOutboxActorContext,
     initial_sequence: u64,
     mut receiver: tokio::sync::mpsc::Receiver<AgentRunEventOutboxCommand>,
-    terminal_submitted: Arc<Mutex<bool>>,
-    cancellation: CancellationToken,
-    completion: tokio::sync::watch::Sender<AgentRunEventOutboxOutcome>,
-    durability: tokio::sync::watch::Sender<AgentRunEventOutboxDurability>,
     mut failure_requests: tokio::sync::watch::Receiver<Option<AgentRunEventOutboxFailureRequest>>,
 ) {
     tokio::spawn(async move {
         // The registry holds only a Weak reference. The actor keeps the outbox
         // reachable for the whole open lifecycle, then releases it when a true
         // terminal or fail-closed outcome ends the actor.
-        let _outbox_lifetime = outbox_lifetime;
         let mut sequence = initial_sequence;
         let mut last_turn_id = String::new();
         let mut pending = Vec::with_capacity(LIVE_JOURNAL_MAX_BATCH);
@@ -872,16 +877,16 @@ fn spawn_outbox_actor(
                                 pending.push(event);
                                 if pending.len() >= LIVE_JOURNAL_MAX_BATCH {
                                     if let Err(error) = commit_and_deliver(
-                                        &database,
-                                        delivery.as_ref(),
-                                        &conversation_id,
-                                        &run_id,
+                                        &actor.database,
+                                        actor.delivery.as_ref(),
+                                        &actor.conversation_id,
+                                        &actor.run_id,
                                         &mut pending,
                                     ).await {
                                         drain_failure = Some(error);
                                         break;
                                     }
-                                    durability.send_replace(
+                                    actor.durability.send_replace(
                                         AgentRunEventOutboxDurability::Committed(sequence),
                                     );
                                 }
@@ -899,15 +904,15 @@ fn spawn_outbox_actor(
                     }
                     if drain_failure.is_none() && !pending.is_empty() {
                         if let Err(error) = commit_and_deliver(
-                            &database,
-                            delivery.as_ref(),
-                            &conversation_id,
-                            &run_id,
+                            &actor.database,
+                            actor.delivery.as_ref(),
+                            &actor.conversation_id,
+                            &actor.run_id,
                             &mut pending,
                         ).await {
                             drain_failure = Some(error);
                         } else {
-                            durability.send_replace(
+                            actor.durability.send_replace(
                                 AgentRunEventOutboxDurability::Committed(sequence),
                             );
                         }
@@ -918,16 +923,8 @@ fn spawn_outbox_actor(
                         },
                         None => AgentRunEventOutboxFailure::QueueFull,
                     };
-                    fail_actor(
-                        &database,
-                        delivery.as_ref(),
-                        &conversation_id,
-                        &run_id,
+                    actor.fail_closed(
                         &last_turn_id,
-                        &terminal_submitted,
-                        &cancellation,
-                        &completion,
-                        &durability,
                         failure.clone(),
                     ).await;
                     for response in rejected_pause_responses {
@@ -938,10 +935,10 @@ fn spawn_outbox_actor(
                 maybe_command = receiver.recv() => {
                     let Some(command) = maybe_command else {
                         let _ = commit_and_deliver(
-                            &database,
-                            delivery.as_ref(),
-                            &conversation_id,
-                            &run_id,
+                            &actor.database,
+                            actor.delivery.as_ref(),
+                            &actor.conversation_id,
+                            &actor.run_id,
                             &mut pending,
                         ).await;
                         break;
@@ -959,34 +956,26 @@ fn spawn_outbox_actor(
                             pending.push(event);
                             if !deferred || pending.len() >= LIVE_JOURNAL_MAX_BATCH {
                                 if let Err(error) = commit_and_deliver(
-                                    &database,
-                                    delivery.as_ref(),
-                                    &conversation_id,
-                                    &run_id,
+                                    &actor.database,
+                                    actor.delivery.as_ref(),
+                                    &actor.conversation_id,
+                                    &actor.run_id,
                                     &mut pending,
                                 ).await {
-                                    fail_actor(
-                                        &database,
-                                        delivery.as_ref(),
-                                        &conversation_id,
-                                        &run_id,
+                                    actor.fail_closed(
                                         &last_turn_id,
-                                        &terminal_submitted,
-                                        &cancellation,
-                                        &completion,
-                                        &durability,
                                         AgentRunEventOutboxFailure::Persistence {
                                             message: error.to_string(),
                                         },
                                     ).await;
                                     break;
                                 }
-                                durability.send_replace(
+                                actor.durability.send_replace(
                                     AgentRunEventOutboxDurability::Committed(sequence),
                                 );
                             }
                             if terminal {
-                                completion.send_replace(
+                                actor.completion.send_replace(
                                     AgentRunEventOutboxOutcome::TerminalCommitted(
                                         AgentRunEventOutboxCompletion { event_seq: sequence },
                                     ),
@@ -1002,46 +991,38 @@ fn spawn_outbox_actor(
                             last_turn_id = turn_id.clone();
                             if !pending.is_empty() {
                                 if let Err(error) = commit_and_deliver(
-                                    &database,
-                                    delivery.as_ref(),
-                                    &conversation_id,
-                                    &run_id,
+                                    &actor.database,
+                                    actor.delivery.as_ref(),
+                                    &actor.conversation_id,
+                                    &actor.run_id,
                                     &mut pending,
                                 ).await {
                                     let failure = AgentRunEventOutboxFailure::Persistence {
                                         message: error.to_string(),
                                     };
-                                    fail_actor(
-                                        &database,
-                                        delivery.as_ref(),
-                                        &conversation_id,
-                                        &run_id,
+                                    actor.fail_closed(
                                         &last_turn_id,
-                                        &terminal_submitted,
-                                        &cancellation,
-                                        &completion,
-                                        &durability,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
                                     break;
                                 }
-                                durability.send_replace(
+                                actor.durability.send_replace(
                                     AgentRunEventOutboxDurability::Committed(sequence),
                                 );
                             }
                             sequence = sequence.saturating_add(1);
                             match commit_pause_checkpoint_and_deliver(
-                                &database,
-                                delivery.as_ref(),
-                                &conversation_id,
-                                &run_id,
+                                &actor.database,
+                                actor.delivery.as_ref(),
+                                &actor.conversation_id,
+                                &actor.run_id,
                                 &turn_id,
                                 sequence,
                                 &reason,
                             ).await {
                                 Ok(checkpoint) => {
-                                    durability.send_replace(
+                                    actor.durability.send_replace(
                                         AgentRunEventOutboxDurability::Committed(sequence),
                                     );
                                     let _ = response.send(Ok(checkpoint));
@@ -1050,16 +1031,8 @@ fn spawn_outbox_actor(
                                     let failure = AgentRunEventOutboxFailure::Persistence {
                                         message: error.to_string(),
                                     };
-                                    fail_actor(
-                                        &database,
-                                        delivery.as_ref(),
-                                        &conversation_id,
-                                        &run_id,
+                                    actor.fail_closed(
                                         &last_turn_id,
-                                        &terminal_submitted,
-                                        &cancellation,
-                                        &completion,
-                                        &durability,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
@@ -1071,29 +1044,21 @@ fn spawn_outbox_actor(
                 }
                 _ = flush_tick.tick(), if !pending.is_empty() => {
                     if let Err(error) = commit_and_deliver(
-                        &database,
-                        delivery.as_ref(),
-                        &conversation_id,
-                        &run_id,
+                        &actor.database,
+                        actor.delivery.as_ref(),
+                        &actor.conversation_id,
+                        &actor.run_id,
                         &mut pending,
                     ).await {
-                        fail_actor(
-                            &database,
-                            delivery.as_ref(),
-                            &conversation_id,
-                            &run_id,
+                        actor.fail_closed(
                             &last_turn_id,
-                            &terminal_submitted,
-                            &cancellation,
-                            &completion,
-                            &durability,
                             AgentRunEventOutboxFailure::Persistence {
                                 message: error.to_string(),
                             },
                         ).await;
                         break;
                     }
-                    durability
+                    actor.durability
                         .send_replace(AgentRunEventOutboxDurability::Committed(sequence));
                 }
             }
@@ -1101,72 +1066,72 @@ fn spawn_outbox_actor(
     });
 }
 
-async fn fail_actor(
-    database: &DatabaseExecutor,
-    delivery: &dyn AgentRunEventDelivery,
-    conversation_id: &str,
-    run_id: &str,
-    turn_id: &str,
-    terminal_submitted: &Mutex<bool>,
-    cancellation: &CancellationToken,
-    completion: &tokio::sync::watch::Sender<AgentRunEventOutboxOutcome>,
-    durability: &tokio::sync::watch::Sender<AgentRunEventOutboxDurability>,
-    failure: AgentRunEventOutboxFailure,
-) {
-    if let Ok(mut closed) = terminal_submitted.lock() {
-        *closed = true;
-    }
-    cancellation.cancel();
+impl AgentRunEventOutboxActorContext {
+    async fn fail_closed(&self, turn_id: &str, failure: AgentRunEventOutboxFailure) {
+        if let Ok(mut closed) = self.terminal_submitted.lock() {
+            *closed = true;
+        }
+        self.cancellation.cancel();
 
-    let failure_reason = failure.reason_code();
-    let task_run_id = run_id.to_string();
-    let failure_claim = database
-        .write(move |database| {
-            AgentTaskRuntime::new(database)
-                .fail_run_event_outbox_if_open(&task_run_id, failure_reason)
-        })
-        .await;
-    let (durable_head, task_snapshot) = match failure_claim {
-        Ok(execution) => match execution.value {
-            AgentRunFailClosedOutcome::Claimed {
-                event_seq,
-                snapshot,
-            } => (event_seq, snapshot),
-            AgentRunFailClosedOutcome::AlreadyClosed { event_seq } => {
-                // Another actor won the database transaction. Its durable
-                // terminal (or fail-closed task projection) is authoritative;
-                // this stale actor must not publish a second live terminal.
-                durability.send_replace(AgentRunEventOutboxDurability::Committed(event_seq));
-                completion.send_replace(AgentRunEventOutboxOutcome::TerminalCommitted(
-                    AgentRunEventOutboxCompletion { event_seq },
-                ));
+        let failure_reason = failure.reason_code();
+        let task_run_id = self.run_id.clone();
+        let failure_claim = self
+            .database
+            .write(move |database| {
+                AgentTaskRuntime::new(database)
+                    .fail_run_event_outbox_if_open(&task_run_id, failure_reason)
+            })
+            .await;
+        let (durable_head, task_snapshot) = match failure_claim {
+            Ok(execution) => match execution.value {
+                AgentRunFailClosedOutcome::Claimed {
+                    event_seq,
+                    snapshot,
+                } => (event_seq, snapshot),
+                AgentRunFailClosedOutcome::AlreadyClosed { event_seq } => {
+                    // Another actor won the database transaction. Its durable
+                    // terminal (or fail-closed task projection) is authoritative;
+                    // this stale actor must not publish a second live terminal.
+                    self.durability
+                        .send_replace(AgentRunEventOutboxDurability::Committed(event_seq));
+                    self.completion
+                        .send_replace(AgentRunEventOutboxOutcome::TerminalCommitted(
+                            AgentRunEventOutboxCompletion { event_seq },
+                        ));
+                    return;
+                }
+            },
+            Err(_) => {
+                // Without a successful transactional claim we cannot prove that a
+                // competing terminal publisher did not win. Fail the waiters but
+                // avoid an unowned second ephemeral terminal.
+                self.durability
+                    .send_replace(AgentRunEventOutboxDurability::Failed(failure.clone()));
+                self.completion
+                    .send_replace(AgentRunEventOutboxOutcome::Failed(failure));
                 return;
             }
-        },
-        Err(_) => {
-            // Without a successful transactional claim we cannot prove that a
-            // competing terminal publisher did not win. Fail the waiters but
-            // avoid an unowned second ephemeral terminal.
-            durability.send_replace(AgentRunEventOutboxDurability::Failed(failure.clone()));
-            completion.send_replace(AgentRunEventOutboxOutcome::Failed(failure));
-            return;
-        }
-    };
-    let terminal_sequence = durable_head.saturating_add(1);
+        };
+        let terminal_sequence = durable_head.saturating_add(1);
 
-    let mut terminal = AgentRunEvent::terminal_error(
-        run_id,
-        Some(turn_id),
-        terminal_sequence,
-        "The response stream could not be stored safely. Retry this message.",
-        "failed",
-        Some(&serde_json::json!({ "reason": failure_reason })),
-    );
-    terminal.persistence = crate::agent_run::AgentRunEventPersistence::Ephemeral;
-    delivery.deliver_run_event(conversation_id, &terminal);
-    delivery.deliver_task_run_snapshot(conversation_id, task_snapshot);
-    durability.send_replace(AgentRunEventOutboxDurability::Failed(failure.clone()));
-    completion.send_replace(AgentRunEventOutboxOutcome::Failed(failure));
+        let mut terminal = AgentRunEvent::terminal_error(
+            &self.run_id,
+            Some(turn_id),
+            terminal_sequence,
+            "The response stream could not be stored safely. Retry this message.",
+            "failed",
+            Some(&serde_json::json!({ "reason": failure_reason })),
+        );
+        terminal.persistence = crate::agent_run::AgentRunEventPersistence::Ephemeral;
+        self.delivery
+            .deliver_run_event(&self.conversation_id, &terminal);
+        self.delivery
+            .deliver_task_run_snapshot(&self.conversation_id, *task_snapshot);
+        self.durability
+            .send_replace(AgentRunEventOutboxDurability::Failed(failure.clone()));
+        self.completion
+            .send_replace(AgentRunEventOutboxOutcome::Failed(failure));
+    }
 }
 
 async fn commit_and_deliver(
