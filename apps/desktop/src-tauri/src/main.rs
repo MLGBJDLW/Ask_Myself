@@ -343,13 +343,6 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
-            match db.mark_interrupted_agent_task_runs() {
-                Ok(count) if count > 0 => {
-                    log::info!("Marked {count} interrupted agent task run(s) from a previous app process")
-                }
-                Ok(_) => {}
-                Err(e) => log::warn!("Failed to mark interrupted agent task runs: {e}"),
-            }
             match db
                 .list_skills()
                 .and_then(|skills| nexa_core::skills::materialize_user_skills_to_disk(&data_dir, &skills))
@@ -360,6 +353,26 @@ fn main() {
             let db = Arc::new(db);
             let db_executor = nexa_core::db_executor::DatabaseExecutor::new((*db).clone(), 64)
                 .expect("failed to initialize bounded database executor");
+            let run_event_outboxes = nexa_core::run_event_outbox::AgentRunEventOutboxes::new(
+                db_executor.clone(),
+                Arc::new(agent_run_outbox::DesktopAgentRunEventDelivery::new(
+                    app.handle().clone(),
+                )),
+            );
+            let agent_run_recovery = tauri::async_runtime::block_on(
+                run_event_outboxes.recover_after_restart(),
+            )?;
+            if agent_run_recovery.restored_suspensions > 0
+                || agent_run_recovery.repaired_terminals > 0
+                || agent_run_recovery.cancelled_runs > 0
+            {
+                log::info!(
+                    "Recovered Agent Runs after restart: {} suspension(s) restored, {} terminal projection(s) repaired, {} interrupted run(s) cancelled",
+                    agent_run_recovery.restored_suspensions,
+                    agent_run_recovery.repaired_terminals,
+                    agent_run_recovery.cancelled_runs,
+                );
+            }
             let activity_runtime = nexa_core::activity::ActivityRuntime::with_database((*db).clone())
                 .expect("failed to initialize durable activity runtime");
             let context_compaction = nexa_core::context_maintenance::ContextCompactionService::new(
@@ -399,6 +412,7 @@ fn main() {
             app.manage(AppState {
                 db: db.clone(),
                 db_executor,
+                run_event_outboxes,
                 subagent_lifecycle: subagent_lifecycle::SubagentLifecycleRuntime::default(),
                 context_compaction,
                 media_generation,

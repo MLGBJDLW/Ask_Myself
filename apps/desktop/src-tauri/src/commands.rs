@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::agent_stream::emit_agent_frontend_event_with_presentation;
 #[cfg(test)]
 use crate::agent_stream::{
     compact_agent_event_for_frontend, split_text_by_utf8_bytes, MAX_FRONTEND_ARTIFACT_STRING_CHARS,
@@ -20,11 +19,10 @@ use crate::background_work_governor::{
     BackgroundWorkGovernor, BackgroundWorkPermit, BackgroundWorkReceiver, SourceChangeJob,
 };
 use nexa_core::agent::power_mode::AgentPowerMode;
-use nexa_core::agent::{AgentEvent, AgentExecutionMode, AgentSteeringMessage, CancellationToken};
-use nexa_core::agent_run::{
-    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
-    AgentRunPhase,
-};
+#[cfg(test)]
+use nexa_core::agent::AgentEvent;
+use nexa_core::agent::{AgentExecutionMode, AgentSteeringMessage};
+use nexa_core::agent_run::{AgentRunEvent, AgentRunPhase};
 #[cfg(test)]
 use nexa_core::app_settings::ShellAccessMode;
 use nexa_core::app_settings::{AppConfig, TextToSpeechConfig, WizardState};
@@ -87,6 +85,7 @@ use nexa_core::provider_catalog::{
     ProviderPreset,
 };
 use nexa_core::provider_registry::provider_type_for_parts;
+use nexa_core::run_event_outbox::AgentRunEventOutboxes;
 use nexa_core::runtime::AgentRunEventOutbox;
 use nexa_core::search::{self, SearchResult};
 use nexa_core::settings_schema_v2::{
@@ -150,6 +149,7 @@ const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 pub struct AppState {
     pub db: Arc<Database>,
     pub db_executor: DatabaseExecutor,
+    pub run_event_outboxes: AgentRunEventOutboxes,
     pub subagent_lifecycle: crate::subagent_lifecycle::SubagentLifecycleRuntime,
     pub context_compaction: nexa_core::context_maintenance::ContextCompactionService,
     pub media_generation: nexa_core::media_generation::MediaGenerationRuntime,
@@ -183,17 +183,10 @@ struct TerminalAgentError<'a> {
     payload: Option<&'a serde_json::Value>,
 }
 
-fn emit_terminal_agent_error_once(
-    terminal_emitted: &AtomicBool,
-    _db: &Database,
-    _app_handle: &AppHandle,
+fn submit_terminal_agent_error(
     stream_event_seq: &AgentRunEventOutbox,
     error: TerminalAgentError<'_>,
 ) {
-    if terminal_emitted.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
     let run_event = AgentRunEvent::terminal_error(
         error.task_run_id,
         Some(error.turn_id),

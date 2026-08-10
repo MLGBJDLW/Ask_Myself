@@ -18,6 +18,7 @@ pub enum AgentRunPhase {
     Tooling,
     Approval,
     AwaitingUserInput,
+    Paused,
     Compacting,
     Accounting,
     Done,
@@ -32,6 +33,7 @@ impl AgentRunPhase {
             Self::Tooling => "tooling",
             Self::Approval => "approval",
             Self::AwaitingUserInput => "awaiting_user_input",
+            Self::Paused => "paused",
             Self::Compacting => "compacting",
             Self::Accounting => "accounting",
             Self::Done => "done",
@@ -46,6 +48,7 @@ impl AgentRunPhase {
             "tooling" => Some(Self::Tooling),
             "approval" => Some(Self::Approval),
             "awaiting_user_input" => Some(Self::AwaitingUserInput),
+            "paused" => Some(Self::Paused),
             "compacting" => Some(Self::Compacting),
             "accounting" => Some(Self::Accounting),
             "done" => Some(Self::Done),
@@ -579,7 +582,11 @@ impl AgentRunEvent {
                 AgentRunEventKind::Status,
                 controller_status_phase(code),
                 content.clone(),
-                tone.clone().or_else(|| Some("running".to_string())),
+                if code == "awaiting_user_input" {
+                    Some("awaiting_user_input".to_string())
+                } else {
+                    tone.clone().or_else(|| Some("running".to_string()))
+                },
             ),
             AgentEvent::ConnectionState { state } => {
                 let (label, status) = match state.state {
@@ -1019,6 +1026,16 @@ impl AgentRunEvent {
         self.kind.is_terminal()
     }
 
+    /// Whether this event permanently closes its durable Agent Run.
+    ///
+    /// Older builds encoded a resumable pause as `Done(status=paused)`. Keep
+    /// that row readable as a turn boundary without treating it as the run's
+    /// one irreversible terminal outcome.
+    pub fn closes_run(&self) -> bool {
+        self.is_terminal()
+            && !(self.kind == AgentRunEventKind::Done && self.status.as_deref() == Some("paused"))
+    }
+
     pub fn validate_durable_contract(&self) -> Result<(), AgentRunEventContractError> {
         if self.version != AGENT_RUN_EVENT_VERSION {
             return Err(AgentRunEventContractError::UnsupportedVersion {
@@ -1269,6 +1286,19 @@ mod tests {
     }
 
     #[test]
+    fn awaiting_user_input_controller_status_uses_canonical_lifecycle_status() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ControllerStatus {
+            code: "awaiting_user_input".to_string(),
+            content: "Waiting for your response".to_string(),
+            tone: Some("attention".to_string()),
+        });
+
+        assert_eq!(run_event.phase, AgentRunPhase::AwaitingUserInput);
+        assert_eq!(run_event.status.as_deref(), Some("awaiting_user_input"));
+        assert_eq!(run_event.payload["tone"], "attention");
+    }
+
+    #[test]
     fn connection_state_projects_to_user_recovery_event() {
         let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ConnectionState {
             state: ConnectionStateEvent {
@@ -1457,6 +1487,7 @@ mod tests {
             AgentRunPhase::Tooling,
             AgentRunPhase::Approval,
             AgentRunPhase::AwaitingUserInput,
+            AgentRunPhase::Paused,
             AgentRunPhase::Compacting,
             AgentRunPhase::Accounting,
             AgentRunPhase::Done,

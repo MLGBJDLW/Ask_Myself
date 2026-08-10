@@ -2457,6 +2457,23 @@ Every answer that uses knowledge base search results.
              DELETE FROM agent_run_events WHERE run_id = OLD.id;
          END;",
     ),
+    (
+        "v115_task_checkpoint_launch_key",
+        "ALTER TABLE task_resume_checkpoints ADD COLUMN launch_idempotency_key TEXT;",
+    ),
+    (
+        "v116_task_checkpoint_response_message",
+        "ALTER TABLE task_resume_checkpoints ADD COLUMN response_message_id TEXT REFERENCES messages(id);",
+    ),
+    (
+        "v117_task_checkpoint_resume_indexes",
+        "CREATE INDEX IF NOT EXISTS idx_task_resume_checkpoints_launch_key
+             ON task_resume_checkpoints(launch_idempotency_key)
+             WHERE launch_idempotency_key IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_task_resume_checkpoints_response_message
+             ON task_resume_checkpoints(response_message_id)
+             WHERE response_message_id IS NOT NULL;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2825,6 +2842,52 @@ mod tests {
                  WHERE type = 'index' AND name IN (
                      'idx_interaction_responses_launch_key',
                      'idx_interaction_responses_message'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 2);
+    }
+
+    #[test]
+    fn task_checkpoint_resume_migrations_recover_after_first_column_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DROP INDEX idx_task_resume_checkpoints_response_message;
+             DROP INDEX idx_task_resume_checkpoints_launch_key;
+             ALTER TABLE task_resume_checkpoints DROP COLUMN response_message_id;
+             DELETE FROM _migrations
+             WHERE name IN (
+                 'v115_task_checkpoint_launch_key',
+                 'v116_task_checkpoint_response_message',
+                 'v117_task_checkpoint_resume_indexes'
+             );",
+        )
+        .expect("simulate interruption after the first checkpoint response column");
+
+        run_migrations(&conn).expect("partial task checkpoint resume migration should recover");
+
+        for column in ["launch_idempotency_key", "response_message_id"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM pragma_table_info('task_resume_checkpoints')
+                         WHERE name = ?1
+                     )",
+                    [column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "task_resume_checkpoints.{column} should exist");
+        }
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name IN (
+                     'idx_task_resume_checkpoints_launch_key',
+                     'idx_task_resume_checkpoints_response_message'
                  )",
                 [],
                 |row| row.get(0),

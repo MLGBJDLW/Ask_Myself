@@ -23,6 +23,26 @@ payloads and operating-system events enter through explicit adapters. Durable
 records authorize replay and recovery; transient UI state must not invent a
 successful tool execution or model response.
 
+## Run Event publication boundary
+
+The core runtime owns one Run Event outbox per Agent Run. It is the sole
+authority for Run Event sequencing, batching, Run Event-derived task
+projection, and terminal acceptance. Producers submit unsequenced events
+through a bounded, non-blocking interface; the native desktop bridge supplies
+only the post-commit delivery adapter. Consequently, a missing main window
+cannot block durable run completion, and presentation code cannot race the core
+ledger with a second sequence or terminal decision.
+
+Resumable phases such as paused and awaiting user input keep the same outbox
+open. True terminal outcomes close it permanently, and finalization crosses the
+completion barrier only after both the terminal event and task projection are
+durable. Per-run lifecycle serialization also covers durable continuation
+claims, executor spawn, session registration, pause, and stop. Startup recovery
+uses the Run Event ledger to restore suspensions or terminalize interrupted
+work instead of letting task rows invent a second outcome. The detailed
+batching, failure, recovery, and wire rules are normative in the
+[Agent Streaming Protocol](./AGENT_STREAMING_PROTOCOL.md).
+
 ## Cross-cutting invariants
 
 1. **Local-first ownership.** Indexes, conversation history, settings, and
@@ -49,9 +69,10 @@ successful tool execution or model response.
 
 ## Normative runtime contracts
 
-- [Agent Streaming Protocol](./AGENT_STREAMING_PROTOCOL.md) defines the single
-  event owner, versioned wire schema, ordered delivery, block offsets, terminal
-  authority, recovery, and window-scoped projection channels.
+- [Agent Streaming Protocol](./AGENT_STREAMING_PROTOCOL.md) defines the core
+  Run Event outbox, versioned wire schema, commit-before-delivery ordering,
+  batching, terminal completion barrier, fail-closed recovery, block offsets,
+  and window-scoped projection channels.
 - [Terminal and Agent Bridge](./TERMINAL_AGENT_BRIDGE.md) defines the boundary
   between the user-owned PTY and approval-gated agent interaction.
 - [Live File-Tool Streaming](./LIVE_FILE_TOOL_STREAMING.md) separates partial

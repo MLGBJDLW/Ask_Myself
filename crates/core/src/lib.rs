@@ -89,6 +89,7 @@ pub mod provider_registry;
 pub mod quality_eval;
 pub mod quality_profile;
 pub mod rag;
+pub mod run_event_outbox;
 pub mod runtime;
 pub mod search;
 pub mod settings_schema_v2;

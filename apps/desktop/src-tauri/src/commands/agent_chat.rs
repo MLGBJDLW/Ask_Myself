@@ -1,23 +1,25 @@
 use super::*;
-use crate::agent_run_outbox::spawn_agent_run_outbox;
 use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
     build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
     build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
-    finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
+    finalize_desktop_agent_stop, finalize_desktop_agent_turn, provider_config_egress_id,
+    provider_config_is_local, reconcile_authoritative_run_event_outbox_failure,
     request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
     run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
     DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
-    DesktopAgentSessionDependencyRequest, DesktopAgentTurnConfigRequest,
-    DesktopAgentTurnFinalization, DesktopAgentTurnRequest, DesktopAgentTurnRuntime,
-    DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest, DesktopRunningAgentStopRequest,
+    DesktopAgentSessionDependencyRequest, DesktopAgentStopFinalization,
+    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
+    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
+    DesktopRunningAgentStopRequest,
 };
 use nexa_core::llm::ReasoningEffort;
 use nexa_core::mixture_of_agents::{
     AgentCollaborationMode, MoaAdvisor, MoaPreset, MoaPresetId, MoaProvider,
 };
 use nexa_core::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
+use nexa_core::run_event_outbox::AgentRunEventSubmitError;
 use nexa_core::runtime::{
     ActiveAgentTurn, AgentRunEventOutbox, AgentTurnHandle, AgentTurnState, RuntimeTerminalStatus,
     StartTurnRequest, TurnLaunchStage, RUNTIME_PROTOCOL_VERSION,
@@ -155,6 +157,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub vision_turn_override: Option<VisionTurnOverride>,
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
+    pub resume_checkpoint_id: Option<String>,
     pub idempotency_key: String,
 }
 
@@ -290,6 +293,7 @@ pub async fn agent_chat_cmd(
         vision_turn_override: request.vision_turn_override,
         user_artifacts: request.user_artifacts,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
+        resume_checkpoint_id: request.resume_checkpoint_id,
         idempotency_key: request.idempotency_key,
     })
     .await
@@ -361,6 +365,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         vision_turn_override,
         user_artifacts,
         task_orchestrator_run_id,
+        resume_checkpoint_id,
         idempotency_key,
     } = request;
     let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
@@ -375,6 +380,17 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    let resume_checkpoint_id = resume_checkpoint_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    if resume_checkpoint_id.is_some() && task_orchestrator_run_id.is_some() {
+        return Err(
+            "Task checkpoint resumes recover their original Task Orchestrator identity."
+                .to_string(),
+        );
+    }
 
     // 1. Load the conversation first so provider/model selection follows the
     // active chat, not whatever global default happened to be selected later.
@@ -479,20 +495,58 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         user_artifacts.as_ref(),
     )?;
     let resumes_interaction = interaction_response.is_some();
-    let mut resumed_turn = if let Some(response) = interaction_response.as_ref() {
-        let resumed_run_id = state
+    if resumes_interaction && resume_checkpoint_id.is_some() {
+        return Err(
+            "Interaction responses and task checkpoints are mutually exclusive continuations."
+                .to_string(),
+        );
+    }
+    if resume_checkpoint_id.is_some() && attachments.is_some() {
+        return Err("Task checkpoint resumes cannot add new attachments.".to_string());
+    }
+    let resumed_run_id = if let Some(response) = interaction_response.as_ref() {
+        Some(
+            state
+                .db
+                .get_interaction_request_run_id(&response.interaction_id)
+                .map_err(|error| error.to_string())?,
+        )
+    } else if let Some(checkpoint_id) = resume_checkpoint_id.as_deref() {
+        let checkpoint = state
             .db
-            .get_interaction_request_run_id(&response.interaction_id)
+            .get_task_resume_checkpoint(checkpoint_id)
             .map_err(|error| error.to_string())?;
+        let checkpoint_run = state
+            .db
+            .get_agent_task_run(&checkpoint.run_id)
+            .map_err(|error| error.to_string())?;
+        if checkpoint_run.conversation_id != conversation_id {
+            return Err("Task checkpoint belongs to a different conversation.".to_string());
+        }
+        Some(checkpoint.run_id)
+    } else {
+        None
+    };
+    let resumes_existing_run = resumed_run_id.is_some();
+    let run_lifecycle_guard = if let Some(resumed_run_id) = resumed_run_id.as_deref() {
+        Some(
+            agent_state
+                .sessions
+                .acquire_run_lifecycle(resumed_run_id)
+                .await,
+        )
+    } else {
+        None
+    };
+    let mut resumed_turn = if let Some(resumed_run_id) = resumed_run_id.as_deref() {
         agent_state
             .sessions
-            .take_for_run(&conversation_id, &resumed_run_id)
+            .take_for_run(&conversation_id, resumed_run_id)
             .await
             .map_err(|error| error.to_string())?
     } else {
         None
     };
-
     // Persist only the minimal durable launch tuple before acknowledging. The
     // database allocates sort order inside this same transaction, avoiding a
     // full history read and a concurrent MAX(sort_order) race on the hot path.
@@ -544,16 +598,27 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
-    let launch_record = match state
-        .db
-        .create_agent_turn_and_run_with_interaction_response(
+    let launch_result = if let Some(checkpoint_id) = resume_checkpoint_id.as_deref() {
+        state.db.resume_agent_turn_from_checkpoint(
             &user_msg,
-            &task_title_from_message(&message),
             Some(&db_config.provider),
             Some(&db_config.model),
             &idempotency_key,
-            interaction_response.as_ref(),
-        ) {
+            checkpoint_id,
+        )
+    } else {
+        state
+            .db
+            .create_agent_turn_and_run_with_interaction_response(
+                &user_msg,
+                &task_title_from_message(&message),
+                Some(&db_config.provider),
+                Some(&db_config.model),
+                &idempotency_key,
+                interaction_response.as_ref(),
+            )
+    };
+    let mut launch_record = match launch_result {
         Ok(launch_record) => launch_record,
         Err(error) => {
             if let Some(previous) = resumed_turn.take() {
@@ -562,12 +627,114 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             return Err(error.to_string());
         }
     };
+    if let Some(expected_run_id) = resumed_run_id.as_deref() {
+        debug_assert_eq!(launch_record.run_id, expected_run_id);
+    }
+    let _run_lifecycle_guard = match run_lifecycle_guard {
+        Some(guard) => guard,
+        None => {
+            agent_state
+                .sessions
+                .acquire_run_lifecycle(&launch_record.run_id)
+                .await
+        }
+    };
+    let authoritative_task = match state.db.get_agent_task_run(&launch_record.run_id) {
+        Ok(task) => task,
+        Err(error) => {
+            if let Some(previous) = resumed_turn.take() {
+                agent_state.sessions.register(previous).await;
+            }
+            return Err(error.to_string());
+        }
+    };
+    launch_record.status = authoritative_task.status.clone();
     let continuation_is_already_running = resumed_turn
         .as_ref()
         .is_some_and(|previous| !previous.is_finished());
+    let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
+        task_orchestrator_run_id
+    } else if resumes_existing_run {
+        match state
+            .db
+            .get_workflow_automation_run_for_task_run(&launch_record.run_id)
+        {
+            Ok(run) => run.map(|run| run.id),
+            Err(error) => {
+                if let Some(previous) = resumed_turn.take() {
+                    agent_state.sessions.register(previous).await;
+                }
+                return Err(error.to_string());
+            }
+        }
+    } else {
+        None
+    };
+    if !launch_status_needs_executor(&launch_record.status) {
+        if !resumes_existing_run {
+            if let Some(run_id) = task_orchestrator_run_id.as_deref() {
+                let workflow_run = state
+                    .db
+                    .get_workflow_automation_run(run_id)
+                    .map_err(|error| error.to_string())?;
+                match workflow_run.task_run_id.as_deref() {
+                    None => {
+                        state
+                            .db
+                            .start_workflow_automation_run(
+                                run_id,
+                                &launch_record.run_id,
+                                Some("Agent launch was superseded before executor spawn"),
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Some(bound_run_id)
+                        if bound_run_id == launch_record.run_id
+                            && workflow_run.status == "queued" =>
+                    {
+                        state
+                            .db
+                            .start_workflow_automation_run(
+                                run_id,
+                                &launch_record.run_id,
+                                Some("Agent launch was superseded before executor spawn"),
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Some(bound_run_id) if bound_run_id == launch_record.run_id => {}
+                    Some(bound_run_id) => {
+                        return Err(format!(
+                            "Task Orchestrator run {run_id} is already bound to Agent Run {bound_run_id}"
+                        ));
+                    }
+                }
+                if let Err(error) = state.db.transition_workflow_automation_run(
+                    run_id,
+                    &launch_record.status,
+                    authoritative_task
+                        .summary
+                        .as_deref()
+                        .or(Some("Agent launch was superseded before executor spawn")),
+                ) {
+                    warn!(
+                        "Failed to project authoritative Agent Run {} status {} to Task Orchestrator run {run_id}: {error}",
+                        launch_record.run_id,
+                        launch_record.status
+                    );
+                }
+            }
+        }
+        if let Some(previous) = resumed_turn.take() {
+            agent_state.sessions.register(previous).await;
+        }
+        return Ok(desktop_agent_chat_launch(
+            &launch_record,
+            task_orchestrator_run_id,
+        ));
+    }
     if reused_launch_needs_no_executor(
         &launch_record,
-        resumes_interaction,
+        resumes_existing_run,
         continuation_is_already_running,
     ) {
         if let Some(previous) = resumed_turn.take() {
@@ -578,29 +745,36 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_orchestrator_run_id,
         ));
     }
-    let resumed_event_outbox = if let Some(previous) = resumed_turn.take() {
+    let task_run_id_for_command = launch_record.run_id.clone();
+    let stream_event_seq = match state
+        .run_event_outboxes
+        .open(&conversation_id, &launch_record.run_id)
+        .await
+    {
+        Ok(outbox) => outbox,
+        Err(error) => {
+            if let Some(previous) = resumed_turn.take() {
+                agent_state.sessions.register(previous).await;
+            }
+            return Err(error.to_string());
+        }
+    };
+    if stream_event_seq.is_closed_for_submission() {
+        if let Some(previous) = resumed_turn.take() {
+            agent_state.sessions.register(previous).await;
+        }
+        return Err(format!(
+            "Agent task run {} is already terminal and cannot resume.",
+            launch_record.run_id
+        ));
+    }
+    if let Some(previous) = resumed_turn.take() {
         debug_assert_eq!(previous.handle.run_id, launch_record.run_id);
-        let event_outbox = Arc::clone(&previous.event_outbox);
         previous.cancel_token.cancel();
         previous.task.abort();
         let _ = previous.task.await;
-        Some(event_outbox)
-    } else {
-        None
-    };
-    let task_orchestrator_run_id = if task_orchestrator_run_id.is_some() {
-        task_orchestrator_run_id
-    } else if resumes_interaction {
-        state
-            .db
-            .get_workflow_automation_run_for_task_run(&launch_record.run_id)
-            .map_err(|error| error.to_string())?
-            .map(|run| run.id)
-    } else {
-        None
-    };
-    let task_run_id_for_command = launch_record.run_id.clone();
-    if !resumes_interaction {
+    }
+    if !resumes_existing_run {
         if let Some(run_id) = task_orchestrator_run_id.as_deref() {
             state
                 .db
@@ -608,22 +782,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 .map_err(|err| err.to_string())?;
         }
     }
-    let stream_event_seq = if let Some(event_outbox) = resumed_event_outbox {
-        event_outbox
-    } else {
-        let last_event_sequence = state
-            .db
-            .latest_agent_run_event_sequence(&launch_record.run_id)
-            .map_err(|error| error.to_string())?;
-        Arc::new(spawn_agent_run_outbox(
-            app_handle.clone(),
-            state.db_executor.clone(),
-            conversation_id.clone(),
-            launch_record.run_id.clone(),
-            last_event_sequence,
-        ))
-    };
-    let terminal_emitted = Arc::new(AtomicBool::new(false));
     emit_agent_task_run_update(
         &state.db,
         &app_handle,
@@ -679,19 +837,21 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let task = tokio::spawn(async move {
         let _foreground_work_lease = background_work.foreground_lease();
         let initialization = async {
-            db.mark_agent_task_run_started(&task_run_id, "initializing")
+            stream_event_seq_for_task
+                .submit(AgentRunEvent::status_update(
+                    &task_run_id,
+                    Some(&turn_id),
+                    0,
+                    AgentRunPhase::Routing,
+                    "Agent started",
+                    Some("running"),
+                    None,
+                ))
                 .map_err(|error| error.to_string())?;
-            emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
-            record_internal_agent_run_status_event(
-                &conv_id,
-                &task_run_id,
-                Some(&turn_id),
-                &stream_event_seq_for_task,
-                AgentRunPhase::Routing,
-                "Agent started",
-                Some("running"),
-                None,
-            );
+            stream_event_seq_for_task
+                .flush()
+                .await
+                .map_err(|error| error.to_string())?;
 
             if cancel_token_clone.is_cancelled() {
                 return Err("Agent execution cancelled during initialization.".to_string());
@@ -920,7 +1080,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
                     db: &db,
                     mcp_manager: &mcp_manager,
-                    app_handle: &handle,
                     event_seq: &stream_event_seq_for_task,
                     conversation_id: &conv_id,
                     task_run_id: &task_run_id,
@@ -1004,7 +1163,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 None,
                 Some(&initial_task_artifacts),
             );
-            emit_agent_task_run_update(&db, &handle, &conv_id, &task_run_id);
             record_turn_launch_metric(
                 &db,
                 &handle,
@@ -1091,9 +1249,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     task_orchestrator_run_id_for_task.as_deref(),
                     &turn_id,
                     &stream_event_seq_for_task,
-                    &terminal_emitted,
                     &error,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -1107,9 +1265,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     task_orchestrator_run_id_for_task.as_deref(),
                     &turn_id,
                     &stream_event_seq_for_task,
-                    &terminal_emitted,
                     &error.to_string(),
-                );
+                )
+                .await;
                 return;
             }
         }
@@ -1136,7 +1294,6 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 app_handle: handle.clone(),
                 task_run_id: task_run_id.clone(),
                 event_seq: Arc::clone(&stream_event_seq_for_task),
-                terminal_emitted: Arc::clone(&terminal_emitted),
                 launch_started,
             },
         })
@@ -1151,10 +1308,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             Some(Err(CoreError::Cancelled(message))) => {
                 warn!("Agent execution cancelled for conversation {conv_id}: {message}");
                 let payload = serde_json::json!({ "reason": message });
-                emit_terminal_agent_error_once(
-                    terminal_emitted.as_ref(),
-                    &db,
-                    &handle,
+                submit_terminal_agent_error(
                     stream_event_seq_for_task.as_ref(),
                     TerminalAgentError {
                         conversation_id: &conv_id,
@@ -1168,10 +1322,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
             Some(Err(e)) => {
                 warn!("Agent execution failed for conversation {conv_id}: {e}");
-                emit_terminal_agent_error_once(
-                    terminal_emitted.as_ref(),
-                    &db,
-                    &handle,
+                submit_terminal_agent_error(
                     stream_event_seq_for_task.as_ref(),
                     TerminalAgentError {
                         conversation_id: &conv_id,
@@ -1186,10 +1337,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             None => {
                 warn!("Agent execution timed out for conversation {conv_id}");
                 let payload = serde_json::json!({ "reason": "timeout" });
-                emit_terminal_agent_error_once(
-                    terminal_emitted.as_ref(),
-                    &db,
-                    &handle,
+                submit_terminal_agent_error(
                     stream_event_seq_for_task.as_ref(),
                     TerminalAgentError {
                         conversation_id: &conv_id,
@@ -1210,8 +1358,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             task_run_id: &task_run_id,
             task_orchestrator_run_id: task_orchestrator_run_id_for_task.as_deref(),
             turn_id: &turn_id,
+            event_seq: stream_event_seq_for_task.as_ref(),
             outcome: &outcome,
-        });
+        })
+        .await;
 
         if matches!(result, Some(Ok(_))) {
             run_desktop_agent_post_success_learning(DesktopAgentPostSuccessLearningRequest {
@@ -1286,13 +1436,15 @@ fn elapsed_millis(started: Instant) -> u64 {
 
 fn reused_launch_needs_no_executor(
     launch: &nexa_core::conversation::AgentTurnLaunchRecord,
-    resumes_interaction: bool,
+    resumes_existing_run: bool,
     continuation_is_already_running: bool,
 ) -> bool {
     launch.reused
-        && (!resumes_interaction
-            || continuation_is_already_running
-            || launch.status == "awaiting_user_input")
+        && (!resumes_existing_run || continuation_is_already_running || launch.status != "queued")
+}
+
+fn launch_status_needs_executor(status: &str) -> bool {
+    status == "queued"
 }
 
 fn initialization_frontend_message(error: &str) -> &'static str {
@@ -1309,8 +1461,216 @@ fn initialization_frontend_message(error: &str) -> &'static str {
 
 #[cfg(test)]
 mod initialization_error_tests {
-    use super::{initialization_frontend_message, reused_launch_needs_no_executor};
-    use nexa_core::conversation::AgentTurnLaunchRecord;
+    use super::{
+        desktop_agent_chat_launch, initialization_frontend_message, launch_status_needs_executor,
+        reconcile_initialization_terminal_barrier, reused_launch_needs_no_executor,
+    };
+    use nexa_core::conversation::{
+        AgentTurnLaunchRecord, ConversationMessage, CreateConversationInput,
+    };
+    use nexa_core::db::Database;
+    use nexa_core::llm::Role;
+    use nexa_core::runtime::{AgentSessionManager, AgentTurnState};
+    use nexa_core::workflow_automation::{
+        SaveWorkflowAutomationInput, WorkflowAutomationApprovalPolicy, WorkflowAutomationTrigger,
+    };
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn lifecycle_barrier_observes_pause_before_executor_spawn_decision() {
+        let db = Database::open_memory().expect("open memory db");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: "launch-pause-race-message".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Start then pause".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).expect("add user message");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .expect("create turn");
+        let task = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "Launch/pause race",
+                Some("open_ai"),
+                Some("gpt-test"),
+            )
+            .expect("create task run");
+        let sessions = Arc::new(AgentSessionManager::new());
+        let pause_guard = sessions.acquire_run_lifecycle(&task.id).await;
+        db.update_agent_task_run_progress(
+            &task.id,
+            Some("paused"),
+            Some("paused"),
+            None,
+            Some("Paused before executor spawn"),
+            None,
+            None,
+        )
+        .expect("pause task behind lifecycle barrier");
+
+        let (decision_tx, mut decision_rx) = tokio::sync::oneshot::channel();
+        let launcher = {
+            let db = db.clone();
+            let sessions = Arc::clone(&sessions);
+            let run_id = task.id.clone();
+            tokio::spawn(async move {
+                let _launch_guard = sessions.acquire_run_lifecycle(&run_id).await;
+                let status = db
+                    .get_agent_task_run(&run_id)
+                    .expect("authoritative task after lifecycle barrier")
+                    .status;
+                let _ = decision_tx.send(launch_status_needs_executor(&status));
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            decision_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(pause_guard);
+        assert!(!decision_rx.await.expect("spawn decision"));
+        launcher.await.expect("launcher task");
+    }
+
+    #[test]
+    fn initialization_finalizer_preserves_a_competing_terminal_winner() {
+        let db = Database::open_memory().expect("open memory db");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: "initialization-race-message".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Start the task".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).expect("add user message");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .expect("create turn");
+        let task = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "Initialization race",
+                Some("open_ai"),
+                Some("gpt-test"),
+            )
+            .expect("create task run");
+        db.mark_agent_task_run_started(&task.id, "initializing")
+            .expect("start task run");
+        let automation = db
+            .save_workflow_automation(&SaveWorkflowAutomationInput {
+                id: None,
+                name: "Initialization race".to_string(),
+                description: "Verify terminal arbitration".to_string(),
+                workflow_template_id: "report_brief".to_string(),
+                prompt: "Start the task".to_string(),
+                trigger: WorkflowAutomationTrigger::Manual,
+                source_scope: Vec::new(),
+                approval_policy: WorkflowAutomationApprovalPolicy {
+                    require_before_run: false,
+                    allowed_tools: Vec::new(),
+                    risk_level: "low".to_string(),
+                },
+                enabled: true,
+            })
+            .expect("save automation");
+        let orchestrator = db
+            .record_workflow_automation_run(&automation.id, None, "queued", Some("queued"))
+            .expect("queue automation run");
+        db.start_workflow_automation_run(&orchestrator.id, &task.id, Some("running"))
+            .expect("start automation run");
+
+        let winner_artifacts = serde_json::json!({ "reason": "stop_won" });
+        db.finish_agent_task_run(
+            &task.id,
+            "cancelled",
+            Some("Stopped by user"),
+            Some("stop_won"),
+            Some(&winner_artifacts),
+        )
+        .expect("project competing terminal winner");
+        let initialization_trace = serde_json::json!({ "initializationError": "provider failed" });
+
+        assert!(!reconcile_initialization_terminal_barrier(
+            &db,
+            &task.id,
+            Some(&orchestrator.id),
+            &turn.id,
+            true,
+            "failed",
+            "error",
+            "Agent initialization failed",
+            "provider failed",
+            &initialization_trace,
+        ));
+
+        let authoritative_task = db.get_agent_task_run(&task.id).expect("task winner");
+        assert_eq!(authoritative_task.status, "cancelled");
+        assert_eq!(
+            authoritative_task.summary.as_deref(),
+            Some("Stopped by user")
+        );
+        assert_eq!(
+            authoritative_task.error_message.as_deref(),
+            Some("stop_won")
+        );
+        assert_eq!(authoritative_task.artifacts, Some(winner_artifacts));
+        assert_eq!(
+            db.get_conversation_turn(&turn.id)
+                .expect("turn projection")
+                .status,
+            "cancelled"
+        );
+        let authoritative_orchestrator = db
+            .get_workflow_automation_run(&orchestrator.id)
+            .expect("workflow projection");
+        assert_eq!(authoritative_orchestrator.status, "cancelled");
+        assert_eq!(
+            authoritative_orchestrator.summary.as_deref(),
+            Some("Stopped by user")
+        );
+    }
 
     #[test]
     fn stale_registry_failure_is_actionable_without_exposing_internal_ids() {
@@ -1345,10 +1705,44 @@ mod initialization_error_tests {
             false,
         ));
     }
+
+    #[test]
+    fn reused_terminal_checkpoint_never_starts_an_executor() {
+        for status in ["completed", "failed", "timed_out", "cancelled"] {
+            let launch = AgentTurnLaunchRecord {
+                conversation_id: "conversation-1".to_string(),
+                user_message_id: "message-1".to_string(),
+                user_message_sort_order: 1,
+                turn_id: "turn-1".to_string(),
+                run_id: "run-1".to_string(),
+                status: status.to_string(),
+                reused: true,
+            };
+            assert!(reused_launch_needs_no_executor(&launch, true, false));
+        }
+    }
+
+    #[test]
+    fn paused_launch_is_resumable_nonterminal_state() {
+        let launch = desktop_agent_chat_launch(
+            &AgentTurnLaunchRecord {
+                conversation_id: "conversation-1".to_string(),
+                user_message_id: "message-1".to_string(),
+                user_message_sort_order: 1,
+                turn_id: "turn-1".to_string(),
+                run_id: "run-1".to_string(),
+                status: "paused".to_string(),
+                reused: true,
+            },
+            None,
+        );
+
+        assert_eq!(launch.handle.state, AgentTurnState::Paused);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finalize_desktop_agent_initialization_failure(
+async fn finalize_desktop_agent_initialization_failure(
     db: &Database,
     app_handle: &AppHandle,
     conversation_id: &str,
@@ -1356,7 +1750,6 @@ fn finalize_desktop_agent_initialization_failure(
     task_orchestrator_run_id: Option<&str>,
     turn_id: &str,
     event_seq: &AgentRunEventOutbox,
-    terminal_emitted: &AtomicBool,
     error: &str,
 ) {
     warn!("Agent initialization failed for conversation {conversation_id}: {error}");
@@ -1369,34 +1762,127 @@ fn finalize_desktop_agent_initialization_failure(
         "Agent initialization failed"
     };
     let trace = serde_json::json!({ "initializationError": error, "status": status });
-    let _ = db.finalize_conversation_turn(turn_id, turn_status, None, Some(&trace));
-    let _ = db.finish_agent_task_run(
-        task_run_id,
-        status,
-        Some(summary),
-        Some(error),
-        Some(&trace),
-    );
-    if let Some(run_id) = task_orchestrator_run_id {
-        let _ = db.transition_workflow_automation_run(run_id, status, Some(summary));
-    }
     let payload = serde_json::json!({ "stage": "initialization", "reason": error });
     let frontend_message = initialization_frontend_message(error);
-    emit_terminal_agent_error_once(
-        terminal_emitted,
-        db,
-        app_handle,
-        event_seq,
-        TerminalAgentError {
-            conversation_id,
+    let initialization_candidate = AgentRunEvent::terminal_error(
+        task_run_id,
+        Some(turn_id),
+        0,
+        frontend_message,
+        status,
+        Some(&payload),
+    );
+    let initialization_candidate_submitted = match event_seq.submit(initialization_candidate) {
+        Ok(()) => true,
+        Err(AgentRunEventSubmitError::AlreadyClosed) => false,
+        Err(submit_error) => {
+            warn!(
+                "Failed to submit initialization terminal RunEvent for {conversation_id}: {submit_error}"
+            );
+            false
+        }
+    };
+    if let Err(outbox_error) = event_seq.wait_for_terminal_commit().await {
+        warn!(
+            "Run Event outbox did not durably terminalize initialization failure for {conversation_id}: {outbox_error}"
+        );
+        reconcile_authoritative_run_event_outbox_failure(
+            db,
             task_run_id,
+            task_orchestrator_run_id,
             turn_id,
-            message: frontend_message,
-            status,
-            payload: Some(&payload),
-        },
+            &outbox_error,
+        );
+        emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+        return;
+    }
+
+    reconcile_initialization_terminal_barrier(
+        db,
+        task_run_id,
+        task_orchestrator_run_id,
+        turn_id,
+        initialization_candidate_submitted,
+        status,
+        turn_status,
+        summary,
+        error,
+        &trace,
     );
     emit_agent_task_run_update(db, app_handle, conversation_id, task_run_id);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_initialization_terminal_barrier(
+    db: &Database,
+    task_run_id: &str,
+    task_orchestrator_run_id: Option<&str>,
+    turn_id: &str,
+    initialization_candidate_submitted: bool,
+    initialization_status: &str,
+    initialization_turn_status: &str,
+    initialization_summary: &str,
+    initialization_error: &str,
+    initialization_trace: &serde_json::Value,
+) -> bool {
+    let task = match db.get_agent_task_run(task_run_id) {
+        Ok(task) => task,
+        Err(error) => {
+            warn!("Failed to load initialization terminal projection {task_run_id}: {error}");
+            return false;
+        }
+    };
+
+    if initialization_candidate_submitted && task.status == initialization_status {
+        let _ = db.finalize_conversation_turn(
+            turn_id,
+            initialization_turn_status,
+            None,
+            Some(initialization_trace),
+        );
+        let _ = db.finish_agent_task_run(
+            task_run_id,
+            initialization_status,
+            Some(initialization_summary),
+            Some(initialization_error),
+            Some(initialization_trace),
+        );
+        if let Some(run_id) = task_orchestrator_run_id {
+            if let Err(error) = db.transition_workflow_automation_run(
+                run_id,
+                initialization_status,
+                Some(initialization_summary),
+            ) {
+                warn!("Failed to finalize Task Orchestrator run {run_id}: {error}");
+            }
+        }
+        return true;
+    }
+
+    let authoritative_turn_status = match task.status.as_str() {
+        "completed" => "success",
+        "failed" | "timed_out" => "error",
+        "cancelled" => "cancelled",
+        status => {
+            warn!(
+                "Initialization terminal reconciliation found nonterminal task status {status} for {task_run_id}; preserving it"
+            );
+            return false;
+        }
+    };
+    if let Err(error) =
+        db.finalize_conversation_turn(turn_id, authoritative_turn_status, None, None)
+    {
+        warn!("Failed to reconcile conversation turn {turn_id}: {error}");
+    }
+    if let Some(run_id) = task_orchestrator_run_id {
+        if let Err(error) =
+            db.transition_workflow_automation_run(run_id, &task.status, task.summary.as_deref())
+        {
+            warn!("Failed to reconcile Task Orchestrator run {run_id}: {error}");
+        }
+    }
+    false
 }
 
 fn desktop_agent_chat_launch(
@@ -1408,6 +1894,7 @@ fn desktop_agent_chat_launch(
         "running" | "cancelling" => AgentTurnState::Running,
         "waiting_approval" => AgentTurnState::WaitingApproval,
         "awaiting_user_input" => AgentTurnState::AwaitingUserInput,
+        "paused" => AgentTurnState::Paused,
         "completed" | "success" | "cached" => {
             AgentTurnState::Terminal(RuntimeTerminalStatus::Completed)
         }
@@ -1519,13 +2006,96 @@ pub async fn agent_stop_cmd(
 ) -> Result<(), String> {
     if let Some(run_id) = state
         .db
-        .cancel_awaiting_interactions_for_conversation(&conversation_id)
+        .stoppable_interaction_run_for_conversation(&conversation_id)
         .map_err(|error| error.to_string())?
     {
-        if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
-            turn.cancel_token.cancel();
+        let _run_lifecycle_guard = agent_state.sessions.acquire_run_lifecycle(&run_id).await;
+        let run = state
+            .db
+            .get_agent_task_run(&run_id)
+            .map_err(|error| error.to_string())?;
+        if !matches!(run.status.as_str(), "awaiting_user_input" | "cancelling") {
+            if let Ok(Some(turn)) = agent_state
+                .sessions
+                .take_for_run(&conversation_id, &run_id)
+                .await
+            {
+                request_desktop_running_agent_stop(
+                    turn,
+                    DesktopRunningAgentStopRequest {
+                        db: state.db.clone(),
+                        app_handle,
+                        conversation_id,
+                    },
+                );
+            }
+            return Ok(());
         }
-        emit_agent_task_run_update(&state.db, &app_handle, &conversation_id, &run_id);
+        let mut event_outbox = None;
+        let mut task_orchestrator_run_id = None;
+        if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
+            if turn.handle.run_id == run_id {
+                event_outbox = Some(Arc::clone(&turn.event_outbox));
+                task_orchestrator_run_id = turn.orchestrator_run_id.clone();
+                turn.task.abort();
+                turn.cancel_token.cancel();
+                let _ = turn.task.await;
+            } else {
+                agent_state.sessions.register(turn).await;
+            }
+        }
+        let event_outbox = match event_outbox {
+            Some(outbox) => outbox,
+            None => state
+                .run_event_outboxes
+                .open(&conversation_id, &run_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        if run.status == "awaiting_user_input" {
+            let cancelling = AgentRunEvent::status_update(
+                &run_id,
+                Some(&run.turn_id),
+                0,
+                AgentRunPhase::AwaitingUserInput,
+                "Stop requested while waiting for user input",
+                Some("cancelling"),
+                Some(&serde_json::json!({
+                    "reason": "cancelled_while_awaiting_user_input"
+                })),
+            );
+            match event_outbox.submit(cancelling) {
+                Ok(()) | Err(AgentRunEventSubmitError::AlreadyClosed) => {}
+                Err(error) => return Err(error.to_string()),
+            }
+            event_outbox
+                .flush()
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        state
+            .db
+            .cancel_interactions_for_stopped_run(&run_id)
+            .map_err(|error| error.to_string())?;
+        if task_orchestrator_run_id.is_none() {
+            task_orchestrator_run_id = state
+                .db
+                .get_workflow_automation_run_for_task_run(&run_id)
+                .map_err(|error| error.to_string())?
+                .map(|workflow| workflow.id);
+        }
+        finalize_desktop_agent_stop(DesktopAgentStopFinalization {
+            db: state.db.as_ref(),
+            app_handle: &app_handle,
+            conversation_id: &conversation_id,
+            task_run_id: &run_id,
+            task_orchestrator_run_id: task_orchestrator_run_id.as_deref(),
+            turn_id: &run.turn_id,
+            event_seq: event_outbox.as_ref(),
+            reason: "cancelled_while_awaiting_user_input",
+            summary: "Cancelled while waiting for user input",
+        })
+        .await;
         return Ok(());
     }
 
