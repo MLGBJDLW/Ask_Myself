@@ -414,12 +414,28 @@ pub enum ProviderHostedToolStatus {
     Failed,
 }
 
+/// Provider-owned Responses item family. Keep this separate from the remote
+/// tool's display name (notably for named MCP calls) so presentation does not
+/// depend on Nexa's local tool registry recognizing that name.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderHostedToolKind {
+    WebSearch,
+    FileSearch,
+    CodeInterpreter,
+    ComputerUse,
+    ImageGeneration,
+    Mcp,
+    Shell,
+}
+
 /// Provider-neutral projection of a provider-executed Responses item.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderHostedToolEvent {
     pub call_id: String,
     pub tool_name: String,
+    pub kind: ProviderHostedToolKind,
     pub provider_id: String,
     pub status: ProviderHostedToolStatus,
     #[serde(skip_serializing_if = "Option::is_none")]

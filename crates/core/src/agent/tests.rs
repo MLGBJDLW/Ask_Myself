@@ -946,6 +946,7 @@ impl LlmProvider for ProviderHostedToolProvider {
             tool: Box::new(crate::llm::ProviderHostedToolEvent {
                 call_id: "ws-1".to_string(),
                 tool_name: "web_search".to_string(),
+                kind: crate::llm::ProviderHostedToolKind::WebSearch,
                 provider_id: "deepseek".to_string(),
                 status,
                 arguments: Some("{\"query\":\"Nexa\"}".to_string()),

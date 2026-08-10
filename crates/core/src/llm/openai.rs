@@ -21,8 +21,9 @@ use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
     CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
-    ProviderHostedToolEvent, ProviderHostedToolStatus, ProviderStreamEvent, ProviderType, Role,
-    StreamChunk, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus, ProviderStreamEvent,
+    ProviderType, Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
+    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 #[cfg(test)]
 use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
@@ -1094,7 +1095,7 @@ fn validate_responses_input_items(items: &[serde_json::Value]) -> Result<(), Cor
                 )));
             }
             item_type
-                if provider_hosted_tool_name(item_type, item).is_some()
+                if provider_hosted_tool_identity(item_type, item).is_some()
                     && !pending_call_ids.is_empty() =>
             {
                 let mut pending = pending_call_ids.iter().cloned().collect::<Vec<_>>();
@@ -1319,7 +1320,7 @@ fn parse_responses_completion(
 
     for item in output {
         match item.get("type").and_then(serde_json::Value::as_str) {
-            Some(item_type) if provider_hosted_tool_name(item_type, item).is_some() => {
+            Some(item_type) if provider_hosted_tool_identity(item_type, item).is_some() => {
                 if item_type == "web_search_call" {
                     query = item
                         .pointer("/action/query")
@@ -1597,23 +1598,30 @@ fn responses_provider_id(dialect: super::native_search::NativeSearchDialect) -> 
     }
 }
 
-fn provider_hosted_tool_name(item_type: &str, item: &serde_json::Value) -> Option<String> {
-    let canonical = match item_type {
-        "web_search_call" => "web_search",
-        "file_search_call" => "file_search",
-        "code_interpreter_call" => "code_interpreter",
-        "computer_call" | "computer_use_call" => "computer_use",
-        "image_generation_call" => "image_generation",
-        "mcp_call" => item
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("mcp"),
-        "local_shell_call" | "shell_call" => "shell",
+fn provider_hosted_tool_identity(
+    item_type: &str,
+    item: &serde_json::Value,
+) -> Option<(ProviderHostedToolKind, String)> {
+    let (kind, canonical) = match item_type {
+        "web_search_call" => (ProviderHostedToolKind::WebSearch, "web_search"),
+        "file_search_call" => (ProviderHostedToolKind::FileSearch, "file_search"),
+        "code_interpreter_call" => (ProviderHostedToolKind::CodeInterpreter, "code_interpreter"),
+        "computer_call" | "computer_use_call" => {
+            (ProviderHostedToolKind::ComputerUse, "computer_use")
+        }
+        "image_generation_call" => (ProviderHostedToolKind::ImageGeneration, "image_generation"),
+        "mcp_call" => (
+            ProviderHostedToolKind::Mcp,
+            item.get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("mcp"),
+        ),
+        "local_shell_call" | "shell_call" => (ProviderHostedToolKind::Shell, "shell"),
         // Function calls are client-executed and deliberately stay on the
         // existing ToolCallDelta/local dispatch path.
         _ => return None,
     };
-    Some(canonical.to_string())
+    Some((kind, canonical.to_string()))
 }
 
 fn compact_json_field(value: Option<&serde_json::Value>) -> Option<String> {
@@ -1798,7 +1806,7 @@ fn provider_hosted_tool_event(
             (value, item_type, status)
         }
     };
-    let tool_name = provider_hosted_tool_name(item_type, item)?;
+    let (kind, tool_name) = provider_hosted_tool_identity(item_type, item)?;
     let status = match item.get("status").and_then(serde_json::Value::as_str) {
         Some("failed") | Some("cancelled") => ProviderHostedToolStatus::Failed,
         Some("completed") => ProviderHostedToolStatus::Completed,
@@ -1835,6 +1843,7 @@ fn provider_hosted_tool_event(
     Some(ProviderHostedToolEvent {
         call_id,
         tool_name,
+        kind,
         provider_id: responses_provider_id(dialect).to_string(),
         status,
         arguments,
@@ -1864,20 +1873,53 @@ fn project_provider_hosted_tool_event(
     })
 }
 
-fn project_completed_provider_hosted_tools(
+fn project_terminal_provider_hosted_tools(
     response: &serde_json::Value,
     projection: &mut ResponsesStreamProjection,
     dialect: super::native_search::NativeSearchDialect,
 ) -> Vec<ProviderStreamEvent> {
+    let response_status = response
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("terminal");
     response
         .get("output")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|item| {
+            let mut terminal_item = item.clone();
+            let item_status = item.get("status").and_then(serde_json::Value::as_str);
+            let item_is_terminal = matches!(
+                item_status,
+                Some("completed" | "failed" | "cancelled")
+            );
+            if !item_is_terminal && response_status != "completed" {
+                if let Some(object) = terminal_item.as_object_mut() {
+                    object.insert("status".to_string(), serde_json::json!("failed"));
+                    object.insert(
+                        "error".to_string(),
+                        serde_json::json!({
+                            "message": format!(
+                                "Provider response became {response_status} before the hosted tool completed."
+                            )
+                        }),
+                    );
+                }
+            } else if matches!(item_status, Some("in_progress" | "queued")) {
+                if let Some(object) = terminal_item.as_object_mut() {
+                    object.insert("status".to_string(), serde_json::json!("failed"));
+                    object.insert(
+                        "error".to_string(),
+                        serde_json::json!({
+                            "message": "Provider response completed while the hosted tool was still running."
+                        }),
+                    );
+                }
+            }
             let synthetic = serde_json::json!({
                 "type": "response.output_item.done",
-                "item": item,
+                "item": terminal_item,
             });
             project_provider_hosted_tool_event(&synthetic, projection, dialect)
         })
@@ -2018,8 +2060,7 @@ fn project_responses_stream_event(
                     "{event_type} omitted the authoritative response payload"
                 ))
             })?;
-            let mut events =
-                project_completed_provider_hosted_tools(&response, projection, dialect);
+            let mut events = project_terminal_provider_hosted_tools(&response, projection, dialect);
             let mut completed = parse_responses_completion(response, dialect, capability)?;
             if let Some(tool_calls) = completed.tool_calls.as_mut() {
                 for call in tool_calls {
@@ -3417,16 +3458,36 @@ data: [DONE]
     fn responses_stream_projects_every_provider_hosted_tool_family() {
         let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
         let cases = [
-            ("web_search_call", "web_search"),
-            ("file_search_call", "file_search"),
-            ("code_interpreter_call", "code_interpreter"),
-            ("computer_call", "computer_use"),
-            ("image_generation_call", "image_generation"),
-            ("mcp_call", "mcp"),
-            ("local_shell_call", "shell"),
+            (
+                "web_search_call",
+                "web_search",
+                ProviderHostedToolKind::WebSearch,
+            ),
+            (
+                "file_search_call",
+                "file_search",
+                ProviderHostedToolKind::FileSearch,
+            ),
+            (
+                "code_interpreter_call",
+                "code_interpreter",
+                ProviderHostedToolKind::CodeInterpreter,
+            ),
+            (
+                "computer_call",
+                "computer_use",
+                ProviderHostedToolKind::ComputerUse,
+            ),
+            (
+                "image_generation_call",
+                "image_generation",
+                ProviderHostedToolKind::ImageGeneration,
+            ),
+            ("mcp_call", "mcp", ProviderHostedToolKind::Mcp),
+            ("local_shell_call", "shell", ProviderHostedToolKind::Shell),
         ];
 
-        for (index, (item_type, expected_name)) in cases.into_iter().enumerate() {
+        for (index, (item_type, expected_name, expected_kind)) in cases.into_iter().enumerate() {
             let call_id = format!("provider-call-{index}");
             let event = serde_json::json!({
                 "type": "response.output_item.added",
@@ -3442,6 +3503,7 @@ data: [DONE]
                 .expect("provider-hosted Responses item");
             assert_eq!(projected.call_id, call_id);
             assert_eq!(projected.tool_name, expected_name);
+            assert_eq!(projected.kind, expected_kind);
             assert_eq!(projected.provider_id, "deepseek");
             assert_eq!(projected.status, ProviderHostedToolStatus::Running);
         }
@@ -3456,6 +3518,24 @@ data: [DONE]
             }
         });
         assert!(provider_hosted_tool_event(&client_function, dialect).is_none());
+    }
+
+    #[test]
+    fn named_responses_mcp_call_preserves_name_and_mcp_family() {
+        let dialect = super::super::native_search::NativeSearchDialect::OpenAiResponses;
+        let event = serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "id": "mcp-1",
+                "type": "mcp_call",
+                "name": "remote_lookup",
+                "status": "in_progress"
+            }
+        });
+
+        let projected = provider_hosted_tool_event(&event, dialect).expect("hosted MCP event");
+        assert_eq!(projected.tool_name, "remote_lookup");
+        assert_eq!(projected.kind, ProviderHostedToolKind::Mcp);
     }
 
     #[test]
@@ -3640,6 +3720,51 @@ data: [DONE]
                 if tool.status == ProviderHostedToolStatus::Completed
                     && tool.content.as_deref() == Some("{\"matches\":2}")
         )));
+    }
+
+    #[test]
+    fn responses_incomplete_terminalizes_an_in_progress_hosted_tool() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut projection = ResponsesStreamProjection::default();
+        let events = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.incomplete",
+                "response": {
+                    "id": "resp-1",
+                    "status": "incomplete",
+                    "incomplete_details": { "reason": "max_output_tokens" },
+                    "output": [{
+                        "id": "ws-1",
+                        "type": "web_search_call",
+                        "status": "in_progress",
+                        "action": { "type": "search", "query": "Nexa" }
+                    }]
+                }
+            }),
+            &mut projection,
+            dialect,
+            capability,
+        )
+        .unwrap();
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::HostedTool { tool }
+                if tool.call_id == "ws-1"
+                    && tool.status == ProviderHostedToolStatus::Failed
+                    && tool.content.as_deref().is_some_and(|content| content.contains("incomplete"))
+        )));
+        assert!(projection.terminal_seen);
     }
 
     #[test]

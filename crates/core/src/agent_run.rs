@@ -386,22 +386,24 @@ impl AgentRunEventKindContract {
             AgentRunEventKind::ToolPreparing => Self {
                 kind,
                 required_payload_paths: &["run.callId", "run.toolName", "run.status"],
-                alternative_payload_paths: &[],
+                // Read compatibility for already-persisted protocol-v2 rows.
+                // New producers are asserted separately to emit payload.run.
+                alternative_payload_paths: &[&["toolName"]],
             },
             AgentRunEventKind::ToolStarted => Self {
                 kind,
                 required_payload_paths: &["run.callId", "run.toolName", "run.status"],
-                alternative_payload_paths: &[],
+                alternative_payload_paths: &[&["toolName"]],
             },
             AgentRunEventKind::ToolProgress => Self {
                 kind,
                 required_payload_paths: &["run.callId", "run.toolName", "run.status"],
-                alternative_payload_paths: &[],
+                alternative_payload_paths: &[&["note"]],
             },
             AgentRunEventKind::ToolCompleted => Self {
                 kind,
                 required_payload_paths: &["run.callId", "run.toolName", "run.status"],
-                alternative_payload_paths: &[],
+                alternative_payload_paths: &[&["toolName"]],
             },
             AgentRunEventKind::ApprovalRequested => Self {
                 kind,
@@ -1654,6 +1656,67 @@ mod tests {
                     "public tool RunEvents must expose exactly one canonical payload.run shape: {event:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn historical_v2_flat_tool_payloads_remain_valid_on_read() {
+        let cases = [
+            (
+                AgentRunEventKind::ToolPreparing,
+                serde_json::json!({
+                    "callId": "call-1",
+                    "toolName": "read_file",
+                    "argsBytes": 12,
+                    "index": 0
+                }),
+            ),
+            (
+                AgentRunEventKind::ToolStarted,
+                serde_json::json!({
+                    "callId": "call-1",
+                    "toolName": "read_file",
+                    "arguments": "{}"
+                }),
+            ),
+            (
+                AgentRunEventKind::ToolProgress,
+                serde_json::json!({
+                    "callId": "call-1",
+                    "note": "reading"
+                }),
+            ),
+            (
+                AgentRunEventKind::ToolCompleted,
+                serde_json::json!({
+                    "callId": "call-1",
+                    "toolName": "read_file",
+                    "content": "ok",
+                    "isError": false
+                }),
+            ),
+        ];
+
+        for (index, (kind, payload)) in cases.into_iter().enumerate() {
+            let event = AgentRunEvent {
+                version: AGENT_RUN_EVENT_VERSION,
+                run_id: "historical-run".to_string(),
+                turn_id: "historical-turn".to_string(),
+                event_seq: index as u64 + 1,
+                kind,
+                phase: AgentRunPhase::Tooling,
+                visibility: AgentRunEventVisibility::User,
+                persistence: AgentRunEventPersistence::Durable,
+                display_kind: AgentRunDisplayKind::Tool,
+                importance: AgentRunEventImportance::Normal,
+                label: "read_file".to_string(),
+                status: Some("completed".to_string()),
+                payload,
+                created_at: None,
+            };
+            event.validate_durable_contract().unwrap_or_else(|error| {
+                panic!("historical {} event was rejected: {error}", kind.as_str())
+            });
         }
     }
 

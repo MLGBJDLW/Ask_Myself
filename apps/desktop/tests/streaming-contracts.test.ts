@@ -723,6 +723,40 @@ test('durable legacy tool payloads are normalized into the canonical tool-card l
   assertEqual(projected.toolCalls[0].content, '/workspace', 'tool result content');
 });
 
+test('durable legacy tool progress preserves the started card identity', () => {
+  const projected = projectRunEventsToStreamState(taskRun('running'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'read_file',
+      status: 'running',
+      payload: {
+        type: 'toolCallStart',
+        callId: 'legacy-progress-1',
+        toolName: 'read_file',
+        arguments: '{"path":"README.md"}',
+      },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolProgress',
+      phase: 'tooling',
+      label: 'reading',
+      status: 'running',
+      payload: {
+        type: 'toolCallProgress',
+        callId: 'legacy-progress-1',
+        note: 'reading',
+      },
+    }),
+  ]);
+
+  assertEqual(projected.toolCalls.length, 1, 'legacy progress updates the existing card');
+  assertEqual(projected.toolCalls[0].toolName, 'read_file', 'progress note must not replace tool name');
+  assertEqual(projected.toolCalls[0].progressNote, 'reading', 'progress note remains visible');
+});
+
 test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', () => {
   const conversationId = 'conversation-legacy-run-event-gaps';
 

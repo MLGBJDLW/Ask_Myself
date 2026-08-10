@@ -99,16 +99,21 @@ function legacyToolStatus(runEvent: AgentRunEvent, payload: PayloadRecord): Tool
  */
 function legacyToolRun(runEvent: AgentRunEvent, payload: PayloadRecord): ToolRunItem | null {
   const callId = stringValue(payload.callId)?.trim();
-  const toolName = stringValue(payload.toolName)?.trim() || runEvent.label.trim();
-  if (!callId || !toolName) return null;
-  const renderKind = legacyToolRenderKind(toolName);
+  const persistedToolName = stringValue(payload.toolName)?.trim();
+  // Historical ToolCallProgress payloads carried only callId + note, while
+  // their RunEvent label was the note itself. Leave the name empty so an
+  // existing card keeps its identity instead of being renamed to "reading".
+  const toolName = persistedToolName
+    || (runEvent.kind === 'toolProgress' ? '' : runEvent.label.trim());
+  if (!callId || (!toolName && runEvent.kind !== 'toolProgress')) return null;
+  const renderKind = legacyToolRenderKind(toolName || 'unknown_tool');
   return {
     callId,
     toolName,
     owner: {
       id: 'nexa.runtime',
       name: 'Nexa Runtime',
-      capability: toolName,
+      capability: toolName || 'unknown_tool',
       description: 'Compatibility projection for a persisted tool lifecycle event.',
     },
     providerExecuted: false,
