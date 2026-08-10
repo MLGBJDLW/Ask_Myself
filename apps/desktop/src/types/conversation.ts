@@ -1087,6 +1087,8 @@ export interface ToolRunItem {
   callId: string;
   toolName: string;
   owner: CapabilityOwner;
+  /** The upstream provider executed this run; Nexa only renders and traces it. */
+  providerExecuted?: boolean;
   status: ToolRunStatus;
   arguments?: string;
   renderKind: ToolRenderKind;

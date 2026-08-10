@@ -586,6 +586,7 @@ impl SubagentEventBridge {
         let _ = event_tx
             .send(AgentEvent::ToolCallProgress {
                 call_id: self.parent_call_id.clone(),
+                tool_name: "spawn_subagent".to_string(),
                 note,
                 activity: Some(event),
             })

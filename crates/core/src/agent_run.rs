@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentEvent, StreamBlockChannel, ToolRunStatus};
+use crate::agent::{AgentEvent, StreamBlockChannel, ToolRunItem, ToolRunStatus};
 
 pub const AGENT_RUN_EVENT_VERSION: u16 = 2;
 
@@ -385,23 +385,23 @@ impl AgentRunEventKindContract {
             },
             AgentRunEventKind::ToolPreparing => Self {
                 kind,
-                required_payload_paths: &["toolName"],
-                alternative_payload_paths: &[&["run.toolName"]],
+                required_payload_paths: &["run.callId", "run.toolName", "run.status"],
+                alternative_payload_paths: &[],
             },
             AgentRunEventKind::ToolStarted => Self {
                 kind,
-                required_payload_paths: &["toolName"],
-                alternative_payload_paths: &[&["run.toolName"]],
+                required_payload_paths: &["run.callId", "run.toolName", "run.status"],
+                alternative_payload_paths: &[],
             },
             AgentRunEventKind::ToolProgress => Self {
                 kind,
-                required_payload_paths: &["note"],
-                alternative_payload_paths: &[&["run.toolName"]],
+                required_payload_paths: &["run.callId", "run.toolName", "run.status"],
+                alternative_payload_paths: &[],
             },
             AgentRunEventKind::ToolCompleted => Self {
                 kind,
-                required_payload_paths: &["toolName"],
-                alternative_payload_paths: &[&["run.toolName"]],
+                required_payload_paths: &["run.callId", "run.toolName", "run.status"],
+                alternative_payload_paths: &[],
             },
             AgentRunEventKind::ApprovalRequested => Self {
                 kind,
@@ -513,10 +513,10 @@ impl AgentRunEvent {
                 tool_name.clone(),
                 Some(ToolRunStatus::Running.as_str().to_string()),
             ),
-            AgentEvent::ToolCallProgress { note, .. } => (
+            AgentEvent::ToolCallProgress { tool_name, .. } => (
                 AgentRunEventKind::ToolProgress,
                 AgentRunPhase::Tooling,
-                note.clone(),
+                tool_name.clone(),
                 Some(ToolRunStatus::Running.as_str().to_string()),
             ),
             AgentEvent::ToolCallResult {
@@ -699,7 +699,7 @@ impl AgentRunEvent {
             importance,
             label,
             status,
-            payload: serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+            payload: agent_event_payload(event),
             created_at: None,
         }
     }
@@ -1064,6 +1064,111 @@ impl AgentRunEvent {
     }
 }
 
+fn agent_event_payload(event: &AgentEvent) -> serde_json::Value {
+    let canonical_tool_run = match event {
+        AgentEvent::ToolCallPreparing {
+            call_id, tool_name, ..
+        }
+        | AgentEvent::ToolCallArgsDelta {
+            call_id, tool_name, ..
+        } => Some(compatibility_tool_run(
+            call_id,
+            tool_name,
+            ToolRunStatus::Preparing,
+            None,
+            None,
+            None,
+        )),
+        AgentEvent::ToolCallStart {
+            call_id,
+            tool_name,
+            arguments,
+        } => Some(compatibility_tool_run(
+            call_id,
+            tool_name,
+            ToolRunStatus::Running,
+            Some(arguments),
+            None,
+            None,
+        )),
+        AgentEvent::ToolCallProgress {
+            call_id,
+            tool_name,
+            note,
+            ..
+        } => Some(compatibility_tool_run(
+            call_id,
+            tool_name,
+            ToolRunStatus::Running,
+            None,
+            None,
+            Some(note.clone()),
+        )),
+        AgentEvent::ToolCallResult {
+            call_id,
+            tool_name,
+            content,
+            is_error,
+            artifacts,
+        } => Some(compatibility_tool_run(
+            call_id,
+            tool_name,
+            if *is_error {
+                ToolRunStatus::Failed
+            } else {
+                ToolRunStatus::Completed
+            },
+            None,
+            Some((content.clone(), *is_error, artifacts.clone())),
+            None,
+        )),
+        AgentEvent::ToolRunStarted { run }
+        | AgentEvent::ToolRunUpdated { run }
+        | AgentEvent::ToolRunCompleted { run } => Some(run.clone()),
+        _ => None,
+    };
+
+    if let Some(run) = canonical_tool_run {
+        serde_json::json!({ "run": run })
+    } else {
+        serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}))
+    }
+}
+
+fn compatibility_tool_run(
+    call_id: &str,
+    tool_name: &str,
+    status: ToolRunStatus,
+    arguments: Option<&str>,
+    result: Option<(String, bool, Option<serde_json::Value>)>,
+    progress_note: Option<String>,
+) -> ToolRunItem {
+    let parsed_arguments = arguments
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let registry = crate::tools::ToolRegistry::new();
+    let invocation = registry.build_invocation(call_id, tool_name, parsed_arguments);
+    let capabilities = invocation.capabilities;
+    let (content, is_error, artifacts) = result
+        .map(|(content, is_error, artifacts)| (Some(content), Some(is_error), artifacts))
+        .unwrap_or((None, None, None));
+    ToolRunItem {
+        call_id: call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        owner: invocation.owner,
+        provider_executed: false,
+        status,
+        arguments: arguments.map(str::to_string),
+        render_kind: capabilities.render_kind,
+        capabilities,
+        content,
+        is_error,
+        artifacts,
+        progress_note,
+        duration_ms: None,
+    }
+}
+
 fn payload_has_all_paths(payload: &serde_json::Value, paths: &[&str]) -> bool {
     paths.iter().all(|path| payload_has_path(payload, path))
 }
@@ -1229,6 +1334,7 @@ mod tests {
                 call_id: "call-1".to_string(),
                 tool_name: "search_knowledge_base".to_string(),
                 owner: crate::plugins::capability_owner_for_tool("search_knowledge_base"),
+                provider_executed: false,
                 status: ToolRunStatus::Completed,
                 arguments: None,
                 render_kind: ToolRenderKind::Search,
@@ -1452,6 +1558,7 @@ mod tests {
             },
             AgentEvent::ToolCallProgress {
                 call_id: "call-1".to_string(),
+                tool_name: "search_knowledge_base".to_string(),
                 note: "searching".to_string(),
                 activity: None,
             },
@@ -1535,6 +1642,18 @@ mod tests {
                     event, run_event.kind
                 )
             });
+            if matches!(
+                run_event.kind,
+                AgentRunEventKind::ToolPreparing
+                    | AgentRunEventKind::ToolStarted
+                    | AgentRunEventKind::ToolProgress
+                    | AgentRunEventKind::ToolCompleted
+            ) {
+                assert!(
+                    run_event.payload.get("run").is_some_and(serde_json::Value::is_object),
+                    "public tool RunEvents must expose exactly one canonical payload.run shape: {event:?}"
+                );
+            }
         }
     }
 
@@ -1543,6 +1662,7 @@ mod tests {
             call_id: "call-1".to_string(),
             tool_name: "search_knowledge_base".to_string(),
             owner: crate::plugins::capability_owner_for_tool("search_knowledge_base"),
+            provider_executed: false,
             status,
             arguments: Some("{}".to_string()),
             render_kind: ToolRenderKind::Search,

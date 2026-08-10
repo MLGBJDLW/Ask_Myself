@@ -7,6 +7,10 @@ pub(super) const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StreamRecoveryDecision {
+    StopAfterVisibleOutput {
+        user_message: String,
+        trace_message: String,
+    },
     Reconnect {
         attempt: u32,
         status_message: String,
@@ -165,8 +169,17 @@ impl StreamRecoveryPolicy {
         self,
         force_non_streaming: bool,
         completed_retries: u32,
+        visible_output: bool,
         detail: &str,
     ) -> StreamRecoveryDecision {
+        if visible_output {
+            return StreamRecoveryDecision::StopAfterVisibleOutput {
+                user_message: "The provider connection ended after output was already shown. The partial response was kept, and Nexa did not resend the request to avoid duplicate answers or tool execution.".to_string(),
+                trace_message: format!(
+                    "provider stream interrupted after visible output; retry suppressed: {detail}"
+                ),
+            };
+        }
         if !force_non_streaming && completed_retries < self.max_disconnect_retries {
             let attempt = completed_retries + 1;
             let reset_reason = format!(
@@ -199,8 +212,12 @@ mod tests {
 
     #[test]
     fn reconnects_until_disconnect_retry_budget_is_used() {
-        let decision =
-            StreamRecoveryPolicy::default().decide_after_incomplete(false, 0, "connection closed");
+        let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
+            false,
+            0,
+            false,
+            "connection closed",
+        );
 
         assert_eq!(
             decision,
@@ -213,6 +230,22 @@ mod tests {
                 delay: Duration::from_millis(250),
             }
         );
+    }
+
+    #[test]
+    fn visible_output_irreversibly_disables_transport_replay() {
+        let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
+            false,
+            0,
+            true,
+            "connection closed",
+        );
+
+        assert!(matches!(
+            decision,
+            StreamRecoveryDecision::StopAfterVisibleOutput { ref trace_message, .. }
+                if trace_message.contains("retry suppressed")
+        ));
     }
 
     #[test]
@@ -300,8 +333,12 @@ mod tests {
 
     #[test]
     fn switches_to_non_streaming_after_disconnect_retry_budget() {
-        let decision =
-            StreamRecoveryPolicy::default().decide_after_incomplete(false, 2, "connection closed");
+        let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
+            false,
+            2,
+            false,
+            "connection closed",
+        );
 
         assert_eq!(
             decision,
@@ -318,8 +355,12 @@ mod tests {
 
     #[test]
     fn keeps_forced_non_streaming_mode_on_fallback_path() {
-        let decision =
-            StreamRecoveryPolicy::default().decide_after_incomplete(true, 0, "connection closed");
+        let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
+            true,
+            0,
+            false,
+            "connection closed",
+        );
 
         assert!(matches!(
             decision,

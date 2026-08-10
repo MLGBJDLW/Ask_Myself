@@ -233,6 +233,7 @@ impl AgentExecutor {
         let mut iteration_thinking = String::new();
         let mut answer_delta_seen: bool;
         let mut thinking_delta_seen: bool;
+        let mut provider_hosted_tool_seen: bool;
         let mut finish_reason: Option<FinishReason>;
         let mut preparing_call_ids: HashSet<String> = HashSet::new();
         let mut started_call_ids: HashSet<String> = HashSet::new();
@@ -544,6 +545,7 @@ impl AgentExecutor {
             iteration_thinking.clear();
             answer_delta_seen = false;
             thinking_delta_seen = false;
+            provider_hosted_tool_seen = false;
             finish_reason = None;
             preparing_call_ids.clear();
             started_call_ids.clear();
@@ -689,6 +691,38 @@ impl AgentExecutor {
                         }
                         if let Some(u) = chunk.usage {
                             chunk_usage = Some(u);
+                        }
+                    }
+                    StreamLoopEvent::Provider(Some(ProviderStreamEvent::HostedTool { tool })) => {
+                        provider_hosted_tool_seen = true;
+                        time_to_first_token_ms.get_or_insert_with(|| {
+                            u64::try_from(request_started_at.elapsed().as_millis())
+                                .unwrap_or(u64::MAX)
+                        });
+                        let status = tool.status;
+                        let run = build_provider_hosted_tool_run_item(&self.tools, &tool);
+                        match status {
+                            ProviderHostedToolStatus::Running => {
+                                let event = if tool_run_started_ids.insert(run.call_id.clone()) {
+                                    AgentEvent::ToolRunStarted { run }
+                                } else {
+                                    AgentEvent::ToolRunUpdated { run }
+                                };
+                                let _ = tx.send(event).await;
+                            }
+                            ProviderHostedToolStatus::Completed
+                            | ProviderHostedToolStatus::Failed => {
+                                if tool_run_started_ids.insert(run.call_id.clone()) {
+                                    let mut started = run.clone();
+                                    started.status = ToolRunStatus::Running;
+                                    started.content = None;
+                                    started.is_error = None;
+                                    let _ =
+                                        tx.send(AgentEvent::ToolRunStarted { run: started }).await;
+                                }
+                                append_persisted_trace_tool_run(persisted_trace_items, &run);
+                                let _ = tx.send(AgentEvent::ToolRunCompleted { run }).await;
+                            }
                         }
                     }
                     StreamLoopEvent::Provider(Some(ProviderStreamEvent::RecoverableError {
@@ -857,8 +891,88 @@ impl AgentExecutor {
                 match stream_recovery_policy.decide_after_incomplete(
                     *force_non_streaming_llm,
                     sampling_retries,
+                    answer_delta_seen
+                        || thinking_delta_seen
+                        || provider_hosted_tool_seen
+                        || !tool_calls.is_empty(),
                     &detail,
                 ) {
+                    StreamRecoveryDecision::StopAfterVisibleOutput {
+                        user_message,
+                        trace_message,
+                    } => {
+                        let _ = tx
+                            .send(connection_state_event(
+                                self.provider.name(),
+                                model,
+                                ConnectionStateKind::Failed,
+                                Some(ConnectionErrorCategory::Network),
+                                sampling_retries,
+                                stream_recovery_policy.max_disconnect_retries(),
+                                None,
+                                false,
+                            ))
+                            .await;
+                        if !full_content.trim().is_empty() || !iteration_thinking.trim().is_empty()
+                        {
+                            let draft_reasoning =
+                                self.reasoning_content_for_iteration(&iteration_thinking, false);
+                            let mut draft_message = Message {
+                                role: Role::Assistant,
+                                parts: vec![ContentPart::Text {
+                                    text: full_content.clone(),
+                                }],
+                                name: None,
+                                tool_calls: None,
+                                reasoning_content: draft_reasoning.clone(),
+                                prompt_cache_hint: None,
+                            };
+                            let mut draft_envelope =
+                                crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+                                    Uuid::new_v4().to_string(),
+                                    accepted_sample_id.clone(),
+                                    accepted_route_snapshot.clone(),
+                                    draft_message.text_content(),
+                                    crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
+                                        &iteration_thinking,
+                                    ))
+                                    .as_deref(),
+                                    draft_reasoning.as_deref(),
+                                    Vec::new(),
+                                    reasoning_was_requested,
+                                );
+                            draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
+                            draft_message.set_provider_turn(draft_envelope);
+                            self.persist_stream_interrupted_assistant_draft(
+                                assistant_turn::AssistantTurnPersistenceContext {
+                                    db,
+                                    conversation_id,
+                                    turn_id,
+                                    model,
+                                    route_kind,
+                                    persisted_trace_items: &mut *persisted_trace_items,
+                                    sort_order: &mut *sort_order,
+                                },
+                                &draft_message,
+                                draft_reasoning,
+                                &iteration_thinking,
+                            );
+                        }
+                        emit_error_and_finalize_turn(
+                            tx,
+                            db,
+                            trace,
+                            turn_id,
+                            route_kind,
+                            persisted_trace_items,
+                            TurnErrorMessages {
+                                frontend_message: user_message,
+                                trace_message: trace_message.clone(),
+                            },
+                        )
+                        .await;
+                        return Err(CoreError::StreamIncomplete(trace_message));
+                    }
                     StreamRecoveryDecision::Reconnect {
                         attempt,
                         status_message: _,

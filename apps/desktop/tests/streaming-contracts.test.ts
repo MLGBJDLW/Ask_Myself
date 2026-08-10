@@ -685,6 +685,44 @@ test('durable replay restores direct canonical run events through live projectio
   streamStore.clearStream(conversationId);
 });
 
+test('durable legacy tool payloads are normalized into the canonical tool-card lifecycle', () => {
+  const projected = projectRunEventsToStreamState(taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'run_shell',
+      status: 'running',
+      payload: {
+        type: 'toolCallStart',
+        callId: 'legacy-call-1',
+        toolName: 'run_shell',
+        arguments: '{"command":"pwd"}',
+      },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'run_shell',
+      status: 'completed',
+      payload: {
+        type: 'toolCallResult',
+        callId: 'legacy-call-1',
+        toolName: 'run_shell',
+        content: '/workspace',
+        isError: false,
+      },
+    }),
+  ]);
+
+  assertEqual(projected.toolCalls.length, 1, 'legacy durable calls must not disappear at replay');
+  assertEqual(projected.toolCalls[0].callId, 'legacy-call-1', 'stable call id');
+  assertEqual(projected.toolCalls[0].toolName, 'run_shell', 'tool name');
+  assertEqual(projected.toolCalls[0].status, 'done', 'terminal tool status');
+  assertEqual(projected.toolCalls[0].content, '/workspace', 'tool result content');
+});
+
 test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', () => {
   const conversationId = 'conversation-legacy-run-event-gaps';
 
@@ -1144,13 +1182,14 @@ test('normalizes persisted trace tool calls through the shared tool status proje
     items: [
       {
         kind: 'tool',
-        toolCall: {
+        tool_call: {
           callId: 'call-1',
           toolName: 'run_shell',
           arguments: '{"program":"cargo"}',
           status: 'failed',
           renderKind: 'commandExecution',
           isError: false,
+          providerExecuted: true,
         },
       },
       {
@@ -1170,6 +1209,11 @@ test('normalizes persisted trace tool calls through the shared tool status proje
   assert(items[0].kind === 'tool', 'first persisted item should be a tool');
   assertEqual(items[0].toolCall.status, 'error', 'failed trace status normalizes to error');
   assertEqual(items[0].toolCall.argsStatus, 'error', 'failed trace args status');
+  assertEqual(
+    items[0].toolCall.providerExecuted,
+    true,
+    'legacy snake_case trace carries provider execution ownership',
+  );
   assert(items[1].kind === 'tool', 'second persisted item should be a tool');
   assertEqual(items[1].toolCall.status, 'approvalPending', 'approval status normalizes');
   assert(isPendingToolCallStatus(items[1].toolCall.status), 'approval trace is pending');

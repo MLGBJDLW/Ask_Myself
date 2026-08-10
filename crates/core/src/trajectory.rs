@@ -937,10 +937,13 @@ mod tests {
                 label: "retrieve_evidence".to_string(),
                 status: Some("completed".to_string()),
                 payload: serde_json::json!({
-                    "callId": "call-1",
-                    "toolName": "retrieve_evidence",
-                    "content": "Evidence card [1]",
-                    "isError": false,
+                    "run": {
+                        "callId": "call-1",
+                        "toolName": "retrieve_evidence",
+                        "status": "completed",
+                        "content": "Evidence card [1]",
+                        "isError": false,
+                    },
                 }),
                 created_at: None,
             },

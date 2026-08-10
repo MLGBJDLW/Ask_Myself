@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_run::{AgentRunDisplayKind, AgentRunEventVisibility};
 use crate::evidence_verifier::{EvidenceSignals, RuntimeVerificationSignals};
+use crate::plugins::CapabilityOwner;
 use crate::skills::Skill;
 use crate::tool_visibility_policy::ToolVisibilityDecision;
 use crate::tools::{ToolRegistry, ToolRenderKind, ToolRunCapabilities};
@@ -14,6 +15,9 @@ use super::turn_events::TurnLoopEvent;
 pub(super) struct PersistedTraceToolCall {
     call_id: String,
     tool_name: String,
+    owner: CapabilityOwner,
+    #[serde(default, rename = "providerExecuted")]
+    provider_executed: bool,
     arguments: String,
     status: String,
     #[serde(rename = "renderKind")]
@@ -72,6 +76,7 @@ pub(super) enum PersistedTraceItem {
         text: String,
     },
     Tool {
+        #[serde(rename = "toolCall", alias = "tool_call")]
         tool_call: PersistedTraceToolCall,
     },
     SkillSelection {
@@ -157,6 +162,8 @@ pub(super) fn append_persisted_trace_tool(
         tool_call: PersistedTraceToolCall {
             call_id: call_id.to_string(),
             tool_name: tool_name.to_string(),
+            owner: tools.plugin_info(tool_name),
+            provider_executed: false,
             arguments: arguments.to_string(),
             status: status.to_string(),
             render_kind: capabilities.render_kind,
@@ -166,6 +173,38 @@ pub(super) fn append_persisted_trace_tool(
             artifacts,
         },
     });
+}
+
+pub(super) fn append_persisted_trace_tool_run(
+    items: &mut Vec<PersistedTraceItem>,
+    run: &super::ToolRunItem,
+) {
+    let tool_call = PersistedTraceToolCall {
+        call_id: run.call_id.clone(),
+        tool_name: run.tool_name.clone(),
+        owner: run.owner.clone(),
+        provider_executed: run.provider_executed,
+        arguments: run.arguments.clone().unwrap_or_default(),
+        status: run.status.as_str().to_string(),
+        render_kind: run.render_kind,
+        capabilities: run.capabilities.clone(),
+        content: run.content.clone(),
+        is_error: run.is_error,
+        artifacts: run.artifacts.clone(),
+    };
+    if let Some(PersistedTraceItem::Tool {
+        tool_call: existing,
+    }) = items.iter_mut().rev().find(|item| {
+        matches!(
+            item,
+            PersistedTraceItem::Tool { tool_call }
+                if tool_call.call_id == run.call_id && tool_call.provider_executed
+        )
+    }) {
+        *existing = tool_call;
+        return;
+    }
+    items.push(PersistedTraceItem::Tool { tool_call });
 }
 
 pub(super) fn append_persisted_trace_status(
@@ -425,6 +464,8 @@ mod tests {
             tool_call: PersistedTraceToolCall {
                 call_id: format!("{tool_name}-1"),
                 tool_name: tool_name.to_string(),
+                owner: crate::plugins::capability_owner_for_tool(tool_name),
+                provider_executed: false,
                 arguments: "{}".to_string(),
                 status: "done".to_string(),
                 render_kind: ToolRenderKind::Generic,
@@ -442,6 +483,53 @@ mod tests {
                 artifacts,
             },
         }
+    }
+
+    #[test]
+    fn persisted_tool_trace_uses_canonical_camel_case_contract() {
+        let wire = serde_json::to_value(done_tool("web_search")).unwrap();
+        assert!(wire.get("toolCall").is_some());
+        assert!(wire.get("tool_call").is_none());
+        assert_eq!(wire["toolCall"]["providerExecuted"], false);
+        assert!(wire["toolCall"].get("owner").is_some());
+    }
+
+    #[test]
+    fn provider_hosted_trace_completion_enrichment_replaces_the_same_card() {
+        let capabilities = ToolRunCapabilities {
+            input_streaming: crate::tools::ToolInputStreamingMode::None,
+            render_kind: ToolRenderKind::Search,
+            read_only: true,
+            destructive: false,
+            concurrency_safe: true,
+            interrupt_behavior: crate::tools::ToolInterruptBehavior::Cancel,
+            resource_keys: Vec::new(),
+        };
+        let mut run = super::super::ToolRunItem {
+            call_id: "hosted-1".to_string(),
+            tool_name: "web_search".to_string(),
+            owner: crate::plugins::capability_owner_for_tool("web_search"),
+            provider_executed: true,
+            status: super::super::ToolRunStatus::Completed,
+            arguments: None,
+            render_kind: ToolRenderKind::Search,
+            capabilities,
+            content: None,
+            is_error: Some(false),
+            artifacts: None,
+            progress_note: None,
+            duration_ms: None,
+        };
+        let mut items = Vec::new();
+        append_persisted_trace_tool_run(&mut items, &run);
+        run.content = Some("authoritative result".to_string());
+        append_persisted_trace_tool_run(&mut items, &run);
+
+        assert_eq!(items.len(), 1);
+        let PersistedTraceItem::Tool { tool_call } = &items[0] else {
+            panic!("expected provider-hosted tool trace");
+        };
+        assert_eq!(tool_call.content.as_deref(), Some("authoritative result"));
     }
 
     fn test_skill(id: &str, name: &str, display_name: &str) -> Skill {

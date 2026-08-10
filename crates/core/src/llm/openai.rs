@@ -4,8 +4,9 @@
 //! that expose the same `/v1/chat/completions` interface.
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -20,8 +21,8 @@ use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
     CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
-    ProviderType, Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
-    DEFAULT_STREAM_IDLE_TIMEOUT,
+    ProviderHostedToolEvent, ProviderHostedToolStatus, ProviderStreamEvent, ProviderType, Role,
+    StreamChunk, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 #[cfg(test)]
 use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
@@ -1084,7 +1085,18 @@ fn validate_responses_input_items(items: &[serde_json::Value]) -> Result<(), Cor
                 }
                 pending_call_ids.remove(call_id);
             }
-            "message" | "reasoning" | "web_search_call" if !pending_call_ids.is_empty() => {
+            "message" | "reasoning" if !pending_call_ids.is_empty() => {
+                let mut pending = pending_call_ids.iter().cloned().collect::<Vec<_>>();
+                pending.sort();
+                return Err(CoreError::Llm(format!(
+                    "Responses input places {item_type} before output for pending call_id(s): {}",
+                    pending.join(", ")
+                )));
+            }
+            item_type
+                if provider_hosted_tool_name(item_type, item).is_some()
+                    && !pending_call_ids.is_empty() =>
+            {
                 let mut pending = pending_call_ids.iter().cloned().collect::<Vec<_>>();
                 pending.sort();
                 return Err(CoreError::Llm(format!(
@@ -1307,25 +1319,29 @@ fn parse_responses_completion(
 
     for item in output {
         match item.get("type").and_then(serde_json::Value::as_str) {
-            Some("web_search_call") => {
-                query = item
-                    .pointer("/action/query")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| {
-                        item.pointer("/action/queries")
-                            .and_then(serde_json::Value::as_array)
-                            .map(|queries| {
-                                queries
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_str)
-                                    .collect::<Vec<_>>()
-                                    .join(" | ")
-                            })
-                            .filter(|queries| !queries.is_empty())
-                    });
+            Some(item_type) if provider_hosted_tool_name(item_type, item).is_some() => {
+                if item_type == "web_search_call" {
+                    query = item
+                        .pointer("/action/query")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| {
+                            item.pointer("/action/queries")
+                                .and_then(serde_json::Value::as_array)
+                                .map(|queries| {
+                                    queries
+                                        .iter()
+                                        .filter_map(serde_json::Value::as_str)
+                                        .collect::<Vec<_>>()
+                                        .join(" | ")
+                                })
+                                .filter(|queries| !queries.is_empty())
+                        });
+                }
                 // Hosted-tool output is provider-owned replay state for both
-                // Responses dialects; retain it in native order.
+                // Responses dialects; retain every recognized built-in item in
+                // native order so adding a non-search ToolCard cannot silently
+                // invalidate a later client-tool replay envelope.
                 let item_completed = item
                     .get("id")
                     .and_then(serde_json::Value::as_str)
@@ -1561,6 +1577,311 @@ struct ResponsesStreamProjection {
     answer: String,
     thinking: String,
     terminal_seen: bool,
+    hosted_tools: HashMap<String, ProviderHostedToolEvent>,
+    client_tool_item_ids: HashMap<String, String>,
+    client_tools: HashMap<String, ResponsesClientToolProjection>,
+}
+
+#[derive(Default)]
+struct ResponsesClientToolProjection {
+    arguments: String,
+    index: Option<u32>,
+}
+
+fn responses_provider_id(dialect: super::native_search::NativeSearchDialect) -> &'static str {
+    match dialect {
+        super::native_search::NativeSearchDialect::DeepSeekResponses => "deepseek",
+        super::native_search::NativeSearchDialect::OpenAiResponses => "openai",
+        super::native_search::NativeSearchDialect::AnthropicServerTool => "anthropic",
+        super::native_search::NativeSearchDialect::GeminiGoogleSearch => "google",
+    }
+}
+
+fn provider_hosted_tool_name(item_type: &str, item: &serde_json::Value) -> Option<String> {
+    let canonical = match item_type {
+        "web_search_call" => "web_search",
+        "file_search_call" => "file_search",
+        "code_interpreter_call" => "code_interpreter",
+        "computer_call" | "computer_use_call" => "computer_use",
+        "image_generation_call" => "image_generation",
+        "mcp_call" => item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("mcp"),
+        "local_shell_call" | "shell_call" => "shell",
+        // Function calls are client-executed and deliberately stay on the
+        // existing ToolCallDelta/local dispatch path.
+        _ => return None,
+    };
+    Some(canonical.to_string())
+}
+
+fn compact_json_field(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(text) => Some(text.clone()),
+        _ => serde_json::to_string(value).ok(),
+    }
+}
+
+fn client_tool_stream_event(
+    call_id: String,
+    name: Option<String>,
+    arguments_delta: String,
+    index: Option<u32>,
+) -> ProviderStreamEvent {
+    ProviderStreamEvent::Chunk {
+        chunk: Box::new(StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(super::ToolCallDelta {
+                id: call_id,
+                name,
+                arguments_delta,
+                index,
+                thought_signature: None,
+            }),
+            finish_reason: None,
+            usage: None,
+            thinking_delta: None,
+        }),
+    }
+}
+
+fn project_responses_client_tool_event(
+    value: &serde_json::Value,
+    projection: &mut ResponsesStreamProjection,
+) -> Result<Option<ProviderStreamEvent>, CoreError> {
+    let event_type = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if event_type == "response.output_item.added" {
+        let Some(item) = value.get("item") else {
+            return Ok(None);
+        };
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
+            return Ok(None);
+        }
+        let item_id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| CoreError::Llm("Responses function_call omitted item id".to_string()))?;
+        let call_id = item
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| CoreError::Llm("Responses function_call omitted call_id".to_string()))?;
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| CoreError::Llm("Responses function_call omitted name".to_string()))?;
+        let arguments = item
+            .get("arguments")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let index = value
+            .get("output_index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+        projection
+            .client_tool_item_ids
+            .insert(item_id.to_string(), call_id.to_string());
+        projection.client_tools.insert(
+            call_id.to_string(),
+            ResponsesClientToolProjection {
+                arguments: arguments.clone(),
+                index,
+            },
+        );
+        return Ok(Some(client_tool_stream_event(
+            call_id.to_string(),
+            Some(name.to_string()),
+            arguments,
+            index,
+        )));
+    }
+
+    let is_delta = event_type == "response.function_call_arguments.delta";
+    let is_done = event_type == "response.function_call_arguments.done"
+        || (event_type == "response.output_item.done"
+            && value
+                .pointer("/item/type")
+                .and_then(serde_json::Value::as_str)
+                == Some("function_call"));
+    if !is_delta && !is_done {
+        return Ok(None);
+    }
+    let item = value.get("item").unwrap_or(value);
+    let item_id = value
+        .get("item_id")
+        .or_else(|| item.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let call_id = projection
+        .client_tool_item_ids
+        .get(item_id)
+        .cloned()
+        .or_else(|| {
+            item.get("call_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    let Some(call_id) = call_id else {
+        return Ok(None);
+    };
+    let Some(state) = projection.client_tools.get_mut(&call_id) else {
+        return Ok(None);
+    };
+    let arguments_delta = if is_delta {
+        value
+            .get("delta")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        let completed_arguments = value
+            .get("arguments")
+            .or_else(|| item.get("arguments"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(state.arguments.as_str());
+        streamed_completion_suffix(&state.arguments, completed_arguments, "function arguments")?
+    };
+    if arguments_delta.is_empty() {
+        return Ok(None);
+    }
+    state.arguments.push_str(&arguments_delta);
+    Ok(Some(client_tool_stream_event(
+        call_id,
+        None,
+        arguments_delta,
+        state.index,
+    )))
+}
+
+fn provider_hosted_tool_event(
+    value: &serde_json::Value,
+    dialect: super::native_search::NativeSearchDialect,
+) -> Option<ProviderHostedToolEvent> {
+    let event_type = value.get("type")?.as_str()?;
+    let (item, item_type, default_status) = match event_type {
+        "response.output_item.added" => {
+            let item = value.get("item")?;
+            (
+                item,
+                item.get("type")?.as_str()?,
+                ProviderHostedToolStatus::Running,
+            )
+        }
+        "response.output_item.done" => {
+            let item = value.get("item")?;
+            (
+                item,
+                item.get("type")?.as_str()?,
+                ProviderHostedToolStatus::Completed,
+            )
+        }
+        _ => {
+            let suffix = event_type.strip_prefix("response.")?;
+            let (item_type, phase) = suffix.rsplit_once('.')?;
+            let status = match phase {
+                "completed" | "done" => ProviderHostedToolStatus::Completed,
+                "failed" => ProviderHostedToolStatus::Failed,
+                "in_progress" | "queued" | "searching" | "interpreting" | "generating" => {
+                    ProviderHostedToolStatus::Running
+                }
+                _ => return None,
+            };
+            (value, item_type, status)
+        }
+    };
+    let tool_name = provider_hosted_tool_name(item_type, item)?;
+    let status = match item.get("status").and_then(serde_json::Value::as_str) {
+        Some("failed") | Some("cancelled") => ProviderHostedToolStatus::Failed,
+        Some("completed") => ProviderHostedToolStatus::Completed,
+        Some("in_progress") | Some("queued") => ProviderHostedToolStatus::Running,
+        _ => default_status,
+    };
+    let call_id = item
+        .get("id")
+        .or_else(|| item.get("call_id"))
+        .or_else(|| value.get("item_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("output_index")
+                .and_then(serde_json::Value::as_u64)
+                .map(|index| format!("{item_type}:{index}"))
+        })?;
+    let arguments = item
+        .get("arguments")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| compact_json_field(item.get("action")))
+        .or_else(|| compact_json_field(item.get("query")))
+        .or_else(|| compact_json_field(item.get("queries")))
+        .or_else(|| compact_json_field(item.get("code")));
+    let content = compact_json_field(item.get("output"))
+        .or_else(|| compact_json_field(item.get("result")))
+        .or_else(|| {
+            item.pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    Some(ProviderHostedToolEvent {
+        call_id,
+        tool_name,
+        provider_id: responses_provider_id(dialect).to_string(),
+        status,
+        arguments,
+        content,
+        artifacts: Some(serde_json::json!({
+            "kind": "providerHostedTool",
+            "providerId": responses_provider_id(dialect),
+            "itemType": item_type,
+        })),
+    })
+}
+
+fn project_provider_hosted_tool_event(
+    value: &serde_json::Value,
+    projection: &mut ResponsesStreamProjection,
+    dialect: super::native_search::NativeSearchDialect,
+) -> Option<ProviderStreamEvent> {
+    let tool = provider_hosted_tool_event(value, dialect)?;
+    if projection.hosted_tools.get(&tool.call_id) == Some(&tool) {
+        return None;
+    }
+    projection
+        .hosted_tools
+        .insert(tool.call_id.clone(), tool.clone());
+    Some(ProviderStreamEvent::HostedTool {
+        tool: Box::new(tool),
+    })
+}
+
+fn project_completed_provider_hosted_tools(
+    response: &serde_json::Value,
+    projection: &mut ResponsesStreamProjection,
+    dialect: super::native_search::NativeSearchDialect,
+) -> Vec<ProviderStreamEvent> {
+    response
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let synthetic = serde_json::json!({
+                "type": "response.output_item.done",
+                "item": item,
+            });
+            project_provider_hosted_tool_event(&synthetic, projection, dialect)
+        })
+        .collect()
 }
 
 fn streamed_completion_suffix(
@@ -1586,11 +1907,14 @@ fn project_responses_stream_event(
     projection: &mut ResponsesStreamProjection,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
-) -> Result<Vec<StreamChunk>, CoreError> {
+) -> Result<Vec<ProviderStreamEvent>, CoreError> {
     let event_type = value
         .get("type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+    if let Some(event) = project_responses_client_tool_event(&value, projection)? {
+        return Ok(vec![event]);
+    }
     match event_type {
         "response.output_text.delta" => {
             let delta = value
@@ -1601,12 +1925,34 @@ fn project_responses_stream_event(
                 return Ok(Vec::new());
             }
             projection.answer.push_str(delta);
-            Ok(vec![StreamChunk {
-                delta: delta.to_string(),
-                tool_call_delta: None,
-                finish_reason: None,
-                usage: None,
-                thinking_delta: None,
+            Ok(vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: delta.to_string(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                }),
+            }])
+        }
+        "response.output_text.done" => {
+            let completed = value
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let delta = streamed_completion_suffix(&projection.answer, completed, "answer")?;
+            if delta.is_empty() {
+                return Ok(Vec::new());
+            }
+            projection.answer.push_str(&delta);
+            Ok(vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta,
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                }),
             }])
         }
         "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
@@ -1627,12 +1973,43 @@ fn project_responses_stream_event(
                 return Ok(Vec::new());
             }
             projection.thinking.push_str(delta);
-            Ok(vec![StreamChunk {
-                delta: String::new(),
-                tool_call_delta: None,
-                finish_reason: None,
-                usage: None,
-                thinking_delta: Some(delta.to_string()),
+            Ok(vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: Some(delta.to_string()),
+                }),
+            }])
+        }
+        "response.reasoning_text.done" | "response.reasoning_summary_text.done" => {
+            let visible_reasoning_event = match dialect {
+                super::native_search::NativeSearchDialect::DeepSeekResponses => {
+                    "response.reasoning_text.done"
+                }
+                _ => "response.reasoning_summary_text.done",
+            };
+            if event_type != visible_reasoning_event {
+                return Ok(Vec::new());
+            }
+            let completed = value
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let delta = streamed_completion_suffix(&projection.thinking, completed, "thinking")?;
+            if delta.is_empty() {
+                return Ok(Vec::new());
+            }
+            projection.thinking.push_str(&delta);
+            Ok(vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: Some(delta),
+                }),
             }])
         }
         "response.completed" | "response.incomplete" => {
@@ -1641,7 +2018,20 @@ fn project_responses_stream_event(
                     "{event_type} omitted the authoritative response payload"
                 ))
             })?;
+            let mut events =
+                project_completed_provider_hosted_tools(&response, projection, dialect);
             let mut completed = parse_responses_completion(response, dialect, capability)?;
+            if let Some(tool_calls) = completed.tool_calls.as_mut() {
+                for call in tool_calls {
+                    if let Some(streamed) = projection.client_tools.get(&call.id) {
+                        call.arguments = streamed_completion_suffix(
+                            &streamed.arguments,
+                            &call.arguments,
+                            "function arguments",
+                        )?;
+                    }
+                }
+            }
             completed.content =
                 streamed_completion_suffix(&projection.answer, &completed.content, "answer")?;
             completed.thinking = match completed.thinking {
@@ -1654,9 +2044,16 @@ fn project_responses_stream_event(
             }
             .filter(|thinking| !thinking.is_empty());
             projection.terminal_seen = true;
-            completion_response_to_stream_chunks(completed)
+            let terminal_chunks = completion_response_to_stream_chunks(completed)
                 .into_iter()
-                .collect::<Result<Vec<_>, _>>()
+                .map(|chunk| {
+                    chunk.map(|chunk| ProviderStreamEvent::Chunk {
+                        chunk: Box::new(chunk),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            events.extend(terminal_chunks);
+            Ok(events)
         }
         "response.failed" => {
             let message = value
@@ -1677,7 +2074,11 @@ fn project_responses_stream_event(
                 .unwrap_or("Responses stream returned an error event");
             Err(CoreError::Llm(message.to_string()))
         }
-        _ => Ok(Vec::new()),
+        _ => Ok(
+            project_provider_hosted_tool_event(&value, projection, dialect)
+                .into_iter()
+                .collect(),
+        ),
     }
 }
 
@@ -1701,7 +2102,7 @@ fn drain_responses_sse_lines(buffer: &mut Vec<u8>) -> Vec<String> {
 
 async fn dispatch_responses_sse_data(
     data_lines: &mut Vec<String>,
-    tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
+    tx: &mpsc::Sender<ProviderStreamEvent>,
     projection: &mut ResponsesStreamProjection,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
@@ -1723,9 +2124,9 @@ async fn dispatch_responses_sse_data(
     }
     let value = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|error| CoreError::Llm(format!("Responses SSE JSON parse error: {error}")))?;
-    let chunks = project_responses_stream_event(value, projection, dialect, capability)?;
-    for chunk in chunks {
-        if tx.send(Ok(chunk)).await.is_err() {
+    let events = project_responses_stream_event(value, projection, dialect, capability)?;
+    for event in events {
+        if tx.send(event).await.is_err() {
             return Ok(true);
         }
     }
@@ -1734,7 +2135,7 @@ async fn dispatch_responses_sse_data(
 
 async fn parse_responses_sse_stream(
     response: reqwest::Response,
-    tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    tx: mpsc::Sender<ProviderStreamEvent>,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
 ) -> Result<(), CoreError> {
@@ -1931,13 +2332,13 @@ impl OpenAiProvider {
         Ok(parsed)
     }
 
-    async fn stream_hosted_search(
+    async fn stream_hosted_search_events(
         &self,
         request: &CompletionRequest,
         dialect: super::native_search::NativeSearchDialect,
         mode: super::native_search::SearchExecutionMode,
         capability: crate::model_catalog::NativeWebSearchCapability,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
         let mut body = build_responses_request(request, dialect, mode, capability)?;
         body["stream"] = serde_json::json!(true);
@@ -1970,13 +2371,49 @@ impl OpenAiProvider {
                 parse_responses_sse_stream(response, tx.clone(), dialect, capability).await
             {
                 transport.record_transport_failure(&error.to_string());
-                let _ = tx.send(Err(error)).await;
+                let event = match error {
+                    CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message) => {
+                        ProviderStreamEvent::RecoverableError { message }
+                    }
+                    CoreError::Cancelled(message) => ProviderStreamEvent::Cancelled { message },
+                    error => ProviderStreamEvent::TerminalError {
+                        message: error.to_string(),
+                    },
+                };
+                let _ = tx.send(event).await;
             } else {
                 transport.record_transport_success();
             }
         });
         Ok(Box::pin(futures::stream::unfold(rx, |mut rx| async {
             rx.recv().await.map(|item| (item, rx))
+        })))
+    }
+
+    async fn stream_hosted_search(
+        &self,
+        request: &CompletionRequest,
+        dialect: super::native_search::NativeSearchDialect,
+        mode: super::native_search::SearchExecutionMode,
+        capability: crate::model_catalog::NativeWebSearchCapability,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        let events = self
+            .stream_hosted_search_events(request, dialect, mode, capability)
+            .await?;
+        Ok(Box::pin(events.filter_map(|event| async move {
+            match event {
+                ProviderStreamEvent::Chunk { chunk } => Some(Ok(*chunk)),
+                ProviderStreamEvent::HostedTool { .. } => None,
+                ProviderStreamEvent::RecoverableError { message } => {
+                    Some(Err(CoreError::StreamIncomplete(message)))
+                }
+                ProviderStreamEvent::Cancelled { message } => {
+                    Some(Err(CoreError::Cancelled(message)))
+                }
+                ProviderStreamEvent::TerminalError { message } => {
+                    Some(Err(CoreError::Llm(message)))
+                }
+            }
         })))
     }
 }
@@ -2319,6 +2756,37 @@ impl LlmProvider for OpenAiProvider {
         Ok(Box::pin(stream))
     }
 
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        if let Some((dialect, mode, capability)) = hosted_search_context(request) {
+            if capability.supports_stream_events
+                && (capability.can_mix_client_tools
+                    || !hosted_search_requires_client_tools(request, mode))
+            {
+                return match self
+                    .stream_hosted_search_events(request, dialect, mode, capability)
+                    .await
+                {
+                    Ok(stream) => Ok(stream),
+                    Err(error)
+                        if matches!(
+                            mode,
+                            super::native_search::SearchExecutionMode::Auto
+                                | super::native_search::SearchExecutionMode::Hybrid
+                        ) =>
+                    {
+                        Err(contextualize_hosted_search_error(dialect, error))
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+        }
+        let stream = self.stream(request).await?;
+        Ok(super::stream_chunks_to_provider_events(stream))
+    }
+
     async fn health_check(&self) -> Result<(), CoreError> {
         self.list_models().await?;
         Ok(())
@@ -2480,7 +2948,9 @@ data: [DONE]
             .write_all(
                 br#"data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"plan","sequence_number":1}
 
-data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"hello","sequence_number":2}
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"Nexa"}},"sequence_number":2}
+
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":2,"content_index":0,"delta":"hello","sequence_number":3}
 
 "#,
             )
@@ -2491,9 +2961,9 @@ data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"c
 
         socket
             .write_all(
-                br#"data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":" world","sequence_number":3}
+                br#"data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":2,"content_index":0,"delta":" world","sequence_number":4}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"plan"}],"summary":[]},{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world","annotations":[]}]}],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}},"sequence_number":4}
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"plan"}],"summary":[]},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"Nexa"}},{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world","annotations":[]}]}],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}},"sequence_number":5}
 
 data: [DONE]
 
@@ -2871,7 +3341,7 @@ data: [DONE]
 
         let mut stream = tokio::time::timeout(
             std::time::Duration::from_millis(300),
-            provider.stream(&request),
+            provider.stream_events(&request),
         )
         .await
         .expect("stream() must return before the terminal Responses event")
@@ -2880,26 +3350,54 @@ data: [DONE]
         let thinking = tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
             .await
             .expect("reasoning delta should arrive before completion")
-            .expect("reasoning chunk")
-            .expect("valid reasoning chunk");
-        assert_eq!(thinking.thinking_delta.as_deref(), Some("plan"));
+            .expect("reasoning event");
+        assert!(matches!(
+            thinking,
+            ProviderStreamEvent::Chunk { chunk }
+                if chunk.thinking_delta.as_deref() == Some("plan")
+        ));
+
+        let hosted = tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
+            .await
+            .expect("hosted tool should arrive before completion")
+            .expect("hosted tool event");
+        assert!(matches!(
+            hosted,
+            ProviderStreamEvent::HostedTool { tool }
+                if tool.call_id == "ws_1"
+                    && tool.status == ProviderHostedToolStatus::Running
+        ));
 
         let first_answer =
             tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
                 .await
                 .expect("answer delta should arrive before completion")
-                .expect("answer chunk")
-                .expect("valid answer chunk");
+                .expect("answer event");
+        let ProviderStreamEvent::Chunk {
+            chunk: first_answer,
+        } = first_answer
+        else {
+            panic!("expected answer chunk");
+        };
         assert_eq!(first_answer.delta, "hello");
 
         let mut answer = first_answer.delta;
         let mut finish_reason = None;
         let mut trailing_thinking = String::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.expect("valid Responses stream chunk");
-            answer.push_str(&chunk.delta);
-            trailing_thinking.push_str(chunk.thinking_delta.as_deref().unwrap_or_default());
-            finish_reason = chunk.finish_reason.or(finish_reason);
+        let mut hosted_completed = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                ProviderStreamEvent::Chunk { chunk } => {
+                    answer.push_str(&chunk.delta);
+                    trailing_thinking.push_str(chunk.thinking_delta.as_deref().unwrap_or_default());
+                    finish_reason = chunk.finish_reason.or(finish_reason);
+                }
+                ProviderStreamEvent::HostedTool { tool } => {
+                    hosted_completed |= tool.call_id == "ws_1"
+                        && tool.status == ProviderHostedToolStatus::Completed;
+                }
+                event => panic!("unexpected Responses stream event: {event:?}"),
+            }
         }
 
         server.await.expect("server task").expect("server result");
@@ -2909,6 +3407,321 @@ data: [DONE]
             "the completed response must not repeat streamed thinking"
         );
         assert_eq!(finish_reason, Some(FinishReason::Stop));
+        assert!(
+            hosted_completed,
+            "terminal payload must close the hosted tool card"
+        );
+    }
+
+    #[test]
+    fn responses_stream_projects_every_provider_hosted_tool_family() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let cases = [
+            ("web_search_call", "web_search"),
+            ("file_search_call", "file_search"),
+            ("code_interpreter_call", "code_interpreter"),
+            ("computer_call", "computer_use"),
+            ("image_generation_call", "image_generation"),
+            ("mcp_call", "mcp"),
+            ("local_shell_call", "shell"),
+        ];
+
+        for (index, (item_type, expected_name)) in cases.into_iter().enumerate() {
+            let call_id = format!("provider-call-{index}");
+            let event = serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": {
+                    "id": call_id,
+                    "type": item_type,
+                    "status": "in_progress",
+                    "action": { "query": "Nexa" }
+                }
+            });
+            let projected = provider_hosted_tool_event(&event, dialect)
+                .expect("provider-hosted Responses item");
+            assert_eq!(projected.call_id, call_id);
+            assert_eq!(projected.tool_name, expected_name);
+            assert_eq!(projected.provider_id, "deepseek");
+            assert_eq!(projected.status, ProviderHostedToolStatus::Running);
+        }
+
+        let client_function = serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "id": "fc-1",
+                "type": "function_call",
+                "name": "read_file",
+                "arguments": "{}"
+            }
+        });
+        assert!(provider_hosted_tool_event(&client_function, dialect).is_none());
+    }
+
+    #[test]
+    fn responses_replay_retains_every_recognized_provider_hosted_tool_family() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let response = serde_json::json!({
+            "id": "resp-1",
+            "status": "completed",
+            "output": [
+                {
+                    "id": "reasoning-1",
+                    "type": "reasoning",
+                    "status": "completed",
+                    "content": [{ "type": "reasoning_text", "text": "plan" }]
+                },
+                { "id": "web-1", "type": "web_search_call", "status": "completed" },
+                { "id": "file-1", "type": "file_search_call", "status": "completed" },
+                { "id": "code-1", "type": "code_interpreter_call", "status": "completed" },
+                { "id": "computer-1", "type": "computer_call", "status": "completed" },
+                { "id": "image-1", "type": "image_generation_call", "status": "completed" },
+                { "id": "mcp-1", "type": "mcp_call", "name": "remote_lookup", "status": "completed" },
+                { "id": "shell-1", "type": "local_shell_call", "status": "completed" },
+                {
+                    "id": "function-1",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "call-1",
+                    "name": "read_file",
+                    "arguments": "{}"
+                }
+            ]
+        });
+
+        let parsed = parse_responses_completion(response, dialect, capability).unwrap();
+        let tool_call = parsed
+            .tool_calls
+            .expect("client tool call")
+            .into_iter()
+            .next()
+            .expect("first client tool call");
+        assert!(tool_call.thought_signature.is_some());
+    }
+
+    #[test]
+    fn responses_terminal_payload_completes_hosted_tool_once() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut projection = ResponsesStreamProjection::default();
+        let started = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "ws-1",
+                    "type": "web_search_call",
+                    "status": "in_progress",
+                    "action": { "type": "search", "query": "Nexa" }
+                }
+            }),
+            &mut projection,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        assert!(matches!(
+            started.as_slice(),
+            [ProviderStreamEvent::HostedTool { tool }]
+                if tool.status == ProviderHostedToolStatus::Running
+        ));
+
+        let completed = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "id": "ws-1",
+                            "type": "web_search_call",
+                            "status": "completed",
+                            "action": { "type": "search", "query": "Nexa" }
+                        },
+                        {
+                            "id": "msg-1",
+                            "type": "message",
+                            "status": "completed",
+                            "content": [{ "type": "output_text", "text": "done" }]
+                        }
+                    ]
+                }
+            }),
+            &mut projection,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    ProviderStreamEvent::HostedTool { tool }
+                        if tool.status == ProviderHostedToolStatus::Completed
+                ))
+                .count(),
+            1
+        );
+        assert!(projection.terminal_seen);
+    }
+
+    #[test]
+    fn responses_terminal_payload_enriches_an_earlier_sparse_tool_completion() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut projection = ResponsesStreamProjection::default();
+        let sparse = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.web_search_call.completed",
+                "item_id": "ws-1"
+            }),
+            &mut projection,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        assert!(matches!(
+            sparse.as_slice(),
+            [ProviderStreamEvent::HostedTool { tool }]
+                if tool.status == ProviderHostedToolStatus::Completed && tool.content.is_none()
+        ));
+
+        let terminal = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [{
+                        "id": "ws-1",
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "result": { "matches": 2 }
+                    }]
+                }
+            }),
+            &mut projection,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        assert!(terminal.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::HostedTool { tool }
+                if tool.status == ProviderHostedToolStatus::Completed
+                    && tool.content.as_deref() == Some("{\"matches\":2}")
+        )));
+    }
+
+    #[test]
+    fn responses_streams_client_function_card_without_repeating_arguments_at_terminal() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut projection = ResponsesStreamProjection::default();
+        let events = [
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "fc-1",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "call_id": "call-1",
+                    "name": "read_file",
+                    "arguments": ""
+                }
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc-1",
+                "output_index": 0,
+                "delta": "{\"path\":"
+            }),
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc-1",
+                "output_index": 0,
+                "arguments": "{\"path\":\"README.md\"}"
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [{
+                        "id": "fc-1",
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call-1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }]
+                }
+            }),
+        ];
+
+        let mut streamed_arguments = String::new();
+        let mut names = Vec::new();
+        let mut finish_reason = None;
+        for event in events {
+            for projected in
+                project_responses_stream_event(event, &mut projection, dialect, capability).unwrap()
+            {
+                let ProviderStreamEvent::Chunk { chunk } = projected else {
+                    continue;
+                };
+                if let Some(delta) = chunk.tool_call_delta {
+                    streamed_arguments.push_str(&delta.arguments_delta);
+                    if let Some(name) = delta.name {
+                        names.push(name);
+                    }
+                }
+                finish_reason = chunk.finish_reason.or(finish_reason);
+            }
+        }
+
+        assert!(!names.is_empty());
+        assert!(names.iter().all(|name| name == "read_file"));
+        assert_eq!(streamed_arguments, "{\"path\":\"README.md\"}");
+        assert_eq!(finish_reason, Some(FinishReason::ToolCalls));
     }
 
     #[test]
