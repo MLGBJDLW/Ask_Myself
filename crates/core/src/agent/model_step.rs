@@ -129,6 +129,76 @@ pub(super) struct ModelStepOutput {
 }
 
 impl AgentExecutor {
+    /// Own retries for a completion that has not projected any output yet.
+    ///
+    /// Provider adapters perform one wire attempt. Keeping the retry loop here
+    /// prevents a provider retry, automatic route fallback, and agent recovery
+    /// from multiplying one another invisibly.
+    async fn complete_before_visible_output(
+        &self,
+        request: &CompletionRequest,
+        stream_recovery_policy: StreamRecoveryPolicy,
+        tx: &mpsc::Sender<AgentEvent>,
+        model: &str,
+    ) -> Result<crate::llm::CompletionResponse, CoreError> {
+        let mut retry_count = 0;
+        loop {
+            match self.provider.complete(request).await {
+                Ok(response) => return Ok(response),
+                Err(CoreError::RateLimited { retry_after_secs }) => {
+                    match stream_recovery_policy
+                        .decide_after_rate_limit(retry_count, retry_after_secs)
+                    {
+                        StreamConnectRetryDecision::Retry { attempt, delay, .. } => {
+                            retry_count = attempt;
+                            let _ = tx
+                                .send(connection_state_event(
+                                    self.provider.name(),
+                                    model,
+                                    ConnectionStateKind::Reconnecting,
+                                    Some(ConnectionErrorCategory::RateLimit),
+                                    attempt,
+                                    stream_recovery_policy.max_connect_retries(),
+                                    Some(delay),
+                                    true,
+                                ))
+                                .await;
+                            tokio::time::sleep(delay).await;
+                        }
+                        StreamConnectRetryDecision::GiveUp { .. } => {
+                            return Err(CoreError::RateLimited { retry_after_secs });
+                        }
+                    }
+                }
+                Err(CoreError::TransientLlm(message)) => {
+                    match stream_recovery_policy.decide_after_transient_error(retry_count, &message)
+                    {
+                        StreamConnectRetryDecision::Retry { attempt, delay, .. } => {
+                            retry_count = attempt;
+                            let _ = tx
+                                .send(connection_state_event(
+                                    self.provider.name(),
+                                    model,
+                                    ConnectionStateKind::Reconnecting,
+                                    Some(ConnectionErrorCategory::Network),
+                                    attempt,
+                                    stream_recovery_policy.max_connect_retries(),
+                                    Some(delay),
+                                    true,
+                                ))
+                                .await;
+                            tokio::time::sleep(delay).await;
+                        }
+                        StreamConnectRetryDecision::GiveUp { .. } => {
+                            return Err(CoreError::TransientLlm(message));
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(super) async fn run_model_step(
         &self,
         ctx: ModelStepContext<'_>,
@@ -250,7 +320,15 @@ impl AgentExecutor {
                 if *force_non_streaming_llm {
                     info!("Initiating LLM completion in non-streaming mode");
                     let candidate_sample_id = Uuid::new_v4().to_string();
-                    match self.provider.complete(&current_request).await {
+                    match self
+                        .complete_before_visible_output(
+                            &current_request,
+                            stream_recovery_policy,
+                            tx,
+                            model,
+                        )
+                        .await
+                    {
                         Ok(response) => {
                             accepted_sample_id = candidate_sample_id;
                             accepted_route_snapshot =
@@ -754,9 +832,9 @@ impl AgentExecutor {
                         return Err(CoreError::Cancelled(message));
                     }
                     StreamLoopEvent::Provider(Some(ProviderStreamEvent::TerminalError {
-                        message,
+                        failure,
                     })) => {
-                        let e = CoreError::Llm(message);
+                        let e = failure.into_core_error();
                         error!("LLM stream error: {e}");
                         emit_error_and_finalize_turn(
                             tx,
@@ -1020,7 +1098,15 @@ impl AgentExecutor {
                             .await;
 
                         let candidate_sample_id = Uuid::new_v4().to_string();
-                        match self.provider.complete(&current_request).await {
+                        match self
+                            .complete_before_visible_output(
+                                &current_request,
+                                stream_recovery_policy,
+                                tx,
+                                model,
+                            )
+                            .await
+                        {
                             Ok(response) => {
                                 accepted_sample_id = candidate_sample_id;
                                 accepted_route_snapshot =

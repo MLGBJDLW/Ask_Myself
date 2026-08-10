@@ -14,8 +14,8 @@ use futures::{stream, stream::BoxStream, StreamExt};
 
 use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{
-    CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderType,
-    StreamChunk,
+    CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderStreamFailure,
+    ProviderType, StreamChunk,
 };
 use crate::error::CoreError;
 
@@ -316,8 +316,8 @@ impl LlmProvider for AutomaticFallbackProvider {
                 ProviderStreamEvent::Cancelled { message } => {
                     Some(Err(CoreError::Cancelled(message)))
                 }
-                ProviderStreamEvent::TerminalError { message } => {
-                    Some(Err(CoreError::Llm(message)))
+                ProviderStreamEvent::TerminalError { failure } => {
+                    Some(Err(failure.into_core_error()))
                 }
             }
         })))
@@ -358,7 +358,7 @@ impl LlmProvider for AutomaticFallbackProvider {
                             {
                                 return Some((
                                     ProviderStreamEvent::TerminalError {
-                                        message: error.to_string(),
+                                        failure: error.into(),
                                     },
                                     None,
                                 ));
@@ -376,7 +376,7 @@ impl LlmProvider for AutomaticFallbackProvider {
                             {
                                 return Some((
                                     ProviderStreamEvent::TerminalError {
-                                        message: error.to_string(),
+                                        failure: error.into(),
                                     },
                                     None,
                                 ));
@@ -406,7 +406,9 @@ impl LlmProvider for AutomaticFallbackProvider {
                             Err(error) => {
                                 return Some((
                                     ProviderStreamEvent::TerminalError {
-                                        message: format!("{message}; fallback failed: {error}"),
+                                        failure: ProviderStreamFailure::provider(format!(
+                                            "{message}; fallback failed: {error}"
+                                        )),
                                     },
                                     None,
                                 ));
@@ -433,9 +435,9 @@ impl LlmProvider for AutomaticFallbackProvider {
                             Err(error) => {
                                 return Some((
                                     ProviderStreamEvent::TerminalError {
-                                        message: format!(
+                                        failure: ProviderStreamFailure::provider(format!(
                                             "Provider stream ended before output; fallback failed: {error}"
-                                        ),
+                                        )),
                                     },
                                     None,
                                 ));

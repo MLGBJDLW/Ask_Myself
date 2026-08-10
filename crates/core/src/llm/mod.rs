@@ -451,6 +451,52 @@ pub struct ProviderHostedToolEvent {
 /// Existing providers still implement `stream()` in terms of `StreamChunk`.
 /// This adapter Interface gives the agent layer a seam for provider-level
 /// recovery policy without requiring every provider to change at once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProviderStreamFailure {
+    Provider { message: String },
+    RateLimited { retry_after_secs: u64 },
+    ContextOverflow { prompt_tokens: u32, max_tokens: u32 },
+    Internal { message: String },
+}
+
+impl ProviderStreamFailure {
+    pub fn provider(message: impl Into<String>) -> Self {
+        Self::Provider {
+            message: message.into(),
+        }
+    }
+
+    pub fn into_core_error(self) -> CoreError {
+        match self {
+            Self::Provider { message } => CoreError::Llm(message),
+            Self::RateLimited { retry_after_secs } => CoreError::RateLimited { retry_after_secs },
+            Self::ContextOverflow {
+                prompt_tokens,
+                max_tokens,
+            } => CoreError::ContextOverflow(prompt_tokens, max_tokens),
+            Self::Internal { message } => CoreError::Internal(message),
+        }
+    }
+}
+
+impl From<CoreError> for ProviderStreamFailure {
+    fn from(error: CoreError) -> Self {
+        match error {
+            CoreError::Llm(message) => Self::Provider { message },
+            CoreError::RateLimited { retry_after_secs } => Self::RateLimited { retry_after_secs },
+            CoreError::ContextOverflow(prompt_tokens, max_tokens) => Self::ContextOverflow {
+                prompt_tokens,
+                max_tokens,
+            },
+            CoreError::Internal(message) => Self::Internal { message },
+            error => Self::Internal {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
@@ -458,7 +504,7 @@ pub enum ProviderStreamEvent {
     HostedTool { tool: Box<ProviderHostedToolEvent> },
     RecoverableError { message: String },
     Cancelled { message: String },
-    TerminalError { message: String },
+    TerminalError { failure: ProviderStreamFailure },
 }
 
 /// Convert a legacy chunk stream into provider-normalized stream events.
@@ -480,7 +526,7 @@ fn provider_stream_event_from_chunk_result(
         }
         Err(CoreError::Cancelled(message)) => ProviderStreamEvent::Cancelled { message },
         Err(error) => ProviderStreamEvent::TerminalError {
-            message: error.to_string(),
+            failure: error.into(),
         },
     }
 }
@@ -1107,8 +1153,23 @@ mod tests {
 
         assert!(matches!(
             &events[0],
-            ProviderStreamEvent::TerminalError { message }
-                if message == "LLM error: provider refused request"
+            ProviderStreamEvent::TerminalError {
+                failure: ProviderStreamFailure::Provider { message }
+            } if message == "provider refused request"
         ));
+    }
+
+    #[test]
+    fn terminal_stream_failure_round_trips_without_duplicating_llm_prefix() {
+        let failure = ProviderStreamFailure::from(CoreError::Llm(
+            "Responses function_call contained incomplete arguments".to_string(),
+        ));
+
+        let error = failure.into_core_error();
+
+        assert_eq!(
+            error.to_string(),
+            "LLM error: Responses function_call contained incomplete arguments"
+        );
     }
 }

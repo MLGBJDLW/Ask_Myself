@@ -33,7 +33,6 @@ use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
-const MAX_COMPLETE_ATTEMPTS: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // OpenAI API wire types — request
@@ -463,11 +462,6 @@ fn is_retriable_reqwest_error(error: &reqwest::Error) -> bool {
         || msg.contains("incompleted")
         || msg.contains("unexpected eof")
         || msg.trim() == "error decoding response body"
-}
-
-async fn sleep_before_completion_retry(attempt: u32) {
-    let delay_ms = 250_u64.saturating_mul(2_u64.saturating_pow(attempt.saturating_sub(1)));
-    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 }
 
 fn completion_response_to_stream_chunks(
@@ -1573,19 +1567,24 @@ fn parse_responses_completion(
     })
 }
 
+/// Single state machine for projecting one Responses stream into executable
+/// agent events. Tool arguments remain provisional until a provider completion
+/// event supplies a complete JSON object.
 #[derive(Default)]
-struct ResponsesStreamProjection {
+struct ResponsesAssembler {
     answer: String,
     thinking: String,
     terminal_seen: bool,
     hosted_tools: HashMap<String, ProviderHostedToolEvent>,
     client_tool_item_ids: HashMap<String, String>,
-    client_tools: HashMap<String, ResponsesClientToolProjection>,
+    client_tools: HashMap<String, ResponsesClientToolAssembly>,
 }
 
 #[derive(Default)]
-struct ResponsesClientToolProjection {
-    arguments: String,
+struct ResponsesClientToolAssembly {
+    provisional_arguments: String,
+    final_arguments: Option<String>,
+    arguments_emitted: bool,
     index: Option<u32>,
 }
 
@@ -1658,12 +1657,13 @@ fn client_tool_stream_event(
 
 fn project_responses_client_tool_event(
     value: &serde_json::Value,
-    projection: &mut ResponsesStreamProjection,
-) -> Result<Option<ProviderStreamEvent>, CoreError> {
+    projection: &mut ResponsesAssembler,
+) -> Result<Option<Vec<ProviderStreamEvent>>, CoreError> {
     let event_type = value
         .get("type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+
     if event_type == "response.output_item.added" {
         let Some(item) = value.get("item") else {
             return Ok(None);
@@ -1671,22 +1671,10 @@ fn project_responses_client_tool_event(
         if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
             return Ok(None);
         }
-        let item_id = item
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.trim().is_empty())
-            .ok_or_else(|| CoreError::Llm("Responses function_call omitted item id".to_string()))?;
-        let call_id = item
-            .get("call_id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.trim().is_empty())
-            .ok_or_else(|| CoreError::Llm("Responses function_call omitted call_id".to_string()))?;
-        let name = item
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-            .ok_or_else(|| CoreError::Llm("Responses function_call omitted name".to_string()))?;
-        let arguments = item
+        let item_id = required_responses_tool_field(item, "id", "item id")?;
+        let call_id = required_responses_tool_field(item, "call_id", "call_id")?;
+        let name = required_responses_tool_field(item, "name", "name")?;
+        let provisional_arguments = item
             .get("arguments")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
@@ -1700,17 +1688,18 @@ fn project_responses_client_tool_event(
             .insert(item_id.to_string(), call_id.to_string());
         projection.client_tools.insert(
             call_id.to_string(),
-            ResponsesClientToolProjection {
-                arguments: arguments.clone(),
+            ResponsesClientToolAssembly {
+                provisional_arguments,
                 index,
+                ..ResponsesClientToolAssembly::default()
             },
         );
-        return Ok(Some(client_tool_stream_event(
+        return Ok(Some(vec![client_tool_stream_event(
             call_id.to_string(),
             Some(name.to_string()),
-            arguments,
+            String::new(),
             index,
-        )));
+        )]));
     }
 
     let is_delta = event_type == "response.function_call_arguments.delta";
@@ -1723,6 +1712,7 @@ fn project_responses_client_tool_event(
     if !is_delta && !is_done {
         return Ok(None);
     }
+
     let item = value.get("item").unwrap_or(value);
     let item_id = value
         .get("item_id")
@@ -1736,38 +1726,187 @@ fn project_responses_client_tool_event(
         .or_else(|| {
             item.get("call_id")
                 .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.trim().is_empty())
                 .map(str::to_string)
         });
     let Some(call_id) = call_id else {
-        return Ok(None);
+        return Err(CoreError::StreamIncomplete(format!(
+            "{event_type} omitted a resolvable function call identity"
+        )));
     };
-    let Some(state) = projection.client_tools.get_mut(&call_id) else {
-        return Ok(None);
-    };
-    let arguments_delta = if is_delta {
-        value
+
+    let index = value
+        .get("output_index")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let emit_name = !projection.client_tools.contains_key(&call_id);
+    if emit_name {
+        projection.client_tools.insert(
+            call_id.clone(),
+            ResponsesClientToolAssembly {
+                index,
+                ..ResponsesClientToolAssembly::default()
+            },
+        );
+        if !item_id.is_empty() {
+            projection
+                .client_tool_item_ids
+                .insert(item_id.to_string(), call_id.clone());
+        }
+    }
+    let state = projection
+        .client_tools
+        .get_mut(&call_id)
+        .expect("client tool state inserted");
+
+    if is_delta {
+        let delta = value
             .get("delta")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    } else {
-        let completed_arguments = value
-            .get("arguments")
-            .or_else(|| item.get("arguments"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(state.arguments.as_str());
-        streamed_completion_suffix(&state.arguments, completed_arguments, "function arguments")?
-    };
-    if arguments_delta.is_empty() {
-        return Ok(None);
+            .unwrap_or_default();
+        state.provisional_arguments.push_str(delta);
+        return Ok(Some(Vec::new()));
     }
-    state.arguments.push_str(&arguments_delta);
-    Ok(Some(client_tool_stream_event(
+
+    let completed_arguments = value
+        .get("arguments")
+        .or_else(|| item.get("arguments"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|arguments| !arguments.is_empty())
+        .unwrap_or(&state.provisional_arguments)
+        .to_string();
+    validate_completed_tool_arguments(&completed_arguments, event_type)?;
+
+    if let Some(existing) = &state.final_arguments {
+        if existing != &completed_arguments {
+            return Err(CoreError::StreamIncomplete(format!(
+                "Responses function call {call_id} completed with conflicting arguments"
+            )));
+        }
+    } else {
+        state.final_arguments = Some(completed_arguments.clone());
+    }
+
+    if state.arguments_emitted {
+        return Ok(Some(Vec::new()));
+    }
+    state.arguments_emitted = true;
+    let name = emit_name
+        .then(|| item.get("name").and_then(serde_json::Value::as_str))
+        .flatten()
+        .map(str::to_string);
+    Ok(Some(vec![client_tool_stream_event(
         call_id,
-        None,
-        arguments_delta,
-        state.index,
-    )))
+        name,
+        completed_arguments,
+        state.index.or(index),
+    )]))
+}
+
+fn required_responses_tool_field<'a>(
+    item: &'a serde_json::Value,
+    field: &str,
+    label: &str,
+) -> Result<&'a str, CoreError> {
+    item.get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CoreError::Llm(format!("Responses function_call omitted {label}")))
+}
+
+fn validate_completed_tool_arguments(arguments: &str, event: &str) -> Result<(), CoreError> {
+    let valid = serde_json::from_str::<serde_json::Value>(arguments)
+        .is_ok_and(|arguments| arguments.is_object());
+    if valid {
+        Ok(())
+    } else {
+        Err(CoreError::StreamIncomplete(format!(
+            "{event} contained incomplete function arguments"
+        )))
+    }
+}
+
+fn finalize_terminal_client_tools(
+    response: &mut serde_json::Value,
+    projection: &mut ResponsesAssembler,
+) -> Result<Vec<ProviderStreamEvent>, CoreError> {
+    let response_completed =
+        response.get("status").and_then(serde_json::Value::as_str) == Some("completed");
+    let Some(output) = response
+        .get_mut("output")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut events = Vec::new();
+    for (output_index, item) in output.iter_mut().enumerate() {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
+            continue;
+        }
+        let call_id = required_responses_tool_field(item, "call_id", "call_id")?.to_string();
+        let name = required_responses_tool_field(item, "name", "name")?.to_string();
+        if !response_completed {
+            return Err(CoreError::StreamIncomplete(format!(
+                "Responses response became incomplete before function call {call_id} completed"
+            )));
+        }
+
+        let terminal_arguments = item
+            .get("arguments")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .filter(|arguments| {
+                serde_json::from_str::<serde_json::Value>(arguments)
+                    .is_ok_and(|arguments| arguments.is_object())
+            });
+        let existed = projection.client_tools.contains_key(&call_id);
+        let state = projection
+            .client_tools
+            .entry(call_id.clone())
+            .or_insert_with(|| ResponsesClientToolAssembly {
+                index: u32::try_from(output_index).ok(),
+                ..ResponsesClientToolAssembly::default()
+            });
+        let authoritative = match (terminal_arguments, state.final_arguments.as_ref()) {
+            (Some(terminal), Some(completed)) if &terminal != completed => {
+                return Err(CoreError::StreamIncomplete(format!(
+                    "Responses function call {call_id} terminal payload conflicted with output_item.done"
+                )));
+            }
+            (Some(terminal), _) => terminal,
+            (None, Some(completed)) => {
+                item["arguments"] = serde_json::Value::String(completed.clone());
+                completed.clone()
+            }
+            (None, None) => {
+                return Err(CoreError::StreamIncomplete(format!(
+                    "Responses function call {call_id} never produced completed arguments"
+                )));
+            }
+        };
+        state.final_arguments = Some(authoritative.clone());
+
+        if let Some(item_id) = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|item_id| !item_id.trim().is_empty())
+        {
+            projection
+                .client_tool_item_ids
+                .insert(item_id.to_string(), call_id.clone());
+        }
+        if !state.arguments_emitted {
+            state.arguments_emitted = true;
+            events.push(client_tool_stream_event(
+                call_id,
+                (!existed).then_some(name),
+                authoritative,
+                state.index,
+            ));
+        }
+    }
+    Ok(events)
 }
 
 fn provider_hosted_tool_event(
@@ -1858,7 +1997,7 @@ fn provider_hosted_tool_event(
 
 fn project_provider_hosted_tool_event(
     value: &serde_json::Value,
-    projection: &mut ResponsesStreamProjection,
+    projection: &mut ResponsesAssembler,
     dialect: super::native_search::NativeSearchDialect,
 ) -> Option<ProviderStreamEvent> {
     let tool = provider_hosted_tool_event(value, dialect)?;
@@ -1875,7 +2014,7 @@ fn project_provider_hosted_tool_event(
 
 fn project_terminal_provider_hosted_tools(
     response: &serde_json::Value,
-    projection: &mut ResponsesStreamProjection,
+    projection: &mut ResponsesAssembler,
     dialect: super::native_search::NativeSearchDialect,
 ) -> Vec<ProviderStreamEvent> {
     let response_status = response
@@ -1926,27 +2065,28 @@ fn project_terminal_provider_hosted_tools(
         .collect()
 }
 
-fn streamed_completion_suffix(
-    streamed: &str,
-    completed: &str,
-    channel: &str,
-) -> Result<String, CoreError> {
+fn visible_completion_suffix(streamed: &str, completed: &str, channel: &str) -> String {
     if streamed.is_empty() {
-        return Ok(completed.to_string());
+        return completed.to_string();
     }
-    completed
-        .strip_prefix(streamed)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            CoreError::StreamIncomplete(format!(
-                "Responses {channel} deltas did not match the completed response"
-            ))
-        })
+    if let Some(suffix) = completed.strip_prefix(streamed) {
+        return suffix.to_string();
+    }
+    if streamed.starts_with(completed) {
+        return String::new();
+    }
+    tracing::warn!(
+        channel,
+        streamed_bytes = streamed.len(),
+        completed_bytes = completed.len(),
+        "Responses visible deltas differed from the terminal projection; preserving already-visible output"
+    );
+    String::new()
 }
 
 fn project_responses_stream_event(
     value: serde_json::Value,
-    projection: &mut ResponsesStreamProjection,
+    projection: &mut ResponsesAssembler,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
 ) -> Result<Vec<ProviderStreamEvent>, CoreError> {
@@ -1954,8 +2094,8 @@ fn project_responses_stream_event(
         .get("type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if let Some(event) = project_responses_client_tool_event(&value, projection)? {
-        return Ok(vec![event]);
+    if let Some(events) = project_responses_client_tool_event(&value, projection)? {
+        return Ok(events);
     }
     match event_type {
         "response.output_text.delta" => {
@@ -1982,7 +2122,7 @@ fn project_responses_stream_event(
                 .get("text")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            let delta = streamed_completion_suffix(&projection.answer, completed, "answer")?;
+            let delta = visible_completion_suffix(&projection.answer, completed, "answer");
             if delta.is_empty() {
                 return Ok(Vec::new());
             }
@@ -2039,7 +2179,7 @@ fn project_responses_stream_event(
                 .get("text")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            let delta = streamed_completion_suffix(&projection.thinking, completed, "thinking")?;
+            let delta = visible_completion_suffix(&projection.thinking, completed, "thinking");
             if delta.is_empty() {
                 return Ok(Vec::new());
             }
@@ -2055,32 +2195,31 @@ fn project_responses_stream_event(
             }])
         }
         "response.completed" | "response.incomplete" => {
-            let response = value.get("response").cloned().ok_or_else(|| {
+            let mut response = value.get("response").cloned().ok_or_else(|| {
                 CoreError::StreamIncomplete(format!(
                     "{event_type} omitted the authoritative response payload"
                 ))
             })?;
             let mut events = project_terminal_provider_hosted_tools(&response, projection, dialect);
+            events.extend(finalize_terminal_client_tools(&mut response, projection)?);
             let mut completed = parse_responses_completion(response, dialect, capability)?;
             if let Some(tool_calls) = completed.tool_calls.as_mut() {
                 for call in tool_calls {
                     if let Some(streamed) = projection.client_tools.get(&call.id) {
-                        call.arguments = streamed_completion_suffix(
-                            &streamed.arguments,
-                            &call.arguments,
-                            "function arguments",
-                        )?;
+                        if streamed.arguments_emitted {
+                            call.arguments.clear();
+                        }
                     }
                 }
             }
             completed.content =
-                streamed_completion_suffix(&projection.answer, &completed.content, "answer")?;
+                visible_completion_suffix(&projection.answer, &completed.content, "answer");
             completed.thinking = match completed.thinking {
-                Some(thinking) => Some(streamed_completion_suffix(
+                Some(thinking) => Some(visible_completion_suffix(
                     &projection.thinking,
                     &thinking,
                     "thinking",
-                )?),
+                )),
                 None => None,
             }
             .filter(|thinking| !thinking.is_empty());
@@ -2144,7 +2283,7 @@ fn drain_responses_sse_lines(buffer: &mut Vec<u8>) -> Vec<String> {
 async fn dispatch_responses_sse_data(
     data_lines: &mut Vec<String>,
     tx: &mpsc::Sender<ProviderStreamEvent>,
-    projection: &mut ResponsesStreamProjection,
+    projection: &mut ResponsesAssembler,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
 ) -> Result<bool, CoreError> {
@@ -2183,7 +2322,7 @@ async fn parse_responses_sse_stream(
     let mut byte_stream = response.bytes_stream();
     let mut buffer = Vec::new();
     let mut data_lines = Vec::new();
-    let mut projection = ResponsesStreamProjection::default();
+    let mut projection = ResponsesAssembler::default();
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
@@ -2418,7 +2557,7 @@ impl OpenAiProvider {
                     }
                     CoreError::Cancelled(message) => ProviderStreamEvent::Cancelled { message },
                     error => ProviderStreamEvent::TerminalError {
-                        message: error.to_string(),
+                        failure: error.into(),
                     },
                 };
                 let _ = tx.send(event).await;
@@ -2451,8 +2590,8 @@ impl OpenAiProvider {
                 ProviderStreamEvent::Cancelled { message } => {
                     Some(Err(CoreError::Cancelled(message)))
                 }
-                ProviderStreamEvent::TerminalError { message } => {
-                    Some(Err(CoreError::Llm(message)))
+                ProviderStreamEvent::TerminalError { failure } => {
+                    Some(Err(failure.into_core_error()))
                 }
             }
         })))
@@ -2575,72 +2714,46 @@ impl LlmProvider for OpenAiProvider {
         let body = build_request_body_with_config(request, false, Some(&self.config));
         let body_bytes = serialized_json_body(&body, "OpenAI completion request")?;
 
-        let mut attempt = 1;
-        let oai: OaiResponse = loop {
-            let response = match with_request_timeout(
-                apply_openrouter_headers(
-                    self.transport
-                        .client()
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {api_key}"))
-                        .header("Content-Type", "application/json")
-                        .body(body_bytes.clone()),
-                    &self.config,
-                ),
-                self.request_timeout,
-            )
-            .send()
+        let response = with_request_timeout(
+            apply_openrouter_headers(
+                self.transport
+                    .client()
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes),
+                &self.config,
+            ),
+            self.request_timeout,
+        )
+        .send()
+        .await
+        .inspect_err(|error| {
+            self.transport.record_transport_failure(&error.to_string());
+        })
+        .map_err(|error| {
+            let message = format!("Request failed: {error}");
+            if is_retriable_reqwest_error(&error) {
+                CoreError::TransientLlm(message)
+            } else {
+                CoreError::Llm(message)
+            }
+        })?;
+        let response = self.check_response(response).await?;
+        let oai: OaiResponse = response
+            .json()
             .await
             .inspect_err(|error| {
                 self.transport.record_transport_failure(&error.to_string());
-            }) {
-                Ok(response) => response,
-                Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
-                    warn!(
-                        "OpenAI completion request failed on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {e}; retrying"
-                    );
-                    sleep_before_completion_retry(attempt).await;
-                    attempt += 1;
-                    continue;
+            })
+            .map_err(|error| {
+                let message = format!("Failed to parse completion response: {error}");
+                if is_retriable_reqwest_error(&error) {
+                    CoreError::TransientLlm(message)
+                } else {
+                    CoreError::Llm(message)
                 }
-                Err(e) => return Err(CoreError::Llm(format!("Request failed: {e}"))),
-            };
-
-            let response = match self.check_response(response).await {
-                Ok(response) => response,
-                Err(CoreError::TransientLlm(message)) if attempt < MAX_COMPLETE_ATTEMPTS => {
-                    warn!(
-                        "OpenAI completion returned transient error on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {message}; retrying"
-                    );
-                    sleep_before_completion_retry(attempt).await;
-                    attempt += 1;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-
-            match response.json().await.inspect_err(|error| {
-                self.transport.record_transport_failure(&error.to_string());
-            }) {
-                Ok(oai) => break oai,
-                Err(e) if is_retriable_reqwest_error(&e) && attempt < MAX_COMPLETE_ATTEMPTS => {
-                    warn!(
-                        "OpenAI completion response body failed on attempt {attempt}/{MAX_COMPLETE_ATTEMPTS}: {e}; retrying"
-                    );
-                    sleep_before_completion_retry(attempt).await;
-                    attempt += 1;
-                    continue;
-                }
-                Err(e) => {
-                    let message = format!("Failed to parse completion response: {e}");
-                    return if is_retriable_reqwest_error(&e) {
-                        Err(CoreError::TransientLlm(message))
-                    } else {
-                        Err(CoreError::Llm(message))
-                    };
-                }
-            }
-        };
+            })?;
         self.transport.record_transport_success();
 
         let choice = oai
@@ -2836,6 +2949,11 @@ impl LlmProvider for OpenAiProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use super::*;
     use futures::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2938,6 +3056,36 @@ data: [DONE]
             .await?;
         socket.flush().await?;
         socket.shutdown().await
+    }
+
+    async fn serve_single_transient_completion(
+        listener: tokio::net::TcpListener,
+        attempts: Arc<AtomicUsize>,
+    ) -> std::io::Result<()> {
+        let (mut socket, _) = listener.accept().await?;
+        attempts.fetch_add(1, Ordering::SeqCst);
+        let mut request = [0u8; 4096];
+        let _ = socket.read(&mut request).await?;
+        let body = br#"{"error":{"message":"temporary upstream failure"}}"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await?;
+        socket.write_all(body).await?;
+        socket.shutdown().await?;
+
+        if let Ok(Ok((mut unexpected, _))) =
+            tokio::time::timeout(Duration::from_millis(400), listener.accept()).await
+        {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            let _ = unexpected.shutdown().await;
+        }
+        Ok(())
     }
 
     async fn serve_delayed_responses_sse_response(
@@ -3339,6 +3487,39 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn completion_adapter_performs_one_wire_attempt_and_returns_typed_transient_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_single_transient_completion(
+            listener,
+            Arc::clone(&attempts),
+        ));
+        let provider = OpenAiProvider::new(ProviderConfig {
+            provider_type: ProviderType::OpenAi,
+            base_url: Some(format!("http://{addr}/v1")),
+            api_key: Some("test-key".to_string()),
+            org_id: None,
+            timeout_secs: Some(1),
+        })
+        .expect("provider");
+
+        let error = provider
+            .complete(&endpoint_reasoning_request("test-model"))
+            .await
+            .expect_err("503 must stay retryable for the attempt controller");
+
+        server.await.expect("server task").expect("server result");
+        assert!(matches!(
+            error,
+            CoreError::TransientLlm(ref message) if message == "temporary upstream failure"
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn responses_stream_exposes_reasoning_and_answer_before_completion() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -3602,7 +3783,7 @@ data: [DONE]
             supports_stream_events: true,
             can_mix_client_tools: true,
         };
-        let mut projection = ResponsesStreamProjection::default();
+        let mut projection = ResponsesAssembler::default();
         let started = project_responses_stream_event(
             serde_json::json!({
                 "type": "response.output_item.added",
@@ -3678,7 +3859,7 @@ data: [DONE]
             supports_stream_events: true,
             can_mix_client_tools: true,
         };
-        let mut projection = ResponsesStreamProjection::default();
+        let mut projection = ResponsesAssembler::default();
         let sparse = project_responses_stream_event(
             serde_json::json!({
                 "type": "response.web_search_call.completed",
@@ -3735,7 +3916,7 @@ data: [DONE]
             supports_stream_events: true,
             can_mix_client_tools: true,
         };
-        let mut projection = ResponsesStreamProjection::default();
+        let mut projection = ResponsesAssembler::default();
         let events = project_responses_stream_event(
             serde_json::json!({
                 "type": "response.incomplete",
@@ -3780,7 +3961,7 @@ data: [DONE]
             supports_stream_events: true,
             can_mix_client_tools: true,
         };
-        let mut projection = ResponsesStreamProjection::default();
+        let mut projection = ResponsesAssembler::default();
         let events = [
             serde_json::json!({
                 "type": "response.output_item.added",
@@ -3847,6 +4028,228 @@ data: [DONE]
         assert!(names.iter().all(|name| name == "read_file"));
         assert_eq!(streamed_arguments, "{\"path\":\"README.md\"}");
         assert_eq!(finish_reason, Some(FinishReason::ToolCalls));
+    }
+
+    #[test]
+    fn responses_buffers_function_arguments_until_a_completion_event() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut assembler = ResponsesAssembler::default();
+
+        let added = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "fc-1",
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "read_file",
+                    "arguments": ""
+                }
+            }),
+            &mut assembler,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        let delta = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc-1",
+                "delta": "{\"path\":"
+            }),
+            &mut assembler,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        let done = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": "fc-1",
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            }),
+            &mut assembler,
+            dialect,
+            capability,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            added.as_slice(),
+            [ProviderStreamEvent::Chunk { chunk }]
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta.is_empty())
+        ));
+        assert!(delta.is_empty(), "partial JSON must stay provisional");
+        assert!(matches!(
+            done.as_slice(),
+            [ProviderStreamEvent::Chunk { chunk }]
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "{\"path\":\"README.md\"}")
+        ));
+    }
+
+    #[test]
+    fn responses_output_item_done_repairs_a_sparse_terminal_snapshot() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut assembler = ResponsesAssembler::default();
+        let events = [
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": { "id": "fc-1", "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "" }
+            }),
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": { "id": "fc-1", "type": "function_call", "status": "completed", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"README.md\"}" }
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [{
+                        "id": "fc-1",
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call-1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":"
+                    }]
+                }
+            }),
+        ];
+        let mut arguments = String::new();
+        let mut finish_reason = None;
+        for event in events {
+            for projected in
+                project_responses_stream_event(event, &mut assembler, dialect, capability).unwrap()
+            {
+                let ProviderStreamEvent::Chunk { chunk } = projected else {
+                    continue;
+                };
+                if let Some(tool) = chunk.tool_call_delta {
+                    arguments.push_str(&tool.arguments_delta);
+                }
+                finish_reason = chunk.finish_reason.or(finish_reason);
+            }
+        }
+
+        assert_eq!(arguments, "{\"path\":\"README.md\"}");
+        assert_eq!(finish_reason, Some(FinishReason::ToolCalls));
+    }
+
+    #[test]
+    fn responses_rejects_terminal_function_arguments_without_a_completion_gate() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut assembler = ResponsesAssembler::default();
+        let error = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [{
+                        "id": "fc-1",
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call-1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":"
+                    }]
+                }
+            }),
+            &mut assembler,
+            dialect,
+            capability,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, CoreError::StreamIncomplete(message) if message.contains("never produced completed arguments"))
+        );
+    }
+
+    #[test]
+    fn responses_preserves_visible_thinking_when_terminal_bytes_differ() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let mut assembler = ResponsesAssembler::default();
+        project_responses_stream_event(
+            serde_json::json!({ "type": "response.reasoning_text.delta", "delta": "visible plan" }),
+            &mut assembler,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        let terminal = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "output": [{
+                        "id": "reasoning-1",
+                        "type": "reasoning",
+                        "status": "completed",
+                        "content": [{ "type": "reasoning_text", "text": "normalized plan" }]
+                    }]
+                }
+            }),
+            &mut assembler,
+            dialect,
+            capability,
+        );
+
+        assert!(
+            terminal.is_ok(),
+            "visible output mismatch must not kill the turn"
+        );
     }
 
     #[test]
