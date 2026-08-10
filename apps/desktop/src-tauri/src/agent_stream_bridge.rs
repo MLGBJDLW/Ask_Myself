@@ -313,6 +313,9 @@ fn event_marks_provider_response_byte(event: &AgentEvent) -> bool {
             | AgentEvent::ToolCallPreparing { .. }
             | AgentEvent::ToolCallArgsDelta { .. }
             | AgentEvent::ToolCallStart { .. }
+            | AgentEvent::ToolRunStarted { .. }
+            | AgentEvent::ToolRunUpdated { .. }
+            | AgentEvent::ToolRunCompleted { .. }
             | AgentEvent::UsageUpdate { .. }
             | AgentEvent::Done { .. }
     )
@@ -323,6 +326,7 @@ fn event_has_visible_token(event: &AgentEvent) -> bool {
         AgentEvent::TextDelta { delta } => !delta.is_empty(),
         AgentEvent::Thinking { content } => !content.is_empty(),
         AgentEvent::ToolCallStart { .. } => true,
+        AgentEvent::ToolRunStarted { .. } | AgentEvent::ToolRunCompleted { .. } => true,
         AgentEvent::Done { message, .. } => !message.text_content().is_empty(),
         _ => false,
     }
@@ -343,6 +347,7 @@ mod tests {
                 call_id: call_id.to_string(),
                 tool_name: "test_tool".to_string(),
                 owner: nexa_core::plugins::capability_owner_for_tool("test_tool"),
+                provider_executed: false,
                 status: ToolRunStatus::Preparing,
                 arguments: Some(note.to_string()),
                 render_kind: ToolRenderKind::Generic,

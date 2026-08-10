@@ -35,8 +35,8 @@ use crate::llm::reasoning_profile::{
 };
 use crate::llm::{
     stream_chunks_to_provider_events, CompletionRequest, ContentPart, LlmProvider, Message,
-    ProviderStreamEvent, ProviderType, ReasoningEffort, Role, ToolCallDelta, ToolCallRequest,
-    ToolDefinition, Usage,
+    ProviderHostedToolStatus, ProviderStreamEvent, ProviderType, ReasoningEffort, Role,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
@@ -102,7 +102,9 @@ use self::stream_recovery::{
     ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
     StreamRecoveryPolicy,
 };
-use self::tool_runtime::{build_tool_run_item, tool_call_execution_batches};
+use self::tool_runtime::{
+    build_provider_hosted_tool_run_item, build_tool_run_item, tool_call_execution_batches,
+};
 use self::tool_scheduler::{
     loop_guard_blocked_result, output_limit_truncated_tool_result, ToolSchedulerPolicy,
 };
@@ -110,7 +112,7 @@ use self::trace_builder::{
     append_developer_persisted_trace_status, append_internal_persisted_trace_status,
     append_persisted_trace_loaded_skills, append_persisted_trace_loop_event,
     append_persisted_trace_prompt_cache, append_persisted_trace_status,
-    append_persisted_trace_thinking, append_persisted_trace_tool,
+    append_persisted_trace_thinking, append_persisted_trace_tool, append_persisted_trace_tool_run,
     append_persisted_trace_visibility, build_task_run_artifacts, build_trace_artifacts,
     build_turn_trace, build_turn_trace_with_verification, evidence_signals_from_trace,
     PersistedTraceItem,

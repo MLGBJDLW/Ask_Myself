@@ -306,13 +306,20 @@ impl LlmProvider for AutomaticFallbackProvider {
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
         let events = self.stream_events(request).await?;
-        Ok(Box::pin(events.map(|event| match event {
-            ProviderStreamEvent::Chunk { chunk } => Ok(*chunk),
-            ProviderStreamEvent::RecoverableError { message } => {
-                Err(CoreError::StreamIncomplete(message))
+        Ok(Box::pin(events.filter_map(|event| async move {
+            match event {
+                ProviderStreamEvent::Chunk { chunk } => Some(Ok(*chunk)),
+                ProviderStreamEvent::HostedTool { .. } => None,
+                ProviderStreamEvent::RecoverableError { message } => {
+                    Some(Err(CoreError::StreamIncomplete(message)))
+                }
+                ProviderStreamEvent::Cancelled { message } => {
+                    Some(Err(CoreError::Cancelled(message)))
+                }
+                ProviderStreamEvent::TerminalError { message } => {
+                    Some(Err(CoreError::Llm(message)))
+                }
             }
-            ProviderStreamEvent::Cancelled { message } => Err(CoreError::Cancelled(message)),
-            ProviderStreamEvent::TerminalError { message } => Err(CoreError::Llm(message)),
         })))
     }
 
@@ -360,6 +367,24 @@ impl LlmProvider for AutomaticFallbackProvider {
                         }
                         state.emitted_output = true;
                         return Some((ProviderStreamEvent::Chunk { chunk }, Some(state)));
+                    }
+                    Some(ProviderStreamEvent::HostedTool { tool }) => {
+                        if !state.emitted_output {
+                            if let Err(error) = state
+                                .owner
+                                .select_route(state.selected_position, state.current_position)
+                            {
+                                return Some((
+                                    ProviderStreamEvent::TerminalError {
+                                        message: error.to_string(),
+                                    },
+                                    None,
+                                ));
+                            }
+                            state.selected_position = state.current_position;
+                        }
+                        state.emitted_output = true;
+                        return Some((ProviderStreamEvent::HostedTool { tool }, Some(state)));
                     }
                     Some(ProviderStreamEvent::RecoverableError { message })
                         if !state.emitted_output

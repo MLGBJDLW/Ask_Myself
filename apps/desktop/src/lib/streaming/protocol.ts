@@ -16,6 +16,7 @@ export interface ToolCallEvent {
   callId: string;
   toolName: string;
   owner?: CapabilityOwner;
+  providerExecuted?: boolean;
   arguments: string;
   status:
     | 'preparing'

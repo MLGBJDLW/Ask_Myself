@@ -114,6 +114,8 @@ pub enum AgentEvent {
     ToolCallProgress {
         #[serde(rename = "callId")]
         call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
         note: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         activity: Option<ActivityEvent>,
@@ -250,6 +252,11 @@ pub struct ToolRunItem {
     #[serde(rename = "toolName")]
     pub tool_name: String,
     pub owner: CapabilityOwner,
+    /// True when the upstream provider executed the tool inside the model
+    /// request. Provider-executed runs are display/trace events and must not be
+    /// submitted to Nexa's local tool dispatcher.
+    #[serde(default, rename = "providerExecuted")]
+    pub provider_executed: bool,
     pub status: ToolRunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,

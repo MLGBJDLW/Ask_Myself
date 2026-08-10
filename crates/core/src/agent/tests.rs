@@ -836,18 +836,11 @@ impl LlmProvider for RecoveringStreamProvider {
         _request: &CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::iter(vec![
-            Ok(StreamChunk {
-                delta: "partial ".to_string(),
-                tool_call_delta: None,
-                finish_reason: None,
-                usage: None,
-                thinking_delta: None,
-            }),
-            Err(CoreError::StreamIncomplete(
-                "stream interrupted: error decoding response body".to_string(),
-            )),
-        ])))
+        Ok(Box::pin(stream::iter(vec![Err(
+            CoreError::StreamIncomplete(
+                "stream interrupted before output: error decoding response body".to_string(),
+            ),
+        )])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -886,18 +879,11 @@ impl LlmProvider for FlakyThenSuccessfulStreamProvider {
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         if call_no == 0 {
-            return Ok(Box::pin(stream::iter(vec![
-                Ok(StreamChunk {
-                    delta: "partial ".to_string(),
-                    tool_call_delta: None,
-                    finish_reason: None,
-                    usage: None,
-                    thinking_delta: None,
-                }),
-                Err(CoreError::StreamIncomplete(
-                    "stream interrupted: error decoding response body".to_string(),
-                )),
-            ])));
+            return Ok(Box::pin(stream::iter(vec![Err(
+                CoreError::StreamIncomplete(
+                    "stream interrupted before output: error decoding response body".to_string(),
+                ),
+            )])));
         }
 
         Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
@@ -907,6 +893,137 @@ impl LlmProvider for FlakyThenSuccessfulStreamProvider {
             usage: None,
             thinking_delta: None,
         })])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+struct VisibleThenInterruptedProvider {
+    stream_calls: Arc<AtomicUsize>,
+    complete_calls: Arc<AtomicUsize>,
+}
+
+struct ProviderHostedToolProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for ProviderHostedToolProvider {
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-v4-flash".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "provider-hosted tool lifecycle must stay on the original stream".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Llm(
+            "agent must consume the normalized provider event stream".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let hosted = |status| ProviderStreamEvent::HostedTool {
+            tool: Box::new(crate::llm::ProviderHostedToolEvent {
+                call_id: "ws-1".to_string(),
+                tool_name: "web_search".to_string(),
+                kind: crate::llm::ProviderHostedToolKind::WebSearch,
+                provider_id: "deepseek".to_string(),
+                status,
+                arguments: Some("{\"query\":\"Nexa\"}".to_string()),
+                content: None,
+                artifacts: Some(serde_json::json!({
+                    "kind": "providerHostedTool",
+                    "providerId": "deepseek",
+                    "itemType": "web_search_call",
+                })),
+            }),
+        };
+        Ok(Box::pin(stream::iter(vec![
+            hosted(ProviderHostedToolStatus::Running),
+            hosted(ProviderHostedToolStatus::Completed),
+            ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: "provider answer".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                }),
+            },
+            ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            },
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for VisibleThenInterruptedProvider {
+    fn name(&self) -> &str {
+        "visible-then-interrupted-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        self.complete_calls.fetch_add(1, Ordering::SeqCst);
+        Err(CoreError::Llm(
+            "visible output must never enter non-streaming fallback".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamChunk {
+                delta: "partial answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            }),
+            Err(CoreError::StreamIncomplete(
+                "stream interrupted after output".to_string(),
+            )),
+        ])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -4979,7 +5096,7 @@ async fn test_filtered_thought_only_response_fails_without_retrying_or_leaking()
 }
 
 #[tokio::test]
-async fn test_stream_incomplete_replays_stream_before_non_streaming_fallback() {
+async fn test_stream_incomplete_before_visible_output_replays_stream() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
@@ -5054,7 +5171,7 @@ async fn test_stream_incomplete_replays_stream_before_non_streaming_fallback() {
 }
 
 #[tokio::test]
-async fn test_stream_incomplete_recovers_with_non_streaming_retry() {
+async fn test_stream_incomplete_before_visible_output_recovers_with_non_streaming_retry() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
@@ -5117,6 +5234,127 @@ async fn test_stream_incomplete_recovers_with_non_streaming_retry() {
     );
     assert!(!saw_error, "stream recovery should not surface an error");
     assert_eq!(visible_text, "complete answer");
+}
+
+#[tokio::test]
+async fn test_stream_incomplete_after_visible_output_never_resends_request() {
+    let registry = ToolRegistry::new();
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let complete_calls = Arc::new(AtomicUsize::new(0));
+    let provider = VisibleThenInterruptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        complete_calls: Arc::clone(&complete_calls),
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("visible partial output must stop instead of replaying");
+
+    assert!(error.to_string().contains("retry suppressed"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
+
+    let mut visible_text = String::new();
+    let mut saw_reset = false;
+    let mut saw_error = false;
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            Some(AgentEvent::TextDelta { delta }) => visible_text.push_str(&delta),
+            Some(AgentEvent::StreamReset { .. }) => saw_reset = true,
+            Some(AgentEvent::Error { .. }) => saw_error = true,
+            Some(_) => {}
+            None => break,
+        }
+    }
+    assert_eq!(visible_text, "partial answer");
+    assert!(
+        !saw_reset,
+        "visible output must not be erased for a hidden retry"
+    );
+    assert!(
+        saw_error,
+        "the interrupted partial response must be terminalized"
+    );
+}
+
+#[tokio::test]
+async fn test_provider_hosted_tool_is_rendered_without_local_dispatch_or_extra_round() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ProviderHostedToolProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("deepseek-v4-flash".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "search".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("provider-hosted tool turn");
+    assert_eq!(final_message.text_content(), "provider answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+
+    let mut started = 0;
+    let mut completed = 0;
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            Some(AgentEvent::ToolRunStarted { run }) => {
+                assert!(run.provider_executed);
+                assert_eq!(run.call_id, "ws-1");
+                started += 1;
+            }
+            Some(AgentEvent::ToolRunCompleted { run }) => {
+                assert!(run.provider_executed);
+                assert_eq!(run.call_id, "ws-1");
+                completed += 1;
+            }
+            Some(AgentEvent::ToolCallStart { .. }) => {
+                panic!("provider-hosted tool must not enter local dispatch")
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    assert_eq!(started, 1);
+    assert_eq!(completed, 1);
 }
 
 #[tokio::test]

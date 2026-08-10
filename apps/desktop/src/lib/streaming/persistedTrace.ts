@@ -114,6 +114,10 @@ function persistedToolCallFromRecord(toolCall: Record<string, unknown>): ToolCal
         ? toolCall.renderKind as ToolRenderKind
         : undefined,
     owner: owner ? owner as unknown as CapabilityOwner : undefined,
+    providerExecuted:
+      typeof toolCall.providerExecuted === 'boolean'
+        ? toolCall.providerExecuted
+        : undefined,
     capabilities: capabilities ? capabilities as unknown as ToolRunCapabilities : undefined,
     argsStatus,
     argsBytes:
@@ -188,7 +192,7 @@ export function extractPersistedTraceItems(
     }
 
     if (item.kind === 'tool') {
-      const toolCall = asRecord(item.toolCall);
+      const toolCall = asRecord(item.toolCall) ?? asRecord(item.tool_call);
       const projected = toolCall ? persistedToolCallFromRecord(toolCall) : null;
       if (projected) items.push({ kind: 'tool', toolCall: projected });
       continue;

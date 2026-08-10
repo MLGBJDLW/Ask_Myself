@@ -1790,7 +1790,8 @@ mod tests {
         assert_eq!(
             events[4]
                 .payload
-                .get("toolName")
+                .get("run")
+                .and_then(|run| run.get("toolName"))
                 .and_then(|value| value.as_str()),
             Some("search")
         );
@@ -1835,7 +1836,8 @@ mod tests {
         assert_eq!(
             events[2]
                 .payload
-                .get("isError")
+                .get("run")
+                .and_then(|run| run.get("isError"))
                 .and_then(|value| value.as_bool()),
             Some(true)
         );

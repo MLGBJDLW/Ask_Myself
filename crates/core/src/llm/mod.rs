@@ -403,6 +403,49 @@ pub struct StreamChunk {
     pub thinking_delta: Option<String>,
 }
 
+/// Lifecycle status for a tool that the provider executes inside its own
+/// Responses request. These events are presentation and trace data only: the
+/// agent must never dispatch them through Nexa's local tool registry.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderHostedToolStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// Provider-owned Responses item family. Keep this separate from the remote
+/// tool's display name (notably for named MCP calls) so presentation does not
+/// depend on Nexa's local tool registry recognizing that name.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderHostedToolKind {
+    WebSearch,
+    FileSearch,
+    CodeInterpreter,
+    ComputerUse,
+    ImageGeneration,
+    Mcp,
+    Shell,
+}
+
+/// Provider-neutral projection of a provider-executed Responses item.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderHostedToolEvent {
+    pub call_id: String,
+    pub tool_name: String,
+    pub kind: ProviderHostedToolKind,
+    pub provider_id: String,
+    pub status: ProviderHostedToolStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<serde_json::Value>,
+}
+
 /// Provider-normalized stream event.
 ///
 /// Existing providers still implement `stream()` in terms of `StreamChunk`.
@@ -412,6 +455,7 @@ pub struct StreamChunk {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
     Chunk { chunk: Box<StreamChunk> },
+    HostedTool { tool: Box<ProviderHostedToolEvent> },
     RecoverableError { message: String },
     Cancelled { message: String },
     TerminalError { message: String },
@@ -725,6 +769,14 @@ impl LlmProvider for MessageValidatingProvider {
     ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
         self.validate(request)?;
         self.inner.stream(request).await
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.validate(request)?;
+        self.inner.stream_events(request).await
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {

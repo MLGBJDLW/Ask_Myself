@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 
 use crate::llm::ToolCallRequest;
+use crate::llm::{ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus};
+use crate::plugins::CapabilityOwner;
 use crate::tools::diff_stats::{
     changed_line_count, create_file_diff_artifact, diff_stats_artifact, diff_stats_from_diff,
     text_diff_artifact,
 };
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolRegistry, ToolRenderKind};
 use crate::work_plan::MutationWorkPlan;
 use serde_json::{json, Map, Value};
 
@@ -51,6 +53,7 @@ pub(super) fn build_tool_run_item(
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
         owner,
+        provider_executed: false,
         status,
         arguments: displayed_arguments,
         render_kind: capabilities.render_kind,
@@ -60,6 +63,64 @@ pub(super) fn build_tool_run_item(
         artifacts,
         progress_note,
         duration_ms,
+    }
+}
+
+pub(super) fn build_provider_hosted_tool_run_item(
+    tools: &ToolRegistry,
+    event: &ProviderHostedToolEvent,
+) -> ToolRunItem {
+    let parsed_args = event
+        .arguments
+        .as_deref()
+        .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+        .unwrap_or(Value::Null);
+    let mut capabilities = tools.run_capabilities(&event.tool_name, &parsed_args);
+    capabilities.render_kind = match event.kind {
+        ProviderHostedToolKind::WebSearch | ProviderHostedToolKind::FileSearch => {
+            ToolRenderKind::Search
+        }
+        ProviderHostedToolKind::CodeInterpreter | ProviderHostedToolKind::Shell => {
+            ToolRenderKind::CommandExecution
+        }
+        ProviderHostedToolKind::ImageGeneration => ToolRenderKind::Image,
+        ProviderHostedToolKind::Mcp => ToolRenderKind::Mcp,
+        ProviderHostedToolKind::ComputerUse => capabilities.render_kind,
+    };
+    let provider_label = match event.provider_id.as_str() {
+        "deepseek" => "DeepSeek",
+        "openai" => "OpenAI",
+        "anthropic" => "Anthropic",
+        "google" => "Google",
+        _ => event.provider_id.as_str(),
+    };
+    ToolRunItem {
+        call_id: event.call_id.clone(),
+        tool_name: event.tool_name.clone(),
+        owner: CapabilityOwner {
+            id: format!("provider-hosted:{}", event.provider_id),
+            name: format!("{provider_label} hosted tools"),
+            capability: "provider_hosted_tool".to_string(),
+            description: format!("Executed remotely by {provider_label} inside the model request."),
+        },
+        provider_executed: true,
+        status: match event.status {
+            ProviderHostedToolStatus::Running => ToolRunStatus::Running,
+            ProviderHostedToolStatus::Completed => ToolRunStatus::Completed,
+            ProviderHostedToolStatus::Failed => ToolRunStatus::Failed,
+        },
+        arguments: event.arguments.clone(),
+        render_kind: capabilities.render_kind,
+        capabilities,
+        content: event.content.clone(),
+        is_error: match event.status {
+            ProviderHostedToolStatus::Running => None,
+            ProviderHostedToolStatus::Completed => Some(false),
+            ProviderHostedToolStatus::Failed => Some(true),
+        },
+        artifacts: event.artifacts.clone(),
+        progress_note: None,
+        duration_ms: None,
     }
 }
 
@@ -585,6 +646,28 @@ pub(super) fn tool_call_execution_batches(
 mod tests {
     use super::*;
     use crate::tools::default_tool_registry;
+
+    #[test]
+    fn named_provider_hosted_mcp_tool_keeps_mcp_render_kind() {
+        let tools = default_tool_registry();
+        let run = build_provider_hosted_tool_run_item(
+            &tools,
+            &ProviderHostedToolEvent {
+                call_id: "mcp-1".to_string(),
+                tool_name: "remote_lookup".to_string(),
+                kind: ProviderHostedToolKind::Mcp,
+                provider_id: "openai".to_string(),
+                status: ProviderHostedToolStatus::Completed,
+                arguments: Some("{}".to_string()),
+                content: Some("ok".to_string()),
+                artifacts: None,
+            },
+        );
+
+        assert_eq!(run.tool_name, "remote_lookup");
+        assert_eq!(run.render_kind, ToolRenderKind::Mcp);
+        assert_eq!(run.capabilities.render_kind, ToolRenderKind::Mcp);
+    }
 
     #[test]
     fn mutation_tool_run_item_includes_work_plan_artifact() {

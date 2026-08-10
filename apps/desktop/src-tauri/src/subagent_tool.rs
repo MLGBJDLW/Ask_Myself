@@ -2944,6 +2944,7 @@ async fn run_subagent_once(
                 }
                 AgentEvent::ToolCallProgress {
                     call_id,
+                    tool_name,
                     note,
                     activity,
                 } => {
@@ -2953,6 +2954,7 @@ async fn run_subagent_once(
                         serde_json::json!({
                             "phase": "toolProgress",
                             "callId": call_id,
+                            "toolName": tool_name,
                             "note": note,
                             "activity": activity,
                         }),

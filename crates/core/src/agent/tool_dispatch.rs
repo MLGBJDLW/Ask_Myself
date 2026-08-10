@@ -596,6 +596,7 @@ impl AgentExecutor {
                                         let _ = progress_tx
                                             .send(AgentEvent::ToolCallProgress {
                                                 call_id: progress_call_id.clone(),
+                                                tool_name: progress_tool_name.clone(),
                                                 note,
                                                 activity: Some(event),
                                             })
@@ -610,6 +611,7 @@ impl AgentExecutor {
                                         let _ = progress_tx
                                             .send(AgentEvent::ToolCallProgress {
                                                 call_id: progress_call_id.clone(),
+                                                tool_name: progress_tool_name.clone(),
                                                 note: note.clone(),
                                                 activity: None,
                                             })
