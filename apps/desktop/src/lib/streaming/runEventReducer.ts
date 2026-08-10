@@ -32,6 +32,10 @@ import {
   type ToolPreparingPayload,
 } from './toolProjection';
 import { clearStreamWatchdog } from './watchdog';
+import {
+  classifyAgentRunEventLifecycle,
+  suspendAgentRunProjection,
+} from './runEventLifecycle';
 
 type PayloadRecord = Record<string, unknown>;
 
@@ -147,6 +151,14 @@ export function applyAgentRunEvent(
   callbacks: RunEventReducerCallbacks,
 ): void {
   const payload = asRecord(runEvent.payload);
+  const lifecycle = classifyAgentRunEventLifecycle(runEvent);
+
+  if (lifecycle === 'resume') {
+    state.isStreaming = true;
+    state.isThinking = false;
+  } else if (lifecycle === 'suspension') {
+    suspendAgentRunProjection(state);
+  }
 
   switch (runEvent.kind) {
     case 'outputDelta': {
@@ -268,6 +280,7 @@ export function applyAgentRunEvent(
     }
 
     case 'done': {
+      if (lifecycle === 'suspension') return;
       clearStreamWatchdog(state);
       clearToolPreparingTimers(state);
       applyDoneEvent(state, {

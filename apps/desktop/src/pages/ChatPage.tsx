@@ -51,6 +51,13 @@ interface CompactionUiState {
   detail?: string;
 }
 
+interface ChatRouteState {
+  initialMessage?: string;
+  systemPrompt?: string;
+  taskOrchestratorRunId?: string | null;
+  resumeCheckpointId?: string | null;
+}
+
 const COMPACTION_STORAGE_PREFIX = 'nexa.context-compaction.v1.';
 const TERMINAL_ACTIVITY_STATES = new Set<api.ActivityState>([
   'completed',
@@ -931,15 +938,11 @@ export function ChatPage() {
   const collectionContext = chat.activeConversation?.collectionContext ?? initialCollectionContext;
 
   const sentInitialRef = useRef<string | null>(null);
-  const initialMessage = (
-    (location.state as { initialMessage?: string } | null)?.initialMessage ?? ''
-  ).trim();
-  const initialSystemPrompt = (
-    (location.state as { systemPrompt?: string } | null)?.systemPrompt ?? ''
-  ).trim();
-  const initialTaskOrchestratorRunId = (
-    (location.state as { taskOrchestratorRunId?: string | null } | null)?.taskOrchestratorRunId ?? ''
-  ).trim();
+  const routeState = location.state as ChatRouteState | null;
+  const initialMessage = (routeState?.initialMessage ?? '').trim();
+  const initialSystemPrompt = (routeState?.systemPrompt ?? '').trim();
+  const initialTaskOrchestratorRunId = (routeState?.taskOrchestratorRunId ?? '').trim();
+  const initialResumeCheckpointId = (routeState?.resumeCheckpointId ?? '').trim();
   const initialSourceScopeKey = initialSourceIds.join(',');
   const initialCollectionKey = collectionContext ? JSON.stringify(collectionContext) : '';
 
@@ -948,7 +951,7 @@ export function ChatPage() {
     if (!initialMessage || chat.loadingConfig || !chat.agentConfig || chat.isStreaming) {
       return;
     }
-    const key = `${location.key}:${initialMessage}:${initialSystemPrompt}:${initialSourceScopeKey}:${initialCollectionKey}:${initialTaskOrchestratorRunId}`;
+    const key = `${location.key}:${initialMessage}:${initialSystemPrompt}:${initialSourceScopeKey}:${initialCollectionKey}:${initialTaskOrchestratorRunId}:${initialResumeCheckpointId}`;
     if (sentInitialRef.current === key) {
       return;
     }
@@ -964,8 +967,15 @@ export function ChatPage() {
         initialMessage,
         undefined,
         undefined,
-        initialTaskOrchestratorRunId
-          ? { taskOrchestratorRunId: initialTaskOrchestratorRunId }
+        initialTaskOrchestratorRunId || initialResumeCheckpointId
+          ? {
+              ...(initialTaskOrchestratorRunId
+                ? { taskOrchestratorRunId: initialTaskOrchestratorRunId }
+                : {}),
+              ...(initialResumeCheckpointId
+                ? { resumeCheckpointId: initialResumeCheckpointId }
+                : {}),
+            }
           : undefined,
       );
     })();
@@ -976,6 +986,7 @@ export function ChatPage() {
     initialMessage,
     initialSystemPrompt,
     initialTaskOrchestratorRunId,
+    initialResumeCheckpointId,
     initialCollectionContext,
     initialCollectionKey,
     initialSourceIds,

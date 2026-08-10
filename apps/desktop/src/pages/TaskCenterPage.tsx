@@ -32,6 +32,10 @@ import * as api from '../lib/api';
 import { useElapsedTime } from '../lib/useElapsedTime';
 import { useDeveloperMode } from '../lib/developerMode';
 import {
+  invalidateTaskCheckpointLoadState,
+  resumableCheckpointForTask,
+} from '../lib/taskResume';
+import {
   taskCenterHistoryFromEvents,
   type TaskCenterHistoryItem,
 } from '../lib/streaming/taskCenterHistory';
@@ -416,10 +420,17 @@ export function TaskCenterPage() {
   const detailCacheRef = useRef<Map<string, TaskDetailCacheEntry>>(new Map());
   const previousDeveloperModeRef = useRef(developerMode);
   const nextCursorRef = useRef<AgentTaskRunPageCursor | null>(null);
+  const autoLoadedCheckpointRunsRef = useRef<Set<string>>(new Set());
 
   const selected = useMemo(
     () => tasks.find((task) => task.run.id === selectedId) ?? null,
     [selectedId, tasks],
+  );
+  const resumableCheckpoint = useMemo(
+    () => selected
+      ? resumableCheckpointForTask(selected.run.id, selected.run.status, resumeCheckpoints)
+      : null,
+    [resumeCheckpoints, selected],
   );
 
   const load = useCallback(async (append = false) => {
@@ -583,6 +594,18 @@ export function TaskCenterPage() {
     }
   }, [developerMode, loadedPanels, selected]);
 
+  useEffect(() => {
+    if (
+      !selected
+      || selected.run.status !== 'paused'
+      || loadedPanels.has('checkpoint')
+      || autoLoadedCheckpointRunsRef.current.has(selected.run.id)
+    ) return;
+
+    autoLoadedCheckpointRunsRef.current.add(selected.run.id);
+    void loadDetailPanel('checkpoint');
+  }, [loadDetailPanel, loadedPanels, selected]);
+
   const handleSelectTask = useCallback((runId: string) => {
     localStorage.setItem(TASK_CENTER_SELECTION_KEY, runId);
     setSelectedId(runId);
@@ -606,8 +629,21 @@ export function TaskCenterPage() {
     if (!selected || !isActiveTask(selected.run.status) || selected.run.status === 'awaiting_user_input') return;
     setPausingId(selected.run.id);
     try {
-      const checkpoint = await api.pauseAgentTaskRun(selected.run.id);
-      setResumeCheckpoints((current) => [checkpoint, ...current.filter((item) => item.id !== checkpoint.id)]);
+      const runId = selected.run.id;
+      await api.pauseAgentTaskRun(runId);
+      detailGenerationRef.current += 1;
+      invalidateTaskCheckpointLoadState(
+        detailCacheRef.current,
+        autoLoadedCheckpointRunsRef.current,
+        runId,
+      );
+      setResumeCheckpoints([]);
+      setLoadedPanels((current) => {
+        const next = new Set(current);
+        next.delete('checkpoint');
+        return next;
+      });
+      setLoadingPanels(new Set());
       toast.success(copy.pauseSaved);
       await load();
     } catch (error) {
@@ -618,19 +654,25 @@ export function TaskCenterPage() {
   }, [copy.pauseError, copy.pauseSaved, load, selected]);
 
   const handleResume = useCallback(async () => {
-    if (!selected) return;
+    if (!selected || !resumableCheckpoint) return;
     setResumingId(selected.run.id);
     try {
       const resume = await api.getTaskResumePrompt(selected.run.id);
+      if (resume.run.id !== selected.run.id || resume.checkpoint.runId !== selected.run.id) {
+        throw new Error('Resume checkpoint does not belong to the selected run');
+      }
       navigate(`/chat/${selected.run.conversationId}`, {
-        state: { initialMessage: resume.prompt },
+        state: {
+          initialMessage: resume.prompt,
+          resumeCheckpointId: resume.checkpoint.id,
+        },
       });
     } catch (error) {
       toast.error(`${copy.resumeError}: ${String(error)}`);
     } finally {
       setResumingId(null);
     }
-  }, [copy.resumeError, navigate, selected]);
+  }, [copy.resumeError, navigate, resumableCheckpoint, selected]);
 
   const handleRetry = useCallback(() => {
     if (!selected) return;
@@ -785,7 +827,7 @@ export function TaskCenterPage() {
     : selected?.artifactKinds ?? [];
   const artifactPaths = [...new Set(artifacts.flatMap((artifact) => artifact.paths))].slice(0, 8);
   const latestCheckpoint = resumeCheckpoints[0] ?? null;
-  const canResume = Boolean(selected && (selected.run.status === 'paused' || latestCheckpoint));
+  const canResume = resumableCheckpoint !== null;
   const investigationNodes = investigationGraph?.nodes ?? [];
   const investigationEdges = investigationGraph?.edges ?? [];
   const investigationCitations = investigationGraph?.citations ?? [];

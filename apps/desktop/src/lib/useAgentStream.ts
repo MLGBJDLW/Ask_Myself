@@ -18,6 +18,7 @@ import type {
   MoaPresetId,
   OrchestrationProfile,
 } from './api';
+import { agentTurnStateSuspendsStream } from './streaming/runEventLifecycle';
 
 type AutoCompactedInfo = { summary: string } | null;
 
@@ -45,6 +46,7 @@ interface UseAgentStreamReturn {
     visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    resumeCheckpointId?: string | null,
     propagateErrors?: boolean,
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
@@ -152,6 +154,7 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
     visionTurnOverride?: VisionTurnOverride | null,
     userArtifacts?: ArtifactPayload | null,
     taskOrchestratorRunId?: string | null,
+    resumeCheckpointId?: string | null,
     propagateErrors = false,
   ) => {
     activeConversationRef.current = conversationId;
@@ -174,10 +177,11 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
         visionTurnOverride,
         userArtifacts,
         taskOrchestratorRunId,
+        resumeCheckpointId,
       );
       streamStore.bindTurnHandle(conversationId, handle);
-      if (handle?.state === 'awaitingUserInput') {
-        streamStore.markAwaitingUserInput(conversationId);
+      if (handle && agentTurnStateSuspendsStream(handle.state)) {
+        streamStore.markResumableSuspension(conversationId);
       }
     } catch (err) {
       streamStore.sendError(conversationId, String(err));

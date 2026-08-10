@@ -40,6 +40,12 @@ import { parseAgentFrontendEvent } from '../src/lib/streaming/runEventWire';
 import { applyStreamBlockDelta } from '../src/lib/streaming/blockProjection';
 import { createDefaultState } from '../src/lib/streaming/state';
 import { upsertBoundedConversationCache } from '../src/lib/boundedConversationCache';
+import { buildAgentChatRequest } from '../src/lib/agentChatRequest';
+import {
+  invalidateTaskCheckpointLoadState,
+  resumableCheckpointForTask,
+} from '../src/lib/taskResume';
+import { agentTurnStateSuspendsStream } from '../src/lib/streaming/runEventLifecycle';
 import {
   isTaskTimelineEvent,
   taskTimelinePayloadFromTaskEvent,
@@ -65,7 +71,7 @@ import type {
   ToolCallEvent,
   TraceEvent,
 } from '../src/lib/streaming/protocol';
-import type { WorkflowAutomationSchedulerEvent } from '../src/types/workflows';
+import type { TaskResumeCheckpoint, WorkflowAutomationSchedulerEvent } from '../src/types/workflows';
 
 type TestFn = () => void | Promise<void>;
 
@@ -84,6 +90,125 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
   }
 }
+
+test('checkpoint resume request uses a deterministic idempotency key and camelCase checkpoint id', () => {
+  const request = buildAgentChatRequest({
+    conversationId: 'conversation-1',
+    message: 'Continue from the checkpoint',
+    resumeCheckpointId: ' checkpoint-7 ',
+  }, () => 'random-id-must-not-be-used');
+
+  assertEqual(request.idempotencyKey, 'task-resume:checkpoint-7', 'resume idempotency key');
+  assertEqual(request.resumeCheckpointId, 'checkpoint-7', 'checkpoint id should be normalized');
+  assert(
+    Object.prototype.hasOwnProperty.call(request, 'resumeCheckpointId'),
+    'request should expose resumeCheckpointId in camelCase',
+  );
+});
+
+test('checkpoint resume and interaction continuation cannot share one agent request', () => {
+  let rejected = false;
+  try {
+    buildAgentChatRequest({
+      conversationId: 'conversation-1',
+      message: 'Ambiguous continuation',
+      resumeCheckpointId: 'checkpoint-7',
+      userArtifacts: {
+        kind: 'questionResponse',
+        version: 2,
+        interactionId: 'interaction-9',
+      },
+    });
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, 'ambiguous continuation must be rejected');
+});
+
+test('Task Center only resumes a paused run through its own latest checkpoint', () => {
+  const checkpoint: TaskResumeCheckpoint = {
+    id: 'checkpoint-7',
+    runId: 'run-1',
+    reason: 'Paused by user',
+    status: 'paused',
+    phase: 'paused',
+    state: null,
+    resumePrompt: 'Continue',
+    createdAt: '2026-08-10T00:00:00.000Z',
+  };
+
+  assertEqual(
+    resumableCheckpointForTask('run-1', 'paused', [checkpoint]),
+    checkpoint,
+    'paused run should expose its matching latest checkpoint',
+  );
+  assertEqual(
+    resumableCheckpointForTask('run-1', 'completed', [checkpoint]),
+    null,
+    'terminal run with an old checkpoint should use Retry instead of Resume',
+  );
+  assertEqual(
+    resumableCheckpointForTask('run-2', 'paused', [checkpoint]),
+    null,
+    'checkpoint from another run must not enable Resume',
+  );
+});
+
+test('pausing invalidates an already-loaded empty checkpoint cache so the paused run reloads it', () => {
+  const cache = new Map<string, {
+    loaded: Set<string>;
+    resumeCheckpoints?: TaskResumeCheckpoint[];
+    untouched: string;
+  }>([[
+    'run-1',
+    {
+      loaded: new Set(['history', 'checkpoint']),
+      resumeCheckpoints: [],
+      untouched: 'preserved',
+    },
+  ]]);
+  const autoLoadedRuns = new Set(['run-1']);
+
+  invalidateTaskCheckpointLoadState(cache, autoLoadedRuns, 'run-1');
+
+  const invalidated = cache.get('run-1');
+  assert(invalidated, 'the remaining task detail cache should be preserved');
+  assert(!invalidated.loaded.has('checkpoint'), 'checkpoint panel must become loadable again');
+  assertEqual(invalidated.loaded.has('history'), true, 'unrelated loaded panels stay cached');
+  assertEqual(invalidated.resumeCheckpoints, undefined, 'the cached empty checkpoint list is removed');
+  assertEqual(invalidated.untouched, 'preserved', 'unrelated cached details stay intact');
+  assertEqual(autoLoadedRuns.has('run-1'), false, 'paused-run autoload may run again');
+});
+
+test('paused launch handles are resumable stream suspensions', () => {
+  assertEqual(agentTurnStateSuspendsStream('paused'), true, 'paused handle suspends transport');
+  assertEqual(
+    agentTurnStateSuspendsStream('awaitingUserInput'),
+    true,
+    'awaiting-input handle also suspends transport',
+  );
+  assertEqual(agentTurnStateSuspendsStream('running'), false, 'running handle remains live');
+
+  const conversationId = 'conversation-paused-launch-handle';
+  streamStore.startStream(conversationId);
+  const handle = {
+    sessionId: conversationId,
+    runId: 'run-paused-handle',
+    turnId: 'turn-paused-handle',
+    state: 'paused' as const,
+  };
+  streamStore.bindTurnHandle(conversationId, handle);
+  if (agentTurnStateSuspendsStream(handle.state)) {
+    streamStore.markResumableSuspension(conversationId);
+  }
+
+  const suspended = streamStore.getStream(conversationId);
+  assert(suspended, 'paused launch state should remain addressable');
+  assertEqual(suspended.isStreaming, false, 'paused launch handle settles live streaming');
+  assertEqual(suspended.isThinking, false, 'paused launch handle settles thinking');
+  assertEqual(suspended.turnHandle?.runId, handle.runId, 'paused launch retains its resumable run');
+  streamStore.clearStream(conversationId);
+});
 
 test('legacy missing-reasoning sentinel is never rendered as thinking', () => {
   assertEqual(
@@ -135,6 +260,15 @@ function frontendEvent(runEvent: AgentRunEvent): AgentFrontendEvent {
 test('runtime wire schema accepts only the canonical Run Event envelope', () => {
   const canonical = frontendEvent(runEvent({ eventSeq: 1, kind: 'status' }));
   assert(parseAgentFrontendEvent(canonical), 'canonical envelope should parse');
+  assert(
+    parseAgentFrontendEvent(frontendEvent(runEvent({
+      eventSeq: 2,
+      kind: 'status',
+      phase: 'paused',
+      status: 'paused',
+    }))),
+    'paused status should remain valid in the protocol-v2 envelope',
+  );
   assertEqual(
     parseAgentFrontendEvent({ ...canonical, type: 'status' }),
     null,
@@ -2144,6 +2278,144 @@ test('awaiting-user-input status settles live streaming without a terminal error
   assertEqual(awaiting.isThinking, false, 'awaiting input should settle thinking');
   assertEqual(awaiting.error, null, 'awaiting input should not surface an error');
   assert(awaiting.turnTiming?.finishedAtEpochMs, 'awaiting input should freeze turn timing');
+
+  streamStore.clearStream(conversationId);
+});
+
+test('paused status suspends a bound run and a later running status resumes it', () => {
+  const conversationId = 'conversation-paused-resume';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'run-1',
+    turnId: 'turn-1',
+    state: 'running',
+  });
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    phase: 'paused',
+    status: 'paused',
+    label: 'Run paused',
+  })));
+
+  const paused = streamStore.getStream(conversationId);
+  assert(paused, 'paused stream state should exist');
+  assertEqual(paused.isStreaming, false, 'paused status should suspend live streaming');
+  assertEqual(paused.isThinking, false, 'paused status should settle thinking');
+  assertEqual(paused.error, null, 'paused status should not surface an error');
+  assert(paused.turnTiming?.finishedAtEpochMs, 'paused status should freeze turn timing');
+  assertEqual(paused.turnHandle?.runId, 'run-1', 'paused status retains the bound run identity');
+
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 2,
+    kind: 'status',
+    phase: 'responding',
+    status: 'running',
+    label: 'Run resumed',
+  })));
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({
+    eventSeq: 3,
+    kind: 'outputDelta',
+    payload: {
+      blockId: 'resumed-answer',
+      channel: 'answer',
+      offset: 0,
+      delta: 'Continued on the same run',
+    },
+  })));
+
+  const resumed = streamStore.getStream(conversationId);
+  assert(resumed, 'resumed stream state should exist');
+  assertEqual(resumed.isStreaming, true, 'running status should resume the suspended stream');
+  assertEqual(resumed.turnHandle?.runId, 'run-1', 'resume keeps the original run projection');
+  assertEqual(resumed.streamText, 'Continued on the same run', 'resumed events are projected');
+  streamStore.clearStream(conversationId);
+});
+
+test('legacy Done paused suspends without closing the same-run continuation', () => {
+  const conversationId = 'conversation-legacy-done-paused';
+  const events: AgentRunEvent[] = [
+    runEvent({
+      eventSeq: 1,
+      kind: 'done',
+      phase: 'done',
+      status: 'paused',
+      label: 'Run paused',
+      payload: { finishReason: 'paused' },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'status',
+      phase: 'routing',
+      status: 'queued',
+      label: 'Run queued to resume',
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'outputDelta',
+      phase: 'responding',
+      label: 'Continued output',
+      payload: {
+        blockId: 'continued-answer',
+        channel: 'answer',
+        offset: 0,
+        delta: 'Continued after pause',
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      status: 'completed',
+      label: 'Run completed',
+      payload: {
+        message: { role: 'assistant', parts: [{ type: 'text', text: 'Continued after pause' }] },
+        usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      },
+    }),
+  ];
+
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId,
+    runId: 'run-1',
+    turnId: 'turn-1',
+    state: 'running',
+  });
+  streamStore.dispatch(conversationId, frontendEvent(events[0]));
+
+  const suspended = streamStore.getStream(conversationId);
+  assert(suspended, 'legacy paused state should be retained');
+  assertEqual(suspended.isStreaming, false, 'legacy paused Done suspends live transport');
+  assertEqual(suspended.streamRounds.length, 0, 'legacy paused Done does not finalize a reply round');
+  assertEqual(suspended.turnHandle?.runId, 'run-1', 'legacy pause keeps the same run identity');
+
+  for (const event of events.slice(1)) {
+    streamStore.dispatch(conversationId, frontendEvent(event));
+  }
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'continued live state should exist');
+  assertEqual(live.isStreaming, false, 'the later completed Done closes live transport');
+  assertEqual(
+    live.streamRounds[live.streamRounds.length - 1]?.reply,
+    'Continued after pause',
+    'live projection consumes output after the legacy pause',
+  );
+
+  const durable = projectRunEventsToStreamState(taskRun('completed'), events);
+  assertEqual(durable.isStreaming, false, 'the completed durable projection is settled');
+  assertEqual(
+    durable.streamRounds[durable.streamRounds.length - 1]?.reply,
+    'Continued after pause',
+    'durable replay continues past the legacy paused Done',
+  );
+  assertEqual(
+    durable._lastEventSeq,
+    4,
+    'durable replay consumes the true terminal event after the suspension',
+  );
 
   streamStore.clearStream(conversationId);
 });
