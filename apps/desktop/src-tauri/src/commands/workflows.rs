@@ -308,6 +308,7 @@ async fn launch_task_orchestrator_execution_ticket(
             "workflowRunId": workflow_run_id,
         })),
         task_orchestrator_run_id: Some(workflow_run_id.clone()),
+        resume_checkpoint_id: None,
         idempotency_key: format!("workflow:{queue_id}"),
     })
     .await;
@@ -913,79 +914,331 @@ pub async fn get_task_resume_prompt_cmd(
 pub async fn pause_agent_task_run_cmd(
     state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
-    app_handle: AppHandle,
     run_id: String,
 ) -> Result<TaskResumeCheckpoint, String> {
-    let run = state
-        .db
+    pause_agent_task_run(
+        state.db.as_ref(),
+        &state.run_event_outboxes,
+        &agent_state.sessions,
+        &run_id,
+    )
+    .await
+}
+
+async fn pause_agent_task_run(
+    db: &Database,
+    run_event_outboxes: &AgentRunEventOutboxes,
+    sessions: &nexa_core::runtime::AgentSessionManager,
+    run_id: &str,
+) -> Result<TaskResumeCheckpoint, String> {
+    let _run_lifecycle_guard = sessions.acquire_run_lifecycle(run_id).await;
+    let initial_run = db
         .get_agent_task_run(&run_id)
         .map_err(|err| err.to_string())?;
-    let checkpoint = state
-        .db
-        .pause_task_run_with_checkpoint(&run_id, "user_pause")
-        .map_err(|err| err.to_string())?;
+    if !matches!(
+        initial_run.status.as_str(),
+        "queued" | "running" | "waiting_approval"
+    ) {
+        return Err(format!(
+            "Agent task run {run_id} cannot be paused from status '{}'",
+            initial_run.status
+        ));
+    }
 
-    if let Some(task_state) = agent_state.sessions.take(&run.conversation_id).await {
-        if task_state.handle.run_id == run_id {
-            let stream_event_seq = Arc::clone(&task_state.event_outbox);
-            emit_agent_frontend_event_with_presentation(
-                stream_event_seq.as_ref(),
-                &run.conversation_id,
-                &run_id,
-                Some(&task_state.handle.turn_id),
-                AgentEvent::Status {
-                    content: "Pause checkpoint saved".to_string(),
-                    tone: Some("muted".to_string()),
-                },
-                AgentRunEventVisibility::Internal,
-                AgentRunDisplayKind::Status,
-                AgentRunEventImportance::Low,
-            );
-            emit_agent_task_run_update(&state.db, &app_handle, &run.conversation_id, &run_id);
-            task_state.cancel_token.cancel();
-            let abort_task = task_state.task;
-            let db = state.db.clone();
-            let handle = app_handle.clone();
-            let conv_id = run.conversation_id.clone();
-            let turn_id = task_state.handle.turn_id.clone();
-            let checkpoint_id = checkpoint.id.clone();
-            let resume_prompt = checkpoint.resume_prompt.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if !abort_task.is_finished() {
-                    abort_task.abort();
-                    let artifacts = serde_json::json!({
-                        "kind": "resumeCheckpoint",
-                        "checkpointId": checkpoint_id,
-                        "resumePrompt": resume_prompt,
-                    });
-                    let _ = db.finish_agent_task_run(
-                        &run_id,
-                        "paused",
-                        Some("Paused with a resumable checkpoint"),
-                        None,
-                        Some(&artifacts),
-                    );
-                    let run_event = AgentRunEvent::terminal_status(
-                        &run_id,
-                        Some(&turn_id),
-                        0,
-                        "Paused with a resumable checkpoint",
-                        "paused",
-                        Some(&artifacts),
-                    );
-                    if let Err(error) = stream_event_seq.submit(run_event) {
-                        warn!("Failed to submit paused terminal RunEvent for {conv_id}: {error}");
-                    }
-                    emit_agent_task_run_update(&db, &handle, &conv_id, &run_id);
-                }
-            });
-        } else {
-            agent_state.sessions.register(task_state).await;
+    let mut event_outbox = None;
+    let mut event_turn_id = initial_run.turn_id.clone();
+    if let Some(task_state) = sessions
+        .take_for_run(&initial_run.conversation_id, &run_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        event_turn_id = task_state.handle.turn_id.clone();
+        event_outbox = Some(Arc::clone(&task_state.event_outbox));
+        // Stop the old producer before deciding whether this is still a
+        // checkpoint-pausable run. Awaiting the aborted owner closes the race
+        // where it could otherwise establish a user-input barrier after our
+        // first status read.
+        task_state.task.abort();
+        task_state.cancel_token.cancel();
+        let _ = task_state.task.await;
+    }
+
+    let event_outbox = match event_outbox {
+        Some(outbox) => outbox,
+        None => run_event_outboxes
+            .open(&initial_run.conversation_id, &run_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    };
+    // Drain everything accepted before the producer stopped, then make the
+    // pause decision from the resulting durable state.
+    event_outbox
+        .flush()
+        .await
+        .map_err(|error| error.to_string())?;
+    let run = db
+        .get_agent_task_run(&run_id)
+        .map_err(|err| err.to_string())?;
+    let has_unresolved_interactions = db
+        .agent_run_has_unresolved_interactions(&run_id)
+        .map_err(|err| err.to_string())?;
+    if run.status == "awaiting_user_input" || has_unresolved_interactions {
+        return Err(format!(
+            "Agent task run {run_id} is waiting for required user input and cannot be checkpoint-paused"
+        ));
+    }
+    if !matches!(
+        run.status.as_str(),
+        "queued" | "running" | "waiting_approval"
+    ) {
+        return Err(format!(
+            "Agent task run {run_id} cannot be paused from status '{}'",
+            run.status
+        ));
+    }
+
+    event_outbox
+        .pause_with_checkpoint(&event_turn_id, "user_pause")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    use nexa_core::agent::CancellationToken;
+    use nexa_core::conversation::{AgentTaskRun, ConversationMessage, CreateConversationInput};
+    use nexa_core::interaction::{
+        CreateInteractionRequest, InteractionKind, InteractionQuestion, InteractionQuestionKind,
+    };
+    use nexa_core::llm::Role;
+    use nexa_core::run_event_outbox::AgentRunEventDelivery;
+    use nexa_core::runtime::{ActiveAgentTurn, AgentTurnHandle};
+    use std::sync::atomic::AtomicBool;
+
+    struct NoopDelivery;
+
+    impl AgentRunEventDelivery for NoopDelivery {
+        fn deliver_run_event(&self, _conversation_id: &str, _event: &AgentRunEvent) {}
+
+        fn deliver_task_run_snapshot(&self, _conversation_id: &str, _snapshot: AgentTaskRun) {}
+    }
+
+    struct SuspendForInteractionOnDrop {
+        db: Database,
+        request: Option<CreateInteractionRequest>,
+    }
+
+    impl Drop for SuspendForInteractionOnDrop {
+        fn drop(&mut self) {
+            let request = self.request.take().expect("interaction request");
+            let created = self
+                .db
+                .create_interaction_request(&request)
+                .expect("create interaction while producer stops");
+            self.db
+                .suspend_agent_turn_for_interaction(&created.request.interaction_id)
+                .expect("suspend run for interaction while producer stops");
         }
     }
 
-    Ok(checkpoint)
+    #[tokio::test]
+    async fn pause_command_commits_checkpoint_event_and_both_projections() {
+        let db = Database::open_memory().expect("open memory database");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Pause this task".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).expect("add user message");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .expect("create turn");
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "Pause this task",
+                Some("test"),
+                Some("test-model"),
+            )
+            .expect("create run");
+        db.mark_agent_task_run_started(&run.id, "responding")
+            .expect("start run");
+        let executor = DatabaseExecutor::new(db.clone(), 8).expect("database executor");
+        let outboxes = AgentRunEventOutboxes::new(executor, Arc::new(NoopDelivery));
+        let sessions = nexa_core::runtime::AgentSessionManager::new();
+
+        let checkpoint = pause_agent_task_run(&db, &outboxes, &sessions, &run.id)
+            .await
+            .expect("pause task run");
+
+        assert_eq!(
+            db.get_agent_task_run(&run.id).expect("paused task").status,
+            "paused"
+        );
+        let paused_turn = db.get_conversation_turn(&turn.id).expect("paused turn");
+        assert_eq!(paused_turn.status, "paused");
+        assert!(paused_turn.finished_at.is_none());
+        assert_eq!(
+            db.list_task_resume_checkpoints(&run.id)
+                .expect("checkpoint ledger")
+                .len(),
+            1
+        );
+        let events = db.list_agent_run_events(&run.id).expect("run event ledger");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].phase, AgentRunPhase::Paused);
+        assert_eq!(events[0].payload["checkpointId"], checkpoint.id);
+    }
+
+    #[tokio::test]
+    async fn producer_entering_user_input_during_pause_cannot_create_a_pause_checkpoint() {
+        let db = Database::open_memory().expect("open memory database");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Ask before continuing".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).expect("add user message");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .expect("create turn");
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "Ask before continuing",
+                Some("test"),
+                Some("test-model"),
+            )
+            .expect("create run");
+        db.mark_agent_task_run_started(&run.id, "responding")
+            .expect("start run");
+
+        let executor = DatabaseExecutor::new(db.clone(), 8).expect("database executor");
+        let outboxes = AgentRunEventOutboxes::new(executor, Arc::new(NoopDelivery));
+        let outbox = outboxes
+            .open(&conversation.id, &run.id)
+            .await
+            .expect("open run event outbox");
+        let sessions = nexa_core::runtime::AgentSessionManager::new();
+        let cancellation = CancellationToken::new();
+        let (steering_tx, _steering_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let producer_db = db.clone();
+        let producer_conversation_id = conversation.id.clone();
+        let producer_turn_id = turn.id.clone();
+        let producer = tokio::spawn(async move {
+            let _suspend_on_drop = SuspendForInteractionOnDrop {
+                db: producer_db,
+                request: Some(CreateInteractionRequest {
+                    conversation_id: producer_conversation_id,
+                    turn_id: producer_turn_id,
+                    tool_call_id: Some("call-pause-race".to_string()),
+                    idempotency_key: "pause-race-interaction".to_string(),
+                    kind: InteractionKind::UserInput,
+                    title: "Input required".to_string(),
+                    description: None,
+                    questions: vec![InteractionQuestion {
+                        id: "scope".to_string(),
+                        header: "Scope".to_string(),
+                        question: "Which scope should continue?".to_string(),
+                        kind: InteractionQuestionKind::Short,
+                        options: Vec::new(),
+                        placeholder: None,
+                        why: None,
+                    }],
+                    required: true,
+                    expires_at: None,
+                }),
+            };
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        ready_rx.await.expect("producer reached pause race");
+        sessions
+            .register(ActiveAgentTurn {
+                handle: AgentTurnHandle::running(
+                    conversation.id.clone(),
+                    run.id.clone(),
+                    turn.id.clone(),
+                ),
+                cancel_token: cancellation,
+                task: producer,
+                steering_tx,
+                event_outbox: Arc::clone(&outbox),
+                orchestrator_run_id: None,
+                frontend_paint_recorded: AtomicBool::new(false),
+            })
+            .await;
+
+        let error = pause_agent_task_run(&db, &outboxes, &sessions, &run.id)
+            .await
+            .expect_err("user-input barrier must win the pause race");
+
+        assert!(error.contains("waiting for required user input"));
+        assert_eq!(
+            db.get_agent_task_run(&run.id)
+                .expect("load task run")
+                .status,
+            "awaiting_user_input"
+        );
+        assert!(db
+            .agent_run_has_unresolved_interactions(&run.id)
+            .expect("check interaction barrier"));
+        assert!(db
+            .list_task_resume_checkpoints(&run.id)
+            .expect("list resume checkpoints")
+            .is_empty());
+        assert!(!db
+            .list_agent_run_events(&run.id)
+            .expect("list run events")
+            .iter()
+            .any(|event| {
+                event.phase == AgentRunPhase::Paused || event.status.as_deref() == Some("paused")
+            }));
+    }
 }
 
 #[tauri::command]

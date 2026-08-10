@@ -11,12 +11,14 @@ use crate::conversation::{AgentSubtaskRun, AgentTaskRun, AgentTaskRunEvent};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::task_timeline::TaskTimelineEvent;
+use crate::workflow_automation::TaskResumeCheckpoint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskRunStatus {
     Queued,
     Running,
+    Cancelling,
     WaitingApproval,
     AwaitingUserInput,
     Completed,
@@ -31,6 +33,7 @@ impl TaskRunStatus {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
+            Self::Cancelling => "cancelling",
             Self::WaitingApproval => "waiting_approval",
             Self::AwaitingUserInput => "awaiting_user_input",
             Self::Completed => "completed",
@@ -93,6 +96,17 @@ pub struct TaskRunUpdate<'a> {
 
 pub struct AgentTaskRuntime<'a> {
     db: &'a Database,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AgentRunFailClosedOutcome {
+    Claimed {
+        event_seq: u64,
+        snapshot: Box<AgentTaskRun>,
+    },
+    AlreadyClosed {
+        event_seq: u64,
+    },
 }
 
 impl<'a> AgentTaskRuntime<'a> {
@@ -166,8 +180,179 @@ impl<'a> AgentTaskRuntime<'a> {
         run_id: &str,
         event: &AgentRunEvent,
     ) -> Result<AgentTaskRun, CoreError> {
-        self.update_progress_from_event(run_id, event)?;
-        self.db.get_agent_task_run(run_id)
+        let connection = self.db.conn();
+        Self::update_progress_from_event_on_connection(&connection, run_id, event)?;
+        Database::get_agent_task_run_on_connection(&connection, run_id)
+    }
+
+    /// Commit the durable Run Event batch and every task projection it causes
+    /// in one SQLite transaction. Delivery can begin only after this returns.
+    pub(crate) fn commit_run_event_batch(
+        &self,
+        run_id: &str,
+        events: &[AgentRunEvent],
+    ) -> Result<Vec<AgentTaskRun>, CoreError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut connection = self.db.conn();
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (_, already_closed) =
+            Database::agent_run_event_head_on_connection(&transaction, run_id)?;
+        if already_closed {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} is already closed"
+            )));
+        }
+        crate::db::insert_agent_run_events(&transaction, events)?;
+
+        let mut snapshots = Vec::new();
+        for event in events {
+            if Self::update_progress_from_event_on_connection(&transaction, run_id, event)? {
+                snapshots.push(Database::get_agent_task_run_on_connection(
+                    &transaction,
+                    run_id,
+                )?);
+            }
+        }
+        transaction.commit()?;
+        Ok(snapshots)
+    }
+
+    /// Commit a resumable pause as one durable boundary. The outbox supplies
+    /// the sequence number; this transaction owns the checkpoint row and both
+    /// materialized lifecycle projections so no restart can observe a partial
+    /// pause.
+    pub(crate) fn commit_pause_checkpoint(
+        &self,
+        run_id: &str,
+        turn_id: &str,
+        event_seq: u64,
+        reason: &str,
+    ) -> Result<(TaskResumeCheckpoint, AgentRunEvent, AgentTaskRun), CoreError> {
+        let checkpoint = self
+            .db
+            .prepare_task_resume_checkpoint(run_id, reason, None)?;
+        let artifacts = serde_json::json!({
+            "kind": "resumeCheckpoint",
+            "checkpointId": checkpoint.id,
+            "resumePrompt": checkpoint.resume_prompt,
+        });
+        let event = AgentRunEvent::status_update(
+            run_id,
+            Some(turn_id),
+            event_seq,
+            crate::agent_run::AgentRunPhase::Paused,
+            "Paused with a resumable checkpoint",
+            Some(TaskRunStatus::Paused.as_str()),
+            Some(&artifacts),
+        );
+        event.validate_durable_contract().map_err(|error| {
+            CoreError::InvalidInput(format!("invalid pause Run Event: {error}"))
+        })?;
+
+        let mut connection = self.db.conn();
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (durable_turn_id, status): (String, String) = transaction
+            .query_row(
+                "SELECT turn_id, status FROM agent_task_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("Agent task run {run_id}"))
+                }
+                other => CoreError::Database(other),
+            })?;
+        if durable_turn_id != turn_id {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} changed turns while its pause was being committed"
+            )));
+        }
+        if !matches!(status.as_str(), "queued" | "running" | "waiting_approval") {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} cannot be paused from status {status}"
+            )));
+        }
+        if Database::agent_run_has_unresolved_interactions_on_connection(&transaction, run_id)? {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} established a required user-input barrier before pause commit"
+            )));
+        }
+        let (durable_head, already_closed) =
+            Database::agent_run_event_head_on_connection(&transaction, run_id)?;
+        if already_closed || event_seq != durable_head.saturating_add(1) {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} changed at sequence {durable_head} while its pause was being committed"
+            )));
+        }
+
+        let checkpoint =
+            Database::insert_task_resume_checkpoint_on_connection(&transaction, &checkpoint)?;
+        crate::db::insert_agent_run_events(&transaction, std::slice::from_ref(&event))?;
+        Self::update_progress_from_event_on_connection(&transaction, run_id, &event)?;
+        let turn_updated = transaction.execute(
+            "UPDATE conversation_turns
+             SET status = 'paused', finished_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1
+               AND status NOT IN ('success', 'error', 'cancelled')",
+            [turn_id],
+        )?;
+        if turn_updated != 1 {
+            return Err(CoreError::Conflict(format!(
+                "Conversation turn {turn_id} changed while its pause was being committed"
+            )));
+        }
+        let snapshot = Database::get_agent_task_run_on_connection(&transaction, run_id)?;
+        transaction.commit()?;
+        Ok((checkpoint, event, snapshot))
+    }
+
+    /// Atomically claim fail-closed ownership for an outbox actor.
+    ///
+    /// The closure check and failed task projection share one immediate
+    /// transaction. A durable terminal publisher can therefore win before
+    /// this transaction, or this transaction can close the task first, but a
+    /// stale actor can never overwrite a committed terminal projection.
+    pub(crate) fn fail_run_event_outbox_if_open(
+        &self,
+        run_id: &str,
+        failure_reason: &str,
+    ) -> Result<AgentRunFailClosedOutcome, CoreError> {
+        let failure_payload = serde_json::json!({ "reason": failure_reason });
+        let mut connection = self.db.conn();
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (event_seq, already_closed) =
+            Database::agent_run_event_head_on_connection(&transaction, run_id)?;
+        if already_closed {
+            transaction.commit()?;
+            return Ok(AgentRunFailClosedOutcome::AlreadyClosed { event_seq });
+        }
+
+        Database::project_agent_task_run_finished_on_connection(
+            &transaction,
+            run_id,
+            TaskRunStatus::Failed.as_str(),
+            Some("Run Event outbox failed closed"),
+            Some(failure_reason),
+            Some(&failure_payload),
+        )?;
+        let snapshot = Database::get_agent_task_run_on_connection(&transaction, run_id)?;
+        if snapshot.status != TaskRunStatus::Failed.as_str() {
+            return Err(CoreError::Conflict(format!(
+                "Agent Run {run_id} closed while the outbox failure claim was in progress"
+            )));
+        }
+        transaction.commit()?;
+        Ok(AgentRunFailClosedOutcome::Claimed {
+            event_seq,
+            snapshot: Box::new(snapshot),
+        })
     }
 
     pub fn record_timeline_event(
@@ -220,98 +405,129 @@ impl<'a> AgentTaskRuntime<'a> {
         self.db.get_agent_subtask_run(subtask_run_id)
     }
 
-    fn update_progress_from_event(
-        &self,
+    fn update_progress_from_event_on_connection(
+        connection: &rusqlite::Connection,
         run_id: &str,
         event: &AgentRunEvent,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
+        let emits_snapshot = !matches!(
+            event.kind,
+            AgentRunEventKind::OutputDelta
+                | AgentRunEventKind::Thinking
+                | AgentRunEventKind::UsageUpdated
+        );
         if event.kind == AgentRunEventKind::Status
             && event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput
-            && !self.db.agent_run_has_unresolved_interactions(run_id)?
+            && !Database::agent_run_has_unresolved_interactions_on_connection(connection, run_id)?
         {
             // A response can atomically re-queue the run while the suspended
             // executor is still draining its buffered status event. That old
             // event must not move the resumed run back behind the barrier.
-            return Ok(());
+            return Ok(emits_snapshot);
         }
         let preserves_awaiting_status = !matches!(
             event.kind,
             AgentRunEventKind::Done | AgentRunEventKind::Error
         ) && !(event.kind == AgentRunEventKind::Status
-            && event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput);
+            && (event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput
+                || event.status.as_deref() == Some("cancelling")));
         if preserves_awaiting_status
-            && self.db.get_agent_task_run(run_id)?.status
+            && Database::get_agent_task_run_on_connection(connection, run_id)?.status
                 == TaskRunStatus::AwaitingUserInput.as_str()
         {
-            return Ok(());
+            return Ok(emits_snapshot);
         }
 
-        match event.kind {
-            AgentRunEventKind::ApprovalRequested => self.db.project_agent_task_run_progress(
-                run_id,
-                Some(TaskRunStatus::WaitingApproval.as_str()),
-                Some("approval"),
-                None,
-                Some(&event.label),
-                None,
-                None,
-            ),
-            AgentRunEventKind::ApprovalResolved => self.db.project_agent_task_run_progress(
-                run_id,
-                Some(TaskRunStatus::Running.as_str()),
-                Some("tooling"),
-                None,
-                Some(&event.label),
-                None,
-                None,
-            ),
+        let projection = match event.kind {
+            AgentRunEventKind::ApprovalRequested => {
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
+                    run_id,
+                    Some(TaskRunStatus::WaitingApproval.as_str()),
+                    Some("approval"),
+                    None,
+                    Some(&event.label),
+                    None,
+                    None,
+                )
+            }
+            AgentRunEventKind::ApprovalResolved => {
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
+                    run_id,
+                    Some(TaskRunStatus::Running.as_str()),
+                    Some("tooling"),
+                    None,
+                    Some(&event.label),
+                    None,
+                    None,
+                )
+            }
             AgentRunEventKind::ToolPreparing
             | AgentRunEventKind::ToolStarted
             | AgentRunEventKind::ToolProgress
-            | AgentRunEventKind::ToolCompleted => self.db.project_agent_task_run_progress(
-                run_id,
-                Some(TaskRunStatus::Running.as_str()),
-                Some("tooling"),
-                None,
-                Some(&event.label),
-                None,
-                None,
-            ),
-            AgentRunEventKind::PlanUpdated => self.db.project_agent_task_run_progress(
-                run_id,
-                Some(TaskRunStatus::Running.as_str()),
-                Some(event.phase.as_str()),
-                None,
-                Some(&event.label),
-                event.payload.get("plan"),
-                None,
-            ),
+            | AgentRunEventKind::ToolCompleted => {
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
+                    run_id,
+                    Some(TaskRunStatus::Running.as_str()),
+                    Some("tooling"),
+                    None,
+                    Some(&event.label),
+                    None,
+                    None,
+                )
+            }
+            AgentRunEventKind::PlanUpdated => {
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
+                    run_id,
+                    Some(TaskRunStatus::Running.as_str()),
+                    Some(event.phase.as_str()),
+                    None,
+                    Some(&event.label),
+                    event.payload.get("plan"),
+                    None,
+                )
+            }
             AgentRunEventKind::Status => {
                 let route_kind = event.label.strip_prefix("Route selected: ").map(str::trim);
-                let status = if event.phase == crate::agent_run::AgentRunPhase::AwaitingUserInput {
-                    TaskRunStatus::AwaitingUserInput
-                } else {
-                    TaskRunStatus::Running
+                let status = match event.status.as_deref() {
+                    Some("queued") => TaskRunStatus::Queued,
+                    Some("cancelling") => TaskRunStatus::Cancelling,
+                    _ => match event.phase {
+                        crate::agent_run::AgentRunPhase::AwaitingUserInput => {
+                            TaskRunStatus::AwaitingUserInput
+                        }
+                        crate::agent_run::AgentRunPhase::Paused => TaskRunStatus::Paused,
+                        _ => TaskRunStatus::Running,
+                    },
                 };
-                self.db.project_agent_task_run_progress(
+                let artifacts = (event.phase == crate::agent_run::AgentRunPhase::Paused)
+                    .then_some(&event.payload);
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
                     run_id,
                     Some(status.as_str()),
                     Some(event.phase.as_str()),
                     route_kind,
                     Some(&event.label),
                     None,
+                    artifacts,
+                )
+            }
+            AgentRunEventKind::RecoveryAttempt => {
+                Database::project_agent_task_run_progress_on_connection(
+                    connection,
+                    run_id,
+                    Some(TaskRunStatus::Running.as_str()),
+                    Some("recovering"),
+                    None,
+                    Some(&event.label),
+                    None,
                     None,
                 )
             }
-            AgentRunEventKind::RecoveryAttempt => self.db.project_agent_task_run_progress(
-                run_id,
-                Some(TaskRunStatus::Running.as_str()),
-                Some("recovering"),
-                None,
-                Some(&event.label),
-                None,
-                None,
-            ),
             AgentRunEventKind::Done => {
                 let (status, summary) = match event.status.as_deref() {
                     Some("cancelled") => (TaskRunStatus::Cancelled, "Agent execution cancelled"),
@@ -319,7 +535,8 @@ impl<'a> AgentTaskRuntime<'a> {
                     Some("paused") => (TaskRunStatus::Paused, event.label.as_str()),
                     _ => (TaskRunStatus::Completed, event.label.as_str()),
                 };
-                self.db.project_agent_task_run_finished(
+                Database::project_agent_task_run_finished_on_connection(
+                    connection,
                     run_id,
                     status.as_str(),
                     Some(summary),
@@ -333,7 +550,8 @@ impl<'a> AgentTaskRuntime<'a> {
                     Some("timed_out") => (TaskRunStatus::TimedOut, "Agent execution timed out"),
                     _ => (TaskRunStatus::Failed, "Agent execution failed"),
                 };
-                self.db.project_agent_task_run_finished(
+                Database::project_agent_task_run_finished_on_connection(
+                    connection,
                     run_id,
                     status.as_str(),
                     Some(summary),
@@ -346,7 +564,9 @@ impl<'a> AgentTaskRuntime<'a> {
             | AgentRunEventKind::Thinking
             | AgentRunEventKind::UsageUpdated
             | AgentRunEventKind::AutoCompacted => Ok(()),
-        }
+        };
+        projection?;
+        Ok(emits_snapshot)
     }
 }
 
@@ -358,7 +578,7 @@ mod tests {
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::llm::{Message, Role, Usage};
 
-    fn create_started_run(db: &Database, suffix: &str) -> (String, String) {
+    fn create_run(db: &Database, suffix: &str, start: bool) -> (String, String) {
         let conversation = db
             .create_conversation(&CreateConversationInput {
                 provider: "openai".to_string(),
@@ -398,8 +618,86 @@ mod tests {
                 model: Some("gpt-4o"),
             })
             .unwrap();
-        runtime.start_run(&run.id, "routing").unwrap();
+        if start {
+            runtime.start_run(&run.id, "routing").unwrap();
+        }
         (run.id, turn.id)
+    }
+
+    fn create_started_run(db: &Database, suffix: &str) -> (String, String) {
+        create_run(db, suffix, true)
+    }
+
+    #[test]
+    fn terminal_commit_and_fail_closed_claim_have_one_transaction_winner() {
+        let db = Database::open_memory().unwrap();
+
+        for attempt in 0..32 {
+            let (run_id, turn_id) = create_started_run(&db, &format!("atomic-race-{attempt}"));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let terminal = AgentRunEvent::terminal_status(
+                &run_id,
+                Some(&turn_id),
+                1,
+                "Completed",
+                "completed",
+                None,
+            );
+
+            let terminal_commit = {
+                let db = db.clone();
+                let run_id = run_id.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    AgentTaskRuntime::new(&db).commit_run_event_batch(&run_id, &[terminal])
+                })
+            };
+            let failure_claim = {
+                let db = db.clone();
+                let run_id = run_id.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    AgentTaskRuntime::new(&db)
+                        .fail_run_event_outbox_if_open(&run_id, "run_event_persistence_failed")
+                })
+            };
+            barrier.wait();
+
+            let terminal_result = terminal_commit.join().expect("terminal commit thread");
+            let failure_result = failure_claim.join().expect("failure claim thread");
+            let events = db.list_agent_run_events(&run_id).expect("run event ledger");
+            let task = db.get_agent_task_run(&run_id).expect("task projection");
+
+            match (terminal_result, failure_result) {
+                (
+                    Ok(_),
+                    Ok(AgentRunFailClosedOutcome::AlreadyClosed { event_seq: 1 }),
+                ) => {
+                    assert_eq!(events.len(), 1);
+                    assert_eq!(task.status, "completed");
+                }
+                (
+                    Err(CoreError::Conflict(_)),
+                    Ok(AgentRunFailClosedOutcome::Claimed {
+                        event_seq: 0,
+                        snapshot,
+                    }),
+                ) => {
+                    assert!(events.is_empty());
+                    assert_eq!(snapshot.status, "failed");
+                    assert_eq!(task.status, "failed");
+                    assert_eq!(
+                        task.error_message.as_deref(),
+                        Some("run_event_persistence_failed")
+                    );
+                }
+                (terminal_result, failure_result) => panic!(
+                    "unexpected transaction race result: terminal={terminal_result:?}, failure={failure_result:?}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -649,5 +947,50 @@ mod tests {
         let run = runtime.apply_run_event(&run_id, &tool_completed).unwrap();
         assert_eq!(run.status, TaskRunStatus::AwaitingUserInput.as_str());
         assert_eq!(run.phase, "awaiting_user_input");
+    }
+
+    #[test]
+    fn runtime_projects_queued_running_and_cancelling_statuses() {
+        let db = Database::open_memory().unwrap();
+        let runtime = AgentTaskRuntime::new(&db);
+        let (run_id, turn_id) = create_run(&db, "status-projection", false);
+
+        let queued = AgentRunEvent::status_update(
+            &run_id,
+            Some(&turn_id),
+            1,
+            crate::agent_run::AgentRunPhase::Routing,
+            "Queued",
+            Some("queued"),
+            None,
+        );
+        let run = runtime.apply_run_event(&run_id, &queued).unwrap();
+        assert_eq!(run.status, TaskRunStatus::Queued.as_str());
+        assert!(run.started_at.is_none());
+
+        let running = AgentRunEvent::status_update(
+            &run_id,
+            Some(&turn_id),
+            2,
+            crate::agent_run::AgentRunPhase::Responding,
+            "Running",
+            Some("running"),
+            None,
+        );
+        let run = runtime.apply_run_event(&run_id, &running).unwrap();
+        assert_eq!(run.status, TaskRunStatus::Running.as_str());
+        assert!(run.started_at.is_some());
+
+        let cancelling = AgentRunEvent::status_update(
+            &run_id,
+            Some(&turn_id),
+            3,
+            crate::agent_run::AgentRunPhase::Responding,
+            "Cancelling",
+            Some("cancelling"),
+            None,
+        );
+        let run = runtime.apply_run_event(&run_id, &cancelling).unwrap();
+        assert_eq!(run.status, TaskRunStatus::Cancelling.as_str());
     }
 }

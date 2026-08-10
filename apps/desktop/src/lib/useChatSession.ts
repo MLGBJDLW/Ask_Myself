@@ -274,7 +274,7 @@ export interface RuntimeProfile {
   memoryPolicy: string;
 }
 
-export interface ChatSendOptions {
+interface ChatSendOptionsBase {
   collectionContext?: Conversation['collectionContext'];
   sourceIds?: string[];
   userArtifacts?: ArtifactPayload | null;
@@ -287,8 +287,12 @@ export interface ChatSendOptions {
   customOrchestration?: CustomOrchestrationOptions | null;
   visionTurnOverride?: import('../types/conversation').VisionTurnOverride | null;
   taskOrchestratorRunId?: string | null;
-  interactionContinuation?: boolean;
 }
+
+export type ChatSendOptions = ChatSendOptionsBase & (
+  | { interactionContinuation?: boolean; resumeCheckpointId?: never }
+  | { interactionContinuation?: never; resumeCheckpointId?: string }
+);
 
 export interface UseChatSessionReturn {
   messages: ConversationMessage[];
@@ -1043,7 +1047,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       let convId = activeId;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
-      if (convId && liveStream?.isStreaming && !options?.interactionContinuation) {
+      if (
+        convId
+        && liveStream?.isStreaming
+        && !options?.interactionContinuation
+        && !options?.resumeCheckpointId
+      ) {
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));
@@ -1193,6 +1202,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.visionTurnOverride,
         options?.userArtifacts,
         options?.taskOrchestratorRunId,
+        options?.resumeCheckpointId,
         options?.interactionContinuation === true,
       );
     },
@@ -1272,9 +1282,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       fallbackRetry && fallbackRetry.content === content
         ? fallbackRetry.personaId
         : activePersonaId;
-    const options =
+    const options: ChatSendOptions =
       fallbackRetry && fallbackRetry.content === content
-        ? fallbackRetry.options
+        ? fallbackRetry.options ?? {}
         : {
             userArtifacts: targetMessage.artifacts ?? null,
             visionTurnOverride: persistedVisionOverride(
@@ -1282,10 +1292,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               attachments,
             ),
           };
-    const retryOptions = {
+    const retryOptions: ChatSendOptions = {
       ...options,
       visionTurnOverride: visionTurnOverride ?? options?.visionTurnOverride,
     };
+    delete retryOptions.resumeCheckpointId;
+    delete retryOptions.interactionContinuation;
 
     // Re-add optimistic user message
     const optimisticMsg: ConversationMessage = {

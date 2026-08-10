@@ -33,6 +33,7 @@ const RUN_PHASES = new Set<AgentRunPhase>([
   'tooling',
   'approval',
   'awaiting_user_input',
+  'paused',
   'compacting',
   'accounting',
   'done',

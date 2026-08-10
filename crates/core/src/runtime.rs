@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::agent::power_mode::AgentPowerMode;
 use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
@@ -19,103 +19,9 @@ use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
 use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
+pub use crate::run_event_outbox::AgentRunEventOutbox;
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
-const AGENT_RUN_EVENT_OUTBOX_CAPACITY: usize = 512;
-
-/// The only producer interface for one run's ordered event ledger.
-#[derive(Clone)]
-pub struct AgentRunEventOutbox {
-    sender: tokio::sync::mpsc::Sender<AgentRunEvent>,
-    failure_handle: AgentRunEventOutboxFailureHandle,
-}
-
-/// Sender-free control plane retained by the outbox actor. Keeping this handle
-/// alive cannot keep the producer channel open.
-#[derive(Clone)]
-pub struct AgentRunEventOutboxFailureHandle {
-    terminal_submitted: Arc<Mutex<bool>>,
-    cancellation: CancellationToken,
-}
-
-impl AgentRunEventOutboxFailureHandle {
-    pub fn fail_closed(&self) {
-        if let Ok(mut terminal_submitted) = self.terminal_submitted.lock() {
-            *terminal_submitted = true;
-        }
-        self.cancellation.cancel();
-    }
-}
-
-impl AgentRunEventOutbox {
-    pub fn channel() -> (Self, tokio::sync::mpsc::Receiver<AgentRunEvent>) {
-        let (sender, receiver) = tokio::sync::mpsc::channel(AGENT_RUN_EVENT_OUTBOX_CAPACITY);
-        let failure_handle = AgentRunEventOutboxFailureHandle {
-            terminal_submitted: Arc::new(Mutex::new(false)),
-            cancellation: CancellationToken::new(),
-        };
-        (
-            Self {
-                sender,
-                failure_handle,
-            },
-            receiver,
-        )
-    }
-
-    pub fn submit(&self, event: AgentRunEvent) -> Result<(), CoreError> {
-        if event.event_seq != 0 {
-            return Err(CoreError::InvalidInput(
-                "Run Event producers must submit an unsequenced event".to_string(),
-            ));
-        }
-        let mut terminal_submitted =
-            self.failure_handle.terminal_submitted.lock().map_err(|_| {
-                CoreError::Internal("Run Event outbox state is poisoned".to_string())
-            })?;
-        if *terminal_submitted {
-            return Err(CoreError::InvalidInput(
-                "Run Event outbox is closed after its terminal event".to_string(),
-            ));
-        }
-        let terminal = event.is_terminal();
-        if let Err(error) = self.sender.try_send(event) {
-            *terminal_submitted = true;
-            self.failure_handle.cancellation.cancel();
-            return Err(match error {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => CoreError::InvalidInput(
-                    "Run Event outbox capacity was exhausted; the run was cancelled before dropping ordered events"
-                        .to_string(),
-                ),
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                    CoreError::Internal("Run Event outbox actor is unavailable".to_string())
-                }
-            });
-        }
-        *terminal_submitted = terminal;
-        Ok(())
-    }
-
-    pub fn is_closed_for_submission(&self) -> bool {
-        self.failure_handle
-            .terminal_submitted
-            .lock()
-            .map(|terminal_submitted| *terminal_submitted)
-            .unwrap_or(true)
-    }
-
-    pub fn failure_handle(&self) -> AgentRunEventOutboxFailureHandle {
-        self.failure_handle.clone()
-    }
-
-    /// One executor-scoped child of the run lifetime. Cancelling a suspended
-    /// executor does not poison a later continuation, while fail-closed outbox
-    /// cancellation reaches every child for this run.
-    pub fn turn_cancellation_token(&self) -> CancellationToken {
-        self.failure_handle.cancellation.child_token()
-    }
-}
-
 /// Runtime-owned control plane for one active turn.
 ///
 /// The host owns transport-only concerns; cancellation, steering, task
@@ -166,11 +72,36 @@ impl ActiveAgentTurn {
 #[derive(Default)]
 pub struct AgentSessionManager {
     active: tokio::sync::Mutex<HashMap<String, ActiveAgentTurn>>,
+    run_lifecycle_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl AgentSessionManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Serialize launch, pause, and stop decisions for one durable Agent Run.
+    ///
+    /// The lock deliberately spans the desktop's database launch transaction,
+    /// executor spawn, and session registration. A repeated checkpoint or
+    /// interaction continuation therefore observes the registered executor
+    /// instead of starting a second producer in the spawn/register gap.
+    pub async fn acquire_run_lifecycle(&self, run_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = match self.run_lifecycle_locks.lock() {
+                Ok(locks) => locks,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(run_id).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(run_id.to_string(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
     }
 
     pub async fn register(&self, turn: ActiveAgentTurn) {
@@ -295,6 +226,11 @@ pub struct StartTurnRequest {
     pub idempotency_key: String,
     pub conversation_id: String,
     pub message: String,
+    /// Optional durable checkpoint whose original turn/run should be resumed.
+    ///
+    /// Legacy hosts omit this field and continue to allocate a new turn.
+    #[serde(default)]
+    pub resume_checkpoint_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<ImageAttachment>,
     #[serde(default)]
@@ -541,6 +477,9 @@ pub enum RuntimeTerminalStatus {
     Failed,
     Cancelled,
     TimedOut,
+    /// Compatibility for trajectories recorded before resumable pauses became
+    /// a nonterminal [`AgentTurnState::Paused`] state. New live runs must not
+    /// emit a terminal event with this status.
     Paused,
 }
 
@@ -576,6 +515,7 @@ pub enum AgentTurnState {
     Running,
     WaitingApproval,
     AwaitingUserInput,
+    Paused,
     Terminal(RuntimeTerminalStatus),
 }
 
@@ -829,7 +769,7 @@ pub fn validate_runtime_turn_events(
                 actual: event.event_seq,
             });
         }
-        if event.is_terminal() {
+        if event.closes_run() {
             terminal_indexes.push(index);
         }
         if event.kind.as_str() == "approvalResolved"
@@ -882,6 +822,27 @@ mod tests {
         AgentRunDisplayKind, AgentRunEventImportance, AgentRunEventKind, AgentRunEventPersistence,
         AgentRunEventVisibility, AgentRunPhase,
     };
+    use crate::conversation::AgentTaskRun;
+    use crate::db::Database;
+    use crate::db_executor::DatabaseExecutor;
+    use crate::run_event_outbox::{AgentRunEventDelivery, AgentRunEventOutboxes};
+
+    struct NoopRunEventDelivery;
+
+    impl AgentRunEventDelivery for NoopRunEventDelivery {
+        fn deliver_run_event(&self, _conversation_id: &str, _event: &AgentRunEvent) {}
+
+        fn deliver_task_run_snapshot(&self, _conversation_id: &str, _snapshot: AgentTaskRun) {}
+    }
+
+    async fn test_outbox(run_id: &str) -> Arc<AgentRunEventOutbox> {
+        let database = Database::open_memory().expect("in-memory database");
+        let executor = DatabaseExecutor::new(database, 8).expect("database executor");
+        AgentRunEventOutboxes::new(executor, Arc::new(NoopRunEventDelivery))
+            .open("session-1", run_id)
+            .await
+            .expect("test Run Event outbox")
+    }
 
     #[test]
     fn turn_launch_stages_expose_a_stable_cross_layer_metric_contract() {
@@ -904,124 +865,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_event_outbox_accepts_one_terminal_and_rejects_later_events() {
-        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
-        let event =
-            AgentRunEvent::terminal_status("run-1", Some("turn-1"), 0, "done", "completed", None);
-        outbox
-            .submit(event)
-            .expect("terminal event should be accepted");
-        assert!(outbox
-            .submit(AgentRunEvent::terminal_status(
-                "run-1",
-                Some("turn-1"),
-                0,
-                "late",
-                "completed",
-                None
-            ))
-            .is_err());
-        assert!(receiver.try_recv().is_ok());
-    }
+    #[tokio::test]
+    async fn run_lifecycle_lock_serializes_same_run_without_blocking_other_runs() {
+        let manager = Arc::new(AgentSessionManager::new());
+        let first = manager.acquire_run_lifecycle("run-1").await;
 
-    #[test]
-    fn run_event_outbox_clones_share_one_ordered_producer_queue() {
-        let (outbox, mut receiver) = AgentRunEventOutbox::channel();
-        let continuation = outbox.clone();
-        outbox
-            .submit(AgentRunEvent::status_update(
-                "run-1",
-                Some("turn-1"),
-                0,
-                AgentRunPhase::AwaitingUserInput,
-                "Waiting for your response",
-                Some("awaiting_user_input"),
-                None,
-            ))
-            .unwrap();
-        continuation
-            .submit(AgentRunEvent::status_update(
-                "run-1",
-                Some("turn-1"),
-                0,
-                AgentRunPhase::Responding,
-                "Interaction response accepted",
-                Some("running"),
-                None,
-            ))
-            .unwrap();
+        let same_run_entered = Arc::new(AtomicBool::new(false));
+        let same_run_task = {
+            let manager = Arc::clone(&manager);
+            let entered = Arc::clone(&same_run_entered);
+            tokio::spawn(async move {
+                let _guard = manager.acquire_run_lifecycle("run-1").await;
+                entered.store(true, Ordering::SeqCst);
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(!same_run_entered.load(Ordering::SeqCst));
 
-        assert_eq!(
-            receiver.try_recv().unwrap().label,
-            "Waiting for your response"
-        );
-        assert_eq!(
-            receiver.try_recv().unwrap().label,
-            "Interaction response accepted"
-        );
-    }
+        let other_run = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.acquire_run_lifecycle("run-2"),
+        )
+        .await
+        .expect("another run must not share the lifecycle lock");
+        drop(other_run);
 
-    #[test]
-    fn run_event_outbox_failure_closes_submission_and_cancels_turn_children() {
-        let (outbox, _receiver) = AgentRunEventOutbox::channel();
-        let suspended_turn = outbox.turn_cancellation_token();
-        suspended_turn.cancel();
-        let existing_turn = outbox.turn_cancellation_token();
-        let failure_handle = outbox.failure_handle();
-
-        assert!(!existing_turn.is_cancelled());
-        failure_handle.fail_closed();
-
-        assert!(outbox.is_closed_for_submission());
-        assert!(existing_turn.is_cancelled());
-        assert!(outbox.turn_cancellation_token().is_cancelled());
-        assert!(outbox
-            .submit(AgentRunEvent::status_update(
-                "run-1",
-                Some("turn-1"),
-                0,
-                AgentRunPhase::Responding,
-                "late",
-                Some("running"),
-                None,
-            ))
-            .is_err());
-    }
-
-    #[test]
-    fn run_event_outbox_capacity_fails_closed_before_ordered_events_can_be_dropped() {
-        let (outbox, _receiver) = AgentRunEventOutbox::channel();
-        let cancellation = outbox.turn_cancellation_token();
-        for index in 0..AGENT_RUN_EVENT_OUTBOX_CAPACITY {
-            outbox
-                .submit(AgentRunEvent::status_update(
-                    "run-1",
-                    Some("turn-1"),
-                    0,
-                    AgentRunPhase::Responding,
-                    &format!("queued-{index}"),
-                    Some("running"),
-                    None,
-                ))
-                .expect("bounded queue still has capacity");
-        }
-
-        let error = outbox
-            .submit(AgentRunEvent::status_update(
-                "run-1",
-                Some("turn-1"),
-                0,
-                AgentRunPhase::Responding,
-                "must not be dropped",
-                Some("running"),
-                None,
-            ))
-            .expect_err("overflow must fail closed");
-
-        assert!(error.to_string().contains("capacity was exhausted"));
-        assert!(cancellation.is_cancelled());
-        assert!(outbox.is_closed_for_submission());
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(1), same_run_task)
+            .await
+            .expect("same run continues after the first lifecycle completes")
+            .expect("same-run lifecycle task");
+        assert!(same_run_entered.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1036,7 +910,7 @@ mod tests {
                 cancel_token: first_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: first_tx,
-                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
+                event_outbox: test_outbox("run-1").await,
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })
@@ -1050,7 +924,7 @@ mod tests {
                 cancel_token: second_cancel,
                 task: tokio::spawn(std::future::pending::<()>()),
                 steering_tx: second_tx,
-                event_outbox: Arc::new(AgentRunEventOutbox::channel().0),
+                event_outbox: test_outbox("run-2").await,
                 orchestrator_run_id: None,
                 frontend_paint_recorded: AtomicBool::new(false),
             })
@@ -1094,8 +968,7 @@ mod tests {
     #[tokio::test]
     async fn session_manager_retains_open_outbox_after_suspended_task_finishes() {
         let manager = AgentSessionManager::new();
-        let (outbox, _receiver) = AgentRunEventOutbox::channel();
-        let outbox = Arc::new(outbox);
+        let outbox = test_outbox("run-1").await;
         let (steering_tx, _steering_rx) = tokio::sync::mpsc::unbounded_channel();
         manager
             .register(ActiveAgentTurn {
@@ -1218,6 +1091,86 @@ mod tests {
         assert_eq!(report.turn_id, "turn-1");
         assert_eq!(report.terminal_status, RuntimeTerminalStatus::Completed);
         assert_eq!(report.event_count, 2);
+    }
+
+    #[test]
+    fn resumable_pause_is_a_nonterminal_turn_state() {
+        let event = AgentRunEvent::status_update(
+            "run-1",
+            Some("turn-1"),
+            1,
+            AgentRunPhase::Paused,
+            "Paused with a resumable checkpoint",
+            Some("paused"),
+            None,
+        );
+
+        assert!(!event.is_terminal());
+        assert_eq!(RuntimeTerminalStatus::from_run_event(&event), None);
+        assert_eq!(
+            serde_json::to_value(AgentTurnState::Paused).unwrap(),
+            serde_json::json!("paused")
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentTurnState>(serde_json::json!("paused")).unwrap(),
+            AgentTurnState::Paused
+        );
+    }
+
+    #[test]
+    fn legacy_paused_terminal_status_remains_readable() {
+        let event = AgentRunEvent::terminal_status(
+            "run-1",
+            Some("turn-1"),
+            1,
+            "Legacy paused run",
+            "paused",
+            None,
+        );
+
+        assert_eq!(
+            RuntimeTerminalStatus::from_run_event(&event),
+            Some(RuntimeTerminalStatus::Paused)
+        );
+        assert_eq!(
+            serde_json::from_value::<RuntimeTerminalStatus>(serde_json::json!("paused")).unwrap(),
+            RuntimeTerminalStatus::Paused
+        );
+    }
+
+    #[test]
+    fn runtime_contract_ignores_legacy_pause_when_a_later_terminal_closes_the_run() {
+        let events = vec![
+            AgentRunEvent::terminal_status(
+                "run-1",
+                Some("turn-1"),
+                1,
+                "Legacy paused run",
+                "paused",
+                None,
+            ),
+            AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                2,
+                AgentRunPhase::Responding,
+                "Resumed",
+                Some("running"),
+                None,
+            ),
+            AgentRunEvent::terminal_status(
+                "run-1",
+                Some("turn-1"),
+                3,
+                "Completed after resume",
+                "completed",
+                None,
+            ),
+        ];
+
+        let report = validate_runtime_turn_events(&events).unwrap();
+        assert_eq!(report.event_count, 3);
+        assert_eq!(report.terminal_status, RuntimeTerminalStatus::Completed);
     }
 
     #[test]

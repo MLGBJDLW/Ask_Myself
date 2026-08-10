@@ -837,12 +837,18 @@ impl Database {
             )
             .optional()?;
 
-        if let Some((_, persisted_answers, _launch_key, Some(response_message_id))) =
+        if let Some((_, persisted_answers, launch_key, Some(response_message_id))) =
             existing_response.as_ref()
         {
             if persisted_answers != &answers_json {
                 return Err(CoreError::InvalidInput(
                     "Interaction response was already launched with different input".to_string(),
+                ));
+            }
+            if launch_key.as_deref() != Some(idempotency_key.as_str()) {
+                return Err(CoreError::InvalidInput(
+                    "Interaction response was already launched with a different idempotency key"
+                        .to_string(),
                 ));
             }
             let (run_id, mut run_status) = tx.query_row(
@@ -858,16 +864,50 @@ impl Database {
                 rusqlite::params![response_message_id],
                 |row| row.get::<_, i64>(0),
             )?;
-            let recovering_interrupted_launch =
-                matches!(
-                    request.status,
-                    InteractionStatus::Submitted | InteractionStatus::Acknowledged
-                ) && matches!(run_status.as_str(), "cancelled" | "failed");
+            let latest_response_message_id = tx
+                .query_row(
+                    "SELECT response.response_message_id
+                     FROM interaction_responses response
+                     JOIN interaction_requests sibling
+                       ON sibling.id = response.interaction_id
+                     JOIN messages message
+                       ON message.id = response.response_message_id
+                     WHERE sibling.run_id = ?1
+                       AND response.response_message_id IS NOT NULL
+                     ORDER BY message.sort_order DESC, response.rowid DESC
+                     LIMIT 1",
+                    rusqlite::params![&run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let active_siblings: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM interaction_requests
+                 WHERE run_id = ?1 AND id != ?2
+                   AND (
+                     status IN ('pending', 'presented', 'partially_answered')
+                     OR (
+                       status = 'submitted'
+                       AND EXISTS (
+                         SELECT 1 FROM interaction_responses response
+                         WHERE response.interaction_id = interaction_requests.id
+                           AND response.response_message_id IS NULL
+                       )
+                     )
+                   )",
+                rusqlite::params![&run_id, &input.interaction_id],
+                |row| row.get(0),
+            )?;
+            let recovering_interrupted_launch = matches!(
+                request.status,
+                InteractionStatus::Submitted | InteractionStatus::Acknowledged
+            ) && run_status == "awaiting_user_input"
+                && latest_response_message_id.as_deref() == Some(response_message_id.as_str())
+                && active_siblings == 0;
             if recovering_interrupted_launch {
                 let turn_requeued = tx.execute(
                     "UPDATE conversation_turns
                      SET status = 'running', finished_at = NULL, updated_at = datetime('now')
-                     WHERE id = ?1 AND status IN ('cancelled', 'error')",
+                     WHERE id = ?1 AND status = 'awaiting_user_input'",
                     rusqlite::params![&request.turn_id],
                 )?;
                 if turn_requeued != 1 {
@@ -878,17 +918,20 @@ impl Database {
                 let requeued = tx.execute(
                     "UPDATE agent_task_runs
                      SET status = 'queued', phase = 'queued', summary = 'Recovering user input',
-                         error_message = NULL, provider = COALESCE(?2, provider),
-                         model = COALESCE(?3, model), finished_at = NULL,
+                         error_message = NULL, finished_at = NULL,
                          updated_at = datetime('now')
-                     WHERE id = ?1 AND status IN ('cancelled', 'failed')",
-                    rusqlite::params![&run_id, provider, model],
+                     WHERE id = ?1 AND status = 'awaiting_user_input'",
+                    rusqlite::params![&run_id],
                 )?;
                 if requeued != 1 {
                     return Err(CoreError::InvalidInput(
                         "Interrupted interaction continuation could not be re-queued".to_string(),
                     ));
                 }
+                tx.execute(
+                    "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![&message.conversation_id],
+                )?;
                 run_status = "queued".to_string();
             }
             tx.commit()?;
@@ -1062,86 +1105,26 @@ impl Database {
         })
     }
 
-    /// Cancel the most recent suspended run in a conversation and all of its
-    /// still-active interaction requests.
-    pub fn cancel_awaiting_interactions_for_conversation(
+    /// Locate the most recent run whose executor is suspended at the durable
+    /// user-input barrier. Callers can persist a cancelling Run Event before
+    /// mutating the interaction rows, so a crash cannot lose the stop intent.
+    pub fn stoppable_interaction_run_for_conversation(
         &self,
         conversation_id: &str,
     ) -> Result<Option<String>, CoreError> {
-        let mut conn = self.conn();
-        expire_due_requests(&mut conn)?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let waiting = tx
+        let mut connection = self.conn();
+        expire_due_requests(&mut connection)?;
+        connection
             .query_row(
-                "SELECT id, turn_id FROM agent_task_runs
-                 WHERE conversation_id = ?1 AND status = 'awaiting_user_input'
+                "SELECT id FROM agent_task_runs
+                 WHERE conversation_id = ?1
+                   AND status IN ('awaiting_user_input', 'cancelling')
                  ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1",
                 rusqlite::params![conversation_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| row.get::<_, String>(0),
             )
-            .optional()?;
-        let Some((run_id, turn_id)) = waiting else {
-            tx.commit()?;
-            return Ok(None);
-        };
-        tx.execute(
-            "INSERT INTO interaction_events (interaction_id, from_status, to_status, reason)
-             SELECT id, status, 'cancelled', 'task_cancelled'
-             FROM interaction_requests
-             WHERE run_id = ?1 AND (
-               status IN ('pending', 'presented', 'partially_answered')
-               OR (
-                 status = 'submitted'
-                 AND EXISTS (
-                   SELECT 1 FROM interaction_responses response
-                   WHERE response.interaction_id = interaction_requests.id
-                     AND response.response_message_id IS NULL
-                 )
-               )
-             )",
-            rusqlite::params![&run_id],
-        )?;
-        tx.execute(
-            "UPDATE interaction_requests
-             SET status = 'cancelled', updated_at = datetime('now')
-             WHERE run_id = ?1 AND (
-               status IN ('pending', 'presented', 'partially_answered')
-               OR (
-                 status = 'submitted'
-                 AND EXISTS (
-                   SELECT 1 FROM interaction_responses response
-                   WHERE response.interaction_id = interaction_requests.id
-                     AND response.response_message_id IS NULL
-                 )
-               )
-             )",
-            rusqlite::params![&run_id],
-        )?;
-        tx.execute(
-            "UPDATE conversation_turns
-             SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now')),
-                 updated_at = datetime('now')
-             WHERE id = ?1 AND status = 'awaiting_user_input'",
-            rusqlite::params![&turn_id],
-        )?;
-        tx.execute(
-            "UPDATE agent_task_runs
-             SET status = 'cancelled', phase = 'done', summary = 'Cancelled while waiting for user input',
-                 error_message = NULL, finished_at = COALESCE(finished_at, datetime('now')),
-                 updated_at = datetime('now')
-             WHERE id = ?1 AND status = 'awaiting_user_input'",
-            rusqlite::params![&run_id],
-        )?;
-        tx.commit()?;
-        drop(conn);
-        let _ = self.record_agent_task_run_event(
-            &run_id,
-            "interaction_cancelled",
-            "Cancelled while waiting for user input",
-            Some("cancelled"),
-            None,
-        );
-        Ok(Some(run_id))
+            .optional()
+            .map_err(CoreError::Database)
     }
 
     /// Mark every resumable interaction owned by an intentionally stopped run
@@ -1392,13 +1375,18 @@ impl Database {
     /// Whether a run still owns an interaction that legitimately keeps it at
     /// the user-input barrier. Submitted responses without a transcript
     /// message are unresolved outbox entries; launched responses are not.
-    pub(crate) fn agent_run_has_unresolved_interactions(
-        &self,
+    pub fn agent_run_has_unresolved_interactions(&self, run_id: &str) -> Result<bool, CoreError> {
+        let connection = self.conn();
+        Self::agent_run_has_unresolved_interactions_on_connection(&connection, run_id)
+    }
+
+    pub(crate) fn agent_run_has_unresolved_interactions_on_connection(
+        connection: &rusqlite::Connection,
         run_id: &str,
     ) -> Result<bool, CoreError> {
-        let conn = self.conn();
-        conn.query_row(
-            "SELECT EXISTS(
+        connection
+            .query_row(
+                "SELECT EXISTS(
                SELECT 1 FROM interaction_requests request
                LEFT JOIN interaction_responses response
                  ON response.interaction_id = request.id
@@ -1411,10 +1399,10 @@ impl Database {
                    )
                  )
              )",
-            rusqlite::params![run_id],
-            |row| row.get(0),
-        )
-        .map_err(CoreError::Database)
+                rusqlite::params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(CoreError::Database)
     }
 
     pub fn mark_interaction_presented(
@@ -2102,13 +2090,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_request_survives_restart_cleanup() {
+    fn pending_request_remains_durable_until_an_explicit_transition() {
         let fixture = fixture();
         let created = fixture
             .db
             .create_interaction_request(&request_input(&fixture, "call-1"))
             .unwrap();
-        fixture.db.mark_interrupted_agent_task_runs().unwrap();
         let request = fixture
             .db
             .get_interaction_request(&created.request.interaction_id)
@@ -2244,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn suspended_interaction_survives_restart_and_can_be_cancelled() {
+    fn suspended_interaction_cancellation_leaves_run_terminalization_to_outbox() {
         let fixture = fixture();
         let created = fixture
             .db
@@ -2254,15 +2241,20 @@ mod tests {
             .db
             .suspend_agent_turn_for_interaction(&created.request.interaction_id)
             .unwrap();
-        assert_eq!(fixture.db.mark_interrupted_agent_task_runs().unwrap(), 0);
         let run_id = fixture
             .db
-            .cancel_awaiting_interactions_for_conversation(&fixture.conversation_id)
-            .unwrap()
+            .get_interaction_request_run_id(&created.request.interaction_id)
             .unwrap();
         assert_eq!(
+            fixture
+                .db
+                .cancel_interactions_for_stopped_run(&run_id)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
             fixture.db.get_agent_task_run(&run_id).unwrap().status,
-            "cancelled"
+            "awaiting_user_input"
         );
         assert_eq!(
             fixture
@@ -2556,7 +2548,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_submitted_response_can_requeue_its_original_turn() {
+    fn restored_interaction_response_requeues_once_per_restart_without_duplicate_message() {
         let fixture = fixture();
         let request = fixture
             .db
@@ -2609,7 +2601,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(first_launch.status, "queued");
-        assert_eq!(fixture.db.mark_interrupted_agent_task_runs().unwrap(), 1);
+        assert!(!first_launch.reused);
+        let message_count = fixture
+            .db
+            .get_messages(&fixture.conversation_id)
+            .unwrap()
+            .len();
+        {
+            let conn = fixture.db.conn();
+            conn.execute(
+                "UPDATE conversation_turns
+                 SET status = 'awaiting_user_input', finished_at = NULL
+                 WHERE id = ?1",
+                [&first_launch.turn_id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE agent_task_runs
+                 SET status = 'awaiting_user_input', phase = 'awaiting_user_input',
+                     finished_at = NULL
+                 WHERE id = ?1",
+                [&first_launch.run_id],
+            )
+            .unwrap();
+        }
 
         let recovered = fixture
             .db
@@ -2625,22 +2640,17 @@ mod tests {
         assert_eq!(recovered.turn_id, first_launch.turn_id);
         assert_eq!(recovered.status, "queued");
         assert!(!recovered.reused);
+        assert_eq!(recovered.user_message_id, first_launch.user_message_id);
+        assert_eq!(
+            fixture
+                .db
+                .get_messages(&fixture.conversation_id)
+                .unwrap()
+                .len(),
+            message_count
+        );
 
-        fixture
-            .db
-            .finalize_conversation_turn(&recovered.turn_id, "error", None, None)
-            .unwrap();
-        fixture
-            .db
-            .finish_agent_task_run(
-                &recovered.run_id,
-                "failed",
-                Some("Initialization failed"),
-                Some("provider unavailable"),
-                None,
-            )
-            .unwrap();
-        let recovered_after_failure = fixture
+        let replayed = fixture
             .db
             .resume_agent_turn_with_interaction_response(
                 &message,
@@ -2650,44 +2660,101 @@ mod tests {
                 &input,
             )
             .unwrap();
-        assert_eq!(recovered_after_failure.run_id, first_launch.run_id);
-        assert_eq!(recovered_after_failure.turn_id, first_launch.turn_id);
-        assert_eq!(recovered_after_failure.status, "queued");
-        assert!(!recovered_after_failure.reused);
+        assert_eq!(replayed.status, "queued");
+        assert!(replayed.reused);
+        assert_eq!(replayed.user_message_id, first_launch.user_message_id);
+
+        let different_key = fixture.db.resume_agent_turn_with_interaction_response(
+            &message,
+            None,
+            None,
+            "different-recover-launch",
+            &input,
+        );
+        assert!(matches!(different_key, Err(CoreError::InvalidInput(_))));
 
         assert_eq!(
             fixture
                 .db
-                .acknowledge_submitted_interactions_for_run(&recovered_after_failure.run_id)
+                .acknowledge_submitted_interactions_for_run(&recovered.run_id)
                 .unwrap(),
             1
         );
-        assert_eq!(fixture.db.mark_interrupted_agent_task_runs().unwrap(), 1);
-        let recoverable = fixture
-            .db
-            .list_interaction_requests(Some(&fixture.conversation_id), false)
+        {
+            let conn = fixture.db.conn();
+            conn.execute(
+                "UPDATE conversation_turns
+                 SET status = 'awaiting_user_input', finished_at = NULL
+                 WHERE id = ?1",
+                [&recovered.turn_id],
+            )
             .unwrap();
-        assert!(recoverable.iter().any(|request| {
-            request.interaction_id == input.interaction_id
-                && request.status == InteractionStatus::Acknowledged
-        }));
+            conn.execute(
+                "UPDATE agent_task_runs
+                 SET status = 'awaiting_user_input', phase = 'awaiting_user_input',
+                     finished_at = NULL
+                 WHERE id = ?1",
+                [&recovered.run_id],
+            )
+            .unwrap();
+        }
         let recovered_after_acknowledgement = fixture
             .db
             .resume_agent_turn_with_interaction_response(
                 &message,
                 None,
                 None,
-                "a-new-retry-key-is-safe-for-the-same-response",
+                "recover-launch",
                 &input,
             )
             .unwrap();
-        assert_eq!(recovered_after_acknowledgement.run_id, first_launch.run_id);
         assert_eq!(recovered_after_acknowledgement.status, "queued");
         assert!(!recovered_after_acknowledgement.reused);
 
+        fixture
+            .db
+            .finalize_conversation_turn(
+                &recovered_after_acknowledgement.turn_id,
+                "error",
+                None,
+                None,
+            )
+            .unwrap();
+        fixture
+            .db
+            .finish_agent_task_run(
+                &recovered_after_acknowledgement.run_id,
+                "failed",
+                Some("Initialization failed"),
+                Some("provider unavailable"),
+                None,
+            )
+            .unwrap();
+        let terminal_replay = fixture
+            .db
+            .resume_agent_turn_with_interaction_response(
+                &message,
+                None,
+                None,
+                "recover-launch",
+                &input,
+            )
+            .unwrap();
+        assert_eq!(terminal_replay.run_id, first_launch.run_id);
+        assert_eq!(terminal_replay.status, "failed");
+        assert!(terminal_replay.reused);
+        assert_eq!(
+            fixture
+                .db
+                .get_agent_task_run(&first_launch.run_id)
+                .unwrap()
+                .status,
+            "failed"
+        );
+
         let stale_waiting = crate::agent_run::AgentRunEvent::status_update(
-            &recovered_after_acknowledgement.run_id,
-            Some(&recovered_after_acknowledgement.turn_id),
+            &terminal_replay.run_id,
+            Some(&terminal_replay.turn_id),
             999,
             crate::agent_run::AgentRunPhase::AwaitingUserInput,
             "Waiting for your response",
@@ -2695,8 +2762,8 @@ mod tests {
             None,
         );
         let run = crate::task_run::AgentTaskRuntime::new(&fixture.db)
-            .apply_run_event(&recovered_after_acknowledgement.run_id, &stale_waiting)
+            .apply_run_event(&terminal_replay.run_id, &stale_waiting)
             .unwrap();
-        assert_eq!(run.status, "queued");
+        assert_eq!(run.status, "failed");
     }
 }

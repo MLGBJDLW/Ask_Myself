@@ -48,6 +48,10 @@ import type {
 } from './streaming/protocol';
 import { armStreamWatchdog, clearStreamWatchdog } from './streaming/watchdog';
 import { ConversationFrameBatcher } from './streaming/frameBatcher';
+import {
+  classifyAgentRunEventLifecycle,
+  suspendAgentRunProjection,
+} from './streaming/runEventLifecycle';
 export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEvent, TraceEvent, UsageTotal } from './streaming/protocol';
 
 const TOOL_PREPARING_DELAY_MS = 150;
@@ -343,13 +347,10 @@ class StreamStoreImpl {
   }
 
   /** Settle the live transport while the durable turn waits for a response. */
-  markAwaitingUserInput(conversationId: string): void {
+  markResumableSuspension(conversationId: string): void {
     const state = this._streams[conversationId];
     if (!state) return;
-    clearStreamWatchdog(state);
-    clearToolPreparingTimers(state);
-    state.isStreaming = false;
-    state.isThinking = false;
+    suspendAgentRunProjection(state);
     this.finishTurnTiming(state);
     this.touch(conversationId);
     this.notifyImmediately(conversationId);
@@ -567,13 +568,7 @@ class StreamStoreImpl {
   ): boolean {
     const status = taskRun.status.toLowerCase();
     if (taskRun.phase === 'awaiting_user_input' || status === 'paused') {
-      clearToolPreparingTimers(state);
-      applyTerminalProjection(state, {
-        toolStatus: 'cancelled',
-        message: 'Backend confirmed this turn is paused for input.',
-        traceTone: 'success',
-        errorMessage: null,
-      });
+      suspendAgentRunProjection(state);
     } else if (status === 'completed') {
       if (!finalMessage) return false;
       clearToolPreparingTimers(state);
@@ -873,16 +868,14 @@ class StreamStoreImpl {
     state: InternalStreamState,
     runEvent: AgentRunEvent,
   ): boolean {
-    const isTerminalEvent = runEvent.kind === 'done' || runEvent.kind === 'error';
-    const isAwaitingUserInput = runEvent.kind === 'status'
-      && runEvent.phase === 'awaiting_user_input';
-    const reopensAwaitingStream = runEvent.kind === 'status'
-      && runEvent.phase !== 'awaiting_user_input'
-      && ['queued', 'running', 'recovering'].includes(runEvent.status ?? '');
-    if (!state.isStreaming && !isTerminalEvent && !reopensAwaitingStream) return false;
+    const lifecycle = classifyAgentRunEventLifecycle(runEvent);
+    const isTerminalEvent = lifecycle === 'terminal';
+    const isResumableSuspension = lifecycle === 'suspension';
+    const reopensSuspendedStream = lifecycle === 'resume';
+    if (!state.isStreaming && !isTerminalEvent && !reopensSuspendedStream) return false;
 
     this.markFirstEventTiming(state);
-    if (reopensAwaitingStream) {
+    if (reopensSuspendedStream) {
       state.isStreaming = true;
       state.isThinking = false;
     }
@@ -898,19 +891,16 @@ class StreamStoreImpl {
           );
         },
     });
-    if (isAwaitingUserInput) {
-      clearStreamWatchdog(state);
-      clearToolPreparingTimers(state);
-      state.isStreaming = false;
-      state.isThinking = false;
+    if (isResumableSuspension) {
+      suspendAgentRunProjection(state);
     }
-    if (isTerminalEvent || isAwaitingUserInput) this.finishTurnTiming(state);
+    if (isTerminalEvent || isResumableSuspension) this.finishTurnTiming(state);
     this.touch(conversationId);
     this.capLiveCollections(state);
     if (isTerminalEvent) this.evictCompletedStreams(conversationId);
     if (
       isTerminalEvent
-      || isAwaitingUserInput
+      || isResumableSuspension
       || runEvent.kind === 'approvalRequested'
       || runEvent.kind === 'approvalResolved'
     ) {

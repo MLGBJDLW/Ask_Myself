@@ -13,10 +13,12 @@
   "include": [
     "tests/**/*.test.ts",
     "src/lib/chatAttachments.ts",
+    "src/lib/agentChatRequest.ts",
     "src/lib/boundedConversationCache.ts",
     "src/lib/localStorageMigrations.ts",
     "src/lib/interactionStore.ts",
     "src/lib/slashCommands.ts",
+    "src/lib/taskResume.ts",
     "src/lib/workflowRecorder.ts",
     "src/lib/streaming/**/*.ts",
     "src/lib/streaming/toolCardPresentation.ts",

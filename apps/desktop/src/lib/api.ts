@@ -142,6 +142,24 @@ import type {
 } from "../types/dreaming";
 import type { ProviderPreset } from "./providerPresets";
 import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
+import {
+  buildAgentChatRequest,
+  type AgentCollaborationMode,
+  type AgentExecutionMode,
+  type AgentPowerMode,
+  type CustomOrchestrationOptions,
+  type MoaPresetId,
+  type OrchestrationProfile,
+} from "./agentChatRequest";
+
+export type {
+  AgentCollaborationMode,
+  AgentExecutionMode,
+  AgentPowerMode,
+  CustomOrchestrationOptions,
+  MoaPresetId,
+  OrchestrationProfile,
+} from "./agentChatRequest";
 
 export type {
   DreamArtifact,
@@ -1668,21 +1686,6 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
-export type AgentExecutionMode = 'normal' | 'plan';
-export type AgentPowerMode = 'standard' | 'nexus';
-export type AgentCollaborationMode = 'direct' | 'mixtureOfAgents';
-export type MoaPresetId = 'fastReview' | 'deepResearch' | 'crossModelCodeReview' | 'custom';
-export type OrchestrationProfile = 'balanced' | 'deep' | 'codeUltra' | 'researchUltra' | 'custom';
-export interface CustomOrchestrationOptions {
-  maxIterations?: number | null;
-  maxParallel?: number | null;
-  maxCallsPerTurn?: number | null;
-  delegatedTokenBudget?: number | null;
-  verificationReservePercent?: number | null;
-  retryLimit?: number | null;
-  minEvidenceSources?: number | null;
-}
-
 export const agentChat = (
   conversationId: string,
   message: string,
@@ -1699,35 +1702,26 @@ export const agentChat = (
   visionTurnOverride?: VisionTurnOverride | null,
   userArtifacts?: ArtifactPayload | null,
   taskOrchestratorRunId?: string | null,
+  resumeCheckpointId?: string | null,
 ) => {
-  const interactionId = userArtifacts
-    && !Array.isArray(userArtifacts)
-    && userArtifacts.kind === 'questionResponse'
-    && userArtifacts.version === 2
-    && typeof userArtifacts.interactionId === 'string'
-    ? userArtifacts.interactionId.trim()
-    : '';
-  const request = {
-    version: 1,
-    idempotencyKey: interactionId
-      ? `interaction-response:${interactionId}`
-      : crypto.randomUUID(),
+  const request = buildAgentChatRequest({
     conversationId,
     message,
-    attachments: attachments ?? [],
-    agentConfigId: agentConfigId ?? null,
-    personaId: personaId ?? null,
-    skillIds: skillIds ?? [],
-    executionMode: executionMode ?? 'normal',
-    powerMode: powerMode ?? 'standard',
-    collaborationMode: collaborationMode ?? 'direct',
-    moaPreset: moaPreset ?? 'fastReview',
-    orchestrationProfile: orchestrationProfile ?? 'balanced',
-    customOrchestration: customOrchestration ?? null,
-    visionTurnOverride: visionTurnOverride ?? null,
-    userArtifacts: userArtifacts ?? null,
-    taskOrchestratorRunId: taskOrchestratorRunId ?? null,
-  };
+    attachments,
+    agentConfigId,
+    personaId,
+    skillIds,
+    executionMode,
+    powerMode,
+    collaborationMode,
+    moaPreset,
+    orchestrationProfile,
+    customOrchestration,
+    visionTurnOverride,
+    userArtifacts,
+    taskOrchestratorRunId,
+    resumeCheckpointId,
+  });
   return invoke<AgentTurnHandle>('agent_chat_cmd', { request });
 };
 

@@ -31,6 +31,12 @@ pub struct StoredDocumentMetadata {
 }
 
 impl Database {
+    #[cfg(test)]
+    pub(crate) fn execute_batch_for_test(&self, sql: &str) -> Result<(), CoreError> {
+        self.conn().execute_batch(sql)?;
+        Ok(())
+    }
+
     /// Open a file-backed database with WAL mode, PRAGMAs, and auto-migration.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let mut conn = Connection::open(path.as_ref())?;
@@ -504,18 +510,46 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
-    pub fn latest_agent_run_event_sequence(&self, run_id: &str) -> Result<u64, CoreError> {
+    pub(crate) fn agent_run_event_head(&self, run_id: &str) -> Result<(u64, bool), CoreError> {
         let conn = self.conn();
-        let sequence: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(event_seq), 0) FROM agent_run_events WHERE run_id = ?1",
+        Self::agent_run_event_head_on_connection(&conn, run_id)
+    }
+
+    pub(crate) fn agent_run_event_head_on_connection(
+        connection: &rusqlite::Connection,
+        run_id: &str,
+    ) -> Result<(u64, bool), CoreError> {
+        let (sequence, closed): (i64, bool) = connection.query_row(
+            "SELECT COALESCE(MAX(event_seq), 0),
+                    (EXISTS(
+                       SELECT 1
+                       FROM agent_run_events terminal
+                       WHERE terminal.run_id = ?1
+                         AND (
+                           terminal.kind = 'error'
+                           OR (
+                             terminal.kind = 'done'
+                             AND COALESCE(terminal.status, '') <> 'paused'
+                           )
+                         )
+                     )
+                     OR EXISTS(
+                       SELECT 1
+                       FROM agent_task_runs task
+                       WHERE task.id = ?1
+                         AND task.status IN ('completed', 'failed', 'timed_out', 'cancelled')
+                     ))
+             FROM agent_run_events
+             WHERE run_id = ?1",
             rusqlite::params![run_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        u64::try_from(sequence).map_err(|_| {
+        let sequence = u64::try_from(sequence).map_err(|_| {
             CoreError::Internal(format!(
                 "Agent run {run_id} has an invalid negative event sequence"
             ))
-        })
+        })?;
+        Ok((sequence, closed))
     }
 
     /// Persist one durable agent run event after validating the protocol contract.
@@ -531,7 +565,7 @@ impl Database {
 
         let conn = self.conn();
         conn.execute(
-            "INSERT OR REPLACE INTO agent_run_events
+            "INSERT INTO agent_run_events
              (run_id, turn_id, event_seq, version, kind, phase, visibility, persistence,
               display_kind, importance, label, status, payload_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
@@ -563,45 +597,9 @@ impl Database {
             return Ok(());
         }
 
-        let mut prepared_events = Vec::with_capacity(events.len());
-        for event in events {
-            event.validate_durable_contract().map_err(|err| {
-                CoreError::InvalidInput(format!("invalid agent run event: {err}"))
-            })?;
-            prepared_events.push((
-                event,
-                agent_event_seq_to_i64(event.event_seq)?,
-                serde_json::to_string(&event.payload)?,
-            ));
-        }
-
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO agent_run_events
-                 (run_id, turn_id, event_seq, version, kind, phase, visibility, persistence,
-                  display_kind, importance, label, status, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            )?;
-            for (event, event_seq, payload_json) in prepared_events {
-                stmt.execute(rusqlite::params![
-                    event.run_id,
-                    event.turn_id,
-                    event_seq,
-                    event.version as i64,
-                    event.kind.as_str(),
-                    event.phase.as_str(),
-                    event.visibility.as_str(),
-                    event.persistence.as_str(),
-                    event.display_kind.as_str(),
-                    event.importance.as_str(),
-                    event.label,
-                    event.status,
-                    payload_json,
-                ])?;
-            }
-        }
+        insert_agent_run_events(&tx, events)?;
         tx.commit()?;
         Ok(())
     }
@@ -714,6 +712,52 @@ impl Database {
 
         Ok(events)
     }
+}
+
+pub(crate) fn insert_agent_run_events(
+    connection: &rusqlite::Connection,
+    events: &[crate::agent_run::AgentRunEvent],
+) -> Result<(), CoreError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let mut prepared_events = Vec::with_capacity(events.len());
+    for event in events {
+        event
+            .validate_durable_contract()
+            .map_err(|err| CoreError::InvalidInput(format!("invalid agent run event: {err}")))?;
+        prepared_events.push((
+            event,
+            agent_event_seq_to_i64(event.event_seq)?,
+            serde_json::to_string(&event.payload)?,
+        ));
+    }
+
+    let mut statement = connection.prepare(
+        "INSERT INTO agent_run_events
+         (run_id, turn_id, event_seq, version, kind, phase, visibility, persistence,
+          display_kind, importance, label, status, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    )?;
+    for (event, event_seq, payload_json) in prepared_events {
+        statement.execute(rusqlite::params![
+            event.run_id,
+            event.turn_id,
+            event_seq,
+            event.version as i64,
+            event.kind.as_str(),
+            event.phase.as_str(),
+            event.visibility.as_str(),
+            event.persistence.as_str(),
+            event.display_kind.as_str(),
+            event.importance.as_str(),
+            event.label,
+            event.status,
+            payload_json,
+        ])?;
+    }
+    Ok(())
 }
 
 fn agent_event_seq_to_i64(event_seq: u64) -> Result<i64, CoreError> {

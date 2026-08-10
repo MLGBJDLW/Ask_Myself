@@ -2101,50 +2101,6 @@ impl Database {
         .map_err(CoreError::Database)
     }
 
-    /// Mark task runs left active by a previous desktop process as interrupted.
-    ///
-    /// The in-memory running task handle is process-local. After the app exits,
-    /// persisted active rows cannot accept steering or cancellation anymore.
-    pub fn mark_interrupted_agent_task_runs(&self) -> Result<usize, CoreError> {
-        const INTERRUPTED_SUMMARY: &str = "Interrupted because the app was closed.";
-        const ACTIVE_STATUSES: [&str; 4] = ["queued", "running", "waiting_approval", "cancelling"];
-
-        let conn = self.conn();
-        let affected = conn.execute(
-            "UPDATE agent_task_runs
-             SET status = 'cancelled',
-                 phase = 'done',
-                 summary = COALESCE(NULLIF(summary, ''), ?1),
-                 error_message = NULL,
-                 finished_at = COALESCE(finished_at, datetime('now')),
-                 updated_at = datetime('now')
-             WHERE status IN (?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                INTERRUPTED_SUMMARY,
-                ACTIVE_STATUSES[0],
-                ACTIVE_STATUSES[1],
-                ACTIVE_STATUSES[2],
-                ACTIVE_STATUSES[3],
-            ],
-        )?;
-
-        conn.execute(
-            "UPDATE conversation_turns
-             SET status = 'cancelled',
-                 finished_at = COALESCE(finished_at, datetime('now')),
-                 updated_at = datetime('now')
-             WHERE status = 'running'
-               AND id IN (
-                 SELECT turn_id
-                 FROM agent_task_runs
-                 WHERE status = 'cancelled'
-               )",
-            [],
-        )?;
-
-        Ok(affected)
-    }
-
     /// Create a durable task run for a conversation turn.
     pub fn create_agent_task_run(
         &self,
@@ -2222,6 +2178,11 @@ impl Database {
                  summary = COALESCE(?5, summary),
                  plan_json = COALESCE(?6, plan_json),
                  artifacts_json = COALESCE(?7, artifacts_json),
+                 started_at = CASE
+                   WHEN ?2 = 'running' AND status IN ('queued', 'paused')
+                     THEN COALESCE(started_at, datetime('now'))
+                   ELSE started_at
+                 END,
                  updated_at = datetime('now')
              WHERE id = ?1",
             rusqlite::params![
@@ -2246,8 +2207,8 @@ impl Database {
     /// guard in this SQL statement makes their ordering irrelevant and preserves
     /// paused checkpoints plus final summaries written by the finalizer.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn project_agent_task_run_progress(
-        &self,
+    pub(crate) fn project_agent_task_run_progress_on_connection(
+        connection: &rusqlite::Connection,
         run_id: &str,
         status: Option<&str>,
         phase: Option<&str>,
@@ -2264,8 +2225,7 @@ impl Database {
             Some(value) => Some(serde_json::to_string(value)?),
             None => None,
         };
-        let conn = self.conn();
-        let affected = conn.execute(
+        let affected = connection.execute(
             "UPDATE agent_task_runs
              SET status = COALESCE(?2, status),
                  phase = COALESCE(?3, phase),
@@ -2273,9 +2233,14 @@ impl Database {
                  summary = COALESCE(?5, summary),
                  plan_json = COALESCE(?6, plan_json),
                  artifacts_json = COALESCE(?7, artifacts_json),
+                 started_at = CASE
+                   WHEN ?2 = 'running' AND status IN ('queued', 'paused')
+                     THEN COALESCE(started_at, datetime('now'))
+                   ELSE started_at
+                 END,
                  updated_at = datetime('now')
              WHERE id = ?1
-               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled', 'paused')",
+               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled')",
             rusqlite::params![
                 run_id,
                 status,
@@ -2287,7 +2252,7 @@ impl Database {
             ],
         )?;
         if affected == 0 {
-            let exists: bool = conn.query_row(
+            let exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agent_task_runs WHERE id = ?1)",
                 [run_id],
                 |row| row.get(0),
@@ -2332,8 +2297,8 @@ impl Database {
     }
 
     /// Project a terminal RunEvent only while the task run is still active.
-    pub(crate) fn project_agent_task_run_finished(
-        &self,
+    pub(crate) fn project_agent_task_run_finished_on_connection(
+        connection: &rusqlite::Connection,
         run_id: &str,
         status: &str,
         summary: Option<&str>,
@@ -2344,8 +2309,7 @@ impl Database {
             Some(value) => Some(serde_json::to_string(value)?),
             None => None,
         };
-        let conn = self.conn();
-        let affected = conn.execute(
+        let affected = connection.execute(
             "UPDATE agent_task_runs
              SET status = ?2,
                  phase = 'done',
@@ -2355,11 +2319,11 @@ impl Database {
                  finished_at = COALESCE(finished_at, datetime('now')),
                  updated_at = datetime('now')
              WHERE id = ?1
-               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled', 'paused')",
+               AND status NOT IN ('completed', 'failed', 'timed_out', 'cancelled')",
             rusqlite::params![run_id, status, summary, error_message, artifacts_json],
         )?;
         if affected == 0 {
-            let exists: bool = conn.query_row(
+            let exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agent_task_runs WHERE id = ?1)",
                 [run_id],
                 |row| row.get(0),
@@ -2397,43 +2361,51 @@ impl Database {
     }
 
     pub fn get_agent_task_run(&self, run_id: &str) -> Result<AgentTaskRun, CoreError> {
-        let conn = self.conn();
-        conn.query_row(
-            "SELECT id, conversation_id, turn_id, user_message_id, status, phase, title,
+        let connection = self.conn();
+        Self::get_agent_task_run_on_connection(&connection, run_id)
+    }
+
+    pub(crate) fn get_agent_task_run_on_connection(
+        connection: &rusqlite::Connection,
+        run_id: &str,
+    ) -> Result<AgentTaskRun, CoreError> {
+        connection
+            .query_row(
+                "SELECT id, conversation_id, turn_id, user_message_id, status, phase, title,
                     route_kind, summary, error_message, provider, model, plan_json,
                     artifacts_json, created_at, updated_at, started_at, finished_at
              FROM agent_task_runs
              WHERE id = ?1",
-            rusqlite::params![run_id],
-            |row| {
-                Ok(AgentTaskRun {
-                    id: row.get(0)?,
-                    conversation_id: row.get(1)?,
-                    turn_id: row.get(2)?,
-                    user_message_id: row.get(3)?,
-                    status: row.get(4)?,
-                    phase: row.get(5)?,
-                    title: row.get(6)?,
-                    route_kind: row.get(7)?,
-                    summary: row.get(8)?,
-                    error_message: row.get(9)?,
-                    provider: row.get(10)?,
-                    model: row.get(11)?,
-                    plan: json_value_from_sql(row.get(12)?, 12)?,
-                    artifacts: json_value_from_sql(row.get(13)?, 13)?,
-                    created_at: row.get(14)?,
-                    updated_at: row.get(15)?,
-                    started_at: row.get(16)?,
-                    finished_at: row.get(17)?,
-                })
-            },
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                CoreError::NotFound(format!("Agent task run {run_id}"))
-            }
-            other => CoreError::Database(other),
-        })
+                rusqlite::params![run_id],
+                |row| {
+                    Ok(AgentTaskRun {
+                        id: row.get(0)?,
+                        conversation_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        user_message_id: row.get(3)?,
+                        status: row.get(4)?,
+                        phase: row.get(5)?,
+                        title: row.get(6)?,
+                        route_kind: row.get(7)?,
+                        summary: row.get(8)?,
+                        error_message: row.get(9)?,
+                        provider: row.get(10)?,
+                        model: row.get(11)?,
+                        plan: json_value_from_sql(row.get(12)?, 12)?,
+                        artifacts: json_value_from_sql(row.get(13)?, 13)?,
+                        created_at: row.get(14)?,
+                        updated_at: row.get(15)?,
+                        started_at: row.get(16)?,
+                        finished_at: row.get(17)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("Agent task run {run_id}"))
+                }
+                other => CoreError::Database(other),
+            })
     }
 
     pub fn get_agent_task_run_by_turn(
@@ -5559,68 +5531,6 @@ mod tests {
         let events = db.get_agent_task_run_events(&run.id).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload.as_ref().unwrap()["callId"], "call-1");
-    }
-
-    #[test]
-    fn test_mark_interrupted_agent_task_runs_cancels_stale_active_runs() {
-        let db = Database::open_memory().unwrap();
-        let conv = db
-            .create_conversation(&CreateConversationInput {
-                provider: "openai".into(),
-                model: "gpt-4o".into(),
-                system_prompt: None,
-                collection_context: None,
-                project_id: None,
-                persona_id: None,
-            })
-            .unwrap();
-
-        let user_msg = ConversationMessage {
-            id: new_id(),
-            conversation_id: conv.id.clone(),
-            role: Role::User,
-            content: "Continue the stale run.".into(),
-            tool_call_id: None,
-            tool_calls: vec![],
-            artifacts: None,
-            token_count: 5,
-            created_at: String::new(),
-            sort_order: 0,
-            thinking: None,
-            image_attachments: None,
-        };
-        db.add_message(&user_msg).unwrap();
-        let turn = db
-            .create_conversation_turn(&conv.id, &user_msg.id, None)
-            .unwrap();
-        let run = db
-            .create_agent_task_run(
-                &conv.id,
-                &turn.id,
-                &user_msg.id,
-                "Stale run",
-                Some("openai"),
-                Some("gpt-4o"),
-            )
-            .unwrap();
-
-        db.mark_agent_task_run_started(&run.id, "responding")
-            .unwrap();
-        let count = db.mark_interrupted_agent_task_runs().unwrap();
-
-        assert_eq!(count, 1);
-        let updated_run = db.get_agent_task_run(&run.id).unwrap();
-        assert_eq!(updated_run.status, "cancelled");
-        assert_eq!(updated_run.phase, "done");
-        assert_eq!(
-            updated_run.summary.as_deref(),
-            Some("Interrupted because the app was closed.")
-        );
-        assert!(updated_run.finished_at.is_some());
-
-        let updated_turn = db.get_conversation_turn(&turn.id).unwrap();
-        assert_eq!(updated_turn.status, "cancelled");
-        assert!(updated_turn.finished_at.is_some());
     }
 
     #[test]

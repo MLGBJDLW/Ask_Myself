@@ -1,57 +1,41 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use log::warn;
 use nexa_core::agent::AgentEvent;
 use nexa_core::agent_run::AgentRunPhase;
-use nexa_core::db::Database;
 use nexa_core::runtime::{AgentRunEventOutbox, TurnLaunchStage};
-use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 use crate::agent_stream::{
     agent_event_rotates_stream_blocks, prepare_agent_run_event_for_frontend, PendingStreamDelta,
     StreamBlockEmitter,
 };
-use crate::agent_task_events::{
-    emit_agent_task_run_update, record_internal_agent_run_status_event,
-};
+use crate::agent_task_events::record_internal_agent_run_status_event;
 
 // Rendering does not require one durable SQLite row per display frame. A 20 Hz
 // flush remains responsive while bounding write amplification for long turns.
 const STREAM_FLUSH_INTERVAL_MS: u64 = 50;
 
 pub(crate) struct AgentStreamForwarder {
-    app_handle: AppHandle,
-    db: Arc<Database>,
     conversation_id: String,
     task_run_id: String,
     turn_id: String,
     event_outbox: AgentRunEventOutbox,
-    terminal_emitted: Arc<AtomicBool>,
     launch_started: Instant,
 }
 
 impl AgentStreamForwarder {
     pub(crate) fn new(
-        app_handle: AppHandle,
-        db: Arc<Database>,
         conversation_id: String,
         task_run_id: String,
         turn_id: String,
         event_outbox: AgentRunEventOutbox,
-        terminal_emitted: Arc<AtomicBool>,
         launch_started: Instant,
     ) -> Self {
         Self {
-            app_handle,
-            db,
             conversation_id,
             task_run_id,
             turn_id,
             event_outbox,
-            terminal_emitted,
             launch_started,
         }
     }
@@ -100,7 +84,7 @@ impl AgentStreamForwarder {
 
                             match event {
                                 AgentEvent::TextDelta { delta } => {
-                                    if self.terminal_emitted.load(Ordering::SeqCst) {
+                                    if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
                                     self.flush_pending_tool_updates(
@@ -121,7 +105,7 @@ impl AgentStreamForwarder {
                                     }
                                 }
                                 AgentEvent::Thinking { content } => {
-                                    if self.terminal_emitted.load(Ordering::SeqCst) {
+                                    if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
                                     self.flush_pending_tool_updates(
@@ -151,26 +135,13 @@ impl AgentStreamForwarder {
                                     // ToolRun is the only public tool lifecycle.
                                 }
                                 event @ AgentEvent::ToolRunUpdated { .. } => {
-                                    if self.terminal_emitted.load(Ordering::SeqCst) {
+                                    if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     queue_latest_tool_update(&mut pending_tool_updates, event);
                                 }
                                 other => {
-                                    if let AgentEvent::Done { message, .. } = &other {
-                                        if let Err(error) = self.db.record_project_turn_completion(
-                                            &self.conversation_id,
-                                            &self.turn_id,
-                                            &self.task_run_id,
-                                            &message.text_content(),
-                                        ) {
-                                            warn!(
-                                                "Failed to publish project workspace turn completion for conversation {} turn {}: {}",
-                                                self.conversation_id, self.turn_id, error
-                                            );
-                                        }
-                                    }
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     self.flush_pending_tool_updates(
                                         &stream_emitter,
@@ -183,11 +154,9 @@ impl AgentStreamForwarder {
                                             other,
                                         );
                                     let rotates_blocks = agent_event_rotates_stream_blocks(&frontend_event);
-                                    if run_event.is_terminal() {
-                                        if self.terminal_emitted.swap(true, Ordering::SeqCst) {
-                                            continue;
-                                        }
-                                    } else if self.terminal_emitted.load(Ordering::SeqCst) {
+                                    if !run_event.is_terminal()
+                                        && self.event_outbox.is_closed_for_submission()
+                                    {
                                         continue;
                                     }
                                     stream_emitter.emit_event(
@@ -201,7 +170,7 @@ impl AgentStreamForwarder {
                             }
                         }
                         None => {
-                            if !self.terminal_emitted.load(Ordering::SeqCst) {
+                            if !self.event_outbox.is_closed_for_submission() {
                                 self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                 self.flush_pending_tool_updates(
                                     &stream_emitter,
@@ -213,7 +182,7 @@ impl AgentStreamForwarder {
                     }
                 }
                 _ = tick.tick() => {
-                    if !self.terminal_emitted.load(Ordering::SeqCst) {
+                    if !self.event_outbox.is_closed_for_submission() {
                         self.flush_pending(&mut stream_emitter, &mut pending_delta);
                         self.flush_pending_tool_updates(
                             &stream_emitter,
@@ -226,20 +195,16 @@ impl AgentStreamForwarder {
     }
 
     fn record_progress_phase(&self, phase: &str, label: &str) {
-        let _ = self.db.update_agent_task_run_progress(
-            &self.task_run_id,
-            Some("running"),
-            Some(phase),
-            None,
-            Some(label),
-            None,
-            None,
-        );
-        emit_agent_task_run_update(
-            &self.db,
-            &self.app_handle,
+        let payload = serde_json::json!({ "phase": phase });
+        record_internal_agent_run_status_event(
             &self.conversation_id,
             &self.task_run_id,
+            Some(&self.turn_id),
+            &self.event_outbox,
+            AgentRunPhase::Responding,
+            label,
+            Some("running"),
+            Some(&payload),
         );
     }
 

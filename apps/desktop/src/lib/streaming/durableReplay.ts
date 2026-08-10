@@ -17,6 +17,7 @@ import {
   enqueueStreamRunEvent,
   takeNextStreamRunEvent,
 } from './ordering';
+import { classifyAgentRunEventLifecycle } from './runEventLifecycle';
 
 export type DurableReplayProjectionState = InternalStreamState;
 
@@ -37,7 +38,7 @@ export function applyDurableRunEventsToState(
       applyAgentRunEvent(state, ready, {
         scheduleToolPreparing: payload => applyToolPreparingReplay(state, payload),
       });
-      if (ready.kind === 'done' || ready.kind === 'error') {
+      if (classifyAgentRunEventLifecycle(ready) === 'terminal') {
         state._pendingRunEvents.clear();
         return;
       }
