@@ -437,12 +437,12 @@ pub fn init_watcher(
                             .entry(sid)
                             .or_insert_with(|| (Instant::now(), HashSet::new(), HashSet::new()));
                         entry.0 = Instant::now();
-                        if event.kind == WatcherEventKind::Removed {
-                            entry.2.insert(event.path.clone());
-                        } else {
-                            // Created or Modified
-                            entry.1.insert(event.path.clone());
-                        }
+                        record_debounced_watcher_path(
+                            &mut entry.1,
+                            &mut entry.2,
+                            event.path,
+                            event.kind,
+                        );
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -476,6 +476,24 @@ pub fn init_watcher(
             }
         }
     });
+}
+
+fn record_debounced_watcher_path(
+    changed_paths: &mut HashSet<PathBuf>,
+    removed_paths: &mut HashSet<PathBuf>,
+    path: PathBuf,
+    kind: WatcherEventKind,
+) {
+    if kind == WatcherEventKind::Removed {
+        changed_paths.remove(&path);
+        removed_paths.insert(path);
+    } else {
+        // Atomic saves commonly emit Removed followed by Created/Modified for
+        // the same path. Preserve only the latest observed state so the
+        // recreated file is ingested instead of being deleted from search.
+        removed_paths.remove(&path);
+        changed_paths.insert(path);
+    }
 }
 
 fn process_source_change_job(app_handle: &tauri::AppHandle, permit: BackgroundWorkPermit) {
@@ -2026,5 +2044,38 @@ mod tests {
             }
             other => panic!("unexpected compacted event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn debounced_watcher_path_uses_latest_event_for_atomic_saves() {
+        let path = PathBuf::from("atomic-save.md");
+        let mut changed_paths = HashSet::new();
+        let mut removed_paths = HashSet::new();
+
+        record_debounced_watcher_path(
+            &mut changed_paths,
+            &mut removed_paths,
+            path.clone(),
+            WatcherEventKind::Removed,
+        );
+        record_debounced_watcher_path(
+            &mut changed_paths,
+            &mut removed_paths,
+            path.clone(),
+            WatcherEventKind::Created,
+        );
+
+        assert_eq!(changed_paths, HashSet::from([path.clone()]));
+        assert!(removed_paths.is_empty());
+
+        record_debounced_watcher_path(
+            &mut changed_paths,
+            &mut removed_paths,
+            path.clone(),
+            WatcherEventKind::Removed,
+        );
+
+        assert!(changed_paths.is_empty());
+        assert_eq!(removed_paths, HashSet::from([path]));
     }
 }

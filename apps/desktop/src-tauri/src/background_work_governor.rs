@@ -79,9 +79,9 @@ impl BackgroundWorkGovernor {
         )
     }
 
-    /// Merge a watcher generation into the pending source job. Removed paths
-    /// win over changed paths, and a newer generation cancels active embedding
-    /// work for the same source.
+    /// Merge a watcher generation into the pending source job. The newest
+    /// generation wins for each path, and a newer generation cancels active
+    /// embedding work for the same source.
     pub fn submit_source_changes(
         &self,
         source_id: String,
@@ -103,9 +103,8 @@ impl BackgroundWorkGovernor {
 
         let pending = state.pending.entry(source_id).or_default();
         for path in changed_paths {
-            if !pending.removed_paths.contains(&path) {
-                pending.changed_paths.insert(path);
-            }
+            pending.removed_paths.remove(&path);
+            pending.changed_paths.insert(path);
         }
         for path in removed_paths {
             pending.changed_paths.remove(&path);
@@ -266,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn merges_paths_and_removal_wins() {
+    fn merges_paths_and_latest_generation_wins() {
         let (governor, receiver) = BackgroundWorkGovernor::new();
         governor.submit_source_changes(
             "source".to_string(),
@@ -278,13 +277,18 @@ mod tests {
             [PathBuf::from("c.md"), PathBuf::from("a.md")],
             [PathBuf::from("a.md")],
         );
+        governor.submit_source_changes("source".to_string(), [PathBuf::from("a.md")], []);
 
         let permit = receiver.recv().expect("merged job");
         assert_eq!(
             permit.job().changed_paths,
-            vec![PathBuf::from("b.md"), PathBuf::from("c.md")]
+            vec![
+                PathBuf::from("a.md"),
+                PathBuf::from("b.md"),
+                PathBuf::from("c.md")
+            ]
         );
-        assert_eq!(permit.job().removed_paths, vec![PathBuf::from("a.md")]);
+        assert!(permit.job().removed_paths.is_empty());
     }
 
     #[test]
