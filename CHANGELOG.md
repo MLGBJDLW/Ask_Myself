@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.7...nexa-monorepo-v0.12.8) (2026-08-10)
+
+
+### Bug Fixes
+
+* **streaming:** address Responses lifecycle review feedback ([02f7fb1](https://github.com/MLGBJDLW/Nexa/commit/02f7fb1ae2d0e2fd3d8ecd51399905d83aa5fce9))
+* **streaming:** repair DeepSeek Responses event lifecycle ([ca18340](https://github.com/MLGBJDLW/Nexa/commit/ca18340a174f97d47160a49fee51836988ff88d8))
+* **streaming:** unify Responses tool and terminal lifecycles ([9491199](https://github.com/MLGBJDLW/Nexa/commit/9491199cf4d8dfe1079aaa31007aaeab656d150d))
+
 ## [0.12.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.6...nexa-monorepo-v0.12.7) (2026-08-09)
 
 
