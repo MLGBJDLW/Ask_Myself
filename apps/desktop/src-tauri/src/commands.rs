@@ -17,7 +17,7 @@ use crate::agent_task_events::{
 };
 use crate::app_events::emit_app_event;
 use crate::background_work_governor::{
-    BackgroundWorkGovernor, BackgroundWorkPermit, BackgroundWorkReceiver,
+    BackgroundWorkGovernor, BackgroundWorkPermit, BackgroundWorkReceiver, SourceChangeJob,
 };
 use nexa_core::agent::power_mode::AgentPowerMode;
 use nexa_core::agent::{AgentEvent, AgentExecutionMode, AgentSteeringMessage, CancellationToken};
@@ -517,9 +517,13 @@ fn process_source_change_job(app_handle: &tauri::AppHandle, permit: BackgroundWo
         }
     }
 
-    if files_added > 0 || files_updated > 0 {
+    // Reconcile the source even when duplicate notifications ingest as
+    // `Unchanged` or this generation only removes a file. A newer generation
+    // may have cancelled the previous bounded embedding pass after ingestion,
+    // leaving legitimate missing vectors for this source to resume.
+    if source_change_job_requires_embedding_reconciliation(&job) {
         info!(
-            "Auto-embedding after incremental ingest for source {}",
+            "Reconciling source-scoped embeddings after watcher generation for source {}",
             job.source_id
         );
         match nexa_core::embedding_job::run_source(
@@ -544,6 +548,10 @@ fn process_source_change_job(app_handle: &tauri::AppHandle, permit: BackgroundWo
         "filesRemoved": job.removed_paths.len(),
     });
     emit_app_event(app_handle, "file-changed", &payload);
+}
+
+fn source_change_job_requires_embedding_reconciliation(job: &SourceChangeJob) -> bool {
+    !job.changed_paths.is_empty() || !job.removed_paths.is_empty()
 }
 
 // ── Agent Helpers ───────────────────────────────────────────────────────
@@ -780,6 +788,27 @@ mod tests {
         filter_desktop_tool_names_by_package_host, runtime_session_config_artifact,
         DesktopAgentSessionConfigInput,
     };
+
+    #[test]
+    fn duplicate_or_removal_only_watcher_generation_resumes_missing_embeddings() {
+        let duplicate_notification = SourceChangeJob {
+            source_id: "source".to_string(),
+            changed_paths: vec![PathBuf::from("unchanged.md")],
+            removed_paths: Vec::new(),
+        };
+        let removal_only = SourceChangeJob {
+            source_id: "source".to_string(),
+            changed_paths: Vec::new(),
+            removed_paths: vec![PathBuf::from("removed.md")],
+        };
+
+        assert!(source_change_job_requires_embedding_reconciliation(
+            &duplicate_notification
+        ));
+        assert!(source_change_job_requires_embedding_reconciliation(
+            &removal_only
+        ));
+    }
 
     #[test]
     fn history_sanitization_drops_empty_and_interrupted_assistant_records() {
