@@ -4,7 +4,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useRef,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useState,
   useCallback,
@@ -33,7 +32,7 @@ import {
   rehypePlugins,
 } from "../../components/chat/markdownComponents";
 import { useTranslation } from "../../i18n";
-import { useTypewriter } from "../../lib/useTypewriter";
+import { useLiveTranscriptProjection } from "../../lib/useLiveTranscriptProjection";
 import { useDeveloperMode } from "../../lib/developerMode";
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
@@ -801,55 +800,11 @@ export function ChatMessages(props: ChatMessagesProps) {
     prevMessagesLenRef.current = messages.length;
   }, [messages]);
 
-  const typewriterText = useTypewriter(streamText, isStreaming, {
-    charsPerTick: 5,
-    intervalMs: 30,
-  });
-  const displayedText = shouldReduceMotion ? streamText : typewriterText;
-
-  const [debouncedMarkdown, setDebouncedMarkdown] = useState("");
-  const latestDisplayedTextRef = useRef(displayedText);
-  const markdownThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
+  const liveTranscript = useLiveTranscriptProjection(
+    { answer: streamText, thinking: thinkingText },
   );
-
-  useEffect(() => {
-    latestDisplayedTextRef.current = displayedText;
-  }, [displayedText]);
-
-  useEffect(() => {
-    const flushImmediately =
-      shouldReduceMotion || !isStreaming || displayedText.length <= 240;
-
-    if (flushImmediately) {
-      if (markdownThrottleTimerRef.current) {
-        clearTimeout(markdownThrottleTimerRef.current);
-        markdownThrottleTimerRef.current = null;
-      }
-      setDebouncedMarkdown(displayedText);
-      return;
-    }
-
-    if (markdownThrottleTimerRef.current) {
-      return;
-    }
-
-    const throttleMs = isStreaming ? 150 : 60;
-    markdownThrottleTimerRef.current = setTimeout(() => {
-      markdownThrottleTimerRef.current = null;
-      setDebouncedMarkdown(latestDisplayedTextRef.current);
-    }, throttleMs);
-  }, [displayedText, isStreaming, shouldReduceMotion]);
-
-  useEffect(
-    () => () => {
-      if (markdownThrottleTimerRef.current) {
-        clearTimeout(markdownThrottleTimerRef.current);
-        markdownThrottleTimerRef.current = null;
-      }
-    },
-    [],
-  );
+  const displayedText = liveTranscript.answer;
+  const displayedThinkingText = liveTranscript.thinking;
 
   const remarkPlugins = useMemo(() => markdownRemarkPlugins, []);
 
@@ -1595,7 +1550,7 @@ export function ChatMessages(props: ChatMessagesProps) {
       streamRounds,
       isStreaming,
       isThinking,
-      thinkingText,
+      thinkingText: displayedThinkingText,
       toolCalls,
       streamText,
       displayedText,
@@ -1603,12 +1558,12 @@ export function ChatMessages(props: ChatMessagesProps) {
     }),
     [
       displayedText,
+      displayedThinkingText,
       developerMode,
       isStreaming,
       isThinking,
       streamRounds,
       streamText,
-      thinkingText,
       toolCalls,
       traceEvents,
     ],
@@ -1708,7 +1663,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     };
   }, []);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     shouldAutoFollowRef.current = true;
     setIsNearBottom(true);
     setUnreadCount(0);
@@ -1773,16 +1728,10 @@ export function ChatMessages(props: ChatMessagesProps) {
     prevMsgCountRef.current = messages.length;
   }, [messages.length, hasOverflow]);
 
-  useLayoutEffect(() => {
-    const { nearBottom, overflow } = getScrollMetrics();
-    setHasOverflow(overflow);
-    if (!overflow) {
-      setIsNearBottom(true);
-      setUnreadCount(0);
-      return;
-    }
-
+  useEffect(() => {
     if (!shouldAutoFollowRef.current) {
+      const { nearBottom, overflow } = getScrollMetrics();
+      setHasOverflow(overflow);
       setIsNearBottom(nearBottom);
       return;
     }
@@ -1791,7 +1740,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     scheduleTurnNavigationUpdate();
   }, [
     messages,
-    debouncedMarkdown,
+    displayedText,
+    displayedThinkingText,
     streamRounds,
     traceEvents,
     toolCalls,
@@ -2424,7 +2374,7 @@ export function ChatMessages(props: ChatMessagesProps) {
             key={item.id}
             initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
-            layout={shouldReduceMotion ? false : "position"}
+            layout={shouldReduceMotion || isStreaming ? false : "position"}
             transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           >
             {item.kind === "thinking"
@@ -2469,7 +2419,7 @@ export function ChatMessages(props: ChatMessagesProps) {
         <motion.div
           initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          layout={shouldReduceMotion ? false : "position"}
+          layout={shouldReduceMotion || isStreaming ? false : "position"}
           transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           className="flex justify-start mb-3"
         >
@@ -2499,7 +2449,7 @@ export function ChatMessages(props: ChatMessagesProps) {
         streamRounds.length === 0 &&
         visibleTraceEvents.length === 0 &&
         toolCalls.length === 0 &&
-        !thinkingText &&
+        !displayedThinkingText &&
         !isThinking && (
           <motion.div
             initial={shouldReduceMotion || isStreaming ? false : { opacity: 0 }}

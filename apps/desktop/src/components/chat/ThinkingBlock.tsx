@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, type ComponentPropsWithoutRef } from 'react';
+import { useState, useRef, useEffect, type ComponentPropsWithoutRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronRight, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -128,6 +128,7 @@ export function ThinkingBlock({
   const prevStreamingRef = useRef(isStreaming);
   const autoOpenedRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const userScrolledUpRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
   const [moodOrder, setMoodOrder] = useState(() => shuffledThinkingMoods());
@@ -174,12 +175,24 @@ export function ThinkingBlock({
 
   // Auto-follow: keep the inner trace panel scrolled to the latest token
   // while streaming, unless the user has scrolled up away from the bottom.
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!isStreaming || !expanded) return;
     const el = scrollContainerRef.current;
     if (!el) return;
     if (userScrolledUpRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    if (scrollFrameRef.current != null) {
+      cancelAnimationFrame(scrollFrameRef.current);
+    }
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+    });
+    return () => {
+      if (scrollFrameRef.current != null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [combinedContent, isStreaming, expanded]);
 
   // Reset the "user scrolled up" guard whenever a new streaming phase starts.
@@ -236,7 +249,7 @@ export function ThinkingBlock({
       <AnimatePresence initial={false}>
         {expanded && (combinedContent || effectiveSections || children) && (
           <motion.div
-            {...getSoftCollapseMotion(!!shouldReduceMotion)}
+            {...getSoftCollapseMotion(!!shouldReduceMotion || isStreaming)}
             className="overflow-hidden"
           >
             <div className="thinking-trace-body mt-1 pl-1">
@@ -255,7 +268,9 @@ export function ThinkingBlock({
                     effectiveSections.map((sec, secIdx) => (
                       <div className="thinking-trace-section" key={secIdx}>
                         {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
-                        {sec.text && (
+                        {sec.text && isStreaming ? (
+                          <div className="whitespace-pre-wrap break-words">{sec.text}</div>
+                        ) : sec.text ? (
                           <ReactMarkdown
                             remarkPlugins={markdownRemarkPlugins}
                             rehypePlugins={rehypePlugins}
@@ -263,11 +278,13 @@ export function ThinkingBlock({
                           >
                             {sec.text}
                           </ReactMarkdown>
-                        )}
+                        ) : null}
                         {sec.node}
                         {sec.toolCallCards}
                       </div>
                     ))
+                  ) : isStreaming ? (
+                    <div className="whitespace-pre-wrap break-words">{content}</div>
                   ) : (
                     <ReactMarkdown
                       remarkPlugins={markdownRemarkPlugins}

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::db::Database;
-use crate::embed::{create_embedder, Embedder, TfIdfEmbedder};
+pub use crate::embedding_job::{EmbedResult, ScanProgress};
 use crate::error::CoreError;
 #[cfg(feature = "video")]
 use crate::parse::hash_file_content;
@@ -134,27 +134,6 @@ pub struct IngestResult {
     pub files_failed: usize,
     pub files_purged: usize,
     pub errors: Vec<String>,
-}
-
-/// Summary of an embedding run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmbedResult {
-    pub source_id: String,
-    pub chunks_embedded: usize,
-    pub chunks_skipped: usize,
-    pub model: String,
-}
-
-/// Progress information emitted during scanning or embedding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScanProgress {
-    pub source_id: String,
-    pub phase: String,
-    pub current: usize,
-    pub total: usize,
-    pub current_file: Option<String>,
 }
 
 /// Result of ingesting a single file (for incremental watcher events).
@@ -535,7 +514,7 @@ fn scan_source_inner(
 /// - `"tfidf"` — loads/builds TF-IDF from the corpus (original behaviour).
 /// - `"local"` or `"api"` — delegates to [`create_embedder`].
 pub fn embed_source(db: &Database, source_id: &str) -> Result<EmbedResult, CoreError> {
-    embed_source_inner(db, source_id, None)
+    crate::embedding_job::embed_source(db, source_id)
 }
 
 /// Generate embeddings with progress reporting.
@@ -547,297 +526,20 @@ pub fn embed_source_with_progress(
     source_id: &str,
     on_progress: impl Fn(ScanProgress),
 ) -> Result<EmbedResult, CoreError> {
-    embed_source_inner(db, source_id, Some(&on_progress))
+    crate::embedding_job::embed_source_with_progress(db, source_id, on_progress)
 }
 
-/// Internal embed implementation shared by public embed functions.
-fn embed_source_inner(
-    db: &Database,
-    source_id: &str,
-    on_progress: Option<&dyn Fn(ScanProgress)>,
-) -> Result<EmbedResult, CoreError> {
-    let config = db.get_embedder_config()?;
-
-    if config.provider == "tfidf" {
-        return embed_source_tfidf(db, source_id, on_progress);
-    }
-
-    let embedder = create_embedder(&config)?;
-    let model = embedder.model_name().to_string();
-
-    let missing = db.get_chunks_without_embeddings(&model)?;
-    let total_chunks = missing.len();
-
-    // Emit initial progress.
-    if let Some(cb) = &on_progress {
-        cb(ScanProgress {
-            source_id: source_id.to_string(),
-            phase: "embedding".to_string(),
-            current: 0,
-            total: total_chunks,
-            current_file: None,
-        });
-    }
-
-    // Process embeddings in sub-batches for progress reporting.
-    const EMBED_BATCH_SIZE: usize = 64;
-    let mut all_batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(total_chunks);
-    let mut embedded_so_far: usize = 0;
-
-    for chunk in missing.chunks(EMBED_BATCH_SIZE) {
-        let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_documents(&texts)?;
-        for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
-            all_batch.push((chunk_id.clone(), model.clone(), vector));
-        }
-        embedded_so_far += chunk.len();
-
-        if let Some(cb) = &on_progress {
-            cb(ScanProgress {
-                source_id: source_id.to_string(),
-                phase: "embedding".to_string(),
-                current: embedded_so_far,
-                total: total_chunks,
-                current_file: None,
-            });
-        }
-    }
-
-    let embedded = all_batch.len();
-    if !all_batch.is_empty() {
-        db.batch_store_embeddings(&all_batch)?;
-    }
-
-    let total_source_chunks = db.get_chunks_for_source(source_id)?.len();
-    let skipped = total_source_chunks.saturating_sub(embedded);
-
-    info!(
-        "Embedding complete for source {}: embedded={}, skipped={}, provider={}",
-        source_id, embedded, skipped, config.provider
-    );
-
-    Ok(EmbedResult {
-        source_id: source_id.to_string(),
-        chunks_embedded: embedded,
-        chunks_skipped: skipped,
-        model,
-    })
-}
-
-/// TF-IDF specific embedding path (original behaviour).
-fn embed_source_tfidf(
-    db: &Database,
-    source_id: &str,
-    on_progress: Option<&dyn Fn(ScanProgress)>,
-) -> Result<EmbedResult, CoreError> {
-    let model = "tfidf-v1";
-
-    let embedder = match db.load_embedder_state(model)? {
-        Some((vocab, idf)) => {
-            info!("Loaded existing embedder state for model '{}'", model);
-            TfIdfEmbedder::from_vocabulary(vocab, idf)
-        }
-        None => {
-            info!("No saved embedder state — building from full corpus");
-            let all_chunks = db.get_all_chunks()?;
-            let corpus: Vec<&str> = all_chunks.iter().map(|(_, c)| c.as_str()).collect();
-            let embedder = TfIdfEmbedder::build_from_corpus(&corpus);
-            db.save_embedder_state(model, &embedder.vocabulary, &embedder.idf)?;
-            embedder
-        }
-    };
-
-    let missing = db.get_chunks_without_embeddings(model)?;
-    let total_chunks = missing.len();
-
-    if let Some(cb) = &on_progress {
-        cb(ScanProgress {
-            source_id: source_id.to_string(),
-            phase: "embedding".to_string(),
-            current: 0,
-            total: total_chunks,
-            current_file: None,
-        });
-    }
-
-    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(missing.len());
-    for (i, (chunk_id, content)) in missing.iter().enumerate() {
-        let vector = embedder.embed(content)?;
-        batch.push((chunk_id.clone(), model.to_string(), vector));
-
-        // Report progress every 50 chunks.
-        if let Some(cb) = &on_progress {
-            if (i + 1) % 50 == 0 || i + 1 == total_chunks {
-                cb(ScanProgress {
-                    source_id: source_id.to_string(),
-                    phase: "embedding".to_string(),
-                    current: i + 1,
-                    total: total_chunks,
-                    current_file: None,
-                });
-            }
-        }
-    }
-    let embedded = batch.len();
-    if !batch.is_empty() {
-        db.batch_store_embeddings(&batch)?;
-    }
-
-    let total_source_chunks = db.get_chunks_for_source(source_id)?.len();
-    let skipped = total_source_chunks.saturating_sub(embedded);
-
-    info!(
-        "Embedding complete for source {}: embedded={}, skipped={}",
-        source_id, embedded, skipped
-    );
-
-    Ok(EmbedResult {
-        source_id: source_id.to_string(),
-        chunks_embedded: embedded,
-        chunks_skipped: skipped,
-        model: model.to_string(),
-    })
-}
-
-/// Delete all embeddings, rebuild using the configured provider, and
-/// re-embed every chunk in the database.
+/// Delete all embeddings and rebuild them using the configured provider.
 pub fn rebuild_embeddings(db: &Database) -> Result<EmbedResult, CoreError> {
-    rebuild_embeddings_with_progress(db, |_| {})
+    crate::embedding_job::rebuild_embeddings(db)
 }
 
-/// Delete all embeddings, rebuild using the configured provider, and
-/// re-embed every chunk in the database — with progress reporting.
-///
-/// Emits [`ScanProgress`] updates with `source_id: "all"` and
-/// `phase: "embedding"` as chunks are processed.
+/// Rebuild all embeddings with progress reporting.
 pub fn rebuild_embeddings_with_progress(
     db: &Database,
     on_progress: impl Fn(ScanProgress),
 ) -> Result<EmbedResult, CoreError> {
-    let config = db.get_embedder_config()?;
-
-    if config.provider == "tfidf" {
-        return rebuild_embeddings_tfidf_inner(db, Some(&on_progress));
-    }
-
-    let embedder = create_embedder(&config)?;
-    let model = embedder.model_name().to_string();
-
-    // 1. Delete all existing embeddings for this model.
-    let deleted = db.delete_all_embeddings(&model)?;
-    info!("Deleted {} existing embeddings", deleted);
-
-    // 2. Embed every chunk in sub-batches with progress.
-    let all_chunks = db.get_all_chunks()?;
-    let total_chunks = all_chunks.len();
-
-    // Emit initial progress.
-    on_progress(ScanProgress {
-        source_id: "all".to_string(),
-        phase: "embedding".to_string(),
-        current: 0,
-        total: total_chunks,
-        current_file: None,
-    });
-
-    const EMBED_BATCH_SIZE: usize = 64;
-    let mut all_batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(total_chunks);
-    let mut embedded_so_far: usize = 0;
-
-    for chunk in all_chunks.chunks(EMBED_BATCH_SIZE) {
-        let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vectors = embedder.embed_documents(&texts)?;
-        for ((chunk_id, _), vector) in chunk.iter().zip(vectors) {
-            all_batch.push((chunk_id.clone(), model.clone(), vector));
-        }
-        embedded_so_far += chunk.len();
-
-        on_progress(ScanProgress {
-            source_id: "all".to_string(),
-            phase: "embedding".to_string(),
-            current: embedded_so_far,
-            total: total_chunks,
-            current_file: None,
-        });
-    }
-
-    let embedded = all_batch.len();
-    if !all_batch.is_empty() {
-        db.batch_store_embeddings(&all_batch)?;
-    }
-
-    info!(
-        "Rebuild complete: {} chunks embedded (provider={})",
-        embedded, config.provider
-    );
-
-    Ok(EmbedResult {
-        source_id: "all".to_string(),
-        chunks_embedded: embedded,
-        chunks_skipped: 0,
-        model,
-    })
-}
-
-/// TF-IDF rebuild with optional progress reporting.
-fn rebuild_embeddings_tfidf_inner(
-    db: &Database,
-    on_progress: Option<&dyn Fn(ScanProgress)>,
-) -> Result<EmbedResult, CoreError> {
-    let model = "tfidf-v1";
-
-    let deleted = db.delete_all_embeddings(model)?;
-    info!("Deleted {} existing embeddings", deleted);
-
-    let all_chunks = db.get_all_chunks()?;
-    let corpus: Vec<&str> = all_chunks.iter().map(|(_, c)| c.as_str()).collect();
-    let embedder = TfIdfEmbedder::build_from_corpus(&corpus);
-    db.save_embedder_state(model, &embedder.vocabulary, &embedder.idf)?;
-
-    let total_chunks = all_chunks.len();
-
-    // Emit initial progress.
-    if let Some(cb) = &on_progress {
-        cb(ScanProgress {
-            source_id: "all".to_string(),
-            phase: "embedding".to_string(),
-            current: 0,
-            total: total_chunks,
-            current_file: None,
-        });
-    }
-
-    let mut batch: Vec<(String, String, Vec<f32>)> = Vec::with_capacity(all_chunks.len());
-    for (i, (chunk_id, content)) in all_chunks.iter().enumerate() {
-        let vector = embedder.embed(content)?;
-        batch.push((chunk_id.clone(), model.to_string(), vector));
-
-        // Report progress every 50 chunks.
-        if let Some(cb) = &on_progress {
-            if (i + 1) % 50 == 0 || i + 1 == total_chunks {
-                cb(ScanProgress {
-                    source_id: "all".to_string(),
-                    phase: "embedding".to_string(),
-                    current: i + 1,
-                    total: total_chunks,
-                    current_file: None,
-                });
-            }
-        }
-    }
-    let embedded = batch.len();
-    if !batch.is_empty() {
-        db.batch_store_embeddings(&batch)?;
-    }
-
-    info!("Rebuild complete: {} chunks embedded", embedded);
-
-    Ok(EmbedResult {
-        source_id: "all".to_string(),
-        chunks_embedded: embedded,
-        chunks_skipped: 0,
-        model: model.to_string(),
-    })
+    crate::embedding_job::rebuild_embeddings_with_progress(db, on_progress)
 }
 
 /// Insert multiple parsed documents in a single transaction for bulk operations.
@@ -1902,12 +1604,10 @@ mod tests {
         assert!(embed.chunks_embedded > 0);
 
         // Every chunk should now have an embedding.
-        let missing = db.get_chunks_without_embeddings("tfidf-v1").unwrap();
-        assert!(
-            missing.is_empty(),
-            "all chunks should have embeddings, but {} are missing",
-            missing.len()
-        );
+        let missing = db
+            .count_chunks_without_embeddings_for_source(&sid, "tfidf-v1")
+            .unwrap();
+        assert_eq!(missing, 0, "all source chunks should have embeddings");
     }
 
     #[test]
@@ -1935,8 +1635,10 @@ mod tests {
         assert_eq!(rebuild.model, "tfidf-v1");
 
         // All chunks should still have embeddings after rebuild.
-        let missing = db.get_chunks_without_embeddings("tfidf-v1").unwrap();
-        assert!(missing.is_empty());
+        let missing = db
+            .count_chunks_without_embeddings_for_source(&sid, "tfidf-v1")
+            .unwrap();
+        assert_eq!(missing, 0);
     }
 
     #[test]
@@ -1974,8 +1676,55 @@ mod tests {
         assert!(e2.chunks_embedded > 0, "new chunks should be embedded");
 
         // No chunks should be missing.
-        let missing = db.get_chunks_without_embeddings("tfidf-v1").unwrap();
-        assert!(missing.is_empty());
+        let missing = db
+            .count_chunks_without_embeddings_for_source(&sid, "tfidf-v1")
+            .unwrap();
+        assert_eq!(missing, 0);
+    }
+
+    #[test]
+    fn test_embedding_job_is_strictly_source_scoped() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        fs::write(
+            first.path().join("first.md"),
+            "# First source\n\nEnough source-specific content to create a searchable chunk for the first source.",
+        )
+        .unwrap();
+        fs::write(
+            second.path().join("second.md"),
+            "# Second source\n\nEnough different content to create a searchable chunk for the second source.",
+        )
+        .unwrap();
+
+        let db = test_db();
+        let first_id = create_test_source(&db, first.path(), vec![], vec![]);
+        let second_id = create_test_source(&db, second.path(), vec![], vec![]);
+        scan_source(&db, &first_id).unwrap();
+        scan_source(&db, &second_id).unwrap();
+
+        crate::embedding_job::run_source(
+            &db,
+            &first_id,
+            crate::embedding_job::EmbeddingJobLimits {
+                batch_size: 1,
+                max_intra_threads: 1,
+            },
+            &crate::embedding_job::NoopEmbeddingJobControl,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.count_chunks_without_embeddings_for_source(&first_id, "tfidf-v1")
+                .unwrap(),
+            0
+        );
+        assert!(
+            db.count_chunks_without_embeddings_for_source(&second_id, "tfidf-v1")
+                .unwrap()
+                > 0,
+            "embedding one source must not mutate another source"
+        );
     }
 
     #[test]

@@ -25,7 +25,7 @@ futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-nexa-core = { path = "../../../crates/core" }
+nexa-core = { path = "../../../crates/core", default-features = false }
 base64 = "0.22"
 rusqlite = { version = "0.32" }
 chrono = { version = "0.4", features = ["clock"] }
@@ -34,6 +34,8 @@ encoding_rs = "0.8"
 portable-pty = "0.9"
 
 [features]
-default = ["custom-protocol", "video"]
+default = ["custom-protocol", "video", "ocr", "local-embeddings"]
 custom-protocol = ["tauri/custom-protocol"]
+local-embeddings = ["nexa-core/local-embeddings"]
+ocr = ["nexa-core/ocr"]
 video = ["nexa-core/video"]

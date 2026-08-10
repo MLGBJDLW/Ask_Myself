@@ -36,6 +36,7 @@ pub mod dreaming;
 pub mod dreaming_scope;
 pub mod ecosystem;
 pub mod embed;
+pub mod embedding_job;
 pub mod embedding_provider_catalog;
 pub mod error;
 pub mod eval_harness;

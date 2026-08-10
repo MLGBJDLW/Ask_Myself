@@ -647,6 +647,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let db = state.db.clone();
     let db_executor = state.db_executor.clone();
     let subagent_lifecycle = state.subagent_lifecycle.clone();
+    let background_work = state.background_work.clone();
     let conv_id = conversation_id.clone();
     let turn_id = launch_record.turn_id.clone();
     let task_run_id = launch_record.run_id.clone();
@@ -676,6 +677,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
 
     let stream_event_seq_for_task = Arc::clone(&stream_event_seq);
     let task = tokio::spawn(async move {
+        let _foreground_work_lease = background_work.foreground_lease();
         let initialization = async {
             db.mark_agent_task_run_started(&task_run_id, "initializing")
                 .map_err(|error| error.to_string())?;

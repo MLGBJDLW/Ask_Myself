@@ -269,19 +269,95 @@ impl Database {
         Ok(results)
     }
 
-    /// Get chunks that do not yet have an embedding for the given model.
-    pub fn get_chunks_without_embeddings(
+    /// Count chunks belonging to a source.
+    pub fn count_chunks_for_source(
+        &self,
+        source_id: &str,
+    ) -> Result<usize, crate::error::CoreError> {
+        let conn = self.conn();
+        let count = conn.query_row(
+            "SELECT COUNT(*) FROM chunks c
+             JOIN documents d ON c.document_id = d.id
+             WHERE d.source_id = ?1",
+            rusqlite::params![source_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// Count all chunks without materializing their content.
+    pub fn count_all_chunks(&self) -> Result<usize, crate::error::CoreError> {
+        let conn = self.conn();
+        let count = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// Count source chunks that do not yet have an embedding for `model`.
+    pub fn count_chunks_without_embeddings_for_source(
+        &self,
+        source_id: &str,
+        model: &str,
+    ) -> Result<usize, crate::error::CoreError> {
+        let conn = self.conn();
+        let count = conn.query_row(
+            "SELECT COUNT(*) FROM chunks c
+             JOIN documents d ON c.document_id = d.id
+             LEFT JOIN embeddings e ON c.id = e.chunk_id AND e.model = ?2
+             WHERE d.source_id = ?1 AND e.chunk_id IS NULL",
+            rusqlite::params![source_id, model],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// Fetch one bounded source-scoped page of chunks missing embeddings.
+    ///
+    /// Callers persist each page before fetching the next one, so repeatedly
+    /// reading the first page is stable without retaining a growing cursor or
+    /// the full corpus in memory.
+    pub fn get_chunks_without_embeddings_for_source_batch(
+        &self,
+        source_id: &str,
+        model: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>, crate::error::CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.content FROM chunks c
+             JOIN documents d ON c.document_id = d.id
+             LEFT JOIN embeddings e ON c.id = e.chunk_id AND e.model = ?2
+             WHERE d.source_id = ?1 AND e.chunk_id IS NULL
+             ORDER BY c.id
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![source_id, model, limit.max(1) as i64],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Fetch one bounded global page of chunks missing embeddings.
+    pub fn get_chunks_without_embeddings_batch(
         &self,
         model: &str,
+        limit: usize,
     ) -> Result<Vec<(String, String)>, crate::error::CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT c.id, c.content FROM chunks c
              LEFT JOIN embeddings e ON c.id = e.chunk_id AND e.model = ?1
              WHERE e.chunk_id IS NULL
-             ORDER BY c.id",
+             ORDER BY c.id
+             LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![model], |row| {
+        let rows = stmt.query_map(rusqlite::params![model, limit.max(1) as i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut results = Vec::new();

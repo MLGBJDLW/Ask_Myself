@@ -21,11 +21,12 @@ use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
+const AGENT_RUN_EVENT_OUTBOX_CAPACITY: usize = 512;
 
 /// The only producer interface for one run's ordered event ledger.
 #[derive(Clone)]
 pub struct AgentRunEventOutbox {
-    sender: tokio::sync::mpsc::UnboundedSender<AgentRunEvent>,
+    sender: tokio::sync::mpsc::Sender<AgentRunEvent>,
     failure_handle: AgentRunEventOutboxFailureHandle,
 }
 
@@ -47,8 +48,8 @@ impl AgentRunEventOutboxFailureHandle {
 }
 
 impl AgentRunEventOutbox {
-    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<AgentRunEvent>) {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    pub fn channel() -> (Self, tokio::sync::mpsc::Receiver<AgentRunEvent>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(AGENT_RUN_EVENT_OUTBOX_CAPACITY);
         let failure_handle = AgentRunEventOutboxFailureHandle {
             terminal_submitted: Arc::new(Mutex::new(false)),
             cancellation: CancellationToken::new(),
@@ -78,9 +79,19 @@ impl AgentRunEventOutbox {
             ));
         }
         let terminal = event.is_terminal();
-        self.sender.send(event).map_err(|_| {
-            CoreError::Internal("Run Event outbox actor is unavailable".to_string())
-        })?;
+        if let Err(error) = self.sender.try_send(event) {
+            *terminal_submitted = true;
+            self.failure_handle.cancellation.cancel();
+            return Err(match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => CoreError::InvalidInput(
+                    "Run Event outbox capacity was exhausted; the run was cancelled before dropping ordered events"
+                        .to_string(),
+                ),
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    CoreError::Internal("Run Event outbox actor is unavailable".to_string())
+                }
+            });
+        }
         *terminal_submitted = terminal;
         Ok(())
     }
@@ -976,6 +987,41 @@ mod tests {
                 None,
             ))
             .is_err());
+    }
+
+    #[test]
+    fn run_event_outbox_capacity_fails_closed_before_ordered_events_can_be_dropped() {
+        let (outbox, _receiver) = AgentRunEventOutbox::channel();
+        let cancellation = outbox.turn_cancellation_token();
+        for index in 0..AGENT_RUN_EVENT_OUTBOX_CAPACITY {
+            outbox
+                .submit(AgentRunEvent::status_update(
+                    "run-1",
+                    Some("turn-1"),
+                    0,
+                    AgentRunPhase::Responding,
+                    &format!("queued-{index}"),
+                    Some("running"),
+                    None,
+                ))
+                .expect("bounded queue still has capacity");
+        }
+
+        let error = outbox
+            .submit(AgentRunEvent::status_update(
+                "run-1",
+                Some("turn-1"),
+                0,
+                AgentRunPhase::Responding,
+                "must not be dropped",
+                Some("running"),
+                None,
+            ))
+            .expect_err("overflow must fail closed");
+
+        assert!(error.to_string().contains("capacity was exhausted"));
+        assert!(cancellation.is_cancelled());
+        assert!(outbox.is_closed_for_submission());
     }
 
     #[tokio::test]

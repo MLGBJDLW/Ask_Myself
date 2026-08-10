@@ -46,6 +46,8 @@ use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
+#[cfg(test)]
+use nexa_core::project::{CreateProjectInput, UpdateProjectInput};
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::quality_profile::{
     resolve_orchestration_profile, CustomOrchestrationOptions, OrchestrationProfile,
@@ -3086,23 +3088,32 @@ mod tests {
 
         let db_config = test_agent_config();
         let app_cfg = AppConfig::default();
-        let request = |conversation: &Conversation| DesktopAgentTurnConfigRequest {
-            db: &db,
-            conversation,
-            turn_id: "turn-current",
-            message: "Use the prior result",
-            persona_id: None,
-            explicit_skill_ids: &[],
-            db_config: &db_config,
-            app_cfg: &app_cfg,
-            execution_mode: AgentExecutionMode::Normal,
-            power_mode: AgentPowerMode::Standard,
-            collaboration_mode: AgentCollaborationMode::Direct,
-            moa_preset: MoaPresetId::FastReview,
-            orchestration_profile: OrchestrationProfile::Balanced,
-            custom_orchestration: None,
-        };
-        let initial = build_desktop_agent_turn_config(request(&conversation)).executor_config;
+        fn request<'a>(
+            db: &'a Database,
+            conversation: &'a Conversation,
+            db_config: &'a DbAgentConfig,
+            app_cfg: &'a AppConfig,
+        ) -> DesktopAgentTurnConfigRequest<'a> {
+            DesktopAgentTurnConfigRequest {
+                db,
+                conversation,
+                turn_id: "turn-current",
+                message: "Use the prior result",
+                persona_id: None,
+                explicit_skill_ids: &[],
+                db_config,
+                app_cfg,
+                execution_mode: AgentExecutionMode::Normal,
+                power_mode: AgentPowerMode::Standard,
+                collaboration_mode: AgentCollaborationMode::Direct,
+                moa_preset: MoaPresetId::FastReview,
+                orchestration_profile: OrchestrationProfile::Balanced,
+                custom_orchestration: None,
+            }
+        }
+        let initial =
+            build_desktop_agent_turn_config(request(&db, &conversation, &db_config, &app_cfg))
+                .executor_config;
         assert!(initial
             .system_prompt
             .contains("Follow workspace instruction v1"));
@@ -3129,8 +3140,13 @@ mod tests {
         let refreshed_conversation = db
             .get_conversation(&conversation.id)
             .expect("reload conversation");
-        let refreshed =
-            build_desktop_agent_turn_config(request(&refreshed_conversation)).executor_config;
+        let refreshed = build_desktop_agent_turn_config(request(
+            &db,
+            &refreshed_conversation,
+            &db_config,
+            &app_cfg,
+        ))
+        .executor_config;
         assert!(refreshed
             .system_prompt
             .contains("Follow workspace instruction v2"));
@@ -3144,8 +3160,13 @@ mod tests {
         let legacy_after_project_edit = db
             .get_conversation(&legacy_snapshot.id)
             .expect("reload legacy project conversation");
-        let migrated =
-            build_desktop_agent_turn_config(request(&legacy_after_project_edit)).executor_config;
+        let migrated = build_desktop_agent_turn_config(request(
+            &db,
+            &legacy_after_project_edit,
+            &db_config,
+            &app_cfg,
+        ))
+        .executor_config;
         assert!(migrated
             .system_prompt
             .contains("Follow workspace instruction v2"));
@@ -3158,7 +3179,9 @@ mod tests {
         let explicit = db
             .get_conversation(&legacy_snapshot.id)
             .expect("reload explicit prompt");
-        let explicit_config = build_desktop_agent_turn_config(request(&explicit)).executor_config;
+        let explicit_config =
+            build_desktop_agent_turn_config(request(&db, &explicit, &db_config, &app_cfg))
+                .executor_config;
         assert!(explicit_config
             .system_prompt
             .contains("Explicit conversation override"));
