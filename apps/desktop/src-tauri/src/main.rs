@@ -5,6 +5,7 @@ mod agent_stream;
 mod agent_stream_bridge;
 mod agent_task_events;
 mod app_events;
+mod background_work_governor;
 mod browser;
 mod commands;
 mod companion_window;
@@ -19,6 +20,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use background_work_governor::BackgroundWorkGovernor;
 use commands::{
     AgentState, AppState, ApprovalState, DownloadCancelFlag, DreamingSchedulerState,
     McpManagerState, RealtimeTranscriptionState, TaskOrchestratorSchedulerState,
@@ -393,6 +395,7 @@ fn main() {
                 .expect("failed to initialize managed voice audio spool"),
             );
 
+            let (background_work, background_work_receiver) = BackgroundWorkGovernor::new();
             app.manage(AppState {
                 db: db.clone(),
                 db_executor,
@@ -406,6 +409,7 @@ fn main() {
                 #[cfg(feature = "video")]
                 voice_spool_append_permits: Arc::new(tokio::sync::Semaphore::new(4)),
                 scan_lock: Arc::new(std::sync::Mutex::new(())),
+                background_work,
             });
             app.manage(AgentState {
                 sessions: nexa_core::runtime::AgentSessionManager::new(),
@@ -430,7 +434,7 @@ fn main() {
 
             // Initialise the file watcher for auto-indexing.
             let handle = app.handle().clone();
-            commands::init_watcher(handle);
+            commands::init_watcher(handle, background_work_receiver);
             commands::init_task_orchestrator_scheduler(app.handle().clone());
             commands::init_dreaming_scheduler(app.handle().clone());
 

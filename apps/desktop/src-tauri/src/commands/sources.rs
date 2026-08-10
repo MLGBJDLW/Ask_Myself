@@ -451,10 +451,21 @@ pub async fn embed_source(
 ) -> Result<EmbedResult, String> {
     let db = state.db.clone();
     let sid = source_id.clone();
+    let scan_lock = state.scan_lock.clone();
+    let progress: Arc<dyn Fn(ingest::ScanProgress) + Send + Sync> = Arc::new(move |progress| {
+        emit_app_event(&app_handle, "source:scan-progress", &progress);
+    });
+    let control = state
+        .background_work
+        .cooperative_embedding_control(Some(progress));
     tokio::task::spawn_blocking(move || {
-        ingest::embed_source_with_progress(&db, &sid, |progress| {
-            emit_app_event(&app_handle, "source:scan-progress", &progress);
-        })
+        let _scan_guard = scan_lock.lock().unwrap_or_else(|error| error.into_inner());
+        nexa_core::embedding_job::run_source(
+            &db,
+            &sid,
+            nexa_core::embedding_job::EmbeddingJobLimits::default(),
+            &control,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -467,10 +478,20 @@ pub async fn rebuild_embeddings(
     app_handle: AppHandle,
 ) -> Result<EmbedResult, String> {
     let db = state.db.clone();
+    let scan_lock = state.scan_lock.clone();
+    let progress: Arc<dyn Fn(ingest::ScanProgress) + Send + Sync> = Arc::new(move |progress| {
+        emit_app_event(&app_handle, "batch:rebuild-progress", &progress);
+    });
+    let control = state
+        .background_work
+        .cooperative_embedding_control(Some(progress));
     tokio::task::spawn_blocking(move || {
-        ingest::rebuild_embeddings_with_progress(&db, |progress| {
-            emit_app_event(&app_handle, "batch:rebuild-progress", &progress);
-        })
+        let _scan_guard = scan_lock.lock().unwrap_or_else(|error| error.into_inner());
+        nexa_core::embedding_job::rebuild_all(
+            &db,
+            nexa_core::embedding_job::EmbeddingJobLimits::default(),
+            &control,
+        )
     })
     .await
     .map_err(|e| e.to_string())?

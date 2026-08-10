@@ -16,6 +16,9 @@ use crate::agent_task_events::{
     emit_agent_task_run_update, record_internal_agent_run_status_event,
 };
 use crate::app_events::emit_app_event;
+use crate::background_work_governor::{
+    BackgroundWorkGovernor, BackgroundWorkPermit, BackgroundWorkReceiver,
+};
 use nexa_core::agent::power_mode::AgentPowerMode;
 use nexa_core::agent::{AgentEvent, AgentExecutionMode, AgentSteeringMessage, CancellationToken};
 use nexa_core::agent_run::{
@@ -163,6 +166,8 @@ pub struct AppState {
     pub voice_spool_append_permits: Arc<tokio::sync::Semaphore>,
     /// Lock to serialize scan operations and prevent duplicate document inserts.
     pub scan_lock: Arc<Mutex<()>>,
+    /// Coordinates resource-intensive background work with foreground turns.
+    pub background_work: BackgroundWorkGovernor,
 }
 
 pub struct AgentState {
@@ -331,7 +336,10 @@ fn task_title_from_message(message: &str) -> String {
 /// Initialise the file watcher and spawn a background thread that registers
 /// sources and processes file-change events. Recursive registration can be
 /// expensive on large trees, so it must never block Tauri's setup callback.
-pub fn init_watcher(app_handle: tauri::AppHandle) {
+pub fn init_watcher(
+    app_handle: tauri::AppHandle,
+    background_work_receiver: BackgroundWorkReceiver,
+) {
     let (file_watcher, rx) = match FileWatcher::new() {
         Ok(pair) => pair,
         Err(e) => {
@@ -346,6 +354,13 @@ pub fn init_watcher(app_handle: tauri::AppHandle) {
         revision: AtomicU64::new(0),
     };
     app_handle.manage(watcher_state);
+
+    let worker_handle = app_handle.clone();
+    thread::spawn(move || {
+        while let Some(permit) = background_work_receiver.recv() {
+            process_source_change_job(&worker_handle, permit);
+        }
+    });
 
     // Clone what we need for the background thread.
     let handle = app_handle.clone();
@@ -453,48 +468,82 @@ pub fn init_watcher(app_handle: tauri::AppHandle) {
                     Some(s) => s,
                     None => continue,
                 };
-
-                // Handle removed files: delete their documents from the DB.
-                for removed in &removed_paths {
-                    let path_str = removed.to_string_lossy();
-                    match app_state.db.delete_document_by_path(&path_str) {
-                        Ok(true) => info!("Removed document for deleted file: {path_str}"),
-                        Ok(false) => { /* file wasn't indexed, nothing to do */ }
-                        Err(e) => warn!("Failed to remove document for {path_str}: {e}"),
-                    }
-                }
-
-                // Incrementally ingest only the changed files instead of
-                // re-scanning the entire source directory.
-                let mut files_added = 0usize;
-                let mut files_updated = 0usize;
-                for path in &changed_paths {
-                    match ingest::ingest_single_file(&app_state.db, &source_id, path) {
-                        Ok(ingest::IngestFileResult::Added) => files_added += 1,
-                        Ok(ingest::IngestFileResult::Updated) => files_updated += 1,
-                        Ok(ingest::IngestFileResult::Unchanged) => {}
-                        Err(e) => warn!("Incremental ingest failed for {}: {e}", path.display()),
-                    }
-                }
-
-                // Embed any new un-embedded chunks.
-                if files_added > 0 || files_updated > 0 {
-                    info!("Auto-embedding after incremental ingest for source {source_id}");
-                    if let Err(e) = ingest::embed_source(&app_state.db, &source_id) {
-                        warn!("Auto-embed failed for source {source_id}: {e}");
-                    }
-                }
-
-                let payload = serde_json::json!({
-                    "sourceId": source_id,
-                    "filesAdded": files_added,
-                    "filesUpdated": files_updated,
-                    "filesRemoved": removed_paths.len(),
-                });
-                emit_app_event(&handle, "file-changed", &payload);
+                app_state.background_work.submit_source_changes(
+                    source_id,
+                    changed_paths,
+                    removed_paths,
+                );
             }
         }
     });
+}
+
+fn process_source_change_job(app_handle: &tauri::AppHandle, permit: BackgroundWorkPermit) {
+    let app_state = match app_handle.try_state::<AppState>() {
+        Some(state) => state,
+        None => return,
+    };
+    let job = permit.job().clone();
+    let _scan_guard = app_state
+        .scan_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    for removed in &job.removed_paths {
+        if let Err(error) = permit.wait_for_foreground() {
+            warn!("Background source cleanup stopped: {error}");
+            return;
+        }
+        let path_str = removed.to_string_lossy();
+        match app_state.db.delete_document_by_path(&path_str) {
+            Ok(true) => info!("Removed document for deleted file: {path_str}"),
+            Ok(false) => {}
+            Err(error) => warn!("Failed to remove document for {path_str}: {error}"),
+        }
+    }
+
+    let mut files_added = 0usize;
+    let mut files_updated = 0usize;
+    for path in &job.changed_paths {
+        if let Err(error) = permit.wait_for_foreground() {
+            warn!("Background source ingestion stopped: {error}");
+            return;
+        }
+        match ingest::ingest_single_file(&app_state.db, &job.source_id, path) {
+            Ok(ingest::IngestFileResult::Added) => files_added += 1,
+            Ok(ingest::IngestFileResult::Updated) => files_updated += 1,
+            Ok(ingest::IngestFileResult::Unchanged) => {}
+            Err(error) => warn!("Incremental ingest failed for {}: {error}", path.display()),
+        }
+    }
+
+    if files_added > 0 || files_updated > 0 {
+        info!(
+            "Auto-embedding after incremental ingest for source {}",
+            job.source_id
+        );
+        match nexa_core::embedding_job::run_source(
+            &app_state.db,
+            &job.source_id,
+            nexa_core::embedding_job::EmbeddingJobLimits::default(),
+            &permit,
+        ) {
+            Ok(_) => {}
+            Err(CoreError::Cancelled(reason)) => info!(
+                "Background embedding yielded for source {}: {reason}",
+                job.source_id
+            ),
+            Err(error) => warn!("Auto-embed failed for source {}: {error}", job.source_id),
+        }
+    }
+
+    let payload = serde_json::json!({
+        "sourceId": job.source_id,
+        "filesAdded": files_added,
+        "filesUpdated": files_updated,
+        "filesRemoved": job.removed_paths.len(),
+    });
+    emit_app_event(app_handle, "file-changed", &payload);
 }
 
 // ── Agent Helpers ───────────────────────────────────────────────────────

@@ -62,6 +62,32 @@ impl EmbedderConfig {
 ///   factory cannot create one directly. Callers should handle TF-IDF
 ///   separately.
 pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, CoreError> {
+    create_embedder_with_limits(config, EmbeddingRuntimeLimits::default())
+}
+
+/// Resource limits applied while constructing an embedding runtime.
+///
+/// Embedding is background work in the desktop application. Keeping its ONNX
+/// thread pool deliberately small prevents a single indexing job from
+/// starving the agent runtime and renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingRuntimeLimits {
+    pub max_intra_threads: usize,
+}
+
+impl Default for EmbeddingRuntimeLimits {
+    fn default() -> Self {
+        Self {
+            max_intra_threads: 2,
+        }
+    }
+}
+
+/// Create an embedder with explicit runtime resource limits.
+pub fn create_embedder_with_limits(
+    config: &EmbedderConfig,
+    _limits: EmbeddingRuntimeLimits,
+) -> Result<Box<dyn Embedder>, CoreError> {
     match config.provider.as_str() {
         "local" => {
             #[cfg(not(feature = "local-embeddings"))]
@@ -81,7 +107,7 @@ pub fn create_embedder(config: &EmbedderConfig) -> Result<Box<dyn Embedder>, Cor
                 let local_model = config.local_embedding_model();
                 if check_local_model_exists_for(model_path, &local_model) {
                     let model_dir = model_path.map(PathBuf::from);
-                    let embedder = OnnxEmbedder::new(model_dir, local_model)?;
+                    let embedder = OnnxEmbedder::new_with_limits(model_dir, local_model, _limits)?;
                     Ok(Box::new(embedder))
                 } else {
                     tracing::warn!(
@@ -838,6 +864,15 @@ impl OnnxEmbedder {
     /// `<data_dir>/<APP_DIR>/models/<model_name>/`.
     /// Downloads model files from HuggingFace when not already present.
     pub fn new(model_dir: Option<PathBuf>, model: LocalEmbeddingModel) -> Result<Self, CoreError> {
+        Self::new_with_limits(model_dir, model, EmbeddingRuntimeLimits::default())
+    }
+
+    /// Create a new ONNX embedder with a bounded intra-op thread pool.
+    pub fn new_with_limits(
+        model_dir: Option<PathBuf>,
+        model: LocalEmbeddingModel,
+        limits: EmbeddingRuntimeLimits,
+    ) -> Result<Self, CoreError> {
         let dir = match model_dir {
             Some(d) => d,
             None => default_model_dir_for(&model)?,
@@ -854,10 +889,10 @@ impl OnnxEmbedder {
             ));
         }
 
-        // Use half of available CPUs for intra-op parallelism, minimum 1.
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).max(1))
+        let available_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
             .unwrap_or(1);
+        let num_threads = limits.max_intra_threads.max(1).min(available_threads);
         tracing::info!(
             "Loading ONNX model from {} (intra_threads={})",
             model_path.display(),
@@ -1934,6 +1969,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embeddings")]
     fn test_asymmetric_embedding_inputs_match_model_contracts() {
         assert_eq!(
             prepare_embedding_input(
@@ -1970,6 +2006,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embeddings")]
     #[ignore] // requires model download (~46 MB)
     fn test_onnx_embed_dimensions() {
         let model = LocalEmbeddingModel::default();
@@ -1985,6 +2022,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embeddings")]
     #[ignore] // requires model download (~46 MB)
     fn test_onnx_cosine_similarity() {
         let embedder = OnnxEmbedder::new(None, LocalEmbeddingModel::default()).unwrap();
@@ -2004,6 +2042,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embeddings")]
     #[ignore] // requires model download (~46 MB)
     fn test_onnx_embed_batch() {
         let embedder = OnnxEmbedder::new(None, LocalEmbeddingModel::default()).unwrap();

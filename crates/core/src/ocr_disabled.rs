@@ -136,3 +136,53 @@ pub fn download_ocr_models(
 ) -> Result<(), CoreError> {
     Err(disabled_error())
 }
+
+// Configuration persistence is part of the stable OCR interface even when
+// the inference implementation is not compiled into a minimal host build.
+use crate::db::Database;
+use rusqlite::params;
+
+const OCR_CONFIG_KEY: &str = "ocr_config";
+
+impl Database {
+    pub fn save_ocr_config(&self, config: &OcrConfig) -> Result<(), CoreError> {
+        let json = serde_json::to_string(config)?;
+        let conn = self.conn();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ocr_config (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             )",
+        )?;
+        conn.execute(
+            "INSERT INTO ocr_config (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                            updated_at = excluded.updated_at",
+            params![OCR_CONFIG_KEY, &json],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_ocr_config(&self) -> Result<OcrConfig, CoreError> {
+        let conn = self.conn();
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ocr_config')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(OcrConfig::default());
+        }
+        match conn.query_row(
+            "SELECT value FROM ocr_config WHERE key = ?1",
+            params![OCR_CONFIG_KEY],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(json) => Ok(serde_json::from_str(&json)?),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(OcrConfig::default()),
+            Err(error) => Err(CoreError::Database(error)),
+        }
+    }
+}
