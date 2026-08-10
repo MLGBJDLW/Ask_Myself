@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.8...nexa-monorepo-v0.12.9) (2026-08-10)
+
+
+### Bug Fixes
+
+* **llm:** gate responses tools on completion ([714b14b](https://github.com/MLGBJDLW/Nexa/commit/714b14bddab0df1b7d5100a6a851e2b9739fef4c))
+* **runtime:** govern background embedding work ([2d3ea90](https://github.com/MLGBJDLW/Nexa/commit/2d3ea90f93f0b970f00f218ceb9efbd4d5519d81))
+* **runtime:** harden provider streaming stability ([bed7c6d](https://github.com/MLGBJDLW/Nexa/commit/bed7c6d602191f9d03d06366a76ccbc351f0dc69))
+* **runtime:** preserve recreated watcher paths ([492e75f](https://github.com/MLGBJDLW/Nexa/commit/492e75fe0720a8e01c70af25098fd210886e29b3))
+* **runtime:** resume cancelled embedding generations ([5a729dd](https://github.com/MLGBJDLW/Nexa/commit/5a729dd9a2c1292417e84f7e0b9e665fc7fe6582))
+
+
+### Performance Improvements
+
+* **streaming:** batch journal and coalesce rendering ([cd3e402](https://github.com/MLGBJDLW/Nexa/commit/cd3e40227005b300aac10011f97ba89d572c58b4))
+
 ## [0.12.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.7...nexa-monorepo-v0.12.8) (2026-08-10)
 
 
