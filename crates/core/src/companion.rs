@@ -597,6 +597,7 @@ const CODEX_DESKTOP_V2_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
 ];
 
 fn supplement_codex_v2_look_tracks(animations: &mut HashMap<String, NormalizedAnimation>) {
+    let fallback = animations.contains_key("idle").then(|| "idle".to_string());
     for direction in 0_u16..16 {
         animations
             .entry(format!("look{direction}"))
@@ -604,7 +605,7 @@ fn supplement_codex_v2_look_tracks(animations: &mut HashMap<String, NormalizedAn
                 frames: vec![72 + direction],
                 fps: 1.0,
                 looping: true,
-                fallback: Some("idle".to_string()),
+                fallback: fallback.clone(),
             });
     }
 }
@@ -1294,6 +1295,29 @@ mod tests {
             vec![87],
             "missing v2 look directions must be supplemented"
         );
+        assert_eq!(
+            explicit.animations["look15"].fallback.as_deref(),
+            Some("idle")
+        );
+
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "v2-no-idle-pet",
+                "displayName": "V2 No Idle Pet",
+                "spriteVersionNumber": 2,
+                "spritesheetPath": "spritesheet.png",
+                "animations": {
+                    "running": { "frames": [56, 57], "fps": 8, "loop": true }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let without_idle =
+            load_companion_pack(&manifest, false).expect("load explicit v2 fixture without idle");
+        assert!(!without_idle.animations.contains_key("idle"));
+        assert_eq!(without_idle.animations["look0"].fallback, None);
 
         fs::write(
             &manifest,
