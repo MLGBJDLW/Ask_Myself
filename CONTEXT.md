@@ -27,3 +27,7 @@ _Avoid_: active route snapshot, latest provider, pre-stream route
 **Durable Run reconciliation**:
 The frontend authority that selects the expected Agent Run, joins its ordered Run Events, task timeline, and final assistant message, and returns a typed active, suspended, terminal, pending, missing, or stale outcome. It owns durable-query timeouts, missing-run confirmation, and event-gap retry policy; UI stores only apply the returned projection and schedule their own timers.
 _Avoid_: watchdog recovery API, hydration-only run selection, final-message polling branch
+
+**Provider event stream**:
+The sole incremental LLM provider interface. It preserves text and metadata chunks, provider-hosted tools, cancellation, and recoverable or terminal failures; chunk-only wire protocols are normalized into it in one direction.
+_Avoid_: provider chunk stream, reverse stream adapter, hosted-tool filtering

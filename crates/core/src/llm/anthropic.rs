@@ -17,8 +17,9 @@ use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
-    FinishReason, LlmProvider, Message, ProviderConfig, ReasoningEffort, Role, StreamChunk,
-    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    FinishReason, LlmProvider, Message, ProviderConfig, ProviderStreamEvent, ReasoningEffort, Role,
+    StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
@@ -1971,10 +1972,10 @@ impl LlmProvider for AnthropicProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
@@ -2024,7 +2025,7 @@ impl LlmProvider for AnthropicProvider {
             rx.recv().await.map(|item| (item, rx))
         });
 
-        Ok(Box::pin(stream))
+        Ok(super::stream_chunks_to_provider_events(Box::pin(stream)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {

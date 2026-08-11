@@ -377,10 +377,10 @@ impl LlmProvider for MockProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             vec![Ok(StreamChunk {
@@ -406,7 +406,7 @@ impl LlmProvider for MockProvider {
                 thinking_delta: None,
             })]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -533,10 +533,10 @@ impl LlmProvider for UnknownReplayThinkingProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.observe_request(request);
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if !self.attempt_tool_call {
@@ -588,7 +588,7 @@ impl LlmProvider for UnknownReplayThinkingProvider {
                 thinking_delta: None,
             })]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -624,10 +624,10 @@ impl LlmProvider for RouteAwareReplayPolicyProvider {
         ))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             vec![Ok(StreamChunk {
@@ -652,7 +652,7 @@ impl LlmProvider for RouteAwareReplayPolicyProvider {
                 thinking_delta: None,
             })]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -687,15 +687,6 @@ impl LlmProvider for RecoverablePrimaryRouteProvider {
     ) -> Result<CompletionResponse, CoreError> {
         Err(CoreError::Llm(
             "the recoverable primary must not enter completion mode".to_string(),
-        ))
-    }
-
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Llm(
-            "the agent must consume provider stream events".to_string(),
         ))
     }
 
@@ -743,15 +734,6 @@ impl LlmProvider for ToolCallingFallbackRouteProvider {
     ) -> Result<CompletionResponse, CoreError> {
         Err(CoreError::Llm(
             "the fallback route must remain streaming".to_string(),
-        ))
-    }
-
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Llm(
-            "the agent must consume provider stream events".to_string(),
         ))
     }
 
@@ -841,36 +823,40 @@ impl LlmProvider for MissingRequiredReasoningProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         if request
             .messages
             .iter()
             .any(|message| message.role == Role::Tool)
         {
-            return Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-                delta: "final answer after safe restart".to_string(),
-                tool_call_delta: None,
-                finish_reason: Some(FinishReason::Stop),
+            return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
+                Ok(StreamChunk {
+                    delta: "final answer after safe restart".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                }),
+            ])));
+        }
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "call-stream".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"unsafe"}"#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
                 thinking_delta: None,
-            })])));
-        }
-        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-            delta: String::new(),
-            tool_call_delta: Some(ToolCallDelta {
-                id: "call-stream".to_string(),
-                name: Some("recording_tool".to_string()),
-                arguments_delta: r#"{"value":"unsafe"}"#.to_string(),
-                index: Some(0),
-                thought_signature: None,
-            }),
-            finish_reason: Some(FinishReason::ToolCalls),
-            usage: None,
-            thinking_delta: None,
-        })])))
+            },
+        )])))
     }
 
     fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
@@ -922,10 +908,10 @@ impl LlmProvider for ThinkingMockProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             vec![
@@ -968,7 +954,7 @@ impl LlmProvider for ThinkingMockProvider {
                 }),
             ]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1006,15 +992,6 @@ impl LlmProvider for EmptyMetadataContextOverflowProvider {
             usage: Usage::default(),
             thinking: None,
         })
-    }
-
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Internal(
-            "test provider uses normalized stream events".to_string(),
-        ))
     }
 
     async fn stream_events(
@@ -1086,12 +1063,12 @@ impl LlmProvider for RecoveringStreamProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::iter(vec![Err(
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Err(
             CoreError::StreamIncomplete(
                 "stream interrupted before output: error decoding response body".to_string(),
             ),
@@ -1128,26 +1105,28 @@ impl LlmProvider for FlakyThenSuccessfulStreamProvider {
         ))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         if call_no == 0 {
-            return Ok(Box::pin(stream::iter(vec![Err(
-                CoreError::StreamIncomplete(
+            return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
+                Err(CoreError::StreamIncomplete(
                     "stream interrupted before output: error decoding response body".to_string(),
-                ),
-            )])));
+                )),
+            ])));
         }
 
-        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-            delta: "stream answer".to_string(),
-            tool_call_delta: None,
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            thinking_delta: None,
-        })])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: "stream answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1197,15 +1176,6 @@ impl LlmProvider for ProviderHostedToolProvider {
     ) -> Result<CompletionResponse, CoreError> {
         Err(CoreError::Llm(
             "provider-hosted tool lifecycle must stay on the original stream".to_string(),
-        ))
-    }
-
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Llm(
-            "agent must consume the normalized provider event stream".to_string(),
         ))
     }
 
@@ -1279,12 +1249,12 @@ impl LlmProvider for VisibleThenInterruptedProvider {
         ))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::iter(vec![
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
             Ok(StreamChunk {
                 delta: "partial answer".to_string(),
                 tool_call_delta: None,
@@ -1319,15 +1289,6 @@ impl LlmProvider for CancelledStreamProvider {
     ) -> Result<CompletionResponse, CoreError> {
         Err(CoreError::Llm(
             "cancelled stream must not enter completion fallback".to_string(),
-        ))
-    }
-
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Internal(
-            "test provider uses normalized stream events".to_string(),
         ))
     }
 
@@ -1413,15 +1374,6 @@ impl LlmProvider for PendingCancellationProvider {
         ))
     }
 
-    async fn stream(
-        &self,
-        _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        Err(CoreError::Internal(
-            "test provider uses normalized stream events".to_string(),
-        ))
-    }
-
     async fn stream_events(
         &self,
         _request: &CompletionRequest,
@@ -1500,10 +1452,10 @@ impl LlmProvider for SteeringInterruptProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         self.request_texts.lock().unwrap().push(
             request
@@ -1514,53 +1466,58 @@ impl LlmProvider for SteeringInterruptProvider {
         );
 
         if call_no == 0 {
-            return Ok(Box::pin(stream::unfold(0, |state| async move {
-                match state {
-                    0 => Some((
-                        Ok(StreamChunk {
-                            delta: "obsolete draft ".to_string(),
-                            tool_call_delta: None,
-                            finish_reason: None,
-                            usage: None,
-                            thinking_delta: None,
-                        }),
-                        1,
-                    )),
-                    1 => {
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                        Some((
+            return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
+                0,
+                |state| async move {
+                    match state {
+                        0 => Some((
                             Ok(StreamChunk {
-                                delta: "should not be used".to_string(),
+                                delta: "obsolete draft ".to_string(),
                                 tool_call_delta: None,
-                                finish_reason: Some(FinishReason::Stop),
+                                finish_reason: None,
                                 usage: None,
                                 thinking_delta: None,
                             }),
-                            2,
-                        ))
+                            1,
+                        )),
+                        1 => {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            Some((
+                                Ok(StreamChunk {
+                                    delta: "should not be used".to_string(),
+                                    tool_call_delta: None,
+                                    finish_reason: Some(FinishReason::Stop),
+                                    usage: None,
+                                    thinking_delta: None,
+                                }),
+                                2,
+                            ))
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                }
-            })));
+                },
+            )));
         }
 
-        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-            delta: "steered answer".to_string(),
-            tool_call_delta: None,
-            finish_reason: Some(FinishReason::Stop),
-            usage: Some(Usage {
-                prompt_tokens: 12,
-                completion_tokens: 2,
-                total_tokens: 14,
-                thinking_tokens: None,
-                tool_prompt_tokens: None,
-                cache_read_tokens: None,
-                cache_miss_tokens: None,
-                cache_creation_tokens: None,
-                provider_raw: None,
-            }),
-            thinking_delta: None,
-        })])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: "steered answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage {
+                    prompt_tokens: 12,
+                    completion_tokens: 2,
+                    total_tokens: 14,
+                    thinking_tokens: None,
+                    tool_prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_miss_tokens: None,
+                    cache_creation_tokens: None,
+                    provider_raw: None,
+                }),
+                thinking_delta: None,
+            },
+        )])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1703,10 +1660,10 @@ impl LlmProvider for ParallelProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             vec![
@@ -1746,7 +1703,7 @@ impl LlmProvider for ParallelProvider {
                 thinking_delta: None,
             })]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1782,18 +1739,20 @@ impl LlmProvider for ThoughtOnlyProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-            delta: String::new(),
-            tool_call_delta: None,
-            finish_reason: Some(self.finish_reason.clone()),
-            usage: None,
-            thinking_delta: Some("raw internal reasoning".to_string()),
-        })])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(self.finish_reason.clone()),
+                usage: None,
+                thinking_delta: Some("raw internal reasoning".to_string()),
+            },
+        )])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1838,10 +1797,10 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.request_reasoning.lock().unwrap().push((
             request.reasoning_enabled,
             request.thinking_budget,
@@ -1865,7 +1824,7 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
                 thinking_delta: None,
             }
         };
-        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1894,10 +1853,10 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.request_reasoning
             .lock()
             .unwrap()
@@ -1939,7 +1898,7 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
                 thinking_delta: Some("reasoning was incorrectly re-enabled".to_string()),
             },
         };
-        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -1964,10 +1923,10 @@ impl LlmProvider for LengthContinuationProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.request_reasoning
             .lock()
             .unwrap()
@@ -1990,7 +1949,7 @@ impl LlmProvider for LengthContinuationProvider {
                 thinking_delta: None,
             }
         };
-        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2015,10 +1974,10 @@ impl LlmProvider for TruncatedToolCallProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunk = if call_no == 0 {
             StreamChunk {
@@ -2049,7 +2008,7 @@ impl LlmProvider for TruncatedToolCallProvider {
                 thinking_delta: None,
             }
         };
-        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2078,10 +2037,10 @@ impl LlmProvider for GoalLifecycleProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = match call_no {
             0 => vec![StreamChunk {
@@ -2112,7 +2071,9 @@ impl LlmProvider for GoalLifecycleProvider {
                 thinking_delta: None,
             }],
         };
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(
+            chunks.into_iter().map(Ok),
+        )))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2137,10 +2098,10 @@ impl LlmProvider for ScriptedProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             self.first_chunks.clone()
@@ -2153,7 +2114,9 @@ impl LlmProvider for ScriptedProvider {
                 thinking_delta: None,
             }]
         };
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(
+            chunks.into_iter().map(Ok),
+        )))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2190,10 +2153,10 @@ impl LlmProvider for ToolSurfaceCapturingProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         self.latest_user_texts.lock().unwrap().push(
             request
                 .messages
@@ -2211,13 +2174,15 @@ impl LlmProvider for ToolSurfaceCapturingProvider {
                 .map(|tool| tool.name.clone())
                 .collect(),
         );
-        Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-            delta: "done".to_string(),
-            tool_call_delta: None,
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            thinking_delta: None,
-        })])))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: "done".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2330,10 +2295,10 @@ impl LlmProvider for CapturingScriptedProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         self.requests.lock().unwrap().push(
             request
@@ -2353,7 +2318,9 @@ impl LlmProvider for CapturingScriptedProvider {
                 thinking_delta: None,
             }]
         };
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(
+            chunks.into_iter().map(Ok),
+        )))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2556,10 +2523,10 @@ impl LlmProvider for LoopGuardSteeringProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         self.requests.lock().unwrap().push(
             request
@@ -2577,7 +2544,7 @@ impl LlmProvider for LoopGuardSteeringProvider {
         let steering_tx = self.steering_tx.clone();
         let steering_text =
             (call_no < 2).then(|| format!("steering note {}", call_no.saturating_add(1)));
-        Ok(Box::pin(stream::unfold(
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
             (0u8, Some(delta.to_string()), steering_text, steering_tx),
             |(state, delta, steering_text, steering_tx)| async move {
                 if state == 0 {
@@ -2868,10 +2835,10 @@ impl LlmProvider for ApprovalRequiredProvider {
         Err(CoreError::Llm("not implemented".to_string()))
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         _request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunks = if call_no == 0 {
             vec![Ok(StreamChunk {
@@ -2896,7 +2863,7 @@ impl LlmProvider for ApprovalRequiredProvider {
                 thinking_delta: None,
             })]
         };
-        Ok(Box::pin(stream::iter(chunks)))
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {

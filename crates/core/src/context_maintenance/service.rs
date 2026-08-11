@@ -523,7 +523,7 @@ fn duration_ms(duration: Duration) -> u64 {
 mod tests {
     use super::*;
     use crate::conversation::{ConversationMessage, CreateConversationInput};
-    use crate::llm::{CompletionRequest, CompletionResponse, LlmProvider, Role, StreamChunk};
+    use crate::llm::{CompletionRequest, CompletionResponse, LlmProvider, Role};
     use async_trait::async_trait;
     use futures::stream;
 
@@ -546,12 +546,12 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
         {
-            Ok(Box::pin(stream::empty()))
+            crate::llm::provider_events_from_chunk_stream(Box::pin(stream::empty()))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {

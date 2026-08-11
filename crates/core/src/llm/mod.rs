@@ -446,11 +446,11 @@ pub struct ProviderHostedToolEvent {
     pub artifacts: Option<serde_json::Value>,
 }
 
-/// Provider-normalized stream event.
+/// Terminal failure reported through the canonical provider-event stream.
 ///
-/// Existing providers still implement `stream()` in terms of `StreamChunk`.
-/// This adapter Interface gives the agent layer a seam for provider-level
-/// recovery policy without requiring every provider to change at once.
+/// Chunk-only wire protocols are normalized into provider events in one
+/// direction. Provider-owned events, such as hosted tools, are never collapsed
+/// back into chunks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ProviderStreamFailure {
@@ -497,6 +497,7 @@ impl From<CoreError> for ProviderStreamFailure {
     }
 }
 
+/// Canonical incremental event emitted by every LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
@@ -507,11 +508,18 @@ pub enum ProviderStreamEvent {
     TerminalError { failure: ProviderStreamFailure },
 }
 
-/// Convert a legacy chunk stream into provider-normalized stream events.
+/// Normalize a chunk-only provider wire stream into canonical provider events.
 pub fn stream_chunks_to_provider_events<'a>(
     stream: BoxStream<'a, Result<StreamChunk, CoreError>>,
 ) -> BoxStream<'a, ProviderStreamEvent> {
     Box::pin(stream.map(provider_stream_event_from_chunk_result))
+}
+
+#[cfg(test)]
+pub(crate) fn provider_events_from_chunk_stream<'a>(
+    stream: BoxStream<'a, Result<StreamChunk, CoreError>>,
+) -> Result<BoxStream<'a, ProviderStreamEvent>, CoreError> {
+    Ok(stream_chunks_to_provider_events(stream))
 }
 
 fn provider_stream_event_from_chunk_result(
@@ -521,11 +529,17 @@ fn provider_stream_event_from_chunk_result(
         Ok(chunk) => ProviderStreamEvent::Chunk {
             chunk: Box::new(chunk),
         },
-        Err(CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message)) => {
+        Err(error) => provider_stream_event_from_error(error),
+    }
+}
+
+pub(crate) fn provider_stream_event_from_error(error: CoreError) -> ProviderStreamEvent {
+    match error {
+        CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message) => {
             ProviderStreamEvent::RecoverableError { message }
         }
-        Err(CoreError::Cancelled(message)) => ProviderStreamEvent::Cancelled { message },
-        Err(error) => ProviderStreamEvent::TerminalError {
+        CoreError::Cancelled(message) => ProviderStreamEvent::Cancelled { message },
+        error => ProviderStreamEvent::TerminalError {
             failure: error.into(),
         },
     }
@@ -758,20 +772,11 @@ pub trait LlmProvider: Send + Sync {
     /// Send a completion request and return the full response.
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError>;
 
-    /// Send a completion request and return a stream of chunks.
-    async fn stream(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>;
-
-    /// Provider-level stream Interface with normalized error classification.
+    /// Open the canonical provider-event stream for this request.
     async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
-        let stream = self.stream(request).await?;
-        Ok(stream_chunks_to_provider_events(stream))
-    }
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError>;
 
     /// Quick connectivity / auth check.
     async fn health_check(&self) -> Result<(), CoreError>;
@@ -836,14 +841,6 @@ impl LlmProvider for MessageValidatingProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         self.validate(request)?;
         self.inner.complete(request).await
-    }
-
-    async fn stream(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        self.validate(request)?;
-        self.inner.stream(request).await
     }
 
     async fn stream_events(
@@ -1200,5 +1197,20 @@ mod tests {
             error.to_string(),
             "LLM error: Responses function_call contained incomplete arguments"
         );
+    }
+
+    #[test]
+    fn provider_trait_exposes_only_the_canonical_event_stream() {
+        let source = include_str!("mod.rs");
+        let trait_source = source
+            .split_once("pub trait LlmProvider")
+            .expect("provider trait declaration")
+            .1
+            .split_once("struct MessageValidatingProvider")
+            .expect("provider trait boundary")
+            .0;
+
+        assert_eq!(trait_source.matches("async fn stream_events(").count(), 1);
+        assert!(!trait_source.contains("async fn stream("));
     }
 }

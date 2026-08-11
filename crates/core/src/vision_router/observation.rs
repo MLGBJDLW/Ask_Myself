@@ -681,10 +681,9 @@ mod tests {
     use std::io::Cursor;
 
     use async_trait::async_trait;
-    use futures::stream::BoxStream;
 
     use super::*;
-    use crate::llm::{CompletionResponse, FinishReason, StreamChunk, Usage};
+    use crate::llm::{CompletionResponse, FinishReason, Usage};
 
     struct StaticVisionProvider {
         response: Result<&'static str, &'static str>,
@@ -716,11 +715,12 @@ mod tests {
             }
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            Ok(Box::pin(futures::stream::empty()))
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
+            crate::llm::provider_events_from_chunk_stream(Box::pin(futures::stream::empty()))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {

@@ -14,8 +14,8 @@ use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
-    FinishReason, LlmProvider, Message, ProviderConfig, Role, StreamChunk, ToolCallDelta,
-    ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    FinishReason, LlmProvider, Message, ProviderConfig, ProviderStreamEvent, Role, StreamChunk,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
 use std::sync::Arc;
@@ -611,10 +611,10 @@ impl LlmProvider for OllamaProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, true);
         let body_bytes = serialized_json_body(&body, "Ollama stream request")?;
@@ -651,7 +651,7 @@ impl LlmProvider for OllamaProvider {
             rx.recv().await.map(|item| (item, rx))
         });
 
-        Ok(Box::pin(stream))
+        Ok(super::stream_chunks_to_provider_events(Box::pin(stream)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
