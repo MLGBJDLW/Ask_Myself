@@ -49,9 +49,10 @@ assert(
   'the title-bar and tray Quit paths must share the same application-exit owner',
 );
 assert(
-  /outer_position\(\)/.test(livePositionClamp)
+  /should_reapply_configured_anchor/.test(livePositionClamp)
+    && /outer_position\(\)/.test(livePositionClamp)
     && /clamped == current/.test(livePositionClamp),
-  'the periodic work-area guard must treat the live native position as authoritative',
+  'the periodic guard must reapply declarative anchors and otherwise preserve live roaming',
 );
 assert(
   /keep_current_position_inside_work_area/.test(placementLoop)

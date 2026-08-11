@@ -156,10 +156,17 @@ fn place_inside_work_area(
         .map_err(|error| format!("Failed to position Companion window: {error}"))
 }
 
+fn should_reapply_configured_anchor(anchor: CompanionAnchor, has_persisted_position: bool) -> bool {
+    !has_persisted_position && !matches!(anchor, CompanionAnchor::Free)
+}
+
 fn keep_current_position_inside_work_area(
     window: &WebviewWindow,
     settings: &CompanionSettings,
 ) -> Result<(), String> {
+    if should_reapply_configured_anchor(settings.anchor, settings.position.is_some()) {
+        return place_inside_work_area(window, settings);
+    }
     let monitor = target_monitor(window, settings)
         .ok_or_else(|| "No monitor is available for the Companion window".to_string())?;
     let window_size = window
@@ -273,9 +280,9 @@ pub fn create_companion_window(app: &mut App, settings: &CompanionSettings) {
                         break;
                     };
                     if config.companion.enabled && window.is_visible().unwrap_or(false) {
-                        // Persisted settings own initial placement. Once the
-                        // window is live, its native position is authoritative
-                        // so automatic roaming is not reset every three seconds.
+                        // Declarative anchors follow work-area changes. Free or
+                        // persisted placement uses the live native position so
+                        // automatic roaming is not reset every three seconds.
                         if let Err(error) =
                             keep_current_position_inside_work_area(&window, &config.companion)
                         {
@@ -524,5 +531,21 @@ mod tests {
             PhysicalPosition::new(-1000, 400),
             "an in-bounds live roaming position must not be reset to persisted settings",
         );
+        assert!(should_reapply_configured_anchor(
+            CompanionAnchor::BottomLeft,
+            false
+        ));
+        assert!(should_reapply_configured_anchor(
+            CompanionAnchor::BottomRight,
+            false
+        ));
+        assert!(!should_reapply_configured_anchor(
+            CompanionAnchor::Free,
+            false
+        ));
+        assert!(!should_reapply_configured_anchor(
+            CompanionAnchor::BottomLeft,
+            true
+        ));
     }
 }
