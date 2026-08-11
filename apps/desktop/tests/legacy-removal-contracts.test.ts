@@ -105,6 +105,36 @@ test('canonical Run Events have no task-event compatibility bridge', () => {
   );
 });
 
+test('durable Run reconciliation has one decision owner', () => {
+  const retiredApi = join(process.cwd(), 'src/lib/streaming/recoveryApi.ts');
+  assert(!existsSync(retiredApi), 'the watchdog-only recovery forwarding API must stay deleted');
+
+  const store = source('src/lib/streamStore.ts');
+  for (const symbol of [
+    'withWatchdogRecoveryTimeout',
+    'retryRunEventGapIfNeeded',
+    'getRecoveryTaskRuns',
+    'finalAssistantMessageForTaskRun',
+  ]) {
+    assert(!store.includes(symbol), `streamStore must not re-own ${symbol}`);
+  }
+
+  const session = source('src/lib/useChatSession.ts');
+  for (const symbol of [
+    'taskRunCanResumeStream',
+    'api.getAgentTaskRunEvents',
+    'api.getAgentRunEvents',
+  ]) {
+    assert(!session.includes(symbol), `useChatSession must not re-own ${symbol}`);
+  }
+
+  const reconciler = source('src/lib/streaming/runReconciliation.ts');
+  assert(
+    reconciler.includes('class DurableRunReconciler'),
+    'durable run selection and retry policy must stay behind the reconciliation interface',
+  );
+});
+
 test('Tool execution has one context-based entry point', () => {
   const tools = source('../../crates/core/src/tools/mod.rs');
   assert(!tools.includes('execute_with_context'), 'Tool API must not expose execute_with_context');

@@ -11,8 +11,6 @@ import type {
   AgentTaskSnapshotEvent,
   AgentTaskRunEvent,
   AgentTurnHandle,
-  ConversationMessage,
-  ConversationTurn,
 } from '../types/conversation';
 import { projectRunEventsToStreamState } from './streaming/durableReplay';
 import {
@@ -20,18 +18,12 @@ import {
   takeNextStreamRunEvent,
 } from './streaming/ordering';
 import { applyAgentRunEvent } from './streaming/runEventReducer';
-import {
-  getRecoveryRunEvents,
-  getRecoveryTaskEvents,
-  getRecoveryTaskRuns,
-  getRecoveryConversation,
-  getRecoveryConversationTurns,
-} from './streaming/recoveryApi';
+import { durableRunReconciler } from './streaming/runReconciliationRuntime';
+import type { DurableRunReconciliationOutcome } from './streaming/runReconciliation';
 import { applyDoneEvent } from './streaming/liveProjection';
 import {
   clearToolPreparingTimers,
   createDefaultState,
-  taskRunIsActive,
   type InternalStreamState,
 } from './streaming/state';
 import {
@@ -56,24 +48,6 @@ export type { ContextUsageBreakdown, StreamRoundEvent, StreamState, ToolCallEven
 
 const TOOL_PREPARING_DELAY_MS = 150;
 const MAX_RETAINED_STREAMS = 32;
-const WATCHDOG_RECOVERY_QUERY_TIMEOUT_MS = 10_000;
-const MAX_RUN_EVENT_GAP_RECOVERY_ATTEMPTS = 3;
-
-async function withWatchdogRecoveryTimeout<T>(query: Promise<T>, label: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      query,
-      new Promise<T>((_resolve, reject) => {
-        timeoutId = setTimeout(() => {
-          reject(new Error(`${label} exceeded ${WATCHDOG_RECOVERY_QUERY_TIMEOUT_MS}ms`));
-        }, WATCHDOG_RECOVERY_QUERY_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timeoutId !== null) clearTimeout(timeoutId);
-  }
-}
 
 /* ── Store implementation ───────────────────────────────────────── */
 
@@ -96,27 +70,6 @@ function stateHasVisibleGeneratedContent(state: InternalStreamState): boolean {
     || state.toolCalls.length > 0
     || state.streamRounds.some(round => Boolean(round.reply || round.thinking)),
   );
-}
-
-function finalAssistantMessageForTaskRun(
-  taskRun: AgentTaskRun,
-  turns: ConversationTurn[],
-  messages: ConversationMessage[],
-): ConversationMessage | null {
-  const turn = turns.find(candidate => candidate.id === taskRun.turnId);
-  if (turn?.assistantMessageId) {
-    const mapped = messages.find(message => message.id === turn.assistantMessageId);
-    if (mapped?.role === 'assistant' && mapped.content.trim()) return mapped;
-  }
-
-  const taskUserIndex = messages.findIndex(message => message.id === taskRun.userMessageId);
-  if (taskUserIndex < 0) return null;
-  for (let index = taskUserIndex + 1; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (message.role === 'user') break;
-    if (message.role === 'assistant' && message.content.trim()) return message;
-  }
-  return null;
 }
 
 function nextAnimationFrame(callback: () => void): void {
@@ -447,41 +400,32 @@ class StreamStoreImpl {
 
   private recoverRunEventGap(conversationId: string, runId: string): void {
     this._gapRecoveries.set(conversationId, runId);
-    void withWatchdogRecoveryTimeout(
-      getRecoveryRunEvents(runId),
-      'Settled run-event gap recovery query',
-    ).then(runEvents => {
+    const isCurrent = () => {
       const state = this._streams[conversationId];
-      if (!state) return;
+      if (!state) return false;
       const boundRunId = state.turnHandle?.runId;
       const pendingRunMatches = [...state._pendingRunEvents.values()]
         .some(event => event.runId === runId);
-      if ((boundRunId && boundRunId !== runId) || (!boundRunId && !pendingRunMatches)) return;
-      for (const runEvent of [...runEvents].sort((left, right) => left.eventSeq - right.eventSeq)) {
-        this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
-      }
-      this.retryRunEventGapIfNeeded(conversationId, runId);
-    }).catch(() => {
-      this.retryRunEventGapIfNeeded(conversationId, runId);
-    }).finally(() => {
-      if (this._gapRecoveries.get(conversationId) === runId) {
-        this._gapRecoveries.delete(conversationId);
-      }
-    });
-  }
-
-  private retryRunEventGapIfNeeded(conversationId: string, runId: string): void {
-    const state = this._streams[conversationId];
-    if (!state) return;
-    const pendingRunMatches = [...state._pendingRunEvents.values()]
-      .some(event => event.runId === runId);
-    if (!pendingRunMatches) {
-      state._runEventGapRecoveryAttempt = 0;
-      return;
-    }
-
-    state._runEventGapRecoveryAttempt += 1;
-    if (state._runEventGapRecoveryAttempt > MAX_RUN_EVENT_GAP_RECOVERY_ATTEMPTS) {
+      return !(
+        (boundRunId && boundRunId !== runId)
+        || (!boundRunId && !pendingRunMatches)
+      );
+    };
+    void durableRunReconciler.recoverGap({
+      runId,
+      isCurrent,
+      accept: runEvents => {
+        for (const runEvent of runEvents) {
+          this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
+        }
+        const state = this._streams[conversationId];
+        return Boolean(state && [...state._pendingRunEvents.values()]
+          .some(event => event.runId === runId));
+      },
+    }).then(outcome => {
+      if (outcome.kind !== 'exhausted' || !isCurrent()) return;
+      const state = this._streams[conversationId];
+      if (!state) return;
       state._pendingRunEvents.clear();
       clearStreamWatchdog(state);
       clearToolPreparingTimers(state);
@@ -497,15 +441,11 @@ class StreamStoreImpl {
       this.touch(conversationId);
       this.evictCompletedStreams(conversationId);
       this.notifyImmediately(conversationId);
-      return;
-    }
-
-    const delayMs = Math.min(250 * (2 ** (state._runEventGapRecoveryAttempt - 1)), 2_000);
-    armStreamWatchdog(state, () => {
-      const current = this._streams[conversationId];
-      if (!current) return;
-      this.recoverMissingRunEvents(conversationId, current, runId);
-    }, delayMs);
+    }).finally(() => {
+      if (this._gapRecoveries.get(conversationId) === runId) {
+        this._gapRecoveries.delete(conversationId);
+      }
+    });
   }
 
   private watchdogStateIsCurrent(
@@ -563,20 +503,20 @@ class StreamStoreImpl {
   private settleConfirmedTaskRun(
     conversationId: string,
     state: InternalStreamState,
-    taskRun: AgentTaskRun,
-    finalMessage: ConversationMessage | null = null,
-  ): boolean {
-    const status = taskRun.status.toLowerCase();
-    if (taskRun.phase === 'awaiting_user_input' || status === 'paused') {
+    outcome: Extract<
+      DurableRunReconciliationOutcome,
+      { kind: 'suspended' | 'completed' | 'terminal' }
+    >,
+  ): void {
+    if (outcome.kind === 'suspended') {
       suspendAgentRunProjection(state);
-    } else if (status === 'completed') {
-      if (!finalMessage) return false;
+    } else if (outcome.kind === 'completed') {
       clearToolPreparingTimers(state);
       applyDoneEvent(state, {
         status: 'completed',
-        message: finalMessage,
+        message: outcome.finalMessage,
       });
-    } else if (status === 'cancelled') {
+    } else if (outcome.status === 'cancelled') {
       clearToolPreparingTimers(state);
       applyTerminalProjection(state, {
         toolStatus: 'cancelled',
@@ -584,27 +524,24 @@ class StreamStoreImpl {
         traceTone: 'success',
         errorMessage: null,
       });
-    } else if (status === 'failed' || status === 'timed_out') {
-      const message = taskRun.errorMessage?.trim()
-        || (status === 'timed_out'
+    } else {
+      const message = outcome.snapshot.taskRun.errorMessage?.trim()
+        || (outcome.status === 'timed_out'
           ? 'Backend confirmed this turn timed out.'
           : 'Backend confirmed this turn failed.');
       clearToolPreparingTimers(state);
       applyTerminalProjection(state, {
-        toolStatus: status === 'timed_out' ? 'timedOut' : 'error',
+        toolStatus: outcome.status === 'timed_out' ? 'timedOut' : 'error',
         message,
         traceTone: 'error',
         errorMessage: message,
       });
-    } else {
-      return false;
     }
 
     this.finishTurnTiming(state);
     this.touch(conversationId);
     this.evictCompletedStreams(conversationId);
     this.notifyImmediately(conversationId);
-    return true;
   }
 
   private async recoverSuspectedStall(
@@ -616,6 +553,7 @@ class StreamStoreImpl {
 
     state._watchdogRecoveryAttempt += 1;
     const expectedRunId = state.turnHandle?.runId;
+    const expectedTurnId = state.turnHandle?.turnId;
     this.setWatchdogConnectionState(state, 'degraded');
     appendStatusTraceEvent(
       state,
@@ -627,22 +565,35 @@ class StreamStoreImpl {
     this.notifyImmediately(conversationId);
 
     try {
-      const taskRuns = await withWatchdogRecoveryTimeout(
-        getRecoveryTaskRuns(conversationId),
-        'Task-run recovery query',
-      );
+      const outcome = await durableRunReconciler.reconcile({
+        reason: 'watchdog',
+        conversationId,
+        expectedRunId,
+        expectedTurnId,
+        missingRunConfirmations: state._watchdogMissingRunConfirmations,
+        isCurrent: () => Boolean(
+          this.watchdogStateIsCurrent(conversationId, generation, expectedRunId),
+        ),
+      });
+      if (outcome.kind === 'stale') return;
       state = this.watchdogStateIsCurrent(conversationId, generation, expectedRunId);
       if (!state) return;
 
-      const candidates = [...taskRuns].sort((left, right) =>
-        Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-      const taskRun = expectedRunId
-        ? candidates.find(run => run.id === expectedRunId || run.turnId === state?.turnHandle?.turnId)
-        : candidates.find(taskRunIsActive) ?? candidates[0];
-      if (!taskRun) {
-        if (expectedRunId) state._watchdogMissingRunConfirmations += 1;
-        else state._watchdogMissingRunConfirmations = 0;
-        if (expectedRunId && state._watchdogMissingRunConfirmations >= 3) {
+      if (outcome.kind === 'unavailable') {
+        state._watchdogMissingRunConfirmations = 0;
+        this.rearmWatchdogRecovery(
+          conversationId,
+          state,
+          `Backend recovery query failed; retrying (${outcome.error}).`,
+        );
+        return;
+      }
+
+      if (outcome.kind === 'missing' || outcome.kind === 'idle') {
+        state._watchdogMissingRunConfirmations = outcome.kind === 'missing'
+          ? outcome.confirmations
+          : 0;
+        if (outcome.kind === 'missing' && outcome.exhausted) {
           const message = 'Connection lost: the backend no longer has this turn.';
           this.setWatchdogConnectionState(state, 'failed');
           clearToolPreparingTimers(state);
@@ -669,27 +620,15 @@ class StreamStoreImpl {
       }
       state._watchdogMissingRunConfirmations = 0;
 
-      const [runEvents, taskEvents] = await withWatchdogRecoveryTimeout(
-        Promise.all([
-          getRecoveryRunEvents(taskRun.id),
-          getRecoveryTaskEvents(taskRun.id),
-        ]),
-        'Durable-event recovery query',
-      );
-      state = this.watchdogStateIsCurrent(conversationId, generation, expectedRunId);
-      if (!state) return;
-
-      state.taskRun = taskRun;
-      state.taskEvents = taskEvents.slice(-256);
-      const missingRunEvents = [...runEvents]
-        .sort((left, right) => left.eventSeq - right.eventSeq);
-      for (const runEvent of missingRunEvents) {
+      state.taskRun = outcome.snapshot.taskRun;
+      state.taskEvents = outcome.snapshot.taskEvents;
+      for (const runEvent of outcome.snapshot.runEvents) {
         this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
       }
 
       state = this._streams[conversationId];
       if (!state || !state.isStreaming) return;
-      if (taskRunIsActive(taskRun)) {
+      if (outcome.kind === 'active') {
         this.setWatchdogConnectionState(state, 'recovered');
         appendStatusTraceEvent(
           state,
@@ -704,27 +643,21 @@ class StreamStoreImpl {
         this.resetTimeout(conversationId, true);
         return;
       }
-      let finalMessage: ConversationMessage | null = null;
-      if (taskRun.status.toLowerCase() === 'completed') {
-        const [conversationResult, turns] = await withWatchdogRecoveryTimeout(
-          Promise.all([
-            getRecoveryConversation(conversationId),
-            getRecoveryConversationTurns(conversationId),
-          ]),
-          'Final-answer recovery query',
-        );
-        state = this.watchdogStateIsCurrent(conversationId, generation, expectedRunId);
-        if (!state) return;
-        finalMessage = finalAssistantMessageForTaskRun(taskRun, turns, conversationResult[1]);
+      if (
+        outcome.kind === 'suspended'
+        || outcome.kind === 'completed'
+        || outcome.kind === 'terminal'
+      ) {
+        this.settleConfirmedTaskRun(conversationId, state, outcome);
+        return;
       }
-      if (this.settleConfirmedTaskRun(conversationId, state, taskRun, finalMessage)) return;
 
       this.rearmWatchdogRecovery(
         conversationId,
         state,
-        taskRun.status.toLowerCase() === 'completed'
+        outcome.reason === 'finalMessage'
           ? 'Backend completed this turn, but the final assistant message is not durable yet; recovery will retry.'
-          : `Backend status '${taskRun.status}' is not terminal; recovery will retry.`,
+          : `Backend status '${outcome.snapshot.taskRun.status}' is not terminal; recovery will retry.`,
       );
     } catch (error) {
       state = this.watchdogStateIsCurrent(conversationId, generation, expectedRunId);
@@ -856,9 +789,6 @@ class StreamStoreImpl {
         state._pendingRunEvents.clear();
         break;
       }
-    }
-    if (state._pendingRunEvents.size === 0) {
-      state._runEventGapRecoveryAttempt = 0;
     }
   }
 
