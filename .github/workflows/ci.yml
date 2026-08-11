@@ -19,6 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Reject tracked local research docs
+        shell: bash
+        run: |
+          tracked="$(git ls-files -- \
+            'docs/research/**' \
+            'docs/local/**' \
+            'docs/*-primary-source-research.md' \
+            'docs/**/*-primary-source-research.md' \
+            'docs/*-implementation-research.md' \
+            'docs/**/*-implementation-research.md')"
+          if [[ -n "$tracked" ]]; then
+            echo "Local-only research documents must not be tracked:"
+            echo "$tracked"
+            exit 1
+          fi
+
       - name: Install system dependencies (Linux)
         run: |
           sudo apt-get update
