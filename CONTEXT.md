@@ -23,3 +23,7 @@ _Avoid_: sampling retry loop, stream recovery decision plumbing, current provide
 **Accepted route**:
 The immutable provider route bound to a model attempt only after that route produces the first accepted stream event, or after a non-streaming completion succeeds. It is the provenance used for replay validation and the durable provider-turn envelope.
 _Avoid_: active route snapshot, latest provider, pre-stream route
+
+**Durable Run reconciliation**:
+The frontend authority that selects the expected Agent Run, joins its ordered Run Events, task timeline, and final assistant message, and returns a typed active, suspended, terminal, pending, missing, or stale outcome. It owns durable-query timeouts, missing-run confirmation, and event-gap retry policy; UI stores only apply the returned projection and schedule their own timers.
+_Avoid_: watchdog recovery API, hydration-only run selection, final-message polling branch

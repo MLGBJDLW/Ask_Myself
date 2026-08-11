@@ -1,4 +1,4 @@
-import type { AgentRunEvent, AgentTaskRun } from '../../types/conversation';
+import type { AgentRunEvent } from '../../types/conversation';
 import type { StreamState } from './protocol';
 import type { StreamTimeoutHandle } from './watchdog';
 
@@ -21,7 +21,6 @@ export interface InternalStreamState extends StreamState {
   _watchdogGeneration: number;
   _watchdogRecoveryAttempt: number;
   _watchdogMissingRunConfirmations: number;
-  _runEventGapRecoveryAttempt: number;
   _toolPreparingTimers: Record<string, ReturnType<typeof setTimeout>>;
   _launchStartedAt: number | null;
   _frontendPaintScheduled: boolean;
@@ -68,16 +67,11 @@ export function createDefaultState(): InternalStreamState {
     _watchdogGeneration: 0,
     _watchdogRecoveryAttempt: 0,
     _watchdogMissingRunConfirmations: 0,
-    _runEventGapRecoveryAttempt: 0,
     _toolPreparingTimers: {},
     _launchStartedAt: null,
     _frontendPaintScheduled: false,
     _frontendPaintReported: false,
   };
-}
-
-export function taskRunIsActive(taskRun: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(taskRun.status);
 }
 
 export function clearToolPreparingTimer(state: InternalStreamState, callId: string): void {

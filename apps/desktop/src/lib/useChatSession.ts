@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
+import { durableRunReconciler } from './streaming/runReconciliationRuntime';
 import type {
   AgentCollaborationMode,
   AgentExecutionMode,
@@ -118,10 +119,6 @@ function isNoRunningAgentError(error: unknown): boolean {
     /no conversation running/i.test(message) ||
     /no longer accepting steering/i.test(message)
   );
-}
-
-function taskRunCanResumeStream(run: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval', 'cancelling'].includes(run.status);
 }
 
 function streamHasVisiblePreview(conversationId: string): boolean {
@@ -673,15 +670,23 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         setTurnsForConversation(activeId, conversationTurns);
         setTaskRunsForConversation(activeId, agentTaskRuns);
         setUsageSnapshot(compactionUsageRef.current.get(activeId) ?? durableUsage);
-        const resumableRun = [...agentTaskRuns].reverse().find(taskRunCanResumeStream);
-        if (resumableRun && !streamHasVisiblePreview(activeId)) {
-          Promise.all([
-            api.getAgentTaskRunEvents(resumableRun.id).catch(() => []),
-            api.getAgentRunEvents(resumableRun.id).catch(() => []),
-          ])
-            .then(([taskEvents, runEvents]) => {
-              if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
-              streamStore.restoreFromRunEvents(activeId, resumableRun, runEvents, taskEvents);
+        if (!streamHasVisiblePreview(activeId)) {
+          void durableRunReconciler.reconcile({
+            reason: 'hydration',
+            conversationId: activeId,
+            taskRuns: agentTaskRuns,
+            isCurrent: () => (
+              !cancelled && generation === conversationHydrationGenerationRef.current
+            ),
+          })
+            .then(outcome => {
+              if (outcome.kind !== 'active') return;
+              streamStore.restoreFromRunEvents(
+                activeId,
+                outcome.snapshot.taskRun,
+                outcome.snapshot.runEvents,
+                outcome.snapshot.taskEvents,
+              );
               const restoredStream = streamStore.getStream(activeId);
               if (restoredStream?.isStreaming) {
                 knownStreamConversationsRef.current.add(activeId);

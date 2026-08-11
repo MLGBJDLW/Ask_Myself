@@ -6,9 +6,9 @@ import type {
 import { applyAgentRunEvent } from './runEventReducer';
 import {
   createDefaultState,
-  taskRunIsActive,
   type InternalStreamState,
 } from './state';
+import { taskRunIsActive } from './runReconciliation';
 import { isTaskTimelineEvent } from './taskTimeline';
 import { applyTerminalProjection } from './terminalProjection';
 import { createToolCall, insertPendingToolCall, type ToolPreparingPayload } from './toolProjection';
