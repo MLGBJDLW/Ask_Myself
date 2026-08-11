@@ -33,10 +33,11 @@ use crate::intelligence::{
 use crate::llm::reasoning_profile::{
     ReasoningCaptureStatus, ReasoningEnvelope, ReasoningReplayPolicy,
 };
+#[cfg(test)]
+use crate::llm::ProviderStreamEvent;
 use crate::llm::{
-    stream_chunks_to_provider_events, CompletionRequest, ContentPart, LlmProvider, Message,
-    ProviderHostedToolStatus, ProviderStreamEvent, ProviderType, ReasoningEffort, Role,
-    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
+    CompletionRequest, ContentPart, LlmProvider, Message, ProviderHostedToolStatus, ProviderType,
+    ReasoningEffort, Role, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::policy_engine::{evaluate_policy_with_baseline, PolicyEffect, PolicySubject};
@@ -65,6 +66,7 @@ mod events;
 mod finalization;
 mod long_task;
 pub mod loop_guard;
+mod model_attempt;
 mod model_step;
 mod output_recovery;
 pub mod power_mode;
@@ -96,12 +98,8 @@ use self::long_task::{
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
-use self::sampling::completion_response_to_agent_stream;
 pub use self::sampling::llm_streaming_disabled_by_env;
-use self::stream_recovery::{
-    ContextOverflowRecoveryDecision, StreamConnectRetryDecision, StreamRecoveryDecision,
-    StreamRecoveryPolicy,
-};
+use self::stream_recovery::{ContextOverflowRecoveryDecision, StreamRecoveryPolicy};
 use self::tool_runtime::{
     build_provider_hosted_tool_run_item, build_tool_run_item, tool_call_execution_batches,
 };

@@ -15,11 +15,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
 use crate::error::CoreError;
+use crate::llm::provider_turn::RouteSnapshot;
+use crate::llm::reasoning_profile::ReasoningReplayPolicy;
 #[cfg(test)]
 use crate::llm::FinishReason;
 use crate::llm::{
     CompletionRequest, CompletionResponse, ContentPart, LlmProvider, Message, ReasoningEffort,
-    Role, StreamChunk, Usage,
+    ReplayHistoryProjection, Role, StreamChunk, Usage,
 };
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,6 +292,17 @@ impl MoaProvider {
         &self.preset
     }
 
+    fn request_for_aggregator(&self, request: &CompletionRequest) -> CompletionRequest {
+        let mut request = request.clone();
+        request.model = self.preset.aggregator_model.clone();
+        if let Some(provider_type) =
+            crate::provider_registry::provider_type_from_key(&self.preset.aggregator_provider)
+        {
+            request.provider_type = Some(provider_type);
+        }
+        request
+    }
+
     async fn aggregator_request(
         &self,
         request: &CompletionRequest,
@@ -308,7 +321,7 @@ impl MoaProvider {
         } else {
             self.latest_private_tail.read().await.clone()
         };
-        let mut aggregator_request = request.clone();
+        let mut aggregator_request = self.request_for_aggregator(request);
         if let Some(tail) = tail {
             aggregator_request.messages.push(Message {
                 role: Role::System,
@@ -427,6 +440,26 @@ impl MoaProvider {
 impl LlmProvider for MoaProvider {
     fn name(&self) -> &str {
         "Mixture of Agents"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        self.aggregator
+            .reasoning_replay_policy(&self.preset.aggregator_model)
+    }
+
+    fn reasoning_replay_history_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        self.aggregator
+            .reasoning_replay_history_policy(&self.preset.aggregator_model)
+    }
+
+    fn replay_history_projection(&self, request: &CompletionRequest) -> ReplayHistoryProjection {
+        let request = self.request_for_aggregator(request);
+        self.aggregator.replay_history_projection(&request)
+    }
+
+    fn route_snapshot(&self, request: &CompletionRequest) -> RouteSnapshot {
+        let request = self.request_for_aggregator(request);
+        self.aggregator.route_snapshot(&request)
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -607,12 +640,77 @@ fn subtract_optional(after: Option<u32>, before: Option<u32>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::{atomic::AtomicUsize, Mutex};
+
+    use crate::llm::fallback::AutomaticFallbackProvider;
+    use crate::llm::provider_turn::ProviderTurnEnvelope;
+    use crate::llm::reasoning_profile::ReasoningApiStyle;
+    use crate::llm::{ProviderType, ToolCallRequest};
 
     struct StubProvider {
         label: &'static str,
         calls: AtomicUsize,
         fail: bool,
+    }
+
+    struct RecordingAggregator {
+        requests: Arc<Mutex<Vec<CompletionRequest>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for RecordingAggregator {
+        fn name(&self) -> &str {
+            "concrete-aggregator"
+        }
+
+        fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+            ReasoningReplayPolicy::NotRequired
+        }
+
+        fn reasoning_replay_history_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+            ReasoningReplayPolicy::RequiredOnToolCall
+        }
+
+        fn route_snapshot(&self, request: &CompletionRequest) -> RouteSnapshot {
+            RouteSnapshot {
+                provider_endpoint_id: "aggregator-endpoint".to_string(),
+                provider_family: "openai".to_string(),
+                api_style: ReasoningApiStyle::OpenAiChatCompletions,
+                model_id: request.model.clone(),
+                reasoning_profile_id: "aggregator-profile-v1".to_string(),
+                reasoning_profile_version: 1,
+                replay_policy: ReasoningReplayPolicy::NotRequired,
+            }
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["aggregator-model".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(CompletionResponse {
+                content: "aggregated".to_string(),
+                tool_calls: None,
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                thinking: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -727,6 +825,92 @@ mod tests {
         let moa = MoaProvider::new(provider("aggregator", false), preset, advisors).unwrap();
         assert!(moa.complete(&request()).await.is_ok());
         assert_eq!(moa.usage_snapshot().await.advisor_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn moa_preserves_fallback_projection_ownership_and_concrete_route_provenance() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let aggregator = AutomaticFallbackProvider::new(
+            0,
+            Box::new(RecordingAggregator {
+                requests: Arc::clone(&received),
+            }),
+            "aggregator-model".to_string(),
+            ProviderType::OpenAi,
+            Vec::new(),
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+        let mut preset = MoaPreset::builtin(MoaPresetId::FastReview, "open_ai", "aggregator-model");
+        preset.budget_policy.max_advisor_calls_per_turn = 0;
+        let advisor = MoaAdvisor {
+            slot: preset.references[0].clone(),
+            provider: provider("unused-advisor", false),
+        };
+        let moa = MoaProvider::new(Arc::new(aggregator), preset, vec![advisor]).unwrap();
+        let concrete_route = RouteSnapshot {
+            provider_endpoint_id: "aggregator-endpoint".to_string(),
+            provider_family: "openai".to_string(),
+            api_style: ReasoningApiStyle::OpenAiChatCompletions,
+            model_id: "aggregator-model".to_string(),
+            reasoning_profile_id: "aggregator-profile-v1".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: ReasoningReplayPolicy::NotRequired,
+        };
+        let tool_call = ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![tool_call.clone()]);
+        assistant.set_provider_turn(ProviderTurnEnvelope::capture(
+            "turn-1",
+            "sample-1",
+            concrete_route,
+            "",
+            Some("prior reasoning"),
+            Some("prior reasoning"),
+            vec![tool_call],
+            true,
+        ));
+        let request = CompletionRequest {
+            model: "moa/fastReview".to_string(),
+            provider_type: Some(ProviderType::Custom),
+            reasoning_enabled: Some(false),
+            messages: vec![
+                assistant,
+                Message::text_with_name(Role::Tool, "tool result", "call-1"),
+                Message::text(Role::User, "continue"),
+            ],
+            ..CompletionRequest::default()
+        };
+
+        assert_eq!(
+            moa.replay_history_projection(&request),
+            ReplayHistoryProjection::ProviderSelectedRoute
+        );
+        let accepted_route = moa.route_snapshot(&request);
+        assert_eq!(accepted_route.provider_endpoint_id, "aggregator-endpoint");
+        assert_eq!(accepted_route.provider_family, "openai");
+        assert_eq!(accepted_route.model_id, "aggregator-model");
+
+        let response = moa.complete(&request).await.unwrap();
+        assert_eq!(response.content, "aggregated");
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].model, "aggregator-model");
+        assert_eq!(received[0].provider_type, Some(ProviderType::OpenAi));
+        assert!(received[0]
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool));
+        assert!(received[0].messages.iter().any(|message| {
+            message
+                .provider_turn()
+                .is_some_and(|envelope| envelope.replay_payload.is_present())
+        }));
     }
 
     #[test]
