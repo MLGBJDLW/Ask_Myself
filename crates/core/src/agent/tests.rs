@@ -427,6 +427,39 @@ struct RouteAwareReplayPolicyProvider {
     complete_calls: Arc<AtomicUsize>,
 }
 
+struct RecoverablePrimaryRouteProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct ToolCallingFallbackRouteProvider {
+    stream_calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<Vec<Message>>>>,
+}
+
+fn recoverable_primary_route(model: &str) -> crate::llm::provider_turn::RouteSnapshot {
+    crate::llm::provider_turn::RouteSnapshot {
+        provider_endpoint_id: "primary-openai-endpoint".to_string(),
+        provider_family: "openai-compatible".to_string(),
+        api_style: crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+        model_id: model.to_string(),
+        reasoning_profile_id: "primary-not-required-v1".to_string(),
+        reasoning_profile_version: 1,
+        replay_policy: ReasoningReplayPolicy::NotRequired,
+    }
+}
+
+fn tool_calling_fallback_route(model: &str) -> crate::llm::provider_turn::RouteSnapshot {
+    crate::llm::provider_turn::RouteSnapshot {
+        provider_endpoint_id: "fallback-deepseek-endpoint".to_string(),
+        provider_family: "deepseek".to_string(),
+        api_style: crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiChatCompletions,
+        model_id: model.to_string(),
+        reasoning_profile_id: "fallback-required-v1".to_string(),
+        reasoning_profile_version: 1,
+        replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+    }
+}
+
 struct UnknownReplayThinkingProvider {
     attempt_tool_call: bool,
     stream_calls: Arc<AtomicUsize>,
@@ -628,6 +661,157 @@ impl LlmProvider for RouteAwareReplayPolicyProvider {
 }
 
 #[async_trait]
+impl LlmProvider for RecoverablePrimaryRouteProvider {
+    fn name(&self) -> &str {
+        "recoverable-primary-route"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::NotRequired
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        recoverable_primary_route(&request.model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["primary-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "the recoverable primary must not enter completion mode".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Llm(
+            "the agent must consume provider stream events".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(stream::iter(vec![
+            ProviderStreamEvent::RecoverableError {
+                message: "primary disconnected before visible output".to_string(),
+            },
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ToolCallingFallbackRouteProvider {
+    fn name(&self) -> &str {
+        "tool-calling-fallback-route"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::RequiredOnToolCall
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        tool_calling_fallback_route(&request.model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["fallback-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "the fallback route must remain streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Llm(
+            "the agent must consume provider stream events".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.requests.lock().unwrap().push(request.messages.clone());
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let events = match call_no {
+            0 => vec![
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: None,
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: Some("fallback reasoning state".to_string()),
+                    }),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: Some(ToolCallDelta {
+                            id: "fallback-call".to_string(),
+                            name: Some("recording_tool".to_string()),
+                            arguments_delta: r#"{"value":"fallback"}"#.to_string(),
+                            index: Some(0),
+                            thought_signature: None,
+                        }),
+                        finish_reason: Some(FinishReason::ToolCalls),
+                        usage: Some(Usage::default()),
+                        thinking_delta: None,
+                    }),
+                },
+            ],
+            1 => vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: "fallback final answer".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            }],
+            _ => {
+                return Err(CoreError::Llm(
+                    "the fallback route received an unexpected extra request".to_string(),
+                ));
+            }
+        };
+        Ok(Box::pin(stream::iter(events)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl LlmProvider for MissingRequiredReasoningProvider {
     fn name(&self) -> &str {
         "missing-required-reasoning-mock"
@@ -797,6 +981,77 @@ struct RecoveringStreamProvider {
     complete_calls: Arc<AtomicUsize>,
 }
 
+struct EmptyMetadataContextOverflowProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for EmptyMetadataContextOverflowProvider {
+    fn name(&self) -> &str {
+        "empty-metadata-context-overflow-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Ok(CompletionResponse {
+            content: "Older turns were compacted.".to_string(),
+            tool_calls: None,
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            thinking: None,
+        })
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Internal(
+            "test provider uses normalized stream events".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call = self.stream_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call > 3 {
+            return Err(CoreError::Internal(
+                "context compaction circuit breaker allowed a fourth model request".to_string(),
+            ));
+        }
+
+        Ok(Box::pin(stream::iter(vec![
+            ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            },
+            ProviderStreamEvent::TerminalError {
+                failure: crate::llm::ProviderStreamFailure::ContextOverflow {
+                    prompt_tokens: 200,
+                    max_tokens: 100,
+                },
+            },
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl LlmProvider for RecoveringStreamProvider {
     fn name(&self) -> &str {
@@ -903,6 +1158,23 @@ impl LlmProvider for FlakyThenSuccessfulStreamProvider {
 struct VisibleThenInterruptedProvider {
     stream_calls: Arc<AtomicUsize>,
     complete_calls: Arc<AtomicUsize>,
+}
+
+struct CancelledStreamProvider {
+    stream_calls: Arc<AtomicUsize>,
+    visible_output: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PendingCancellationPoint {
+    StreamOpen,
+    StreamReadAfterVisible,
+}
+
+struct PendingCancellationProvider {
+    stream_calls: Arc<AtomicUsize>,
+    invocation_started: Arc<Notify>,
+    cancellation_point: PendingCancellationPoint,
 }
 
 struct ProviderHostedToolProvider {
@@ -1024,6 +1296,181 @@ impl LlmProvider for VisibleThenInterruptedProvider {
                 "stream interrupted after output".to_string(),
             )),
         ])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for CancelledStreamProvider {
+    fn name(&self) -> &str {
+        "cancelled-stream-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "cancelled stream must not enter completion fallback".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Internal(
+            "test provider uses normalized stream events".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let mut events = if self.visible_output {
+            vec![
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: None,
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: Some("visible reasoning before cancellation".to_string()),
+                    }),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: "visible answer before cancellation".to_string(),
+                        tool_call_delta: None,
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: Some(ToolCallDelta {
+                            id: "cancelled-call".to_string(),
+                            name: Some("recording_tool".to_string()),
+                            arguments_delta: r#"{"value":"must-not-run"}"#.to_string(),
+                            index: Some(0),
+                            thought_signature: None,
+                        }),
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+            ]
+        } else {
+            vec![ProviderStreamEvent::Chunk {
+                chunk: Box::new(StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            }]
+        };
+        events.push(ProviderStreamEvent::Cancelled {
+            message: "cancelled by user".to_string(),
+        });
+        Ok(Box::pin(stream::iter(events)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for PendingCancellationProvider {
+    fn name(&self) -> &str {
+        "pending-cancellation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "pending stream cancellation must not enter completion fallback".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        Err(CoreError::Internal(
+            "test provider uses normalized stream events".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        match self.cancellation_point {
+            PendingCancellationPoint::StreamOpen => {
+                self.invocation_started.notify_one();
+                std::future::pending::<Result<BoxStream<'_, ProviderStreamEvent>, CoreError>>()
+                    .await
+            }
+            PendingCancellationPoint::StreamReadAfterVisible => {
+                let invocation_started = Arc::clone(&self.invocation_started);
+                Ok(Box::pin(stream::unfold(0_u8, move |state| {
+                    let invocation_started = Arc::clone(&invocation_started);
+                    async move {
+                        match state {
+                            0 => Some((
+                                ProviderStreamEvent::Chunk {
+                                    chunk: Box::new(StreamChunk {
+                                        delta: "partial answer before user cancellation"
+                                            .to_string(),
+                                        tool_call_delta: Some(ToolCallDelta {
+                                            id: "pending-cancelled-call".to_string(),
+                                            name: Some("recording_tool".to_string()),
+                                            arguments_delta: r#"{"value":"must-not-run"}"#
+                                                .to_string(),
+                                            index: Some(0),
+                                            thought_signature: None,
+                                        }),
+                                        finish_reason: None,
+                                        usage: None,
+                                        thinking_delta: Some(
+                                            "partial reasoning before user cancellation"
+                                                .to_string(),
+                                        ),
+                                    }),
+                                },
+                                1,
+                            )),
+                            _ => {
+                                invocation_started.notify_one();
+                                std::future::pending::<Option<(ProviderStreamEvent, u8)>>().await
+                            }
+                        }
+                    }
+                })))
+            }
+        }
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -4535,7 +4982,8 @@ async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
         },
     );
     let db = Database::open_memory().expect("in-memory db");
-    let (tx, _rx) = mpsc::channel(128);
+    let (tx, mut rx) = mpsc::channel(128);
+    let event_drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
     let final_message = executor
         .run(
@@ -4551,6 +4999,8 @@ async fn missing_required_reasoning_safely_restarts_before_tool_execution() {
         )
         .await
         .expect("the same route should restart with reasoning disabled");
+
+    event_drain.await.expect("agent event drain");
 
     assert_eq!(
         final_message.text_content(),
@@ -4918,6 +5368,204 @@ async fn output_validation_uses_the_route_policy_not_the_history_policy() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn automatic_fallback_binds_tool_turn_and_history_to_the_accepted_route() {
+    let primary_stream_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_stream_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_requests = Arc::new(Mutex::new(Vec::new()));
+    let selections = Arc::new(Mutex::new(Vec::new()));
+    let selections_for_callback = Arc::clone(&selections);
+    let provider = crate::llm::fallback::AutomaticFallbackProvider::new(
+        0,
+        Box::new(RecoverablePrimaryRouteProvider {
+            stream_calls: Arc::clone(&primary_stream_calls),
+        }),
+        "primary-model".to_string(),
+        ProviderType::OpenAi,
+        vec![crate::llm::fallback::AutomaticFallbackCandidate {
+            fallback_index: 1,
+            provider: Box::new(ToolCallingFallbackRouteProvider {
+                stream_calls: Arc::clone(&fallback_stream_calls),
+                requests: Arc::clone(&fallback_requests),
+            }),
+            model: "fallback-model".to_string(),
+            provider_type: ProviderType::DeepSeek,
+        }],
+        Arc::new(move |from, to, reason| {
+            selections_for_callback
+                .lock()
+                .unwrap()
+                .push((from, to, reason.to_string()));
+            Ok(())
+        }),
+    )
+    .expect("automatic fallback provider");
+
+    let fallback_route = tool_calling_fallback_route("fallback-model");
+    let historical_tool_call = ToolCallRequest {
+        id: "historical-fallback-call".to_string(),
+        name: "recording_tool".to_string(),
+        arguments: r#"{"value":"historical"}"#.to_string(),
+        thought_signature: None,
+    };
+    let historical_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+        "historical-turn-item",
+        "historical-sample",
+        fallback_route.clone(),
+        "",
+        Some("historical fallback reasoning"),
+        Some("historical fallback reasoning"),
+        vec![historical_tool_call.clone()],
+        true,
+    );
+    assert!(
+        historical_envelope.authorizes_tool_dispatch(),
+        "the route-specific history fixture must carry valid fallback replay state"
+    );
+    let mut historical_assistant = Message::text(Role::Assistant, "");
+    historical_assistant.tool_calls = Some(vec![historical_tool_call]);
+    historical_assistant.set_provider_turn(historical_envelope);
+    let history = vec![
+        Message::text(Role::User, "historical fallback request"),
+        historical_assistant,
+        Message::text_with_name(
+            Role::Tool,
+            "historical fallback result",
+            "historical-fallback-call",
+        ),
+        Message::text(Role::Assistant, "historical fallback final answer"),
+    ];
+
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("primary-model".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "automatic".to_string(),
+            model: "primary-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            history,
+            vec![ContentPart::Text {
+                text: "Use recording_tool through the accepted route.".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the accepted fallback route must own the complete tool loop");
+
+    assert_eq!(final_message.text_content(), "fallback final answer");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(primary_stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *selections.lock().unwrap(),
+        vec![(
+            0,
+            1,
+            "primary_invocation_failed_automatic_fallback".to_string()
+        )]
+    );
+
+    let requests = fallback_requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        let historical_turn = request
+            .iter()
+            .find(|message| {
+                message.tool_calls.as_ref().is_some_and(|calls| {
+                    calls
+                        .iter()
+                        .any(|call| call.id == "historical-fallback-call")
+                })
+            })
+            .expect("each fallback projection must start from the unprojected typed history");
+        assert_eq!(
+            historical_turn
+                .provider_turn()
+                .expect("historical fallback envelope")
+                .route,
+            fallback_route
+        );
+        assert!(request.iter().any(|message| {
+            message.role == Role::Tool
+                && message.name.as_deref() == Some("historical-fallback-call")
+        }));
+    }
+
+    let accepted_tool_turn = requests[1]
+        .iter()
+        .rev()
+        .find(|message| {
+            message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.id == "fallback-call"))
+        })
+        .expect("the follow-up request must replay the accepted fallback tool turn");
+    let accepted_envelope = accepted_tool_turn
+        .provider_turn()
+        .expect("accepted tool turn must carry route provenance");
+    assert_eq!(accepted_envelope.route, fallback_route);
+    assert!(matches!(
+        accepted_envelope.replay_payload,
+        crate::llm::provider_turn::ProviderReplayPayload::DeepSeekReasoningContent(ref value)
+            if value == "fallback reasoning state"
+    ));
+    assert!(accepted_envelope.authorizes_tool_dispatch());
+    assert!(requests[1].iter().any(|message| {
+        message.role == Role::Tool && message.name.as_deref() == Some("fallback-call")
+    }));
+
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    let durable_tool_turn = persisted
+        .iter()
+        .find(|message| {
+            message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == "fallback-call")
+        })
+        .expect("accepted fallback tool turn must be durable");
+    let durable_envelope =
+        crate::conversation::conversation_message_provider_turn(durable_tool_turn)
+            .expect("durable accepted-route envelope");
+    assert_eq!(durable_envelope.route, fallback_route);
+    assert!(matches!(
+        durable_envelope.replay_payload,
+        crate::llm::provider_turn::ProviderReplayPayload::DeepSeekReasoningContent(ref value)
+            if value == "fallback reasoning state"
+    ));
+    assert!(durable_envelope.authorizes_tool_dispatch());
+}
+
 #[test]
 fn explicitly_disabled_reasoning_does_not_require_a_replay_payload() {
     let executor = AgentExecutor::new(
@@ -5237,6 +5885,73 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
 }
 
 #[tokio::test]
+async fn empty_metadata_chunks_do_not_reset_context_compaction_circuit_breaker() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(EmptyMetadataContextOverflowProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            context_window: Some(1_000_000),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+    let compaction_statuses = Arc::new(AtomicUsize::new(0));
+    let drained_compaction_statuses = Arc::clone(&compaction_statuses);
+    let event_drain = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if matches!(
+                event,
+                AgentEvent::Status { ref content, .. }
+                    if content.starts_with("Context window overflow detected.")
+            ) {
+                drained_compaction_statuses.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+    let history = (0..6)
+        .flat_map(|turn| {
+            [
+                Message::text(Role::User, format!("old user turn {turn}")),
+                Message::text(Role::Assistant, format!("old assistant response {turn}")),
+            ]
+        })
+        .collect();
+
+    let error = executor
+        .run(
+            history,
+            vec![ContentPart::Text {
+                text: "answer after considering the history".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("the third context overflow must open the circuit breaker");
+
+    event_drain.await.expect("agent event drain");
+    assert!(matches!(error, CoreError::ContextOverflow(200, 100)));
+    assert_eq!(
+        stream_calls.load(Ordering::SeqCst),
+        3,
+        "two compactions permit exactly three provider attempts"
+    );
+    assert_eq!(
+        compaction_statuses.load(Ordering::SeqCst),
+        2,
+        "the run must expose exactly the two budgeted compaction attempts"
+    );
+}
+
+#[tokio::test]
 async fn test_stream_incomplete_after_visible_output_never_resends_request() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
@@ -5296,6 +6011,439 @@ async fn test_stream_incomplete_after_visible_output_never_resends_request() {
         saw_error,
         "the interrupted partial response must be terminalized"
     );
+}
+
+#[tokio::test]
+async fn visible_cancelled_stream_persists_accepted_interrupted_draft_once() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(CancelledStreamProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            visible_output: true,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "cancelled-stream-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "start a cancellable response".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+    let error_events = Arc::new(AtomicUsize::new(0));
+    let done_events = Arc::new(AtomicUsize::new(0));
+    let drained_errors = Arc::clone(&error_events);
+    let drained_done = Arc::clone(&done_events);
+    let event_drain = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Error { .. } => {
+                    drained_errors.fetch_add(1, Ordering::SeqCst);
+                }
+                AgentEvent::Done { .. } => {
+                    drained_done.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("provider cancellation must terminate the turn");
+
+    event_drain.await.expect("agent event drain");
+    assert!(matches!(
+        error,
+        CoreError::Cancelled(ref message) if message == "cancelled by user"
+    ));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(error_events.load(Ordering::SeqCst), 1);
+    assert_eq!(done_events.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        db.get_conversation_turn(&turn.id)
+            .expect("finalized turn")
+            .status,
+        "error"
+    );
+
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    let drafts = persisted
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(drafts.len(), 1, "the interrupted draft must persist once");
+    let draft = drafts[0];
+    assert_eq!(draft.content, "visible answer before cancellation");
+    assert_eq!(
+        draft.thinking.as_deref(),
+        Some("visible reasoning before cancellation")
+    );
+    assert!(draft.tool_calls.is_empty());
+    let envelope = crate::conversation::conversation_message_provider_turn(draft)
+        .expect("cancelled visible draft must retain accepted provenance");
+    assert!(!envelope.sample_id.is_empty());
+    assert_eq!(envelope.route.provider_family, "cancelled-stream-mock");
+    assert_eq!(envelope.route.model_id, "mock-model");
+    assert_eq!(
+        envelope.visible_content,
+        "visible answer before cancellation"
+    );
+    assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
+    assert_eq!(db.count_provider_turns().expect("provider turns"), 1);
+}
+
+#[tokio::test]
+async fn previsible_cancelled_stream_does_not_persist_assistant_draft() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(CancelledStreamProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            visible_output: false,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "cancelled-stream-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "cancel before visible output".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+    let event_drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("provider cancellation must terminate the turn");
+
+    event_drain.await.expect("agent event drain");
+    assert!(matches!(error, CoreError::Cancelled(_)));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert!(db
+        .get_messages(&conversation.id)
+        .expect("persisted messages")
+        .iter()
+        .all(|message| message.role != Role::Assistant));
+    assert_eq!(db.count_provider_turns().expect("provider turns"), 0);
+}
+
+#[tokio::test]
+async fn user_cancellation_interrupts_pending_stream_open_without_draft() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let invocation_started = Arc::new(Notify::new());
+    let cancel_token = CancellationToken::new();
+    let executor = AgentExecutor::new(
+        Box::new(PendingCancellationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            invocation_started: Arc::clone(&invocation_started),
+            cancellation_point: PendingCancellationPoint::StreamOpen,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    )
+    .with_cancel_token(cancel_token.clone());
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "pending-cancellation-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "cancel while opening the model stream".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 6,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+    let error_events = Arc::new(AtomicUsize::new(0));
+    let done_events = Arc::new(AtomicUsize::new(0));
+    let drained_errors = Arc::clone(&error_events);
+    let drained_done = Arc::clone(&done_events);
+    let event_drain = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Error { .. } => {
+                    drained_errors.fetch_add(1, Ordering::SeqCst);
+                }
+                AgentEvent::Done { .. } => {
+                    drained_done.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    });
+    let run_db = db.clone();
+    let conversation_id = conversation.id.clone();
+    let turn_id = turn.id.clone();
+    let user_content = user_message.content.clone();
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text { text: user_content }],
+                &run_db,
+                Some(&conversation_id),
+                Some(&turn_id),
+                tx,
+                1,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("provider stream-open invocation must begin");
+    cancel_token.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("pending stream open must observe cancellation promptly")
+        .expect("agent run task")
+        .expect_err("user cancellation must terminate the run");
+
+    event_drain.await.expect("agent event drain");
+    assert!(matches!(error, CoreError::Cancelled(_)));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(error_events.load(Ordering::SeqCst), 1);
+    assert_eq!(done_events.load(Ordering::SeqCst), 0);
+    assert!(db
+        .get_messages(&conversation.id)
+        .expect("persisted messages")
+        .iter()
+        .all(|message| message.role != Role::Assistant));
+    assert_eq!(db.count_provider_turns().expect("provider turns"), 0);
+}
+
+#[tokio::test]
+async fn user_cancellation_interrupts_pending_stream_read_and_persists_draft() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let invocation_started = Arc::new(Notify::new());
+    let cancel_token = CancellationToken::new();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(PendingCancellationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            invocation_started: Arc::clone(&invocation_started),
+            cancellation_point: PendingCancellationPoint::StreamReadAfterVisible,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    )
+    .with_cancel_token(cancel_token.clone());
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "pending-cancellation-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "cancel while reading the model stream".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 6,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+    let error_events = Arc::new(AtomicUsize::new(0));
+    let done_events = Arc::new(AtomicUsize::new(0));
+    let drained_errors = Arc::clone(&error_events);
+    let drained_done = Arc::clone(&done_events);
+    let event_drain = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::Error { .. } => {
+                    drained_errors.fetch_add(1, Ordering::SeqCst);
+                }
+                AgentEvent::Done { .. } => {
+                    drained_done.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    });
+    let run_db = db.clone();
+    let conversation_id = conversation.id.clone();
+    let turn_id = turn.id.clone();
+    let user_content = user_message.content.clone();
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text { text: user_content }],
+                &run_db,
+                Some(&conversation_id),
+                Some(&turn_id),
+                tx,
+                1,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("provider stream read must become pending after visible output");
+    cancel_token.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("pending stream read must observe cancellation promptly")
+        .expect("agent run task")
+        .expect_err("user cancellation must terminate the run");
+
+    event_drain.await.expect("agent event drain");
+    assert!(matches!(error, CoreError::Cancelled(_)));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(error_events.load(Ordering::SeqCst), 1);
+    assert_eq!(done_events.load(Ordering::SeqCst), 0);
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    let drafts = persisted
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(drafts.len(), 1);
+    let draft = drafts[0];
+    assert_eq!(draft.content, "partial answer before user cancellation");
+    assert_eq!(
+        draft.thinking.as_deref(),
+        Some("partial reasoning before user cancellation")
+    );
+    assert!(draft.tool_calls.is_empty());
+    let envelope = crate::conversation::conversation_message_provider_turn(draft)
+        .expect("visible partial cancellation must retain accepted provenance");
+    assert!(!envelope.sample_id.is_empty());
+    assert_eq!(envelope.route.provider_family, "pending-cancellation-mock");
+    assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
+    assert_eq!(db.count_provider_turns().expect("provider turns"), 1);
 }
 
 #[tokio::test]
