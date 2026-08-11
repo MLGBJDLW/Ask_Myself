@@ -73,6 +73,18 @@ fn work_area_bounds(
     (min_x, min_y, max_x, max_y)
 }
 
+fn clamp_position_to_work_area(
+    area: &PhysicalRect<i32, u32>,
+    window_size: PhysicalSize<u32>,
+    position: PhysicalPosition<i32>,
+) -> PhysicalPosition<i32> {
+    let (min_x, min_y, max_x, max_y) = work_area_bounds(area, window_size);
+    PhysicalPosition::new(
+        position.x.clamp(min_x, max_x),
+        position.y.clamp(min_y, max_y),
+    )
+}
+
 fn monitor_identity(monitor: &tauri::Monitor) -> String {
     format!(
         "{}@{}:{}:{}x{}",
@@ -105,7 +117,7 @@ fn clamped_position(
     window_size: PhysicalSize<u32>,
     settings: &CompanionSettings,
 ) -> PhysicalPosition<i32> {
-    let (min_x, min_y, max_x, max_y) = work_area_bounds(monitor.work_area(), window_size);
+    let (min_x, _, max_x, max_y) = work_area_bounds(monitor.work_area(), window_size);
     let scale_factor = monitor.scale_factor();
     let (x, y) = match settings.position {
         Some(position) => (
@@ -123,7 +135,11 @@ fn clamped_position(
             CompanionAnchor::BottomRight | CompanionAnchor::Free => (max_x, max_y),
         },
     };
-    PhysicalPosition::new(x.clamp(min_x, max_x), y.clamp(min_y, max_y))
+    clamp_position_to_work_area(
+        monitor.work_area(),
+        window_size,
+        PhysicalPosition::new(x, y),
+    )
 }
 
 fn place_inside_work_area(
@@ -138,6 +154,34 @@ fn place_inside_work_area(
     window
         .set_position(clamped_position(&monitor, window_size, settings))
         .map_err(|error| format!("Failed to position Companion window: {error}"))
+}
+
+fn should_reapply_configured_anchor(anchor: CompanionAnchor, has_persisted_position: bool) -> bool {
+    !has_persisted_position && !matches!(anchor, CompanionAnchor::Free)
+}
+
+fn keep_current_position_inside_work_area(
+    window: &WebviewWindow,
+    settings: &CompanionSettings,
+) -> Result<(), String> {
+    if should_reapply_configured_anchor(settings.anchor, settings.position.is_some()) {
+        return place_inside_work_area(window, settings);
+    }
+    let monitor = target_monitor(window, settings)
+        .ok_or_else(|| "No monitor is available for the Companion window".to_string())?;
+    let window_size = window
+        .outer_size()
+        .unwrap_or_else(|_| PhysicalSize::new(COMPANION_WIDTH as u32, COMPANION_HEIGHT as u32));
+    let current = window
+        .outer_position()
+        .map_err(|error| format!("Failed to read Companion window position: {error}"))?;
+    let clamped = clamp_position_to_work_area(monitor.work_area(), window_size, current);
+    if clamped == current {
+        return Ok(());
+    }
+    window
+        .set_position(clamped)
+        .map_err(|error| format!("Failed to keep Companion window inside the work area: {error}"))
 }
 
 fn apply_window_attributes(
@@ -236,7 +280,12 @@ pub fn create_companion_window(app: &mut App, settings: &CompanionSettings) {
                         break;
                     };
                     if config.companion.enabled && window.is_visible().unwrap_or(false) {
-                        if let Err(error) = place_inside_work_area(&window, &config.companion) {
+                        // Declarative anchors follow work-area changes. Free or
+                        // persisted placement uses the live native position so
+                        // automatic roaming is not reset every three seconds.
+                        if let Err(error) =
+                            keep_current_position_inside_work_area(&window, &config.companion)
+                        {
                             record_error(&app_handle, error);
                         }
                     }
@@ -465,5 +514,38 @@ mod tests {
         };
         let bounds = work_area_bounds(&work_area, PhysicalSize::new(144, 168));
         assert_eq!(bounds, (-1908, 12, -156, 860));
+        assert_eq!(
+            clamp_position_to_work_area(
+                &work_area,
+                PhysicalSize::new(144, 168),
+                PhysicalPosition::new(-4000, 1200),
+            ),
+            PhysicalPosition::new(-1908, 860)
+        );
+        assert_eq!(
+            clamp_position_to_work_area(
+                &work_area,
+                PhysicalSize::new(144, 168),
+                PhysicalPosition::new(-1000, 400),
+            ),
+            PhysicalPosition::new(-1000, 400),
+            "an in-bounds live roaming position must not be reset to persisted settings",
+        );
+        assert!(should_reapply_configured_anchor(
+            CompanionAnchor::BottomLeft,
+            false
+        ));
+        assert!(should_reapply_configured_anchor(
+            CompanionAnchor::BottomRight,
+            false
+        ));
+        assert!(!should_reapply_configured_anchor(
+            CompanionAnchor::Free,
+            false
+        ));
+        assert!(!should_reapply_configured_anchor(
+            CompanionAnchor::BottomLeft,
+            true
+        ));
     }
 }

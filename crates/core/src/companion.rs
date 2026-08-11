@@ -557,28 +557,79 @@ fn default_codex_frame(rows: u32) -> CompanionFrameGrid {
     }
 }
 
-fn animation_row(row: u16, columns: u16, fps: f32) -> NormalizedAnimation {
-    let start = row.saturating_mul(columns);
+fn animation_row(row: u16, frame_count: u16, fps: f32) -> NormalizedAnimation {
+    const CODEX_COLUMNS: u16 = 8;
+    let start = row.saturating_mul(CODEX_COLUMNS);
     NormalizedAnimation {
-        frames: (start..start.saturating_add(columns)).collect(),
+        frames: (start..start.saturating_add(frame_count)).collect(),
         fps,
         looping: true,
         fallback: None,
     }
 }
 
-fn default_codex_animations() -> HashMap<String, NormalizedAnimation> {
-    HashMap::from([
-        ("idle".to_string(), animation_row(0, 8, 8.0)),
-        ("moveRight".to_string(), animation_row(1, 8, 10.0)),
-        ("moveLeft".to_string(), animation_row(2, 8, 10.0)),
-        ("waving".to_string(), animation_row(3, 8, 10.0)),
-        ("jumping".to_string(), animation_row(4, 8, 10.0)),
-        ("failed".to_string(), animation_row(5, 8, 8.0)),
-        ("waiting".to_string(), animation_row(6, 8, 8.0)),
-        ("running".to_string(), animation_row(7, 8, 12.0)),
-        ("review".to_string(), animation_row(8, 8, 8.0)),
-    ])
+const CODEX_TUI_V1_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
+    ("idle", 0, 6, 8.0),
+    ("moveRight", 1, 8, 10.0),
+    ("moveLeft", 2, 8, 10.0),
+    ("waving", 3, 4, 10.0),
+    ("jumping", 4, 5, 10.0),
+    ("failed", 5, 8, 8.0),
+    ("waiting", 6, 6, 8.0),
+    ("running", 7, 6, 12.0),
+    ("review", 8, 6, 8.0),
+];
+
+// The public Codex contract currently covers only v1's 8x9 atlas. Keep the
+// observed desktop v2 8x11 layout separate so that extending one dialect never
+// silently changes the other. The audited v2 packs use seven idle cells and a
+// transparent eighth cell; the remaining standard rows match v1's counts.
+const CODEX_DESKTOP_V2_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
+    ("idle", 0, 7, 8.0),
+    ("moveRight", 1, 8, 10.0),
+    ("moveLeft", 2, 8, 10.0),
+    ("waving", 3, 4, 10.0),
+    ("jumping", 4, 5, 10.0),
+    ("failed", 5, 8, 8.0),
+    ("waiting", 6, 6, 8.0),
+    ("running", 7, 6, 12.0),
+    ("review", 8, 6, 8.0),
+];
+
+fn supplement_codex_v2_look_tracks(animations: &mut HashMap<String, NormalizedAnimation>) {
+    let fallback = animations.contains_key("idle").then(|| "idle".to_string());
+    for direction in 0_u16..16 {
+        animations
+            .entry(format!("look{direction}"))
+            .or_insert_with(|| NormalizedAnimation {
+                frames: vec![72 + direction],
+                fps: 1.0,
+                looping: true,
+                fallback: fallback.clone(),
+            });
+    }
+}
+
+fn default_codex_animations(sprite_version: u16) -> HashMap<String, NormalizedAnimation> {
+    // Codex atlases reserve eight cells per row, but several standard states
+    // intentionally use fewer. Playing padding cells makes the pet disappear
+    // once per loop. Select the audited table for the declared dialect instead
+    // of treating grid width as animation length.
+    let standard_tracks = if sprite_version == 2 {
+        &CODEX_DESKTOP_V2_STANDARD_TRACKS
+    } else {
+        &CODEX_TUI_V1_STANDARD_TRACKS
+    };
+    let mut animations = standard_tracks
+        .iter()
+        .map(|(name, row, frame_count, fps)| {
+            ((*name).to_string(), animation_row(*row, *frame_count, *fps))
+        })
+        .collect::<HashMap<_, _>>();
+    if sprite_version == 2 {
+        supplement_codex_v2_look_tracks(&mut animations);
+    }
+    animations
 }
 
 struct NormalizedNexaV1 {
@@ -770,8 +821,8 @@ pub fn load_companion_pack(
                 .to_string()
         });
         let display_name = manifest.display_name.unwrap_or_else(|| id.clone());
-        let animations = if manifest.animations.is_empty() {
-            default_codex_animations()
+        let mut animations = if manifest.animations.is_empty() {
+            default_codex_animations(sprite_version)
         } else {
             manifest
                 .animations
@@ -789,6 +840,12 @@ pub fn load_companion_pack(
                 })
                 .collect()
         };
+        if sprite_version == 2 {
+            // A desktop v2 author may override any semantic animation without
+            // having to duplicate the fixed directional lookup rows. Preserve
+            // authored look tracks and synthesize only missing directions.
+            supplement_codex_v2_look_tracks(&mut animations);
+        }
         let experimental = if sprite_version == 2 {
             vec!["directional_look_rows".to_string()]
         } else {
@@ -1198,6 +1255,69 @@ mod tests {
         assert_eq!(loaded.dialect, CompanionPackDialect::CodexDesktopV2);
         assert_eq!(loaded.compatibility, "experimental");
         assert_eq!(loaded.experimental_features, vec!["directional_look_rows"]);
+        assert_eq!(loaded.animations["idle"].frames, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(loaded.animations["waving"].frames, vec![24, 25, 26, 27]);
+        assert_eq!(
+            loaded.animations["jumping"].frames,
+            vec![32, 33, 34, 35, 36]
+        );
+        assert_eq!(
+            loaded.animations["running"].frames,
+            vec![56, 57, 58, 59, 60, 61]
+        );
+        assert_eq!(loaded.animations["look0"].frames, vec![72]);
+        assert_eq!(loaded.animations["look15"].frames, vec![87]);
+
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "v2-explicit-pet",
+                "displayName": "V2 Explicit Pet",
+                "spriteVersionNumber": 2,
+                "spritesheetPath": "spritesheet.png",
+                "animations": {
+                    "idle": { "frames": [0, 2, 4], "fps": 6, "loop": true },
+                    "look0": { "frames": [73], "fps": 1, "loop": true }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let explicit = load_companion_pack(&manifest, false).expect("load explicit v2 fixture");
+        assert_eq!(explicit.animations["idle"].frames, vec![0, 2, 4]);
+        assert_eq!(
+            explicit.animations["look0"].frames,
+            vec![73],
+            "an authored direction must not be overwritten"
+        );
+        assert_eq!(
+            explicit.animations["look15"].frames,
+            vec![87],
+            "missing v2 look directions must be supplemented"
+        );
+        assert_eq!(
+            explicit.animations["look15"].fallback.as_deref(),
+            Some("idle")
+        );
+
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "v2-no-idle-pet",
+                "displayName": "V2 No Idle Pet",
+                "spriteVersionNumber": 2,
+                "spritesheetPath": "spritesheet.png",
+                "animations": {
+                    "running": { "frames": [56, 57], "fps": 8, "loop": true }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let without_idle =
+            load_companion_pack(&manifest, false).expect("load explicit v2 fixture without idle");
+        assert!(!without_idle.animations.contains_key("idle"));
+        assert_eq!(without_idle.animations["look0"].fallback, None);
 
         fs::write(
             &manifest,

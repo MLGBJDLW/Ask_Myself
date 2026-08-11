@@ -12,6 +12,7 @@ test.beforeEach(async ({ page }) => {
     const lifecycleMarks: Array<{ kind: string; at: number }> = [];
     let packVersion = 1;
     let assetReads = 0;
+    let cursor = { x: 544, y: 468 };
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       if (cmd.startsWith('plugin:window|')) companionInvocations.push(cmd);
       switch (cmd) {
@@ -61,18 +62,22 @@ test.beforeEach(async ({ page }) => {
               id: 'test-pet',
               displayName: 'Decoded Test Pet',
               description: null,
-              dialect: 'nexa_v2',
-              compatibility: 'native',
+              dialect: 'codex_desktop_v2',
+              compatibility: 'experimental',
               spritesheetPath: 'pet.svg',
               contentHash: `pack-${packVersion}`,
-              frame: { width: 1, height: 1, columns: 1, rows: 1 },
+              frame: { width: 1, height: 1, columns: 8, rows: 11 },
               animations: {
-                idle: { frames: [0], fps: 12, looping: true, fallback: null },
-                runningTool: { frames: [0], fps: 12, looping: true, fallback: 'idle' },
+                idle: { frames: [0, 1, 2, 3, 4, 5, 6], fps: 5, looping: true, fallback: null },
+                runningTool: { frames: [56, 57, 58, 59, 60, 61], fps: 5, looping: true, fallback: 'idle' },
                 clicked: { frames: [0], fps: 12, looping: false, fallback: 'idle' },
                 beingPetted: { frames: [0], fps: 12, looping: false, fallback: 'idle' },
+                ...Object.fromEntries(Array.from({ length: 16 }, (_, index) => [
+                  `look${index}`,
+                  { frames: [72 + index], fps: 1, looping: true, fallback: 'idle' },
+                ])),
               },
-              experimentalFeatures: [],
+              experimentalFeatures: ['directional_look_rows'],
               managed: false,
             }],
             errors: [],
@@ -86,7 +91,7 @@ test.beforeEach(async ({ page }) => {
           lifecycleMarks.push({ kind: `decoded-source-${String(args.contentHash ?? '')}`, at: performance.now() });
           const color = String(args.contentHash ?? '').endsWith('2') ? '%23ec4899' : '%238b5cf6';
           return {
-            dataUrl: `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'%3E%3Crect width='1' height='1' fill='${color}'/%3E%3C/svg%3E`,
+            dataUrl: `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='1'%3E%3Crect width='4' height='1' fill='${color}'/%3E%3C/svg%3E`,
             contentHash: String(args.contentHash ?? ''),
           };
         }
@@ -99,6 +104,8 @@ test.beforeEach(async ({ page }) => {
           return { x: 400, y: 500 };
         case 'plugin:window|outer_size':
           return { width: 288, height: 336 };
+        case 'plugin:window|cursor_position':
+          return cursor;
         case 'plugin:window|current_monitor':
           return {
             name: 'Test Monitor',
@@ -155,6 +162,7 @@ test.beforeEach(async ({ page }) => {
       __companionAssetReads?: () => number;
       __companionPositionWrites?: unknown[];
       __setCompanionPackVersion?: (version: number) => void;
+      __setCompanionCursor?: (position: { x: number; y: number }) => void;
       __emitTauri?: (event: string, payload: unknown) => void;
     }).__companionInvocations = companionInvocations;
     (window as unknown as {
@@ -167,6 +175,9 @@ test.beforeEach(async ({ page }) => {
     (window as unknown as { __setCompanionPackVersion?: (version: number) => void }).__setCompanionPackVersion = version => {
       packVersion = version;
     };
+    (window as unknown as {
+      __setCompanionCursor?: (position: { x: number; y: number }) => void;
+    }).__setCompanionCursor = position => { cursor = position; };
     (window as unknown as {
       __emitTauri?: (event: string, payload: unknown) => void;
     }).__emitTauri = (event, payload) => {
@@ -257,6 +268,77 @@ test('decoded pack refresh is atomic and pointer behaviors are reachable', async
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __companionInvocations?: string[] }
   ).__companionInvocations?.at(-1))).toBe('set_companion_interaction_cmd:locked');
+});
+
+test('equivalent projection refreshes never reset the v2 sprite animation clock', async ({ page }) => {
+  await page.goto('/companion');
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __companionReady?: boolean }
+  ).__companionReady)).toBe(true);
+  await page.evaluate(() => {
+    (window as unknown as { __emitTauri?: (event: string, payload: unknown) => void })
+      .__emitTauri?.('companion://visibility', true);
+  });
+  const sprite = page.locator('.companion-sprite');
+  await expect(sprite).toBeVisible();
+
+  const transitions: Array<{ at: number; position: string }> = [];
+  const startedAt = Date.now();
+  let lastPosition = '';
+  let nextRefreshAt = 350;
+  while (Date.now() - startedAt < 1_650) {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= nextRefreshAt) {
+      await page.evaluate(() => {
+        (window as unknown as { __emitTauri?: (event: string, payload: unknown) => void })
+          .__emitTauri?.('companion://projection-changed', null);
+      });
+      nextRefreshAt += 350;
+    }
+    const position = await sprite.evaluate(element => getComputedStyle(element).backgroundPosition);
+    if (position !== lastPosition) {
+      transitions.push({ at: elapsed, position });
+      lastPosition = position;
+    }
+    await page.waitForTimeout(25);
+  }
+
+  expect(transitions.length).toBeGreaterThanOrEqual(7);
+  const holds = transitions.slice(1).map((transition, index) => (
+    transition.at - transitions[index].at
+  ));
+  expect(Math.max(...holds)).toBeLessThan(320);
+  expect(await page.evaluate(() => (
+    (window as unknown as { __companionAssetReads?: () => number }).__companionAssetReads?.()
+  ))).toBe(1);
+});
+
+test('v2 directional rows follow the global cursor without replacing the sprite', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nexa-test-companion-idle', 'true'));
+  await page.goto('/companion');
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __companionReady?: boolean }
+  ).__companionReady)).toBe(true);
+  await page.evaluate(() => {
+    (window as unknown as { __emitTauri?: (event: string, payload: unknown) => void })
+      .__emitTauri?.('companion://visibility', true);
+  });
+  const sprite = page.locator('.companion-sprite');
+  await expect(sprite).toBeVisible();
+  await sprite.evaluate(element => {
+    (window as unknown as { __originalCompanionSprite?: Element }).__originalCompanionSprite = element;
+  });
+  await expect(page.locator('.companion-window-root')).toHaveAttribute('data-look-direction', '0');
+
+  await page.evaluate(() => {
+    (window as unknown as {
+      __setCompanionCursor?: (position: { x: number; y: number }) => void;
+    }).__setCompanionCursor?.({ x: 744, y: 668 });
+  });
+  await expect(page.locator('.companion-window-root')).toHaveAttribute('data-look-direction', '4');
+  expect(await sprite.evaluate(element => (
+    (window as unknown as { __originalCompanionSprite?: Element }).__originalCompanionSprite === element
+  ))).toBe(true);
 });
 
 test('continue-when-hidden gates automatic companion visibility', async ({ page }) => {
