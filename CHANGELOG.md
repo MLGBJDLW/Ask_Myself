@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.10...nexa-monorepo-v0.12.11) (2026-08-11)
+
+
+### Bug Fixes
+
+* **companion:** choose stable animation fallback ([880400c](https://github.com/MLGBJDLW/Nexa/commit/880400c0ceabbad1a6b3ad2cb7b3afe3e4df1628))
+* **companion:** harden v2 directional tracking ([f589d47](https://github.com/MLGBJDLW/Nexa/commit/f589d470d16d464924ee4529bfd967e849a4a2a4))
+* **companion:** keep v2 look fallbacks valid ([e7eb3af](https://github.com/MLGBJDLW/Nexa/commit/e7eb3af6da07319b2ed31738cdec2239bb46e236))
+* **companion:** normalize v2 motion runtime ([53428ce](https://github.com/MLGBJDLW/Nexa/commit/53428ce0a3ca2ee8b11fec370ad09911548145b5))
+* **companion:** preserve audited v2 compatibility ([c71cf33](https://github.com/MLGBJDLW/Nexa/commit/c71cf33ed4b76a890fb9cfc580fc6732d11dc3ca))
+* **companion:** preserve configured anchors ([e2107c8](https://github.com/MLGBJDLW/Nexa/commit/e2107c8ed16ea6758044eb0a426737d8f9161804))
+* **companion:** preserve live roaming position ([710d2c9](https://github.com/MLGBJDLW/Nexa/commit/710d2c9f9a3f1c67bc5350c2f153bc57fe6cebac))
+* **desktop:** honor direct application exit ([4c80e5a](https://github.com/MLGBJDLW/Nexa/commit/4c80e5a2ce58ac5855b781a0c62fe9f30687c61a))
+* reconnect tray exit and Codex v2 companion motion ([35eab45](https://github.com/MLGBJDLW/Nexa/commit/35eab45dee3a23416aa49131dfb533180776e81b))
+
 ## [0.12.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.9...nexa-monorepo-v0.12.10) (2026-08-11)
 
 
