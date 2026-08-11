@@ -194,7 +194,8 @@ export function resolveLookDirection(
   const nextDirection = Math.round(directionUnits) % 16;
   if (currentDirection === null) return nextDirection;
   const normalizedCurrent = ((currentDirection % 16) + 16) % 16;
-  const deltaFromCurrent = ((directionUnits - normalizedCurrent + 8) % 16) - 8;
+  const wrappedDelta = ((directionUnits - normalizedCurrent) % 16 + 16) % 16;
+  const deltaFromCurrent = wrappedDelta > 8 ? wrappedDelta - 16 : wrappedDelta;
   const hysteresisUnits = Math.max(0, hysteresisDegrees) / 22.5;
   return Math.abs(deltaFromCurrent) <= 0.5 + hysteresisUnits
     ? normalizedCurrent

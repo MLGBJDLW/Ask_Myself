@@ -53,6 +53,11 @@ const pointAtDegrees = (degrees: number) => {
 assertEqual(resolveLookDirection(pointAtDegrees(12), { x: 50, y: 50 }, 0, null), 1, 'raw look sector');
 assertEqual(resolveLookDirection(pointAtDegrees(12), { x: 50, y: 50 }, 0, 0, 4), 0, 'look hysteresis holds');
 assertEqual(resolveLookDirection(pointAtDegrees(18), { x: 50, y: 50 }, 0, 0, 4), 1, 'look hysteresis releases');
+assertEqual(
+  resolveLookDirection(pointAtDegrees(1), { x: 50, y: 50 }, 0, 15, 16),
+  15,
+  'look hysteresis wraps symmetrically across the 15-to-0 seam',
+);
 
 const pack: CompanionAnimationPack = {
   contentHash: 'hash',

@@ -596,6 +596,19 @@ const CODEX_DESKTOP_V2_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
     ("review", 8, 6, 8.0),
 ];
 
+fn supplement_codex_v2_look_tracks(animations: &mut HashMap<String, NormalizedAnimation>) {
+    for direction in 0_u16..16 {
+        animations
+            .entry(format!("look{direction}"))
+            .or_insert_with(|| NormalizedAnimation {
+                frames: vec![72 + direction],
+                fps: 1.0,
+                looping: true,
+                fallback: Some("idle".to_string()),
+            });
+    }
+}
+
 fn default_codex_animations(sprite_version: u16) -> HashMap<String, NormalizedAnimation> {
     // Codex atlases reserve eight cells per row, but several standard states
     // intentionally use fewer. Playing padding cells makes the pet disappear
@@ -613,17 +626,7 @@ fn default_codex_animations(sprite_version: u16) -> HashMap<String, NormalizedAn
         })
         .collect::<HashMap<_, _>>();
     if sprite_version == 2 {
-        for direction in 0_u16..16 {
-            animations.insert(
-                format!("look{direction}"),
-                NormalizedAnimation {
-                    frames: vec![72 + direction],
-                    fps: 1.0,
-                    looping: true,
-                    fallback: Some("idle".to_string()),
-                },
-            );
-        }
+        supplement_codex_v2_look_tracks(&mut animations);
     }
     animations
 }
@@ -817,7 +820,7 @@ pub fn load_companion_pack(
                 .to_string()
         });
         let display_name = manifest.display_name.unwrap_or_else(|| id.clone());
-        let animations = if manifest.animations.is_empty() {
+        let mut animations = if manifest.animations.is_empty() {
             default_codex_animations(sprite_version)
         } else {
             manifest
@@ -836,6 +839,12 @@ pub fn load_companion_pack(
                 })
                 .collect()
         };
+        if sprite_version == 2 {
+            // A desktop v2 author may override any semantic animation without
+            // having to duplicate the fixed directional lookup rows. Preserve
+            // authored look tracks and synthesize only missing directions.
+            supplement_codex_v2_look_tracks(&mut animations);
+        }
         let experimental = if sprite_version == 2 {
             vec!["directional_look_rows".to_string()]
         } else {
@@ -1257,6 +1266,34 @@ mod tests {
         );
         assert_eq!(loaded.animations["look0"].frames, vec![72]);
         assert_eq!(loaded.animations["look15"].frames, vec![87]);
+
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "v2-explicit-pet",
+                "displayName": "V2 Explicit Pet",
+                "spriteVersionNumber": 2,
+                "spritesheetPath": "spritesheet.png",
+                "animations": {
+                    "idle": { "frames": [0, 2, 4], "fps": 6, "loop": true },
+                    "look0": { "frames": [73], "fps": 1, "loop": true }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let explicit = load_companion_pack(&manifest, false).expect("load explicit v2 fixture");
+        assert_eq!(explicit.animations["idle"].frames, vec![0, 2, 4]);
+        assert_eq!(
+            explicit.animations["look0"].frames,
+            vec![73],
+            "an authored direction must not be overwritten"
+        );
+        assert_eq!(
+            explicit.animations["look15"].frames,
+            vec![87],
+            "missing v2 look directions must be supplemented"
+        );
 
         fs::write(
             &manifest,
