@@ -568,23 +568,50 @@ fn animation_row(row: u16, frame_count: u16, fps: f32) -> NormalizedAnimation {
     }
 }
 
+const CODEX_TUI_V1_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
+    ("idle", 0, 6, 8.0),
+    ("moveRight", 1, 8, 10.0),
+    ("moveLeft", 2, 8, 10.0),
+    ("waving", 3, 4, 10.0),
+    ("jumping", 4, 5, 10.0),
+    ("failed", 5, 8, 8.0),
+    ("waiting", 6, 6, 8.0),
+    ("running", 7, 6, 12.0),
+    ("review", 8, 6, 8.0),
+];
+
+// The public Codex contract currently covers only v1's 8x9 atlas. Keep the
+// observed desktop v2 8x11 layout separate so that extending one dialect never
+// silently changes the other. The audited v2 packs use seven idle cells and a
+// transparent eighth cell; the remaining standard rows match v1's counts.
+const CODEX_DESKTOP_V2_STANDARD_TRACKS: [(&str, u16, u16, f32); 9] = [
+    ("idle", 0, 7, 8.0),
+    ("moveRight", 1, 8, 10.0),
+    ("moveLeft", 2, 8, 10.0),
+    ("waving", 3, 4, 10.0),
+    ("jumping", 4, 5, 10.0),
+    ("failed", 5, 8, 8.0),
+    ("waiting", 6, 6, 8.0),
+    ("running", 7, 6, 12.0),
+    ("review", 8, 6, 8.0),
+];
+
 fn default_codex_animations(sprite_version: u16) -> HashMap<String, NormalizedAnimation> {
-    let mut animations = HashMap::from([
-        // Codex atlases reserve eight cells per row, but several standard
-        // states intentionally use fewer. Playing the padding cells makes the
-        // pet disappear once per loop (most visibly: idle at one-second
-        // intervals). Keep these counts aligned with the versioned atlas
-        // contract instead of treating grid width as animation length.
-        ("idle".to_string(), animation_row(0, 6, 8.0)),
-        ("moveRight".to_string(), animation_row(1, 8, 10.0)),
-        ("moveLeft".to_string(), animation_row(2, 8, 10.0)),
-        ("waving".to_string(), animation_row(3, 4, 10.0)),
-        ("jumping".to_string(), animation_row(4, 5, 10.0)),
-        ("failed".to_string(), animation_row(5, 8, 8.0)),
-        ("waiting".to_string(), animation_row(6, 6, 8.0)),
-        ("running".to_string(), animation_row(7, 6, 12.0)),
-        ("review".to_string(), animation_row(8, 6, 8.0)),
-    ]);
+    // Codex atlases reserve eight cells per row, but several standard states
+    // intentionally use fewer. Playing padding cells makes the pet disappear
+    // once per loop. Select the audited table for the declared dialect instead
+    // of treating grid width as animation length.
+    let standard_tracks = if sprite_version == 2 {
+        &CODEX_DESKTOP_V2_STANDARD_TRACKS
+    } else {
+        &CODEX_TUI_V1_STANDARD_TRACKS
+    };
+    let mut animations = standard_tracks
+        .iter()
+        .map(|(name, row, frame_count, fps)| {
+            ((*name).to_string(), animation_row(*row, *frame_count, *fps))
+        })
+        .collect::<HashMap<_, _>>();
     if sprite_version == 2 {
         for direction in 0_u16..16 {
             animations.insert(
@@ -817,7 +844,7 @@ pub fn load_companion_pack(
         (
             dialect,
             if sprite_version == 2 {
-                "native".to_string()
+                "experimental".to_string()
             } else {
                 "compatible".to_string()
             },
@@ -1216,9 +1243,9 @@ mod tests {
 
         let loaded = load_companion_pack(&manifest, false).expect("load v2 fixture");
         assert_eq!(loaded.dialect, CompanionPackDialect::CodexDesktopV2);
-        assert_eq!(loaded.compatibility, "native");
+        assert_eq!(loaded.compatibility, "experimental");
         assert_eq!(loaded.experimental_features, vec!["directional_look_rows"]);
-        assert_eq!(loaded.animations["idle"].frames, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(loaded.animations["idle"].frames, vec![0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(loaded.animations["waving"].frames, vec![24, 25, 26, 27]);
         assert_eq!(
             loaded.animations["jumping"].frames,
