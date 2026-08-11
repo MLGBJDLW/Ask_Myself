@@ -1,6 +1,7 @@
 import {
   reduceCompanionBehavior,
   resolveAnimationFrame,
+  resolveLookDirection,
   resolveWalkStep,
   selectCompanionAnimation,
   taskBehavior,
@@ -39,6 +40,19 @@ assert(leftBoundary.turned, 'walk reports a boundary turn');
 const rightBoundary = resolveWalkStep(97, 'right', 1_000, { minX: 0, maxX: 100 }, 10);
 assertEqual(rightBoundary.x, 100, 'walk clamps to right boundary');
 assertEqual(rightBoundary.direction, 'left', 'walk turns at right boundary');
+
+assertEqual(resolveLookDirection({ x: 50, y: 0 }, { x: 50, y: 50 }), 0, 'look up');
+assertEqual(resolveLookDirection({ x: 100, y: 50 }, { x: 50, y: 50 }), 4, 'look right');
+assertEqual(resolveLookDirection({ x: 50, y: 100 }, { x: 50, y: 50 }), 8, 'look down');
+assertEqual(resolveLookDirection({ x: 0, y: 50 }, { x: 50, y: 50 }), 12, 'look left');
+assertEqual(resolveLookDirection({ x: 55, y: 55 }, { x: 50, y: 50 }), null, 'look dead zone');
+const pointAtDegrees = (degrees: number) => {
+  const radians = degrees * Math.PI / 180;
+  return { x: 50 + Math.sin(radians) * 100, y: 50 - Math.cos(radians) * 100 };
+};
+assertEqual(resolveLookDirection(pointAtDegrees(12), { x: 50, y: 50 }, 0, null), 1, 'raw look sector');
+assertEqual(resolveLookDirection(pointAtDegrees(12), { x: 50, y: 50 }, 0, 0, 4), 0, 'look hysteresis holds');
+assertEqual(resolveLookDirection(pointAtDegrees(18), { x: 50, y: 50 }, 0, 0, 4), 1, 'look hysteresis releases');
 
 const pack: CompanionAnimationPack = {
   contentHash: 'hash',

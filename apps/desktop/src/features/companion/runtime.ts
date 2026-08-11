@@ -174,6 +174,33 @@ export interface WalkBounds {
   maxX: number;
 }
 
+export interface CompanionPoint {
+  x: number;
+  y: number;
+}
+
+export function resolveLookDirection(
+  pointer: CompanionPoint,
+  center: CompanionPoint,
+  deadZonePixels = 36,
+  currentDirection: number | null = null,
+  hysteresisDegrees = 4,
+): number | null {
+  const deltaX = pointer.x - center.x;
+  const deltaY = pointer.y - center.y;
+  if (Math.hypot(deltaX, deltaY) <= Math.max(0, deadZonePixels)) return null;
+  const clockwiseFromUp = (Math.atan2(deltaX, -deltaY) + Math.PI * 2) % (Math.PI * 2);
+  const directionUnits = clockwiseFromUp / (Math.PI * 2) * 16;
+  const nextDirection = Math.round(directionUnits) % 16;
+  if (currentDirection === null) return nextDirection;
+  const normalizedCurrent = ((currentDirection % 16) + 16) % 16;
+  const deltaFromCurrent = ((directionUnits - normalizedCurrent + 8) % 16) - 8;
+  const hysteresisUnits = Math.max(0, hysteresisDegrees) / 22.5;
+  return Math.abs(deltaFromCurrent) <= 0.5 + hysteresisUnits
+    ? normalizedCurrent
+    : nextDirection;
+}
+
 export function resolveWalkStep(
   x: number,
   direction: 'left' | 'right',

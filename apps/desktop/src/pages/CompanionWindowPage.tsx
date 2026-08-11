@@ -1,6 +1,6 @@
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
-import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { currentMonitor, cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import {
   useCallback,
   useEffect,
@@ -15,6 +15,7 @@ import {
   decodeImageSource,
   reduceCompanionBehavior,
   resolveAnimationFrame,
+  resolveLookDirection,
   resolveWalkStep,
   selectCompanionAnimation,
   taskBehavior,
@@ -28,8 +29,11 @@ const STATE_HYSTERESIS_MS = 180;
 const DRAG_THRESHOLD_PX = 6;
 const CLICK_SEQUENCE_MS = 850;
 const IDLE_GESTURE_DELAY_MS = 8_000;
-const AUTO_WALK_DELAY_MS = 10_000;
-const AUTO_WALK_DURATION_MS = 2_800;
+const AUTO_WALK_DELAY_MS = 6_000;
+const AUTO_WALK_DURATION_MS = 4_000;
+const POSITION_WRITE_INTERVAL_MS = 34;
+const LOOK_DIRECTION_POLL_MS = 100;
+const LOOK_DIRECTION_DEAD_ZONE_PX = 36;
 
 interface DecodedCompanionRuntime {
   pack: api.NormalizedCompanionPack;
@@ -53,6 +57,7 @@ function Sprite({
   reducedMotion,
   active,
   terminal,
+  lookDirection,
   onAnimationComplete,
 }: {
   runtime: DecodedCompanionRuntime | null;
@@ -62,12 +67,17 @@ function Sprite({
   reducedMotion: boolean;
   active: boolean;
   terminal: boolean;
+  lookDirection: number | null;
   onAnimationComplete: () => void;
 }) {
-  const selected = useMemo(
-    () => selectCompanionAnimation(runtime?.pack ?? null, state, behavior),
-    [behavior, runtime?.pack, state],
-  );
+  const selected = useMemo(() => {
+    if (runtime?.pack.dialect === 'codex_desktop_v2' && lookDirection !== null) {
+      const key = `look${lookDirection}`;
+      const animation = runtime.pack.animations[key];
+      if (animation) return { key, animation };
+    }
+    return selectCompanionAnimation(runtime?.pack ?? null, state, behavior);
+  }, [behavior, lookDirection, runtime?.pack, state]);
   const [frameIndex, setFrameIndex] = useState(0);
   const completionRef = useRef(onAnimationComplete);
   completionRef.current = onAnimationComplete;
@@ -88,7 +98,9 @@ function Sprite({
     const looping = selected.animation.looping && !singlePass;
     const startedAt = performance.now();
     let animationFrame = 0;
+    let wakeTimer = 0;
     let completionSent = false;
+    const frameDurationMs = 1_000 / fps;
     const tick = (now: number) => {
       const next = resolveAnimationFrame(
         now - startedAt,
@@ -104,10 +116,22 @@ function Sprite({
         }
         return;
       }
-      animationFrame = window.requestAnimationFrame(tick);
+      const elapsed = Math.max(0, now - startedAt);
+      const nextBoundary = (Math.floor(elapsed / frameDurationMs) + 1) * frameDurationMs;
+      const waitMs = Math.max(0, nextBoundary - elapsed);
+      if (waitMs > 20) {
+        wakeTimer = window.setTimeout(() => {
+          animationFrame = window.requestAnimationFrame(tick);
+        }, Math.max(0, waitMs - 8));
+      } else {
+        animationFrame = window.requestAnimationFrame(tick);
+      }
     };
     animationFrame = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(animationFrame);
+    return () => {
+      window.clearTimeout(wakeTimer);
+      window.cancelAnimationFrame(animationFrame);
+    };
   }, [active, playbackKey, reducedMotion, selected, settings.animationFpsCap, singlePass]);
 
   if (!runtime || !selected) {
@@ -165,6 +189,8 @@ export function CompanionWindowPage() {
   const [visible, setVisible] = useState(false);
   const [systemReducedMotion, setSystemReducedMotion] = useState(false);
   const [mainWindowVisible, setMainWindowVisible] = useState<boolean | null>(null);
+  const [lookDirection, setLookDirection] = useState<number | null>(null);
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== 'hidden');
   const refreshTimer = useRef<number | null>(null);
   const runtimeRequest = useRef(0);
   const runtimeRef = useRef<DecodedCompanionRuntime | null>(null);
@@ -251,6 +277,12 @@ export function CompanionWindowPage() {
     update();
     query.addEventListener('change', update);
     return () => query.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    const update = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
   }, []);
 
   useEffect(() => {
@@ -353,9 +385,52 @@ export function CompanionWindowPage() {
   const stableState = terminalAnimationConsumed ? 'idle' : stableProjection?.state ?? 'idle';
   const effectiveBehavior = behavior === 'idle' ? taskBehavior(stableState) : behavior;
   const reducedMotion = settings.reducedMotion || systemReducedMotion;
+  const motionActive = visible && pageVisible;
 
   useEffect(() => {
-    if (reducedMotion || !visible || stableState !== 'idle' || behavior !== 'idle') return;
+    const canTrack = runtime?.pack.dialect === 'codex_desktop_v2'
+      && motionActive
+      && !reducedMotion
+      && stableState === 'idle'
+      && (behavior === 'idle' || behavior === 'hovering');
+    if (!canTrack) {
+      setLookDirection(null);
+      return;
+    }
+    let cancelled = false;
+    let timer = 0;
+    const companionWindow = getCurrentWindow();
+    const sample = async () => {
+      try {
+        const [pointerPosition, windowPosition, windowSize] = await Promise.all([
+          cursorPosition(),
+          companionWindow.outerPosition(),
+          companionWindow.outerSize(),
+        ]);
+        if (cancelled) return;
+        setLookDirection(current => resolveLookDirection(
+          pointerPosition,
+          {
+            x: windowPosition.x + windowSize.width / 2,
+            y: windowPosition.y + windowSize.height / 2,
+          },
+          LOOK_DIRECTION_DEAD_ZONE_PX,
+          current,
+        ));
+      } catch {
+        if (!cancelled) setLookDirection(null);
+      }
+      if (!cancelled) timer = window.setTimeout(() => { void sample(); }, LOOK_DIRECTION_POLL_MS);
+    };
+    void sample();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [behavior, motionActive, reducedMotion, runtime?.pack.dialect, stableState]);
+
+  useEffect(() => {
+    if (reducedMotion || !motionActive || stableState !== 'idle' || behavior !== 'idle') return;
     const canGesture = settings.idleActions;
     const canWalk = settings.autoWalk
       && !settings.lockPosition
@@ -390,7 +465,7 @@ export function CompanionWindowPage() {
     settings.interactionMode,
     settings.lockPosition,
     stableState,
-    visible,
+    motionActive,
   ]);
 
   useEffect(() => {
@@ -398,7 +473,7 @@ export function CompanionWindowPage() {
     if (
       !settings.autoWalk
       || reducedMotion
-      || !visible
+      || !motionActive
       || settings.lockPosition
       || settings.interactionMode !== 'smart'
       || stableState !== 'idle'
@@ -435,7 +510,7 @@ export function CompanionWindowPage() {
         x = next.x;
         walkDirection = next.direction;
         lastFrameAt = now;
-        if (!positionWritePending && now - lastPositionWriteAt >= 50) {
+        if (!positionWritePending && now - lastPositionWriteAt >= POSITION_WRITE_INTERVAL_MS) {
           lastPositionWriteAt = now;
           positionWritePending = true;
           void companionWindow
@@ -466,7 +541,7 @@ export function CompanionWindowPage() {
     settings.interactionMode,
     settings.lockPosition,
     stableState,
-    visible,
+    motionActive,
   ]);
 
   useEffect(() => {
@@ -552,6 +627,7 @@ export function CompanionWindowPage() {
       data-facing={behavior === 'walkingLeft' ? 'left' : 'right'}
       data-visible={visible}
       data-auto-walk={settings.autoWalk}
+      data-look-direction={lookDirection ?? 'none'}
       data-interaction-mode={settings.interactionMode}
       onPointerEnter={() => dispatchBehavior({ type: 'hoverStarted' })}
       onPointerLeave={() => {
@@ -576,8 +652,9 @@ export function CompanionWindowPage() {
         behavior={effectiveBehavior}
         settings={settings}
         reducedMotion={reducedMotion}
-        active={visible}
+        active={motionActive}
         terminal={Boolean(stableProjection?.terminal) && !terminalAnimationConsumed}
+        lookDirection={stableState === 'idle' ? lookDirection : null}
         onAnimationComplete={() => {
           if (stableProjection?.terminal) setTerminalAnimationConsumed(true);
           dispatchBehavior({ type: 'animationCompleted' });

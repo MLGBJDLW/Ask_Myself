@@ -557,28 +557,48 @@ fn default_codex_frame(rows: u32) -> CompanionFrameGrid {
     }
 }
 
-fn animation_row(row: u16, columns: u16, fps: f32) -> NormalizedAnimation {
-    let start = row.saturating_mul(columns);
+fn animation_row(row: u16, frame_count: u16, fps: f32) -> NormalizedAnimation {
+    const CODEX_COLUMNS: u16 = 8;
+    let start = row.saturating_mul(CODEX_COLUMNS);
     NormalizedAnimation {
-        frames: (start..start.saturating_add(columns)).collect(),
+        frames: (start..start.saturating_add(frame_count)).collect(),
         fps,
         looping: true,
         fallback: None,
     }
 }
 
-fn default_codex_animations() -> HashMap<String, NormalizedAnimation> {
-    HashMap::from([
-        ("idle".to_string(), animation_row(0, 8, 8.0)),
+fn default_codex_animations(sprite_version: u16) -> HashMap<String, NormalizedAnimation> {
+    let mut animations = HashMap::from([
+        // Codex atlases reserve eight cells per row, but several standard
+        // states intentionally use fewer. Playing the padding cells makes the
+        // pet disappear once per loop (most visibly: idle at one-second
+        // intervals). Keep these counts aligned with the versioned atlas
+        // contract instead of treating grid width as animation length.
+        ("idle".to_string(), animation_row(0, 6, 8.0)),
         ("moveRight".to_string(), animation_row(1, 8, 10.0)),
         ("moveLeft".to_string(), animation_row(2, 8, 10.0)),
-        ("waving".to_string(), animation_row(3, 8, 10.0)),
-        ("jumping".to_string(), animation_row(4, 8, 10.0)),
+        ("waving".to_string(), animation_row(3, 4, 10.0)),
+        ("jumping".to_string(), animation_row(4, 5, 10.0)),
         ("failed".to_string(), animation_row(5, 8, 8.0)),
-        ("waiting".to_string(), animation_row(6, 8, 8.0)),
-        ("running".to_string(), animation_row(7, 8, 12.0)),
-        ("review".to_string(), animation_row(8, 8, 8.0)),
-    ])
+        ("waiting".to_string(), animation_row(6, 6, 8.0)),
+        ("running".to_string(), animation_row(7, 6, 12.0)),
+        ("review".to_string(), animation_row(8, 6, 8.0)),
+    ]);
+    if sprite_version == 2 {
+        for direction in 0_u16..16 {
+            animations.insert(
+                format!("look{direction}"),
+                NormalizedAnimation {
+                    frames: vec![72 + direction],
+                    fps: 1.0,
+                    looping: true,
+                    fallback: Some("idle".to_string()),
+                },
+            );
+        }
+    }
+    animations
 }
 
 struct NormalizedNexaV1 {
@@ -771,7 +791,7 @@ pub fn load_companion_pack(
         });
         let display_name = manifest.display_name.unwrap_or_else(|| id.clone());
         let animations = if manifest.animations.is_empty() {
-            default_codex_animations()
+            default_codex_animations(sprite_version)
         } else {
             manifest
                 .animations
@@ -797,7 +817,7 @@ pub fn load_companion_pack(
         (
             dialect,
             if sprite_version == 2 {
-                "experimental".to_string()
+                "native".to_string()
             } else {
                 "compatible".to_string()
             },
@@ -1196,8 +1216,20 @@ mod tests {
 
         let loaded = load_companion_pack(&manifest, false).expect("load v2 fixture");
         assert_eq!(loaded.dialect, CompanionPackDialect::CodexDesktopV2);
-        assert_eq!(loaded.compatibility, "experimental");
+        assert_eq!(loaded.compatibility, "native");
         assert_eq!(loaded.experimental_features, vec!["directional_look_rows"]);
+        assert_eq!(loaded.animations["idle"].frames, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(loaded.animations["waving"].frames, vec![24, 25, 26, 27]);
+        assert_eq!(
+            loaded.animations["jumping"].frames,
+            vec![32, 33, 34, 35, 36]
+        );
+        assert_eq!(
+            loaded.animations["running"].frames,
+            vec![56, 57, 58, 59, 60, 61]
+        );
+        assert_eq!(loaded.animations["look0"].frames, vec![72]);
+        assert_eq!(loaded.animations["look15"].frames, vec![87]);
 
         fs::write(
             &manifest,
