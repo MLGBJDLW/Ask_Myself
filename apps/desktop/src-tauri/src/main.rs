@@ -166,6 +166,23 @@ const TRAY_RESET_COMPANION_ID: &str = "tray_reset_companion";
 const TRAY_COMPANION_SETTINGS_ID: &str = "tray_companion_settings";
 const TRAY_QUIT_ID: &str = "tray_quit";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainWindowCloseAction {
+    MinimizeToTray,
+    ExitApplication,
+}
+
+fn main_window_close_action(behavior: WindowCloseBehavior) -> MainWindowCloseAction {
+    match behavior {
+        WindowCloseBehavior::Exit => MainWindowCloseAction::ExitApplication,
+        WindowCloseBehavior::MinimizeToTray => MainWindowCloseAction::MinimizeToTray,
+    }
+}
+
+fn request_application_exit(app: &tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -270,7 +287,7 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 show_main_window(app);
                 let _ = app.emit("companion://open-settings", ());
             }
-            TRAY_QUIT_ID => app.exit(0),
+            TRAY_QUIT_ID => request_application_exit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -873,22 +890,33 @@ fn main() {
             let config = app_handle
                 .try_state::<AppState>()
                 .and_then(|state| state.db.load_app_config().ok());
-            let minimize_to_tray = config.as_ref().is_some_and(|config| {
-                config.window_close_behavior == WindowCloseBehavior::MinimizeToTray
-            });
-            if minimize_to_tray {
-                api.prevent_close();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-                let _ = app_handle.emit("companion://main-visibility", false);
-                if config
-                    .as_ref()
-                    .is_some_and(|config| !config.companion.continue_when_main_hidden)
-                {
-                    if let Err(error) = companion_window::hide_companion(app_handle) {
-                        log::warn!("Failed to hide Desktop Pet with the main window: {error}");
+            let close_action = main_window_close_action(
+                config.as_ref().map_or(WindowCloseBehavior::Exit, |config| {
+                    config.window_close_behavior
+                }),
+            );
+            match close_action {
+                MainWindowCloseAction::MinimizeToTray => {
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.hide();
                     }
+                    let _ = app_handle.emit("companion://main-visibility", false);
+                    if config
+                        .as_ref()
+                        .is_some_and(|config| !config.companion.continue_when_main_hidden)
+                    {
+                        if let Err(error) = companion_window::hide_companion(app_handle) {
+                            log::warn!("Failed to hide Desktop Pet with the main window: {error}");
+                        }
+                    }
+                }
+                MainWindowCloseAction::ExitApplication => {
+                    // Closing only the main webview leaves the independent
+                    // Companion window and tray alive. Direct-exit mode owns
+                    // the process lifecycle, so terminate the whole Tauri app.
+                    api.prevent_close();
+                    request_application_exit(app_handle);
                 }
             }
         }
@@ -931,5 +959,17 @@ mod tests {
                 | StateFlags::VISIBLE
                 | StateFlags::FULLSCREEN
         ));
+    }
+
+    #[test]
+    fn direct_close_exits_the_application_instead_of_only_the_main_window() {
+        assert_eq!(
+            main_window_close_action(WindowCloseBehavior::Exit),
+            MainWindowCloseAction::ExitApplication
+        );
+        assert_eq!(
+            main_window_close_action(WindowCloseBehavior::MinimizeToTray),
+            MainWindowCloseAction::MinimizeToTray
+        );
     }
 }
