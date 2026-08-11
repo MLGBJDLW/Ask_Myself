@@ -15,7 +15,7 @@ use futures::{stream, stream::BoxStream, StreamExt};
 use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{
     CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderStreamFailure,
-    ProviderType, StreamChunk,
+    ProviderType, ReplayHistoryProjection, StreamChunk,
 };
 use crate::error::CoreError;
 
@@ -90,12 +90,18 @@ impl AutomaticFallbackProvider {
         let mut request = request.clone();
         request.model = self.routes[position].model.clone();
         request.provider_type = Some(self.routes[position].provider_type);
-        let route_snapshot = self.routes[position].provider.route_snapshot(&request);
-        request.messages = super::reasoning_replay::prepare_provider_replay_history(
-            &request.messages,
-            &route_snapshot,
-        )
-        .messages;
+        let route = &self.routes[position];
+        if let ReplayHistoryProjection::Caller(history_policy) =
+            route.provider.replay_history_projection(&request)
+        {
+            let mut route_snapshot = route.provider.route_snapshot(&request);
+            route_snapshot.replay_policy = history_policy;
+            request.messages = super::reasoning_replay::prepare_provider_replay_history(
+                &request.messages,
+                &route_snapshot,
+            )
+            .messages;
+        }
         request
     }
 
@@ -255,6 +261,10 @@ impl LlmProvider for AutomaticFallbackProvider {
         // `request_for_route` applies the concrete route contract immediately
         // before opening that route.
         ReasoningReplayPolicy::NotRequired
+    }
+
+    fn replay_history_projection(&self, _request: &CompletionRequest) -> ReplayHistoryProjection {
+        ReplayHistoryProjection::ProviderSelectedRoute
     }
 
     fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
@@ -505,6 +515,7 @@ mod tests {
         behavior: Behavior,
         models: Arc<Mutex<Vec<String>>>,
         replay_policy: ReasoningReplayPolicy,
+        history_replay_policy: ReasoningReplayPolicy,
         histories: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
     }
 
@@ -516,6 +527,10 @@ mod tests {
 
         fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
             self.replay_policy
+        }
+
+        fn reasoning_replay_history_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+            self.history_replay_policy
         }
 
         async fn list_models(&self) -> Result<Vec<String>, CoreError> {
@@ -593,6 +608,7 @@ mod tests {
             behavior,
             models,
             replay_policy: ReasoningReplayPolicy::Unknown,
+            history_replay_policy: ReasoningReplayPolicy::Unknown,
             histories: None,
         })
     }
@@ -608,6 +624,7 @@ mod tests {
             behavior,
             models,
             replay_policy,
+            history_replay_policy: replay_policy,
             histories: None,
         })
     }
@@ -624,6 +641,25 @@ mod tests {
             behavior,
             models,
             replay_policy,
+            history_replay_policy: replay_policy,
+            histories: Some(histories),
+        })
+    }
+
+    fn provider_with_output_and_history_policy(
+        name: &'static str,
+        behavior: Behavior,
+        models: Arc<Mutex<Vec<String>>>,
+        replay_policy: ReasoningReplayPolicy,
+        history_replay_policy: ReasoningReplayPolicy,
+        histories: Arc<Mutex<Vec<Vec<Message>>>>,
+    ) -> Box<dyn LlmProvider> {
+        Box::new(MockProvider {
+            name,
+            behavior,
+            models,
+            replay_policy,
+            history_replay_policy,
             histories: Some(histories),
         })
     }
@@ -811,6 +847,201 @@ mod tests {
             wrapper.reasoning_replay_policy("ignored"),
             ReasoningReplayPolicy::RequiredOnToolCall
         );
+    }
+
+    #[tokio::test]
+    async fn concrete_history_policy_omits_an_incompatible_prior_tool_unit() {
+        let history = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_output_and_history_policy(
+                "primary",
+                Behavior::Stream(vec![chunk("answer")]),
+                models,
+                ReasoningReplayPolicy::NotRequired,
+                ReasoningReplayPolicy::RequiredOnToolCall,
+                Arc::clone(&history),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            Vec::new(),
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }]);
+        let mut route_request = request();
+        route_request.messages = vec![
+            assistant,
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::Assistant, "dependent answer"),
+        ];
+
+        let events = wrapper
+            .stream_events(&route_request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        let history = history.lock().unwrap();
+        assert!(!history[0].iter().any(|message| message.role == Role::Tool));
+        assert!(history[0]
+            .iter()
+            .any(|message| message.text_content().contains("Provider replay boundary")));
+    }
+
+    #[tokio::test]
+    async fn explicit_reasoning_disable_preserves_a_safe_not_required_tool_unit() {
+        let history = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_output_and_history_policy(
+                "primary",
+                Behavior::Stream(vec![chunk("answer")]),
+                models,
+                ReasoningReplayPolicy::NotRequired,
+                ReasoningReplayPolicy::RequiredOnToolCall,
+                Arc::clone(&history),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            Vec::new(),
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+        let mut route_request = request();
+        route_request.reasoning_enabled = Some(false);
+        let route = wrapper.route_snapshot(&route_request);
+        let tool_call = ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![tool_call.clone()]);
+        assistant.set_provider_turn(crate::llm::provider_turn::ProviderTurnEnvelope::capture(
+            "turn-1",
+            "sample-1",
+            route,
+            "",
+            None,
+            None,
+            vec![tool_call],
+            false,
+        ));
+        route_request.messages = vec![
+            assistant,
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::Assistant, "dependent answer"),
+        ];
+
+        let events = wrapper
+            .stream_events(&route_request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        let mut effort_request = route_request;
+        effort_request.reasoning_enabled = None;
+        effort_request.reasoning_effort = Some(crate::llm::ReasoningEffort::None);
+        let effort_events = wrapper
+            .stream_events(&effort_request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(effort_events.len(), 1);
+        let history = history.lock().unwrap();
+        assert_eq!(history.len(), 2);
+        for invocation in history.iter() {
+            assert!(invocation.iter().any(|message| message.role == Role::Tool));
+            assert!(!invocation
+                .iter()
+                .any(|message| message.text_content().contains("Provider replay boundary")));
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_projects_each_route_from_the_original_history() {
+        let primary_history = Arc::new(Mutex::new(Vec::new()));
+        let fallback_history = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider_with_policy_and_history(
+                "primary",
+                Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    message: "primary unavailable".to_string(),
+                }]),
+                Arc::clone(&models),
+                ReasoningReplayPolicy::RequiredOnToolCall,
+                Arc::clone(&primary_history),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider_with_policy_and_history(
+                    "fallback",
+                    Behavior::Stream(vec![chunk("fallback answer")]),
+                    models,
+                    ReasoningReplayPolicy::NotRequired,
+                    Arc::clone(&fallback_history),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }]);
+        let mut route_request = request();
+        route_request.messages = vec![
+            assistant,
+            Message::text_with_name(Role::Tool, "result", "call-1"),
+            Message::text(Role::Assistant, "dependent answer"),
+        ];
+
+        let events = wrapper
+            .stream_events(&route_request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        let primary_history = primary_history.lock().unwrap();
+        assert!(!primary_history[0]
+            .iter()
+            .any(|message| message.role == Role::Tool));
+        assert!(primary_history[0]
+            .iter()
+            .any(|message| message.text_content().contains("Provider replay boundary")));
+        let fallback_history = fallback_history.lock().unwrap();
+        assert!(fallback_history[0]
+            .iter()
+            .any(|message| message.role == Role::Tool));
+        assert!(!fallback_history[0]
+            .iter()
+            .any(|message| message.text_content().contains("Provider replay boundary")));
     }
 
     #[tokio::test]

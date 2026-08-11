@@ -677,6 +677,18 @@ pub enum ProviderType {
 // Provider trait
 // ---------------------------------------------------------------------------
 
+/// Ownership of replay-history projection for one provider invocation.
+///
+/// Most concrete providers expose a stable route before invocation and let
+/// the caller project history for that route. Route-selecting adapters must
+/// instead receive the original history and project only after they choose a
+/// concrete route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayHistoryProjection {
+    Caller(reasoning_profile::ReasoningReplayPolicy),
+    ProviderSelectedRoute,
+}
+
 /// Trait implemented by each LLM backend.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -709,6 +721,19 @@ pub trait LlmProvider: Send + Sync {
         model: &str,
     ) -> reasoning_profile::ReasoningReplayPolicy {
         self.reasoning_replay_policy(model)
+    }
+
+    /// Declare which side owns replay-history projection for this invocation.
+    /// The typed contract avoids overloading `NotRequired` as an adapter
+    /// sentinel: ordinary no-replay routes still need compatibility filtering.
+    fn replay_history_projection(&self, request: &CompletionRequest) -> ReplayHistoryProjection {
+        if request.reasoning_enabled == Some(false)
+            || request.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            ReplayHistoryProjection::Caller(reasoning_profile::ReasoningReplayPolicy::NotRequired)
+        } else {
+            ReplayHistoryProjection::Caller(self.reasoning_replay_history_policy(&request.model))
+        }
     }
 
     /// Immutable identity of the concrete route that will receive this
@@ -794,6 +819,10 @@ impl LlmProvider for MessageValidatingProvider {
         model: &str,
     ) -> reasoning_profile::ReasoningReplayPolicy {
         self.inner.reasoning_replay_history_policy(model)
+    }
+
+    fn replay_history_projection(&self, request: &CompletionRequest) -> ReplayHistoryProjection {
+        self.inner.replay_history_projection(request)
     }
 
     fn route_snapshot(&self, request: &CompletionRequest) -> provider_turn::RouteSnapshot {
