@@ -150,7 +150,12 @@ export function selectCompanionAnimation(
     const animation = pack.animations[key];
     if (animation) return { key, animation };
   }
-  const [key, animation] = Object.entries(pack.animations)[0] ?? [];
+  const orderedEntries = Object.entries(pack.animations).sort(([left], [right]) => (
+    left < right ? -1 : left > right ? 1 : 0
+  ));
+  const [key, animation] = orderedEntries.find(([candidate]) => (
+    !/^look(?:[0-9]|1[0-5])$/.test(candidate)
+  )) ?? orderedEntries[0] ?? [];
   return key && animation ? { key, animation } : null;
 }
 

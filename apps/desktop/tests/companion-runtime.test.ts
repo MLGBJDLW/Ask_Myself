@@ -71,5 +71,17 @@ assertEqual(
   'petting',
   'behavior animation wins over task fallback',
 );
+const explicitV2WithoutIdle: CompanionAnimationPack = {
+  contentHash: 'v2-without-idle',
+  animations: {
+    look0: { frames: [72], fps: 1, looping: true, fallback: null },
+    running: { frames: [56, 57], fps: 8, looping: true, fallback: null },
+  },
+};
+assertEqual(
+  selectCompanionAnimation(explicitV2WithoutIdle, 'idle', 'idle')?.key,
+  'running',
+  'generic fallback excludes synthesized directional look tracks',
+);
 
 console.log('ok - companion runtime state, clock, and boundary contracts');
