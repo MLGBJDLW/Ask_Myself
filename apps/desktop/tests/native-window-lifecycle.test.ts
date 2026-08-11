@@ -11,6 +11,10 @@ const mainSource = readFileSync(
   join(process.cwd(), 'src-tauri', 'src', 'main.rs'),
   'utf8',
 );
+const companionSource = readFileSync(
+  join(process.cwd(), 'src-tauri', 'src', 'companion_window.rs'),
+  'utf8',
+);
 
 const closePolicy = mainSource.match(
   /fn main_window_close_action[\s\S]*?\n}\n/,
@@ -20,6 +24,12 @@ const closeHandler = mainSource.match(
 )?.[0] ?? '';
 const exitOwner = mainSource.match(
   /fn request_application_exit[\s\S]*?\n}\n/,
+)?.[0] ?? '';
+const livePositionClamp = companionSource.match(
+  /fn keep_current_position_inside_work_area[\s\S]*?\n}\n/,
+)?.[0] ?? '';
+const placementLoop = companionSource.match(
+  /let mut interval = tokio::time::interval[\s\S]*?\n\s*}\);/,
 )?.[0] ?? '';
 
 assert(
@@ -38,5 +48,15 @@ assert(
   (mainSource.match(/request_application_exit\(/g) ?? []).length === 3,
   'the title-bar and tray Quit paths must share the same application-exit owner',
 );
+assert(
+  /outer_position\(\)/.test(livePositionClamp)
+    && /clamped == current/.test(livePositionClamp),
+  'the periodic work-area guard must treat the live native position as authoritative',
+);
+assert(
+  /keep_current_position_inside_work_area/.test(placementLoop)
+    && !/place_inside_work_area\(/.test(placementLoop),
+  'the periodic guard must clamp roaming in place instead of replaying persisted coordinates',
+);
 
-console.log('ok - native window close owns the full application lifecycle');
+console.log('ok - native window lifecycle preserves application exit and live roaming authority');
