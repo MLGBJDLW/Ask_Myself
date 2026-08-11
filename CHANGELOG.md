@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.9...nexa-monorepo-v0.12.10) (2026-08-11)
+
+
+### Features
+
+* **desktop:** resume paused agent runs in place ([e9c71a9](https://github.com/MLGBJDLW/Nexa/commit/e9c71a97e548c19cfa1e90aeb3e385aedcaa9453))
+
 ## [0.12.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.8...nexa-monorepo-v0.12.9) (2026-08-10)
 
 
