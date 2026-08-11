@@ -534,9 +534,9 @@ pub fn build_learned_successes_section(successes: &[(LearnedSuccess, f32)]) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{CompletionResponse, FinishReason, StreamChunk, Usage};
+    use crate::llm::{CompletionResponse, FinishReason, Usage};
     use async_trait::async_trait;
-    use futures::stream::{self, BoxStream};
+    use futures::stream;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -693,11 +693,12 @@ mod tests {
             })
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            Ok(Box::pin(stream::iter(Vec::new())))
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
+            crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(Vec::new())))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {

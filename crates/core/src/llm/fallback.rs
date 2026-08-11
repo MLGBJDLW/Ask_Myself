@@ -14,8 +14,8 @@ use futures::{stream, stream::BoxStream, StreamExt};
 
 use super::reasoning_profile::ReasoningReplayPolicy;
 use super::{
-    CompletionRequest, CompletionResponse, LlmProvider, ProviderStreamEvent, ProviderStreamFailure,
-    ProviderType, ReplayHistoryProjection, StreamChunk,
+    provider_stream_event_from_error, CompletionRequest, CompletionResponse, LlmProvider,
+    ProviderStreamEvent, ProviderType, ReplayHistoryProjection,
 };
 use crate::error::CoreError;
 
@@ -311,28 +311,6 @@ impl LlmProvider for AutomaticFallbackProvider {
         }))
     }
 
-    async fn stream(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        let events = self.stream_events(request).await?;
-        Ok(Box::pin(events.filter_map(|event| async move {
-            match event {
-                ProviderStreamEvent::Chunk { chunk } => Some(Ok(*chunk)),
-                ProviderStreamEvent::HostedTool { .. } => None,
-                ProviderStreamEvent::RecoverableError { message } => {
-                    Some(Err(CoreError::StreamIncomplete(message)))
-                }
-                ProviderStreamEvent::Cancelled { message } => {
-                    Some(Err(CoreError::Cancelled(message)))
-                }
-                ProviderStreamEvent::TerminalError { failure } => {
-                    Some(Err(failure.into_core_error()))
-                }
-            }
-        })))
-    }
-
     async fn stream_events(
         &self,
         request: &CompletionRequest,
@@ -414,14 +392,12 @@ impl LlmProvider for AutomaticFallbackProvider {
                                 state.current = stream;
                             }
                             Err(error) => {
-                                return Some((
-                                    ProviderStreamEvent::TerminalError {
-                                        failure: ProviderStreamFailure::provider(format!(
-                                            "{message}; fallback failed: {error}"
-                                        )),
-                                    },
-                                    None,
-                                ));
+                                tracing::warn!(
+                                    initial_error = %message,
+                                    fallback_error = %error,
+                                    "automatic fallback stream failed before output"
+                                );
+                                return Some((provider_stream_event_from_error(error), None));
                             }
                         }
                     }
@@ -443,14 +419,11 @@ impl LlmProvider for AutomaticFallbackProvider {
                                 state.current = stream;
                             }
                             Err(error) => {
-                                return Some((
-                                    ProviderStreamEvent::TerminalError {
-                                        failure: ProviderStreamFailure::provider(format!(
-                                            "Provider stream ended before output; fallback failed: {error}"
-                                        )),
-                                    },
-                                    None,
-                                ));
+                                tracing::warn!(
+                                    fallback_error = %error,
+                                    "automatic fallback failed after an empty provider stream"
+                                );
+                                return Some((provider_stream_event_from_error(error), None));
                             }
                         }
                     }
@@ -501,11 +474,15 @@ mod tests {
     use futures::stream;
 
     use super::*;
-    use crate::llm::{FinishReason, Message, Role, ToolCallRequest, Usage};
+    use crate::llm::{
+        FinishReason, Message, ProviderStreamFailure, Role, StreamChunk, ToolCallRequest, Usage,
+    };
 
     #[derive(Clone)]
     enum Behavior {
         Stream(Vec<ProviderStreamEvent>),
+        StreamRateLimited,
+        StreamCancelled,
         CompleteTransient,
         CompleteSuccess,
     }
@@ -556,15 +533,10 @@ mod tests {
                     usage: Usage::default(),
                     thinking: None,
                 }),
-                Behavior::Stream(_) => unreachable!("stream fixture used for completion"),
+                Behavior::Stream(_) | Behavior::StreamRateLimited | Behavior::StreamCancelled => {
+                    unreachable!("stream fixture used for completion")
+                }
             }
-        }
-
-        async fn stream(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            Ok(Box::pin(stream::empty()))
         }
 
         async fn stream_events(
@@ -575,10 +547,18 @@ mod tests {
             if let Some(histories) = &self.histories {
                 histories.lock().unwrap().push(request.messages.clone());
             }
-            let Behavior::Stream(events) = &self.behavior else {
-                unreachable!("completion fixture used for stream")
-            };
-            Ok(Box::pin(stream::iter(events.clone())))
+            match &self.behavior {
+                Behavior::Stream(events) => Ok(Box::pin(stream::iter(events.clone()))),
+                Behavior::StreamRateLimited => Err(CoreError::RateLimited {
+                    retry_after_secs: 7,
+                }),
+                Behavior::StreamCancelled => {
+                    Err(CoreError::Cancelled("user stopped fallback".to_string()))
+                }
+                Behavior::CompleteTransient | Behavior::CompleteSuccess => {
+                    unreachable!("completion fixture used for stream")
+                }
+            }
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {
@@ -594,6 +574,21 @@ mod tests {
                 finish_reason: None,
                 usage: None,
                 thinking_delta: None,
+            }),
+        }
+    }
+
+    fn hosted_tool() -> ProviderStreamEvent {
+        ProviderStreamEvent::HostedTool {
+            tool: Box::new(crate::llm::ProviderHostedToolEvent {
+                call_id: "hosted-call-1".to_string(),
+                tool_name: "web_search".to_string(),
+                kind: crate::llm::ProviderHostedToolKind::WebSearch,
+                provider_id: "search-1".to_string(),
+                status: crate::llm::ProviderHostedToolStatus::Completed,
+                arguments: Some("{\"query\":\"Nexa\"}".to_string()),
+                content: Some("result".to_string()),
+                artifacts: None,
             }),
         }
     }
@@ -728,6 +723,147 @@ mod tests {
                 "primary_invocation_failed_automatic_fallback".to_string()
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn fallback_preserves_hosted_tool_events_from_the_selected_route() {
+        let selections = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&selections);
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    message: "connection reset".to_string(),
+                }]),
+                Arc::new(Mutex::new(Vec::new())),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::Stream(vec![hosted_tool()]),
+                    Arc::new(Mutex::new(Vec::new())),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(move |from, to, reason| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((from, to, reason.to_string()));
+                Ok(())
+            }),
+        )
+        .unwrap();
+
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [ProviderStreamEvent::HostedTool { tool }]
+                if tool.call_id == "hosted-call-1"
+                    && tool.status == crate::llm::ProviderHostedToolStatus::Completed
+        ));
+        assert_eq!(
+            *selections.lock().unwrap(),
+            vec![(
+                0,
+                1,
+                "primary_invocation_failed_automatic_fallback".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_open_after_recoverable_error_preserves_rate_limit_classification() {
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    message: "connection reset".to_string(),
+                }]),
+                Arc::new(Mutex::new(Vec::new())),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::StreamRateLimited,
+                    Arc::new(Mutex::new(Vec::new())),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [ProviderStreamEvent::TerminalError {
+                failure: ProviderStreamFailure::RateLimited {
+                    retry_after_secs: 7
+                }
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn fallback_open_after_empty_stream_preserves_cancellation_classification() {
+        let wrapper = AutomaticFallbackProvider::new(
+            0,
+            provider(
+                "primary",
+                Behavior::Stream(Vec::new()),
+                Arc::new(Mutex::new(Vec::new())),
+            ),
+            "primary-model".to_string(),
+            ProviderType::OpenAi,
+            vec![AutomaticFallbackCandidate {
+                fallback_index: 1,
+                provider: provider(
+                    "fallback",
+                    Behavior::StreamCancelled,
+                    Arc::new(Mutex::new(Vec::new())),
+                ),
+                model: "fallback-model".to_string(),
+                provider_type: ProviderType::OpenAi,
+            }],
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .unwrap();
+
+        let events = wrapper
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [ProviderStreamEvent::Cancelled { message }]
+                if message == "user stopped fallback"
+        ));
     }
 
     #[tokio::test]

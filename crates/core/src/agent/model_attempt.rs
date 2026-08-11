@@ -1139,13 +1139,6 @@ mod tests {
             }
         }
 
-        async fn stream(
-            &self,
-            _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            unreachable!("tests use normalized stream events")
-        }
-
         async fn stream_events(
             &self,
             request: &CompletionRequest,

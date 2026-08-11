@@ -15,13 +15,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
 use crate::error::CoreError;
+use crate::llm::provider_stream_event_from_error;
 use crate::llm::provider_turn::RouteSnapshot;
 use crate::llm::reasoning_profile::ReasoningReplayPolicy;
 #[cfg(test)]
 use crate::llm::FinishReason;
 use crate::llm::{
-    CompletionRequest, CompletionResponse, ContentPart, LlmProvider, Message, ReasoningEffort,
-    ReplayHistoryProjection, Role, StreamChunk, Usage,
+    CompletionRequest, CompletionResponse, ContentPart, LlmProvider, Message, ProviderStreamEvent,
+    ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk, Usage,
 };
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -475,10 +476,10 @@ impl LlmProvider for MoaProvider {
         Ok(response)
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let before = self.usage_snapshot().await.advisor_usage;
         let aggregator_request = self.aggregator_request(request).await?;
         let after = self.usage_snapshot().await.advisor_usage;
@@ -486,35 +487,36 @@ impl LlmProvider for MoaProvider {
         let aggregator = Arc::clone(&self.aggregator);
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
-            match aggregator.stream(&aggregator_request).await {
+            match aggregator.stream_events(&aggregator_request).await {
                 Ok(mut provider_stream) => {
                     let mut attached_usage = false;
-                    while let Some(item) = provider_stream.next().await {
-                        let item = item.map(|mut chunk| {
+                    while let Some(mut event) = provider_stream.next().await {
+                        if let ProviderStreamEvent::Chunk { chunk } = &mut event {
                             if let Some(usage) = chunk.usage.as_mut() {
                                 add_usage(usage, &advisor_usage);
                                 attached_usage = true;
                             }
-                            chunk
-                        });
-                        if tx.send(item).await.is_err() {
+                        }
+                        if tx.send(event).await.is_err() {
                             return;
                         }
                     }
                     if !attached_usage && advisor_usage.total_tokens > 0 {
                         let _ = tx
-                            .send(Ok(StreamChunk {
-                                delta: String::new(),
-                                tool_call_delta: None,
-                                finish_reason: None,
-                                usage: Some(advisor_usage),
-                                thinking_delta: None,
-                            }))
+                            .send(ProviderStreamEvent::Chunk {
+                                chunk: Box::new(StreamChunk {
+                                    delta: String::new(),
+                                    tool_call_delta: None,
+                                    finish_reason: None,
+                                    usage: Some(advisor_usage),
+                                    thinking_delta: None,
+                                }),
+                            })
                             .await;
                     }
                 }
                 Err(error) => {
-                    let _ = tx.send(Err(error)).await;
+                    let _ = tx.send(provider_stream_event_from_error(error)).await;
                 }
             }
         });
@@ -645,7 +647,10 @@ mod tests {
     use crate::llm::fallback::AutomaticFallbackProvider;
     use crate::llm::provider_turn::ProviderTurnEnvelope;
     use crate::llm::reasoning_profile::ReasoningApiStyle;
-    use crate::llm::{ProviderType, ToolCallRequest};
+    use crate::llm::{
+        ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus,
+        ProviderStreamEvent, ProviderType, ToolCallRequest,
+    };
 
     struct StubProvider {
         label: &'static str,
@@ -655,6 +660,48 @@ mod tests {
 
     struct RecordingAggregator {
         requests: Arc<Mutex<Vec<CompletionRequest>>>,
+    }
+
+    struct HostedToolAggregator;
+
+    #[async_trait]
+    impl LlmProvider for HostedToolAggregator {
+        fn name(&self) -> &str {
+            "hosted-tool-aggregator"
+        }
+
+        async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+            Ok(vec!["aggregator-model".to_string()])
+        }
+
+        async fn complete(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<CompletionResponse, CoreError> {
+            unreachable!("streaming test must use the canonical provider-event surface")
+        }
+
+        async fn stream_events(
+            &self,
+            _request: &CompletionRequest,
+        ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+            Ok(Box::pin(stream::iter([ProviderStreamEvent::HostedTool {
+                tool: Box::new(ProviderHostedToolEvent {
+                    call_id: "hosted-call-1".to_string(),
+                    tool_name: "web_search".to_string(),
+                    kind: ProviderHostedToolKind::WebSearch,
+                    provider_id: "search-1".to_string(),
+                    status: ProviderHostedToolStatus::Completed,
+                    arguments: Some("{\"query\":\"Nexa\"}".to_string()),
+                    content: Some("result".to_string()),
+                    artifacts: None,
+                }),
+            }])))
+        }
+
+        async fn health_check(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -701,11 +748,12 @@ mod tests {
             })
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            Ok(Box::pin(stream::empty()))
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
+            crate::llm::provider_events_from_chunk_stream(Box::pin(stream::empty()))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {
@@ -744,18 +792,21 @@ mod tests {
             })
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
             let response = self.complete(request).await?;
-            Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
-                delta: response.content,
-                tool_call_delta: None,
-                finish_reason: Some(response.finish_reason),
-                usage: Some(response.usage),
-                thinking_delta: None,
-            })])))
+            crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+                StreamChunk {
+                    delta: response.content,
+                    tool_call_delta: None,
+                    finish_reason: Some(response.finish_reason),
+                    usage: Some(response.usage),
+                    thinking_delta: None,
+                },
+            )])))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {
@@ -911,6 +962,31 @@ mod tests {
                 .provider_turn()
                 .is_some_and(|envelope| envelope.replay_payload.is_present())
         }));
+    }
+
+    #[tokio::test]
+    async fn moa_preserves_hosted_tool_events_from_the_aggregator() {
+        let mut preset = MoaPreset::builtin(MoaPresetId::FastReview, "open_ai", "aggregator-model");
+        preset.budget_policy.max_advisor_calls_per_turn = 0;
+        let advisor = MoaAdvisor {
+            slot: preset.references[0].clone(),
+            provider: provider("unused-advisor", false),
+        };
+        let moa = MoaProvider::new(Arc::new(HostedToolAggregator), preset, vec![advisor]).unwrap();
+
+        let events = moa
+            .stream_events(&request())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [ProviderStreamEvent::HostedTool { tool }]
+                if tool.call_id == "hosted-call-1"
+                    && tool.status == ProviderHostedToolStatus::Completed
+        ));
     }
 
     #[test]

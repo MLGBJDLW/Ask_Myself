@@ -459,14 +459,12 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<
-            futures::stream::BoxStream<'_, Result<crate::llm::StreamChunk, CoreError>>,
-            CoreError,
-        > {
-            Ok(Box::pin(stream::empty()))
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
+            crate::llm::provider_events_from_chunk_stream(Box::pin(stream::empty()))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {

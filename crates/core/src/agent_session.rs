@@ -476,10 +476,10 @@ mod tests {
             Err(CoreError::Llm("not used".to_string()))
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
         {
             let chunks = vec![Ok(StreamChunk {
                 delta: "session answer".to_string(),
@@ -488,7 +488,7 @@ mod tests {
                 usage: None,
                 thinking_delta: None,
             })];
-            Ok(stream::iter(chunks).boxed())
+            crate::llm::provider_events_from_chunk_stream(stream::iter(chunks).boxed())
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {
@@ -513,20 +513,22 @@ mod tests {
             Err(CoreError::Llm("not used".to_string()))
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<futures::stream::BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError>
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
         {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(stream::iter(vec![Ok(StreamChunk {
-                delta: "must not execute".to_string(),
-                tool_call_delta: None::<ToolCallDelta>,
-                finish_reason: Some(FinishReason::Stop),
-                usage: None,
-                thinking_delta: None,
-            })])
-            .boxed())
+            crate::llm::provider_events_from_chunk_stream(
+                stream::iter(vec![Ok(StreamChunk {
+                    delta: "must not execute".to_string(),
+                    tool_call_delta: None::<ToolCallDelta>,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: None,
+                    thinking_delta: None,
+                })])
+                .boxed(),
+            )
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {

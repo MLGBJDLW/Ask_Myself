@@ -4,7 +4,7 @@
 //! that expose the same `/v1/chat/completions` interface.
 
 use async_trait::async_trait;
-use futures::{stream::BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -2569,33 +2569,6 @@ impl OpenAiProvider {
             rx.recv().await.map(|item| (item, rx))
         })))
     }
-
-    async fn stream_hosted_search(
-        &self,
-        request: &CompletionRequest,
-        dialect: super::native_search::NativeSearchDialect,
-        mode: super::native_search::SearchExecutionMode,
-        capability: crate::model_catalog::NativeWebSearchCapability,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-        let events = self
-            .stream_hosted_search_events(request, dialect, mode, capability)
-            .await?;
-        Ok(Box::pin(events.filter_map(|event| async move {
-            match event {
-                ProviderStreamEvent::Chunk { chunk } => Some(Ok(*chunk)),
-                ProviderStreamEvent::HostedTool { .. } => None,
-                ProviderStreamEvent::RecoverableError { message } => {
-                    Some(Err(CoreError::StreamIncomplete(message)))
-                }
-                ProviderStreamEvent::Cancelled { message } => {
-                    Some(Err(CoreError::Cancelled(message)))
-                }
-                ProviderStreamEvent::TerminalError { failure } => {
-                    Some(Err(failure.into_core_error()))
-                }
-            }
-        })))
-    }
 }
 
 #[async_trait]
@@ -2820,17 +2793,17 @@ impl LlmProvider for OpenAiProvider {
         })
     }
 
-    async fn stream(
+    async fn stream_events(
         &self,
         request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         if let Some((dialect, mode, capability)) = hosted_search_context(request) {
             if capability.supports_stream_events
                 && (capability.can_mix_client_tools
                     || !hosted_search_requires_client_tools(request, mode))
             {
                 return match self
-                    .stream_hosted_search(request, dialect, mode, capability)
+                    .stream_hosted_search_events(request, dialect, mode, capability)
                     .await
                 {
                     Ok(stream) => Ok(stream),
@@ -2847,14 +2820,14 @@ impl LlmProvider for OpenAiProvider {
                 };
             }
             let response = self.complete(request).await?;
-            return Ok(Box::pin(futures::stream::iter(
-                completion_response_to_stream_chunks(response),
+            return Ok(super::stream_chunks_to_provider_events(Box::pin(
+                futures::stream::iter(completion_response_to_stream_chunks(response)),
             )));
         }
         if requires_non_streaming_fallback(&request.model) {
             let response = self.complete(request).await?;
-            return Ok(Box::pin(futures::stream::iter(
-                completion_response_to_stream_chunks(response),
+            return Ok(super::stream_chunks_to_provider_events(Box::pin(
+                futures::stream::iter(completion_response_to_stream_chunks(response)),
             )));
         }
 
@@ -2907,38 +2880,7 @@ impl LlmProvider for OpenAiProvider {
             rx.recv().await.map(|item| (item, rx))
         });
 
-        Ok(Box::pin(stream))
-    }
-
-    async fn stream_events(
-        &self,
-        request: &CompletionRequest,
-    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
-        if let Some((dialect, mode, capability)) = hosted_search_context(request) {
-            if capability.supports_stream_events
-                && (capability.can_mix_client_tools
-                    || !hosted_search_requires_client_tools(request, mode))
-            {
-                return match self
-                    .stream_hosted_search_events(request, dialect, mode, capability)
-                    .await
-                {
-                    Ok(stream) => Ok(stream),
-                    Err(error)
-                        if matches!(
-                            mode,
-                            super::native_search::SearchExecutionMode::Auto
-                                | super::native_search::SearchExecutionMode::Hybrid
-                        ) =>
-                    {
-                        Err(contextualize_hosted_search_error(dialect, error))
-                    }
-                    Err(error) => Err(error),
-                };
-            }
-        }
-        let stream = self.stream(request).await?;
-        Ok(super::stream_chunks_to_provider_events(stream))
+        Ok(super::stream_chunks_to_provider_events(Box::pin(stream)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -3475,11 +3417,16 @@ data: [DONE]
             parallel_tool_calls: true,
         };
 
-        let mut stream = provider.stream(&request).await.expect("start stream");
+        let mut stream = provider
+            .stream_events(&request)
+            .await
+            .expect("start stream");
         let mut text = String::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.expect("stream chunk");
-            text.push_str(&chunk.delta);
+        while let Some(event) = stream.next().await {
+            match event {
+                ProviderStreamEvent::Chunk { chunk } => text.push_str(&chunk.delta),
+                other => panic!("unexpected provider event: {other:?}"),
+            }
         }
 
         server.await.expect("server task").expect("server result");

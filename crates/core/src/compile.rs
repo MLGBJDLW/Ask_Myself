@@ -807,9 +807,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{CompletionResponse, FinishReason, StreamChunk, Usage};
+    use crate::llm::{CompletionResponse, FinishReason, Usage};
     use crate::sources::CreateSourceInput;
-    use futures::stream::BoxStream;
 
     struct StaticLlmProvider {
         content: String,
@@ -838,11 +837,12 @@ mod tests {
             })
         }
 
-        async fn stream(
+        async fn stream_events(
             &self,
             _request: &CompletionRequest,
-        ) -> Result<BoxStream<'_, Result<StreamChunk, CoreError>>, CoreError> {
-            Ok(Box::pin(futures::stream::empty()))
+        ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError>
+        {
+            crate::llm::provider_events_from_chunk_stream(Box::pin(futures::stream::empty()))
         }
 
         async fn health_check(&self) -> Result<(), CoreError> {
