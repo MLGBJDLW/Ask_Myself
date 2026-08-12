@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.11...nexa-monorepo-v0.12.12) (2026-08-12)
+
+
+### Bug Fixes
+
+* **agent:** classify navigation handoff targets ([f2ec83b](https://github.com/MLGBJDLW/Nexa/commit/f2ec83bcde5752e2722170d86e80b91ba639140a))
+* **agent:** isolate browser tool routing ([086ff4b](https://github.com/MLGBJDLW/Nexa/commit/086ff4b76b6be5979993cbdcd865914b9593cc51))
+* **agent:** route URL opens to browser sessions ([29b7286](https://github.com/MLGBJDLW/Nexa/commit/29b72865b46bdb5697fbe947f6ccfca077ed8f6c))
+* **agent:** satisfy handoff policy lint ([557e87f](https://github.com/MLGBJDLW/Nexa/commit/557e87f97149642bd5024a04402284573e0e9a62))
+* **browser:** hide unavailable artifact actions ([ee701c7](https://github.com/MLGBJDLW/Nexa/commit/ee701c76d6c017baa101acce55893ddf73260b07))
+* **browser:** preserve routed content visibility ([7d41c5a](https://github.com/MLGBJDLW/Nexa/commit/7d41c5adcc28e63b67c3b5e38039b34245c2d51c))
+* **browser:** respect archived chat boundaries ([470e9db](https://github.com/MLGBJDLW/Nexa/commit/470e9db91dedec74006cc970614638c6de28b47d))
+* **browser:** route web links through Nexa Browser ([d4caeda](https://github.com/MLGBJDLW/Nexa/commit/d4caeda407cca787596e5670abefed789ec7ac27))
+* **chat:** restore visible average cache hit ([101c932](https://github.com/MLGBJDLW/Nexa/commit/101c932515103de98b0715beeb7e393f80dec938))
+* **companion:** animate pets while dragging ([2c06da3](https://github.com/MLGBJDLW/Nexa/commit/2c06da3a8cd857ee965d1679bb9d6a26d17a710a))
+* **desktop:** localize native tray menu ([e8024a2](https://github.com/MLGBJDLW/Nexa/commit/e8024a2ad715ffc4e2fa4fcfc89ed34a7417a29d))
+* **desktop:** preserve native locale authority ([293fb9e](https://github.com/MLGBJDLW/Nexa/commit/293fb9ef661f58281e2296cc71ef5be2aba6ea5d))
+* unify browser routing, tray locale, and pet drag motion ([8008c68](https://github.com/MLGBJDLW/Nexa/commit/8008c6855b0b82507759ce320c0a8f32c162dadd))
+
 ## [0.12.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.10...nexa-monorepo-v0.12.11) (2026-08-11)
 
 
