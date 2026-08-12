@@ -567,6 +567,7 @@ export interface SaveAgentConfigInput {
 }
 
 export interface AppConfig {
+  uiLocale?: string;
   cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;

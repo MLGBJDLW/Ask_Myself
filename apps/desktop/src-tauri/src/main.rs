@@ -27,6 +27,7 @@ use commands::{
 };
 use nexa_core::app_settings::WindowCloseBehavior;
 use nexa_core::db::Database;
+use serde::Deserialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -165,6 +166,51 @@ const TRAY_UNLOCK_COMPANION_ID: &str = "tray_unlock_companion";
 const TRAY_RESET_COMPANION_ID: &str = "tray_reset_companion";
 const TRAY_COMPANION_SETTINGS_ID: &str = "tray_companion_settings";
 const TRAY_QUIT_ID: &str = "tray_quit";
+const TRAY_ID: &str = "nexa-main";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrayMenuLabels {
+    show_nexa: String,
+    show_companion: String,
+    hide_companion: String,
+    lock_companion: String,
+    unlock_companion: String,
+    reset_companion: String,
+    companion_settings: String,
+    quit_nexa: String,
+}
+
+fn supported_tray_locale(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "zh-CN",
+        "zh-TW" => "zh-TW",
+        "ja" => "ja",
+        "ko" => "ko",
+        "fr" => "fr",
+        "de" => "de",
+        "es" => "es",
+        "pt" => "pt",
+        "ru" => "ru",
+        _ => "en",
+    }
+}
+
+fn tray_labels(locale: &str) -> TrayMenuLabels {
+    let translations = match supported_tray_locale(locale) {
+        "zh-CN" => include_str!("../../src/i18n/locales/zh-CN/tray.json"),
+        "zh-TW" => include_str!("../../src/i18n/locales/zh-TW/tray.json"),
+        "ja" => include_str!("../../src/i18n/locales/ja/tray.json"),
+        "ko" => include_str!("../../src/i18n/locales/ko/tray.json"),
+        "fr" => include_str!("../../src/i18n/locales/fr/tray.json"),
+        "de" => include_str!("../../src/i18n/locales/de/tray.json"),
+        "es" => include_str!("../../src/i18n/locales/es/tray.json"),
+        "pt" => include_str!("../../src/i18n/locales/pt/tray.json"),
+        "ru" => include_str!("../../src/i18n/locales/ru/tray.json"),
+        _ => include_str!("../../src/i18n/locales/en/tray.json"),
+    };
+    serde_json::from_str(translations).expect("bundled tray translations must be valid")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainWindowCloseAction {
@@ -192,52 +238,55 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "Show Nexa", true, None::<&str>)?;
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    labels: &TrayMenuLabels,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, &labels.show_nexa, true, None::<&str>)?;
     let show_companion_item = MenuItem::with_id(
         app,
         TRAY_SHOW_COMPANION_ID,
-        "Show Desktop Pet",
+        &labels.show_companion,
         true,
         None::<&str>,
     )?;
     let hide_companion_item = MenuItem::with_id(
         app,
         TRAY_HIDE_COMPANION_ID,
-        "Hide Desktop Pet",
+        &labels.hide_companion,
         true,
         None::<&str>,
     )?;
     let unlock_companion_item = MenuItem::with_id(
         app,
         TRAY_UNLOCK_COMPANION_ID,
-        "Unlock Desktop Pet",
+        &labels.unlock_companion,
         true,
         None::<&str>,
     )?;
     let lock_companion_item = MenuItem::with_id(
         app,
         TRAY_LOCK_COMPANION_ID,
-        "Lock Desktop Pet",
+        &labels.lock_companion,
         true,
         None::<&str>,
     )?;
     let reset_companion_item = MenuItem::with_id(
         app,
         TRAY_RESET_COMPANION_ID,
-        "Reset Pet Position",
+        &labels.reset_companion,
         true,
         None::<&str>,
     )?;
     let companion_settings_item = MenuItem::with_id(
         app,
         TRAY_COMPANION_SETTINGS_ID,
-        "Open Pet Settings",
+        &labels.companion_settings,
         true,
         None::<&str>,
     )?;
-    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit Nexa", true, None::<&str>)?;
-    let menu = Menu::with_items(
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, &labels.quit_nexa, true, None::<&str>)?;
+    Menu::with_items(
         app,
         &[
             &show_item,
@@ -249,10 +298,14 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &companion_settings_item,
             &quit_item,
         ],
-    )?;
+    )
+}
+
+fn install_tray(app: &mut tauri::App, locale: &str) -> tauri::Result<()> {
+    let menu = build_tray_menu(app.handle(), &tray_labels(locale))?;
     let icon = app.default_window_icon().cloned();
 
-    let mut tray = TrayIconBuilder::with_id("nexa-main")
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Nexa")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -307,6 +360,31 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
+}
+
+#[tauri::command]
+fn update_tray_menu_cmd(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    locale: String,
+) -> Result<(), String> {
+    let locale = supported_tray_locale(locale.trim());
+    let mut config = state
+        .db
+        .load_app_config()
+        .map_err(|error| error.to_string())?;
+    if config.ui_locale != locale {
+        config.ui_locale = locale.to_string();
+        state
+            .db
+            .save_app_config(&config)
+            .map_err(|error| error.to_string())?;
+    }
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Nexa tray is unavailable".to_string())?;
+    let menu = build_tray_menu(&app, &tray_labels(locale)).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
 
 fn main() {
@@ -456,12 +534,9 @@ fn main() {
                 data_dir.join("browser-profiles"),
             ));
             app.manage(DownloadCancelFlag(Arc::new(AtomicBool::new(false))));
-            let companion_settings = db
-                .load_app_config()
-                .map(|config| config.companion)
-                .unwrap_or_default();
-            companion_window::create_companion_window(app, &companion_settings);
-            install_tray(app)?;
+            let app_config = db.load_app_config().unwrap_or_default();
+            companion_window::create_companion_window(app, &app_config.companion);
+            install_tray(app, &app_config.ui_locale)?;
 
             // Initialise the file watcher for auto-indexing.
             let handle = app.handle().clone();
@@ -747,6 +822,7 @@ fn main() {
             // App Config
             commands::get_app_config_cmd,
             commands::save_app_config_cmd,
+            update_tray_menu_cmd,
             commands::synthesize_speech_preview_cmd,
             commands::refresh_tts_voice_catalog_cmd,
             commands::clear_speech_cache_cmd,

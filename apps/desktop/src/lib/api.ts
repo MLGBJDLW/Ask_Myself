@@ -1944,6 +1944,9 @@ export const getAppConfig = () =>
 export const saveAppConfig = (config: AppConfig) =>
   invoke<void>('save_app_config_cmd', { config });
 
+export const updateTrayMenu = (locale: string) =>
+  invoke<void>('update_tray_menu_cmd', { locale });
+
 export interface SpeechPreview {
   assetId: string;
   path: string;

@@ -1,0 +1,10 @@
+{
+  "showNexa": "Mostrar Nexa",
+  "showCompanion": "Mostrar mascota de escritorio",
+  "hideCompanion": "Ocultar mascota de escritorio",
+  "lockCompanion": "Bloquear mascota de escritorio",
+  "unlockCompanion": "Desbloquear mascota de escritorio",
+  "resetCompanion": "Restablecer posición de la mascota",
+  "companionSettings": "Abrir ajustes de la mascota",
+  "quitNexa": "Salir de Nexa"
+}

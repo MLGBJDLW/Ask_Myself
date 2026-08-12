@@ -1,0 +1,10 @@
+{
+  "showNexa": "显示 Nexa",
+  "showCompanion": "显示桌面宠物",
+  "hideCompanion": "隐藏桌面宠物",
+  "lockCompanion": "锁定桌面宠物",
+  "unlockCompanion": "解锁桌面宠物",
+  "resetCompanion": "重置宠物位置",
+  "companionSettings": "打开宠物设置",
+  "quitNexa": "退出 Nexa"
+}

@@ -24,6 +24,7 @@ import type sources from './locales/en/sources.json';
 import type taskCenter from './locales/en/taskCenter.json';
 import type themeStudio from './locales/en/themeStudio.json';
 import type time from './locales/en/time.json';
+import type tray from './locales/en/tray.json';
 import type update from './locales/en/update.json';
 import type usage from './locales/en/usage.json';
 import type voice from './locales/en/voice.json';
@@ -72,6 +73,7 @@ export const translationNamespaces = [
   'taskCenter',
   'themeStudio',
   'time',
+  'tray',
   'update',
   'usage',
   'voice',
@@ -108,6 +110,7 @@ type NamespaceKeyMap = {
   taskCenter: typeof taskCenter;
   themeStudio: typeof themeStudio;
   time: typeof time;
+  tray: typeof tray;
   update: typeof update;
   usage: typeof usage;
   voice: typeof voice;

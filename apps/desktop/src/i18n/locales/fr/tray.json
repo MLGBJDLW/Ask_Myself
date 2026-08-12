@@ -1,0 +1,10 @@
+{
+  "showNexa": "Afficher Nexa",
+  "showCompanion": "Afficher l’animal de bureau",
+  "hideCompanion": "Masquer l’animal de bureau",
+  "lockCompanion": "Verrouiller l’animal de bureau",
+  "unlockCompanion": "Déverrouiller l’animal de bureau",
+  "resetCompanion": "Réinitialiser la position de l’animal",
+  "companionSettings": "Ouvrir les réglages de l’animal",
+  "quitNexa": "Quitter Nexa"
+}

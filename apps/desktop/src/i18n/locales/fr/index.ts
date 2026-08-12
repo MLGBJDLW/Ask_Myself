@@ -26,6 +26,7 @@ import sources from './sources.json';
 import taskCenter from './taskCenter.json';
 import themeStudio from './themeStudio.json';
 import time from './time.json';
+import tray from './tray.json';
 import update from './update.json';
 import usage from './usage.json';
 import voice from './voice.json';
@@ -59,6 +60,7 @@ export const fr: TranslationKeys = flattenTranslationNamespaces({
   taskCenter,
   themeStudio,
   time,
+  tray,
   update,
   usage,
   voice,

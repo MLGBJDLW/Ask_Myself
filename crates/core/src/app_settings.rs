@@ -680,6 +680,10 @@ impl Default for CompanionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// UI locale shared with native desktop surfaces such as the system tray.
+    #[serde(default = "default_ui_locale")]
+    pub ui_locale: String,
+
     /// Answer cache TTL in hours. 0 = disabled. Default: 24
     #[serde(default = "default_cache_ttl_hours")]
     pub cache_ttl_hours: u32,
@@ -803,6 +807,9 @@ fn default_failure_hold_ms() -> u32 {
 fn default_cache_ttl_hours() -> u32 {
     24
 }
+fn default_ui_locale() -> String {
+    "en".to_string()
+}
 fn default_search_limit() -> usize {
     20
 }
@@ -920,6 +927,7 @@ fn default_stt_num_threads() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            ui_locale: default_ui_locale(),
             cache_ttl_hours: default_cache_ttl_hours(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
