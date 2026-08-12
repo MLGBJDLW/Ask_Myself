@@ -618,7 +618,7 @@ fn trim_handoff_token(token: &str) -> &str {
             '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
         )
     });
-    token.trim_end_matches(|character: char| matches!(character, '.' | '?' | '!'))
+    token.trim_end_matches(['.', '?', '!'])
 }
 
 fn looks_like_local_path(token: &str) -> bool {
