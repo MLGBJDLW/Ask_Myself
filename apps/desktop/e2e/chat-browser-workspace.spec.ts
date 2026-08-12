@@ -343,6 +343,9 @@ test('docks the global Browser Workspace beside non-chat content', async ({ page
 
   const dock = page.getByTestId('browser-dock');
   await expect(dock).toBeVisible();
+  await expect(dock.getByRole('button', { name: 'Point out' })).toHaveCount(0);
+  await expect(dock.getByRole('button', { name: 'Coordinate region' })).toHaveCount(0);
+  await expect(dock.getByRole('button', { name: 'Send text' })).toHaveCount(0);
   await expect(routedContent).toBeInViewport();
 
   const bounds = await page.evaluate(() => {

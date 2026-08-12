@@ -89,6 +89,8 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('openInitialUrlOnReuse: Boolean(url)'), 'only explicit Open in Browser URLs may open a tab when creation reuses a session');
   assert(dock.includes('event.preventDefault()'), 'the mounted dock must acknowledge Open in Browser delivery');
   assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
+  assert(dock.includes('{onSendArtifactToAgent && ('), 'agent artifact controls require a live artifact recipient');
+  assert(dock.includes('!onSendArtifactToAgent) return'), 'artifact capture must fail closed without a recipient');
 });
 
 test('HTTP links have one in-app destination and the duplicate web preview is removed', () => {
