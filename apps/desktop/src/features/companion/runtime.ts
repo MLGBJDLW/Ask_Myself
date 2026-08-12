@@ -31,7 +31,8 @@ export type CompanionBehaviorState =
   | 'hovering'
   | 'beingPetted'
   | 'clicked'
-  | 'dragging'
+  | 'draggingLeft'
+  | 'draggingRight'
   | 'dropped'
   | 'walkingLeft'
   | 'walkingRight'
@@ -45,7 +46,8 @@ export type CompanionBehaviorEvent =
   | { type: 'hoverStarted' }
   | { type: 'hoverEnded' }
   | { type: 'clicked'; clickCount: number }
-  | { type: 'dragStarted' }
+  | { type: 'dragStarted'; direction: 'left' | 'right' }
+  | { type: 'dragMoved'; direction: 'left' | 'right' }
   | { type: 'dragEnded' }
   | { type: 'idleGesture'; gesture: 'wave' | 'sleep' }
   | { type: 'walkStarted'; direction: 'left' | 'right' }
@@ -81,20 +83,21 @@ export function reduceCompanionBehavior(
     case 'clicked':
       return event.clickCount >= 3 ? 'beingPetted' : 'clicked';
     case 'dragStarted':
-      return 'dragging';
+    case 'dragMoved':
+      return event.direction === 'left' ? 'draggingLeft' : 'draggingRight';
     case 'dragEnded':
-      return current === 'dragging' ? 'dropped' : current;
+      return current === 'draggingLeft' || current === 'draggingRight' ? 'dropped' : current;
     case 'idleGesture':
       return event.gesture === 'sleep' ? 'sleeping' : 'waving';
     case 'walkStarted':
     case 'walkTurned':
       return event.direction === 'left' ? 'walkingLeft' : 'walkingRight';
     case 'taskStateChanged':
-      return current === 'dragging' || current === 'beingPetted'
+      return current === 'draggingLeft' || current === 'draggingRight' || current === 'beingPetted'
         ? current
         : taskBehavior(event.state);
     case 'animationCompleted':
-      return current === 'dragging' ? current : 'idle';
+      return current === 'draggingLeft' || current === 'draggingRight' ? current : 'idle';
   }
 }
 
@@ -103,7 +106,11 @@ const BEHAVIOR_ANIMATION_CANDIDATES: Record<CompanionBehaviorState, string[]> = 
   hovering: ['hovering', 'lookUp', 'idle'],
   beingPetted: ['beingPetted', 'petting', 'happy', 'waving', 'idle'],
   clicked: ['clicked', 'jumping', 'waving', 'idle'],
-  dragging: ['dragging', 'pickedUp', 'idle'],
+  // A pack-specific drag pose remains the highest-priority override. Standard
+  // Codex v2 packs otherwise use their directional locomotion rows; `running`
+  // is task activity in that atlas, not foot-running.
+  draggingLeft: ['draggingLeft', 'dragging', 'pickedUp', 'moveLeft', 'walkingLeft', 'walking', 'idle'],
+  draggingRight: ['draggingRight', 'dragging', 'pickedUp', 'moveRight', 'walkingRight', 'walking', 'idle'],
   dropped: ['dropped', 'landing', 'jumping', 'idle'],
   walkingLeft: ['moveLeft', 'walkingLeft', 'walking', 'idle'],
   walkingRight: ['moveRight', 'walkingRight', 'walking', 'idle'],
@@ -182,6 +189,32 @@ export interface WalkBounds {
 export interface CompanionPoint {
   x: number;
   y: number;
+}
+
+export function classifyDragDirection(
+  deltaX: number,
+  deltaY: number,
+  minimumDistancePixels = 14,
+  axisBias = 1.12,
+): 'left' | 'right' | null {
+  if (Math.hypot(deltaX, deltaY) < Math.max(0, minimumDistancePixels)) {
+    return null;
+  }
+  if (Math.abs(deltaX) <= Math.abs(deltaY) * Math.max(1, axisBias)) {
+    return null;
+  }
+  return deltaX < 0 ? 'left' : 'right';
+}
+
+export function resolveDragDirection(
+  deltaX: number,
+  deltaY: number,
+  currentDirection: 'left' | 'right',
+  minimumDistancePixels = 14,
+  axisBias = 1.12,
+): 'left' | 'right' {
+  return classifyDragDirection(deltaX, deltaY, minimumDistancePixels, axisBias)
+    ?? currentDirection;
 }
 
 export function resolveLookDirection(
