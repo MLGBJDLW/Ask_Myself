@@ -13,8 +13,10 @@ import {
 import { DEFAULT_COMPANION_SETTINGS } from '../features/companion/defaults';
 import {
   decodeImageSource,
+  classifyDragDirection,
   reduceCompanionBehavior,
   resolveAnimationFrame,
+  resolveDragDirection,
   resolveLookDirection,
   resolveWalkStep,
   selectCompanionAnimation,
@@ -32,6 +34,7 @@ const IDLE_GESTURE_DELAY_MS = 8_000;
 const AUTO_WALK_DELAY_MS = 6_000;
 const AUTO_WALK_DURATION_MS = 4_000;
 const POSITION_WRITE_INTERVAL_MS = 34;
+const DRAG_DIRECTION_POLL_MS = 34;
 const LOOK_DIRECTION_POLL_MS = 100;
 const LOOK_DIRECTION_DEAD_ZONE_PX = 36;
 
@@ -166,6 +169,7 @@ function Sprite({
     <div
       className="companion-sprite"
       aria-label={runtime.pack.displayName}
+      data-animation={selected.key}
       style={{
         aspectRatio: `${aspect}`,
         backgroundImage: `url(${runtime.asset})`,
@@ -200,6 +204,8 @@ export function CompanionWindowPage() {
     x: number;
     y: number;
     dragging: boolean;
+    direction: 'left' | 'right';
+    lastCursor: { x: number; y: number } | null;
   } | null>(null);
   const clickTimes = useRef<number[]>([]);
   const nextIdleAction = useRef<'gesture' | 'walk'>('walk');
@@ -561,6 +567,8 @@ export function CompanionWindowPage() {
       x: event.clientX,
       y: event.clientY,
       dragging: false,
+      direction: behavior === 'walkingLeft' || behavior === 'draggingLeft' ? 'left' : 'right',
+      lastCursor: null,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -576,8 +584,44 @@ export function CompanionWindowPage() {
     ) return;
     if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < DRAG_THRESHOLD_PX) return;
     pressed.dragging = true;
-    dispatchBehavior({ type: 'dragStarted' });
+    pressed.direction = resolveDragDirection(
+      event.clientX - pressed.x,
+      event.clientY - pressed.y,
+      pressed.direction,
+      DRAG_THRESHOLD_PX,
+    );
+    dispatchBehavior({ type: 'dragStarted', direction: pressed.direction });
+    let directionTimer = 0;
+    const sampleDragDirection = async () => {
+      const active = pointer.current;
+      if (active !== pressed || !active.dragging) return;
+      try {
+        const nextCursor = await cursorPosition();
+        if (active.lastCursor) {
+          const nextDirection = classifyDragDirection(
+            nextCursor.x - active.lastCursor.x,
+            nextCursor.y - active.lastCursor.y,
+          );
+          if (nextDirection) {
+            active.lastCursor = nextCursor;
+            if (nextDirection !== active.direction) {
+              active.direction = nextDirection;
+              dispatchBehavior({ type: 'dragMoved', direction: nextDirection });
+            }
+          }
+        } else {
+          active.lastCursor = nextCursor;
+        }
+      } catch {
+        // Keep the initial pointer vector when global sampling is unavailable.
+      }
+      if (pointer.current === pressed && pressed.dragging) {
+        directionTimer = window.setTimeout(() => { void sampleDragDirection(); }, DRAG_DIRECTION_POLL_MS);
+      }
+    };
+    void sampleDragDirection();
     void getCurrentWindow().startDragging().finally(() => {
+      window.clearTimeout(directionTimer);
       if (!pointer.current?.dragging) return;
       pointer.current = null;
       dispatchBehavior({ type: 'dragEnded' });
@@ -624,7 +668,7 @@ export function CompanionWindowPage() {
       className="companion-window-root"
       data-state={stableState}
       data-behavior={effectiveBehavior}
-      data-facing={behavior === 'walkingLeft' ? 'left' : 'right'}
+      data-facing={behavior === 'walkingLeft' || behavior === 'draggingLeft' ? 'left' : 'right'}
       data-visible={visible}
       data-auto-walk={settings.autoWalk}
       data-look-direction={lookDirection ?? 'none'}

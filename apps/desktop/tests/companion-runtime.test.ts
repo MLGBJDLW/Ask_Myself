@@ -1,6 +1,8 @@
 import {
+  classifyDragDirection,
   reduceCompanionBehavior,
   resolveAnimationFrame,
+  resolveDragDirection,
   resolveLookDirection,
   resolveWalkStep,
   selectCompanionAnimation,
@@ -20,8 +22,9 @@ assertEqual(reduceCompanionBehavior('idle', { type: 'hoverStarted' }), 'hovering
 assertEqual(reduceCompanionBehavior('hovering', { type: 'hoverEnded' }), 'idle', 'hover exits');
 assertEqual(reduceCompanionBehavior('idle', { type: 'clicked', clickCount: 1 }), 'clicked', 'single click');
 assertEqual(reduceCompanionBehavior('clicked', { type: 'clicked', clickCount: 3 }), 'beingPetted', 'repeated click pets');
-assertEqual(reduceCompanionBehavior('idle', { type: 'dragStarted' }), 'dragging', 'drag starts');
-assertEqual(reduceCompanionBehavior('dragging', { type: 'dragEnded' }), 'dropped', 'drag drops');
+assertEqual(reduceCompanionBehavior('idle', { type: 'dragStarted', direction: 'right' }), 'draggingRight', 'drag starts');
+assertEqual(reduceCompanionBehavior('draggingRight', { type: 'dragMoved', direction: 'left' }), 'draggingLeft', 'drag turns');
+assertEqual(reduceCompanionBehavior('draggingLeft', { type: 'dragEnded' }), 'dropped', 'drag drops');
 assertEqual(taskBehavior('runningTool'), 'reactingToTool', 'tool task reaction');
 assertEqual(taskBehavior('succeeded'), 'reactingToSuccess', 'success task reaction');
 assertEqual(taskBehavior('failed'), 'reactingToFailure', 'failure task reaction');
@@ -40,6 +43,13 @@ assert(leftBoundary.turned, 'walk reports a boundary turn');
 const rightBoundary = resolveWalkStep(97, 'right', 1_000, { minX: 0, maxX: 100 }, 10);
 assertEqual(rightBoundary.x, 100, 'walk clamps to right boundary');
 assertEqual(rightBoundary.direction, 'left', 'walk turns at right boundary');
+
+assertEqual(resolveDragDirection(-20, 2, 'right'), 'left', 'horizontal drag faces left');
+assertEqual(resolveDragDirection(20, 2, 'left'), 'right', 'horizontal drag faces right');
+assertEqual(resolveDragDirection(4, 20, 'left'), 'left', 'vertical motion retains facing');
+assertEqual(resolveDragDirection(3, 1, 'right'), 'right', 'small jitter retains facing');
+assertEqual(classifyDragDirection(20, 2), 'right', 'accepted motion can advance the drag origin');
+assertEqual(classifyDragDirection(4, 20), null, 'ambiguous motion does not advance the drag origin');
 
 assertEqual(resolveLookDirection({ x: 50, y: 0 }, { x: 50, y: 50 }), 0, 'look up');
 assertEqual(resolveLookDirection({ x: 100, y: 50 }, { x: 50, y: 50 }), 4, 'look right');
@@ -63,6 +73,9 @@ const pack: CompanionAnimationPack = {
   contentHash: 'hash',
   animations: {
     idle: { frames: [0], fps: 8, looping: true, fallback: null },
+    running: { frames: [56, 57, 58], fps: 12, looping: true, fallback: 'idle' },
+    moveLeft: { frames: [16, 17, 18], fps: 12, looping: true, fallback: 'idle' },
+    moveRight: { frames: [8, 9, 10], fps: 12, looping: true, fallback: 'idle' },
     petting: { frames: [0, 1], fps: 12, looping: false, fallback: 'idle' },
   },
 };
@@ -70,6 +83,16 @@ assertEqual(
   selectCompanionAnimation(pack, 'idle', 'beingPetted')?.key,
   'petting',
   'behavior animation wins over task fallback',
+);
+assertEqual(
+  selectCompanionAnimation(pack, 'idle', 'draggingLeft')?.key,
+  'moveLeft',
+  'left drag uses the directional running track',
+);
+assertEqual(
+  selectCompanionAnimation(pack, 'idle', 'draggingRight')?.key,
+  'moveRight',
+  'right drag uses the directional running track',
 );
 const explicitV2WithoutIdle: CompanionAnimationPack = {
   contentHash: 'v2-without-idle',

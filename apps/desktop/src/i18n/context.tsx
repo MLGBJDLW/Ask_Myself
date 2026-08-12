@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 import type { Locale, TranslationKeys } from './types';
 import { en } from './locales/en';
+import { updateTrayMenu } from '../lib/api';
 
 const localeLoaders: Record<Locale, () => Promise<TranslationKeys>> = {
   'zh-CN': () => import('./locales/zh-CN').then((module) => module.zhCN),
@@ -57,6 +58,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale;
+    void updateTrayMenu(locale).catch(() => {
+      // Browser-only tests and the first webview tick can run without Tauri.
+      // The next locale effect or application launch will synchronize again.
+    });
   }, [locale]);
 
   useEffect(() => {

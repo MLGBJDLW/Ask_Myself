@@ -46,7 +46,7 @@ pub enum ToolCategory {
     SubAgent,
     /// MCP: dynamically added MCP tools
     Mcp,
-    /// Controlled browser/desktop handoff actions
+    /// Source-scoped local path handoff actions.
     Automation,
 }
 
@@ -507,7 +507,7 @@ pub fn infer_tool_access_profile(
             true,
             true,
             ApprovalRisk::High,
-            "Can operate desktop or browser surfaces through automation.",
+            "Can open or reveal source-scoped local paths in a desktop application.",
         ),
         "computer_observe" => (
             "automation",

@@ -21,6 +21,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { StreamProvider } from "./lib/StreamProvider";
 import { ProgressProvider } from "./lib/ProgressProvider";
 import { FilePreviewProvider } from "./features/preview";
+import { BrowserDock } from "./features/browser";
 import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
@@ -130,15 +131,36 @@ function AppShell() {
             {wizardCompleted === false && location.pathname !== '/wizard' && (
               <Navigate to="/wizard" replace />
             )}
-            {wizardCompleted === null ? (
-              <PageLoader />
-            ) : (
-              <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
-            )}
+            <div
+              data-testid="app-workspace"
+              className="flex h-full min-h-0 min-w-0 overflow-hidden"
+            >
+              <div className="h-full min-h-0 min-w-0 flex-1">
+                {wizardCompleted === null ? (
+                  <PageLoader />
+                ) : (
+                  <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
+                )}
+              </div>
+              <GlobalBrowserDock />
+            </div>
           </FilePreviewProvider>
         </AppWindowFrame>
       </MotionConfig>
     </I18nProvider>
+  );
+}
+
+function GlobalBrowserDock() {
+  const location = useLocation();
+  const [open, setOpen] = useState(false);
+  if (location.pathname.startsWith('/chat')) return null;
+  return (
+    <BrowserDock
+      open={open}
+      conversationId="nexa-global-browser-workspace"
+      onOpenChange={setOpen}
+    />
   );
 }
 

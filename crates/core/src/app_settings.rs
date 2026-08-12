@@ -1,10 +1,11 @@
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::web_search::{WebSearchProviderProfile, WebSearchReranker};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 const APP_CONFIG_KEY: &str = "app_config";
+const UI_LOCALE_KEY: &str = "ui_locale";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 3;
 
@@ -680,6 +681,10 @@ impl Default for CompanionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// UI locale shared with native desktop surfaces such as the system tray.
+    #[serde(default = "default_ui_locale")]
+    pub ui_locale: String,
+
     /// Answer cache TTL in hours. 0 = disabled. Default: 24
     #[serde(default = "default_cache_ttl_hours")]
     pub cache_ttl_hours: u32,
@@ -803,6 +808,9 @@ fn default_failure_hold_ms() -> u32 {
 fn default_cache_ttl_hours() -> u32 {
     24
 }
+fn default_ui_locale() -> String {
+    "en".to_string()
+}
 fn default_search_limit() -> usize {
     20
 }
@@ -920,6 +928,7 @@ fn default_stt_num_threads() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            ui_locale: default_ui_locale(),
             cache_ttl_hours: default_cache_ttl_hours(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
@@ -996,6 +1005,13 @@ impl Database {
         if !table_exists {
             return Ok(AppConfig::default());
         }
+        let persisted_ui_locale = conn
+            .query_row(
+                "SELECT value FROM app_config WHERE key = ?1",
+                params![UI_LOCALE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
         let result = conn.query_row(
             "SELECT value FROM app_config WHERE key = ?1",
             params![APP_CONFIG_KEY],
@@ -1005,20 +1021,72 @@ impl Database {
             Ok(json) => {
                 drop(conn);
                 let config: AppConfig = serde_json::from_str(&json)?;
-                let config = decrypt_app_config_secrets(config)?;
+                let mut config = decrypt_app_config_secrets(config)?;
+                if let Some(locale) = persisted_ui_locale {
+                    config.ui_locale = locale;
+                }
                 let (config, visibility_migrated) = migrate_tool_visibility_defaults(config);
                 if visibility_migrated {
                     self.save_app_config(&config)?;
                 }
                 Ok(config)
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AppConfig::default()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                let mut config = AppConfig::default();
+                if let Some(locale) = persisted_ui_locale {
+                    config.ui_locale = locale;
+                }
+                Ok(config)
+            }
             Err(e) => Err(CoreError::Database(e)),
         }
     }
 
     pub fn save_app_config(&self, config: &AppConfig) -> Result<(), CoreError> {
-        let json = serde_json::to_string(&encrypt_app_config_secrets(config.clone())?)?;
+        let mut conn = self.conn();
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_config (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             )",
+        )?;
+        let persisted_ui_locale = transaction
+            .query_row(
+                "SELECT value FROM app_config WHERE key = ?1",
+                params![UI_LOCALE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let mut config = config.clone();
+        if let Some(locale) = persisted_ui_locale {
+            config.ui_locale = locale;
+        }
+        let json = serde_json::to_string(&encrypt_app_config_secrets(config)?)?;
+        transaction.execute(
+            "INSERT INTO app_config (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                            updated_at = excluded.updated_at",
+            params![APP_CONFIG_KEY, &json],
+        )?;
+        crate::settings_schema_v2::sync_legacy_app_config_in_transaction(&transaction)?;
+        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Persist the UI locale independently from whole AppConfig snapshots.
+    /// This prevents a stale renderer snapshot from reverting native surfaces.
+    pub fn save_ui_locale(&self, locale: &str) -> Result<(), CoreError> {
+        let locale = locale.trim();
+        if locale.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "UI locale must not be empty".to_string(),
+            ));
+        }
         let mut conn = self.conn();
         let transaction =
             conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1034,10 +1102,8 @@ impl Database {
              VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(key) DO UPDATE SET value = excluded.value,
                                             updated_at = excluded.updated_at",
-            params![APP_CONFIG_KEY, &json],
+            params![UI_LOCALE_KEY, locale],
         )?;
-        crate::settings_schema_v2::sync_legacy_app_config_in_transaction(&transaction)?;
-        crate::capability_registry::sync_registry_in_transaction(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1143,6 +1209,34 @@ mod tests {
             CompanionInteractionMode::Smart
         );
         assert_eq!(config.companion.anchor, CompanionAnchor::BottomRight);
+    }
+
+    #[test]
+    fn independently_persisted_ui_locale_survives_stale_app_config_saves() {
+        let db = Database::open_memory().expect("open_memory");
+        let mut config = AppConfig::default();
+        config.cache_ttl_hours = 12;
+        db.save_app_config(&config).expect("save initial config");
+        db.save_ui_locale("zh-CN").expect("save UI locale");
+
+        let mut stale_snapshot = config;
+        stale_snapshot.ui_locale = "en".to_string();
+        stale_snapshot.cache_ttl_hours = 48;
+        db.save_app_config(&stale_snapshot)
+            .expect("save stale whole-config snapshot");
+
+        let loaded = db.load_app_config().expect("load merged config");
+        assert_eq!(loaded.ui_locale, "zh-CN");
+        assert_eq!(loaded.cache_ttl_hours, 48);
+    }
+
+    #[test]
+    fn independently_persisted_ui_locale_applies_before_app_config_exists() {
+        let db = Database::open_memory().expect("open_memory");
+        db.save_ui_locale("ja").expect("save UI locale");
+
+        let loaded = db.load_app_config().expect("load default config");
+        assert_eq!(loaded.ui_locale, "ja");
     }
 
     #[test]

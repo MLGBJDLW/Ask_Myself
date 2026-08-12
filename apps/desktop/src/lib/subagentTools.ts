@@ -234,7 +234,7 @@ export const SUBAGENT_TOOL_CATALOG: SubagentToolDescriptor[] = [
   {
     name: 'desktop_automation',
     label: 'Desktop Automation',
-    description: 'Open approved URLs, searches, or source-scoped paths on the local desktop.',
+    description: 'Open or reveal source-scoped paths on the local desktop.',
     enabledByDefault: false,
     source: 'built_in',
   },

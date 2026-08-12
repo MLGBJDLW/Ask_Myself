@@ -293,10 +293,18 @@ test('a direct archived conversation link opens read-only without joining the ac
   await expect(page.getByTestId('conversation-item-conv-archived')).toHaveCount(0);
   await expect(page.getByPlaceholder('Type a message...')).toHaveCount(0);
 
+  await page.keyboard.press('Control+Shift+B');
+  const dock = page.getByTestId('browser-dock');
+  await expect(dock).toBeVisible();
+  await expect(dock.getByRole('button', { name: 'Point out' })).toHaveCount(0);
+  await expect(dock.getByRole('button', { name: 'Coordinate region' })).toHaveCount(0);
+  await expect(dock.getByRole('button', { name: 'Send text' })).toHaveCount(0);
+
   await banner.getByRole('button', { name: 'Restore' }).click();
   await expect(banner).toBeHidden();
   await expect(page.getByTestId('conversation-item-conv-archived')).toBeVisible();
   await expect(page.getByPlaceholder('Type a message...')).toBeVisible();
+  await expect(dock.getByRole('button', { name: 'Point out' })).toBeVisible();
 });
 
 test('responsive sidebar collapse is temporary and restores the user preference', async ({ page }) => {

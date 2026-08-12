@@ -32,8 +32,7 @@ import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { formatUserError } from '../../lib/userError';
-
-export const OPEN_BROWSER_WORKSPACE_EVENT = 'nexa:open-browser-workspace';
+import { OPEN_BROWSER_WORKSPACE_EVENT, type OpenNexaBrowserDetail } from './openNexaBrowser';
 
 export interface BrowserDockStatus {
   tabCount: number;
@@ -226,7 +225,7 @@ export function BrowserDock({
   useEffect(() => {
     const handler = (event: Event) => {
       if (!conversationId) return;
-      const detail = (event as CustomEvent<{ url?: string }>).detail;
+      const detail = (event as CustomEvent<OpenNexaBrowserDetail>).detail;
       event.preventDefault();
       onOpenChange(true);
       if (detail?.url) {
@@ -339,7 +338,7 @@ export function BrowserDock({
   }, [reportError, session, t]);
 
   const startPick = useCallback(async (mode: 'element' | 'region') => {
-    if (!session || !currentTab) return;
+    if (!session || !currentTab || !onSendArtifactToAgent) return;
     setPickMode(mode);
     try {
       if (mode === 'element') await api.beginBrowserElementPick(session.id, currentTab.id);
@@ -353,7 +352,7 @@ export function BrowserDock({
             if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
             pickTimerRef.current = null;
             setPickMode(null);
-            onSendArtifactToAgent?.(artifact);
+            onSendArtifactToAgent(artifact);
             toast.success(t('browser.artifactAttached'));
           } else if (attempts >= 120) {
             if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
@@ -373,14 +372,14 @@ export function BrowserDock({
   }, [currentTab, onSendArtifactToAgent, reportError, session, t]);
 
   const sendSelectedText = useCallback(async () => {
-    if (!session || !currentTab) return;
+    if (!session || !currentTab || !onSendArtifactToAgent) return;
     try {
       const text = await api.selectedBrowserText(session.id, currentTab.id);
       if (!text.trim()) {
         toast.info(t('browser.noSelectedText'));
         return;
       }
-      onSendArtifactToAgent?.({ kind: 'text', url: currentTab.url, title: currentTab.title, text });
+      onSendArtifactToAgent({ kind: 'text', url: currentTab.url, title: currentTab.title, text });
       toast.success(t('browser.artifactAttached'));
     } catch (error) {
       reportError(t('browser.actionFailed'), error);
@@ -507,12 +506,14 @@ export function BrowserDock({
           <button type="button" onClick={() => void addTab()} className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-tertiary hover:bg-surface-3 hover:text-text-primary" aria-label={t('browser.newTab')}><Plus size={13} /></button>
         </div>
 
-        <div className="mt-1.5 flex items-center gap-1">
-          <button type="button" disabled={!currentTab || pickMode !== null} onClick={() => void startPick('element')} className={`browser-action-chip ${pickMode === 'element' ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200' : ''}`}><MousePointer2 size={12} /> {t('browser.pointOut')}</button>
-          <button type="button" disabled={!currentTab || pickMode !== null} onClick={() => void startPick('region')} className={`browser-action-chip ${pickMode === 'region' ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200' : ''}`}><Crosshair size={12} /> {t('browser.selectRegion')}</button>
-          <button type="button" disabled={!currentTab} onClick={() => void sendSelectedText()} className="browser-action-chip"><TextCursorInput size={12} /> {t('browser.sendText')}</button>
-          <span className="ml-auto flex items-center gap-1 text-[9px] uppercase tracking-[.14em] text-text-tertiary"><Send size={10} /> {t('browser.sharedSession')}</span>
-        </div>
+        {onSendArtifactToAgent && (
+          <div className="mt-1.5 flex items-center gap-1">
+            <button type="button" disabled={!currentTab || pickMode !== null} onClick={() => void startPick('element')} className={`browser-action-chip ${pickMode === 'element' ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200' : ''}`}><MousePointer2 size={12} /> {t('browser.pointOut')}</button>
+            <button type="button" disabled={!currentTab || pickMode !== null} onClick={() => void startPick('region')} className={`browser-action-chip ${pickMode === 'region' ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200' : ''}`}><Crosshair size={12} /> {t('browser.selectRegion')}</button>
+            <button type="button" disabled={!currentTab} onClick={() => void sendSelectedText()} className="browser-action-chip"><TextCursorInput size={12} /> {t('browser.sendText')}</button>
+            <span className="ml-auto flex items-center gap-1 text-[9px] uppercase tracking-[.14em] text-text-tertiary"><Send size={10} /> {t('browser.sharedSession')}</span>
+          </div>
+        )}
       </header>
 
       <div ref={contentRef} className="relative min-h-0 flex-1 bg-[#071018]" data-testid="browser-native-surface">

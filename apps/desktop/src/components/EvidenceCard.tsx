@@ -23,7 +23,6 @@ import { useTranslation } from '../i18n';
 import { openFileInDefaultApp, showInFileExplorer } from '../lib/api';
 import { canPreviewInApp, useFilePreview } from '../features/preview';
 import { VideoPreviewModal } from './media/VideoPreviewModal';
-import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { isWebUrl, sourceBasename, sourceDirectory, sourceKindLabel } from '../lib/sourceDisplay';
 
 /* ------------------------------------------------------------------ */
@@ -145,7 +144,7 @@ export function EvidenceCardComponent({
   const [expanded, setExpanded] = useState(false);
   const [videoPreviewPath, setVideoPreviewPath] = useState<string | null>(null);
   const { t } = useTranslation();
-  const { openFilePreview } = useFilePreview();
+  const { openFilePreview, openWebLink } = useFilePreview();
 
   const previewText = card.snippet || card.content;
   const needsTruncation = previewText.length > TRUNCATE_LENGTH;
@@ -174,7 +173,7 @@ export function EvidenceCardComponent({
 
   const handleOpenSource = () => {
     if (isWebSource) {
-      openExternal(card.documentPath).catch(() => toast.error(t('card.fileNotFound')));
+      openWebLink(card.documentPath, displayTitle);
       return;
     }
     if (isVideo) {
@@ -293,7 +292,7 @@ export function EvidenceCardComponent({
           <button
             onClick={() => {
               if (isWebSource) {
-                openExternal(card.documentPath).catch(() => toast.error(t('card.fileNotFound')));
+                openWebLink(card.documentPath, displayTitle);
                 return;
               }
               showInFileExplorer(card.documentPath).catch(() =>

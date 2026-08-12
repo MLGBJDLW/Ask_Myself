@@ -89,14 +89,39 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('openInitialUrlOnReuse: Boolean(url)'), 'only explicit Open in Browser URLs may open a tab when creation reuses a session');
   assert(dock.includes('event.preventDefault()'), 'the mounted dock must acknowledge Open in Browser delivery');
   assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
+  assert(dock.includes('{onSendArtifactToAgent && ('), 'agent artifact controls require a live artifact recipient');
+  assert(dock.includes('!onSendArtifactToAgent) return'), 'artifact capture must fail closed without a recipient');
 });
 
-test('Reader Preview remains a distinct safe reading mode with Browser as the primary remote action', () => {
+test('HTTP links have one in-app destination and the duplicate web preview is removed', () => {
   const preview = source('src/features/preview/FilePreviewProvider.tsx');
-  assert(preview.includes('OPEN_BROWSER_WORKSPACE_EVENT'), 'remote previews must offer the first-class Browser Workspace');
-  assert(preview.includes("t('preview.safeReadingMode')"), 'the sanitized srcDoc surface must be named Safe Reading Mode');
-  assert(preview.includes('cancelable: true'), 'Open in Browser delivery must be observable by the preview');
-  assert(preview.includes('if (handled) setWebPreview(null)'), 'the safe preview must remain open when no BrowserDock handles the URL');
+  const previewApi = source('src/lib/api.ts');
+  const previewCommands = source('src-tauri/src/commands/preview.rs');
+  const router = source('src/features/browser/openNexaBrowser.ts');
+  const markdown = source('src/components/chat/markdownComponents.tsx');
+  const app = source('src/App.tsx');
+  const chatPage = source('src/pages/ChatPage.tsx');
+  const searchEvidence = source('src/components/EvidenceCard.tsx');
+  assert(router.includes('OPEN_BROWSER_WORKSPACE_EVENT'), 'links must use the first-class Browser Workspace');
+  assert(router.includes('cancelable: true'), 'Open in Browser delivery must be observable by the preview');
+  assert(router.includes('dispatchEvent'), 'HTTP(S) opening must have one Browser Workspace routing owner');
+  assert(preview.includes('openNexaBrowser(trimmed, title)'), 'file and document links must route to Nexa Browser');
+  assert(!preview.includes('webPreview'), 'the duplicate web-preview state and iframe must be deleted');
+  assert(!previewApi.includes('probeWebPreview'), 'the retired web-preview API must be deleted');
+  assert(!previewCommands.includes('probe_web_preview'), 'the retired native web fetcher must be deleted');
+  assert(!preview.includes('target="_blank"'), 'document hyperlinks must not bypass Nexa Browser');
+  assert(markdown.includes('openWebLink'), 'chat hyperlinks must use the shared Nexa Browser route');
+  assert(app.includes('<GlobalBrowserDock />'), 'non-chat pages need a mounted Nexa Browser destination');
+  assert(
+    chatPage.includes('onSendArtifactToAgent={isArchivedConversation ? undefined : handleBrowserArtifact}'),
+    'archived chats must not expose artifact actions that cannot reach the read-only composer',
+  );
+  assert(app.includes('data-testid="app-workspace"'), 'global browser and routed content need one horizontal workspace');
+  assert(app.includes('className="flex h-full min-h-0 min-w-0 overflow-hidden"'), 'global browser workspace must dock horizontally');
+  assert(preview.includes('dirtyRef.current && !window.confirm(labels.discardPrompt)'), 'dirty previews must confirm before routing a web link');
+  assert(preview.includes('setOpen(false)'), 'an acknowledged web link must close the covering file preview');
+  assert(searchEvidence.includes('openWebLink(card.documentPath'), 'search result URLs must use Nexa Browser');
+  assert(!searchEvidence.includes('openExternal(card.documentPath'), 'search result URLs must not bypass Nexa Browser');
 });
 
 for (const { name, fn } of tests) {

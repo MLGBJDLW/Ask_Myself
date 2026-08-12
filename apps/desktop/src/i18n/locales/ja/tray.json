@@ -1,0 +1,10 @@
+{
+  "showNexa": "Nexa を表示",
+  "showCompanion": "デスクトップペットを表示",
+  "hideCompanion": "デスクトップペットを非表示",
+  "lockCompanion": "デスクトップペットを固定",
+  "unlockCompanion": "デスクトップペットの固定を解除",
+  "resetCompanion": "ペットの位置をリセット",
+  "companionSettings": "ペット設定を開く",
+  "quitNexa": "Nexa を終了"
+}

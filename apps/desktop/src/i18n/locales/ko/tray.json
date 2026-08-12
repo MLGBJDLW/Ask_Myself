@@ -1,0 +1,10 @@
+{
+  "showNexa": "Nexa 표시",
+  "showCompanion": "데스크톱 펫 표시",
+  "hideCompanion": "데스크톱 펫 숨기기",
+  "lockCompanion": "데스크톱 펫 위치 잠금",
+  "unlockCompanion": "데스크톱 펫 위치 잠금 해제",
+  "resetCompanion": "펫 위치 초기화",
+  "companionSettings": "펫 설정 열기",
+  "quitNexa": "Nexa 종료"
+}

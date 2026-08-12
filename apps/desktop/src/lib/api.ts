@@ -771,15 +771,6 @@ export const previewFile = (path: string) =>
     path,
   });
 
-export interface WebPreviewProbe {
-  embeddable: boolean;
-  reason?: string | null;
-  document?: string | null;
-}
-
-export const probeWebPreview = (url: string) =>
-  invoke<WebPreviewProbe>('probe_web_preview_cmd', { url });
-
 export const saveTextFile = (
   path: string,
   content: string,
@@ -1952,6 +1943,9 @@ export const getAppConfig = () =>
 
 export const saveAppConfig = (config: AppConfig) =>
   invoke<void>('save_app_config_cmd', { config });
+
+export const updateTrayMenu = (locale: string) =>
+  invoke<void>('update_tray_menu_cmd', { locale });
 
 export interface SpeechPreview {
   assetId: string;

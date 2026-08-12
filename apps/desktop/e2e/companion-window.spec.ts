@@ -13,6 +13,7 @@ test.beforeEach(async ({ page }) => {
     let packVersion = 1;
     let assetReads = 0;
     let cursor = { x: 544, y: 468 };
+    let releaseDrag: (() => void) | null = null;
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       if (cmd.startsWith('plugin:window|')) companionInvocations.push(cmd);
       switch (cmd) {
@@ -69,6 +70,9 @@ test.beforeEach(async ({ page }) => {
               frame: { width: 1, height: 1, columns: 8, rows: 11 },
               animations: {
                 idle: { frames: [0, 1, 2, 3, 4, 5, 6], fps: 5, looping: true, fallback: null },
+                running: { frames: [56, 57, 58, 59, 60, 61], fps: 12, looping: true, fallback: 'idle' },
+                moveLeft: { frames: [16, 17, 18, 19, 20, 21], fps: 12, looping: true, fallback: 'idle' },
+                moveRight: { frames: [8, 9, 10, 11, 12, 13], fps: 12, looping: true, fallback: 'idle' },
                 runningTool: { frames: [56, 57, 58, 59, 60, 61], fps: 5, looping: true, fallback: 'idle' },
                 clicked: { frames: [0], fps: 12, looping: false, fallback: 'idle' },
                 beingPetted: { frames: [0], fps: 12, looping: false, fallback: 'idle' },
@@ -120,6 +124,8 @@ test.beforeEach(async ({ page }) => {
         case 'plugin:window|set_position':
           positionWrites.push(args.value);
           return null;
+        case 'plugin:window|start_dragging':
+          return new Promise<void>((resolve) => { releaseDrag = resolve; });
         case 'companion_renderer_ready_cmd':
           (window as unknown as { __companionReady?: boolean }).__companionReady = true;
           lifecycleMarks.push({ kind: 'renderer-ready', at: performance.now() });
@@ -163,6 +169,7 @@ test.beforeEach(async ({ page }) => {
       __companionPositionWrites?: unknown[];
       __setCompanionPackVersion?: (version: number) => void;
       __setCompanionCursor?: (position: { x: number; y: number }) => void;
+      __releaseCompanionDrag?: () => void;
       __emitTauri?: (event: string, payload: unknown) => void;
     }).__companionInvocations = companionInvocations;
     (window as unknown as {
@@ -178,6 +185,10 @@ test.beforeEach(async ({ page }) => {
     (window as unknown as {
       __setCompanionCursor?: (position: { x: number; y: number }) => void;
     }).__setCompanionCursor = position => { cursor = position; };
+    (window as unknown as { __releaseCompanionDrag?: () => void }).__releaseCompanionDrag = () => {
+      releaseDrag?.();
+      releaseDrag = null;
+    };
     (window as unknown as {
       __emitTauri?: (event: string, payload: unknown) => void;
     }).__emitTauri = (event, payload) => {
@@ -259,6 +270,16 @@ test('decoded pack refresh is atomic and pointer behaviors are reachable', async
   await expect(companion).toHaveAttribute('data-behavior', 'clicked');
   await companion.click({ clickCount: 3, delay: 30 });
   await expect(companion).toHaveAttribute('data-behavior', 'beingPetted');
+
+  await companion.dispatchEvent('pointerdown', { button: 0, pointerId: 42, clientX: 40, clientY: 40 });
+  await companion.dispatchEvent('pointermove', { button: 0, pointerId: 42, clientX: 52, clientY: 40 });
+  await expect(companion).toHaveAttribute('data-behavior', 'draggingRight');
+  await expect(companion).toHaveAttribute('data-facing', 'right');
+  await expect(sprite).toHaveAttribute('data-animation', 'moveRight');
+  await page.evaluate(() => (
+    window as unknown as { __releaseCompanionDrag?: () => void }
+  ).__releaseCompanionDrag?.());
+  await expect(companion).toHaveAttribute('data-behavior', 'dropped');
 
   await companion.click({ button: 'right' });
   const menu = page.getByRole('menu');
