@@ -1911,10 +1911,10 @@ export function ChatPage() {
           </>
         )}
       </div>
-      {!isArchivedConversation && (
+      {chat.activeId && (
         <BrowserDock
           open={browserOpen}
-          conversationId={chat.activeId ?? undefined}
+          conversationId={chat.activeId}
           agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
           onOpenChange={setBrowserOpen}
           onStatusChange={setBrowserStatus}

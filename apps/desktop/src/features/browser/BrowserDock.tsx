@@ -32,8 +32,7 @@ import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { formatUserError } from '../../lib/userError';
-
-export const OPEN_BROWSER_WORKSPACE_EVENT = 'nexa:open-browser-workspace';
+import { OPEN_BROWSER_WORKSPACE_EVENT, type OpenNexaBrowserDetail } from './openNexaBrowser';
 
 export interface BrowserDockStatus {
   tabCount: number;
@@ -226,7 +225,7 @@ export function BrowserDock({
   useEffect(() => {
     const handler = (event: Event) => {
       if (!conversationId) return;
-      const detail = (event as CustomEvent<{ url?: string }>).detail;
+      const detail = (event as CustomEvent<OpenNexaBrowserDetail>).detail;
       event.preventDefault();
       onOpenChange(true);
       if (detail?.url) {

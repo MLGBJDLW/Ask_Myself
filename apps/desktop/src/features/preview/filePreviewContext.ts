@@ -2,12 +2,12 @@ import { createContext, useContext } from 'react';
 
 interface FilePreviewContextValue {
   openFilePreview: (path: string) => void;
-  openWebPreview: (url: string, title?: string) => void;
+  openWebLink: (url: string, title?: string) => void;
 }
 
 export const FilePreviewContext = createContext<FilePreviewContextValue>({
   openFilePreview: () => undefined,
-  openWebPreview: () => undefined,
+  openWebLink: () => undefined,
 });
 
 const PREVIEWABLE_EXTENSIONS = new Set([

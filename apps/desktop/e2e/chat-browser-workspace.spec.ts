@@ -289,6 +289,15 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
   await page.getByRole('button', { name: 'Hand back' }).click();
   await expect(page.getByText('Shared session ready')).toBeVisible();
 
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('nexa:open-browser-workspace', {
+      detail: { url: 'https://openai.com/unified-browser', title: 'Unified browser' },
+      cancelable: true,
+    }));
+  });
+  await expect(page.getByTestId('browser-dock')).toBeVisible();
+  await expect(address).toHaveValue('https://openai.com/unified-browser');
+
   const diagnostics = await page.evaluate(() => (window as unknown as {
     __browserDiagnostics__: {
       creates: Array<Record<string, unknown>>;

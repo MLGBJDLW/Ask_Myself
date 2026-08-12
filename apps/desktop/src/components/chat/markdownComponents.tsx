@@ -145,10 +145,10 @@ function scrollAnchorIntoChatContainer(target: HTMLElement): boolean {
 /*  Markdown component overrides                                       */
 /* ------------------------------------------------------------------ */
 
-/** Open links in the system browser via Tauri shell, or render citation chips */
+/** Route web links through Nexa Browser, or render local/citation references. */
 function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>) {
   const citationCtx = useContext(CitationContext);
-  const { openFilePreview, openWebPreview } = useFilePreview();
+  const { openFilePreview, openWebLink } = useFilePreview();
 
   // Detect citation links: href="cite:CHUNK_ID"
   if (href && href.startsWith('cite:')) {
@@ -205,7 +205,7 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
     );
   }
 
-  // URL reference: open in system browser
+  // URL reference: open in the shared Nexa Browser Workspace.
   if (href && href.startsWith('url:')) {
     const rawUrl = href.slice(4);
     const host = sourceHost(rawUrl);
@@ -220,7 +220,7 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         type="button"
         onClick={() => {
           if (/^https?:\/\//i.test(rawUrl)) {
-            openWebPreview(rawUrl, displayLabel);
+            openWebLink(rawUrl, displayLabel);
           }
         }}
         className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[11px] font-medium
@@ -263,7 +263,8 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
         const label = Array.isArray(children)
           ? children.map(String).join('')
           : String(children ?? '');
-        openWebPreview(href, label || sourceHost(href));
+        const displayLabel = label || sourceHost(href);
+        openWebLink(href, displayLabel);
         return;
       }
       if (/^mailto:/i.test(href)) {

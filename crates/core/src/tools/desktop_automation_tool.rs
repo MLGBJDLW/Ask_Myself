@@ -1,15 +1,14 @@
 //! DesktopAutomationTool — controlled handoff to the user's visible desktop.
 //!
 //! This tool intentionally avoids raw coordinate/mouse/keyboard automation.
-//! It provides narrow, auditable actions that are useful for a local desktop
-//! assistant: opening URLs/searches in the default browser, opening or revealing
-//! source-scoped files, and bounded waits inside a larger workflow.
+//! It provides narrow, auditable actions for opening or revealing source-scoped
+//! files. Interactive HTTP(S) work belongs exclusively to `browser_session` so
+//! the Agent and user share Nexa's policy-controlled Browser Workspace.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
@@ -27,12 +26,6 @@ const DEF_JSON: &str = include_str!("../../prompts/tools/desktop_automation.json
 #[derive(Debug, Deserialize)]
 struct DesktopAutomationArgs {
     action: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    query: Option<String>,
-    #[serde(default)]
-    engine: Option<String>,
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
@@ -68,17 +61,13 @@ impl DesktopLaunchCommand {
         }
     }
 
-    fn into_execution_request(
-        self,
-        source_scope: &[String],
-        network_intent: bool,
-    ) -> ExecutionRequest {
+    fn into_execution_request(self, source_scope: &[String]) -> ExecutionRequest {
         ExecutionRequest::for_detached_local_tool(
             self.program,
             self.args,
             "desktop_automation",
             source_scope.to_vec(),
-            network_intent,
+            false,
         )
     }
 }
@@ -87,51 +76,6 @@ fn normalize_nonempty(value: Option<String>) -> Option<String> {
     value
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
-}
-
-fn url_encode_component(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.as_bytes() {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
-            encoded.push(ch);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-fn build_search_url(engine: Option<&str>, query: &str) -> Result<String, CoreError> {
-    let encoded = url_encode_component(query);
-    let url = match engine
-        .unwrap_or("bing")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "google" => format!("https://www.google.com/search?q={encoded}"),
-        "bing" => format!("https://www.bing.com/search?q={encoded}"),
-        "duckduckgo" | "ddg" => format!("https://duckduckgo.com/?q={encoded}"),
-        "baidu" => format!("https://www.baidu.com/s?wd={encoded}"),
-        other => {
-            return Err(CoreError::InvalidInput(format!(
-                "Unsupported search engine '{other}'. Use google, bing, duckduckgo, or baidu."
-            )))
-        }
-    };
-    Ok(url)
-}
-
-fn validate_http_url(raw: &str) -> Result<String, CoreError> {
-    let parsed = Url::parse(raw)
-        .map_err(|e| CoreError::InvalidInput(format!("Invalid URL for open_url: {e}")))?;
-    match parsed.scheme() {
-        "http" | "https" => Ok(parsed.to_string()),
-        other => Err(CoreError::InvalidInput(format!(
-            "desktop_automation can only open http/https URLs, got '{other}'."
-        ))),
-    }
 }
 
 fn launcher_command(target: &str) -> DesktopLaunchCommand {
@@ -177,10 +121,9 @@ fn reveal_command(path: &Path) -> DesktopLaunchCommand {
 async fn spawn_detached(
     command: DesktopLaunchCommand,
     source_scope: &[String],
-    network_intent: bool,
 ) -> Result<(), CoreError> {
     let environment = LocalDetachedProcessExecutionEnvironment;
-    let request = command.into_execution_request(source_scope, network_intent);
+    let request = command.into_execution_request(source_scope);
     environment.execute(request).await.map(|_| ())
 }
 
@@ -245,9 +188,7 @@ impl Tool for DesktopAutomationTool {
             .and_then(|value| value.as_str())
             .unwrap_or("desktop action");
         let target = args
-            .get("url")
-            .or_else(|| args.get("query"))
-            .or_else(|| args.get("path"))
+            .get("path")
             .and_then(|value| value.as_str())
             .unwrap_or("<target not specified>");
         Some(format!(
@@ -270,41 +211,10 @@ impl Tool for DesktopAutomationTool {
             CoreError::InvalidInput(format!("Invalid desktop_automation arguments: {e}"))
         })?;
         args.action = args.action.trim().to_ascii_lowercase();
-        args.url = normalize_nonempty(args.url);
-        args.query = normalize_nonempty(args.query);
-        args.engine = normalize_nonempty(args.engine);
         args.path = normalize_nonempty(args.path);
         args.reason = normalize_nonempty(args.reason);
 
         match args.action.as_str() {
-            "open_url" => {
-                let raw = args.url.as_deref().ok_or_else(|| {
-                    CoreError::InvalidInput("open_url requires a non-empty url".to_string())
-                })?;
-                let url = validate_http_url(raw)?;
-                let target = url.clone();
-                spawn_detached(launcher_command(&target), source_scope, true).await?;
-                Ok(ToolResult {
-                    call_id: call_id.to_string(),
-                    content: format!("Opened URL in the default browser: {url}"),
-                    is_error: false,
-                    artifacts: Some(artifact(&args, Some(url), true, false)),
-                })
-            }
-            "web_search" => {
-                let query = args.query.as_deref().ok_or_else(|| {
-                    CoreError::InvalidInput("web_search requires a non-empty query".to_string())
-                })?;
-                let url = build_search_url(args.engine.as_deref(), query)?;
-                let target = url.clone();
-                spawn_detached(launcher_command(&target), source_scope, true).await?;
-                Ok(ToolResult {
-                    call_id: call_id.to_string(),
-                    content: format!("Opened browser search for: {query}"),
-                    is_error: false,
-                    artifacts: Some(artifact(&args, Some(url), true, false)),
-                })
-            }
             "open_path" => {
                 let path = args.path.as_deref().ok_or_else(|| {
                     CoreError::InvalidInput("open_path requires a non-empty path".to_string())
@@ -312,7 +222,7 @@ impl Tool for DesktopAutomationTool {
                 let canonical = resolve_source_path(db, source_scope, path)?;
                 let target = canonical.to_string_lossy().to_string();
                 let launch_target = target.clone();
-                spawn_detached(launcher_command(&launch_target), source_scope, false).await?;
+                spawn_detached(launcher_command(&launch_target), source_scope).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Opened local path: {}", canonical.display()),
@@ -327,7 +237,7 @@ impl Tool for DesktopAutomationTool {
                 let canonical = resolve_source_path(db, source_scope, path)?;
                 let target = canonical.to_string_lossy().to_string();
                 let reveal_target = canonical.clone();
-                spawn_detached(reveal_command(&reveal_target), source_scope, false).await?;
+                spawn_detached(reveal_command(&reveal_target), source_scope).await?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!("Revealed local path: {}", canonical.display()),
@@ -348,21 +258,8 @@ mod tests {
     use crate::sources::CreateSourceInput;
 
     #[test]
-    fn search_url_encodes_unicode_and_uses_engine() {
-        let url = build_search_url(Some("baidu"), "Nexa 桌面助手").unwrap();
-        assert!(url.starts_with("https://www.baidu.com/s?wd="));
-        assert!(url.contains("Nexa%20%E6%A1%8C%E9%9D%A2%E5%8A%A9%E6%89%8B"));
-    }
-
-    #[test]
-    fn rejects_non_http_urls() {
-        let err = validate_http_url("file:///etc/passwd").unwrap_err();
-        assert!(err.to_string().contains("http/https"));
-    }
-
-    #[test]
     fn launcher_command_builds_platform_opener() {
-        let command = launcher_command("https://example.com/path");
+        let command = launcher_command("workspace/note.txt");
 
         #[cfg(windows)]
         {
@@ -371,19 +268,19 @@ mod tests {
                 command.args,
                 vec![
                     "url.dll,FileProtocolHandler".to_string(),
-                    "https://example.com/path".to_string()
+                    "workspace/note.txt".to_string()
                 ]
             );
         }
         #[cfg(target_os = "macos")]
         {
             assert_eq!(command.program, "open");
-            assert_eq!(command.args, vec!["https://example.com/path".to_string()]);
+            assert_eq!(command.args, vec!["workspace/note.txt".to_string()]);
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             assert_eq!(command.program, "xdg-open");
-            assert_eq!(command.args, vec!["https://example.com/path".to_string()]);
+            assert_eq!(command.args, vec!["workspace/note.txt".to_string()]);
         }
     }
 
@@ -417,8 +314,7 @@ mod tests {
     #[tokio::test]
     async fn detached_execution_request_carries_desktop_policy() {
         let source_scope = vec!["source-1".to_string()];
-        let request = launcher_command("https://example.com/path")
-            .into_execution_request(&source_scope, true);
+        let request = launcher_command("workspace/note.txt").into_execution_request(&source_scope);
         let environment = LocalDetachedProcessExecutionEnvironment;
         let decision = environment.review(&request).await.unwrap();
 
@@ -436,8 +332,8 @@ mod tests {
             request.sandbox.allowed_programs,
             vec![request.program.clone()]
         );
-        assert!(request.network_intent);
-        assert!(request.sandbox.network_allowed);
+        assert!(!request.network_intent);
+        assert!(!request.sandbox.network_allowed);
         assert!(!request.sandbox.capture_file_changes);
         assert_eq!(
             decision.kind,
@@ -453,8 +349,10 @@ mod tests {
             .unwrap()
             .clone();
         assert!(!actions.iter().any(|action| action == "wait"));
+        assert!(!actions.iter().any(|action| action == "open_url"));
+        assert!(!actions.iter().any(|action| action == "web_search"));
         assert!(tool.requires_confirmation(&serde_json::json!({
-            "action": "open_url"
+            "action": "open_path"
         })));
     }
 

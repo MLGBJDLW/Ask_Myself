@@ -782,8 +782,7 @@ mod tests {
     };
     use super::preview::{
         append_preview_warning, build_file_preview, default_app_launch_command,
-        file_explorer_launch_command, is_public_web_preview_ip, resolve_source_file,
-        web_preview_block_reason,
+        file_explorer_launch_command, resolve_source_file,
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
@@ -1779,65 +1778,6 @@ mod tests {
             assert_eq!(command.program, "xdg-open");
             assert_eq!(command.args, vec![path.to_string_lossy().to_string()]);
         }
-    }
-
-    #[test]
-    fn web_preview_preflight_rejects_frame_blocking_headers() {
-        assert_eq!(
-            web_preview_block_reason(Some("DENY"), None),
-            Some("x-frame-options")
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("default-src 'self'; frame-ancestors 'self'")),
-            Some("frame-ancestors")
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("frame-ancestors *")),
-            None
-        );
-        assert_eq!(web_preview_block_reason(None, None), None);
-        assert_eq!(
-            web_preview_block_reason(
-                None,
-                Some("frame-ancestors https://tauri.localhost.attacker.example")
-            ),
-            Some("frame-ancestors")
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("frame-ancestors http://tauri.localhost")),
-            None
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("default-src *, frame-ancestors 'none'")),
-            Some("frame-ancestors")
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("frame-ancestors https://tauri.localhost")),
-            Some("frame-ancestors")
-        );
-        assert_eq!(
-            web_preview_block_reason(None, Some("frame-ancestors http://tauri.localhost:9999")),
-            Some("frame-ancestors")
-        );
-    }
-
-    #[test]
-    fn web_preview_preflight_rejects_non_public_network_targets() {
-        for ip in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "169.254.169.254",
-            "192.168.1.1",
-            "::1",
-            "fe80::1",
-            "fc00::1",
-        ] {
-            assert!(!is_public_web_preview_ip(ip.parse().unwrap()), "{ip}");
-        }
-        assert!(is_public_web_preview_ip("8.8.8.8".parse().unwrap()));
-        assert!(is_public_web_preview_ip(
-            "2606:4700:4700::1111".parse().unwrap()
-        ));
     }
 
     #[test]

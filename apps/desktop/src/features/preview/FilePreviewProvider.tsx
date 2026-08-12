@@ -12,7 +12,6 @@ import { useNavigate } from 'react-router';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import {
@@ -25,7 +24,6 @@ import {
   FileSpreadsheet,
   FileText,
   FolderOpen,
-  Globe2,
   Image as ImageIcon,
   Languages,
   ListTree,
@@ -45,14 +43,14 @@ import {
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
-import { isWebUrl, sourceHost } from '../../lib/sourceDisplay';
+import { isWebUrl } from '../../lib/sourceDisplay';
 import { useResizablePanel } from '../../lib/useResizablePanel';
 import {
   markdownComponents,
   markdownRemarkPlugins,
   rehypePlugins,
 } from '../../components/chat/markdownComponents';
-import { OPEN_BROWSER_WORKSPACE_EVENT } from '../browser';
+import { openNexaBrowser } from '../browser';
 import { FilePreviewContext } from './filePreviewContext';
 
 type PreviewMode = 'preview' | 'text' | 'edit' | 'split';
@@ -62,25 +60,6 @@ const FILE_PREVIEW_WIDTH_KEY = 'file-preview-panel-width';
 const FILE_PREVIEW_MIN_WIDTH = 560;
 const FILE_PREVIEW_MAX_WIDTH = 1180;
 const MAX_AGENT_SELECTION_CHARS = 24_000;
-
-function safeWebPreviewDocument(document: string): string {
-  const sanitized = String(DOMPurify.sanitize(document, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'input', 'link', 'meta', 'object', 'script'],
-    FORBID_ATTR: [
-      'action',
-      'background',
-      'formaction',
-      'href',
-      'ping',
-      'poster',
-      'src',
-      'srcset',
-      'xlink:href',
-    ],
-  }));
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; media-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><style>html{color-scheme:light}body{box-sizing:border-box;max-width:960px;margin:0 auto;padding:24px;font:15px/1.6 system-ui,sans-serif;color:#18181b;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>${sanitized}</body></html>`;
-}
 
 type TextSelectionState = {
   start: number;
@@ -234,7 +213,6 @@ function buildAgentEditPrompt({
 function createPreviewLabels(t: TranslateFn) {
   return {
     title: t('preview.title'),
-    webTitle: t('preview.webTitle'),
     preview: t('preview.preview'),
     structured: t('preview.structured'),
     edit: t('preview.edit'),
@@ -247,20 +225,13 @@ function createPreviewLabels(t: TranslateFn) {
     discard: t('preview.discard'),
     reload: t('preview.reload'),
     openExternal: t('preview.openExternal'),
-    copyUrl: t('preview.copyUrl'),
     showFolder: t('preview.showFolder'),
     copyPath: t('preview.copyPath'),
     copied: t('preview.copied'),
     close: t('preview.close'),
     resizePanel: t('preview.resizePanel'),
     loading: t('preview.loading'),
-    safeReadingMode: t('preview.safeReadingMode'),
-    openInBrowser: t('preview.openInBrowser'),
-    webPreviewNotice: t('preview.webPreviewNotice'),
-    webLoading: t('preview.webLoading'),
-    webTimedOut: t('preview.webTimedOut'),
-    webTimedOutHint: t('preview.webTimedOutHint'),
-    openExternalFailed: t('preview.openExternalFailed'),
+    browserOpenFailed: t('browser.openFailed'),
     empty: t('preview.empty'),
     unsupported: t('preview.unsupported'),
     sheets: t('preview.sheets'),
@@ -386,7 +357,13 @@ function runSizeClass(value: string | null | undefined): string {
   }
 }
 
-function DocumentRuns({ runs }: { runs: api.DocumentPreviewRun[] }) {
+function DocumentRuns({
+  runs,
+  onOpenWebLink,
+}: {
+  runs: api.DocumentPreviewRun[];
+  onOpenWebLink: (url: string, title?: string) => void;
+}) {
   return (
     <>
       {runs.map((run, index) => {
@@ -410,8 +387,10 @@ function DocumentRuns({ runs }: { runs: api.DocumentPreviewRun[] }) {
             <a
               key={`${index}-${run.text}`}
               href={run.hyperlink}
-              target="_blank"
-              rel="noreferrer"
+              onClick={(event) => {
+                event.preventDefault();
+                onOpenWebLink(run.hyperlink!, run.text || undefined);
+              }}
               className={className}
               style={style}
             >
@@ -434,10 +413,12 @@ function DocumentBlockView({
   block,
   assetMap,
   labels,
+  onOpenWebLink,
 }: {
   block: api.DocumentPreviewBlock;
   assetMap: Map<string, api.PreviewAsset>;
   labels: PreviewLabels;
+  onOpenWebLink: (url: string, title?: string) => void;
 }) {
   switch (block.type) {
     case 'heading': {
@@ -456,14 +437,14 @@ function DocumentBlockView({
             : 'mt-5 text-base font-semibold leading-snug';
       return (
         <Tag className={`${headingClass} first:mt-0 ${textAlignClass(block.alignment)}`}>
-          <DocumentRuns runs={block.runs} />
+          <DocumentRuns runs={block.runs} onOpenWebLink={onOpenWebLink} />
         </Tag>
       );
     }
     case 'paragraph':
       return (
         <p className={`my-3 whitespace-pre-wrap text-sm leading-7 ${textAlignClass(block.alignment)}`}>
-          <DocumentRuns runs={block.runs} />
+          <DocumentRuns runs={block.runs} onOpenWebLink={onOpenWebLink} />
         </p>
       );
     case 'list': {
@@ -477,7 +458,7 @@ function DocumentBlockView({
         >
           {block.items.map((item, index) => (
             <li key={index}>
-              <DocumentRuns runs={item.runs} />
+              <DocumentRuns runs={item.runs} onOpenWebLink={onOpenWebLink} />
             </li>
           ))}
         </ListTag>
@@ -502,6 +483,7 @@ function DocumentBlockView({
                             block={child}
                             assetMap={assetMap}
                             labels={labels}
+                            onOpenWebLink={onOpenWebLink}
                           />
                         ))
                       ) : (
@@ -562,10 +544,12 @@ function StructuredDocumentPreview({
   preview,
   labels,
   onMouseUp,
+  onOpenWebLink,
 }: {
   preview: api.DocumentStructuredPreview;
   labels: PreviewLabels;
   onMouseUp: () => void;
+  onOpenWebLink: (url: string, title?: string) => void;
 }) {
   const assetMap = useMemo(
     () => new Map(preview.assets.map((asset) => [asset.id, asset])),
@@ -580,7 +564,13 @@ function StructuredDocumentPreview({
     >
       <article className="mx-auto min-h-full max-w-[900px] rounded-md border border-border/70 bg-surface-1 px-6 py-6 text-text-primary shadow-[0_18px_45px_rgba(0,0,0,0.18)] sm:px-8 sm:py-7">
         {preview.blocks.map((block, index) => (
-          <DocumentBlockView key={index} block={block} assetMap={assetMap} labels={labels} />
+          <DocumentBlockView
+            key={index}
+            block={block}
+            assetMap={assetMap}
+            labels={labels}
+            onOpenWebLink={onOpenWebLink}
+          />
         ))}
       </article>
     </div>
@@ -760,15 +750,24 @@ function StructuredPreviewRenderer({
   preview,
   labels,
   onMouseUp,
+  onOpenWebLink,
 }: {
   preview: api.StructuredPreview;
   labels: PreviewLabels;
   onMouseUp: () => void;
+  onOpenWebLink: (url: string, title?: string) => void;
 }) {
   if (preview.type === 'workbook') {
     return <WorkbookPreview preview={preview} labels={labels} onMouseUp={onMouseUp} />;
   }
-  return <StructuredDocumentPreview preview={preview} labels={labels} onMouseUp={onMouseUp} />;
+  return (
+    <StructuredDocumentPreview
+      preview={preview}
+      labels={labels}
+      onMouseUp={onMouseUp}
+      onOpenWebLink={onOpenWebLink}
+    />
+  );
 }
 
 function OfficeRenderedPreview({
@@ -898,9 +897,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const labels = useMemo(() => createPreviewLabels(t), [t]);
   const shouldReduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
-  const [webPreview, setWebPreview] = useState<{ url: string; title?: string } | null>(null);
-  const [webPreviewStatus, setWebPreviewStatus] = useState<'probing' | 'loading' | 'loaded' | 'timedOut'>('probing');
-  const [webPreviewDocument, setWebPreviewDocument] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<api.FilePreview | null>(null);
   const [draft, setDraft] = useState('');
@@ -912,7 +908,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
   const {
     size: previewPanelWidth,
     setSize: setPreviewPanelWidth,
@@ -931,35 +926,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
-
-  useEffect(() => {
-    if (!webPreview) return;
-    let active = true;
-    setWebPreviewDocument(null);
-    setWebPreviewStatus('probing');
-    void api.probeWebPreview(webPreview.url)
-      .then((probe) => {
-        if (active) {
-          if (probe.embeddable && probe.document) {
-            setWebPreviewDocument(safeWebPreviewDocument(probe.document));
-            setWebPreviewStatus('loading');
-          } else {
-            setWebPreviewStatus('timedOut');
-          }
-        }
-      })
-      .catch((reason) => {
-        console.error('[web-preview] preflight failed', reason);
-        if (active) setWebPreviewStatus('timedOut');
-      });
-    const timer = setTimeout(() => {
-      setWebPreviewStatus((status) => status === 'probing' || status === 'loading' ? 'timedOut' : status);
-    }, 12_000);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [webPreview]);
 
   const loadFile = useCallback(
     async (
@@ -997,48 +963,23 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
       return;
     }
-    setWebPreview(null);
     setOpen(true);
     void loadFile(path);
   }, [labels.discardPrompt, loadFile]);
 
-  const openWebPreview = useCallback((url: string, title?: string) => {
+  const openWebLink = useCallback((url: string, title?: string) => {
     const trimmed = url.trim();
     if (!isWebUrl(trimmed)) {
       void openExternal(trimmed).catch((reason) => {
-        console.error('[web-preview] external open failed', reason);
-        toast.error(labels.openExternalFailed);
+        console.error('[link] external open failed', reason);
+        toast.error(labels.browserOpenFailed);
       });
       return;
     }
-    if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
-      return;
+    if (!openNexaBrowser(trimmed, title)) {
+      toast.error(labels.browserOpenFailed);
     }
-    setOpen(false);
-    setWebPreviewDocument(null);
-    setWebPreviewStatus('probing');
-    setWebPreview({ url: trimmed, title });
-    setCopiedUrl(false);
-  }, [labels.discardPrompt, labels.openExternalFailed]);
-
-  const openWebPreviewExternally = useCallback(async () => {
-    if (!webPreview) return;
-    try {
-      await openExternal(webPreview.url);
-    } catch (reason) {
-      console.error('[web-preview] external open failed', reason);
-      toast.error(labels.openExternalFailed);
-    }
-  }, [labels.openExternalFailed, webPreview]);
-
-  const openWebPreviewInBrowser = useCallback(() => {
-    if (!webPreview) return;
-    const handled = !window.dispatchEvent(new CustomEvent(OPEN_BROWSER_WORKSPACE_EVENT, {
-      detail: { url: webPreview.url },
-      cancelable: true,
-    }));
-    if (handled) setWebPreview(null);
-  }, [webPreview]);
+  }, [labels.browserOpenFailed]);
 
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {
@@ -1047,9 +988,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     setOpen(false);
   }, [dirty, labels.discardPrompt]);
 
-  const closeWebPreview = useCallback(() => {
-    setWebPreview(null);
-  }, []);
 
   const handlePreviewPanelResizeKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -1215,8 +1153,8 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   }, [close, open, save]);
 
   const contextValue = useMemo(
-    () => ({ openFilePreview, openWebPreview }),
-    [openFilePreview, openWebPreview],
+    () => ({ openFilePreview, openWebLink }),
+    [openFilePreview, openWebLink],
   );
   const content = preview?.content ?? '';
   const hasStructured = hasStructuredPreview(preview);
@@ -1518,6 +1456,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                     preview={preview.structuredPreview}
                     labels={labels}
                     onMouseUp={captureRenderedSelection}
+                    onOpenWebLink={openWebLink}
                   />
                 ) : hasRenderedPreview && mode === 'preview' && preview.renderedPreview ? (
                   <OfficeRenderedPreview rendered={preview.renderedPreview} labels={labels} />
@@ -1651,122 +1590,6 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 </motion.div>
               )}
             </AnimatePresence>
-            </motion.aside>
-          </>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {webPreview && (
-          <>
-            <motion.div
-              key="web-preview-backdrop"
-              initial={shouldReduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
-              className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[1px]"
-              onClick={closeWebPreview}
-              aria-hidden="true"
-            />
-            <motion.aside
-              key="web-preview-panel"
-              initial={shouldReduceMotion ? false : { x: '100%', opacity: 0.8 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%', opacity: 0.8 }}
-              transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-              className="fixed inset-y-0 right-0 z-[51] flex w-[min(920px,100vw)] flex-col border-l border-border bg-surface-1 shadow-2xl"
-              role="dialog"
-              aria-modal="true"
-              aria-label={labels.webTitle}
-            >
-              <header className="shrink-0 border-b border-border bg-surface-1/95 px-4 py-3 backdrop-blur">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-accent">
-                    <Globe2 size={18} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-sm font-semibold text-text-primary">
-                      {webPreview.title || sourceHost(webPreview.url) || labels.webTitle}
-                    </h2>
-                    <p className="mt-1 truncate text-[11px] text-text-tertiary" title={webPreview.url}>
-                      {webPreview.url}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={closeWebPreview}
-                    className="rounded-md p-2 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                    title={labels.close}
-                    aria-label={labels.close}
-                  >
-                    <PanelRightClose size={18} />
-                  </button>
-                </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface-0 px-2.5 py-1.5 text-[11px] text-text-secondary">
-                    {labels.safeReadingMode} · {labels.webPreviewNotice}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={openWebPreviewInBrowser}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-2.5 text-xs font-medium text-white transition-colors hover:bg-accent/90"
-                  >
-                    <Globe2 size={14} />
-                    {labels.openInBrowser}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { void openWebPreviewExternally(); }}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                  >
-                    <ExternalLink size={14} />
-                    {labels.openExternal}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(webPreview.url);
-                      setCopiedUrl(true);
-                      setTimeout(() => setCopiedUrl(false), 1600);
-                    }}
-                    className="inline-flex h-8 items-center justify-center rounded-md px-2 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                    title={labels.copyUrl}
-                    aria-label={labels.copyUrl}
-                  >
-                    {copiedUrl ? <Check size={15} className="text-success" /> : <Copy size={15} />}
-                  </button>
-                </div>
-              </header>
-              <div className="relative min-h-0 flex-1 bg-white">
-                {webPreviewDocument && (webPreviewStatus === 'loading' || webPreviewStatus === 'loaded') && (
-                  <iframe
-                    key={webPreview.url}
-                    title={webPreview.title || webPreview.url}
-                    srcDoc={webPreviewDocument}
-                    sandbox=""
-                    referrerPolicy="no-referrer"
-                    onLoad={() => setWebPreviewStatus((status) => status === 'loading' ? 'loaded' : status)}
-                    onError={() => setWebPreviewStatus('timedOut')}
-                    className="h-full w-full border-0 bg-white"
-                  />
-                )}
-                {webPreviewStatus !== 'loaded' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-surface-1/95 p-8 text-center">
-                    {webPreviewStatus === 'probing' || webPreviewStatus === 'loading' ? (
-                      <div className="flex items-center gap-2 text-sm text-text-secondary"><Loader2 size={17} className="animate-spin" /> {labels.webLoading}</div>
-                    ) : (
-                      <div className="max-w-sm">
-                        <TriangleAlert size={24} className="mx-auto text-warning" />
-                        <h3 className="mt-3 text-sm font-semibold text-text-primary">{labels.webTimedOut}</h3>
-                        <p className="mt-1 text-xs text-text-tertiary">{labels.webTimedOutHint}</p>
-                        <button type="button" onClick={openWebPreviewInBrowser} className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white">
-                          <Globe2 size={14} /> {labels.openInBrowser}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             </motion.aside>
           </>
         )}
