@@ -175,7 +175,7 @@ impl Tool for DesktopAutomationTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::Automation, ToolCategory::DesktopInteract]
+        &[ToolCategory::Automation]
     }
 
     fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {

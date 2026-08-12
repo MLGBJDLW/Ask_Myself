@@ -1730,6 +1730,16 @@ mod tests {
         assert!(!names.iter().any(|name| name == "desktop_automation"));
     }
 
+    #[test]
+    fn select_tools_keeps_desktop_automation_for_local_path_handoffs() {
+        let registry = default_tool_registry();
+        let defs = registry.select_tools("Reveal this file in Explorer", false);
+        let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
+
+        assert!(names.iter().any(|name| name == "desktop_automation"));
+        assert!(!names.iter().any(|name| name == "browser_session"));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn select_tools_includes_native_computer_use_for_desktop_tasks() {

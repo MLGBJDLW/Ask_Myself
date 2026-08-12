@@ -193,7 +193,7 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         &mut log,
         "signal.automation",
         ToolVisibilitySignalKind::Automation,
-        "query mentions browser or desktop automation",
+        "query explicitly requests opening or revealing a local path",
     );
     push_term_signal(
         &query,
@@ -318,7 +318,7 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
             &mut log,
             "category.automation",
             ToolCategory::Automation,
-            "automation signal matched",
+            "local path handoff signal matched",
         );
     }
     if has_signal(&signals, ToolVisibilitySignalKind::Process) {
@@ -890,38 +890,32 @@ const KNOWLEDGE_TERMS: &[&str] = &[
 ];
 
 const AUTOMATION_TERMS: &[&str] = &[
-    "browser",
-    "desktop",
-    "computer use",
-    "window",
-    "screenshot",
-    "mouse",
-    "keyboard",
-    "click",
-    "type text",
-    "automate",
-    "automation",
-    "open url",
-    "open website",
+    "open path",
     "open file",
+    "open folder",
+    "open this path",
+    "open this file",
+    "open this folder",
+    "reveal path",
     "reveal file",
-    "launch",
-    "http://",
-    "https://",
-    "浏览器",
-    "桌面",
-    "电脑操作",
-    "窗口",
-    "截图",
-    "鼠标",
-    "键盘",
-    "点击",
-    "输入文字",
-    "自动化",
-    "打开网页",
-    "打开网站",
+    "reveal folder",
+    "reveal this path",
+    "reveal this file",
+    "reveal this folder",
+    "show in explorer",
+    "show in finder",
+    "打开路径",
     "打开文件",
+    "打开文件夹",
+    "打开这个路径",
+    "打开这个文件",
+    "打开这个文件夹",
+    "定位路径",
     "定位文件",
+    "定位文件夹",
+    "定位这个路径",
+    "定位这个文件",
+    "定位这个文件夹",
 ];
 
 const PROCESS_TERMS: &[&str] = &[
@@ -1081,6 +1075,38 @@ mod tests {
             .active_categories
             .contains(&ToolCategory::BrowserInteract));
         assert_eq!(decision.route, ToolVisibilityRouteKind::WebLookup);
+    }
+
+    #[test]
+    fn browser_tasks_do_not_activate_retired_desktop_handoff_capabilities() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "Open this website in my browser and click Sign in",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::BrowserInteract));
+        assert!(!decision
+            .active_categories
+            .contains(&ToolCategory::Automation));
+    }
+
+    #[test]
+    fn local_path_handoffs_activate_desktop_automation_capability() {
+        let decision = decide_tool_visibility(ToolVisibilityInput {
+            query: "Reveal this file in Explorer",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert!(decision
+            .active_categories
+            .contains(&ToolCategory::Automation));
+        assert!(!decision
+            .active_categories
+            .contains(&ToolCategory::BrowserInteract));
     }
 
     #[test]
