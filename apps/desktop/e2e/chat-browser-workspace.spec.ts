@@ -327,3 +327,38 @@ test('opens a shared Browser Workspace and attaches pointed page context', async
   });
   expect(diagnostics.controls).toContain('none');
 });
+
+test('docks the global Browser Workspace beside non-chat content', async ({ page }) => {
+  await page.goto('/');
+
+  const routedContent = page.locator('[data-app-area="home"]');
+  await expect(routedContent).toBeVisible();
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('nexa:open-browser-workspace', {
+      detail: { url: 'https://openai.com/non-chat', title: 'Non-chat browser' },
+      cancelable: true,
+    }));
+  });
+
+  const dock = page.getByTestId('browser-dock');
+  await expect(dock).toBeVisible();
+  await expect(routedContent).toBeInViewport();
+
+  const bounds = await page.evaluate(() => {
+    const content = document.querySelector<HTMLElement>('[data-app-area="home"]')?.getBoundingClientRect();
+    const browser = document.querySelector<HTMLElement>('[data-testid="browser-dock"]')?.getBoundingClientRect();
+    return content && browser
+      ? {
+          content: { top: content.top, right: content.right, width: content.width, height: content.height },
+          browser: { top: browser.top, left: browser.left, width: browser.width, height: browser.height },
+        }
+      : null;
+  });
+
+  expect(bounds).not.toBeNull();
+  expect(Math.abs((bounds?.content.top ?? 0) - (bounds?.browser.top ?? 0))).toBeLessThan(2);
+  expect(bounds?.content.right ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual((bounds?.browser.left ?? 0) + 1);
+  expect(bounds?.content.width ?? 0).toBeGreaterThan(0);
+  expect(bounds?.content.height ?? 0).toBeGreaterThan(0);
+});

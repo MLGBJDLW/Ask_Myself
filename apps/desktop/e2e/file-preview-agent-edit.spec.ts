@@ -464,13 +464,15 @@ test.beforeEach(async ({ page }) => {
               'Alpha is ready.',
               'Beta needs a clearer action item before launch.',
               'Gamma is stable.',
+              '',
+              '[OpenAI](https://openai.com/file-preview)',
             ].join('\n'),
             encoding: 'utf-8',
             editable: true,
             sizeBytes: 128,
             modifiedAt: nowIso,
             hash: 'sha256-agent-edit',
-            lineCount: 5,
+            lineCount: 7,
             truncated: false,
             warning: null,
             structuredPreview: null,
@@ -626,6 +628,34 @@ test('opens file preview as a large panel and closes it from outside clicks', as
 
   await page.getByTestId('file-preview-backdrop').click({ position: { x: 32, y: 120 } });
   await expect(previewPanel).toBeHidden();
+});
+
+test('closes file preview only after a dirty web link is confirmed and routed', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  await page.getByRole('button', { name: /agent-edit\.md/i }).click();
+  const previewPanel = page.getByLabel('File Preview');
+  await expect(previewPanel).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByTestId('file-preview-editor').fill('# Unsaved release notes\n\n[OpenAI](https://openai.com/file-preview)');
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+
+  page.once('dialog', async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    await dialog.dismiss();
+  });
+  await page.getByRole('link', { name: 'OpenAI' }).click();
+  await expect(previewPanel).toBeVisible();
+  await expect(page.getByTestId('browser-dock')).toHaveCount(0);
+
+  page.once('dialog', async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    await dialog.accept();
+  });
+  await page.getByRole('link', { name: 'OpenAI' }).click();
+  await expect(previewPanel).toBeHidden();
+  await expect(page.getByTestId('browser-dock')).toBeVisible();
 });
 
 test('renders structured DOCX without requesting layout rendering', async ({ page }) => {

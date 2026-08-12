@@ -976,10 +976,15 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       });
       return;
     }
+    if (dirtyRef.current && !window.confirm(labels.discardPrompt)) {
+      return;
+    }
     if (!openNexaBrowser(trimmed, title)) {
       toast.error(labels.browserOpenFailed);
+      return;
     }
-  }, [labels.browserOpenFailed]);
+    setOpen(false);
+  }, [labels.browserOpenFailed, labels.discardPrompt]);
 
   const close = useCallback(() => {
     if (dirty && !window.confirm(labels.discardPrompt)) {

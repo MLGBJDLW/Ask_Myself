@@ -109,6 +109,10 @@ test('HTTP links have one in-app destination and the duplicate web preview is re
   assert(!preview.includes('target="_blank"'), 'document hyperlinks must not bypass Nexa Browser');
   assert(markdown.includes('openWebLink'), 'chat hyperlinks must use the shared Nexa Browser route');
   assert(app.includes('<GlobalBrowserDock />'), 'non-chat pages need a mounted Nexa Browser destination');
+  assert(app.includes('data-testid="app-workspace"'), 'global browser and routed content need one horizontal workspace');
+  assert(app.includes('className="flex h-full min-h-0 min-w-0 overflow-hidden"'), 'global browser workspace must dock horizontally');
+  assert(preview.includes('dirtyRef.current && !window.confirm(labels.discardPrompt)'), 'dirty previews must confirm before routing a web link');
+  assert(preview.includes('setOpen(false)'), 'an acknowledged web link must close the covering file preview');
   assert(searchEvidence.includes('openWebLink(card.documentPath'), 'search result URLs must use Nexa Browser');
   assert(!searchEvidence.includes('openExternal(card.documentPath'), 'search result URLs must not bypass Nexa Browser');
 });

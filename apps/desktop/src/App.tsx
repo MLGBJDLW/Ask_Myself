@@ -127,16 +127,23 @@ function AppShell() {
       <MotionConfig reducedMotion="user">
         <AppWindowFrame>
           <FilePreviewProvider>
-            <GlobalBrowserDock />
             <CommandPalette />
             {wizardCompleted === false && location.pathname !== '/wizard' && (
               <Navigate to="/wizard" replace />
             )}
-            {wizardCompleted === null ? (
-              <PageLoader />
-            ) : (
-              <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
-            )}
+            <div
+              data-testid="app-workspace"
+              className="flex h-full min-h-0 min-w-0 overflow-hidden"
+            >
+              <div className="h-full min-h-0 min-w-0 flex-1">
+                {wizardCompleted === null ? (
+                  <PageLoader />
+                ) : (
+                  <Outlet context={{ setWizardCompleted } satisfies AppShellOutletContext} />
+                )}
+              </div>
+              <GlobalBrowserDock />
+            </div>
           </FilePreviewProvider>
         </AppWindowFrame>
       </MotionConfig>
