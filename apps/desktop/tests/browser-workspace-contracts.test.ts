@@ -100,6 +100,7 @@ test('HTTP links have one in-app destination and the duplicate web preview is re
   const router = source('src/features/browser/openNexaBrowser.ts');
   const markdown = source('src/components/chat/markdownComponents.tsx');
   const app = source('src/App.tsx');
+  const chatPage = source('src/pages/ChatPage.tsx');
   const searchEvidence = source('src/components/EvidenceCard.tsx');
   assert(router.includes('OPEN_BROWSER_WORKSPACE_EVENT'), 'links must use the first-class Browser Workspace');
   assert(router.includes('cancelable: true'), 'Open in Browser delivery must be observable by the preview');
@@ -111,6 +112,10 @@ test('HTTP links have one in-app destination and the duplicate web preview is re
   assert(!preview.includes('target="_blank"'), 'document hyperlinks must not bypass Nexa Browser');
   assert(markdown.includes('openWebLink'), 'chat hyperlinks must use the shared Nexa Browser route');
   assert(app.includes('<GlobalBrowserDock />'), 'non-chat pages need a mounted Nexa Browser destination');
+  assert(
+    chatPage.includes('onSendArtifactToAgent={isArchivedConversation ? undefined : handleBrowserArtifact}'),
+    'archived chats must not expose artifact actions that cannot reach the read-only composer',
+  );
   assert(app.includes('data-testid="app-workspace"'), 'global browser and routed content need one horizontal workspace');
   assert(app.includes('className="flex h-full min-h-0 min-w-0 overflow-hidden"'), 'global browser workspace must dock horizontally');
   assert(preview.includes('dirtyRef.current && !window.confirm(labels.discardPrompt)'), 'dirty previews must confirm before routing a web link');

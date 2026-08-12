@@ -1918,7 +1918,7 @@ export function ChatPage() {
           agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
           onOpenChange={setBrowserOpen}
           onStatusChange={setBrowserStatus}
-          onSendArtifactToAgent={handleBrowserArtifact}
+          onSendArtifactToAgent={isArchivedConversation ? undefined : handleBrowserArtifact}
         />
       )}
     </div>
