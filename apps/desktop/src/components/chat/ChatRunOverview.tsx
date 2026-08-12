@@ -415,6 +415,18 @@ export function ChatRunOverview({
           {phaseLabel} · {elapsedLabel}
         </span>
       ) : null}
+      {cacheStats?.hitPercent != null ? (
+        <span
+          data-testid="chat-run-cache-hit-summary"
+          className="mr-1.5 inline-flex h-6 max-w-[10rem] items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/80 px-2 text-[10px] text-text-secondary"
+          title={`${t('chat.contextHudAverageCache')}: ${cacheStats.hitPercent.toFixed(1)}%`}
+        >
+          <span className="truncate">{t('chat.contextHudAverageCache')}</span>
+          <span className="shrink-0 font-semibold tabular-nums text-text-primary">
+            {cacheStats.hitPercent.toFixed(1)}%
+          </span>
+        </span>
+      ) : null}
       <button
         type="button"
         className="relative flex h-8 w-8 cursor-pointer select-none items-center justify-center rounded-full outline-none transition-colors hover:bg-surface-2/80 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent/35"

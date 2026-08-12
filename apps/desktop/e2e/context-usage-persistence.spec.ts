@@ -572,6 +572,8 @@ test('context HUD groups detailed segments and averages cache across completed t
   await page.getByTestId('chat-input-textarea').fill('Generate the first cache sample.');
   await page.getByTestId('chat-send').click();
 
+  await expect(page.getByTestId('chat-run-cache-hit-summary')).toBeVisible();
+  await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('50.0%');
   await contextTrigger.hover();
   await expect(contextDetails).toBeVisible();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('50.0%');
@@ -585,6 +587,7 @@ test('context HUD groups detailed segments and averages cache across completed t
   await page.getByTestId('chat-input-textarea').fill('Generate a lower cache sample.');
   await page.getByTestId('chat-send').click();
 
+  await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('40.0%');
   await contextTrigger.hover();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40.0%');
 });
