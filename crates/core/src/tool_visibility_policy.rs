@@ -222,6 +222,30 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         ToolVisibilitySignalKind::Browser,
         "query refers to browser inspection, interaction, or a local web app",
     );
+    if !has_signal(&signals, ToolVisibilitySignalKind::Browser)
+        && query_has_web_navigation_handoff(&query)
+    {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.browser_navigation_handoff",
+            ToolVisibilitySignalKind::Browser,
+            vec!["navigation intent + web target".to_string()],
+            "explicit web navigation belongs to the shared browser session",
+        );
+    }
+    if !has_signal(&signals, ToolVisibilitySignalKind::Automation)
+        && query_has_local_path_handoff(&query)
+    {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.local_path_handoff",
+            ToolVisibilitySignalKind::Automation,
+            vec!["open/reveal intent + local path".to_string()],
+            "an explicit local path handoff needs the visible desktop opener",
+        );
+    }
     push_term_signal(
         &query,
         DESKTOP_TERMS,
@@ -557,6 +581,75 @@ fn activate_category(
 
 fn has_signal(signals: &[ToolVisibilitySignal], kind: ToolVisibilitySignalKind) -> bool {
     signals.iter().any(|signal| signal.kind == kind)
+}
+
+fn query_has_web_navigation_handoff(query: &str) -> bool {
+    contains_any(query, NAVIGATION_INTENT_TERMS)
+        && !query_has_local_path_target(query)
+        && (contains_any(query, WEB_NAVIGATION_TARGET_TERMS) || query_has_explicit_url(query))
+}
+
+fn query_has_local_path_handoff(query: &str) -> bool {
+    contains_any(query, LOCAL_PATH_HANDOFF_INTENT_TERMS) && query_has_local_path_target(query)
+}
+
+fn query_has_local_path_target(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .map(trim_handoff_token)
+        .any(looks_like_local_path)
+}
+
+fn contains_any(query: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| query.contains(*term))
+}
+
+fn query_has_explicit_url(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .map(trim_handoff_token)
+        .any(|token| token.starts_with("http://") || token.starts_with("https://"))
+}
+
+fn trim_handoff_token(token: &str) -> &str {
+    let token = token.trim_matches(|character: char| {
+        matches!(
+            character,
+            '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+        )
+    });
+    token.trim_end_matches(|character: char| matches!(character, '.' | '?' | '!'))
+}
+
+fn looks_like_local_path(token: &str) -> bool {
+    if token.is_empty()
+        || token.starts_with("http://")
+        || token.starts_with("https://")
+        || token.starts_with("www.")
+    {
+        return false;
+    }
+    let bytes = token.as_bytes();
+    let has_drive_prefix = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\');
+    if has_drive_prefix
+        || token.starts_with('/')
+        || token.starts_with('\\')
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with("~/")
+        || token.starts_with("~\\")
+        || token.contains('/')
+        || token.contains('\\')
+    {
+        return true;
+    }
+    token
+        .rsplit_once('.')
+        .map(|(_, extension)| LOCAL_FILE_EXTENSIONS.contains(&extension))
+        .unwrap_or(false)
 }
 
 fn has_subagent_relevance_signal(signals: &[ToolVisibilitySignal]) -> bool {
@@ -959,33 +1052,50 @@ const TERMINAL_TERMS: &[&str] = &[
 const BROWSER_TERMS: &[&str] = &[
     "browser",
     "browser session",
-    "open http",
-    "open url",
-    "open the url",
-    "open this url",
-    "open website",
-    "open the website",
-    "open this website",
-    "open link",
-    "open this link",
-    "visit http",
-    "visit website",
-    "navigate to http",
-    "navigate to website",
     "localhost",
     "local app",
     "local page",
     "dev server",
-    "打开 http",
-    "打开网址",
-    "打开网站",
-    "打开这个网站",
-    "访问 http",
-    "访问网站",
-    "导航到 http",
     "浏览器",
     "本地页面",
     "本地网页",
+];
+
+const NAVIGATION_INTENT_TERMS: &[&str] = &[
+    "open",
+    "visit",
+    "navigate",
+    "go to",
+    "browse to",
+    "launch",
+    "打开",
+    "访问",
+    "前往",
+    "转到",
+    "导航到",
+];
+
+const WEB_NAVIGATION_TARGET_TERMS: &[&str] = &[
+    "url", "website", "web site", "webpage", "web page", "link", "网址", "网站", "网页", "链接",
+];
+
+const LOCAL_PATH_HANDOFF_INTENT_TERMS: &[&str] = &[
+    "open",
+    "reveal",
+    "show in explorer",
+    "show in finder",
+    "locate",
+    "打开",
+    "显示",
+    "定位",
+];
+
+const LOCAL_FILE_EXTENSIONS: &[&str] = &[
+    "txt", "md", "json", "jsonl", "yaml", "yml", "toml", "xml", "csv", "tsv", "log", "pdf", "doc",
+    "docx", "xls", "xlsx", "ppt", "pptx", "rtf", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs",
+    "py", "go", "java", "kt", "kts", "c", "h", "cpp", "hpp", "cs", "swift", "sh", "ps1", "bat",
+    "cmd", "html", "htm", "css", "scss", "sql", "db", "sqlite", "png", "jpg", "jpeg", "gif",
+    "webp", "svg", "mp3", "wav", "m4a", "mp4", "mov", "avi", "zip", "tar", "gz", "7z", "rar",
 ];
 
 const DESKTOP_TERMS: &[&str] = &[
@@ -1114,8 +1224,12 @@ mod tests {
     }
 
     #[test]
-    fn url_only_open_requests_activate_browser_session_capabilities() {
-        for query in ["Open https://example.com", "Open this website"] {
+    fn explicit_web_navigation_requests_activate_browser_session_capabilities() {
+        for query in [
+            "Open https://example.com",
+            "Open this website",
+            "Go to https://example.com",
+        ] {
             let decision = decide_tool_visibility(ToolVisibilityInput {
                 query,
                 system_prompt: "",
@@ -1132,6 +1246,28 @@ mod tests {
             assert!(!decision
                 .active_categories
                 .contains(&ToolCategory::Automation));
+        }
+    }
+
+    #[test]
+    fn concrete_local_paths_activate_desktop_automation_capability() {
+        for query in [
+            "Open notes.txt",
+            "Reveal /source/report.pdf",
+            "Open link.txt",
+        ] {
+            let decision = decide_tool_visibility(ToolVisibilityInput {
+                query,
+                system_prompt: "",
+                has_sources: false,
+            });
+
+            assert!(decision
+                .active_categories
+                .contains(&ToolCategory::Automation));
+            assert!(!decision
+                .active_categories
+                .contains(&ToolCategory::BrowserInteract));
         }
     }
 
