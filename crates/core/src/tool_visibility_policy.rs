@@ -959,10 +959,30 @@ const TERMINAL_TERMS: &[&str] = &[
 const BROWSER_TERMS: &[&str] = &[
     "browser",
     "browser session",
+    "open http",
+    "open url",
+    "open the url",
+    "open this url",
+    "open website",
+    "open the website",
+    "open this website",
+    "open link",
+    "open this link",
+    "visit http",
+    "visit website",
+    "navigate to http",
+    "navigate to website",
     "localhost",
     "local app",
     "local page",
     "dev server",
+    "打开 http",
+    "打开网址",
+    "打开网站",
+    "打开这个网站",
+    "访问 http",
+    "访问网站",
+    "导航到 http",
     "浏览器",
     "本地页面",
     "本地网页",
@@ -1091,6 +1111,28 @@ mod tests {
         assert!(!decision
             .active_categories
             .contains(&ToolCategory::Automation));
+    }
+
+    #[test]
+    fn url_only_open_requests_activate_browser_session_capabilities() {
+        for query in ["Open https://example.com", "Open this website"] {
+            let decision = decide_tool_visibility(ToolVisibilityInput {
+                query,
+                system_prompt: "",
+                has_sources: false,
+            });
+
+            assert!(decision.active_categories.contains(&ToolCategory::Web));
+            assert!(decision
+                .active_categories
+                .contains(&ToolCategory::BrowserRead));
+            assert!(decision
+                .active_categories
+                .contains(&ToolCategory::BrowserInteract));
+            assert!(!decision
+                .active_categories
+                .contains(&ToolCategory::Automation));
+        }
     }
 
     #[test]
