@@ -10,6 +10,8 @@ function assert(condition: unknown, message: string): asserts condition {
 const root = process.cwd();
 const main = readFileSync(join(root, 'src-tauri/src/main.rs'), 'utf8');
 const context = readFileSync(join(root, 'src/i18n/context.tsx'), 'utf8');
+const appSettings = readFileSync(join(root, '../../crates/core/src/app_settings.rs'), 'utf8');
+const settingsPage = readFileSync(join(root, 'src/features/settings/SettingsPage.tsx'), 'utf8');
 const locales = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'];
 const keys = [
   'showNexa',
@@ -24,7 +26,10 @@ const keys = [
 
 assert(main.includes('TrayMenuLabels'), 'native tray must use a complete localized label contract');
 assert(main.includes('update_tray_menu_cmd'), 'native tray must support live locale refresh');
+assert(main.includes('save_ui_locale(locale)'), 'tray locale must use independent persistence');
 assert(context.includes('updateTrayMenu'), 'changing the UI locale must refresh the native tray');
+assert(appSettings.includes('UI_LOCALE_KEY'), 'native locale must survive stale whole-config snapshots');
+assert(settingsPage.includes('uiLocale: nextLocale'), 'the live Settings AppConfig snapshot must follow locale changes');
 const english = JSON.parse(readFileSync(join(root, 'src/i18n/locales/en/tray.json'), 'utf8')) as Record<string, string>;
 
 for (const locale of locales) {

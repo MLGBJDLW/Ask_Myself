@@ -29,7 +29,7 @@ import type { VideoConfig, WhisperModel } from '../../types/video';
 import type { Skill, SkillChangeProposal, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../../types/extensions';
 import type { TraceSummary, AgentTrace } from '../../types/trace';
 import type { QualityEvalReport } from '../../types/qualityEval';
-import { useTranslation } from '../../i18n';
+import { useTranslation, type Locale } from '../../i18n';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AgentQualitySettingsTab } from '../../components/settings/AgentQualitySettingsTab';
 import { AppearanceSettingsTab } from '../../components/settings/AppearanceSettingsTab';
@@ -488,13 +488,19 @@ export function SettingsPage() {
     void loadAppConfig();
   }, [loadAppConfig]);
 
+  const handleLocaleChange = useCallback((nextLocale: Locale) => {
+    setLocale(nextLocale);
+    setAppConfig((current) => current ? { ...current, uiLocale: nextLocale } : current);
+  }, [setLocale]);
+
   const handleAppConfigSave = async (configOverride?: AppConfig) => {
-    const configToSave = configOverride ?? appConfig;
-    if (!configToSave) return false;
+    const snapshot = configOverride ?? appConfig;
+    if (!snapshot) return false;
+    const configToSave = { ...snapshot, uiLocale: locale };
     setAppConfigLoading(true);
     try {
       await api.saveAppConfig(configToSave);
-      if (configOverride) setAppConfig(configOverride);
+      setAppConfig(configToSave);
       toast.success(t('common.success'));
       return true;
     } catch {
@@ -1628,7 +1634,7 @@ export function SettingsPage() {
       {activeTab === 'appearance' && (
         <AppearanceSettingsTab
           locale={locale}
-          setLocale={setLocale}
+          setLocale={handleLocaleChange}
           availableLocales={availableLocales}
           appVersion={appVersion}
           updater={updater}

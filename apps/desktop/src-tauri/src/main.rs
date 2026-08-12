@@ -369,17 +369,10 @@ fn update_tray_menu_cmd(
     locale: String,
 ) -> Result<(), String> {
     let locale = supported_tray_locale(locale.trim());
-    let mut config = state
+    state
         .db
-        .load_app_config()
+        .save_ui_locale(locale)
         .map_err(|error| error.to_string())?;
-    if config.ui_locale != locale {
-        config.ui_locale = locale.to_string();
-        state
-            .db
-            .save_app_config(&config)
-            .map_err(|error| error.to_string())?;
-    }
     let tray = app
         .tray_by_id(TRAY_ID)
         .ok_or_else(|| "Nexa tray is unavailable".to_string())?;
