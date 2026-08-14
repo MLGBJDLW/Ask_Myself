@@ -6654,7 +6654,7 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
+    "description": "Gemini 3.7 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
     "nativeWebSearch": {
       "dialect": "geminiGoogleSearch",
       "supportsDomains": false,
@@ -6670,6 +6670,39 @@
     },
     "models": [
       {
+        "id": "gemini-3.7-flash",
+        "name": "Gemini 3.7 Flash",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "productReadiness": "known",
+        "recommended": true,
+        "capabilities": {
+          "reasoning": {
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "gemini-3.6-flash",
         "name": "Gemini 3.6 Flash",
         "nativeWebSearch": {
@@ -6682,10 +6715,10 @@
           "supportsStreamEvents": true,
           "canMixClientTools": true
         },
-        "tagKey": "providers.tagLatest",
+        "tagKey": "providers.tagFast",
         "source": "curated",
         "productReadiness": "known",
-        "recommended": true,
+        "recommended": false,
         "capabilities": {
           "reasoning": {
             "effortLevels": [

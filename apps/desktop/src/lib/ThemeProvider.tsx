@@ -1,25 +1,38 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { type ThemeId, getInitialTheme, applyTheme, isThemeId } from './theme';
 import { garbageCollectThemeAssets, resolveThemeBackground } from './api';
-import { applyCustomTheme, clearCustomThemeVariables, normalizeCustomTheme, type CustomThemeDefinition } from './themeProfile';
+import {
+  applyCustomTheme,
+  clearCustomThemeVariables,
+  normalizeThemeResourcePlugin,
+  themeResourcePluginToCustomTheme,
+  themeToResourcePlugin,
+  type CustomThemeDefinition,
+  type ThemeResourcePlugin,
+} from './themeProfile';
 
 interface ThemeContextValue {
   theme: ThemeId;
   activeThemeId: string;
   customThemes: CustomThemeDefinition[];
+  themePlugins: ThemeResourcePlugin[];
   setTheme: (theme: string) => void;
-  saveCustomTheme: (theme: CustomThemeDefinition) => void;
-  deleteCustomTheme: (id: string, additionallyRetainedAssetIds?: string[]) => void;
+  installThemePlugin: (plugin: ThemeResourcePlugin) => void;
+  uninstallThemePlugin: (id: string, additionallyRetainedAssetIds?: string[]) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [customThemes, setCustomThemes] = useState<CustomThemeDefinition[]>(readCustomThemes);
+  const [themePlugins, setThemePlugins] = useState<ThemeResourcePlugin[]>(readThemePlugins);
+  const customThemes = useMemo(
+    () => themePlugins.map(themeResourcePluginToCustomTheme),
+    [themePlugins],
+  );
   const [activeThemeId, setActiveThemeId] = useState<string>(() => {
     const stored = localStorage.getItem(ACTIVE_THEME_KEY);
-    return stored && (isThemeId(stored) || readCustomThemes().some((theme) => theme.id === stored))
+    return stored && (isThemeId(stored) || readThemePlugins().some((plugin) => plugin.id === stored))
       ? stored
       : getInitialTheme();
   });
@@ -52,29 +65,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (isThemeId(newTheme) || customThemes.some((profile) => profile.id === newTheme)) setActiveThemeId(newTheme);
   };
 
-  const saveCustomTheme = (profile: CustomThemeDefinition) => {
-    const normalized = normalizeCustomTheme(profile);
-    setCustomThemes((current) => {
-      const next = [...current.filter((item) => item.id !== normalized.id), normalized];
-      localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(next));
-      void collectUnusedThemeAssets(next);
-      return next;
-    });
+  const installThemePlugin = (plugin: ThemeResourcePlugin) => {
+    const normalized = normalizeThemeResourcePlugin(plugin);
+    const next = [...themePlugins.filter((item) => item.id !== normalized.id), normalized];
+    localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(next));
+    setThemePlugins(next);
+    void collectUnusedThemeAssets(next.map(themeResourcePluginToCustomTheme));
     setActiveThemeId(normalized.id);
   };
 
-  const deleteCustomTheme = (id: string, additionallyRetainedAssetIds: string[] = []) => {
-    setCustomThemes((current) => {
-      const next = current.filter((profile) => profile.id !== id);
-      localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(next));
-      void collectUnusedThemeAssets(next, additionallyRetainedAssetIds);
-      return next;
-    });
+  const uninstallThemePlugin = (id: string, additionallyRetainedAssetIds: string[] = []) => {
+    const next = themePlugins.filter((plugin) => plugin.id !== id);
+    localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(next));
+    setThemePlugins(next);
+    void collectUnusedThemeAssets(next.map(themeResourcePluginToCustomTheme), additionallyRetainedAssetIds);
     if (activeThemeId === id) setActiveThemeId('dark');
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, activeThemeId, customThemes, setTheme, saveCustomTheme, deleteCustomTheme }}>
+    <ThemeContext.Provider value={{ theme, activeThemeId, customThemes, themePlugins, setTheme, installThemePlugin, uninstallThemePlugin }}>
       {children}
     </ThemeContext.Provider>
   );
@@ -95,16 +104,26 @@ async function collectUnusedThemeAssets(
   }
 }
 
-const CUSTOM_THEMES_KEY = 'nexa-custom-themes-v1';
+const THEME_PLUGINS_KEY = 'nexa-theme-resource-plugins-v1';
+const LEGACY_CUSTOM_THEMES_KEY = 'nexa-custom-themes-v1';
 const ACTIVE_THEME_KEY = 'nexa-active-theme-v1';
 
-function readCustomThemes(): CustomThemeDefinition[] {
+function readThemePlugins(): ThemeResourcePlugin[] {
   try {
-    const value = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY) ?? '[]') as unknown;
+    const storedPlugins = localStorage.getItem(THEME_PLUGINS_KEY);
+    const value = JSON.parse(storedPlugins ?? localStorage.getItem(LEGACY_CUSTOM_THEMES_KEY) ?? '[]') as unknown;
     if (!Array.isArray(value)) return [];
-    return value.flatMap((item) => {
-      try { return [normalizeCustomTheme(item)]; } catch { return []; }
+    const plugins = value.flatMap((item) => {
+      try {
+        return [storedPlugins
+          ? normalizeThemeResourcePlugin(item)
+          : themeToResourcePlugin(item as CustomThemeDefinition)];
+      } catch {
+        return [];
+      }
     });
+    if (!storedPlugins && plugins.length > 0) localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(plugins));
+    return plugins;
   } catch {
     return [];
   }

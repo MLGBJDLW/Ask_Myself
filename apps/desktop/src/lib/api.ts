@@ -1978,6 +1978,14 @@ export interface ThemeBackgroundAsset {
   bytes: number;
 }
 
+export const generateThemeResourcePlugin = (description: string) =>
+  invoke<import('./themeProfile').ThemeResourcePlugin>('generate_theme_resource_plugin_cmd', {
+    description,
+  });
+
+export const generateThemeBackground = (prompt: string) =>
+  invoke<ThemeBackgroundAsset>('generate_theme_background_cmd', { prompt });
+
 export const importThemeBackground = (sourcePath: string) =>
   invoke<ThemeBackgroundAsset>('import_theme_background_cmd', { sourcePath });
 

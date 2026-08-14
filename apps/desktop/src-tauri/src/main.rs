@@ -819,6 +819,8 @@ fn main() {
             commands::synthesize_speech_preview_cmd,
             commands::refresh_tts_voice_catalog_cmd,
             commands::clear_speech_cache_cmd,
+            commands::generate_theme_resource_plugin_cmd,
+            commands::generate_theme_background_cmd,
             commands::import_theme_background_cmd,
             commands::resolve_theme_background_cmd,
             commands::garbage_collect_theme_assets_cmd,
