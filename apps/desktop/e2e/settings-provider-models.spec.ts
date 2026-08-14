@@ -461,6 +461,42 @@ test.beforeEach(async ({ page }) => {
           }
           return preview;
         }
+        case "generate_theme_resource_plugin_cmd":
+          return {
+            manifestVersion: 1,
+            kind: "theme-resource",
+            id: "theme-generated-ocean",
+            name: "Generated Ocean",
+            description: String(_args.description ?? ""),
+            theme: {
+              baseTheme: "dark",
+              mode: "dark",
+              colors: {
+                surface0: "#08131f",
+                surface1: "#102235",
+                textPrimary: "#f2f8ff",
+                textSecondary: "#a8bed1",
+                accent: "#38bdf8",
+              },
+              effects: { surfaceOpacity: 0.9, glassBlur: 14 },
+              background: {
+                kind: "gradient",
+                value: "linear-gradient(145deg, #08131f, #164e63)",
+                fit: "cover",
+                position: "center",
+              },
+            },
+          };
+        case "generate_theme_background_cmd":
+        case "resolve_theme_background_cmd":
+          return {
+            assetId: "a".repeat(64),
+            path: "C:\\Nexa\\themes\\generated-ocean.png",
+            mediaType: "image/png",
+            bytes: 2048,
+          };
+        case "garbage_collect_theme_assets_cmd":
+          return { removedFiles: 0, removedBytes: 0 };
         default:
           return null;
       }
@@ -1195,6 +1231,29 @@ test("appearance keeps a compact theme summary and opens the dedicated Theme tab
   await expect(page.getByRole("button", { name: "Advanced colors" })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("button", { name: "Background & effects" })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("button", { name: "Import & export" })).toHaveAttribute("aria-expanded", "false");
+
+  await page.getByPlaceholder(/calm moonlit ocean/i).fill("calm moonlit ocean with cyan glass");
+  await page.getByRole("button", { name: "Generate theme draft" }).click();
+  await expect(page.getByLabel("Name")).toHaveValue("Generated Ocean");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("nexa-theme-resource-plugins-v1")))
+    .toBeNull();
+
+  await page.getByRole("button", { name: "Generate matching image" }).click();
+  await page.getByRole("button", { name: "Save and apply" }).click();
+  await expect.poll(() => page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("nexa-theme-resource-plugins-v1") ?? "[]") as Array<{
+      id?: string;
+      description?: string;
+      theme?: { background?: { assetId?: string } };
+    }>;
+    return stored[0];
+  })).toEqual(expect.objectContaining({
+    id: "theme-generated-ocean",
+    description: "calm moonlit ocean with cyan glass",
+    theme: expect.objectContaining({
+      background: expect.objectContaining({ assetId: "a".repeat(64) }),
+    }),
+  }));
 });
 
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {

@@ -1,7 +1,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { NexaSelect } from '../ui/overlay';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Download, Image, Plus, RotateCcw, Save, Trash2, Upload, WandSparkles } from 'lucide-react';
+import { Download, Image, LoaderCircle, Plus, RotateCcw, Save, Trash2, Upload, WandSparkles } from 'lucide-react';
 import { useMemo, useState, type CSSProperties } from 'react';
 import { toast } from 'sonner';
 
@@ -11,9 +11,12 @@ import { useTheme } from '../../lib/ThemeProvider';
 import {
   contrastRatio,
   customThemeToCssVariables,
+  normalizeThemeResourcePlugin,
   normalizeCustomTheme,
   parseCustomTheme,
-  serializeCustomTheme,
+  serializeThemeResourcePlugin,
+  themeResourcePluginToCustomTheme,
+  themeToResourcePlugin,
   type CustomThemeDefinition,
 } from '../../lib/themeProfile';
 import { CollapsiblePanel } from './SettingsSection';
@@ -45,10 +48,20 @@ const COLOR_SLOTS: Array<[keyof CustomThemeDefinition['colors'], string]> = [
 
 export function ThemeStudio() {
   const { t } = useTranslation();
-  const { customThemes, activeThemeId, setTheme, saveCustomTheme, deleteCustomTheme } = useTheme();
+  const {
+    customThemes,
+    themePlugins,
+    activeThemeId,
+    setTheme,
+    installThemePlugin,
+    uninstallThemePlugin,
+  } = useTheme();
   const [draft, setDraft] = useState<CustomThemeDefinition>(() => newTheme(t));
+  const [themeDescription, setThemeDescription] = useState('');
   const [importValue, setImportValue] = useState('');
   const [backgroundPreviewUrl, setBackgroundPreviewUrl] = useState<string | null>(null);
+  const [isGeneratingTheme, setIsGeneratingTheme] = useState(false);
+  const [isGeneratingBackground, setIsGeneratingBackground] = useState(false);
   const variables = useMemo(
     () => customThemeToCssVariables(draft, backgroundPreviewUrl ?? undefined),
     [backgroundPreviewUrl, draft],
@@ -94,6 +107,7 @@ export function ThemeStudio() {
   const selectProfile = async (profile: CustomThemeDefinition) => {
     setTheme(profile.id);
     setDraft(profile);
+    setThemeDescription(themePlugins.find((plugin) => plugin.id === profile.id)?.description ?? '');
     setBackgroundPreviewUrl(null);
     if (profile.background.kind === 'image' && profile.background.assetId) {
       try {
@@ -107,7 +121,7 @@ export function ThemeStudio() {
   };
   const save = () => {
     try {
-      saveCustomTheme(normalizeCustomTheme(draft));
+      installThemePlugin(themeToResourcePlugin(normalizeCustomTheme(draft), themeDescription));
       toast.success(t('themeStudio.saved'));
     } catch (error) {
       console.error('[theme-studio] save failed', error);
@@ -116,15 +130,71 @@ export function ThemeStudio() {
   };
   const importJson = () => {
     try {
-      const profile = parseCustomTheme(importValue);
+      const value = JSON.parse(importValue) as unknown;
+      const plugin = value && typeof value === 'object' && (value as { kind?: unknown }).kind === 'theme-resource'
+        ? normalizeThemeResourcePlugin(value)
+        : themeToResourcePlugin(parseCustomTheme(importValue));
+      const profile = themeResourcePluginToCustomTheme(plugin);
       setDraft(profile);
+      setThemeDescription(plugin.description ?? '');
       setBackgroundPreviewUrl(null);
-      saveCustomTheme(profile);
+      installThemePlugin(plugin);
       setImportValue('');
       toast.success(t('themeStudio.imported'));
     } catch (error) {
       console.error('[theme-studio] invalid theme', error);
       toast.error(t('themeStudio.invalidTheme'));
+    }
+  };
+  const generateTheme = async () => {
+    if (!themeDescription.trim()) return;
+    setIsGeneratingTheme(true);
+    try {
+      const plugin = normalizeThemeResourcePlugin(await api.generateThemeResourcePlugin(themeDescription));
+      setDraft(themeResourcePluginToCustomTheme(plugin));
+      setBackgroundPreviewUrl(null);
+      toast.success(t('themeStudio.draftGenerated'));
+    } catch (error) {
+      console.error('[theme-studio] theme generation failed', error);
+      toast.error(t('themeStudio.generationFailed'));
+    } finally {
+      setIsGeneratingTheme(false);
+    }
+  };
+  const generateBackground = async () => {
+    const direction = themeDescription.trim() || draft.name;
+    setIsGeneratingBackground(true);
+    try {
+      const palette = [draft.colors.surface0, draft.colors.surface1, draft.colors.accent]
+        .filter(Boolean)
+        .join(', ');
+      const asset = await api.generateThemeBackground(`${direction}. Palette: ${palette}.`);
+      setBackgroundPreviewUrl(convertFileSrc(asset.path));
+      setDraft((current) => ({
+        ...current,
+        background: {
+          ...current.background,
+          kind: 'image',
+          value: undefined,
+          assetId: asset.assetId,
+          fit: 'cover',
+        },
+      }));
+      const retainedAssetIds = [
+        ...themePlugins.flatMap((plugin) => plugin.theme.background.assetId ? [plugin.theme.background.assetId] : []),
+        asset.assetId,
+      ];
+      try {
+        await api.garbageCollectThemeAssets(retainedAssetIds);
+      } catch (error) {
+        console.warn('[theme-studio] generated background cleanup deferred', error);
+      }
+      toast.success(t('themeStudio.backgroundGenerated'));
+    } catch (error) {
+      console.error('[theme-studio] background generation failed', error);
+      toast.error(t('themeStudio.backgroundGenerationFailed'));
+    } finally {
+      setIsGeneratingBackground(false);
     }
   };
 
@@ -135,7 +205,22 @@ export function ThemeStudio() {
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary"><WandSparkles size={16} /> {t('themeStudio.title')}</div>
           <p className="mt-1 text-xs text-text-tertiary">{t('themeStudio.description')}</p>
         </div>
-        <button type="button" onClick={() => { setDraft(newTheme(t)); setBackgroundPreviewUrl(null); }} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Plus size={13} /> {t('themeStudio.new')}</button>
+        <button type="button" onClick={() => { setDraft(newTheme(t)); setThemeDescription(''); setBackgroundPreviewUrl(null); }} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Plus size={13} /> {t('themeStudio.new')}</button>
+      </div>
+
+      <div className="rounded-lg border border-accent/30 bg-accent/5 p-3" data-testid="theme-plugin-generator">
+        <div className="text-xs font-medium text-text-primary">{t('themeStudio.describeTitle')}</div>
+        <p className="mt-1 text-xs text-text-tertiary">{t('themeStudio.describeHelp')}</p>
+        <textarea value={themeDescription} onChange={(event) => setThemeDescription(event.target.value)} maxLength={4000} placeholder={t('themeStudio.describePlaceholder')} className="mt-2 min-h-20 w-full rounded-md border border-border bg-surface-0 p-2 text-sm text-text-primary" />
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" disabled={!themeDescription.trim() || isGeneratingTheme} onClick={() => void generateTheme()} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-text-inverse disabled:opacity-50">
+            {isGeneratingTheme ? <LoaderCircle size={13} className="animate-spin" /> : <WandSparkles size={13} />} {t('themeStudio.generateDraft')}
+          </button>
+          <button type="button" disabled={isGeneratingBackground} onClick={() => void generateBackground()} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary disabled:opacity-50">
+            {isGeneratingBackground ? <LoaderCircle size={13} className="animate-spin" /> : <Image size={13} />} {t('themeStudio.generateBackground')}
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] text-text-tertiary">{t('themeStudio.previewBeforeInstall')}</p>
       </div>
 
       {customThemes.length > 0 && (
@@ -143,7 +228,7 @@ export function ThemeStudio() {
           {customThemes.map((profile) => (
             <div key={profile.id} className={`flex items-center gap-1 rounded-md border px-2 py-1 ${activeThemeId === profile.id ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <button type="button" onClick={() => void selectProfile(profile)} className="text-xs text-text-primary">{profile.name}</button>
-              <button type="button" onClick={() => deleteCustomTheme(profile.id, draft.background.assetId ? [draft.background.assetId] : [])} aria-label={t('themeStudio.deleteTheme', { name: profile.name })} className="text-text-tertiary hover:text-danger"><Trash2 size={12} /></button>
+              <button type="button" onClick={() => uninstallThemePlugin(profile.id, draft.background.assetId ? [draft.background.assetId] : [])} aria-label={t('themeStudio.deleteTheme', { name: profile.name })} className="text-text-tertiary hover:text-danger"><Trash2 size={12} /></button>
             </div>
           ))}
         </div>
@@ -204,7 +289,7 @@ export function ThemeStudio() {
           {contrast !== null && contrast < 4.5 && <div className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning">{t('themeStudio.contrastWarning', { ratio: contrast.toFixed(2) })}</div>}
           <CollapsiblePanel title={t('themeStudio.importExport')}>
             <div className="space-y-3">
-              <button type="button" onClick={() => void navigator.clipboard.writeText(serializeCustomTheme(draft))} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary"><Download size={13} /> {t('themeStudio.copyJson')}</button>
+              <button type="button" onClick={() => void navigator.clipboard.writeText(serializeThemeResourcePlugin(draft, themeDescription))} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary"><Download size={13} /> {t('themeStudio.copyJson')}</button>
               <textarea value={importValue} onChange={(event) => setImportValue(event.target.value)} placeholder={t('themeStudio.importPlaceholder')} className="min-h-20 w-full rounded-md border border-border bg-surface-0 p-2 text-xs text-text-primary" />
               <button type="button" disabled={!importValue.trim()} onClick={importJson} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary disabled:opacity-50"><Upload size={13} /> {t('themeStudio.importJson')}</button>
             </div>

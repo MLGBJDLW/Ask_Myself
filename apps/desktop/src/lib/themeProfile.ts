@@ -37,6 +37,15 @@ export interface CustomThemeDefinition {
   };
 }
 
+export interface ThemeResourcePlugin {
+  manifestVersion: 1;
+  kind: 'theme-resource';
+  id: string;
+  name: string;
+  description?: string;
+  theme: Omit<CustomThemeDefinition, 'version' | 'id' | 'name'>;
+}
+
 export type ThemeCssVariables = Record<`--${string}`, string>;
 
 const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string}`> = {
@@ -145,7 +154,84 @@ export function serializeCustomTheme(theme: CustomThemeDefinition): string {
 }
 
 export function parseCustomTheme(json: string): CustomThemeDefinition {
-  return normalizeCustomTheme(JSON.parse(json) as unknown);
+  const value = JSON.parse(json) as unknown;
+  if (isThemeResourcePlugin(value)) return themeResourcePluginToCustomTheme(value);
+  return normalizeCustomTheme(value);
+}
+
+export function themeToResourcePlugin(
+  theme: CustomThemeDefinition,
+  description?: string,
+): ThemeResourcePlugin {
+  const normalized = normalizeCustomTheme(theme);
+  return normalizeThemeResourcePlugin({
+    manifestVersion: 1,
+    kind: 'theme-resource',
+    id: normalized.id,
+    name: normalized.name,
+    ...(description?.trim() ? { description: description.trim() } : {}),
+    theme: resourceThemeFromProfile(normalized),
+  });
+}
+
+export function normalizeThemeResourcePlugin(value: unknown): ThemeResourcePlugin {
+  if (!value || typeof value !== 'object') throw new Error('Theme resource plugin must be an object');
+  const input = value as Partial<ThemeResourcePlugin>;
+  if (input.manifestVersion !== 1 || input.kind !== 'theme-resource') throw new Error('Unsupported theme resource plugin');
+  if (!input.theme || typeof input.theme !== 'object') throw new Error('Theme resource plugin is missing its theme');
+  const profile = normalizeCustomTheme({
+    ...input.theme,
+    version: 1,
+    id: input.id,
+    name: input.name,
+  });
+  const description = input.description?.trim();
+  if (description && description.length > 500) throw new Error('Theme resource description is too long');
+  return {
+    manifestVersion: 1,
+    kind: 'theme-resource',
+    id: profile.id,
+    name: profile.name,
+    ...(description ? { description } : {}),
+    theme: resourceThemeFromProfile(profile),
+  };
+}
+
+export function themeResourcePluginToCustomTheme(value: unknown): CustomThemeDefinition {
+  const plugin = normalizeThemeResourcePlugin(value);
+  return normalizeCustomTheme({
+    ...plugin.theme,
+    version: 1,
+    id: plugin.id,
+    name: plugin.name,
+  });
+}
+
+export function serializeThemeResourcePlugin(
+  theme: CustomThemeDefinition,
+  description?: string,
+): string {
+  return JSON.stringify(themeToResourcePlugin(theme, description), null, 2);
+}
+
+function isThemeResourcePlugin(value: unknown): value is ThemeResourcePlugin {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && (value as Partial<ThemeResourcePlugin>).kind === 'theme-resource',
+  );
+}
+
+function resourceThemeFromProfile(
+  profile: CustomThemeDefinition,
+): ThemeResourcePlugin['theme'] {
+  return {
+    baseTheme: profile.baseTheme,
+    mode: profile.mode,
+    colors: profile.colors,
+    effects: profile.effects,
+    background: profile.background,
+  };
 }
 
 export function applyCustomTheme(theme: CustomThemeDefinition, resolvedBackgroundUrl?: string): void {
