@@ -152,6 +152,7 @@ export function ThemeStudio() {
     try {
       const plugin = normalizeThemeResourcePlugin(await api.generateThemeResourcePlugin(themeDescription));
       setDraft(themeResourcePluginToCustomTheme(plugin));
+      setThemeDescription(plugin.description ?? '');
       setBackgroundPreviewUrl(null);
       toast.success(t('themeStudio.draftGenerated'));
     } catch (error) {

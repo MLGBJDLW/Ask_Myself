@@ -467,7 +467,7 @@ test.beforeEach(async ({ page }) => {
             kind: "theme-resource",
             id: "theme-generated-ocean",
             name: "Generated Ocean",
-            description: String(_args.description ?? ""),
+            description: String(_args.description ?? "").slice(0, 500),
             theme: {
               baseTheme: "dark",
               mode: "dark",
@@ -1217,7 +1217,7 @@ test("settings discard leaves speech drafts unpersisted while keeping saved Whis
   await expect(page.getByRole("button", { name: /^Small / })).toHaveClass(/border-accent/);
 });
 
-test("appearance keeps a compact theme summary and opens the dedicated Theme tab", async ({ page }) => {
+test("appearance installs the backend-normalized theme draft only after explicit save", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("nexa-active-theme-v1", "dark"));
   await page.goto("/settings");
 
@@ -1232,7 +1232,9 @@ test("appearance keeps a compact theme summary and opens the dedicated Theme tab
   await expect(page.getByRole("button", { name: "Background & effects" })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("button", { name: "Import & export" })).toHaveAttribute("aria-expanded", "false");
 
-  await page.getByPlaceholder(/calm moonlit ocean/i).fill("calm moonlit ocean with cyan glass");
+  const requestedDescription = `calm moonlit ocean with cyan glass ${"and quiet stars ".repeat(40)}`;
+  const normalizedDescription = requestedDescription.slice(0, 500);
+  await page.getByPlaceholder(/calm moonlit ocean/i).fill(requestedDescription);
   await page.getByRole("button", { name: "Generate theme draft" }).click();
   await expect(page.getByLabel("Name")).toHaveValue("Generated Ocean");
   await expect.poll(() => page.evaluate(() => localStorage.getItem("nexa-theme-resource-plugins-v1")))
@@ -1249,7 +1251,7 @@ test("appearance keeps a compact theme summary and opens the dedicated Theme tab
     return stored[0];
   })).toEqual(expect.objectContaining({
     id: "theme-generated-ocean",
-    description: "calm moonlit ocean with cyan glass",
+    description: normalizedDescription,
     theme: expect.objectContaining({
       background: expect.objectContaining({ assetId: "a".repeat(64) }),
     }),
