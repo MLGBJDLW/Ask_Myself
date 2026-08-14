@@ -1522,18 +1522,7 @@ fn parse_responses_completion(
             },
         ));
     }
-    let usage_value = value.get("usage").cloned().unwrap_or_default();
-    let provider_raw = usage_value.as_object().map(|_| usage_value.clone());
-    let prompt_tokens = usage_value
-        .get("input_tokens")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or_default();
-    let completion_tokens = usage_value
-        .get("output_tokens")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or_default();
+    let usage = responses_usage_from_value(value.get("usage").cloned().unwrap_or_default());
     let finish_reason = if response_completed && !tool_calls.is_empty() {
         FinishReason::ToolCalls
     } else if response_status == "incomplete"
@@ -1552,19 +1541,38 @@ fn parse_responses_completion(
         content,
         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
         finish_reason,
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: usage_value
-                .get("total_tokens")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens)),
-            provider_raw,
-            ..Usage::default()
-        },
+        usage,
         thinking: (!thinking.is_empty()).then(|| thinking.join("\n")),
     })
+}
+
+fn responses_usage_from_value(usage_value: serde_json::Value) -> Usage {
+    let token_at = |pointer: &str| {
+        usage_value
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+    };
+    let prompt_tokens = token_at("/input_tokens").unwrap_or_default();
+    let completion_tokens = token_at("/output_tokens").unwrap_or_default();
+    let cache_read_tokens = token_at("/input_tokens_details/cached_tokens")
+        .or_else(|| token_at("/input_tokens_details/cache_read_input_tokens"));
+    let cache_creation_tokens = token_at("/input_tokens_details/cache_creation_input_tokens")
+        .or_else(|| token_at("/input_tokens_details/cache_write_input_tokens"))
+        .or_else(|| token_at("/input_tokens_details/cache_creation/cache_creation_input_tokens"));
+
+    Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: token_at("/total_tokens")
+            .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens)),
+        thinking_tokens: token_at("/output_tokens_details/reasoning_tokens"),
+        tool_prompt_tokens: None,
+        cache_read_tokens,
+        cache_miss_tokens: cache_read_tokens.map(|cached| prompt_tokens.saturating_sub(cached)),
+        cache_creation_tokens,
+        provider_raw: usage_value.as_object().map(|_| usage_value.clone()),
+    }
 }
 
 /// Single state machine for projecting one Responses stream into executable
@@ -5892,5 +5900,102 @@ data: [DONE]
         )
         .unwrap();
         assert_eq!(deepseek.content, "Answer");
+    }
+
+    #[test]
+    fn responses_parser_normalizes_input_token_cache_details() {
+        let payload = serde_json::json!({
+            "status": "completed",
+            "output": [{
+                "id": "msg_cache",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "Answer",
+                    "annotations": []
+                }]
+            }],
+            "usage": {
+                "input_tokens": 79_539,
+                "input_tokens_details": { "cached_tokens": 21_888 },
+                "output_tokens": 824,
+                "output_tokens_details": { "reasoning_tokens": 559 },
+                "total_tokens": 80_363
+            }
+        });
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+
+        let response = parse_responses_completion(
+            payload,
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            capability,
+        )
+        .expect("valid DeepSeek Responses payload");
+
+        assert_eq!(response.usage.prompt_tokens, 79_539);
+        assert_eq!(response.usage.cache_read_tokens, Some(21_888));
+        assert_eq!(response.usage.cache_miss_tokens, Some(57_651));
+        assert_eq!(response.usage.thinking_tokens, Some(559));
+    }
+
+    #[test]
+    fn responses_stream_terminal_event_preserves_cache_usage_for_the_hud() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let events = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [{
+                        "id": "msg-cache",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": "Answer" }]
+                    }],
+                    "usage": {
+                        "input_tokens": 79_539,
+                        "input_tokens_details": { "cached_tokens": 21_888 },
+                        "output_tokens": 824,
+                        "total_tokens": 80_363
+                    }
+                }
+            }),
+            &mut ResponsesAssembler::default(),
+            dialect,
+            capability,
+        )
+        .expect("valid terminal stream event");
+
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ProviderStreamEvent::Chunk { chunk } => chunk.usage.as_ref(),
+                _ => None,
+            })
+            .expect("terminal stream usage");
+        assert_eq!(usage.cache_read_tokens, Some(21_888));
+        assert_eq!(usage.cache_miss_tokens, Some(57_651));
     }
 }
