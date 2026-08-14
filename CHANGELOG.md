@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.12...nexa-monorepo-v0.12.13) (2026-08-14)
+
+
+### Features
+
+* add Gemini 3.7, cache metrics, and theme plugins ([a0f31ca](https://github.com/MLGBJDLW/Nexa/commit/a0f31ca36541f22ec73fce1a223ed32e0ddc46c3))
+* **models:** add Gemini 3.7 Flash ([cb17253](https://github.com/MLGBJDLW/Nexa/commit/cb17253178bdf093d71d2f7bb9ddb5401a78737f))
+* **themes:** add declarative theme resource plugins ([39ccae6](https://github.com/MLGBJDLW/Nexa/commit/39ccae6bfdbe0842604feb156cb664625ad5ad77))
+
+
+### Bug Fixes
+
+* **themes:** align Unicode description limits ([3706a5b](https://github.com/MLGBJDLW/Nexa/commit/3706a5b469948be41bf9340682b1b3ffb265d792))
+* **themes:** preserve normalized draft descriptions ([6906987](https://github.com/MLGBJDLW/Nexa/commit/6906987aa923cbe4da27a2564a9abd75f52b28fc))
+* **usage:** restore Responses cache hit accounting ([4448734](https://github.com/MLGBJDLW/Nexa/commit/4448734b83bfa2fd1773d43c61c929971cd734f4))
+
 ## [0.12.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.11...nexa-monorepo-v0.12.12) (2026-08-12)
 
 
