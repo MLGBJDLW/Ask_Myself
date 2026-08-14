@@ -46,6 +46,14 @@ test('theme profiles round-trip through the declarative plugin envelope', () => 
   assert.deepEqual(parseCustomTheme(serialized), themeResourcePluginToCustomTheme(plugin));
 });
 
+test('theme-resource description limits count Unicode code points like the Rust backend', () => {
+  assert.equal(themeToResourcePlugin(profile, '🌊'.repeat(251)).description, '🌊'.repeat(251));
+  assert.throws(
+    () => themeToResourcePlugin(profile, '🌊'.repeat(501)),
+    /description is too long/,
+  );
+});
+
 test('theme-resource plugins reject executable or remote background content', () => {
   const plugin = themeToResourcePlugin(profile);
   const unsafe = {

@@ -186,7 +186,7 @@ export function normalizeThemeResourcePlugin(value: unknown): ThemeResourcePlugi
     name: input.name,
   });
   const description = input.description?.trim();
-  if (description && description.length > 500) throw new Error('Theme resource description is too long');
+  if (description && Array.from(description).length > 500) throw new Error('Theme resource description is too long');
   return {
     manifestVersion: 1,
     kind: 'theme-resource',
