@@ -3,7 +3,8 @@
 //! The desktop UI and backend both read `shared/provider-presets.json` so
 //! provider defaults do not drift between TypeScript and Rust.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -579,6 +580,37 @@ pub fn model_limits_from_catalog(provider_type: ProviderType, model: &str) -> Op
     })
 }
 
+/// Resolve context size by model id from the shared built-in catalog when the
+/// provider is not available at the call site. Exact, full-limit lookups should
+/// continue to use [`model_limits_from_catalog`].
+pub fn model_context_tokens_from_shared_catalog(model: &str) -> Option<u64> {
+    let normalized_model = normalize_model_id(model);
+    if normalized_model.is_empty() {
+        return None;
+    }
+    static SHARED_MODEL_CONTEXT_TOKENS: OnceLock<HashMap<String, u64>> = OnceLock::new();
+    SHARED_MODEL_CONTEXT_TOKENS
+        .get_or_init(|| {
+            let mut context_tokens_by_model = HashMap::<String, u64>::new();
+            let Ok(catalog) = load_builtin_catalog() else {
+                return context_tokens_by_model;
+            };
+            for descriptor in catalog.models {
+                let Some(context_tokens) = descriptor.limits.context_tokens else {
+                    continue;
+                };
+                for id in std::iter::once(descriptor.id).chain(descriptor.aliases) {
+                    context_tokens_by_model
+                        .entry(normalize_model_id(&id))
+                        .or_insert(context_tokens);
+                }
+            }
+            context_tokens_by_model
+        })
+        .get(&normalized_model)
+        .copied()
+}
+
 pub fn model_supports_reasoning_from_catalog(
     provider_type: ProviderType,
     model: &str,
@@ -946,7 +978,8 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"gemini-3.6-flash"));
+        assert_eq!(ids.first(), Some(&"gemini-3.7-flash"));
+        assert!(ids.contains(&"gemini-3.6-flash"));
         assert!(ids.contains(&"gemini-3.5-flash-lite"));
         assert!(!ids.contains(&"gemini-3-pro-preview"));
         assert!(!ids.contains(&"gemini-2.0-flash"));
@@ -955,21 +988,21 @@ mod tests {
         let latest = google
             .models
             .first()
-            .expect("Gemini 3.6 Flash should be listed first");
+            .expect("Gemini 3.7 Flash should be listed first");
         assert_eq!(latest.recommended, Some(true));
+        assert_eq!(latest.source, Some(ModelCatalogSource::Official));
+        let limits = model_limits_from_catalog(ProviderType::Google, &latest.id)
+            .expect("Gemini 3.7 Flash limits should project from the shared catalog");
+        assert_eq!(limits.context_tokens, Some(1_048_576));
+        assert_eq!(limits.max_output_tokens, Some(65_536));
         let reasoning = latest
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
-            .expect("Gemini 3.6 Flash should expose reasoning controls");
+            .expect("Gemini 3.7 Flash should expose reasoning controls");
         assert_eq!(
             reasoning.effort_levels,
-            vec![
-                "minimal".to_string(),
-                "low".to_string(),
-                "medium".to_string(),
-                "high".to_string(),
-            ]
+            vec!["low".to_string(), "medium".to_string(), "high".to_string(),]
         );
         assert_eq!(reasoning.default_effort.as_deref(), Some("medium"));
         assert_eq!(

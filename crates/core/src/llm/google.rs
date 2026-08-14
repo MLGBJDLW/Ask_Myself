@@ -653,9 +653,17 @@ fn uses_latest_generation_contract(model: &str) -> bool {
         || matches!((major, minor), (Some(3), Some(minor)) if minor >= 6)
 }
 
-fn normalize_thinking_level(level: &ReasoningEffort) -> String {
+fn normalize_thinking_level(model: &str, level: &ReasoningEffort) -> String {
+    let minimum = if normalized_model_name(model)
+        .to_ascii_lowercase()
+        .starts_with("gemini-3.7-flash")
+    {
+        "low"
+    } else {
+        "minimal"
+    };
     match level {
-        ReasoningEffort::None | ReasoningEffort::Minimal => "minimal",
+        ReasoningEffort::None | ReasoningEffort::Minimal => minimum,
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => "high",
@@ -663,8 +671,15 @@ fn normalize_thinking_level(level: &ReasoningEffort) -> String {
     .to_string()
 }
 
-fn thinking_budget_to_level(budget: u32) -> String {
+fn thinking_budget_to_level(model: &str, budget: u32) -> String {
     match budget {
+        ..=128
+            if normalized_model_name(model)
+                .to_ascii_lowercase()
+                .starts_with("gemini-3.7-flash") =>
+        {
+            "low"
+        }
         ..=128 => "minimal",
         129..=4_096 => "low",
         4_097..=16_384 => "medium",
@@ -747,8 +762,12 @@ fn build_request_body(
             request
                 .reasoning_effort
                 .as_ref()
-                .map(normalize_thinking_level)
-                .or_else(|| request.thinking_budget.map(thinking_budget_to_level))
+                .map(|level| normalize_thinking_level(&request.model, level))
+                .or_else(|| {
+                    request
+                        .thinking_budget
+                        .map(|budget| thinking_budget_to_level(&request.model, budget))
+                })
                 .map(|thinking_level| GeminiThinkingConfig {
                     thinking_budget: None,
                     thinking_level: Some(thinking_level),
@@ -2151,7 +2170,7 @@ mod tests {
     #[test]
     fn test_latest_models_use_thinking_level_and_omit_temperature() {
         let request = CompletionRequest {
-            model: "gemini-3.6-flash".to_string(),
+            model: "gemini-3.7-flash".to_string(),
             messages: vec![Message::text(Role::User, "hello")],
             temperature: Some(0.2),
             max_tokens: Some(256),
@@ -2173,6 +2192,38 @@ mod tests {
         assert_eq!(thinking.thinking_budget, None);
         assert_eq!(thinking.thinking_level.as_deref(), Some("high"));
         assert_eq!(thinking.include_thoughts, Some(true));
+    }
+
+    #[test]
+    fn test_gemini_3_7_never_emits_unsupported_minimal_thinking() {
+        for (reasoning_effort, thinking_budget) in
+            [(Some(ReasoningEffort::Minimal), None), (None, Some(128))]
+        {
+            let request = CompletionRequest {
+                model: "models/gemini-3.7-flash".to_string(),
+                messages: vec![Message::text(Role::User, "hello")],
+                temperature: None,
+                max_tokens: Some(256),
+                tools: None,
+                stop: None,
+                thinking_budget,
+                reasoning_enabled: Some(true),
+                reasoning_effort,
+                provider_type: None,
+                routing_session_id: None,
+                parallel_tool_calls: true,
+            };
+
+            let body = build_request_body(&request, None, vec![]);
+            let thinking = body
+                .generation_config
+                .expect("generation config")
+                .thinking_config
+                .expect("thinking config");
+
+            assert_eq!(thinking.thinking_level.as_deref(), Some("low"));
+            assert_eq!(thinking.thinking_budget, None);
+        }
     }
 
     #[test]

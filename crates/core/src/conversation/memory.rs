@@ -140,6 +140,12 @@ pub fn context_safety_buffer(max_tokens: u32) -> u32 {
 /// users can set context_window in AgentConfig. Update this list by checking
 /// provider API documentation.
 pub fn model_context_window(model: &str) -> u32 {
+    if let Some(context_tokens) =
+        crate::provider_catalog::model_context_tokens_from_shared_catalog(model)
+            .and_then(|tokens| u32::try_from(tokens).ok())
+    {
+        return context_tokens;
+    }
     let m = model.to_lowercase();
     let m = m.as_str();
 
@@ -668,6 +674,7 @@ mod tests {
         assert_eq!(model_context_window("claude-2.1"), 200_000);
         assert_eq!(model_context_window("claude-2.0"), 100_000);
         // Google Gemini
+        assert_eq!(model_context_window("gemini-3.7-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.6-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.5-flash-lite"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.1-pro-preview"), 1_048_576);
@@ -684,9 +691,9 @@ mod tests {
         // Moonshot / Kimi
         assert_eq!(model_context_window("kimi-k3"), 1_048_576);
         assert_eq!(model_context_window("moonshotai/kimi-k3"), 1_048_576);
-        assert_eq!(model_context_window("kimi-k2.7-code"), 256_000);
-        assert_eq!(model_context_window("kimi-k2.6"), 256_000);
-        assert_eq!(model_context_window("kimi-k2.5"), 256_000);
+        assert_eq!(model_context_window("kimi-k2.7-code"), 262_144);
+        assert_eq!(model_context_window("kimi-k2.6"), 262_144);
+        assert_eq!(model_context_window("kimi-k2.5"), 262_144);
         assert_eq!(model_context_window("kimi-k2-thinking"), 256_000);
         assert_eq!(model_context_window("kimi-k2"), 256_000);
         assert_eq!(model_context_window("kimi-latest"), 128_000);
