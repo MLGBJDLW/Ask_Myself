@@ -77,6 +77,10 @@ assert(
   'the native main window must stay hidden until the branded startup surface has painted',
 );
 assert(
+  /StateFlags::all\(\)\s*&\s*!\(StateFlags::DECORATIONS\s*\|\s*StateFlags::VISIBLE\)/.test(mainSource),
+  'persisted window state must not restore visibility before the branded startup surface paints',
+);
+assert(
   typeof mainWindow.backgroundColor === 'string' && mainWindow.backgroundColor !== '#ffffff',
   'the native webview background must match the branded startup surface instead of flashing white',
 );
