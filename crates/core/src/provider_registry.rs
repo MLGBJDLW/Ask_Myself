@@ -26,7 +26,7 @@ const PROVIDER_REGISTRY: &[ProviderRegistryEntry] = &[
     ProviderRegistryEntry {
         provider_type: ProviderType::OpenAi,
         canonical_key: "open_ai",
-        aliases: &["openai", "open_ai"],
+        aliases: &["openai", "open_ai", "xai"],
         adapter: ProviderAdapterKind::OpenAiCompatible,
     },
     ProviderRegistryEntry {
@@ -208,6 +208,7 @@ mod tests {
             provider_type_from_key("open_ai"),
             Some(ProviderType::OpenAi)
         );
+        assert_eq!(provider_type_from_key("xai"), Some(ProviderType::OpenAi));
         assert_eq!(provider_type_from_key("gemini"), Some(ProviderType::Google));
         assert_eq!(
             provider_type_for_parts("custom", Some("https://api.deepseek.com")),
