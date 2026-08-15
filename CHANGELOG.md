@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.13...nexa-monorepo-v0.12.14) (2026-08-15)
+
+
+### Features
+
+* add GLM 5.3 readiness and refine startup pet UX ([889bc09](https://github.com/MLGBJDLW/Nexa/commit/889bc099e9f179e98f808dc721a496627b5514a7))
+* **desktop:** reveal branded startup after first paint ([27396d9](https://github.com/MLGBJDLW/Nexa/commit/27396d9ea80d7be67b8863b82c91d34cf737c663))
+* **models:** add GLM 5.3 release metadata ([8055618](https://github.com/MLGBJDLW/Nexa/commit/8055618634d13cd2cbef4f9536e690253ff92d86))
+
+
+### Bug Fixes
+
+* **companion:** paint movement before native dragging ([531d88a](https://github.com/MLGBJDLW/Nexa/commit/531d88a22466357ed6e00b690e179af0ab80382a))
+* **desktop:** authorize startup window reveal ([57c7ed3](https://github.com/MLGBJDLW/Nexa/commit/57c7ed3086c0fb3b0a3342af63d3d02e029d3b9c))
+* **desktop:** preserve hidden startup state ([192b693](https://github.com/MLGBJDLW/Nexa/commit/192b693f91711e92f673e18f81cbeeef32776412))
+* **theme:** sync native control color scheme ([1ee4733](https://github.com/MLGBJDLW/Nexa/commit/1ee473398200657acaebda37439c66a6ac9df1af))
+
 ## [0.12.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.12...nexa-monorepo-v0.12.13) (2026-08-14)
 
 
