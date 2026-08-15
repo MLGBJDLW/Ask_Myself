@@ -4,10 +4,83 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/logo-small.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>Nexa</title>
+    <style>
+      html, body, #root { width: 100%; height: 100%; margin: 0; }
+      body { overflow: hidden; background: #0d0a18; }
+      .startup-splash {
+        display: grid;
+        width: 100%;
+        height: 100%;
+        place-items: center;
+        overflow: hidden;
+        color: #f8f7ff;
+        background:
+          radial-gradient(circle at 50% 42%, rgba(139, 92, 246, 0.24), transparent 26%),
+          radial-gradient(circle at 56% 52%, rgba(236, 72, 153, 0.12), transparent 38%),
+          #0d0a18;
+      }
+      .startup-splash__content { display: grid; justify-items: center; gap: 18px; }
+      .startup-splash__mark {
+        position: relative;
+        display: grid;
+        width: 88px;
+        height: 88px;
+        place-items: center;
+      }
+      .startup-splash__mark::before {
+        position: absolute;
+        inset: 0;
+        content: "";
+        border: 1px solid rgba(196, 181, 253, 0.28);
+        border-top-color: rgba(244, 114, 182, 0.9);
+        border-radius: 999px;
+        filter: drop-shadow(0 0 18px rgba(139, 92, 246, 0.35));
+        animation: nexa-startup-orbit 1.8s linear infinite;
+      }
+      .startup-splash__mark::after {
+        position: absolute;
+        inset: 14px;
+        content: "";
+        border-radius: 24px;
+        background: rgba(124, 58, 237, 0.14);
+        animation: nexa-startup-breathe 1.8s ease-in-out infinite;
+      }
+      .startup-splash__logo {
+        z-index: 1;
+        width: 46px;
+        height: 46px;
+        filter: drop-shadow(0 6px 18px rgba(236, 72, 153, 0.28));
+      }
+      .startup-splash__wordmark {
+        font: 600 15px/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        opacity: 0.86;
+      }
+      @keyframes nexa-startup-orbit { to { transform: rotate(360deg); } }
+      @keyframes nexa-startup-breathe {
+        0%, 100% { opacity: 0.55; transform: scale(0.9); }
+        50% { opacity: 1; transform: scale(1.04); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .startup-splash__mark::before,
+        .startup-splash__mark::after { animation: none; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="startup-splash" data-testid="startup-splash" role="status" aria-label="Starting Nexa">
+        <div class="startup-splash__content">
+          <div class="startup-splash__mark" aria-hidden="true">
+            <img class="startup-splash__logo" src="/logo-small.svg" alt="" />
+          </div>
+          <span class="startup-splash__wordmark">Nexa</span>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

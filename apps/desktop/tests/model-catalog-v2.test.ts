@@ -11,6 +11,10 @@ import {
   type ModelDescriptor,
 } from '../src/lib/modelCatalog';
 import { providerModelCatalogCacheKey } from '../src/lib/providerModelCatalog';
+// @ts-expect-error The contract runner intentionally omits Node ambient types.
+import { readFileSync } from 'node:fs';
+// @ts-expect-error The contract runner intentionally omits Node ambient types.
+import { join } from 'node:path';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -223,6 +227,65 @@ function testUncataloguedImageModelsRemainEditable(): void {
   );
 }
 
+function testGlm53IsDiscoverableWithoutAdvertisingAnUnavailableRoute(): void {
+  type RawPreset = {
+    id: string;
+    provider: string;
+    baseUrl: string;
+    models: Array<Parameters<typeof attachModelDescriptors>[0][number]>;
+  };
+  const presets = JSON.parse(readFileSync(
+    join(process.cwd(), '..', '..', 'shared', 'provider-presets.json'),
+    'utf8',
+  )) as RawPreset[];
+  const findPreset = (provider: string, baseUrl: string) => presets.find(
+    preset => preset.provider === provider && normalizeModelEndpointUrl(preset.baseUrl) === normalizeModelEndpointUrl(baseUrl),
+  );
+  const zhipu = findPreset('zhipu', 'https://open.bigmodel.cn/api/paas/v4');
+  assert(zhipu, 'the ordinary Zhipu Model API preset should exist');
+  const models = attachModelDescriptors(zhipu.models, {
+    surface: 'text',
+    providerId: zhipu.id,
+    endpointId: `text:${zhipu.id}`,
+    apiStyle: 'openai_chat',
+  });
+  const model = models.find(candidate => candidate.id === 'glm-5.3');
+  assert(model, 'the released GLM-5.3 model should be discoverable');
+  assertEqual(model.descriptor.lifecycle, 'gated', 'the ordinary Model API is not live yet');
+  assertEqual(model.descriptor.productReadiness, 'known', 'release facts are known without claiming callability');
+  assertEqual(model.descriptor.availableToCredential, false, 'the unavailable route must remain disabled');
+  assertEqual(model.descriptor.limits.contextTokens, 1_000_000, 'GLM-5.3 context should be official');
+  assertEqual(model.descriptor.limits.maxOutputTokens, 131_072, 'GLM-5.3 output limit should be official');
+  assertEqual(selectImplicitDefault(models), null, 'Zhipu should continue requiring an explicit live model selection');
+  const rawReasoning = model.capabilities?.reasoning as {
+    mode?: string;
+    defaultEffort?: string;
+  } | null | undefined;
+  assertEqual(rawReasoning?.mode, 'always', 'GLM-5.3 reasoning cannot be disabled');
+  assertEqual(rawReasoning?.defaultEffort, 'max', 'GLM-5.3 should default to max effort');
+
+  for (const codingPlanUrl of [
+    'https://open.bigmodel.cn/api/coding/paas/v4',
+    'https://api.z.ai/api/coding/paas/v4',
+  ]) {
+    assert(
+      !findPreset('zhipu', codingPlanUrl),
+      'Coding Plan must not be exposed outside its officially supported clients',
+    );
+  }
+
+  for (const route of [
+    { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' },
+    { provider: 'alibaba_model_studio', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+    { provider: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1' },
+  ]) {
+    assert(
+      !findPreset(route.provider, route.baseUrl)?.models.some(model => model.id.toLowerCase().includes('glm-5.3')),
+      `${route.provider} must not advertise GLM-5.3 before its own live catalog does`,
+    );
+  }
+}
+
 testImplicitDefaultsRespectLifecycleAccessAndReadiness();
 testLegacyImagePresetProjectsCanonicalMetadata();
 testRecommendationDoesNotFabricateProductReadiness();
@@ -231,3 +294,4 @@ testEndpointIdentityRequiresAnExactBaseUrlMatch();
 testSavedExternalEndpointIdentityRequiresAnUnchangedScope();
 testWizardRequiresAnExplicitNonEmptyModel();
 testUncataloguedImageModelsRemainEditable();
+testGlm53IsDiscoverableWithoutAdvertisingAnUnavailableRoute();

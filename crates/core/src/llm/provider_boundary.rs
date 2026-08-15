@@ -144,6 +144,16 @@ pub(super) fn is_siliconflow_public_endpoint(
     endpoint_matches(provider, base_url, &["api.siliconflow.cn"], &["/v1"])
 }
 
+pub(super) fn is_zhipu_model_api_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
+    provider == ProviderType::Zhipu
+        && endpoint_matches(
+            provider,
+            base_url,
+            &["open.bigmodel.cn", "api.z.ai"],
+            &["/api/paas/v4"],
+        )
+}
+
 pub(super) fn is_azure_openai_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
     let Some(url) = trusted_url(provider, base_url) else {
         return false;
@@ -262,6 +272,15 @@ mod tests {
             ),
             "token-plan-global"
         );
+        for endpoint in [
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://api.z.ai/api/paas/v4",
+        ] {
+            assert!(is_zhipu_model_api_endpoint(
+                ProviderType::Zhipu,
+                Some(endpoint)
+            ));
+        }
         for endpoint in [
             "http://dashscope.aliyuncs.com/compatible-mode/v1",
             "https://dashscope.aliyuncs.com:8443/compatible-mode/v1",

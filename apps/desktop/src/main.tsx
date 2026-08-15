@@ -7,6 +7,31 @@ import "@fontsource-variable/inter";
 import "./index.css";
 import { SpeechPlaybackProvider } from "./features/voice/SpeechPlaybackProvider";
 import { OverlayProvider } from "./components/ui/overlay";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+function revealMainWindowAfterFirstPaint() {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  let appWindow: ReturnType<typeof getCurrentWindow>;
+  try {
+    appWindow = getCurrentWindow();
+  } catch {
+    // Browser previews and partial test shims do not have native window metadata.
+    return;
+  }
+  if (appWindow.label !== "main") return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      void (async () => {
+        await appWindow.show();
+        await appWindow.setFocus();
+      })().catch((error: unknown) => {
+        console.warn("Unable to reveal the main window after startup paint", error);
+      });
+    });
+  });
+}
+
+revealMainWindowAfterFirstPaint();
 
 runLocalStorageMigrations();
 

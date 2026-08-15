@@ -38,6 +38,12 @@ const DRAG_DIRECTION_POLL_MS = 34;
 const LOOK_DIRECTION_POLL_MS = 100;
 const LOOK_DIRECTION_DEAD_ZONE_PX = 36;
 
+function afterNextPaint(): Promise<void> {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 interface DecodedCompanionRuntime {
   pack: api.NormalizedCompanionPack;
   asset: string;
@@ -619,10 +625,19 @@ export function CompanionWindowPage() {
         directionTimer = window.setTimeout(() => { void sampleDragDirection(); }, DRAG_DIRECTION_POLL_MS);
       }
     };
-    void sampleDragDirection();
-    void getCurrentWindow().startDragging().finally(() => {
+    void (async () => {
+      // React batches the behavior update until this pointer event returns.
+      // Let the directional sprite commit and paint before Windows enters its
+      // modal native-move loop, where WebView rendering can be suspended.
+      await afterNextPaint();
+      if (pointer.current !== pressed || !pressed.dragging) return;
+      void sampleDragDirection();
+      await getCurrentWindow().startDragging();
+    })().catch((error: unknown) => {
+      console.warn('Unable to start native companion dragging', error);
+    }).finally(() => {
       window.clearTimeout(directionTimer);
-      if (!pointer.current?.dragging) return;
+      if (pointer.current !== pressed || !pressed.dragging) return;
       pointer.current = null;
       dispatchBehavior({ type: 'dragEnded' });
       void api.persistCompanionPosition();
@@ -698,7 +713,9 @@ export function CompanionWindowPage() {
         reducedMotion={reducedMotion}
         active={motionActive}
         terminal={Boolean(stableProjection?.terminal) && !terminalAnimationConsumed}
-        lookDirection={stableState === 'idle' ? lookDirection : null}
+        lookDirection={stableState === 'idle' && (effectiveBehavior === 'idle' || effectiveBehavior === 'hovering')
+          ? lookDirection
+          : null}
         onAnimationComplete={() => {
           if (stableProjection?.terminal) setTerminalAnimationConsumed(true);
           dispatchBehavior({ type: 'animationCompleted' });

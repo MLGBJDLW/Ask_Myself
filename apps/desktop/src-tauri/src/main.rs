@@ -153,9 +153,10 @@ fn load_or_create_routing_session_secret(data_dir: &Path) -> io::Result<String> 
 }
 
 fn persisted_window_state_flags() -> StateFlags {
-    // Native decorations are controlled by tauri.conf.json. Restoring this flag
-    // would let a pre-custom-frame state re-enable the system title bar.
-    StateFlags::all() & !StateFlags::DECORATIONS
+    // Native decorations and startup visibility are controlled by tauri.conf.json.
+    // Restoring either flag could re-enable the system title bar or reveal the
+    // WebView before the branded startup surface has painted.
+    StateFlags::all() & !(StateFlags::DECORATIONS | StateFlags::VISIBLE)
 }
 
 const TRAY_SHOW_ID: &str = "tray_show";
@@ -1018,15 +1019,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persisted_window_state_never_restores_native_decorations() {
+    fn persisted_window_state_never_restores_native_decorations_or_visibility() {
         let flags = persisted_window_state_flags();
 
         assert!(!flags.contains(StateFlags::DECORATIONS));
+        assert!(!flags.contains(StateFlags::VISIBLE));
         assert!(flags.contains(
             StateFlags::SIZE
                 | StateFlags::POSITION
                 | StateFlags::MAXIMIZED
-                | StateFlags::VISIBLE
                 | StateFlags::FULLSCREEN
         ));
     }

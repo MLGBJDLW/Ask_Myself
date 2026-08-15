@@ -42,7 +42,10 @@ export function catalogModelOptionDescription(
   const io = `${descriptor.inputModalities.map((item) => modalityLabel(item, t)).join('+')}→${descriptor.outputModalities.map((item) => modalityLabel(item, t)).join('+')}`;
   const region = descriptor.regions.length > 0 ? descriptor.regions.join(', ') : null;
   const source = descriptor.source === 'discovered' ? t('settings.modelSourceDiscovered') : null;
-  return [model.id, model.secondary, source, region, io].filter(Boolean).join(' · ');
+  const credential = descriptor.availableToCredential === false
+    ? t('settings.modelCredentialUnavailable')
+    : null;
+  return [model.id, model.secondary, credential, source, region, io].filter(Boolean).join(' · ');
 }
 
 /** Searchable model picker with a compact selected label and two-line catalog rows. */

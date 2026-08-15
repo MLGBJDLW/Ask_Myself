@@ -11,7 +11,7 @@ use super::provider_boundary::{
     is_deepseek_anthropic_endpoint, is_deepseek_public_endpoint, is_google_public_endpoint,
     is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
     is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
-    is_xai_public_endpoint, provider_id,
+    is_xai_public_endpoint, is_zhipu_model_api_endpoint, provider_id,
 };
 use super::{ProviderType, ReasoningEffort};
 
@@ -31,6 +31,7 @@ pub enum ThinkingModeControl {
     Unsupported,
     ProviderDefault,
     AlwaysOn,
+    AlwaysOnThinkingType,
     EnableThinking,
     ThinkingType,
     ThinkingTypeWithKeep,
@@ -201,7 +202,10 @@ impl ReasoningProfile {
         effort: Option<&ReasoningEffort>,
         budget: Option<u32>,
     ) -> Option<bool> {
-        if self.mode_control == ThinkingModeControl::AlwaysOn {
+        if matches!(
+            self.mode_control,
+            ThinkingModeControl::AlwaysOn | ThinkingModeControl::AlwaysOnThinkingType
+        ) {
             return Some(true);
         }
         if effort == Some(&ReasoningEffort::None) {
@@ -585,6 +589,31 @@ pub fn resolve_reasoning_profile(
         return value;
     }
 
+    if is_zhipu_model_api_endpoint(provider, base_url) {
+        if model != "glm-5.3" {
+            return ReasoningProfile::unsupported(key);
+        }
+        let mut value = profile(
+            key,
+            "zhipu-glm53-model-api-v1",
+            ThinkingModeControl::AlwaysOnThinkingType,
+            ReasoningEffortField::TopLevel,
+            ReasoningEffortMapping::Exact,
+            (
+                &[
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ],
+                Some(ReasoningEffort::Max),
+            ),
+            ReasoningBudgetField::None,
+        );
+        value.preserve_reasoning_history = true;
+        value.omit_temperature_when_reasoning = true;
+        return value;
+    }
+
     if is_alibaba_chat_endpoint(provider, base_url) {
         if matches!(model.as_str(), "qwen3.8-max" | "qwen3.8-max-preview") {
             let mode_control = if model == "qwen3.8-max-preview" {
@@ -931,6 +960,50 @@ mod tests {
             "grok-4.20-multi-agent-0309",
         );
         assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+    }
+
+    #[test]
+    fn glm53_model_api_is_always_on_and_endpoint_scoped() {
+        for endpoint in [
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://api.z.ai/api/paas/v4",
+        ] {
+            let value = resolve_reasoning_profile(
+                ProviderType::Zhipu,
+                Some(endpoint),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                "glm-5.3",
+            );
+            assert_eq!(value.id, "zhipu-glm53-model-api-v1");
+            assert_eq!(
+                value.mode_control,
+                ThinkingModeControl::AlwaysOnThinkingType
+            );
+            assert_eq!(value.effort_field, ReasoningEffortField::TopLevel);
+            assert_eq!(
+                value.accepted_efforts,
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]
+            );
+            assert_eq!(value.default_effort, Some(ReasoningEffort::Max));
+        }
+
+        for endpoint in [
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "https://open.bigmodel.cn/api/paas/v5",
+            "https://api.z.ai:8443/api/paas/v4",
+        ] {
+            let value = resolve_reasoning_profile(
+                ProviderType::Zhipu,
+                Some(endpoint),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                "glm-5.3",
+            );
+            assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+        }
     }
 
     #[test]

@@ -41,6 +41,7 @@ export function getInitialTheme(): ThemeId {
 
 export function applyTheme(theme: ThemeId): void {
   const root = document.documentElement;
+  root.style.colorScheme = isLightTheme(theme) ? 'light' : 'dark';
   for (const id of THEME_IDS) {
     if (id !== 'dark') root.classList.remove(`theme-${id}`);
   }

@@ -107,10 +107,10 @@ const BEHAVIOR_ANIMATION_CANDIDATES: Record<CompanionBehaviorState, string[]> = 
   beingPetted: ['beingPetted', 'petting', 'happy', 'waving', 'idle'],
   clicked: ['clicked', 'jumping', 'waving', 'idle'],
   // A pack-specific drag pose remains the highest-priority override. Standard
-  // Codex v2 packs otherwise use their directional locomotion rows; `running`
-  // is task activity in that atlas, not foot-running.
-  draggingLeft: ['draggingLeft', 'dragging', 'pickedUp', 'moveLeft', 'walkingLeft', 'walking', 'idle'],
-  draggingRight: ['draggingRight', 'dragging', 'pickedUp', 'moveRight', 'walkingRight', 'walking', 'idle'],
+  // Codex v2 packs use directional locomotion rows. Other dialects often expose
+  // only a generic running track, which is still better drag feedback than idle.
+  draggingLeft: ['draggingLeft', 'dragging', 'pickedUp', 'moveLeft', 'walkingLeft', 'walking', 'running', 'idle'],
+  draggingRight: ['draggingRight', 'dragging', 'pickedUp', 'moveRight', 'walkingRight', 'walking', 'running', 'idle'],
   dropped: ['dropped', 'landing', 'jumping', 'idle'],
   walkingLeft: ['moveLeft', 'walkingLeft', 'walking', 'idle'],
   walkingRight: ['moveRight', 'walkingRight', 'walking', 'idle'],

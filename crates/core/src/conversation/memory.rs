@@ -232,7 +232,7 @@ pub fn model_context_window(model: &str) -> u32 {
         "deepseek-chat" | "deepseek-reasoner" => 128_000,
 
         // Zhipu GLM
-        "glm-5.2" | "glm-5.2-fast-preview" => 1_000_000,
+        "glm-5.3" | "glm-5.2" | "glm-5.2-fast-preview" => 1_000_000,
         "glm-5.1" | "glm-5" | "glm-5-turbo" => 200_000,
         "glm-4-long" => 1_000_000,
 
@@ -414,7 +414,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("llama") => 128_000,
 
         // Zhipu GLM
-        _ if m.starts_with("glm-5.2") => 1_000_000,
+        _ if m.starts_with("glm-5.3") || m.starts_with("glm-5.2") => 1_000_000,
         _ if m.contains("glm") => 128_000,
 
         // Moonshot / Kimi
@@ -684,6 +684,7 @@ mod tests {
         assert_eq!(model_context_window("gemini-1.5-pro"), 2_097_152);
         assert_eq!(model_context_window("gemini-1.5-flash"), 1_048_576);
         // Zhipu GLM
+        assert_eq!(model_context_window("glm-5.3"), 1_000_000);
         assert_eq!(model_context_window("glm-5.2"), 1_000_000);
         assert_eq!(model_context_window("glm-5.1"), 200_000);
         assert_eq!(model_context_window("glm-5"), 200_000);

@@ -94,6 +94,18 @@ assertEqual(
   'moveRight',
   'right drag uses the directional running track',
 );
+const genericRunningPack: CompanionAnimationPack = {
+  contentHash: 'generic-running',
+  animations: {
+    idle: { frames: [0], fps: 8, looping: true, fallback: null },
+    running: { frames: [1, 2, 3], fps: 12, looping: true, fallback: 'idle' },
+  },
+};
+assertEqual(
+  selectCompanionAnimation(genericRunningPack, 'idle', 'draggingRight')?.key,
+  'running',
+  'dragging falls back to a generic running track before idle',
+);
 const explicitV2WithoutIdle: CompanionAnimationPack = {
   contentHash: 'v2-without-idle',
   animations: {

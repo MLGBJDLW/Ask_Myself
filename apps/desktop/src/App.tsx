@@ -74,8 +74,18 @@ function NotFoundPage() {
 function PageLoader() {
   const { t } = useTranslation();
   return (
-    <div className="flex h-full min-h-0 items-center justify-center text-sm text-text-tertiary">
-      {t('common.loading')}
+    <div
+      className="startup-splash"
+      data-testid="startup-splash"
+      role="status"
+      aria-label={t('common.loading')}
+    >
+      <div className="startup-splash__content">
+        <div className="startup-splash__mark" aria-hidden="true">
+          <img className="startup-splash__logo" src="/logo-small.svg" alt="" />
+        </div>
+        <span className="startup-splash__wordmark">Nexa</span>
+      </div>
     </div>
   );
 }

@@ -15,6 +15,19 @@ const companionSource = readFileSync(
   join(process.cwd(), 'src-tauri', 'src', 'companion_window.rs'),
   'utf8',
 );
+const tauriConfig = JSON.parse(readFileSync(
+  join(process.cwd(), 'src-tauri', 'tauri.conf.json'),
+  'utf8',
+)) as {
+  app?: { windows?: Array<{ visible?: boolean; backgroundColor?: string }> };
+};
+const indexHtml = readFileSync(join(process.cwd(), 'index.html'), 'utf8');
+const bootstrapSource = readFileSync(join(process.cwd(), 'src', 'main.tsx'), 'utf8');
+const themeSource = readFileSync(join(process.cwd(), 'src', 'lib', 'theme.ts'), 'utf8');
+const mainCapability = JSON.parse(readFileSync(
+  join(process.cwd(), 'src-tauri', 'capabilities', 'default.json'),
+  'utf8',
+)) as { permissions?: string[] };
 
 const closePolicy = mainSource.match(
   /fn main_window_close_action[\s\S]*?\n}\n/,
@@ -59,5 +72,41 @@ assert(
     && !/place_inside_work_area\(/.test(placementLoop),
   'the periodic guard must clamp roaming in place instead of replaying persisted coordinates',
 );
+const mainWindow = tauriConfig.app?.windows?.[0];
+assert(
+  mainWindow?.visible === false,
+  'the native main window must stay hidden until the branded startup surface has painted',
+);
+assert(
+  /StateFlags::all\(\)\s*&\s*!\(StateFlags::DECORATIONS\s*\|\s*StateFlags::VISIBLE\)/.test(mainSource),
+  'persisted window state must not restore visibility before the branded startup surface paints',
+);
+assert(
+  typeof mainWindow.backgroundColor === 'string' && mainWindow.backgroundColor !== '#ffffff',
+  'the native webview background must match the branded startup surface instead of flashing white',
+);
+assert(
+  /data-testid=["']startup-splash["']/.test(indexHtml)
+    && /logo-small\.svg/.test(indexHtml)
+    && /prefers-reduced-motion/.test(indexHtml),
+  'the first HTML paint must contain a branded, reduced-motion-safe startup animation',
+);
+assert(
+  /name=["']color-scheme["']\s+content=["']dark light["']/.test(indexHtml)
+    && /root\.style\.colorScheme\s*=\s*isLightTheme\(theme\)\s*\?\s*["']light["']\s*:\s*["']dark["']/.test(themeSource),
+  'native controls must follow the active light or dark application theme after startup',
+);
+assert(
+  /requestAnimationFrame/.test(bootstrapSource)
+    && /getCurrentWindow\(\)/.test(bootstrapSource)
+    && /\.show\(\)/.test(bootstrapSource)
+    && /\.setFocus\(\)/.test(bootstrapSource),
+  'the bootstrap must reveal the correctly sized native window only after the startup surface paints',
+);
+assert(
+  mainCapability.permissions?.includes('core:window:allow-show')
+    && mainCapability.permissions.includes('core:window:allow-set-focus'),
+  'the main webview must be authorized to reveal and focus the initially hidden native window',
+);
 
-console.log('ok - native window lifecycle preserves application exit and live roaming authority');
+console.log('ok - native window lifecycle preserves startup, application exit, and live roaming authority');
