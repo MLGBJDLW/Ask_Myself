@@ -1073,16 +1073,81 @@ mod tests {
 
         let zhipu = find_provider_preset("zhipu", Some("https://open.bigmodel.cn/api/paas/v4"))
             .expect("Zhipu preset should match");
-        assert_eq!(
-            zhipu.models.first().map(|model| model.id.as_str()),
-            Some("glm-5.2")
-        );
-        let glm52_reasoning = zhipu.models[0]
+        let glm52 = zhipu
+            .models
+            .iter()
+            .find(|model| model.id == "glm-5.2")
+            .expect("GLM-5.2 should remain the recommended live default");
+        assert_eq!(glm52.recommended, Some(true));
+        let glm52_reasoning = glm52
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
             .expect("GLM-5.2 should expose reasoning controls");
         assert!(glm52_reasoning.effort_levels.contains(&"max".to_string()));
+
+        let glm53 = zhipu
+            .models
+            .iter()
+            .find(|model| model.id == "glm-5.3")
+            .expect("the released GLM-5.3 model should be discoverable");
+        assert_eq!(glm53.source, Some(ModelCatalogSource::Official));
+        assert_eq!(glm53.status, Some(ModelLifecycleStatus::Gated));
+        assert_eq!(glm53.recommended, Some(false));
+        let reasoning = glm53
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("GLM-5.3 should expose its always-on reasoning contract");
+        assert_eq!(reasoning.mode.as_deref(), Some("always"));
+        assert_eq!(reasoning.effort_levels, ["low", "high", "max"]);
+        assert_eq!(reasoning.default_effort.as_deref(), Some("max"));
+        let limits = model_limits_from_catalog(ProviderType::Zhipu, "glm-5.3")
+            .expect("GLM-5.3 limits should project from the shared catalog");
+        assert_eq!(limits.context_tokens, Some(1_000_000));
+        assert_eq!(limits.max_output_tokens, Some(131_072));
+        let snapshot = build_effective_model_catalog(
+            "zhipu",
+            Some("https://open.bigmodel.cn/api/paas/v4"),
+            None,
+            None,
+            "2026-08-15T00:00:00Z",
+        );
+        let glm53_descriptor = snapshot
+            .descriptors
+            .iter()
+            .find(|model| model.id == "glm-5.3")
+            .expect("GLM-5.3 descriptor should remain visible while unavailable");
+        assert_eq!(glm53_descriptor.available_to_credential, Some(false));
+        assert_eq!(
+            glm53_descriptor.product_readiness,
+            crate::model_catalog::ProductReadiness::Known
+        );
+
+        for base_url in [
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "https://api.z.ai/api/coding/paas/v4",
+        ] {
+            assert!(
+                find_provider_preset("zhipu", Some(base_url)).is_none(),
+                "Coding Plan is restricted to officially supported clients"
+            );
+        }
+
+        for (provider, base_url) in [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            (
+                "alibaba_model_studio",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+            ("siliconflow", "https://api.siliconflow.cn/v1"),
+        ] {
+            let preset = find_provider_preset(provider, Some(base_url)).expect("known preset");
+            assert!(preset
+                .models
+                .iter()
+                .all(|model| !model.id.contains("glm-5.3")));
+        }
     }
 
     #[test]

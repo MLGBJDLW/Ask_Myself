@@ -7417,11 +7417,43 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.3 metadata (Model API coming soon), plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
     "models": [
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "gated",
+        "access": "account_enablement",
+        "productReadiness": "known",
+        "availableToCredential": false,
+        "recommended": false,
+        "regions": ["cn-mainland"],
+        "lastVerifiedAt": "2026-08-15",
+        "releaseDate": "2026-08-14",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
       {
         "id": "glm-5.2",
         "name": "GLM-5.2",

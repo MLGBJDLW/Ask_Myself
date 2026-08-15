@@ -840,6 +840,35 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");
 });
 
+test("settings discovers GLM-5.3 without enabling an unavailable or restricted route", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  await expect(page.getByRole("button", { name: /GLM Coding Plan/ })).toHaveCount(0);
+  const zhipuCard = page.getByRole("button", { name: /^Zhipu \(GLM\)/ });
+  await expect(zhipuCard).toContainText("Model API coming soon");
+  await zhipuCard.click();
+
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await expect(baseUrlField.getByRole("textbox")).toHaveValue(
+    "https://open.bigmodel.cn/api/paas/v4",
+  );
+
+  const modelField = page.getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "");
+  await modelSelect.click();
+  const glm53 = page.locator('[role="option"][data-value="glm-5.3"]');
+  await expect(glm53).toBeVisible();
+  await expect(glm53).toContainText("Unavailable for this credential");
+  await expect(glm53).toHaveAttribute("data-disabled", "true");
+  await page.keyboard.press("Escape");
+});
+
 test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();

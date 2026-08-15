@@ -282,6 +282,8 @@ fn project_model(
     descriptor.replacement_model_id = optional_string(model, "replacementModelId");
     descriptor.pricing_ref = optional_string(model, "pricingRef");
     descriptor.product_readiness = readiness(model, &descriptor);
+    descriptor.available_to_credential =
+        model.get("availableToCredential").and_then(Value::as_bool);
     descriptor.input_modalities = input_modalities(surface, model);
     descriptor.output_modalities = output_modalities(surface, model);
     descriptor.capabilities = capabilities(surface, api_style, preset, model);

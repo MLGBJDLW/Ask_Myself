@@ -913,7 +913,7 @@ fn build_request_body_with_config(
             None
         },
         thinking: match reasoning_profile.mode_control {
-            ThinkingModeControl::ThinkingType => {
+            ThinkingModeControl::ThinkingType | ThinkingModeControl::AlwaysOnThinkingType => {
                 requested_reasoning_mode.map(|enabled| OaiThinking {
                     thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
                     keep: None,
@@ -4430,6 +4430,33 @@ data: [DONE]
         };
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
         assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn glm53_model_api_always_sends_a_supported_reasoning_effort() {
+        let request = CompletionRequest {
+            model: "glm-5.3".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(131_072),
+            reasoning_enabled: Some(false),
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::Zhipu),
+            ..CompletionRequest::default()
+        };
+        let config = endpoint_config(ProviderType::Zhipu, "https://open.bigmodel.cn/api/paas/v4");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert_eq!(body["reasoning_effort"], "max");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["max_tokens"], 131_072);
     }
 
     #[test]
