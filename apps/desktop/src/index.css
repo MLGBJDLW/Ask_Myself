@@ -41,6 +41,12 @@ html[data-companion-window="true"] #root {
 
 .companion-window-root[data-facing="left"] .companion-sprite { --companion-facing: -1; }
 
+/* Dedicated left-facing rows already point left; mirroring them would make
+   the pet run backwards while moving left. */
+.companion-window-root[data-facing="left"] .companion-sprite[data-animation="moveLeft"],
+.companion-window-root[data-facing="left"] .companion-sprite[data-animation="walkingLeft"],
+.companion-window-root[data-facing="left"] .companion-sprite[data-animation="draggingLeft"] { --companion-facing: 1; }
+
 .companion-shadow {
   position: absolute;
   bottom: 3px;

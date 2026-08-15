@@ -597,50 +597,78 @@ export function CompanionWindowPage() {
       DRAG_THRESHOLD_PX,
     );
     dispatchBehavior({ type: 'dragStarted', direction: pressed.direction });
-    let directionTimer = 0;
-    const sampleDragDirection = async () => {
-      const active = pointer.current;
-      if (active !== pressed || !active.dragging) return;
+    // Move the window from the renderer instead of Window.startDragging():
+    // Windows' native modal move loop suspends WebView painting, which froze
+    // the directional run cycle for the whole drag. A manual move loop keeps
+    // compositing alive so the pet visibly runs while it is dragged around.
+    const companionWindow = getCurrentWindow();
+    const stepManualDrag = async (
+      cursorOrigin: { x: number; y: number },
+      windowOrigin: { x: number; y: number },
+      writeState: { pending: boolean },
+    ) => {
+      if (pointer.current !== pressed || !pressed.dragging) return;
       try {
-        const nextCursor = await cursorPosition();
-        if (active.lastCursor) {
+        const cursor = await cursorPosition();
+        if (pointer.current !== pressed || !pressed.dragging) return;
+        if (pressed.lastCursor) {
           const nextDirection = classifyDragDirection(
-            nextCursor.x - active.lastCursor.x,
-            nextCursor.y - active.lastCursor.y,
+            cursor.x - pressed.lastCursor.x,
+            cursor.y - pressed.lastCursor.y,
           );
           if (nextDirection) {
-            active.lastCursor = nextCursor;
-            if (nextDirection !== active.direction) {
-              active.direction = nextDirection;
+            pressed.lastCursor = cursor;
+            if (nextDirection !== pressed.direction) {
+              pressed.direction = nextDirection;
               dispatchBehavior({ type: 'dragMoved', direction: nextDirection });
             }
           }
         } else {
-          active.lastCursor = nextCursor;
+          pressed.lastCursor = cursor;
+        }
+        if (!writeState.pending) {
+          writeState.pending = true;
+          void companionWindow
+            .setPosition(new PhysicalPosition(
+              Math.round(windowOrigin.x + (cursor.x - cursorOrigin.x)),
+              Math.round(windowOrigin.y + (cursor.y - cursorOrigin.y)),
+            ))
+            .finally(() => { writeState.pending = false; });
         }
       } catch {
-        // Keep the initial pointer vector when global sampling is unavailable.
+        // Transient global-cursor sampling failures must not end the drag.
       }
       if (pointer.current === pressed && pressed.dragging) {
-        directionTimer = window.setTimeout(() => { void sampleDragDirection(); }, DRAG_DIRECTION_POLL_MS);
+        window.setTimeout(() => {
+          void stepManualDrag(cursorOrigin, windowOrigin, writeState);
+        }, DRAG_DIRECTION_POLL_MS);
       }
     };
     void (async () => {
-      // React batches the behavior update until this pointer event returns.
-      // Let the directional sprite commit and paint before Windows enters its
-      // modal native-move loop, where WebView rendering can be suspended.
-      await afterNextPaint();
+      const [cursorOrigin, windowOrigin] = await Promise.all([
+        cursorPosition(),
+        companionWindow.outerPosition(),
+      ]);
       if (pointer.current !== pressed || !pressed.dragging) return;
-      void sampleDragDirection();
-      await getCurrentWindow().startDragging();
-    })().catch((error: unknown) => {
-      console.warn('Unable to start native companion dragging', error);
-    }).finally(() => {
-      window.clearTimeout(directionTimer);
-      if (pointer.current !== pressed || !pressed.dragging) return;
-      pointer.current = null;
-      dispatchBehavior({ type: 'dragEnded' });
-      void api.persistCompanionPosition();
+      pressed.lastCursor = cursorOrigin;
+      void stepManualDrag(cursorOrigin, windowOrigin, { pending: false });
+    })().catch(async (error: unknown) => {
+      // Without global cursor access the native move loop is still better
+      // than an immovable pet, even though it freezes sprite playback.
+      console.warn('Falling back to native companion dragging', error);
+      try {
+        await afterNextPaint();
+        if (pointer.current !== pressed || !pressed.dragging) return;
+        await companionWindow.startDragging();
+      } catch (nativeError) {
+        console.warn('Unable to start native companion dragging', nativeError);
+      } finally {
+        if (pointer.current === pressed && pressed.dragging) {
+          pointer.current = null;
+          dispatchBehavior({ type: 'dragEnded' });
+          void api.persistCompanionPosition();
+        }
+      }
     });
   };
 
@@ -653,6 +681,7 @@ export function CompanionWindowPage() {
     }
     if (pressed.dragging) {
       dispatchBehavior({ type: 'dragEnded' });
+      void api.persistCompanionPosition();
       return;
     }
     const now = performance.now();
