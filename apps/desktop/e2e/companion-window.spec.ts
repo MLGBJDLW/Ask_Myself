@@ -10,6 +10,11 @@ test.beforeEach(async ({ page }) => {
     const companionInvocations: string[] = [];
     const positionWrites: unknown[] = [];
     const lifecycleMarks: Array<{ kind: string; at: number }> = [];
+    const nativeDragSnapshots: Array<{
+      behavior: string | null;
+      animation: string | null;
+      backgroundPosition: string | null;
+    }> = [];
     let packVersion = 1;
     let assetReads = 0;
     let cursor = { x: 544, y: 468 };
@@ -124,8 +129,16 @@ test.beforeEach(async ({ page }) => {
         case 'plugin:window|set_position':
           positionWrites.push(args.value);
           return null;
-        case 'plugin:window|start_dragging':
+        case 'plugin:window|start_dragging': {
+          const root = document.querySelector('.companion-window-root');
+          const sprite = document.querySelector('.companion-sprite');
+          nativeDragSnapshots.push({
+            behavior: root?.getAttribute('data-behavior') ?? null,
+            animation: sprite?.getAttribute('data-animation') ?? null,
+            backgroundPosition: sprite ? getComputedStyle(sprite).backgroundPosition : null,
+          });
           return new Promise<void>((resolve) => { releaseDrag = resolve; });
+        }
         case 'companion_renderer_ready_cmd':
           (window as unknown as { __companionReady?: boolean }).__companionReady = true;
           lifecycleMarks.push({ kind: 'renderer-ready', at: performance.now() });
@@ -167,11 +180,15 @@ test.beforeEach(async ({ page }) => {
       __companionLifecycleMarks?: Array<{ kind: string; at: number }>;
       __companionAssetReads?: () => number;
       __companionPositionWrites?: unknown[];
+      __companionNativeDragSnapshots?: typeof nativeDragSnapshots;
       __setCompanionPackVersion?: (version: number) => void;
       __setCompanionCursor?: (position: { x: number; y: number }) => void;
       __releaseCompanionDrag?: () => void;
       __emitTauri?: (event: string, payload: unknown) => void;
     }).__companionInvocations = companionInvocations;
+    (window as unknown as {
+      __companionNativeDragSnapshots?: typeof nativeDragSnapshots;
+    }).__companionNativeDragSnapshots = nativeDragSnapshots;
     (window as unknown as {
       __companionLifecycleMarks?: Array<{ kind: string; at: number }>;
       __companionAssetReads?: () => number;
@@ -243,6 +260,7 @@ test('does not announce renderer readiness when the first asset cannot decode', 
 });
 
 test('decoded pack refresh is atomic and pointer behaviors are reachable', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nexa-test-companion-idle', 'true'));
   await page.setViewportSize({ width: 144, height: 168 });
   await page.goto('/companion');
   const companion = page.locator('.companion-window-root');
@@ -273,6 +291,18 @@ test('decoded pack refresh is atomic and pointer behaviors are reachable', async
 
   await companion.dispatchEvent('pointerdown', { button: 0, pointerId: 42, clientX: 40, clientY: 40 });
   await companion.dispatchEvent('pointermove', { button: 0, pointerId: 42, clientX: 52, clientY: 40 });
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as {
+      __companionNativeDragSnapshots?: Array<{
+        behavior: string | null;
+        animation: string | null;
+        backgroundPosition: string | null;
+      }>;
+    }
+  ).__companionNativeDragSnapshots?.[0])).toMatchObject({
+    behavior: 'draggingRight',
+    animation: 'moveRight',
+  });
   await expect(companion).toHaveAttribute('data-behavior', 'draggingRight');
   await expect(companion).toHaveAttribute('data-facing', 'right');
   await expect(sprite).toHaveAttribute('data-animation', 'moveRight');
