@@ -23,6 +23,7 @@ const tauriConfig = JSON.parse(readFileSync(
 };
 const indexHtml = readFileSync(join(process.cwd(), 'index.html'), 'utf8');
 const bootstrapSource = readFileSync(join(process.cwd(), 'src', 'main.tsx'), 'utf8');
+const themeSource = readFileSync(join(process.cwd(), 'src', 'lib', 'theme.ts'), 'utf8');
 const mainCapability = JSON.parse(readFileSync(
   join(process.cwd(), 'src-tauri', 'capabilities', 'default.json'),
   'utf8',
@@ -89,6 +90,11 @@ assert(
     && /logo-small\.svg/.test(indexHtml)
     && /prefers-reduced-motion/.test(indexHtml),
   'the first HTML paint must contain a branded, reduced-motion-safe startup animation',
+);
+assert(
+  /name=["']color-scheme["']\s+content=["']dark light["']/.test(indexHtml)
+    && /root\.style\.colorScheme\s*=\s*isLightTheme\(theme\)\s*\?\s*["']light["']\s*:\s*["']dark["']/.test(themeSource),
+  'native controls must follow the active light or dark application theme after startup',
 );
 assert(
   /requestAnimationFrame/.test(bootstrapSource)

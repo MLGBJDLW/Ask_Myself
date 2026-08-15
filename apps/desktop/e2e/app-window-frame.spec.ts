@@ -97,6 +97,23 @@ test('uses a themed window frame with working native controls', async ({ page })
   ]));
 });
 
+test('keeps native controls synchronized with the active color scheme', async ({ page }) => {
+  await page.goto('/missing-route');
+
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+    .toBe('dark');
+
+  await page.evaluate(() => localStorage.setItem('nexa-active-theme-v1', 'light'));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+    .toBe('light');
+
+  await page.evaluate(() => localStorage.setItem('nexa-active-theme-v1', 'midnight'));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+    .toBe('dark');
+});
+
 test('reveals the native window onto a branded startup surface', async ({ page }) => {
   await page.goto('/missing-route');
   await page.evaluate(() => localStorage.setItem('nexa-test-delay-wizard', 'true'));
