@@ -23,6 +23,10 @@ const tauriConfig = JSON.parse(readFileSync(
 };
 const indexHtml = readFileSync(join(process.cwd(), 'index.html'), 'utf8');
 const bootstrapSource = readFileSync(join(process.cwd(), 'src', 'main.tsx'), 'utf8');
+const mainCapability = JSON.parse(readFileSync(
+  join(process.cwd(), 'src-tauri', 'capabilities', 'default.json'),
+  'utf8',
+)) as { permissions?: string[] };
 
 const closePolicy = mainSource.match(
   /fn main_window_close_action[\s\S]*?\n}\n/,
@@ -88,6 +92,11 @@ assert(
     && /\.show\(\)/.test(bootstrapSource)
     && /\.setFocus\(\)/.test(bootstrapSource),
   'the bootstrap must reveal the correctly sized native window only after the startup surface paints',
+);
+assert(
+  mainCapability.permissions?.includes('core:window:allow-show')
+    && mainCapability.permissions.includes('core:window:allow-set-focus'),
+  'the main webview must be authorized to reveal and focus the initially hidden native window',
 );
 
 console.log('ok - native window lifecycle preserves startup, application exit, and live roaming authority');
