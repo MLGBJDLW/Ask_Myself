@@ -1027,6 +1027,7 @@ mod tests {
         assert_eq!(ids.first(), Some(&"~anthropic/claude-fable-latest"));
         assert!(ids.contains(&"anthropic/claude-fable-5"));
         assert!(ids.contains(&"openai/gpt-5.6-sol"));
+        assert!(ids.contains(&"x-ai/grok-4.6"));
         assert!(ids.contains(&"x-ai/grok-4.5"));
         assert!(ids.contains(&"anthropic/claude-sonnet-5"));
         assert!(ids.contains(&"z-ai/glm-5.2"));
@@ -1061,8 +1062,31 @@ mod tests {
             .expect("xAI preset should match its exact base URL");
         assert_eq!(
             xai.models.first().map(|model| model.id.as_str()),
-            Some("grok-4.5")
+            Some("grok-4.6")
         );
+        let grok46 = xai
+            .models
+            .first()
+            .expect("Grok 4.6 should lead the direct xAI catalog");
+        let reasoning = grok46
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("Grok 4.6 should expose reasoning controls");
+        assert_eq!(
+            reasoning.effort_levels,
+            vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ]
+        );
+        assert_eq!(reasoning.default_effort.as_deref(), Some("high"));
+        let limits = model_limits_from_catalog(ProviderType::OpenAi, "grok-4.6")
+            .expect("Grok 4.6 limits should come from the shared catalog");
+        assert_eq!(limits.context_tokens, Some(500_000));
+        assert_eq!(limits.max_output_tokens, None);
 
         let minimax = find_provider_preset("open_ai", Some("https://api.minimax.io/v1"))
             .expect("MiniMax preset should match its exact base URL");
@@ -1173,7 +1197,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::OpenAi, "grok-4.3"),
+            model_supports_vision_from_catalog(ProviderType::OpenAi, "grok-4.6"),
             Some(true)
         );
         assert_eq!(
@@ -1205,7 +1229,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "grok-4.3"),
+            model_supports_reasoning_from_catalog(ProviderType::OpenAi, "grok-4.6"),
             Some(true)
         );
         assert_eq!(

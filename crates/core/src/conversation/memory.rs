@@ -269,7 +269,7 @@ pub fn model_context_window(model: &str) -> u32 {
         | "baichuan4-turbo" | "baichuan4" => 32_000,
 
         // xAI Grok
-        "grok-4.5" => 500_000,
+        "grok-4.6" | "grok-4.5" => 500_000,
         "grok-4.3" => 1_000_000,
         "grok-4" | "grok-4-0709" => 256_000,
         "grok-4-1-fast" | "grok-4-1-fast-reasoning" | "grok-4-1-fast-non-reasoning" => 2_000_000,
@@ -396,6 +396,7 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("deepseek") => 128_000,
 
         // xAI Grok
+        _ if m.starts_with("grok-4.6") => 500_000,
         _ if m.starts_with("grok-4.5") => 500_000,
         _ if m.starts_with("grok-4.3") => 1_000_000,
         _ if m.starts_with("grok-4-1-fast") || m.starts_with("grok-4-fast") => 2_000_000,
@@ -746,6 +747,8 @@ mod tests {
         assert_eq!(model_context_window("Baichuan4-Turbo"), 32_000);
         assert_eq!(model_context_window("Baichuan4"), 32_000);
         // xAI Grok
+        assert_eq!(model_context_window("grok-4.6"), 500_000);
+        assert_eq!(model_context_window("x-ai/grok-4.6"), 500_000);
         assert_eq!(model_context_window("grok-4.5"), 500_000);
         assert_eq!(model_context_window("grok-4.3"), 1_000_000);
         assert_eq!(model_context_window("grok-4"), 256_000);

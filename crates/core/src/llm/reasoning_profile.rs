@@ -167,6 +167,8 @@ pub struct ReasoningProfile {
     pub replay_policy: ReasoningReplayPolicy,
     pub send_preserve_thinking: bool,
     pub omit_temperature_when_reasoning: bool,
+    #[serde(default)]
+    pub omit_stop_when_reasoning: bool,
     pub use_max_completion_tokens: bool,
     pub confidence: CapabilityConfidence,
 }
@@ -191,6 +193,7 @@ impl ReasoningProfile {
             replay_policy: ReasoningReplayPolicy::Unknown,
             send_preserve_thinking: false,
             omit_temperature_when_reasoning: false,
+            omit_stop_when_reasoning: false,
             use_max_completion_tokens: false,
             confidence: CapabilityConfidence::Unknown,
         }
@@ -282,6 +285,7 @@ fn profile(
         replay_policy: ReasoningReplayPolicy::NotRequired,
         send_preserve_thinking: false,
         omit_temperature_when_reasoning: false,
+        omit_stop_when_reasoning: false,
         use_max_completion_tokens: false,
         confidence: CapabilityConfidence::Verified,
     }
@@ -384,22 +388,47 @@ pub fn resolve_reasoning_profile(
 
     if is_xai_public_endpoint(provider, base_url) {
         return match model.as_str() {
-            "grok-4.5" => profile(
-                key,
-                "xai-grok-4.5-reasoning-v1",
-                ThinkingModeControl::AlwaysOn,
-                ReasoningEffortField::TopLevel,
-                ReasoningEffortMapping::Exact,
-                (
-                    &[
-                        ReasoningEffort::Low,
-                        ReasoningEffort::Medium,
-                        ReasoningEffort::High,
-                    ],
-                    Some(ReasoningEffort::High),
-                ),
-                ReasoningBudgetField::None,
-            ),
+            "grok-4.6" => {
+                let mut value = profile(
+                    key,
+                    "xai-grok-4.6-reasoning-v1",
+                    ThinkingModeControl::AlwaysOn,
+                    ReasoningEffortField::TopLevel,
+                    ReasoningEffortMapping::Exact,
+                    (
+                        &[
+                            ReasoningEffort::Low,
+                            ReasoningEffort::Medium,
+                            ReasoningEffort::High,
+                            ReasoningEffort::XHigh,
+                        ],
+                        Some(ReasoningEffort::High),
+                    ),
+                    ReasoningBudgetField::None,
+                );
+                value.omit_stop_when_reasoning = true;
+                value
+            }
+            "grok-4.5" => {
+                let mut value = profile(
+                    key,
+                    "xai-grok-4.5-reasoning-v1",
+                    ThinkingModeControl::AlwaysOn,
+                    ReasoningEffortField::TopLevel,
+                    ReasoningEffortMapping::Exact,
+                    (
+                        &[
+                            ReasoningEffort::Low,
+                            ReasoningEffort::Medium,
+                            ReasoningEffort::High,
+                        ],
+                        Some(ReasoningEffort::High),
+                    ),
+                    ReasoningBudgetField::None,
+                );
+                value.omit_stop_when_reasoning = true;
+                value
+            }
             "grok-4.3" => profile(
                 key,
                 "xai-grok-4.3-reasoning-v1",
@@ -901,6 +930,18 @@ mod tests {
 
     #[test]
     fn curated_openai_compatible_endpoints_keep_only_their_exact_controls() {
+        let grok46 = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.x.ai/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "grok-4.6",
+        );
+        assert_eq!(grok46.default_effort, Some(ReasoningEffort::High));
+        assert_eq!(
+            grok46.wire_effort(Some(&ReasoningEffort::XHigh)).as_deref(),
+            Some("xhigh")
+        );
+
         let xai = resolve_reasoning_profile(
             ProviderType::OpenAi,
             Some("https://api.x.ai/v1"),

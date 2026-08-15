@@ -842,6 +842,9 @@ fn build_request_body_with_config(
     let suppress_temperature = reasoning_supported
         && reasoning_profile.omit_temperature_when_reasoning
         && requested_reasoning_mode != Some(false);
+    let suppress_stop = reasoning_supported
+        && reasoning_profile.omit_stop_when_reasoning
+        && requested_reasoning_mode != Some(false);
     // Some providers/models require function arguments as JSON objects, not strings.
     let raw_tool_args = requires_raw_tool_arguments(&request.model, request.provider_type.as_ref());
     let cache_profile = resolve_prompt_cache_profile(
@@ -947,7 +950,11 @@ fn build_request_body_with_config(
             Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
             _ => None,
         },
-        stop: request.stop.clone(),
+        stop: if suppress_stop {
+            None
+        } else {
+            request.stop.clone()
+        },
         stream: if stream { Some(true) } else { None },
         stream_options: if stream {
             Some(OaiStreamOptions {
@@ -3282,9 +3289,17 @@ data: [DONE]
 
     #[test]
     fn curated_direct_endpoints_emit_only_their_verified_reasoning_controls() {
+        let mut grok46 = endpoint_reasoning_request("grok-4.6");
+        grok46.reasoning_effort = Some(ReasoningEffort::XHigh);
+        grok46.stop = Some(vec!["done".to_string()]);
+        let xai = endpoint_config(ProviderType::OpenAi, "https://api.x.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(&grok46, false, Some(&xai)))
+            .unwrap();
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(body.get("stop").is_none());
+
         let mut xai_request = endpoint_reasoning_request("grok-4.3");
         xai_request.reasoning_effort = Some(ReasoningEffort::None);
-        let xai = endpoint_config(ProviderType::OpenAi, "https://api.x.ai/v1");
         let body = serde_json::to_value(build_request_body_with_config(
             &xai_request,
             false,
