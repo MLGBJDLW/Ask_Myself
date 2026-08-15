@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.14...nexa-monorepo-v0.12.15) (2026-08-15)
+
+
+### Bug Fixes
+
+* **companion:** fix running animation ([ddfa851](https://github.com/MLGBJDLW/Nexa/commit/ddfa8515d8f03a0e5a27a41efbd301b60c8765d7))
+* **companion:** fix running animation ([da0167a](https://github.com/MLGBJDLW/Nexa/commit/da0167a3eb60cc16bf2678d7d8c5c50b66f31aa2))
+
 ## [0.12.14](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.13...nexa-monorepo-v0.12.14) (2026-08-15)
 
 
