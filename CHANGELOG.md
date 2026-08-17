@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.15...nexa-monorepo-v0.12.16) (2026-08-17)
+
+
+### Features
+
+* **models:** add Grok 4.6 support ([41e7747](https://github.com/MLGBJDLW/Nexa/commit/41e77471da2ff873cb2f74f5a1142f5b5e1dbf47))
+* **models:** add Grok 4.6 support ([144eaa4](https://github.com/MLGBJDLW/Nexa/commit/144eaa4da1966e2295f8808592b30c60da24390e))
+
+
+### Bug Fixes
+
+* **models:** map xAI catalog provider ([51c85cf](https://github.com/MLGBJDLW/Nexa/commit/51c85cfc680db83a2beb18e1d0883e72b5d7b204))
+
 ## [0.12.15](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.14...nexa-monorepo-v0.12.15) (2026-08-15)
 
 
