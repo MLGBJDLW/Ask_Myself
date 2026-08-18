@@ -90,6 +90,7 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
 
 pub mod activity_tool;
 pub mod agent_memory_tool;
+pub mod appearance_tool;
 pub mod archive_output_tool;
 pub mod browser_evidence_tool;
 pub mod browser_session_tool;
@@ -1404,6 +1405,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(search_tool::SearchTool));
     registry.register(Box::new(activity_tool::ActivityObserveTool));
+    registry.register(Box::new(appearance_tool::AppearanceTool));
     registry.register(Box::new(tool_search_tool::ToolSearchTool));
     registry.register(Box::new(glob_files_tool::GlobFilesTool));
     registry.register(Box::new(search_files_tool::SearchFilesTool));

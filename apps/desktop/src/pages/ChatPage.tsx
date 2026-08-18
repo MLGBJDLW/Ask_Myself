@@ -22,6 +22,7 @@ import { Button } from '../components/ui/Button';
 import { useOverlayRoot } from '../components/ui/overlay';
 import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
+import { useTheme } from '../lib/ThemeProvider';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
@@ -521,6 +522,7 @@ function SessionSelect({
 /* ------------------------------------------------------------------ */
 
 export function ChatPage() {
+  const { content: themeContent } = useTheme();
   const { t } = useTranslation();
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
@@ -1619,8 +1621,9 @@ export function ChatPage() {
           <div className="flex-1 flex items-center justify-center">
             <EmptyState
               icon={<Logo size={64} />}
-              title={t('chat.noConversations')}
-              description={t('chat.noConversationsDesc')}
+              title={themeContent.statusText || t('chat.noConversations')}
+              description={themeContent.tagline || t('chat.noConversationsDesc')}
+              quote={themeContent.quote}
               action={{
                 label: t('chat.newChat'),
                 onClick: () => handleNewConversation(),

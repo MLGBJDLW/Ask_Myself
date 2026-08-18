@@ -27,6 +27,80 @@ pub fn save_app_config_cmd(
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_appearance_registry_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    state
+        .db
+        .load_appearance_registry()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn hydrate_appearance_registry_cmd(
+    state: tauri::State<'_, AppState>,
+    plugins: Vec<nexa_core::theme_resource_plugin::ThemeResourcePlugin>,
+    active_theme_id: String,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    state
+        .db
+        .hydrate_appearance_registry(plugins, active_theme_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn apply_appearance_plugin_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    plugin: nexa_core::theme_resource_plugin::ThemeResourcePlugin,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    let registry = state
+        .db
+        .apply_appearance_plugin(plugin)
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("appearance://changed", &registry);
+    Ok(registry)
+}
+
+#[tauri::command]
+pub fn activate_appearance_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    theme_id: String,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    let registry = state
+        .db
+        .activate_appearance(&theme_id)
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("appearance://changed", &registry);
+    Ok(registry)
+}
+
+#[tauri::command]
+pub fn rollback_appearance_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    let registry = state.db.rollback_appearance().map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("appearance://changed", &registry);
+    Ok(registry)
+}
+
+#[tauri::command]
+pub fn remove_appearance_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    theme_id: String,
+) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    let registry = state
+        .db
+        .remove_appearance(&theme_id)
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("appearance://changed", &registry);
+    Ok(registry)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechPreview {
@@ -210,7 +284,15 @@ Schema:
       "contextToolResults": "#RRGGBB", "contextTools": "#RRGGBB",
       "contextMcp": "#RRGGBB", "contextOverhead": "#RRGGBB"
     },
-    "effects": { "surfaceOpacity": 0.35-1, "glassBlur": 0-48, "shadowIntensity": 0-2, "radiusScale": 0.5-2 },
+    "effects": { "surfaceOpacity": 0.35-1, "glassBlur": 0-48, "shadowIntensity": 0-2, "radiusScale": 0.5-2, "densityScale": 0.8-1.25 },
+    "typography": { "fontFamily": "local CSS font stack", "monoFontFamily": "local monospace stack", "baseSize": 12-20, "lineHeight": 1.2-2, "letterSpacing": -0.04-0.12 },
+    "motion": { "durationScale": 0-2, "cursorStyle": "precise|fluid|minimal" },
+    "brand": { "logoVariant": "auto|monochrome|accent", "logoForeground": "#RRGGBB", "logoMuted": "#RRGGBB", "logoOpacity": 0.4-1 },
+    "content": { "tagline": "plain text up to 160 chars", "statusText": "plain idle text up to 80 chars", "quote": "plain text up to 240 chars" },
+    "components": {
+      "rail": { "background": "safe color or gradient", "borderColor": "#RRGGBB", "boxShadow": "safe local CSS shadow value" },
+      "header": {}, "card": {}, "browser": {}
+    },
     "background": {
       "kind": "none|color|gradient", "value": "safe color or gradient without URL",
       "fit": "cover|contain|tile", "position": "center", "opacity": 0-1, "dim": 0-1,
@@ -218,7 +300,7 @@ Schema:
     }
   }
 }
-Use semantic contrast suitable for a desktop chat interface. Never emit CSS rules, url(), @import, scripts, or remote resources."##,
+Use semantic contrast suitable for a desktop chat interface. Content is decorative and must never claim that approvals, security checks, errors, or updates succeeded. Never emit CSS selectors/rules, url(), @import, scripts, remote resources, or executable content."##,
             ),
             Message::text(Role::User, description),
         ],

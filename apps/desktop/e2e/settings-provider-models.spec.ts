@@ -463,7 +463,7 @@ test.beforeEach(async ({ page }) => {
         }
         case "generate_theme_resource_plugin_cmd":
           return {
-            manifestVersion: 1,
+            manifestVersion: 2,
             kind: "theme-resource",
             id: "theme-generated-ocean",
             name: "Generated Ocean",
@@ -479,6 +479,11 @@ test.beforeEach(async ({ page }) => {
                 accent: "#38bdf8",
               },
               effects: { surfaceOpacity: 0.9, glassBlur: 14 },
+              typography: {},
+              motion: { cursorStyle: "fluid" },
+              brand: { logoVariant: "auto" },
+              content: { tagline: "Quiet focus", statusText: "Ready to explore" },
+              components: {},
               background: {
                 kind: "gradient",
                 value: "linear-gradient(145deg, #08131f, #164e63)",
@@ -1266,16 +1271,18 @@ test("appearance installs the backend-normalized theme draft only after explicit
   await page.getByPlaceholder(/calm moonlit ocean/i).fill(requestedDescription);
   await page.getByRole("button", { name: "Generate theme draft" }).click();
   await expect(page.getByLabel("Name")).toHaveValue("Generated Ocean");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("nexa-theme-resource-plugins-v1")))
+  await page.getByRole("button", { name: "Controlled component styles" }).click();
+  await page.getByRole("group", { name: "Navigation rail" }).getByLabel("Background").fill("rgba(8, 19, 31, 0.92)");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("nexa-theme-resource-plugins-v2")))
     .toBeNull();
 
   await page.getByRole("button", { name: "Generate matching image" }).click();
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect.poll(() => page.evaluate(() => {
-    const stored = JSON.parse(localStorage.getItem("nexa-theme-resource-plugins-v1") ?? "[]") as Array<{
+    const stored = JSON.parse(localStorage.getItem("nexa-theme-resource-plugins-v2") ?? "[]") as Array<{
       id?: string;
       description?: string;
-      theme?: { background?: { assetId?: string } };
+      theme?: { background?: { assetId?: string }; components?: { rail?: { background?: string } } };
     }>;
     return stored[0];
   })).toEqual(expect.objectContaining({
@@ -1283,6 +1290,9 @@ test("appearance installs the backend-normalized theme draft only after explicit
     description: normalizedDescription,
     theme: expect.objectContaining({
       background: expect.objectContaining({ assetId: "a".repeat(64) }),
+      components: expect.objectContaining({
+        rail: expect.objectContaining({ background: "rgba(8, 19, 31, 0.92)" }),
+      }),
     }),
   }));
 });

@@ -1978,6 +1978,35 @@ export interface ThemeBackgroundAsset {
   bytes: number;
 }
 
+export interface AppearanceRegistry {
+  version: 2;
+  initialized: boolean;
+  revision: number;
+  activeThemeId: string;
+  previousThemeId?: string | null;
+  plugins: import('./themeProfile').ThemeResourcePlugin[];
+}
+
+export const getAppearanceRegistry = () =>
+  invoke<AppearanceRegistry>('get_appearance_registry_cmd');
+
+export const hydrateAppearanceRegistry = (
+  plugins: import('./themeProfile').ThemeResourcePlugin[],
+  activeThemeId: string,
+) => invoke<AppearanceRegistry>('hydrate_appearance_registry_cmd', { plugins, activeThemeId });
+
+export const applyAppearancePlugin = (plugin: import('./themeProfile').ThemeResourcePlugin) =>
+  invoke<AppearanceRegistry>('apply_appearance_plugin_cmd', { plugin });
+
+export const activateAppearance = (themeId: string) =>
+  invoke<AppearanceRegistry>('activate_appearance_cmd', { themeId });
+
+export const rollbackAppearance = () =>
+  invoke<AppearanceRegistry>('rollback_appearance_cmd');
+
+export const removeAppearance = (themeId: string) =>
+  invoke<AppearanceRegistry>('remove_appearance_cmd', { themeId });
+
 export const generateThemeResourcePlugin = (description: string) =>
   invoke<import('./themeProfile').ThemeResourcePlugin>('generate_theme_resource_plugin_cmd', {
     description,

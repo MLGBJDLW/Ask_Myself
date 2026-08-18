@@ -17,7 +17,7 @@ const {
 } = await import('../src/lib/themeProfile.ts');
 
 const profile = {
-  version: 1,
+  version: 2,
   id: 'quiet-ocean',
   name: 'Quiet Ocean',
   baseTheme: 'dark',
@@ -30,6 +30,11 @@ const profile = {
     accent: '#38bdf8',
   },
   effects: { surfaceOpacity: 0.9, glassBlur: 14 },
+  typography: { fontFamily: 'Inter Variable, sans-serif', baseSize: 15, lineHeight: 1.6 },
+  motion: { durationScale: 0.85, cursorStyle: 'fluid' },
+  brand: { logoVariant: 'accent', logoForeground: '#bae6fd', logoOpacity: 0.88 },
+  content: { tagline: 'Quiet focus', statusText: 'Ready to explore', quote: 'Clarity over noise.' },
+  components: { rail: { background: 'rgba(8, 19, 31, 0.92)', borderColor: '#164e63' } },
   background: {
     kind: 'gradient',
     value: 'linear-gradient(145deg, #08131f, #164e63)',
@@ -41,9 +46,43 @@ test('theme profiles round-trip through the declarative plugin envelope', () => 
   const serialized = serializeThemeResourcePlugin(profile, 'calm ocean dashboard');
 
   assert.equal(plugin.kind, 'theme-resource');
-  assert.equal(plugin.manifestVersion, 1);
+  assert.equal(plugin.manifestVersion, 2);
   assert.equal(plugin.description, 'calm ocean dashboard');
   assert.deepEqual(parseCustomTheme(serialized), themeResourcePluginToCustomTheme(plugin));
+});
+
+test('v1 theme-resource plugins migrate into the v2 declarative contract', () => {
+  const legacy = { ...themeToResourcePlugin(profile), manifestVersion: 1 };
+  const migrated = normalizeThemeResourcePlugin(legacy);
+
+  assert.equal(migrated.manifestVersion, 2);
+  assert.equal(migrated.theme.content.statusText, 'Ready to explore');
+});
+
+test('theme resources expose safe type, motion, brand, copy, and component slots', () => {
+  const plugin = themeToResourcePlugin(profile);
+  assert.equal(plugin.theme.typography.fontFamily, 'Inter Variable, sans-serif');
+  assert.equal(plugin.theme.motion.cursorStyle, 'fluid');
+  assert.equal(plugin.theme.brand.logoVariant, 'accent');
+  assert.equal(plugin.theme.content.tagline, 'Quiet focus');
+  assert.equal(plugin.theme.components.rail?.borderColor, '#164e63');
+});
+
+test('theme resources keep executable CSS and remote fonts outside the contract', () => {
+  assert.throws(
+    () => normalizeThemeResourcePlugin({
+      ...themeToResourcePlugin(profile),
+      theme: { ...themeToResourcePlugin(profile).theme, typography: { fontFamily: 'url(https://example.com/font.woff2)' } },
+    }),
+    /Invalid font family/,
+  );
+  assert.throws(
+    () => normalizeThemeResourcePlugin({
+      ...themeToResourcePlugin(profile),
+      theme: { ...themeToResourcePlugin(profile).theme, components: { rail: { background: '#000; display:none' } } },
+    }),
+    /Invalid rail background/,
+  );
 });
 
 test('theme-resource description limits count Unicode code points like the Rust backend', () => {

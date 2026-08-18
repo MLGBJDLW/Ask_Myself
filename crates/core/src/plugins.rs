@@ -196,7 +196,7 @@ const CORE_AGENT_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclar
     id: "core-agent",
     name: "Core Agent",
     capability: "Run orchestration",
-    description: "Routes tasks, coordinates user input, tracks plans, and records verification without owning domain tools.",
+    description: "Routes tasks, coordinates user input, tracks plans, records verification, and manages the shared declarative appearance.",
     surface: EcosystemSurfaceKind::CorePlatform,
     tools: &[
         "tool_search",
@@ -205,9 +205,10 @@ const CORE_AGENT_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclar
         "update_goal",
         "request_user_input",
         "record_verification",
+        "appearance",
     ],
-    settings_surfaces: &["agent-quality", "tool-approvals"],
-    workflows: &["task-planning", "verification"],
+    settings_surfaces: &["agent-quality", "tool-approvals", "appearance"],
+    workflows: &["task-planning", "verification", "customize-appearance"],
 };
 
 const KNOWLEDGE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaration {
@@ -539,6 +540,19 @@ mod tests {
             capability_owner_for_tool("request_user_input").id,
             "core-agent"
         );
+    }
+
+    #[test]
+    fn appearance_tool_shares_the_core_agent_and_settings_surface() {
+        assert_eq!(capability_owner_for_tool("appearance").id, "core-agent");
+        let core = builtin_capability_views()
+            .into_iter()
+            .find(|package| package.id == "core-agent")
+            .expect("missing core agent package");
+        assert!(core
+            .settings_surfaces
+            .iter()
+            .any(|surface| surface == "appearance"));
     }
 
     #[test]

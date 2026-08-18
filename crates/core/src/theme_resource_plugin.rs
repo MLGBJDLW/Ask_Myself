@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::error::CoreError;
 
 pub const THEME_RESOURCE_PLUGIN_KIND: &str = "theme-resource";
-pub const THEME_RESOURCE_PLUGIN_VERSION: u8 = 1;
+pub const THEME_RESOURCE_PLUGIN_VERSION: u8 = 2;
 
 const COLOR_SLOTS: &[&str] = &[
     "surface0",
@@ -64,6 +64,16 @@ pub struct ThemeResourceDefinition {
     #[serde(default)]
     pub effects: ThemeResourceEffects,
     #[serde(default)]
+    pub typography: ThemeResourceTypography,
+    #[serde(default)]
+    pub motion: ThemeResourceMotion,
+    #[serde(default)]
+    pub brand: ThemeResourceBrand,
+    #[serde(default)]
+    pub content: ThemeResourceContent,
+    #[serde(default)]
+    pub components: BTreeMap<String, ThemeResourceComponentStyle>,
+    #[serde(default)]
     pub background: ThemeResourceBackground,
 }
 
@@ -78,6 +88,67 @@ pub struct ThemeResourceEffects {
     pub shadow_intensity: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density_scale: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResourceTypography {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mono_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResourceMotion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_style: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResourceBrand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_foreground: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_muted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_opacity: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResourceContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResourceComponentStyle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_shadow: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -144,9 +215,10 @@ impl ThemeResourcePlugin {
     }
 
     pub fn normalize(mut self) -> Result<Self, CoreError> {
-        if self.manifest_version != THEME_RESOURCE_PLUGIN_VERSION {
+        if !matches!(self.manifest_version, 1 | THEME_RESOURCE_PLUGIN_VERSION) {
             return invalid("Unsupported theme-resource manifest version");
         }
+        self.manifest_version = THEME_RESOURCE_PLUGIN_VERSION;
         if self.kind != THEME_RESOURCE_PLUGIN_KIND {
             return invalid("Invalid theme-resource plugin kind");
         }
@@ -175,27 +247,145 @@ impl ThemeResourcePlugin {
                 return invalid(format!("Invalid semantic color: {slot}"));
             }
         }
-        for required in [
-            "surface0",
-            "surface1",
-            "textPrimary",
-            "textSecondary",
-            "accent",
-        ] {
-            if !self.theme.colors.contains_key(required) {
-                return invalid(format!(
-                    "Generated theme is missing required color: {required}"
-                ));
-            }
-        }
-
         clamp(&mut self.theme.effects.surface_opacity, 0.35, 1.0);
         clamp(&mut self.theme.effects.glass_blur, 0.0, 48.0);
         clamp(&mut self.theme.effects.shadow_intensity, 0.0, 2.0);
         clamp(&mut self.theme.effects.radius_scale, 0.5, 2.0);
+        clamp(&mut self.theme.effects.density_scale, 0.8, 1.25);
+        normalize_typography(&mut self.theme.typography)?;
+        normalize_motion(&mut self.theme.motion)?;
+        normalize_brand(&mut self.theme.brand)?;
+        normalize_content(&mut self.theme.content)?;
+        normalize_components(&mut self.theme.components)?;
         normalize_background(&mut self.theme.background)?;
         Ok(self)
     }
+}
+
+fn normalize_typography(typography: &mut ThemeResourceTypography) -> Result<(), CoreError> {
+    normalize_font(&mut typography.font_family)?;
+    normalize_font(&mut typography.mono_font_family)?;
+    clamp(&mut typography.base_size, 12.0, 20.0);
+    clamp(&mut typography.line_height, 1.2, 2.0);
+    clamp(&mut typography.letter_spacing, -0.04, 0.12);
+    Ok(())
+}
+
+fn normalize_font(value: &mut Option<String>) -> Result<(), CoreError> {
+    let Some(font) = value.as_mut() else {
+        return Ok(());
+    };
+    *font = font.trim().to_string();
+    if font.is_empty() {
+        *value = None;
+        return Ok(());
+    }
+    if font.chars().count() > 160
+        || font.to_ascii_lowercase().contains("url(")
+        || font.to_ascii_lowercase().contains("@import")
+        || !font.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || character.is_whitespace()
+                || "_,'\".-".contains(character)
+        })
+    {
+        return invalid("Theme fonts must be local font-family names");
+    }
+    Ok(())
+}
+
+fn normalize_motion(motion: &mut ThemeResourceMotion) -> Result<(), CoreError> {
+    clamp(&mut motion.duration_scale, 0.0, 2.0);
+    if !matches!(
+        motion.cursor_style.as_deref(),
+        None | Some("precise" | "fluid" | "minimal")
+    ) {
+        return invalid("Invalid theme cursor style");
+    }
+    Ok(())
+}
+
+fn normalize_brand(brand: &mut ThemeResourceBrand) -> Result<(), CoreError> {
+    if !matches!(
+        brand.logo_variant.as_deref(),
+        None | Some("auto" | "monochrome" | "accent")
+    ) {
+        return invalid("Invalid theme logo variant");
+    }
+    for color in [&mut brand.logo_foreground, &mut brand.logo_muted] {
+        if let Some(value) = color.as_mut() {
+            *value = value.trim().to_string();
+            if !safe_color(value) {
+                return invalid("Invalid theme logo color");
+            }
+        }
+    }
+    clamp(&mut brand.logo_opacity, 0.4, 1.0);
+    Ok(())
+}
+
+fn normalize_content(content: &mut ThemeResourceContent) -> Result<(), CoreError> {
+    normalize_plain_text(&mut content.tagline, 160)?;
+    normalize_plain_text(&mut content.status_text, 80)?;
+    normalize_plain_text(&mut content.quote, 240)?;
+    Ok(())
+}
+
+fn normalize_plain_text(value: &mut Option<String>, maximum: usize) -> Result<(), CoreError> {
+    let Some(text) = value.as_mut() else {
+        return Ok(());
+    };
+    *text = text
+        .trim()
+        .chars()
+        .map(|character| {
+            if matches!(character, '\r' | '\n' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    if text.is_empty() {
+        *value = None;
+    } else if text.chars().count() > maximum {
+        return invalid(format!("Theme content exceeds {maximum} characters"));
+    }
+    Ok(())
+}
+
+fn normalize_components(
+    components: &mut BTreeMap<String, ThemeResourceComponentStyle>,
+) -> Result<(), CoreError> {
+    for (slot, style) in components {
+        if !matches!(slot.as_str(), "rail" | "header" | "card" | "browser") {
+            return invalid(format!("Unknown theme component slot: {slot}"));
+        }
+        if let Some(background) = style.background.as_mut() {
+            *background = background.trim().to_string();
+            if !safe_color(background) && !safe_gradient(background) {
+                return invalid(format!("Invalid {slot} background"));
+            }
+        }
+        if let Some(border) = style.border_color.as_mut() {
+            *border = border.trim().to_string();
+            if !safe_color(border) {
+                return invalid(format!("Invalid {slot} border color"));
+            }
+        }
+        if let Some(shadow) = style.box_shadow.as_mut() {
+            *shadow = shadow.trim().to_string();
+            if shadow.chars().count() > 240
+                || unsafe_css(shadow)
+                || !shadow.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "#.%(), /+-".contains(character)
+                })
+            {
+                return invalid(format!("Invalid {slot} shadow"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalize_background(background: &mut ThemeResourceBackground) -> Result<(), CoreError> {
@@ -264,10 +454,18 @@ fn normalize_background(background: &mut ThemeResourceBackground) -> Result<(), 
 }
 
 fn safe_color(value: &str) -> bool {
-    value == "transparent"
+    let lowered = value.to_ascii_lowercase();
+    lowered == "transparent"
         || value.strip_prefix('#').is_some_and(|hex| {
             matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
         })
+        || ["rgb(", "rgba(", "hsl(", "hsla(", "oklch(", "oklab("]
+            .iter()
+            .any(|prefix| lowered.starts_with(prefix))
+            && value.ends_with(')')
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ".%(), /+-".contains(c))
 }
 
 fn safe_gradient(value: &str) -> bool {
@@ -342,7 +540,7 @@ mod tests {
                 .expect("valid plugin");
 
         assert_eq!(plugin.kind, THEME_RESOURCE_PLUGIN_KIND);
-        assert_eq!(plugin.manifest_version, 1);
+        assert_eq!(plugin.manifest_version, THEME_RESOURCE_PLUGIN_VERSION);
         assert!(plugin.id.starts_with("theme-"));
         assert_eq!(plugin.theme.colors["accent"], "#38bdf8");
     }
