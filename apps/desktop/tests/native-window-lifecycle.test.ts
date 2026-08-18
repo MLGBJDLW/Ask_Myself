@@ -87,9 +87,11 @@ assert(
 );
 assert(
   /data-testid=["']startup-splash["']/.test(indexHtml)
-    && /logo-small\.svg/.test(indexHtml)
+    && /startup-splash__logo/.test(indexHtml)
+    && /nexa-startup-appearance-v1/.test(indexHtml)
+    && /--startup-canvas/.test(indexHtml)
     && /prefers-reduced-motion/.test(indexHtml),
-  'the first HTML paint must contain a branded, reduced-motion-safe startup animation',
+  'the first HTML paint must contain a theme-aware, reduced-motion-safe startup animation',
 );
 assert(
   /name=["']color-scheme["']\s+content=["']dark light["']/.test(indexHtml)
