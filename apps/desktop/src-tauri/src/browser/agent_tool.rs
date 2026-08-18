@@ -45,9 +45,13 @@ struct BrowserArgs {
     url: Option<String>,
     observation_id: Option<String>,
     target_ref: Option<String>,
+    end_ref: Option<String>,
     text: Option<String>,
     value: Option<String>,
     key: Option<String>,
+    button: Option<String>,
+    #[serde(default)]
+    modifiers: Vec<String>,
     scroll_x: Option<i64>,
     scroll_y: Option<i64>,
     condition: Option<serde_json::Value>,
@@ -104,15 +108,18 @@ impl Tool for NativeBrowserSessionTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["create_session", "list_sessions", "list_tabs", "open_tab", "activate_tab", "navigate", "go_back", "go_forward", "reload", "observe", "click", "type", "select", "press", "scroll", "wait_for", "close_tab", "close_session"] },
+                "action": { "type": "string", "enum": ["create_session", "list_sessions", "list_tabs", "open_tab", "activate_tab", "navigate", "go_back", "go_forward", "reload", "observe", "move", "hover", "click", "double_click", "drag", "type", "select", "press", "scroll", "wait_for", "close_tab", "close_session"] },
                 "sessionId": { "type": "string" },
                 "tabId": { "type": "string" },
                 "url": { "type": "string" },
                 "observationId": { "type": "string" },
                 "targetRef": { "type": "string" },
+                "endRef": { "type": "string", "description": "Observation-scoped destination element ref for drag." },
                 "text": { "type": "string" },
                 "value": { "type": "string" },
                 "key": { "type": "string" },
+                "button": { "type": "string", "enum": ["left", "middle", "right"], "default": "left" },
+                "modifiers": { "type": "array", "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] }, "uniqueItems": true },
                 "scrollX": { "type": "integer", "default": 0 },
                 "scrollY": { "type": "integer", "default": 0 },
                 "condition": { "type": "object", "description": "Condition type: page_loaded, text_present, or url_matches." },
@@ -319,12 +326,21 @@ impl Tool for NativeBrowserSessionTool {
                     .map_err(Self::invalid)?;
                 observation_result(context.call_id, observation)
             }
-            "click" | "type" | "select" | "press" | "scroll" => {
+            "move" | "hover" | "click" | "double_click" | "drag" | "type" | "select"
+            | "press" | "scroll" => {
                 let observation_id = required(args.observation_id.as_deref(), "observationId")?;
-                let target_ref = if action == "press" {
+                let target_ref = if matches!(
+                    action.as_str(),
+                    "move" | "hover" | "click" | "double_click" | "drag" | "type" | "select" | "press"
+                ) {
                     Some(required(args.target_ref.as_deref(), "targetRef")?)
                 } else {
                     args.target_ref.as_deref()
+                };
+                let end_ref = if action == "drag" {
+                    Some(required(args.end_ref.as_deref(), "endRef")?)
+                } else {
+                    args.end_ref.as_deref()
                 };
                 let key = if action == "press" {
                     Some(required(args.key.as_deref(), "key")?)
@@ -340,9 +356,12 @@ impl Tool for NativeBrowserSessionTool {
                         observation_id,
                         action: &action,
                         target_ref,
+                        end_ref,
                         text: args.text.as_deref(),
                         value: args.value.as_deref(),
                         key,
+                        button: args.button.as_deref(),
+                        modifiers: &args.modifiers,
                         scroll_x: args.scroll_x.unwrap_or(0),
                         scroll_y: args.scroll_y.unwrap_or(0),
                     })

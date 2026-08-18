@@ -131,6 +131,19 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
 }
 
 #[test]
+fn agent_interactions_have_a_visible_two_phase_cursor_and_complete_pointer_sequences() {
+    assert!(BROWSER_INIT_SCRIPT.contains("previewAction"));
+    assert!(BROWSER_INIT_SCRIPT.contains("data-nexa-agent-cursor"));
+    assert!(BROWSER_INIT_SCRIPT.contains("prefers-reduced-motion: reduce"));
+    assert!(BROWSER_INIT_SCRIPT.contains("cubic-bezier(.22,.8,.24,1)"));
+    assert!(BROWSER_INIT_SCRIPT.contains("pointerdown"));
+    assert!(BROWSER_INIT_SCRIPT.contains("dblclick"));
+    assert!(BROWSER_INIT_SCRIPT.contains("dragBetween"));
+    assert!(BROWSER_INIT_SCRIPT.contains("expectedEnd"));
+    assert!(BROWSER_INIT_SCRIPT.contains("domFingerprintOf"));
+}
+
+#[test]
 fn picker_bridge_uses_a_per_webview_token_and_native_message_primitives() {
     let script = browser_init_script("picker-secret");
 
@@ -168,6 +181,10 @@ fn control_takeover_invalidates_the_previous_observation_generation() {
 #[test]
 fn approval_policy_distinguishes_navigation_from_consequential_actions() {
     assert_eq!(
+        classify_agent_action("hover", Some("button"), Some("Preview"), None, None),
+        BrowserActionRisk::Low,
+    );
+    assert_eq!(
         classify_agent_action(
             "click",
             Some("link"),
@@ -176,6 +193,20 @@ fn approval_policy_distinguishes_navigation_from_consequential_actions() {
             None
         ),
         BrowserActionRisk::Low,
+    );
+    assert_eq!(
+        classify_agent_action(
+            "double_click",
+            Some("link"),
+            Some("Documentation"),
+            Some("https://tauri.app"),
+            None
+        ),
+        BrowserActionRisk::Low,
+    );
+    assert_eq!(
+        classify_agent_action("drag", Some("button"), Some("Move item"), None, None),
+        BrowserActionRisk::Consequential,
     );
     assert_eq!(
         classify_agent_action(

@@ -856,7 +856,7 @@ impl BrowserState {
         &self,
         request: BrowserActRequest<'_>,
     ) -> Result<BrowserObservationPayload, String> {
-        let (observation, expected) = {
+        let (observation, expected, expected_end) = {
             let mut runtime = self
                 .inner
                 .lock()
@@ -903,7 +903,20 @@ impl BrowserState {
             if request.target_ref.is_some() && expected.is_none() {
                 return Err("stale observation: target is not part of this observation".to_string());
             }
-            (observation, expected)
+            let expected_end = request.end_ref.and_then(|end_ref| {
+                observation
+                    .elements
+                    .iter()
+                    .find(|element| element.element_ref == end_ref)
+                    .cloned()
+            });
+            if request.end_ref.is_some() && expected_end.is_none() {
+                return Err(
+                    "stale observation: drag destination is not part of this observation"
+                        .to_string(),
+                );
+            }
+            (observation, expected, expected_end)
         };
         let is_form_submitter = expected.as_ref().is_some_and(|element| {
             element.tag == "button"
@@ -925,10 +938,11 @@ impl BrowserState {
                         matches!(kind, "button" | "reset" | "file" | "checkbox" | "radio")
                     })
             });
-        let click_may_navigate = request.action == "click"
+        let click_may_navigate = matches!(request.action, "click" | "double_click")
             && expected
                 .as_ref()
                 .is_some_and(|element| element.tag == "a" || is_form_submitter);
+        let mut navigation_approval = None;
         if click_may_navigate || presses_activation_key {
             if let Some(href) = expected
                 .as_ref()
@@ -937,42 +951,125 @@ impl BrowserState {
                 let target =
                     Url::parse(href).map_err(|_| "Browser link target is invalid".to_string())?;
                 validate_agent_network_url(&target).await?;
-                self.approve_agent_action_url(
-                    request.session_id,
-                    request.tab_id,
-                    request.observation_id,
-                    request.call_id,
-                    &target,
-                    is_form_submitter || implicit_form_submit,
-                )?;
+                navigation_approval = Some((target, is_form_submitter || implicit_form_submit));
             }
         }
-        let expression = format!(
-            "window.__NEXA_BROWSER_RUNTIME__?.act({})",
-            serde_json::to_string(&serde_json::json!({
-                "action": request.action,
-                "targetRef": request.target_ref,
-                "text": request.text,
-                "value": request.value,
-                "key": request.key,
-                "scrollX": request.scroll_x,
-                "scrollY": request.scroll_y,
-                "userEpoch": observation.user_epoch,
-                "domFingerprint": observation.dom_fingerprint,
-                "expected": expected,
-            }))
-            .map_err(|error| error.to_string())?
+        let action_input = serde_json::to_string(&serde_json::json!({
+            "action": request.action,
+            "targetRef": request.target_ref,
+            "endRef": request.end_ref,
+            "text": request.text,
+            "value": request.value,
+            "key": request.key,
+            "button": request.button.unwrap_or("left"),
+            "modifiers": request.modifiers,
+            "scrollX": request.scroll_x,
+            "scrollY": request.scroll_y,
+            "userEpoch": observation.user_epoch,
+            "domFingerprint": observation.dom_fingerprint,
+            "expected": expected,
+            "expectedEnd": expected_end,
+        }))
+        .map_err(|error| error.to_string())?;
+        let preview_expression = format!(
+            "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.previewAction({action_input}); }})()"
         );
-        let pending = self.dispatch_agent_action(
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "moving",
+                "targetRef": request.target_ref,
+                "endRef": request.end_ref,
+            }),
+        );
+        let preview = self.dispatch_agent_action(
+            request.session_id,
+            request.tab_id,
+            request.observation_id,
+            request.call_id,
+            &preview_expression,
+        )?;
+        let preview = preview.resolve().await?;
+        let duration_ms = preview
+            .get("durationMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .min(600);
+        if duration_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+        }
+        if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+            self.approve_agent_action_url(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                target,
+                *form_navigation,
+            )?;
+        }
+        let expression = format!(
+            "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.act({action_input}); }})()"
+        );
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "committing",
+                "targetRef": request.target_ref,
+                "endRef": request.end_ref,
+            }),
+        );
+        let pending = match self.dispatch_agent_action(
             request.session_id,
             request.tab_id,
             request.observation_id,
             request.call_id,
             &expression,
-        )?;
-        pending.resolve().await?;
-        self.observe(request.session_id, request.tab_id, request.call_id)
-            .await
+        ) {
+            Ok(pending) => pending,
+            Err(error) => {
+                if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+                    self.revoke_agent_action_url(
+                        request.session_id,
+                        request.tab_id,
+                        target,
+                        *form_navigation,
+                    );
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = pending.resolve().await {
+            if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+                self.revoke_agent_action_url(
+                    request.session_id,
+                    request.tab_id,
+                    target,
+                    *form_navigation,
+                );
+            }
+            return Err(error);
+        }
+        let observation = self
+            .observe(request.session_id, request.tab_id, request.call_id)
+            .await?;
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "verified",
+                "observationId": observation.observation_id,
+            }),
+        );
+        Ok(observation)
     }
 
     pub fn action_risk(&self, args: &serde_json::Value) -> BrowserActionRisk {
@@ -1328,6 +1425,31 @@ impl BrowserState {
         Ok(())
     }
 
+    fn revoke_agent_action_url(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        url: &Url,
+        form_navigation: bool,
+    ) {
+        let approval = if form_navigation {
+            form_navigation_approval_key(url)
+        } else {
+            url.to_string()
+        };
+        if let Ok(runtime) = self.inner.lock() {
+            if let Some(tab) = runtime
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.tabs.get(tab_id))
+            {
+                if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                    approved.remove(&approval);
+                }
+            }
+        }
+    }
+
     fn webview(&self, session_id: &str, tab_id: &str) -> Result<Webview, String> {
         self.inner
             .lock()
@@ -1374,9 +1496,12 @@ pub struct BrowserActRequest<'a> {
     pub observation_id: &'a str,
     pub action: &'a str,
     pub target_ref: Option<&'a str>,
+    pub end_ref: Option<&'a str>,
     pub text: Option<&'a str>,
     pub value: Option<&'a str>,
     pub key: Option<&'a str>,
+    pub button: Option<&'a str>,
+    pub modifiers: &'a [String],
     pub scroll_x: i64,
     pub scroll_y: i64,
 }

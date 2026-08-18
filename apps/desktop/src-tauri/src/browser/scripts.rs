@@ -58,6 +58,9 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     pendingArtifact: null,
     overlay: null,
     regionStart: null,
+    agentCursor: null,
+    cursorDocument: null,
+    cursorPoint: null,
   };
 
   const textOf = (el) => String(
@@ -151,6 +154,12 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       },
     };
   };
+  const domFingerprintOf = () => {
+    const visualLength = Array.from(document.querySelectorAll('[data-nexa-agent-cursor],[data-nexa-agent-click]'))
+      .reduce((total, element) => total + element.outerHTML.length, 0);
+    const markupLength = Math.max(0, (document.documentElement?.outerHTML.length || 0) - visualLength);
+    return `${location.href}|${markupLength}|${document.body?.innerText.slice(0, 20000) || ''}`;
+  };
   runtime.observe = () => {
     runtime.observationSeq += 1;
     runtime.refs = new Map();
@@ -166,34 +175,179 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio },
       historyLength: history.length,
       userEpoch: runtime.userEpoch,
-      domFingerprint: `${location.href}|${document.documentElement?.outerHTML.length || 0}|${document.body?.innerText.slice(0, 20000) || ''}`,
+      domFingerprint: domFingerprintOf(),
       elements,
     };
+  };
+  const validateAction = (input) => {
+    if (input.userEpoch !== runtime.userEpoch) throw new Error('stale observation: user interacted with the page');
+    const domFingerprint = domFingerprintOf();
+    if (input.domFingerprint !== domFingerprint) throw new Error('stale observation: page content changed');
+    const el = input.targetRef ? runtime.refs.get(input.targetRef) : null;
+    const end = input.endRef ? runtime.refs.get(input.endRef) : null;
+    if (input.targetRef && (!el || !el.isConnected)) throw new Error('stale observation: target disappeared');
+    if (input.endRef && (!end || !end.isConnected)) throw new Error('stale observation: drag destination disappeared');
+    const verify = (element, ref, expected, label) => {
+      if (!element || !expected) return;
+      const current = describe(element, ref);
+      if (current.role !== expected.role || current.name !== expected.name) {
+        throw new Error('stale observation: target identity changed');
+      }
+      const before = expected.bounds;
+      const after = current.bounds;
+      if (['x','y','width','height'].some((key) => Math.abs(Number(before[key]) - Number(after[key])) > 4)) {
+        throw new Error(`stale observation: ${label} bounds changed`);
+      }
+    };
+    verify(el, input.targetRef, input.expected, 'target');
+    verify(end, input.endRef, input.expectedEnd, 'drag destination');
+    return { el, end };
+  };
+  const centerOf = (el) => {
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  };
+  const ensureAgentCursor = (ownerDocument) => {
+    if (runtime.agentCursor?.isConnected && runtime.cursorDocument === ownerDocument) return runtime.agentCursor;
+    runtime.agentCursor?.remove();
+    const cursor = ownerDocument.createElement('div');
+    cursor.setAttribute('data-nexa-agent-cursor', 'true');
+    cursor.setAttribute('aria-hidden', 'true');
+    cursor.style.cssText = 'position:fixed;left:0;top:0;width:22px;height:28px;z-index:2147483647;pointer-events:none;will-change:transform;filter:drop-shadow(0 2px 4px rgba(2,6,23,.45));contain:layout paint style;';
+    cursor.innerHTML = "<svg viewBox='0 0 22 28' width='22' height='28' xmlns='http://www.w3.org/2000/svg'><path d='M2 1.75v20.5l5.4-5.2 3.45 8.15 4.2-1.8-3.5-8.05h7.35L2 1.75Z' fill='#f8fafc' stroke='#0891b2' stroke-width='1.8' stroke-linejoin='round'/></svg>";
+    (ownerDocument.documentElement || ownerDocument.body).appendChild(cursor);
+    runtime.agentCursor = cursor;
+    runtime.cursorDocument = ownerDocument;
+    runtime.cursorPoint = null;
+    return cursor;
+  };
+  const moveAgentCursor = (el, via = null) => {
+    if (!el) return 0;
+    const ownerDocument = el.ownerDocument || document;
+    const ownerWindow = ownerDocument.defaultView || window;
+    const cursor = ensureAgentCursor(ownerDocument);
+    const to = centerOf(el);
+    const viaPoint = via ? centerOf(via) : null;
+    const from = runtime.cursorPoint || {
+      x: Math.max(18, Number(ownerWindow.innerWidth || 0) * 0.22),
+      y: Math.max(22, Number(ownerWindow.innerHeight || 0) * 0.18),
+    };
+    const distance = viaPoint
+      ? Math.hypot(viaPoint.x - from.x, viaPoint.y - from.y) + Math.hypot(to.x - viaPoint.x, to.y - viaPoint.y)
+      : Math.hypot(to.x - from.x, to.y - from.y);
+    const reduced = ownerWindow.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const duration = reduced ? 0 : Math.round(Math.min(520, Math.max(180, 150 + distance * 0.36)));
+    const translate = (point) => `translate3d(${point.x}px,${point.y}px,0)`;
+    cursor.getAnimations?.().forEach((animation) => animation.cancel());
+    if (duration > 0 && cursor.animate) {
+      const bend = Math.min(70, Math.max(18, distance * 0.14));
+      const frames = viaPoint ? [
+        { transform: translate(from), offset: 0 },
+        { transform: translate(viaPoint), offset: 0.48 },
+        { transform: translate(to), offset: 1 },
+      ] : [
+        { transform: translate(from) },
+        { transform: translate({ x: from.x + (to.x - from.x) * 0.55, y: from.y + (to.y - from.y) * 0.45 - bend }) },
+        { transform: translate(to) },
+      ];
+      cursor.animate(frames, { duration, easing: 'cubic-bezier(.22,.8,.24,1)', fill: 'forwards' });
+    }
+    cursor.style.transform = translate(to);
+    runtime.cursorPoint = to;
+    return duration;
+  };
+  const pointerOptions = (input, point, detail = 1) => ({
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    clientX: point.x,
+    clientY: point.y,
+    button: ({ left: 0, middle: 1, right: 2 })[input.button] ?? 0,
+    buttons: 1,
+    detail,
+    altKey: input.modifiers?.includes('Alt') || false,
+    ctrlKey: input.modifiers?.includes('Control') || false,
+    metaKey: input.modifiers?.includes('Meta') || false,
+    shiftKey: input.modifiers?.includes('Shift') || false,
+  });
+  const dispatchPointer = (el, type, input, point, detail = 1) => {
+    const realm = el.ownerDocument?.defaultView || window;
+    const EventType = type.startsWith('pointer') && realm.PointerEvent ? realm.PointerEvent : realm.MouseEvent;
+    el.dispatchEvent(new EventType(type, pointerOptions(input, point, detail)));
+  };
+  const pulseAt = (el, point) => {
+    const ownerDocument = el.ownerDocument || document;
+    const pulse = ownerDocument.createElement('div');
+    pulse.setAttribute('data-nexa-agent-click', 'true');
+    pulse.style.cssText = `position:fixed;z-index:2147483646;pointer-events:none;left:${point.x - 11}px;top:${point.y - 11}px;width:22px;height:22px;border:2px solid #22d3ee;border-radius:999px;box-sizing:border-box;`;
+    (ownerDocument.documentElement || ownerDocument.body).appendChild(pulse);
+    const animation = pulse.animate?.([
+      { opacity: 1, transform: 'scale(.35)' },
+      { opacity: 0, transform: 'scale(1.65)' },
+    ], { duration: 360, easing: 'ease-out' });
+    if (animation) animation.onfinish = () => pulse.remove(); else setTimeout(() => pulse.remove(), 360);
+  };
+  const hoverAt = (el, input, point) => {
+    for (const type of ['pointerover', 'mouseover', 'pointermove', 'mousemove']) dispatchPointer(el, type, input, point);
+  };
+  const clickAt = (el, input, detail = 1) => {
+    const point = centerOf(el);
+    hoverAt(el, input, point);
+    dispatchPointer(el, 'pointerdown', input, point, detail);
+    dispatchPointer(el, 'mousedown', input, point, detail);
+    dispatchPointer(el, 'pointerup', input, point, detail);
+    dispatchPointer(el, 'mouseup', input, point, detail);
+    const button = ({ left: 0, middle: 1, right: 2 })[input.button] ?? 0;
+    if (button === 0 && !(input.modifiers?.length)) el.click();
+    else dispatchPointer(el, button === 1 ? 'auxclick' : button === 2 ? 'contextmenu' : 'click', input, point, detail);
+    pulseAt(el, point);
+  };
+  const dragBetween = (source, destination, input) => {
+    const realm = source.ownerDocument?.defaultView || window;
+    const from = centerOf(source);
+    const to = centerOf(destination);
+    let transfer = null;
+    try { transfer = realm.DataTransfer ? new realm.DataTransfer() : null; } catch (_) {}
+    const dragEvent = (target, type, point) => {
+      if (realm.DragEvent) target.dispatchEvent(new realm.DragEvent(type, { ...pointerOptions(input, point), dataTransfer: transfer }));
+      else dispatchPointer(target, type, input, point);
+    };
+    hoverAt(source, input, from);
+    dispatchPointer(source, 'pointerdown', input, from);
+    dispatchPointer(source, 'mousedown', input, from);
+    dragEvent(source, 'dragstart', from);
+    dragEvent(destination, 'dragenter', to);
+    dragEvent(destination, 'dragover', to);
+    dragEvent(destination, 'drop', to);
+    dragEvent(source, 'dragend', to);
+    dispatchPointer(destination, 'pointerup', input, to);
+    dispatchPointer(destination, 'mouseup', input, to);
+    pulseAt(destination, to);
   };
   runtime.invalidateForUserTakeover = () => {
     runtime.userEpoch += 1;
     runtime.refs = new Map();
+    runtime.agentCursor?.remove();
+    runtime.agentCursor = null;
+    runtime.cursorDocument = null;
+    runtime.cursorPoint = null;
+  };
+  runtime.previewAction = (input) => {
+    const { el, end } = validateAction(input);
+    const destination = input.action === 'drag' ? end : el;
+    return { durationMs: moveAgentCursor(destination, input.action === 'drag' ? el : null), action: input.action };
   };
   runtime.act = (input) => {
-    if (input.userEpoch !== runtime.userEpoch) throw new Error('stale observation: user interacted with the page');
-    const domFingerprint = `${location.href}|${document.documentElement?.outerHTML.length || 0}|${document.body?.innerText.slice(0, 20000) || ''}`;
-    if (input.domFingerprint !== domFingerprint) throw new Error('stale observation: page content changed');
-    const el = input.targetRef ? runtime.refs.get(input.targetRef) : null;
-    if (input.targetRef && (!el || !el.isConnected)) throw new Error('stale observation: target disappeared');
-    if (el && input.expected) {
-      const current = describe(el, input.targetRef);
-      if (current.role !== input.expected.role || current.name !== input.expected.name) {
-        throw new Error('stale observation: target identity changed');
-      }
-      const before = input.expected.bounds;
-      const after = current.bounds;
-      if (['x','y','width','height'].some((key) => Math.abs(Number(before[key]) - Number(after[key])) > 4)) {
-        throw new Error('stale observation: target bounds changed');
-      }
-    }
+    const { el, end } = validateAction(input);
     runtime.synthetic = true;
     try {
-      if (input.action === 'click') el.click();
+      if (input.action === 'move' || input.action === 'hover') hoverAt(el, input, centerOf(el));
+      else if (input.action === 'click') clickAt(el, input);
+      else if (input.action === 'double_click') {
+        clickAt(el, input, 1);
+        clickAt(el, input, 2);
+        dispatchPointer(el, 'dblclick', input, centerOf(el), 2);
+      } else if (input.action === 'drag') dragBetween(el, end, input);
       else if (input.action === 'type') {
         el.focus();
         const realm = el.ownerDocument?.defaultView || window;
@@ -394,7 +548,9 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   }, true);
   const bridge = Object.freeze({
     observe: () => runtime.observe(),
+    previewAction: (input) => runtime.previewAction(input),
     act: (input) => runtime.act(input),
+    invalidateForUserTakeover: () => runtime.invalidateForUserTakeover(),
     beginPick: (mode) => runtime.beginPick(mode),
     cancelPick: () => runtime.cancelPick(),
     takeArtifact: () => runtime.takeArtifact(),
