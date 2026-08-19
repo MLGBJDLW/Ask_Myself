@@ -374,6 +374,8 @@ test.beforeEach(async ({ page }) => {
         }
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig), clone(qwenConfig)];
+        case "list_agent_task_run_summaries_cmd":
+          return { items: [], nextCursor: null };
         case "list_conversations_cmd":
           return [];
         case "list_sources":
@@ -1595,6 +1597,8 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     ),
     rail: await backgroundAlpha(rail),
     titlebar: await backgroundAlpha(titlebar),
+    searchPage: 0,
+    taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0,
     chatContent: 0,
@@ -1629,12 +1633,30 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   await page.screenshot({ path: 'test-results/custom-wallpaper-settings.png', fullPage: true });
 
   await page.goto("/");
+  const routeSurface = page.locator("main[data-theme-surface]").first();
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "content");
+  surfaceAlphas.searchPage = await backgroundAlpha(routeSurface);
   await page.getByRole("textbox").first().focus();
   const recentQueryDropdown = page.getByTestId("recent-query-dropdown");
   await expect(recentQueryDropdown).toBeVisible();
   expect(await backgroundAlpha(recentQueryDropdown)).toBe(1);
 
+  await page.goto("/tasks");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "page");
+  surfaceAlphas.taskPage = await backgroundAlpha(routeSurface);
+  const refreshTasks = page.getByRole("button", { name: "Refresh", exact: true });
+  await expect(refreshTasks).toBeVisible();
+  const refreshRestingBackground = await refreshTasks.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  );
+  await refreshTasks.hover();
+  await expect.poll(() => refreshTasks.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  ))
+    .not.toBe(refreshRestingBackground);
+
   await page.goto("/workflows");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "page");
   const workflowSurface = page.locator("main .min-h-full.bg-surface-0").first();
   await expect(workflowSurface).toBeVisible();
   surfaceAlphas.workflowPage = await backgroundAlpha(workflowSurface);
@@ -1652,6 +1674,8 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     settingsPanel: 0.72,
     rail: 0.72,
     titlebar: 0.72,
+    searchPage: 0.82,
+    taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0.72,
     chatContent: 0.82,
