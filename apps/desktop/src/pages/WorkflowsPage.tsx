@@ -345,7 +345,7 @@ export function WorkflowsPage() {
   };
 
   return (
-    <div className="flex min-h-full flex-col bg-surface-0">
+    <div className="flex min-h-full flex-col bg-surface-0" data-theme-surface="page">
       <header className="border-b border-border bg-surface-1 px-6 py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

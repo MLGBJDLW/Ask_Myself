@@ -679,7 +679,7 @@ export function ChatSidebar({
 
   if (showArchived) {
     return (
-      <div className="flex h-full min-h-0 flex-col border-r border-border bg-surface-1">
+      <div className="flex h-full min-h-0 flex-col border-r border-border bg-surface-1" data-theme-surface="chrome">
         <div className="flex items-center gap-2 border-b border-border px-2 py-3">
           <button
             type="button"
@@ -831,7 +831,7 @@ export function ChatSidebar({
   let runningIndex = 0;
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-surface-1 border-r border-border">
+    <div className="flex flex-col h-full min-h-0 bg-surface-1 border-r border-border" data-theme-surface="chrome">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-border">
         <div className="flex items-center gap-1.5">

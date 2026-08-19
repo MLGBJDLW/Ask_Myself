@@ -1601,7 +1601,7 @@ export function ChatPage() {
       </motion.div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative" data-theme-surface="content">
         {!chat.activeId && (
           <div className="absolute top-2 left-2 z-20">
             <button

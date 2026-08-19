@@ -135,7 +135,7 @@ function AppShell() {
   return (
     <I18nProvider>
       <MotionConfig reducedMotion="user">
-        <AppWindowFrame>
+        <AppWindowFrame area={location.pathname === '/' ? 'home' : 'task'}>
           <FilePreviewProvider>
             <CommandPalette />
             {wizardCompleted === false && location.pathname !== '/wizard' && (

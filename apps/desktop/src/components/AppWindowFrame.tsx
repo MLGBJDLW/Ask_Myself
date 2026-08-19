@@ -14,9 +14,10 @@ function hasNativeWindowRuntime(): boolean {
 
 interface AppWindowFrameProps {
   children: ReactNode;
+  area: 'home' | 'task';
 }
 
-export function AppWindowFrame({ children }: AppWindowFrameProps) {
+export function AppWindowFrame({ children, area }: AppWindowFrameProps) {
   const { t } = useTranslation();
   const hasWindowRuntime = hasNativeWindowRuntime();
   const appWindow = useMemo(
@@ -82,7 +83,11 @@ export function AppWindowFrame({ children }: AppWindowFrameProps) {
   }, [appWindow]);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-text-primary">
+    <div
+      className="app-window-frame relative isolate flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-text-primary"
+      data-app-area={area}
+    >
+      <div className="app-theme-backdrop" aria-hidden="true" />
       <header
         className="app-titlebar relative z-[100] flex h-9 shrink-0 select-none items-stretch border-b border-border bg-surface-1/95"
         data-testid="app-titlebar"
@@ -138,7 +143,7 @@ export function AppWindowFrame({ children }: AppWindowFrameProps) {
         </div>
       </header>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+      <div className="relative z-10 min-h-0 flex-1 overflow-hidden">{children}</div>
     </div>
   );
 }

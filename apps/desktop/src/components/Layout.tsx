@@ -216,10 +216,9 @@ export function Layout() {
 
   return (
     <div
-      className="relative isolate flex h-full min-h-0 overflow-hidden bg-surface-0 text-text-primary"
-      data-app-area={location.pathname === '/' ? 'home' : 'task'}
+      className="relative flex h-full min-h-0 overflow-hidden bg-surface-0 text-text-primary"
+      data-theme-surface="workspace"
     >
-      <div className="app-theme-backdrop" aria-hidden="true" />
       {/* Sidebar */}
       <aside
         className="relative z-10 flex w-14 shrink-0 flex-col overflow-hidden border-r border-border bg-surface-1"
@@ -297,7 +296,10 @@ export function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto">
+      <main
+        className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto"
+        data-theme-surface={location.pathname.startsWith('/chat') ? 'transparent' : 'content'}
+      >
         <Outlet />
       </main>
 

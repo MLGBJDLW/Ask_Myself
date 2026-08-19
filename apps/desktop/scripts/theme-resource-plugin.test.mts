@@ -69,12 +69,27 @@ test('v1 theme-resource plugins migrate into the v2 declarative contract', () =>
 
 test('theme resources expose safe type, motion, brand, copy, and component slots', () => {
   const plugin = themeToResourcePlugin(profile);
+  const variables = customThemeToCssVariables(themeResourcePluginToCustomTheme(plugin));
   assert.equal(plugin.theme.typography.fontFamily, 'Inter Variable, sans-serif');
   assert.equal(plugin.theme.motion.cursorStyle, 'fluid');
   assert.equal(plugin.theme.brand.logoVariant, 'accent');
   assert.equal(plugin.theme.content.tagline, 'Quiet focus');
   assert.equal(plugin.theme.components.rail?.borderColor, '#164e63');
-  assert.equal(customThemeToCssVariables(themeResourcePluginToCustomTheme(plugin))['--theme-titlebar-height'], '1.8rem');
+  assert.equal(variables['--theme-titlebar-height'], '1.8rem');
+  assert.equal(variables['--theme-chrome-surface-alpha'], '90%');
+  assert.equal(variables['--theme-content-surface-alpha'], '90%');
+  assert.match(variables['--theme-content-surface-0'], /color-mix.*--color-surface-0/);
+});
+
+test('wallpaper themes keep reading surfaces above the legibility floor', () => {
+  const variables = customThemeToCssVariables({
+    ...profile,
+    effects: { ...profile.effects, surfaceOpacity: 0.35 },
+  });
+
+  assert.equal(variables['--theme-chrome-surface-alpha'], '35%');
+  assert.equal(variables['--theme-content-surface-alpha'], '82%');
+  assert.equal(variables['--theme-glass-blur'], '14px');
 });
 
 test('theme resources keep executable CSS and remote fonts outside the contract', () => {
