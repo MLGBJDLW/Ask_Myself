@@ -9,6 +9,9 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Configure Ubuntu APT
+      uses: ./.github/actions/configure-ubuntu-apt
+
     - name: Install packages
       shell: bash
       env:

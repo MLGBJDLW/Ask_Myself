@@ -190,6 +190,9 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Configure Ubuntu APT
+        uses: ./.github/actions/configure-ubuntu-apt
+
       - name: Install browser
         working-directory: apps/desktop
         timeout-minutes: 10
