@@ -81,6 +81,13 @@ test('theme resources keep executable CSS and remote fonts outside the contract'
   assert.throws(
     () => normalizeThemeResourcePlugin({
       ...themeToResourcePlugin(profile),
+      theme: { ...themeToResourcePlugin(profile).theme, colors: { accent: '#12345' } },
+    }),
+    /Invalid color/,
+  );
+  assert.throws(
+    () => normalizeThemeResourcePlugin({
+      ...themeToResourcePlugin(profile),
       theme: { ...themeToResourcePlugin(profile).theme, typography: { fontFamily: 'url(https://example.com/font.woff2)' } },
     }),
     /Invalid font family/,

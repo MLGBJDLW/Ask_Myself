@@ -122,7 +122,7 @@ const THEME_VARIABLES = [
 ] as const;
 
 const COMPONENT_SLOTS: ThemeComponentSlot[] = ['rail', 'header', 'card', 'browser'];
-const SAFE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla|oklch|oklab)\([0-9a-z.% ,/+\-]+\)|transparent)$/i;
+const SAFE_COLOR = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|rgba|hsl|hsla|oklch|oklab)\([0-9a-z.% ,/+\-]+\)|transparent)$/i;
 const SAFE_GRADIENT = /^(?:linear|radial|conic)-gradient\([#0-9a-z.%(), /+\-]+\)$/i;
 const SAFE_FONT = /^[a-z0-9 _,'".\-]+$/i;
 const SAFE_SHADOW = /^[#0-9a-z.%(), /+\-]+$/i;

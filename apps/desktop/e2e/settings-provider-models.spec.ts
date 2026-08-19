@@ -164,6 +164,14 @@ test.beforeEach(async ({ page }) => {
 
     let registryReadMode = "registry";
     let registryRevision = 3;
+    let appearanceRegistry = {
+      version: 2,
+      initialized: false,
+      revision: 0,
+      activeThemeId: "dark",
+      previousThemeId: null as string | null,
+      plugins: [] as Array<Record<string, unknown>>,
+    };
     const registryProjection = () => ({
       schemaVersion: 1,
       settingsRevisions: [{
@@ -268,6 +276,68 @@ test.beforeEach(async ({ page }) => {
         }
         case "get_wizard_state_cmd":
           return { completed: true };
+        case "hydrate_appearance_registry_cmd":
+          if (!appearanceRegistry.initialized) {
+            appearanceRegistry = {
+              ...appearanceRegistry,
+              initialized: true,
+              revision: appearanceRegistry.revision + 1,
+              activeThemeId: String(_args.activeThemeId ?? "dark"),
+              plugins: clone((_args.plugins as Array<Record<string, unknown>> | undefined) ?? []),
+            };
+          }
+          return clone(appearanceRegistry);
+        case "get_appearance_registry_cmd":
+          return clone(appearanceRegistry);
+        case "apply_appearance_plugin_cmd": {
+          if (localStorage.getItem("nexa-test-reject-appearance") === "true") {
+            throw new Error("simulated appearance persistence failure");
+          }
+          const plugin = clone(_args.plugin as Record<string, unknown>);
+          const id = String(plugin.id ?? "");
+          appearanceRegistry = {
+            ...appearanceRegistry,
+            initialized: true,
+            revision: appearanceRegistry.revision + 1,
+            previousThemeId: appearanceRegistry.activeThemeId === id
+              ? appearanceRegistry.previousThemeId
+              : appearanceRegistry.activeThemeId,
+            activeThemeId: id,
+            plugins: [...appearanceRegistry.plugins.filter(item => item.id !== id), plugin],
+          };
+          return clone(appearanceRegistry);
+        }
+        case "activate_appearance_cmd": {
+          const nextId = String(_args.themeId ?? "dark");
+          appearanceRegistry = {
+            ...appearanceRegistry,
+            revision: appearanceRegistry.revision + 1,
+            previousThemeId: appearanceRegistry.activeThemeId,
+            activeThemeId: nextId,
+          };
+          return clone(appearanceRegistry);
+        }
+        case "rollback_appearance_cmd": {
+          const previous = appearanceRegistry.previousThemeId;
+          if (!previous) throw new Error("no previous appearance");
+          appearanceRegistry = {
+            ...appearanceRegistry,
+            revision: appearanceRegistry.revision + 1,
+            activeThemeId: previous,
+            previousThemeId: appearanceRegistry.activeThemeId,
+          };
+          return clone(appearanceRegistry);
+        }
+        case "remove_appearance_cmd": {
+          const removedId = String(_args.themeId ?? "");
+          appearanceRegistry = {
+            ...appearanceRegistry,
+            revision: appearanceRegistry.revision + 1,
+            activeThemeId: appearanceRegistry.activeThemeId === removedId ? "dark" : appearanceRegistry.activeThemeId,
+            plugins: appearanceRegistry.plugins.filter(item => item.id !== removedId),
+          };
+          return clone(appearanceRegistry);
+        }
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig), clone(qwenConfig)];
         case "list_conversations_cmd":
@@ -1273,8 +1343,9 @@ test("appearance installs the backend-normalized theme draft only after explicit
   await expect(page.getByLabel("Name")).toHaveValue("Generated Ocean");
   await page.getByRole("button", { name: "Controlled component styles" }).click();
   await page.getByRole("group", { name: "Navigation rail" }).getByLabel("Background").fill("rgba(8, 19, 31, 0.92)");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("nexa-theme-resource-plugins-v2")))
-    .toBeNull();
+  await expect.poll(() => page.evaluate(() => (
+    JSON.parse(localStorage.getItem("nexa-theme-resource-plugins-v2") ?? "[]") as unknown[]
+  ).length)).toBe(0);
 
   await page.getByRole("button", { name: "Generate matching image" }).click();
   await page.getByRole("button", { name: "Save and apply" }).click();
@@ -1295,6 +1366,14 @@ test("appearance installs the backend-normalized theme draft only after explicit
       }),
     }),
   }));
+
+  await page.evaluate(() => localStorage.setItem("nexa-test-reject-appearance", "true"));
+  await page.getByLabel("Name").fill("Rejected Update");
+  await page.getByRole("button", { name: "Save and apply" }).click();
+  await expect.poll(() => page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("nexa-theme-resource-plugins-v2") ?? "[]") as Array<{ name?: string }>;
+    return { name: stored[0]?.name, active: localStorage.getItem("nexa-active-theme-v1") };
+  })).toEqual({ name: "Generated Ocean", active: "theme-generated-ocean" });
 });
 
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {

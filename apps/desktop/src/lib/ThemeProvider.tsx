@@ -42,6 +42,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       : getInitialTheme();
   });
   const registryRevisionRef = useRef(0);
+  const mutationSequenceRef = useRef(0);
   const activeCustomTheme = customThemes.find((profile) => profile.id === activeThemeId);
   const theme = activeCustomTheme?.baseTheme ?? (isThemeId(activeThemeId) ? activeThemeId : 'dark');
   const content = activeCustomTheme?.content ?? {};
@@ -85,6 +86,33 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setActiveThemeId(registry.activeThemeId);
   }, []);
 
+  const restoreLocalSnapshot = useCallback((plugins: ThemeResourcePlugin[], activeId: string) => {
+    localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(plugins));
+    localStorage.setItem(ACTIVE_THEME_KEY, activeId);
+    setThemePlugins(plugins);
+    setActiveThemeId(activeId);
+  }, []);
+
+  const recoverFailedMutation = useCallback(async (
+    sequence: number,
+    fallbackPlugins: ThemeResourcePlugin[],
+    fallbackActiveId: string,
+    error: unknown,
+    message: string,
+  ) => {
+    console.warn(message, error);
+    if (sequence !== mutationSequenceRef.current) return;
+    try {
+      const registry = await api.getAppearanceRegistry();
+      if (sequence !== mutationSequenceRef.current) return;
+      if (!registry || !Array.isArray(registry.plugins)) throw new Error('Appearance registry is unavailable');
+      if (registry.revision < registryRevisionRef.current) return;
+      applyRegistry(registry);
+    } catch {
+      if (sequence === mutationSequenceRef.current) restoreLocalSnapshot(fallbackPlugins, fallbackActiveId);
+    }
+  }, [applyRegistry, restoreLocalSnapshot]);
+
   useEffect(() => {
     let disposed = false;
     const initialPlugins = readThemePlugins();
@@ -104,34 +132,69 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = (newTheme: string) => {
     if (isThemeId(newTheme) || customThemes.some((profile) => profile.id === newTheme)) {
+      const sequence = ++mutationSequenceRef.current;
+      const previousActiveId = activeThemeId;
       setActiveThemeId(newTheme);
-      void api.activateAppearance(newTheme).then(applyRegistry).catch((error) => {
-        console.warn('Unable to persist active appearance', error);
-      });
+      void api.activateAppearance(newTheme)
+        .then((registry) => { if (sequence === mutationSequenceRef.current) applyRegistry(registry); })
+        .catch((error) => void recoverFailedMutation(
+          sequence,
+          themePlugins,
+          previousActiveId,
+          error,
+          'Unable to persist active appearance',
+        ));
     }
   };
 
   const installThemePlugin = (plugin: ThemeResourcePlugin) => {
     const normalized = normalizeThemeResourcePlugin(plugin);
+    const sequence = ++mutationSequenceRef.current;
+    const previousPlugins = themePlugins;
+    const previousActiveId = activeThemeId;
     const next = [...themePlugins.filter((item) => item.id !== normalized.id), normalized];
     localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(next));
     setThemePlugins(next);
-    void collectUnusedThemeAssets(next.map(themeResourcePluginToCustomTheme));
     setActiveThemeId(normalized.id);
-    void api.applyAppearancePlugin(normalized).then(applyRegistry).catch((error) => {
-      console.warn('Unable to persist appearance plugin', error);
-    });
+    void api.applyAppearancePlugin(normalized)
+      .then((registry) => {
+        if (sequence !== mutationSequenceRef.current) return;
+        applyRegistry(registry);
+        void collectUnusedThemeAssets(registry.plugins.map(themeResourcePluginToCustomTheme));
+      })
+      .catch((error) => void recoverFailedMutation(
+        sequence,
+        previousPlugins,
+        previousActiveId,
+        error,
+        'Unable to persist appearance plugin',
+      ));
   };
 
   const uninstallThemePlugin = (id: string, additionallyRetainedAssetIds: string[] = []) => {
+    const sequence = ++mutationSequenceRef.current;
+    const previousPlugins = themePlugins;
+    const previousActiveId = activeThemeId;
     const next = themePlugins.filter((plugin) => plugin.id !== id);
     localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(next));
     setThemePlugins(next);
-    void collectUnusedThemeAssets(next.map(themeResourcePluginToCustomTheme), additionallyRetainedAssetIds);
     if (activeThemeId === id) setActiveThemeId('dark');
-    void api.removeAppearance(id).then(applyRegistry).catch((error) => {
-      console.warn('Unable to remove appearance plugin from the durable registry', error);
-    });
+    void api.removeAppearance(id)
+      .then((registry) => {
+        if (sequence !== mutationSequenceRef.current) return;
+        applyRegistry(registry);
+        void collectUnusedThemeAssets(
+          registry.plugins.map(themeResourcePluginToCustomTheme),
+          additionallyRetainedAssetIds,
+        );
+      })
+      .catch((error) => void recoverFailedMutation(
+        sequence,
+        previousPlugins,
+        previousActiveId,
+        error,
+        'Unable to remove appearance plugin from the durable registry',
+      ));
   };
 
   const rollbackTheme = () => {
