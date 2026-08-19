@@ -7,16 +7,22 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  check:
-    name: Check & Lint
+  # Verification jobs are split by dependency and failure domain so a native
+  # package outage cannot prevent unrelated Rust or frontend feedback.
+  repository_policy:
+    name: Repository Policy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
 
@@ -36,45 +42,12 @@ jobs:
             exit 1
           fi
 
-      - name: Install Tauri system dependencies (Linux)
-        timeout-minutes: 10
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a
-        run: |
-          sudo apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            update
-          sudo --preserve-env=DEBIAN_FRONTEND,NEEDRESTART_MODE apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libdbus-1-dev
-
-      - name: Install Office smoke dependencies (Linux)
-        timeout-minutes: 12
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a
-        run: |
-          sudo --preserve-env=DEBIAN_FRONTEND,NEEDRESTART_MODE apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends \
-            libreoffice-calc \
-            poppler-utils
+  rust_core:
+    name: Rust Core
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,6 +93,27 @@ jobs:
           cargo check -p nexa-core --no-default-features --features ocr
           cargo check -p nexa-core --no-default-features --features video
 
+      - name: Agent eval smoke
+        run: cargo test -p nexa-core developer_eval_smoke_workflow
+
+      - name: Cargo test
+        run: cargo test -p nexa-core
+
+  office_smoke:
+    name: Office Artifact Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Office smoke dependencies
+        uses: ./.github/actions/install-ubuntu-packages
+        timeout-minutes: 12
+        with:
+          packages: |
+            libreoffice-calc
+            poppler-utils
+
       - name: Office artifact runtime smoke
         run: |
           python3 -m venv /tmp/nexa-office-venv
@@ -129,6 +123,13 @@ jobs:
           /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_renderer.py -v
           /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_html_deck_renderer.py -v
           /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_upgrade_pipeline.py -v
+
+  frontend:
+    name: Frontend Contracts & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -171,8 +172,27 @@ jobs:
         working-directory: apps/desktop
         run: npx vite build
 
-      - name: Install browser for critical chat UI regressions
+  browser_regressions:
+    name: Browser Regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
         working-directory: apps/desktop
+        run: npm ci
+
+      - name: Install browser
+        working-directory: apps/desktop
+        timeout-minutes: 10
         run: npx playwright install --with-deps chromium
 
       - name: Critical chat UI regressions
@@ -192,18 +212,115 @@ jobs:
           e2e/chat-recording-dock.spec.ts
           --grep "themed window frame|Agent browser interaction|Agent drag uses observation-scoped|Agent pointer preparation|conversation actions offer archive and delete|archived conversations can be restored|a direct archived conversation link|model selector|shared Browser Workspace|interactive terminal dock|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges|recording dock exposes responsive"
 
+      - name: Upload browser regression diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-regression-diagnostics
+          path: |
+            apps/desktop/playwright-report/
+            apps/desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  linux_desktop:
+    name: Linux Desktop Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Tauri system dependencies
+        uses: ./.github/actions/install-ubuntu-packages
+        timeout-minutes: 10
+        with:
+          packages: |
+            libwebkit2gtk-4.1-dev
+            libappindicator3-dev
+            librsvg2-dev
+            patchelf
+            libssl-dev
+            libgtk-3-dev
+            libjavascriptcoregtk-4.1-dev
+            libsoup-3.0-dev
+            libdbus-1-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-nexa-v1-
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ort.pyke.io
+          key: ${{ runner.os }}-ort-${{ hashFiles('crates/core/Cargo.toml') }}
+
+      - name: Prepare Tauri frontend stub
+        shell: bash
+        run: |
+          mkdir -p apps/desktop/dist
+          printf '%s\n' '<!doctype html><html></html>' > apps/desktop/dist/index.html
+
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop
 
-      - name: Agent eval smoke
-        run: cargo test -p nexa-core developer_eval_smoke_workflow
+  # Keep this name stable: callers and merge policy treat it as the public CI
+  # interface while the implementation jobs above may evolve independently.
+  check:
+    name: Check & Lint
+    if: ${{ always() }}
+    needs:
+      - repository_policy
+      - rust_core
+      - office_smoke
+      - frontend
+      - browser_regressions
+      - linux_desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful CI jobs
+        env:
+          REPOSITORY_POLICY_RESULT: ${{ needs.repository_policy.result }}
+          RUST_CORE_RESULT: ${{ needs.rust_core.result }}
+          OFFICE_SMOKE_RESULT: ${{ needs.office_smoke.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BROWSER_REGRESSIONS_RESULT: ${{ needs.browser_regressions.result }}
+          LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
+        shell: bash
+        run: |
+          results=(
+            "Repository Policy:$REPOSITORY_POLICY_RESULT"
+            "Rust Core:$RUST_CORE_RESULT"
+            "Office Artifact Smoke:$OFFICE_SMOKE_RESULT"
+            "Frontend Contracts & Build:$FRONTEND_RESULT"
+            "Browser Regressions:$BROWSER_REGRESSIONS_RESULT"
+            "Linux Desktop Check:$LINUX_DESKTOP_RESULT"
+          )
 
-      - name: Cargo test
-        run: cargo test -p nexa-core
+          failed=0
+          for result in "${results[@]}"; do
+            echo "$result"
+            if [[ "$result" != *":success" ]]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   windows-check:
     name: Windows Desktop Check
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
