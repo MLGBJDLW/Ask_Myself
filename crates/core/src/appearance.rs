@@ -83,8 +83,10 @@ impl AppearanceRegistry {
     pub fn apply(mut self, plugin: ThemeResourcePlugin) -> Result<Self, CoreError> {
         let plugin = plugin.normalize()?;
         self.initialized = true;
-        self.previous_theme_id = Some(self.active_theme_id.clone());
-        self.active_theme_id = plugin.id.clone();
+        if self.active_theme_id != plugin.id {
+            self.previous_theme_id = Some(self.active_theme_id.clone());
+            self.active_theme_id = plugin.id.clone();
+        }
         if let Some(existing) = self.plugins.iter_mut().find(|item| item.id == plugin.id) {
             *existing = plugin;
         } else {
@@ -293,5 +295,18 @@ mod tests {
         let removed = db.remove_appearance("autumn").unwrap();
         assert_eq!(removed.active_theme_id, "dark");
         assert!(removed.plugins.is_empty());
+    }
+
+    #[test]
+    fn updating_the_active_plugin_preserves_the_previous_theme_for_rollback() {
+        let db = Database::open_memory().unwrap();
+        db.hydrate_appearance_registry(Vec::new(), "dark".into())
+            .unwrap();
+        let first = db.apply_appearance_plugin(plugin("autumn")).unwrap();
+        assert_eq!(first.previous_theme_id.as_deref(), Some("dark"));
+
+        let updated = db.apply_appearance_plugin(plugin("autumn")).unwrap();
+        assert_eq!(updated.previous_theme_id.as_deref(), Some("dark"));
+        assert_eq!(db.rollback_appearance().unwrap().active_theme_id, "dark");
     }
 }

@@ -87,6 +87,15 @@ test('uses a themed window frame with working native controls', async ({ page })
   await expect.poll(() => titlebar.boundingBox().then(box => box?.height ?? 0)).toBeLessThan(regularHeight);
   await page.evaluate(() => { document.documentElement.dataset.cursorStyle = 'precise'; });
   await expect(page.getByRole('button', { name: 'Minimize window' })).toHaveCSS('cursor', 'crosshair');
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty('--theme-base-font-size', '18px');
+    const sample = document.createElement('div');
+    sample.dataset.testid = 'theme-rem-sample';
+    sample.className = 'text-sm';
+    document.body.appendChild(sample);
+  });
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe('18px');
+  await expect.poll(() => page.getByTestId('theme-rem-sample').evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(14);
 
   await page.getByRole('button', { name: 'Minimize window' }).click();
   await page.getByRole('button', { name: 'Maximize window' }).click();
