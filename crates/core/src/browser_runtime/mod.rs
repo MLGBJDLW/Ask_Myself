@@ -5,12 +5,14 @@
 
 mod control_lease;
 mod events;
+mod native_pointer;
 mod policy;
 mod runtime;
 mod types;
 
 pub use control_lease::ControlLease;
 pub use events::{BrowserRuntimeEvent, BrowserRuntimeEventKind};
+pub use native_pointer::move_native_pointer;
 pub use policy::{classify_action_risk, BrowserActionRisk};
 pub use runtime::{BrowserRuntime, BrowserRuntimeError, BrowserRuntimeResult};
 pub use types::*;

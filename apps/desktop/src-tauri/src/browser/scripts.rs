@@ -116,6 +116,25 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     }
     return elements;
   };
+  const dragDestinationElements = () => {
+    const selector = '[draggable="true"],[ondrop],[ondragover],[data-dropzone],[data-drop-zone],[class*="drop" i],[id*="drop" i]';
+    const elements = [];
+    for (const root of roots()) {
+      for (const element of root.querySelectorAll?.(selector) || []) {
+        if (isObservable(element)) elements.push(element);
+        if (elements.length >= 100) return elements;
+      }
+    }
+    return elements;
+  };
+  const observableElements = () => {
+    const seen = new Set();
+    return [...interactiveElements(), ...dragDestinationElements()].filter((element) => {
+      if (seen.has(element)) return false;
+      seen.add(element);
+      return true;
+    }).slice(0, 400);
+  };
   const navigationTargetOf = (el) => {
     if (el.href) return el.href;
     const tag = String(el.tagName || '').toUpperCase();
@@ -129,8 +148,25 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       return new URL(el.getAttribute?.('formaction') || el.form.getAttribute?.('action') || fallbackUrl, ownerDocument.baseURI).href;
     } catch (_) { return null; }
   };
-  const describe = (el, ref) => {
+  const viewportBoundsOf = (el) => {
     const rect = el.getBoundingClientRect();
+    let x = rect.x;
+    let y = rect.y;
+    let ownerWindow = el.ownerDocument?.defaultView;
+    while (ownerWindow && ownerWindow !== window.top) {
+      try {
+        const frame = ownerWindow.frameElement;
+        if (!frame) break;
+        const frameBounds = frame.getBoundingClientRect();
+        x += frameBounds.x;
+        y += frameBounds.y;
+        ownerWindow = frame.ownerDocument?.defaultView;
+      } catch (_) { break; }
+    }
+    return { x, y, width: rect.width, height: rect.height };
+  };
+  const describe = (el, ref) => {
+    const rect = viewportBoundsOf(el);
     const name = textOf(el);
     const navigationTarget = navigationTargetOf(el);
     return {
@@ -163,7 +199,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   runtime.observe = () => {
     runtime.observationSeq += 1;
     runtime.refs = new Map();
-    const elements = interactiveElements().map((el, index) => {
+    const elements = observableElements().map((el, index) => {
       const ref = `e_${runtime.observationSeq}_${index + 1}`;
       runtime.refs.set(ref, el);
       return describe(el, ref);
@@ -337,6 +373,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const destination = input.action === 'drag' ? end : el;
     return { durationMs: moveAgentCursor(destination, input.action === 'drag' ? el : null), action: input.action };
   };
+  runtime.validateAction = (input) => { validateAction(input); return true; };
   runtime.act = (input) => {
     const { el, end } = validateAction(input);
     runtime.synthetic = true;
@@ -549,6 +586,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   const bridge = Object.freeze({
     observe: () => runtime.observe(),
     previewAction: (input) => runtime.previewAction(input),
+    validateAction: (input) => runtime.validateAction(input),
     act: (input) => runtime.act(input),
     invalidateForUserTakeover: () => runtime.invalidateForUserTakeover(),
     beginPick: (mode) => runtime.beginPick(mode),

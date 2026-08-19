@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub use nexa_core::browser_runtime::{
-    BrowserBounds, BrowserControlOwner, BrowserElement, ControlLease,
+    BrowserBounds, BrowserControlOwner, BrowserElement, BrowserElementBounds, ControlLease,
 };
 use nexa_core::browser_runtime::{
     BrowserObservation as CoreBrowserObservation, BrowserSession as CoreBrowserSession,
     BrowserTab as CoreBrowserTab,
 };
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Webview};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
@@ -65,6 +65,7 @@ struct BrowserTab {
     title: String,
     loading: bool,
     status: String,
+    bounds: BrowserBounds,
     approved_agent_urls: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -370,6 +371,14 @@ impl BrowserState {
             network_proxy_url,
             bounds,
         )?;
+        let initial_bounds = bounds
+            .unwrap_or(BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            })
+            .sanitized();
         let info = {
             let mut runtime = self
                 .inner
@@ -407,6 +416,7 @@ impl BrowserState {
                     title: url.host_str().unwrap_or("New tab").to_string(),
                     loading: true,
                     status: "loading".to_string(),
+                    bounds: initial_bounds,
                     approved_agent_urls,
                 },
             );
@@ -592,15 +602,16 @@ impl BrowserState {
         visible: bool,
     ) -> Result<(), String> {
         let bounds = bounds.sanitized();
-        let runtime = self
+        let mut runtime = self
             .inner
             .lock()
             .map_err(|_| "Browser runtime is unavailable".to_string())?;
         let session = runtime
             .sessions
-            .get(session_id)
+            .get_mut(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-        for (tab_id, tab) in &session.tabs {
+        for (tab_id, tab) in &mut session.tabs {
+            tab.bounds = bounds;
             tab.webview
                 .set_bounds(tauri::Rect {
                     position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(),
@@ -954,6 +965,7 @@ impl BrowserState {
                 navigation_approval = Some((target, is_form_submitter || implicit_form_submit));
             }
         }
+        let target_bounds = expected.as_ref().map(|element| element.bounds.clone());
         let action_input = serde_json::to_string(&serde_json::json!({
             "action": request.action,
             "targetRef": request.target_ref,
@@ -1000,6 +1012,51 @@ impl BrowserState {
             .min(600);
         if duration_ms > 0 {
             tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+        }
+        if matches!(request.action, "move" | "hover") {
+            let validate_expression = format!(
+                "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.validateAction({action_input}); }})()"
+            );
+            self.emit(
+                "agentAction",
+                serde_json::json!({
+                    "sessionId": request.session_id,
+                    "tabId": request.tab_id,
+                    "action": request.action,
+                    "phase": "committing",
+                    "targetRef": request.target_ref,
+                }),
+            );
+            let validation = self.dispatch_agent_action(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                &validate_expression,
+            )?;
+            validation.resolve().await?;
+            self.move_native_pointer_to_target(
+                request.session_id,
+                request.tab_id,
+                target_bounds.as_ref().ok_or_else(|| {
+                    "Browser pointer action requires an observed target".to_string()
+                })?,
+            )?;
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let observation = self
+                .observe(request.session_id, request.tab_id, request.call_id)
+                .await?;
+            self.emit(
+                "agentAction",
+                serde_json::json!({
+                    "sessionId": request.session_id,
+                    "tabId": request.tab_id,
+                    "action": request.action,
+                    "phase": "verified",
+                    "observationId": observation.observation_id,
+                }),
+            );
+            return Ok(observation);
         }
         if let Some((target, form_navigation)) = navigation_approval.as_ref() {
             self.approve_agent_action_url(
@@ -1450,6 +1507,56 @@ impl BrowserState {
         }
     }
 
+    fn move_native_pointer_to_target(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        target: &BrowserElementBounds,
+    ) -> Result<(), String> {
+        let (bounds, webview) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let tab = runtime
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.tabs.get(tab_id))
+                .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+            (tab.bounds, tab.webview.clone())
+        };
+        let window = self
+            .app
+            .get_window("main")
+            .ok_or_else(|| "Main application window is unavailable".to_string())?;
+        if !window
+            .is_visible()
+            .map_err(|error| format!("Could not read main window visibility: {error}"))?
+            || window
+                .is_minimized()
+                .map_err(|error| format!("Could not read main window state: {error}"))?
+        {
+            return Err(
+                "Browser pointer movement requires the visible, restored Nexa window".to_string(),
+            );
+        }
+        let origin = window
+            .outer_position()
+            .map_err(|error| format!("Could not read main window position: {error}"))?;
+        let scale_factor = window
+            .scale_factor()
+            .map_err(|error| format!("Could not read main window scale: {error}"))?;
+        let (x, y) =
+            browser_target_screen_point((origin.x, origin.y), scale_factor, bounds, target)?;
+        window
+            .set_focus()
+            .map_err(|error| format!("Could not focus Nexa before pointer movement: {error}"))?;
+        webview
+            .set_focus()
+            .map_err(|error| format!("Could not focus browser before pointer movement: {error}"))?;
+        nexa_core::browser_runtime::move_native_pointer(x, y).map_err(|error| error.to_string())
+    }
+
     fn webview(&self, session_id: &str, tab_id: &str) -> Result<Webview, String> {
         self.inner
             .lock()
@@ -1504,6 +1611,33 @@ pub struct BrowserActRequest<'a> {
     pub modifiers: &'a [String],
     pub scroll_x: i64,
     pub scroll_y: i64,
+}
+
+pub(super) fn browser_target_screen_point(
+    window_origin: (i32, i32),
+    scale_factor: f64,
+    webview_bounds: BrowserBounds,
+    target_bounds: &BrowserElementBounds,
+) -> Result<(i32, i32), String> {
+    let logical_x = webview_bounds.x + target_bounds.x + target_bounds.width / 2.0;
+    let logical_y = webview_bounds.y + target_bounds.y + target_bounds.height / 2.0;
+    if !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || !logical_x.is_finite()
+        || !logical_y.is_finite()
+    {
+        return Err("Browser pointer target has invalid screen coordinates".to_string());
+    }
+    let physical_x = f64::from(window_origin.0) + logical_x * scale_factor;
+    let physical_y = f64::from(window_origin.1) + logical_y * scale_factor;
+    if physical_x < f64::from(i32::MIN)
+        || physical_x > f64::from(i32::MAX)
+        || physical_y < f64::from(i32::MIN)
+        || physical_y > f64::from(i32::MAX)
+    {
+        return Err("Browser pointer target is outside the supported desktop range".to_string());
+    }
+    Ok((physical_x.round() as i32, physical_y.round() as i32))
 }
 
 fn safe_identifier(input: &str) -> String {

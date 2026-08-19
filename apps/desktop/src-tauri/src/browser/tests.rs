@@ -5,7 +5,8 @@ use super::policy::{
     normalize_browser_url, BrowserActionRisk, NavigationActor,
 };
 use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_SCRIPT};
-use super::state::{BrowserControlOwner, ControlLease};
+use super::state::{browser_target_screen_point, BrowserControlOwner, ControlLease};
+use nexa_core::browser_runtime::{BrowserBounds, BrowserElementBounds};
 
 #[test]
 fn browser_url_policy_accepts_top_level_http_navigation() {
@@ -120,6 +121,8 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(!BROWSER_INIT_SCRIPT.contains("el.value ||"));
     assert!(BROWSER_INIT_SCRIPT.contains("input:not([type=\"hidden\" i])"));
     assert!(BROWSER_INIT_SCRIPT.contains("isObservable(element)"));
+    assert!(BROWSER_INIT_SCRIPT.contains("dragDestinationElements"));
+    assert!(BROWSER_INIT_SCRIPT.contains("[class*=\"drop\" i]"));
     assert!(BROWSER_INIT_SCRIPT.contains("invalidateForUserTakeover"));
     assert!(BROWSER_INIT_SCRIPT.contains("requestSubmit"));
     assert!(BROWSER_INIT_SCRIPT.contains("Unsupported browser key"));
@@ -133,6 +136,7 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
 #[test]
 fn agent_interactions_have_a_visible_two_phase_cursor_and_complete_pointer_sequences() {
     assert!(BROWSER_INIT_SCRIPT.contains("previewAction"));
+    assert!(BROWSER_INIT_SCRIPT.contains("validateAction"));
     assert!(BROWSER_INIT_SCRIPT.contains("data-nexa-agent-cursor"));
     assert!(BROWSER_INIT_SCRIPT.contains("prefers-reduced-motion: reduce"));
     assert!(BROWSER_INIT_SCRIPT.contains("cubic-bezier(.22,.8,.24,1)"));
@@ -141,6 +145,29 @@ fn agent_interactions_have_a_visible_two_phase_cursor_and_complete_pointer_seque
     assert!(BROWSER_INIT_SCRIPT.contains("dragBetween"));
     assert!(BROWSER_INIT_SCRIPT.contains("expectedEnd"));
     assert!(BROWSER_INIT_SCRIPT.contains("domFingerprintOf"));
+}
+
+#[test]
+fn browser_target_coordinates_respect_window_origin_webview_offset_and_scale() {
+    let point = browser_target_screen_point(
+        (-1200, 80),
+        1.5,
+        BrowserBounds {
+            x: 300.0,
+            y: 100.0,
+            width: 600.0,
+            height: 500.0,
+        },
+        &BrowserElementBounds {
+            x: 40.0,
+            y: 60.0,
+            width: 80.0,
+            height: 40.0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(point, (-630, 350));
 }
 
 #[test]

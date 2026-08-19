@@ -60,7 +60,7 @@ test('Agent drag uses observation-scoped endpoints and takeover removes its visu
   await page.setContent(`
     <!doctype html>
     <button id="source" draggable="true">Move card</button>
-    <button id="destination">Drop zone</button>
+    <div id="destination" class="drop-zone">Drop zone</div>
     <script>
       window.actionEvents = [];
       for (const type of ['dragstart', 'dragenter', 'dragover', 'drop', 'dragend']) {
