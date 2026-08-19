@@ -13,6 +13,7 @@ const {
   normalizeThemeResourcePlugin,
   parseCustomTheme,
   serializeThemeResourcePlugin,
+  shouldApplyRegistryRevision,
   themeResourcePluginToCustomTheme,
   themeToResourcePlugin,
 } = await import('../src/lib/themeProfile.ts');
@@ -50,6 +51,12 @@ test('theme profiles round-trip through the declarative plugin envelope', () => 
   assert.equal(plugin.manifestVersion, 2);
   assert.equal(plugin.description, 'calm ocean dashboard');
   assert.deepEqual(parseCustomTheme(serialized), themeResourcePluginToCustomTheme(plugin));
+});
+
+test('appearance synchronization discards registry responses older than the applied revision', () => {
+  assert.equal(shouldApplyRegistryRevision(7, 6), false);
+  assert.equal(shouldApplyRegistryRevision(7, 7), true);
+  assert.equal(shouldApplyRegistryRevision(7, 8), true);
 });
 
 test('v1 theme-resource plugins migrate into the v2 declarative contract', () => {

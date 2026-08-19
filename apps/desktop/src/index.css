@@ -16,6 +16,24 @@
   opacity: 0.62;
 }
 
+html[data-cursor-style='fluid'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: pointer;
+}
+
+html[data-cursor-style='precise'] body,
+html[data-cursor-style='precise'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: crosshair;
+}
+
+html[data-cursor-style='minimal'] body,
+html[data-cursor-style='minimal'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: default;
+}
+
+html[data-cursor-style] :where(input, textarea, [contenteditable='true']) {
+  cursor: text;
+}
+
 html[data-logo-variant="monochrome"] .nexa-logo-mark {
   --nexa-logo-accent: currentColor;
   --nexa-logo-muted: currentColor;

@@ -6,6 +6,7 @@ import {
   applyCustomTheme,
   clearCustomThemeVariables,
   normalizeThemeResourcePlugin,
+  shouldApplyRegistryRevision,
   themeResourcePluginToCustomTheme,
   themeToResourcePlugin,
   type CustomThemeDefinition,
@@ -73,10 +74,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const applyRegistry = useCallback((registry: api.AppearanceRegistry | null | undefined) => {
     if (!registry || !Array.isArray(registry.plugins)) return;
+    if (!shouldApplyRegistryRevision(registryRevisionRef.current, registry.revision ?? 0)) return;
     const plugins = registry.plugins.flatMap((plugin) => {
       try { return [normalizeThemeResourcePlugin(plugin)]; } catch { return []; }
     });
-    registryRevisionRef.current = Math.max(registryRevisionRef.current, registry.revision ?? 0);
+    registryRevisionRef.current = registry.revision ?? 0;
     localStorage.setItem(THEME_PLUGINS_KEY, JSON.stringify(plugins));
     localStorage.setItem(ACTIVE_THEME_KEY, registry.activeThemeId);
     setThemePlugins(plugins);

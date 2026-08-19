@@ -89,6 +89,10 @@ export interface ThemeResourcePlugin {
 
 export type ThemeCssVariables = Record<`--${string}`, string>;
 
+export function shouldApplyRegistryRevision(currentRevision: number, incomingRevision: number): boolean {
+  return Number.isFinite(incomingRevision) && incomingRevision >= currentRevision;
+}
+
 const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string}`> = {
   surface0: '--color-surface-0', surface1: '--color-surface-1', surface2: '--color-surface-2',
   surface3: '--color-surface-3', surface4: '--color-surface-4',

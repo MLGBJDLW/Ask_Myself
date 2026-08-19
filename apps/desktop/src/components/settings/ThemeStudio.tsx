@@ -271,6 +271,7 @@ export function ThemeStudio() {
                 <Range label={t('themeStudio.lineHeight')} value={draft.typography.lineHeight ?? 1.5} min={1.2} max={2} step={0.05} onChange={(value) => setDraft({ ...draft, typography: { ...draft.typography, lineHeight: value } })} />
                 <Range label={t('themeStudio.motionScale')} value={draft.motion.durationScale ?? 1} min={0} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, motion: { ...draft.motion, durationScale: value } })} />
                 <Range label={t('themeStudio.densityScale')} value={draft.effects.densityScale ?? 1} min={0.8} max={1.25} step={0.05} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, densityScale: value } })} />
+                <label className="text-xs text-text-secondary">{t('themeStudio.cursorStyle')}<NexaSelect value={draft.motion.cursorStyle ?? 'fluid'} onChange={(event) => setDraft({ ...draft, motion: { ...draft.motion, cursorStyle: event.target.value as 'fluid' | 'precise' | 'minimal' } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="fluid">{t('themeStudio.cursorFluid')}</option><option value="precise">{t('themeStudio.cursorPrecise')}</option><option value="minimal">{t('themeStudio.cursorMinimal')}</option></NexaSelect></label>
               </div>
             </div>
           </CollapsiblePanel>

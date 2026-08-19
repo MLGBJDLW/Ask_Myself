@@ -229,6 +229,13 @@ impl ThemeResourcePlugin {
         if self.name.is_empty() || self.name.chars().count() > 80 {
             return invalid("Theme-resource name must contain 1 to 80 characters");
         }
+        if let Some(description) = self.description.take() {
+            let description = description.trim().to_string();
+            if description.chars().count() > 500 {
+                return invalid("Theme-resource description cannot exceed 500 characters");
+            }
+            self.description = (!description.is_empty()).then_some(description);
+        }
         if !matches!(
             self.theme.base_theme.as_str(),
             "dark" | "light" | "midnight" | "aurora" | "bloom" | "dream"
@@ -564,5 +571,17 @@ mod tests {
         let error = ThemeResourcePlugin::from_generated_value(value, "image")
             .expect_err("unmanaged image must fail");
         assert!(error.to_string().contains("managed local asset id"));
+    }
+
+    #[test]
+    fn plugin_description_uses_the_renderer_length_contract() {
+        let mut plugin = ThemeResourcePlugin::from_generated_value(generated_theme(), "safe")
+            .expect("valid plugin");
+        plugin.description = Some("🌊".repeat(501));
+
+        let error = plugin
+            .normalize()
+            .expect_err("overlong description must fail");
+        assert!(error.to_string().contains("500 characters"));
     }
 }

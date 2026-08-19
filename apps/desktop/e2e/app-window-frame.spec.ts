@@ -85,6 +85,8 @@ test('uses a themed window frame with working native controls', async ({ page })
   const regularHeight = (await titlebar.boundingBox())!.height;
   await page.evaluate(() => document.documentElement.style.setProperty('--theme-titlebar-height', '1.8rem'));
   await expect.poll(() => titlebar.boundingBox().then(box => box?.height ?? 0)).toBeLessThan(regularHeight);
+  await page.evaluate(() => { document.documentElement.dataset.cursorStyle = 'precise'; });
+  await expect(page.getByRole('button', { name: 'Minimize window' })).toHaveCSS('cursor', 'crosshair');
 
   await page.getByRole('button', { name: 'Minimize window' }).click();
   await page.getByRole('button', { name: 'Maximize window' }).click();

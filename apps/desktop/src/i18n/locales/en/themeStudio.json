@@ -115,5 +115,9 @@
   "component.browser": "Browser dock",
   "componentBackground": "Background",
   "componentBorder": "Border color",
-  "componentShadow": "Box shadow"
+  "componentShadow": "Box shadow",
+  "cursorStyle": "Cursor style",
+  "cursorFluid": "Fluid",
+  "cursorPrecise": "Precise",
+  "cursorMinimal": "Minimal"
 }
