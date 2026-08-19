@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Search, FolderOpen, MessageCircle, Settings, ChevronLeft, ChevronRight, Brain, BotMessageSquare, ClipboardList, Workflow } from 'lucide-react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { Search, FolderOpen, MessageCircle, Settings, Brain, BotMessageSquare, ClipboardList, Workflow, Download, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 import {
   DndContext,
   PointerSensor,
@@ -21,11 +21,11 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
 import { Logo } from './Logo';
+import { Tooltip } from './ui';
 import { Toaster } from 'sonner';
 import { getVersion } from '@tauri-apps/api/app';
 import { useTranslation } from '../i18n';
 import { useUpdater } from '../lib/useUpdater';
-import { useResizablePanel } from '../lib/useResizablePanel';
 import { useTheme } from '../lib/ThemeProvider';
 import { isLightTheme } from '../lib/theme';
 import type { TranslationKey } from '../i18n';
@@ -36,14 +36,9 @@ function useAppVersion() {
   return version;
 }
 
-const STORAGE_KEY = 'sidebar-collapsed';
-const SIDEBAR_WIDTH_KEY = 'sidebar-width';
 const NAV_ORDER_KEY = 'sidebar-nav-order';
 const LAST_ROUTE_KEY = 'last-route';
-const SIDEBAR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)';
 const INSTANT_TRANSITION = { duration: 0 };
-const SIDEBAR_MIN_WIDTH = 168;
-const SIDEBAR_MAX_WIDTH = 320;
 
 type NavItem = { to: string; labelKey: TranslationKey; icon: typeof Search };
 
@@ -54,7 +49,6 @@ const CANONICAL_NAV_ITEMS: NavItem[] = [
   { to: '/chat', labelKey: 'nav.chat', icon: MessageCircle },
   { to: '/tasks', labelKey: 'nav.tasks', icon: ClipboardList },
   { to: '/workflows', labelKey: 'nav.workflows', icon: Workflow },
-  { to: '/settings', labelKey: 'nav.settings', icon: Settings },
 ];
 
 function loadOrderedNavItems(): NavItem[] {
@@ -84,50 +78,15 @@ function loadOrderedNavItems(): NavItem[] {
   }
 }
 
-/* ── Right-side tooltip for collapsed sidebar ─────────────────────── */
-function SidebarTooltip({ content, show, children }: { content: string; show: boolean; children: ReactNode }) {
-  const [hovered, setHovered] = useState(false);
-  const shouldReduceMotion = useReducedMotion();
-
-  if (!show) return <>{children}</>;
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {children}
-      <AnimatePresence>
-        {hovered && (
-          <motion.div
-            initial={shouldReduceMotion ? false : { opacity: 0, x: -4 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -4 }}
-            transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.15 }}
-            className="absolute left-full top-1/2 -translate-y-1/2 ml-2 z-50
-              px-2.5 py-1.5 text-xs font-medium
-              bg-surface-4 text-text-primary rounded-md shadow-md
-              whitespace-nowrap pointer-events-none"
-          >
-            {content}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 /* ── Sortable nav item ────────────────────────────────────────────── */
 interface SortableNavItemProps {
   item: NavItem;
   label: string;
-  collapsed: boolean;
   isCurrentPage: boolean;
   shouldReduceMotion: boolean;
 }
 
-function SortableNavItem({ item, label, collapsed, isCurrentPage, shouldReduceMotion }: SortableNavItemProps) {
+function SortableNavItem({ item, label, isCurrentPage, shouldReduceMotion }: SortableNavItemProps) {
   const Icon = item.icon;
   const {
     attributes,
@@ -146,16 +105,15 @@ function SortableNavItem({ item, label, collapsed, isCurrentPage, shouldReduceMo
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <SidebarTooltip content={label} show={collapsed}>
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="mx-auto w-10">
+      <Tooltip content={label} side="right" delay={180}>
         <NavLink
           to={item.to}
           end={item.to === '/'}
           aria-label={label}
           aria-current={isCurrentPage ? 'page' : undefined}
           className={({ isActive }: { isActive: boolean }) =>
-            `relative flex items-center gap-2.5 rounded-md text-sm transition-colors duration-fast ease-out
-            ${collapsed ? 'justify-center px-0 py-2' : 'px-3 py-2'}
+            `relative flex h-10 w-10 items-center justify-center rounded-md text-sm transition-colors duration-fast ease-out
             ${isActive
               ? 'bg-accent-subtle text-accent-hover'
               : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
@@ -166,29 +124,16 @@ function SortableNavItem({ item, label, collapsed, isCurrentPage, shouldReduceMo
             <>
               {/* Active indicator bar */}
               <motion.span
-                className="absolute left-0 top-1/2 -translate-y-1/2 w-0.75 rounded-r-full bg-accent"
+                className="absolute -left-2 top-1/2 w-0.75 -translate-y-1/2 rounded-r-full bg-accent"
                 initial={false}
                 animate={{ height: isActive ? 20 : 0, opacity: isActive ? 1 : 0 }}
                 transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
               />
               <Icon className="h-4.5 w-4.5 shrink-0" />
-              <AnimatePresence>
-                {!collapsed && (
-                  <motion.span
-                    initial={shouldReduceMotion ? false : { opacity: 0, x: -3 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -3 }}
-                    transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.14, ease: 'easeOut' }}
-                    className="whitespace-nowrap"
-                  >
-                    {label}
-                  </motion.span>
-                )}
-              </AnimatePresence>
             </>
           )}
         </NavLink>
-      </SidebarTooltip>
+      </Tooltip>
     </div>
   );
 }
@@ -198,39 +143,11 @@ export function Layout() {
   const { t } = useTranslation();
   const { theme } = useTheme();
   const appVersion = useAppVersion();
-  useUpdater(true);
+  const updater = useUpdater(true);
   const shouldReduceMotion = useReducedMotion();
   const location = useLocation();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
   const [navItems, setNavItems] = useState<NavItem[]>(() => loadOrderedNavItems());
-  const {
-    size: sidebarWidth,
-    setSize: setSidebarWidth,
-    startResize: startSidebarResize,
-    isResizing: isSidebarResizing,
-  } = useResizablePanel({
-    storageKey: SIDEBAR_WIDTH_KEY,
-    defaultSize: 208,
-    minSize: SIDEBAR_MIN_WIDTH,
-    maxSize: SIDEBAR_MAX_WIDTH,
-  });
-
-  useEffect(() => {
-    const mq = window.matchMedia(SIDEBAR_AUTO_COLLAPSE_QUERY);
-    const handleChange = (event: MediaQueryListEvent | MediaQueryList) => {
-      if (event.matches) setCollapsed(true);
-    };
-    handleChange(mq);
-    mq.addEventListener('change', handleChange);
-    return () => mq.removeEventListener('change', handleChange);
-  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -276,29 +193,26 @@ export function Layout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const toggle = () => {
-    setCollapsed((prev: boolean) => {
-      const next = !prev;
-      try { localStorage.setItem(STORAGE_KEY, String(next)); } catch { /* noop */ }
-      return next;
-    });
-  };
-
-  const handleSidebarResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      setSidebarWidth(sidebarWidth - 12);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      setSidebarWidth(sidebarWidth + 12);
-    } else if (event.key === 'Home') {
-      event.preventDefault();
-      setSidebarWidth(SIDEBAR_MIN_WIDTH);
-    } else if (event.key === 'End') {
-      event.preventDefault();
-      setSidebarWidth(SIDEBAR_MAX_WIDTH);
-    }
-  };
+  const updateLabel = updater.status === 'available'
+    ? t('update.version', { version: updater.version ?? '' })
+    : updater.status === 'downloading'
+      ? t('update.downloading')
+      : updater.status === 'ready'
+        ? t('update.ready')
+        : updater.status === 'error'
+          ? t('update.error')
+          : updater.status === 'up-to-date'
+            ? t('update.upToDate')
+            : t('update.checkNow');
+  const UpdateIcon = updater.status === 'available'
+    ? Download
+    : updater.status === 'downloading' || updater.status === 'checking'
+      ? Loader2
+      : updater.status === 'ready' || updater.status === 'up-to-date'
+        ? CheckCircle2
+        : updater.status === 'error'
+          ? AlertCircle
+          : RefreshCw;
 
   return (
     <div
@@ -307,28 +221,18 @@ export function Layout() {
     >
       <div className="app-theme-backdrop" aria-hidden="true" />
       {/* Sidebar */}
-      <motion.aside
-        className="relative z-10 flex shrink-0 flex-col border-r border-border bg-surface-1 overflow-hidden"
-        animate={{ width: collapsed ? 56 : sidebarWidth }}
-        transition={isSidebarResizing || shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+      <aside
+        className="relative z-10 flex w-14 shrink-0 flex-col overflow-hidden border-r border-border bg-surface-1"
         aria-label={t('nav.mainNav')}
+        data-testid="app-navigation-rail"
       >
         {/* Branding */}
-        <div className="flex items-center gap-2.5 px-3.5 py-4 overflow-hidden">
-          <Logo size={20} className="shrink-0" />
-          <AnimatePresence>
-            {!collapsed && (
-              <motion.div
-                initial={shouldReduceMotion ? false : { opacity: 0, x: -3 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={shouldReduceMotion ? { opacity: 0, x: 0 } : { opacity: 0, x: -3 }}
-                transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.14, ease: 'easeOut' }}
-                className="whitespace-nowrap"
-              >
-                <h1 className="text-sm font-bold tracking-tight text-text-primary">{t('app.name')}</h1>
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <div className="grid h-14 shrink-0 place-items-center">
+          <Tooltip content={t('app.name')} side="right" delay={180}>
+            <NavLink to="/" aria-label={t('app.name')} className="grid h-10 w-10 place-items-center rounded-md hover:bg-surface-2">
+              <Logo size={22} decorative />
+            </NavLink>
+          </Tooltip>
         </div>
 
         {/* Navigation */}
@@ -350,7 +254,6 @@ export function Layout() {
                     key={item.to}
                     item={item}
                     label={label}
-                    collapsed={collapsed}
                     isCurrentPage={isCurrentPage}
                     shouldReduceMotion={!!shouldReduceMotion}
                   />
@@ -360,50 +263,38 @@ export function Layout() {
           </DndContext>
         </nav>
 
-        {/* Footer: collapse toggle + version */}
-        <div className="border-t border-border px-2 py-2">
-          <button
-            onClick={toggle}
-            aria-label={collapsed ? t('nav.expand') : t('nav.collapse')}
-            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs
-              text-text-tertiary hover:text-text-secondary hover:bg-surface-2
-              transition-colors duration-fast ease-out cursor-pointer
-              ${collapsed ? 'justify-center' : ''}`}
-          >
-            {collapsed ? (
-              <ChevronRight className="h-4 w-4 shrink-0" />
-            ) : (
-              <>
-                <ChevronLeft className="h-4 w-4 shrink-0" />
-                <span className="overflow-hidden whitespace-nowrap">{t('nav.collapse')}</span>
-                <span className="ml-auto text-text-tertiary/60 relative">
-                  v{appVersion}
-                </span>
-              </>
-            )}
-          </button>
-          {!collapsed && (
-            <div className="mt-1 px-2 py-0.5 text-[11px] text-text-tertiary/60 select-none">
-              {/Mac/i.test(navigator.userAgent) ? '⌘' : 'Ctrl+'}K {t('nav.commandPalette')}
+        {/* Stable metadata and update controls */}
+        <div className="space-y-1 border-t border-border px-2 py-2" data-theme-density-part="rail-footer">
+          <Tooltip content={t('nav.settings')} side="right" delay={180}>
+            <NavLink
+              to="/settings"
+              aria-label={t('nav.settings')}
+              className={({ isActive }) => `grid h-10 w-10 place-items-center rounded-md transition-colors ${isActive ? 'bg-accent-subtle text-accent-hover' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'}`}
+            >
+              <Settings className="h-4.5 w-4.5" />
+            </NavLink>
+          </Tooltip>
+          <Tooltip content={updateLabel} side="right" delay={180}>
+            <button
+              type="button"
+              onClick={() => navigate('/settings')}
+              aria-label={updateLabel}
+              data-update-status={updater.status}
+              className={`relative grid h-10 w-10 place-items-center rounded-md transition-colors hover:bg-surface-2 ${updater.status === 'error' ? 'text-danger' : updater.status === 'available' ? 'text-warning' : updater.status === 'ready' ? 'text-success' : 'text-text-tertiary hover:text-text-primary'}`}
+            >
+              <UpdateIcon className={`h-4.5 w-4.5 ${updater.status === 'checking' || updater.status === 'downloading' ? 'animate-spin' : ''}`} />
+              {(updater.status === 'available' || updater.status === 'ready') && (
+                <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-current shadow-[0_0_7px_currentColor]" />
+              )}
+            </button>
+          </Tooltip>
+          <Tooltip content={`${t('update.currentVersion')}: v${appVersion || '—'}`} side="right" delay={180}>
+            <div className="flex h-5 w-10 select-none items-center justify-center overflow-hidden text-[9px] font-medium tracking-tight text-text-tertiary/65" data-testid="app-version">
+              {appVersion ? `v${appVersion}` : 'v—'}
             </div>
-          )}
+          </Tooltip>
         </div>
-        {!collapsed && (
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-valuemin={SIDEBAR_MIN_WIDTH}
-            aria-valuemax={SIDEBAR_MAX_WIDTH}
-            aria-valuenow={sidebarWidth}
-            tabIndex={0}
-            onPointerDown={startSidebarResize}
-            onKeyDown={handleSidebarResizeKey}
-            className="absolute right-0 top-0 h-full w-2 translate-x-1 cursor-col-resize touch-none
-              bg-transparent outline-none transition-colors hover:bg-accent/25 focus-visible:bg-accent/35"
-            title={t('nav.resizeSidebar')}
-          />
-        )}
-      </motion.aside>
+      </aside>
 
       {/* Main content */}
       <main className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto">

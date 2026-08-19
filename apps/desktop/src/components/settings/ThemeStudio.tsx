@@ -25,13 +25,18 @@ type Translate = ReturnType<typeof useTranslation>['t'];
 
 function newTheme(t: Translate): CustomThemeDefinition {
   return {
-    version: 1,
+    version: 2,
     id: `custom-${Date.now().toString(36)}`,
     name: t('themeStudio.defaultName'),
     baseTheme: 'dark',
     mode: 'dark',
     colors: { surface0: '#0a0a0f', surface1: '#12121a', textPrimary: '#f0f0f5', textSecondary: '#a0a0b0', accent: '#14b8a6', danger: '#ef4444' },
-    effects: { surfaceOpacity: 0.9, glassBlur: 12, shadowIntensity: 1, radiusScale: 1 },
+    effects: { surfaceOpacity: 0.9, glassBlur: 12, shadowIntensity: 1, radiusScale: 1, densityScale: 1 },
+    typography: { baseSize: 16, lineHeight: 1.5, letterSpacing: 0 },
+    motion: { durationScale: 1, cursorStyle: 'fluid' },
+    brand: { logoVariant: 'auto', logoOpacity: 1 },
+    content: {},
+    components: {},
     background: { kind: 'gradient', value: 'linear-gradient(145deg, #0a0a0f, #172554)', fit: 'cover', position: 'center', opacity: 1, dim: 0.15, blur: 0 },
   };
 }
@@ -46,6 +51,8 @@ const COLOR_SLOTS: Array<[keyof CustomThemeDefinition['colors'], string]> = [
   ['contextTools', 'hudTools'], ['contextMcp', 'hudMcp'], ['contextOverhead', 'hudOverhead'],
 ];
 
+const COMPONENT_STYLE_SLOTS = ['rail', 'header', 'card', 'browser'] as const;
+
 export function ThemeStudio() {
   const { t } = useTranslation();
   const {
@@ -55,6 +62,7 @@ export function ThemeStudio() {
     setTheme,
     installThemePlugin,
     uninstallThemePlugin,
+    rollbackTheme,
   } = useTheme();
   const [draft, setDraft] = useState<CustomThemeDefinition>(() => newTheme(t));
   const [themeDescription, setThemeDescription] = useState('');
@@ -200,13 +208,16 @@ export function ThemeStudio() {
   };
 
   return (
-    <div className="mt-5 space-y-4 rounded-xl border border-border bg-surface-1 p-4" data-testid="theme-studio">
+    <div className="mt-5 space-y-4 rounded-xl border border-border bg-surface-1 p-4" data-testid="theme-studio" data-theme-density-surface="studio">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary"><WandSparkles size={16} /> {t('themeStudio.title')}</div>
           <p className="mt-1 text-xs text-text-tertiary">{t('themeStudio.description')}</p>
         </div>
-        <button type="button" onClick={() => { setDraft(newTheme(t)); setThemeDescription(''); setBackgroundPreviewUrl(null); }} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Plus size={13} /> {t('themeStudio.new')}</button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={rollbackTheme} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><RotateCcw size={13} /> {t('themeStudio.rollback')}</button>
+          <button type="button" onClick={() => { setDraft(newTheme(t)); setThemeDescription(''); setBackgroundPreviewUrl(null); }} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-surface-2"><Plus size={13} /> {t('themeStudio.new')}</button>
+        </div>
       </div>
 
       <div className="rounded-lg border border-accent/30 bg-accent/5 p-3" data-testid="theme-plugin-generator">
@@ -242,6 +253,53 @@ export function ThemeStudio() {
             <label className="text-xs text-text-secondary">{t('themeStudio.baseTheme')}<NexaSelect value={draft.baseTheme} onChange={(event) => setDraft({ ...draft, baseTheme: event.target.value as CustomThemeDefinition['baseTheme'] })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary">{['dark', 'light', 'midnight', 'aurora', 'bloom', 'dream'].map((id) => <option key={id} value={id}>{t((`themeStudio.theme.${id}`) as Parameters<Translate>[0])}</option>)}</NexaSelect></label>
             <label className="text-xs text-text-secondary">{t('themeStudio.mode')}<NexaSelect value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as 'dark' | 'light' })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="dark">{t('themeStudio.dark')}</option><option value="light">{t('themeStudio.light')}</option></NexaSelect></label>
           </div>
+          <CollapsiblePanel title={t('themeStudio.identityCopy')}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-text-secondary sm:col-span-2">{t('themeStudio.tagline')}<input value={draft.content.tagline ?? ''} maxLength={160} onChange={(event) => setDraft({ ...draft, content: { ...draft.content, tagline: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+              <label className="text-xs text-text-secondary">{t('themeStudio.statusText')}<input value={draft.content.statusText ?? ''} maxLength={80} onChange={(event) => setDraft({ ...draft, content: { ...draft.content, statusText: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+              <label className="text-xs text-text-secondary">{t('themeStudio.quote')}<input value={draft.content.quote ?? ''} maxLength={240} onChange={(event) => setDraft({ ...draft, content: { ...draft.content, quote: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+              <label className="text-xs text-text-secondary">{t('themeStudio.logoVariant')}<NexaSelect value={draft.brand.logoVariant ?? 'auto'} onChange={(event) => setDraft({ ...draft, brand: { ...draft.brand, logoVariant: event.target.value as 'auto' | 'monochrome' | 'accent' } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="auto">{t('themeStudio.logoAuto')}</option><option value="monochrome">{t('themeStudio.logoMonochrome')}</option><option value="accent">{t('themeStudio.logoAccent')}</option></NexaSelect></label>
+              <label className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-0 px-2 py-1.5 text-xs text-text-secondary">{t('themeStudio.logoForeground')}<input type="color" value={draft.brand.logoForeground ?? draft.colors.textPrimary ?? '#f0f0f5'} onChange={(event) => setDraft({ ...draft, brand: { ...draft.brand, logoForeground: event.target.value } })} className="h-7 w-10 cursor-pointer border-0 bg-transparent" /></label>
+            </div>
+          </CollapsiblePanel>
+          <CollapsiblePanel title={t('themeStudio.typographyMotion')}>
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-text-secondary">{t('themeStudio.fontFamily')}<input value={draft.typography.fontFamily ?? ''} maxLength={160} onChange={(event) => setDraft({ ...draft, typography: { ...draft.typography, fontFamily: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+                <label className="text-xs text-text-secondary">{t('themeStudio.monoFontFamily')}<input value={draft.typography.monoFontFamily ?? ''} maxLength={160} onChange={(event) => setDraft({ ...draft, typography: { ...draft.typography, monoFontFamily: event.target.value } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary" /></label>
+                <Range label={t('themeStudio.baseSize')} value={draft.typography.baseSize ?? 16} min={12} max={20} step={0.5} onChange={(value) => setDraft({ ...draft, typography: { ...draft.typography, baseSize: value } })} />
+                <Range label={t('themeStudio.lineHeight')} value={draft.typography.lineHeight ?? 1.5} min={1.2} max={2} step={0.05} onChange={(value) => setDraft({ ...draft, typography: { ...draft.typography, lineHeight: value } })} />
+                <Range label={t('themeStudio.motionScale')} value={draft.motion.durationScale ?? 1} min={0} max={2} step={0.1} onChange={(value) => setDraft({ ...draft, motion: { ...draft.motion, durationScale: value } })} />
+                <Range label={t('themeStudio.densityScale')} value={draft.effects.densityScale ?? 1} min={0.8} max={1.25} step={0.05} onChange={(value) => setDraft({ ...draft, effects: { ...draft.effects, densityScale: value } })} />
+                <label className="text-xs text-text-secondary">{t('themeStudio.cursorStyle')}<NexaSelect value={draft.motion.cursorStyle ?? 'fluid'} onChange={(event) => setDraft({ ...draft, motion: { ...draft.motion, cursorStyle: event.target.value as 'fluid' | 'precise' | 'minimal' } })} className="mt-1 w-full rounded-md border border-border bg-surface-0 px-2 py-1.5 text-text-primary"><option value="fluid">{t('themeStudio.cursorFluid')}</option><option value="precise">{t('themeStudio.cursorPrecise')}</option><option value="minimal">{t('themeStudio.cursorMinimal')}</option></NexaSelect></label>
+              </div>
+            </div>
+          </CollapsiblePanel>
+          <CollapsiblePanel title={t('themeStudio.componentRecipes')}>
+            <p className="mb-3 text-xs leading-relaxed text-text-tertiary">{t('themeStudio.componentRecipeHelp')}</p>
+            <div className="space-y-3">
+              {COMPONENT_STYLE_SLOTS.map((slot) => {
+                const style = draft.components[slot] ?? {};
+                const update = (key: 'background' | 'borderColor' | 'boxShadow', value: string) => setDraft({
+                  ...draft,
+                  components: {
+                    ...draft.components,
+                    [slot]: { ...style, [key]: value || undefined },
+                  },
+                });
+                return (
+                  <fieldset key={slot} className="rounded-lg border border-border bg-surface-0/55 p-3">
+                    <legend className="px-1 text-xs font-medium text-text-primary">{t((`themeStudio.component.${slot}`) as Parameters<Translate>[0])}</legend>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="text-[11px] text-text-secondary">{t('themeStudio.componentBackground')}<input value={style.background ?? ''} onChange={(event) => update('background', event.target.value)} placeholder="#12121a or gradient" className="mt-1 w-full rounded-md border border-border bg-surface-1 px-2 py-1.5 text-xs text-text-primary" /></label>
+                      <label className="text-[11px] text-text-secondary">{t('themeStudio.componentBorder')}<input value={style.borderColor ?? ''} onChange={(event) => update('borderColor', event.target.value)} placeholder="#ffffff20" className="mt-1 w-full rounded-md border border-border bg-surface-1 px-2 py-1.5 text-xs text-text-primary" /></label>
+                      <label className="text-[11px] text-text-secondary">{t('themeStudio.componentShadow')}<input value={style.boxShadow ?? ''} onChange={(event) => update('boxShadow', event.target.value)} placeholder="0 8px 24px #00000066" className="mt-1 w-full rounded-md border border-border bg-surface-1 px-2 py-1.5 text-xs text-text-primary" /></label>
+                    </div>
+                  </fieldset>
+                );
+              })}
+            </div>
+          </CollapsiblePanel>
           <CollapsiblePanel title={t('themeStudio.advancedColors')}>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {COLOR_SLOTS.map(([key, label]) => (
@@ -281,9 +339,10 @@ export function ThemeStudio() {
         <div className="space-y-3">
           <div className="relative min-h-64 overflow-hidden rounded-xl border border-border p-4" style={variables as CSSProperties}>
             <div className="absolute inset-0" style={{ backgroundColor: variables['--theme-background-color'], backgroundImage: variables['--theme-background-image'], backgroundPosition: variables['--theme-background-position'], backgroundSize: variables['--theme-background-fit'], backgroundRepeat: variables['--theme-background-repeat'], opacity: Number(variables['--theme-background-opacity'] ?? 1), filter: `blur(${variables['--theme-background-blur'] ?? '0px'})` }} />
-            <div className="relative rounded-lg border p-4 shadow-lg" style={{ color: variables['--color-text-primary'], background: variables['--color-surface-0'] }}>
-              <div className="text-sm font-semibold">{t('themeStudio.livePreview')}</div>
-              <p className="mt-2 text-xs" style={{ color: variables['--color-text-secondary'] }}>{t('themeStudio.previewDescription')}</p>
+            <div className="relative rounded-lg border p-4 shadow-lg" style={{ color: variables['--color-text-primary'], background: variables['--theme-component-card-background'] ?? variables['--color-surface-0'], borderColor: variables['--theme-component-card-border'] ?? variables['--color-border'], boxShadow: variables['--theme-component-card-shadow'] }}>
+              <div className="text-sm font-semibold">{draft.content.statusText || t('themeStudio.livePreview')}</div>
+              <p className="mt-2 text-xs" style={{ color: variables['--color-text-secondary'] }}>{draft.content.tagline || t('themeStudio.previewDescription')}</p>
+              {draft.content.quote && <blockquote className="mt-3 border-l-2 pl-2 text-xs italic" style={{ color: variables['--color-text-secondary'], borderColor: variables['--color-accent'] }}>{draft.content.quote}</blockquote>}
               <button type="button" className="mt-4 rounded-md px-3 py-1.5 text-xs" style={{ background: variables['--color-accent'], color: variables['--color-text-inverse'] ?? '#fff' }}>{t('themeStudio.accentAction')}</button>
             </div>
           </div>

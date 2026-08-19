@@ -159,9 +159,13 @@ pub struct ActInBrowserTab {
     pub call_id: String,
     pub action: String,
     pub target_ref: Option<String>,
+    pub end_ref: Option<String>,
     pub text: Option<String>,
     pub value: Option<String>,
     pub key: Option<String>,
+    pub button: Option<String>,
+    #[serde(default)]
+    pub modifiers: Vec<String>,
     #[serde(default)]
     pub scroll_x: i64,
     #[serde(default)]

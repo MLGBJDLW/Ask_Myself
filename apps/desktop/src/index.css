@@ -3,6 +3,48 @@
 @import "katex/dist/katex.min.css";
 @import "./components/ui/overlay/overlayTokens.css";
 
+.nexa-logo-mark {
+  display: block;
+  flex: none;
+  color: var(--theme-logo-foreground, var(--color-text-secondary));
+  --nexa-logo-accent: var(--color-accent);
+  opacity: var(--theme-logo-opacity, 1);
+  filter: drop-shadow(0 4px 12px color-mix(in srgb, var(--color-accent) 16%, transparent));
+}
+
+.nexa-logo-mark .nexa-logo-orbit {
+  opacity: 0.62;
+}
+
+html[data-cursor-style='fluid'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: pointer;
+}
+
+html[data-cursor-style='precise'] body,
+html[data-cursor-style='precise'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: crosshair;
+}
+
+html[data-cursor-style='minimal'] body,
+html[data-cursor-style='minimal'] :where(a[href], button, summary, [role='button'], [role='link']) {
+  cursor: default;
+}
+
+html[data-cursor-style] :where(input, textarea, [contenteditable='true']) {
+  cursor: text;
+}
+
+html[data-logo-variant="monochrome"] .nexa-logo-mark {
+  --nexa-logo-accent: currentColor;
+  --nexa-logo-muted: currentColor;
+  filter: none;
+}
+
+html[data-logo-variant="accent"] .nexa-logo-mark {
+  color: var(--color-accent);
+  --nexa-logo-accent: var(--color-text-primary);
+}
+
 html[data-companion-window="true"],
 html[data-companion-window="true"] body,
 html[data-companion-window="true"] #root {
@@ -267,13 +309,23 @@ html[data-companion-window="true"] #root {
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
-  --motion-duration-instant: 80ms;
-  --motion-duration-fast: 120ms;
-  --motion-duration-normal: 160ms;
-  --motion-duration-deliberate: 220ms;
-  --duration-fast: 150ms;
-  --duration-normal: 250ms;
-  --duration-slow: 400ms;
+  --theme-duration-scale: 1;
+  --theme-density-scale: 1;
+  --theme-titlebar-height: 2.25rem;
+  --theme-rail-brand-height: 3.5rem;
+  --theme-space-1: 0.25rem;
+  --theme-space-2: 0.5rem;
+  --theme-space-2-5: 0.625rem;
+  --theme-space-4: 1rem;
+  --theme-space-5: 1.25rem;
+  --theme-space-14: 3.5rem;
+  --motion-duration-instant: calc(80ms * var(--theme-duration-scale));
+  --motion-duration-fast: calc(120ms * var(--theme-duration-scale));
+  --motion-duration-normal: calc(160ms * var(--theme-duration-scale));
+  --motion-duration-deliberate: calc(220ms * var(--theme-duration-scale));
+  --duration-fast: calc(150ms * var(--theme-duration-scale));
+  --duration-normal: calc(250ms * var(--theme-duration-scale));
+  --duration-slow: calc(400ms * var(--theme-duration-scale));
 }
 
 :root {
@@ -709,7 +761,21 @@ body {
   overflow: hidden;
   background: var(--color-surface-0);
   color: var(--color-text-primary);
-  font-family: var(--font-sans);
+  font-family: var(--theme-font-sans, var(--font-sans));
+  font-size: 1rem;
+  line-height: var(--theme-line-height, normal);
+  letter-spacing: var(--theme-letter-spacing, normal);
+}
+
+html {
+  font-size: var(--theme-base-font-size, 16px);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--theme-font-mono, var(--font-mono));
 }
 
 #root {
@@ -717,8 +783,51 @@ body {
 }
 
 .app-titlebar {
-  background-image: linear-gradient(90deg, var(--color-accent-subtle), transparent 28%);
-  box-shadow: inset 0 1px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  height: var(--theme-titlebar-height);
+  background: var(--theme-component-header-background, linear-gradient(90deg, var(--color-accent-subtle), transparent 28%));
+  border-color: var(--theme-component-header-border, var(--color-border));
+  box-shadow: var(--theme-component-header-shadow, inset 0 1px color-mix(in srgb, var(--color-text-primary) 4%, transparent));
+}
+
+[data-testid='app-navigation-rail'] {
+  background: var(--theme-component-rail-background, var(--color-surface-1));
+  border-color: var(--theme-component-rail-border, var(--color-border));
+  box-shadow: var(--theme-component-rail-shadow, none);
+}
+
+[data-testid='app-navigation-rail'] > :first-child {
+  height: var(--theme-rail-brand-height);
+}
+
+[data-testid='app-navigation-rail'] > nav {
+  padding-inline: var(--theme-space-2);
+}
+
+[data-theme-density-part='rail-footer'] {
+  padding: var(--theme-space-2);
+  row-gap: var(--theme-space-1);
+}
+
+[data-testid='browser-dock'] {
+  background: var(--theme-component-browser-background, var(--color-surface-1));
+  border-color: var(--theme-component-browser-border, var(--color-border));
+  box-shadow: var(--theme-component-browser-shadow, -24px 0 60px rgba(0, 0, 0, .2));
+}
+
+[data-theme-component='card'] {
+  background: var(--theme-component-card-background, transparent);
+  border: 1px solid var(--theme-component-card-border, transparent);
+  box-shadow: var(--theme-component-card-shadow, none);
+  border-radius: var(--radius-lg);
+  padding: var(--theme-space-14) var(--theme-space-5);
+}
+
+[data-theme-density-surface='studio'] {
+  padding: var(--theme-space-4);
+}
+
+[data-theme-density-surface='browser-header'] {
+  padding: var(--theme-space-2) var(--theme-space-2-5);
 }
 
 .app-window-control {

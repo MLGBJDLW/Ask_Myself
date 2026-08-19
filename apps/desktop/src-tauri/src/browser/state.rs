@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub use nexa_core::browser_runtime::{
-    BrowserBounds, BrowserControlOwner, BrowserElement, ControlLease,
+    BrowserBounds, BrowserControlOwner, BrowserElement, BrowserElementBounds, ControlLease,
 };
 use nexa_core::browser_runtime::{
     BrowserObservation as CoreBrowserObservation, BrowserSession as CoreBrowserSession,
     BrowserTab as CoreBrowserTab,
 };
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Webview};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
@@ -65,6 +65,7 @@ struct BrowserTab {
     title: String,
     loading: bool,
     status: String,
+    bounds: BrowserBounds,
     approved_agent_urls: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -370,6 +371,14 @@ impl BrowserState {
             network_proxy_url,
             bounds,
         )?;
+        let initial_bounds = bounds
+            .unwrap_or(BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            })
+            .sanitized();
         let info = {
             let mut runtime = self
                 .inner
@@ -407,6 +416,7 @@ impl BrowserState {
                     title: url.host_str().unwrap_or("New tab").to_string(),
                     loading: true,
                     status: "loading".to_string(),
+                    bounds: initial_bounds,
                     approved_agent_urls,
                 },
             );
@@ -592,15 +602,16 @@ impl BrowserState {
         visible: bool,
     ) -> Result<(), String> {
         let bounds = bounds.sanitized();
-        let runtime = self
+        let mut runtime = self
             .inner
             .lock()
             .map_err(|_| "Browser runtime is unavailable".to_string())?;
         let session = runtime
             .sessions
-            .get(session_id)
+            .get_mut(session_id)
             .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-        for (tab_id, tab) in &session.tabs {
+        for (tab_id, tab) in &mut session.tabs {
+            tab.bounds = bounds;
             tab.webview
                 .set_bounds(tauri::Rect {
                     position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(),
@@ -856,7 +867,7 @@ impl BrowserState {
         &self,
         request: BrowserActRequest<'_>,
     ) -> Result<BrowserObservationPayload, String> {
-        let (observation, expected) = {
+        let (observation, expected, expected_end) = {
             let mut runtime = self
                 .inner
                 .lock()
@@ -865,6 +876,14 @@ impl BrowserState {
                 .sessions
                 .get_mut(request.session_id)
                 .ok_or_else(|| format!("Unknown browser session '{}'", request.session_id))?;
+            if matches!(request.action, "move" | "hover")
+                && session.active_tab_id.as_deref() != Some(request.tab_id)
+            {
+                return Err(
+                    "Browser pointer actions require the target tab to be active and visible"
+                        .to_string(),
+                );
+            }
             if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
                 return Err(
                     "Browser control belongs to the user; wait until they hand it back".to_string(),
@@ -903,7 +922,20 @@ impl BrowserState {
             if request.target_ref.is_some() && expected.is_none() {
                 return Err("stale observation: target is not part of this observation".to_string());
             }
-            (observation, expected)
+            let expected_end = request.end_ref.and_then(|end_ref| {
+                observation
+                    .elements
+                    .iter()
+                    .find(|element| element.element_ref == end_ref)
+                    .cloned()
+            });
+            if request.end_ref.is_some() && expected_end.is_none() {
+                return Err(
+                    "stale observation: drag destination is not part of this observation"
+                        .to_string(),
+                );
+            }
+            (observation, expected, expected_end)
         };
         let is_form_submitter = expected.as_ref().is_some_and(|element| {
             element.tag == "button"
@@ -925,10 +957,11 @@ impl BrowserState {
                         matches!(kind, "button" | "reset" | "file" | "checkbox" | "radio")
                     })
             });
-        let click_may_navigate = request.action == "click"
+        let click_may_navigate = matches!(request.action, "click" | "double_click")
             && expected
                 .as_ref()
                 .is_some_and(|element| element.tag == "a" || is_form_submitter);
+        let mut navigation_approval = None;
         if click_may_navigate || presses_activation_key {
             if let Some(href) = expected
                 .as_ref()
@@ -937,42 +970,171 @@ impl BrowserState {
                 let target =
                     Url::parse(href).map_err(|_| "Browser link target is invalid".to_string())?;
                 validate_agent_network_url(&target).await?;
-                self.approve_agent_action_url(
-                    request.session_id,
-                    request.tab_id,
-                    request.observation_id,
-                    request.call_id,
-                    &target,
-                    is_form_submitter || implicit_form_submit,
-                )?;
+                navigation_approval = Some((target, is_form_submitter || implicit_form_submit));
             }
         }
-        let expression = format!(
-            "window.__NEXA_BROWSER_RUNTIME__?.act({})",
-            serde_json::to_string(&serde_json::json!({
-                "action": request.action,
-                "targetRef": request.target_ref,
-                "text": request.text,
-                "value": request.value,
-                "key": request.key,
-                "scrollX": request.scroll_x,
-                "scrollY": request.scroll_y,
-                "userEpoch": observation.user_epoch,
-                "domFingerprint": observation.dom_fingerprint,
-                "expected": expected,
-            }))
-            .map_err(|error| error.to_string())?
+        let action_input = serde_json::to_string(&serde_json::json!({
+            "action": request.action,
+            "targetRef": request.target_ref,
+            "endRef": request.end_ref,
+            "text": request.text,
+            "value": request.value,
+            "key": request.key,
+            "button": request.button.unwrap_or("left"),
+            "modifiers": request.modifiers,
+            "scrollX": request.scroll_x,
+            "scrollY": request.scroll_y,
+            "userEpoch": observation.user_epoch,
+            "domFingerprint": observation.dom_fingerprint,
+            "expected": expected,
+            "expectedEnd": expected_end,
+        }))
+        .map_err(|error| error.to_string())?;
+        let preview_expression = format!(
+            "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.previewAction({action_input}); }})()"
         );
-        let pending = self.dispatch_agent_action(
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "moving",
+                "targetRef": request.target_ref,
+                "endRef": request.end_ref,
+            }),
+        );
+        let preview = self.dispatch_agent_action(
+            request.session_id,
+            request.tab_id,
+            request.observation_id,
+            request.call_id,
+            &preview_expression,
+        )?;
+        let preview = preview.resolve().await?;
+        let duration_ms = preview
+            .get("durationMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .min(600);
+        if duration_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+        }
+        if matches!(request.action, "move" | "hover") {
+            let prepare_expression = format!(
+                "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.prepareNativePointer({action_input}); }})()"
+            );
+            self.emit(
+                "agentAction",
+                serde_json::json!({
+                    "sessionId": request.session_id,
+                    "tabId": request.tab_id,
+                    "action": request.action,
+                    "phase": "committing",
+                    "targetRef": request.target_ref,
+                }),
+            );
+            let preparation = self.dispatch_agent_action(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                &prepare_expression,
+            )?;
+            let prepared = preparation.resolve().await?;
+            let target_bounds = prepared.get("bounds").cloned().ok_or_else(|| {
+                "Browser pointer preparation returned no target bounds".to_string()
+            })?;
+            let target_bounds: BrowserElementBounds = serde_json::from_value(target_bounds)
+                .map_err(|error| {
+                    format!("Browser pointer preparation returned invalid bounds: {error}")
+                })?;
+            self.move_native_pointer_to_target(request.session_id, request.tab_id, &target_bounds)?;
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let observation = self
+                .observe(request.session_id, request.tab_id, request.call_id)
+                .await?;
+            self.emit(
+                "agentAction",
+                serde_json::json!({
+                    "sessionId": request.session_id,
+                    "tabId": request.tab_id,
+                    "action": request.action,
+                    "phase": "verified",
+                    "observationId": observation.observation_id,
+                }),
+            );
+            return Ok(observation);
+        }
+        if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+            self.approve_agent_action_url(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                target,
+                *form_navigation,
+            )?;
+        }
+        let expression = format!(
+            "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.act({action_input}); }})()"
+        );
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "committing",
+                "targetRef": request.target_ref,
+                "endRef": request.end_ref,
+            }),
+        );
+        let pending = match self.dispatch_agent_action(
             request.session_id,
             request.tab_id,
             request.observation_id,
             request.call_id,
             &expression,
-        )?;
-        pending.resolve().await?;
-        self.observe(request.session_id, request.tab_id, request.call_id)
-            .await
+        ) {
+            Ok(pending) => pending,
+            Err(error) => {
+                if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+                    self.revoke_agent_action_url(
+                        request.session_id,
+                        request.tab_id,
+                        target,
+                        *form_navigation,
+                    );
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = pending.resolve().await {
+            if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+                self.revoke_agent_action_url(
+                    request.session_id,
+                    request.tab_id,
+                    target,
+                    *form_navigation,
+                );
+            }
+            return Err(error);
+        }
+        let observation = self
+            .observe(request.session_id, request.tab_id, request.call_id)
+            .await?;
+        self.emit(
+            "agentAction",
+            serde_json::json!({
+                "sessionId": request.session_id,
+                "tabId": request.tab_id,
+                "action": request.action,
+                "phase": "verified",
+                "observationId": observation.observation_id,
+            }),
+        );
+        Ok(observation)
     }
 
     pub fn action_risk(&self, args: &serde_json::Value) -> BrowserActionRisk {
@@ -1328,6 +1490,81 @@ impl BrowserState {
         Ok(())
     }
 
+    fn revoke_agent_action_url(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        url: &Url,
+        form_navigation: bool,
+    ) {
+        let approval = if form_navigation {
+            form_navigation_approval_key(url)
+        } else {
+            url.to_string()
+        };
+        if let Ok(runtime) = self.inner.lock() {
+            if let Some(tab) = runtime
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.tabs.get(tab_id))
+            {
+                if let Ok(mut approved) = tab.approved_agent_urls.lock() {
+                    approved.remove(&approval);
+                }
+            }
+        }
+    }
+
+    fn move_native_pointer_to_target(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        target: &BrowserElementBounds,
+    ) -> Result<(), String> {
+        let (bounds, webview) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let tab = runtime
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.tabs.get(tab_id))
+                .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+            (tab.bounds, tab.webview.clone())
+        };
+        let window = self
+            .app
+            .get_window("main")
+            .ok_or_else(|| "Main application window is unavailable".to_string())?;
+        if !window
+            .is_visible()
+            .map_err(|error| format!("Could not read main window visibility: {error}"))?
+            || window
+                .is_minimized()
+                .map_err(|error| format!("Could not read main window state: {error}"))?
+        {
+            return Err(
+                "Browser pointer movement requires the visible, restored Nexa window".to_string(),
+            );
+        }
+        let origin = window
+            .outer_position()
+            .map_err(|error| format!("Could not read main window position: {error}"))?;
+        let scale_factor = window
+            .scale_factor()
+            .map_err(|error| format!("Could not read main window scale: {error}"))?;
+        let (x, y) =
+            browser_target_screen_point((origin.x, origin.y), scale_factor, bounds, target)?;
+        window
+            .set_focus()
+            .map_err(|error| format!("Could not focus Nexa before pointer movement: {error}"))?;
+        webview
+            .set_focus()
+            .map_err(|error| format!("Could not focus browser before pointer movement: {error}"))?;
+        nexa_core::browser_runtime::move_native_pointer(x, y).map_err(|error| error.to_string())
+    }
+
     fn webview(&self, session_id: &str, tab_id: &str) -> Result<Webview, String> {
         self.inner
             .lock()
@@ -1374,11 +1611,41 @@ pub struct BrowserActRequest<'a> {
     pub observation_id: &'a str,
     pub action: &'a str,
     pub target_ref: Option<&'a str>,
+    pub end_ref: Option<&'a str>,
     pub text: Option<&'a str>,
     pub value: Option<&'a str>,
     pub key: Option<&'a str>,
+    pub button: Option<&'a str>,
+    pub modifiers: &'a [String],
     pub scroll_x: i64,
     pub scroll_y: i64,
+}
+
+pub(super) fn browser_target_screen_point(
+    window_origin: (i32, i32),
+    scale_factor: f64,
+    webview_bounds: BrowserBounds,
+    target_bounds: &BrowserElementBounds,
+) -> Result<(i32, i32), String> {
+    let logical_x = webview_bounds.x + target_bounds.x + target_bounds.width / 2.0;
+    let logical_y = webview_bounds.y + target_bounds.y + target_bounds.height / 2.0;
+    if !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || !logical_x.is_finite()
+        || !logical_y.is_finite()
+    {
+        return Err("Browser pointer target has invalid screen coordinates".to_string());
+    }
+    let physical_x = f64::from(window_origin.0) + logical_x * scale_factor;
+    let physical_y = f64::from(window_origin.1) + logical_y * scale_factor;
+    if physical_x < f64::from(i32::MIN)
+        || physical_x > f64::from(i32::MAX)
+        || physical_y < f64::from(i32::MIN)
+        || physical_y > f64::from(i32::MAX)
+    {
+        return Err("Browser pointer target is outside the supported desktop range".to_string());
+    }
+    Ok((physical_x.round() as i32, physical_y.round() as i32))
 }
 
 fn safe_identifier(input: &str) -> String {

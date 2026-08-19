@@ -6,7 +6,7 @@ import { useOverlayRoot } from './overlay/OverlayProvider';
 interface TooltipProps {
   content: string;
   children: ReactNode;
-  side?: 'top' | 'bottom';
+  side?: 'top' | 'right' | 'bottom' | 'left';
   delay?: number;
 }
 
@@ -26,8 +26,8 @@ export function Tooltip({ content, children, side = 'top', delay = 300 }: Toolti
       window.innerWidth - padding,
     );
     setPosition({
-      left,
-      top: side === 'top' ? rect.top - 8 : rect.bottom + 8,
+      left: side === 'right' ? rect.right + 8 : side === 'left' ? rect.left - 8 : left,
+      top: side === 'top' ? rect.top - 8 : side === 'bottom' ? rect.bottom + 8 : rect.top + rect.height / 2,
     });
   }, [side]);
 
@@ -62,9 +62,17 @@ export function Tooltip({ content, children, side = 'top', delay = 300 }: Toolti
     <AnimatePresence>
       {show && position && (
         <motion.div
-          initial={{ opacity: 0, y: side === 'top' ? 4 : -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: side === 'top' ? 4 : -4 }}
+          initial={{
+            opacity: 0,
+            x: side === 'right' ? -4 : side === 'left' ? 4 : 0,
+            y: side === 'top' ? 4 : side === 'bottom' ? -4 : 0,
+          }}
+          animate={{ opacity: 1, x: 0, y: 0 }}
+          exit={{
+            opacity: 0,
+            x: side === 'right' ? -4 : side === 'left' ? 4 : 0,
+            y: side === 'top' ? 4 : side === 'bottom' ? -4 : 0,
+          }}
           transition={{ duration: 0.15 }}
           className="
             fixed z-[9999] max-w-[min(32rem,calc(100vw-1.5rem))]
@@ -75,7 +83,13 @@ export function Tooltip({ content, children, side = 'top', delay = 300 }: Toolti
           style={{
             left: position.left,
             top: position.top,
-            transform: side === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
+            transform: side === 'top'
+              ? 'translate(-50%, -100%)'
+              : side === 'bottom'
+                ? 'translate(-50%, 0)'
+                : side === 'left'
+                  ? 'translate(-100%, -50%)'
+                  : 'translate(0, -50%)',
           }}
         >
           {content}

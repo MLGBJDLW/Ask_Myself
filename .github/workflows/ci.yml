@@ -149,11 +149,12 @@ jobs:
           e2e/chat-mermaid-rendering.spec.ts
           e2e/chat-model-switch-context.spec.ts
           e2e/chat-browser-workspace.spec.ts
+          e2e/browser-agent-interaction-runtime.spec.ts
           e2e/chat-terminal-dock.spec.ts
           e2e/chat-turn-navigation.spec.ts
           e2e/chat-plan-progress-panel.spec.ts
           e2e/chat-recording-dock.spec.ts
-          --grep "themed window frame|conversation actions offer archive and delete|archived conversations can be restored|a direct archived conversation link|model selector|shared Browser Workspace|interactive terminal dock|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges|recording dock exposes responsive"
+          --grep "themed window frame|Agent browser interaction|Agent drag uses observation-scoped|Agent pointer preparation|conversation actions offer archive and delete|archived conversations can be restored|a direct archived conversation link|model selector|shared Browser Workspace|interactive terminal dock|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges|recording dock exposes responsive"
 
       - name: Desktop Rust check
         run: cargo check -p nexa-desktop

@@ -816,6 +816,12 @@ fn main() {
             // App Config
             commands::get_app_config_cmd,
             commands::save_app_config_cmd,
+            commands::get_appearance_registry_cmd,
+            commands::hydrate_appearance_registry_cmd,
+            commands::apply_appearance_plugin_cmd,
+            commands::activate_appearance_cmd,
+            commands::rollback_appearance_cmd,
+            commands::remove_appearance_cmd,
             update_tray_menu_cmd,
             commands::synthesize_speech_preview_cmd,
             commands::refresh_tts_voice_catalog_cmd,

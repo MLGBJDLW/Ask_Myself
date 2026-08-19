@@ -47,6 +47,7 @@ import { useDebounce } from '../lib/useDebounce';
 import { getModelStatus } from '../lib/modelStatusCache';
 import { getSoftCollapseMotion, INSTANT_TRANSITION } from '../lib/uiMotion';
 import { formatUserError } from '../lib/userError';
+import { useTheme } from '../lib/ThemeProvider';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -140,6 +141,7 @@ function buildRecallSearchQuery(input: {
 /* ------------------------------------------------------------------ */
 
 export function SearchPage() {
+  const { content: themeContent } = useTheme();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -1317,8 +1319,9 @@ export function SearchPage() {
       {!result && !loading && (
         <EmptyState
           icon={<Logo size={64} />}
-          title={t('search.initialTitle')}
-          description={t('search.initialDesc')}
+          title={themeContent.statusText || t('search.initialTitle')}
+          description={themeContent.tagline || t('search.initialDesc')}
+          quote={themeContent.quote}
         />
       )}
 

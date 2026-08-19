@@ -74,13 +74,28 @@ test('uses a themed window frame with working native controls', async ({ page })
   await expect(titlebar).toBeVisible();
   await expect(dragRegion).toHaveAttribute('data-tauri-drag-region', '');
 
-  const dreamBackground = await titlebar.evaluate((element) => getComputedStyle(element).backgroundColor);
+  const dreamBackground = await titlebar.evaluate((element) => getComputedStyle(element).backgroundImage);
   await page.evaluate(() => {
     document.documentElement.classList.remove('theme-dream');
     document.documentElement.classList.add('theme-light');
   });
-  await expect.poll(() => titlebar.evaluate((element) => getComputedStyle(element).backgroundColor))
+  await expect.poll(() => titlebar.evaluate((element) => getComputedStyle(element).backgroundImage))
     .not.toBe(dreamBackground);
+
+  const regularHeight = (await titlebar.boundingBox())!.height;
+  await page.evaluate(() => document.documentElement.style.setProperty('--theme-titlebar-height', '1.8rem'));
+  await expect.poll(() => titlebar.boundingBox().then(box => box?.height ?? 0)).toBeLessThan(regularHeight);
+  await page.evaluate(() => { document.documentElement.dataset.cursorStyle = 'precise'; });
+  await expect(page.getByRole('button', { name: 'Minimize window' })).toHaveCSS('cursor', 'crosshair');
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty('--theme-base-font-size', '18px');
+    const sample = document.createElement('div');
+    sample.dataset.testid = 'theme-rem-sample';
+    sample.className = 'text-sm';
+    document.body.appendChild(sample);
+  });
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe('18px');
+  await expect.poll(() => page.getByTestId('theme-rem-sample').evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(14);
 
   await page.getByRole('button', { name: 'Minimize window' }).click();
   await page.getByRole('button', { name: 'Maximize window' }).click();
@@ -95,6 +110,29 @@ test('uses a themed window frame with working native controls', async ({ page })
     'plugin:window|toggle_maximize',
     'plugin:window|close',
   ]));
+});
+
+test('keeps the navigation rail fixed, optically centered, and metadata visible', async ({ page }) => {
+  await page.goto('/missing-route');
+
+  const rail = page.getByTestId('app-navigation-rail');
+  await expect(rail).toBeVisible();
+  await expect(rail).toHaveCSS('width', '56px');
+  await expect(page.getByTestId('app-version')).toBeVisible();
+
+  const axes = await Promise.all([
+    rail.boundingBox(),
+    page.getByRole('link', { name: 'Nexa' }).boundingBox(),
+    page.getByRole('link', { name: 'Search' }).boundingBox(),
+    page.getByTestId('app-version').boundingBox(),
+  ]);
+  const [railBox, logoBox, searchBox, versionBox] = axes;
+  expect(railBox && logoBox && searchBox && versionBox).toBeTruthy();
+  const railAxis = railBox!.x + railBox!.width / 2;
+  for (const box of [logoBox!, searchBox!, versionBox!]) {
+    expect(Math.abs(box.x + box.width / 2 - railAxis)).toBeLessThanOrEqual(1);
+  }
+  expect(versionBox!.y + versionBox!.height).toBeLessThanOrEqual(railBox!.y + railBox!.height);
 });
 
 test('keeps native controls synchronized with the active color scheme', async ({ page }) => {
@@ -133,4 +171,34 @@ test('reveals the native window onto a branded startup surface', async ({ page }
   ).__releaseWizardState?.());
   await expect(splash).toHaveCount(0);
   await expect(page.getByText('404')).toBeVisible();
+});
+
+test('hydrates the startup surface from the last validated theme snapshot before React', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('nexa-startup-appearance-v1', JSON.stringify({
+      version: 1,
+      mode: 'light',
+      canvas: '#fef3c7',
+      panel: '#fffbeb',
+      text: '#422006',
+      accent: '#d97706',
+      muted: '#92400e',
+      tagline: 'Make the next action clear.',
+    }));
+  });
+  await page.route('**/src/main.tsx*', route => route.abort());
+  await page.goto('/missing-route', { waitUntil: 'domcontentloaded' });
+
+  const splash = page.getByTestId('startup-splash');
+  await expect(splash).toBeVisible();
+  await expect(splash.locator('.startup-splash__tagline')).toHaveText('Make the next action clear.');
+  await expect.poll(() => page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement);
+    return {
+      canvas: style.getPropertyValue('--startup-canvas').trim(),
+      accent: style.getPropertyValue('--startup-accent').trim(),
+      scheme: document.documentElement.style.colorScheme,
+    };
+  })).toEqual({ canvas: '#fef3c7', accent: '#d97706', scheme: 'light' });
+
 });

@@ -49,6 +49,8 @@ pub fn classify_action_risk(
             | "activate_tab"
             | "navigate"
             | "observe"
+            | "move"
+            | "hover"
             | "scroll"
             | "wait_for"
             | "go_back"
@@ -85,7 +87,10 @@ pub fn classify_action_risk(
     if consequential_words.iter().any(|word| name.contains(word)) || action == "press" {
         return BrowserActionRisk::Consequential;
     }
-    if action == "click" && role == "link" && href.is_some_and(|value| value.starts_with("http")) {
+    if matches!(action.as_str(), "click" | "double_click")
+        && role == "link"
+        && href.is_some_and(|value| value.starts_with("http"))
+    {
         return BrowserActionRisk::Low;
     }
     if action == "type"
@@ -108,6 +113,14 @@ mod tests {
         assert_eq!(
             classify_action_risk("navigate", None, None, None, None),
             BrowserActionRisk::Low
+        );
+        assert_eq!(
+            classify_action_risk("hover", Some("button"), Some("Preview"), None, None),
+            BrowserActionRisk::Low
+        );
+        assert_eq!(
+            classify_action_risk("drag", Some("button"), Some("Move item"), None, None),
+            BrowserActionRisk::Consequential
         );
         assert_eq!(
             classify_action_risk("click", Some("button"), Some("Pay now"), None, None),
