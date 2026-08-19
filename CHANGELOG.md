@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.19](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.18...nexa-monorepo-v0.12.19) (2026-08-19)
+
+
+### Bug Fixes
+
+* adapt wallpaper glass surfaces across settings ([7756e3d](https://github.com/MLGBJDLW/Nexa/commit/7756e3d8383d89c117a1b62365edbb23d6a7b7bc))
+* **ci:** bound Linux dependency installation ([572f6be](https://github.com/MLGBJDLW/Nexa/commit/572f6bed235020fbdf28d209e61a19228c992d94))
+* **theme:** balance wallpaper glass surfaces ([50b95b0](https://github.com/MLGBJDLW/Nexa/commit/50b95b018342b825a40169a2a4aee48645361aff))
+* **theme:** keep dialogs opaque over wallpapers ([3e2474f](https://github.com/MLGBJDLW/Nexa/commit/3e2474fa4a2681b7073685e0ce880339c2b08fd4))
+* **theme:** keep search overlays opaque ([fbd5e41](https://github.com/MLGBJDLW/Nexa/commit/fbd5e4131c7a7106ad7e102c51225720f7bc1d85))
+* **theme:** protect unadapted routes and hover states ([b765a1b](https://github.com/MLGBJDLW/Nexa/commit/b765a1b59a566c8d2f3be815196f523a0ba45163))
+
 ## [0.12.18](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.17...nexa-monorepo-v0.12.18) (2026-08-19)
 
 
