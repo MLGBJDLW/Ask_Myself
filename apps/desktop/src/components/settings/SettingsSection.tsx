@@ -59,6 +59,7 @@ export function Section({
       animate={{ opacity: 1, y: 0 }}
       transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.24, delay, ease: [0.16, 1, 0.3, 1] }}
       className="overflow-hidden rounded-xl border border-border bg-surface-1"
+      data-theme-surface="panel"
     >
       {collapsible ? (
         <button
@@ -164,7 +165,10 @@ export function CollapsiblePanel({
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-surface-1">
+    <div
+      className="overflow-hidden rounded-lg border border-border bg-surface-1"
+      data-theme-surface="panel"
+    >
       <button
         ref={triggerRef}
         id={triggerId}

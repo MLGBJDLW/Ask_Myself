@@ -39,6 +39,7 @@ function useAppVersion() {
 const NAV_ORDER_KEY = 'sidebar-nav-order';
 const LAST_ROUTE_KEY = 'last-route';
 const INSTANT_TRANSITION = { duration: 0 };
+const WALLPAPER_ADAPTED_PAGE_ROUTES = ['/settings', '/tasks', '/workflows'] as const;
 
 type NavItem = { to: string; labelKey: TranslationKey; icon: typeof Search };
 
@@ -76,6 +77,12 @@ function loadOrderedNavItems(): NavItem[] {
   } catch {
     return CANONICAL_NAV_ITEMS;
   }
+}
+
+function isWallpaperAdaptedPageRoute(pathname: string): boolean {
+  return WALLPAPER_ADAPTED_PAGE_ROUTES.some((route) => (
+    pathname === route || pathname.startsWith(`${route}/`)
+  ));
 }
 
 /* ── Sortable nav item ────────────────────────────────────────────── */
@@ -213,6 +220,11 @@ export function Layout() {
         : updater.status === 'error'
           ? AlertCircle
           : RefreshCw;
+  const mainThemeSurface = location.pathname.startsWith('/chat')
+    ? 'transparent'
+    : isWallpaperAdaptedPageRoute(location.pathname)
+      ? 'page'
+      : 'content';
 
   return (
     <div
@@ -298,7 +310,7 @@ export function Layout() {
       {/* Main content */}
       <main
         className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto"
-        data-theme-surface={location.pathname.startsWith('/chat') ? 'transparent' : 'content'}
+        data-theme-surface={mainThemeSurface}
       >
         <Outlet />
       </main>

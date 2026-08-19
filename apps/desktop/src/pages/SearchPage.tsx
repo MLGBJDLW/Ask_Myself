@@ -526,7 +526,11 @@ export function SearchPage() {
           />
 
           {showDropdown && (
-            <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg">
+            <div
+              className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-lg"
+              data-theme-surface="overlay"
+              data-testid="recent-query-dropdown"
+            >
               <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <span className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary">
                   <Clock size={11} />

@@ -725,6 +725,19 @@ html[data-companion-window="true"] #root {
   --graph-suggestion-background: rgba(28, 16, 44, 0.96);
   --graph-shadow-color: #0a0412;
   --graph-shadow-opacity: 0.44;
+
+  /* Dream keeps one continuous backdrop, then separates navigation, panels,
+     and long-form reading with progressively stronger glass surfaces. */
+  --theme-glass-blur: 18px;
+  --theme-chrome-surface-0: rgba(19, 11, 31, 0.66);
+  --theme-chrome-surface-1: rgba(28, 16, 44, 0.68);
+  --theme-chrome-surface-2: rgba(47, 27, 66, 0.70);
+  --theme-content-surface-0: rgba(19, 11, 31, 0.70);
+  --theme-content-surface-1: rgba(28, 16, 44, 0.72);
+  --theme-content-surface-2: rgba(47, 27, 66, 0.74);
+  --theme-reading-surface-0: rgba(19, 11, 31, 0.82);
+  --theme-reading-surface-1: rgba(28, 16, 44, 0.84);
+  --theme-reading-surface-2: rgba(47, 27, 66, 0.84);
 }
 
 .app-theme-backdrop {
@@ -791,8 +804,8 @@ html[data-companion-window="true"] #root {
 }
 
 .theme-dream [data-app-area='task'] > .app-theme-backdrop {
-  opacity: 0.42;
-  filter: saturate(0.74);
+  opacity: 0.72;
+  filter: saturate(0.82);
 }
 
 /* Global base styles */
@@ -844,23 +857,56 @@ samp {
 
 /* Wallpaper appearances use a small set of semantic composition roles instead
    of asking every page and control to understand image backgrounds. */
-.theme-dream [data-theme-surface='workspace'],
-.theme-dream [data-theme-surface='transparent'],
-.theme-dream [data-theme-surface='page'],
-html[data-theme-backdrop='true'] [data-theme-surface='workspace'],
-html[data-theme-backdrop='true'] [data-theme-surface='transparent'],
-html[data-theme-backdrop='true'] [data-theme-surface='page'] {
+:is(html.theme-dream, html[data-theme-backdrop='true']) :is(
+  [data-theme-surface='workspace'],
+  [data-theme-surface='transparent'],
+  [data-theme-surface='page']
+) {
   background: transparent;
 }
 
-html[data-theme-backdrop='true'] [data-theme-surface='content'] {
-  background: var(--theme-content-surface-0);
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='content'] {
+  background: var(--theme-reading-surface-0, var(--theme-content-surface-0));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
 }
 
-html[data-theme-backdrop='true'] [data-theme-surface='chrome'] {
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='chrome'] {
   background: var(--theme-chrome-surface-1);
   -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
   backdrop-filter: blur(var(--theme-glass-blur, 0px));
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) .settings-page-header {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--theme-space-4, 1rem);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 var(--theme-shadow-alpha, 12%), transparent);
+}
+
+/* Route pages contain many established surface utilities. Wallpaper themes
+   reinterpret only fully opaque page-local surfaces as coordinated glass;
+   explicit alpha utilities, dialogs, and portalled menus retain their native
+   readability treatment. */
+@layer utilities {
+  :where(html.theme-dream, html[data-theme-backdrop='true']) :where([data-theme-surface='page']) [class~='bg-surface-0']:where(:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *):not([data-theme-surface='overlay'] *)) {
+    background-color: var(--theme-content-surface-0);
+  }
+
+  :where(html.theme-dream, html[data-theme-backdrop='true']) :where([data-theme-surface='page']) [class~='bg-surface-1']:where(:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *):not([data-theme-surface='overlay'] *)) {
+    background-color: var(--theme-content-surface-1);
+  }
+
+  :where(html.theme-dream, html[data-theme-backdrop='true']) :where([data-theme-surface='page']) [class~='bg-surface-2']:where(:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *):not([data-theme-surface='overlay'] *)) {
+    background-color: var(--theme-content-surface-2);
+  }
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='panel'] {
+  background: var(--theme-component-card-background, var(--theme-content-surface-1));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  box-shadow: var(--theme-component-card-shadow, 0 10px 30px color-mix(in srgb, #000 var(--theme-shadow-alpha, 16%), transparent));
 }
 
 html[data-theme-backdrop='true'] .app-titlebar {
@@ -918,16 +964,20 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
 }
 
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  html[data-theme-backdrop='true'] .app-theme-backdrop {
+  :is(html.theme-dream, html[data-theme-backdrop='true']) .app-theme-backdrop {
     display: none;
   }
 
-  html[data-theme-backdrop='true'] :is(
+  :is(html.theme-dream, html[data-theme-backdrop='true']) :is(
     [data-theme-surface='workspace'],
     [data-theme-surface='content'],
     [data-theme-surface='chrome'],
     [data-theme-surface='transparent'],
     [data-theme-surface='page'],
+    [data-theme-surface='panel'],
+    [data-theme-surface='page'] [class~='bg-surface-0'],
+    [data-theme-surface='page'] [class~='bg-surface-1'],
+    [data-theme-surface='page'] [class~='bg-surface-2'],
     .app-titlebar,
     [data-testid='app-navigation-rail'],
     [data-testid='browser-dock'],

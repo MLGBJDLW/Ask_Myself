@@ -28,6 +28,26 @@ async function backgroundAlpha(locator: Locator): Promise<number> {
   });
 }
 
+async function largeOpaqueSurfaceClasses(root: Locator): Promise<string[]> {
+  return root.locator('*').evaluateAll((elements) => elements.flatMap((element) => {
+    if (element.closest('[role="dialog"]')) return [];
+    const surfaceClass = Array.from(element.classList).find((className) => /^bg-surface-[0-2]$/.test(className));
+    if (!surfaceClass) return [];
+    const bounds = element.getBoundingClientRect();
+    if (bounds.width < 300 || bounds.height < 48 || bounds.width * bounds.height < 20_000) return [];
+    const color = getComputedStyle(element).backgroundColor.trim();
+    const rgb = color.match(/^rgba?\((.+)\)$/i);
+    const functionalAlpha = color.match(/\/\s*([0-9.]+)\s*\)$/);
+    const alpha = rgb
+      ? (rgb[1].split(/[\s,\/]+/).filter(Boolean).length >= 4
+          ? Number(rgb[1].split(/[\s,\/]+/).filter(Boolean)[3])
+          : 1)
+      : (functionalAlpha ? Number(functionalAlpha[1]) : (color === 'transparent' ? 0 : 1));
+    if (alpha < 0.86) return [];
+    return [`${element.tagName.toLowerCase()}.${surfaceClass}:${alpha.toFixed(2)}`];
+  }));
+}
+
 async function expectNexaOptions(trigger: Locator, expectedNames: string[]) {
   await trigger.click();
   const options = trigger.page().getByRole("option");
@@ -354,6 +374,8 @@ test.beforeEach(async ({ page }) => {
         }
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig), clone(qwenConfig)];
+        case "list_agent_task_run_summaries_cmd":
+          return { items: [], nextCursor: null };
         case "list_conversations_cmd":
           return [];
         case "list_sources":
@@ -364,9 +386,20 @@ test.beforeEach(async ({ page }) => {
         case "get_conversation_sources_cmd":
         case "list_checkpoints_cmd":
         case "list_user_memories_cmd":
+        case "list_agent_procedural_memories_cmd":
+        case "list_personas_cmd":
         case "list_skills_cmd":
         case "list_mcp_servers_cmd":
+        case "get_web_search_status_cmd":
           return [];
+        case "get_recent_queries": {
+          const recentQueries = JSON.parse(localStorage.getItem("nexa-e2e-recent-queries") ?? "[]") as unknown;
+          return clone(Array.isArray(recentQueries) ? recentQueries : []);
+        }
+        case "list_skill_change_proposals_cmd": {
+          const proposals = JSON.parse(localStorage.getItem("nexa-e2e-skill-change-proposals") ?? "[]") as unknown;
+          return clone(Array.isArray(proposals) ? proposals : []);
+        }
         case "set_conversation_sources_cmd":
         case "update_conversation_system_prompt_cmd":
         case "compact_conversation_cmd":
@@ -1452,7 +1485,8 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   await page.addInitScript(() => localStorage.setItem("nexa-theme", "dream"));
 
   await page.goto("/settings");
-  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  const appearanceHeading = page.getByRole("heading", { name: "Appearance", exact: true });
+  await expect(appearanceHeading).toBeVisible();
   const shell = page.locator('[data-app-area]');
   const workspace = page.locator('[data-theme-surface="workspace"]');
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'home'));
@@ -1463,7 +1497,11 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   await page.screenshot({ path: 'test-results/dream-home.png', fullPage: true });
 
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'task'));
-  await expect(shell.locator('.app-theme-backdrop')).toHaveCSS('opacity', '0.42');
+  await expect(shell.locator('.app-theme-backdrop')).toHaveCSS('opacity', '0.72');
+  const appearancePanel = appearanceHeading.locator('xpath=ancestor::section[1]');
+  const appearancePanelAlpha = await backgroundAlpha(appearancePanel);
+  expect(appearancePanelAlpha).toBeGreaterThanOrEqual(0.62);
+  expect(appearancePanelAlpha).toBeLessThanOrEqual(0.78);
   await page.screenshot({ path: 'test-results/dream-settings.png', fullPage: true });
 });
 
@@ -1505,11 +1543,40 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     };
     localStorage.setItem("nexa-theme-resource-plugins-v2", JSON.stringify([plugin]));
     localStorage.setItem("nexa-active-theme-v1", plugin.id);
+    localStorage.setItem("nexa-e2e-recent-queries", JSON.stringify([{
+      id: "recent-wallpaper-query",
+      queryText: "wallpaper surface roles",
+      resultCount: 3,
+      searchTimeMs: 12,
+      createdAt: "2026-08-19T00:00:00Z",
+    }]));
+    localStorage.setItem("nexa-e2e-skill-change-proposals", JSON.stringify([{
+      id: "proposal-surface-review",
+      action: "create",
+      skillId: null,
+      name: "Surface Review",
+      description: "Dialog readability regression fixture",
+      content: "# Surface Review",
+      resourceBundle: [],
+      rationale: "Keep overlays separate from wallpaper panels.",
+      warnings: [],
+      status: "pending",
+      conversationId: null,
+      source: "manual",
+      confidence: 0.9,
+      evidence: null,
+      createdAt: "2026-08-19T00:00:00Z",
+      updatedAt: "2026-08-19T00:00:00Z",
+      appliedAt: null,
+      rejectedAt: null,
+    }]));
   });
 
   await page.goto("/settings");
   await expect(page.locator("html")).toHaveAttribute("data-custom-theme", "true");
   await expect(page.locator(".app-theme-backdrop")).toBeVisible();
+  const settingsPage = page.getByTestId("settings-page");
+  await expect(settingsPage).toBeVisible();
 
   const settingsContent = page.locator("main");
   const rail = page.getByTestId("app-navigation-rail");
@@ -1524,14 +1591,72 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   expect(backdropBounds!.y + backdropBounds!.height).toBeGreaterThanOrEqual(frameBounds!.y + frameBounds!.height);
   const surfaceAlphas = {
     settingsContent: await backgroundAlpha(settingsContent),
+    settingsHeader: await backgroundAlpha(page.getByTestId("settings-page-header")),
+    settingsPanel: await backgroundAlpha(
+      page.getByRole("heading", { name: "Appearance", exact: true }).locator('xpath=ancestor::section[1]'),
+    ),
     rail: await backgroundAlpha(rail),
     titlebar: await backgroundAlpha(titlebar),
+    searchPage: 0,
+    taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0,
     chatContent: 0,
   };
 
+  for (const tabName of [
+    "Appearance",
+    "Theme",
+    "Models & Embedding",
+    "AI Providers",
+    "AI Usage",
+    "Media Processing",
+    "Data & Privacy",
+    "Extensions",
+  ]) {
+    await page.getByRole("button", { name: tabName, exact: true }).click();
+    await expect.poll(() => largeOpaqueSurfaceClasses(settingsPage)).toEqual([]);
+    if (tabName === "Extensions") {
+      const skillsSection = page.locator("section").filter({
+        has: page.getByRole("heading", { name: "Skills", exact: true }),
+      });
+      await skillsSection.getByRole("button").first().click();
+      await skillsSection.getByRole("button", { name: "Preview", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Surface Review" });
+      await expect(dialog).toBeVisible();
+      expect(await backgroundAlpha(dialog)).toBe(1);
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    }
+  }
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/custom-wallpaper-settings.png', fullPage: true });
+
+  await page.goto("/");
+  const routeSurface = page.locator("main[data-theme-surface]").first();
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "content");
+  surfaceAlphas.searchPage = await backgroundAlpha(routeSurface);
+  await page.getByRole("textbox").first().focus();
+  const recentQueryDropdown = page.getByTestId("recent-query-dropdown");
+  await expect(recentQueryDropdown).toBeVisible();
+  expect(await backgroundAlpha(recentQueryDropdown)).toBe(1);
+
+  await page.goto("/tasks");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "page");
+  surfaceAlphas.taskPage = await backgroundAlpha(routeSurface);
+  const refreshTasks = page.getByRole("button", { name: "Refresh", exact: true });
+  await expect(refreshTasks).toBeVisible();
+  const refreshRestingBackground = await refreshTasks.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  );
+  await refreshTasks.hover();
+  await expect.poll(() => refreshTasks.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  ))
+    .not.toBe(refreshRestingBackground);
+
   await page.goto("/workflows");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "page");
   const workflowSurface = page.locator("main .min-h-full.bg-surface-0").first();
   await expect(workflowSurface).toBeVisible();
   surfaceAlphas.workflowPage = await backgroundAlpha(workflowSurface);
@@ -1544,9 +1669,13 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   surfaceAlphas.chatContent = await backgroundAlpha(chatContent);
 
   expect(surfaceAlphas).toEqual({
-    settingsContent: 0.82,
+    settingsContent: 0,
+    settingsHeader: 0.72,
+    settingsPanel: 0.72,
     rail: 0.72,
     titlebar: 0.72,
+    searchPage: 0.82,
+    taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0.72,
     chatContent: 0.82,
