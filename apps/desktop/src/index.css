@@ -420,6 +420,53 @@ html[data-companion-window="true"] #root {
   }
 }
 
+/* Explicit dark scope for nested previews. The application root uses the
+   @theme defaults for dark mode, but nested previews must not inherit a named
+   light palette from an ancestor. */
+.theme-dark {
+  --color-surface-0: #0a0a0f;
+  --color-surface-1: #12121a;
+  --color-surface-2: #1a1a25;
+  --color-surface-3: #242430;
+  --color-surface-4: #2e2e3a;
+  --color-text-primary: #f0f0f5;
+  --color-text-secondary: #a0a0b0;
+  --color-text-tertiary: #606070;
+  --color-text-inverse: #0a0a0f;
+  --color-accent: #14B8A6;
+  --color-accent-hover: #2DD4BF;
+  --color-accent-subtle: #14B8A620;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-danger-hover: #f87171;
+  --color-info: #3b82f6;
+  --context-prompts: #38bdf8;
+  --context-conversation: #2dd4bf;
+  --context-tool-results: #f59e0b;
+  --context-tools: #a78bfa;
+  --context-mcp: #f472b6;
+  --context-overhead: #94a3b8;
+  --context-segment-separator: rgba(10, 10, 15, 0.42);
+  --color-border: #ffffff10;
+  --color-border-hover: #ffffff20;
+  --color-border-active: #14B8A680;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 20px rgba(20,184,166,0.15);
+  --graph-canvas-glow-center: rgba(59, 130, 246, 0.14);
+  --graph-canvas-glow-mid: rgba(20, 184, 166, 0.07);
+  --graph-canvas-glow-edge: rgba(10, 10, 15, 0);
+  --graph-node-frost: rgba(255, 255, 255, 0.22);
+  --graph-label-background: rgba(18, 18, 26, 0.94);
+  --graph-label-border: rgba(255, 255, 255, 0.14);
+  --graph-transfer-core: rgba(240, 240, 245, 0.94);
+  --graph-suggestion-background: rgba(18, 18, 26, 0.96);
+  --graph-shadow-color: #000000;
+  --graph-shadow-opacity: 0.38;
+}
+
 /* ── Light theme ──────────────────────────────────────────────────── */
 .theme-light {
   --color-surface-0: #f8fafc;

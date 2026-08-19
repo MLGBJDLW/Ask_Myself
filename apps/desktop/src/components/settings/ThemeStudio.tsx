@@ -338,7 +338,7 @@ export function ThemeStudio() {
 
         <div className="space-y-3">
           <div
-            className={`relative min-h-64 overflow-hidden rounded-xl border border-border p-4 ${draft.baseTheme === 'dark' ? '' : `theme-${draft.baseTheme}`}`}
+            className={`theme-${draft.baseTheme} relative min-h-64 overflow-hidden rounded-xl border border-border p-4`}
             data-testid="theme-live-preview"
             style={variables as CSSProperties}
           >

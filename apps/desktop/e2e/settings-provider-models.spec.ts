@@ -1394,6 +1394,20 @@ test("appearance installs the backend-normalized theme draft only after explicit
   })).toEqual({ name: "Generated Ocean", active: "theme-generated-ocean" });
 });
 
+test("Theme Studio isolates a dark draft from the active light palette", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("nexa-active-theme-v1", "light");
+    localStorage.setItem("nexa-theme", "light");
+  });
+  await page.goto("/settings");
+  await page.getByTestId("theme-summary-card").getByRole("button", { name: "Open Theme Studio" }).click();
+
+  const previewSurface2 = await page.getByTestId("theme-live-preview").evaluate((element) => (
+    getComputedStyle(element).getPropertyValue("--color-surface-2").trim().toLowerCase()
+  ));
+  expect(previewSurface2).toBe("#1a1a25");
+});
+
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
