@@ -390,6 +390,10 @@ test.beforeEach(async ({ page }) => {
         case "list_mcp_servers_cmd":
         case "get_web_search_status_cmd":
           return [];
+        case "get_recent_queries": {
+          const recentQueries = JSON.parse(localStorage.getItem("nexa-e2e-recent-queries") ?? "[]") as unknown;
+          return clone(Array.isArray(recentQueries) ? recentQueries : []);
+        }
         case "list_skill_change_proposals_cmd": {
           const proposals = JSON.parse(localStorage.getItem("nexa-e2e-skill-change-proposals") ?? "[]") as unknown;
           return clone(Array.isArray(proposals) ? proposals : []);
@@ -1537,6 +1541,13 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     };
     localStorage.setItem("nexa-theme-resource-plugins-v2", JSON.stringify([plugin]));
     localStorage.setItem("nexa-active-theme-v1", plugin.id);
+    localStorage.setItem("nexa-e2e-recent-queries", JSON.stringify([{
+      id: "recent-wallpaper-query",
+      queryText: "wallpaper surface roles",
+      resultCount: 3,
+      searchTimeMs: 12,
+      createdAt: "2026-08-19T00:00:00Z",
+    }]));
     localStorage.setItem("nexa-e2e-skill-change-proposals", JSON.stringify([{
       id: "proposal-surface-review",
       action: "create",
@@ -1616,6 +1627,12 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/custom-wallpaper-settings.png', fullPage: true });
+
+  await page.goto("/");
+  await page.getByRole("textbox").first().focus();
+  const recentQueryDropdown = page.getByTestId("recent-query-dropdown");
+  await expect(recentQueryDropdown).toBeVisible();
+  expect(await backgroundAlpha(recentQueryDropdown)).toBe(1);
 
   await page.goto("/workflows");
   const workflowSurface = page.locator("main .min-h-full.bg-surface-0").first();
