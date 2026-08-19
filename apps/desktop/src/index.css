@@ -797,6 +797,9 @@ samp {
 
 /* Wallpaper appearances use a small set of semantic composition roles instead
    of asking every page and control to understand image backgrounds. */
+.theme-dream [data-theme-surface='workspace'],
+.theme-dream [data-theme-surface='transparent'],
+.theme-dream [data-theme-surface='page'],
 html[data-theme-backdrop='true'] [data-theme-surface='workspace'],
 html[data-theme-backdrop='true'] [data-theme-surface='transparent'],
 html[data-theme-backdrop='true'] [data-theme-surface='page'] {

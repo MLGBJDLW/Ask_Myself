@@ -1440,10 +1440,12 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
   const shell = page.locator('[data-app-area]');
+  const workspace = page.locator('[data-theme-surface="workspace"]');
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'home'));
   const homeBackdrop = shell.locator('.app-theme-backdrop');
   await expect(homeBackdrop).toHaveCSS('pointer-events', 'none');
   await expect(homeBackdrop).toHaveCSS('opacity', '0.92');
+  expect(await backgroundAlpha(workspace)).toBe(0);
   await page.screenshot({ path: 'test-results/dream-home.png', fullPage: true });
 
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'task'));
