@@ -888,15 +888,15 @@ samp {
    reinterpret only fully opaque page-local surfaces as coordinated glass;
    explicit alpha utilities, dialogs, and portalled menus retain their native
    readability treatment. */
-:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-0']:not([data-theme-surface])) {
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-0']:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *)) {
   background-color: var(--theme-content-surface-0);
 }
 
-:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-1']:not([data-theme-surface])) {
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-1']:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *)) {
   background-color: var(--theme-content-surface-1);
 }
 
-:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-2']:not([data-theme-surface])) {
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='page'] :where([class~='bg-surface-2']:not([data-theme-surface]):not([role='dialog']):not([role='dialog'] *)) {
   background-color: var(--theme-content-surface-2);
 }
 

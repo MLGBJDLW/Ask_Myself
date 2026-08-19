@@ -30,6 +30,7 @@ async function backgroundAlpha(locator: Locator): Promise<number> {
 
 async function largeOpaqueSurfaceClasses(root: Locator): Promise<string[]> {
   return root.locator('*').evaluateAll((elements) => elements.flatMap((element) => {
+    if (element.closest('[role="dialog"]')) return [];
     const surfaceClass = Array.from(element.classList).find((className) => /^bg-surface-[0-2]$/.test(className));
     if (!surfaceClass) return [];
     const bounds = element.getBoundingClientRect();
@@ -386,10 +387,13 @@ test.beforeEach(async ({ page }) => {
         case "list_agent_procedural_memories_cmd":
         case "list_personas_cmd":
         case "list_skills_cmd":
-        case "list_skill_change_proposals_cmd":
         case "list_mcp_servers_cmd":
         case "get_web_search_status_cmd":
           return [];
+        case "list_skill_change_proposals_cmd": {
+          const proposals = JSON.parse(localStorage.getItem("nexa-e2e-skill-change-proposals") ?? "[]") as unknown;
+          return clone(Array.isArray(proposals) ? proposals : []);
+        }
         case "set_conversation_sources_cmd":
         case "update_conversation_system_prompt_cmd":
         case "compact_conversation_cmd":
@@ -1533,6 +1537,26 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     };
     localStorage.setItem("nexa-theme-resource-plugins-v2", JSON.stringify([plugin]));
     localStorage.setItem("nexa-active-theme-v1", plugin.id);
+    localStorage.setItem("nexa-e2e-skill-change-proposals", JSON.stringify([{
+      id: "proposal-surface-review",
+      action: "create",
+      skillId: null,
+      name: "Surface Review",
+      description: "Dialog readability regression fixture",
+      content: "# Surface Review",
+      resourceBundle: [],
+      rationale: "Keep overlays separate from wallpaper panels.",
+      warnings: [],
+      status: "pending",
+      conversationId: null,
+      source: "manual",
+      confidence: 0.9,
+      evidence: null,
+      createdAt: "2026-08-19T00:00:00Z",
+      updatedAt: "2026-08-19T00:00:00Z",
+      appliedAt: null,
+      rejectedAt: null,
+    }]));
   });
 
   await page.goto("/settings");
@@ -1577,6 +1601,17 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   ]) {
     await page.getByRole("button", { name: tabName, exact: true }).click();
     await expect.poll(() => largeOpaqueSurfaceClasses(settingsPage)).toEqual([]);
+    if (tabName === "Extensions") {
+      const skillsSection = page.locator("section").filter({
+        has: page.getByRole("heading", { name: "Skills", exact: true }),
+      });
+      await skillsSection.getByRole("button").first().click();
+      await skillsSection.getByRole("button", { name: "Preview", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Surface Review" });
+      await expect(dialog).toBeVisible();
+      expect(await backgroundAlpha(dialog)).toBe(1);
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    }
   }
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
