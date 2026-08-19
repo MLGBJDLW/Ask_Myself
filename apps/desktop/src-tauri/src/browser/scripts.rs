@@ -389,6 +389,26 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     return { durationMs: moveAgentCursor(destination, input.action === 'drag' ? el : null), action: input.action };
   };
   runtime.validateAction = (input) => { validateAction(input); return true; };
+  runtime.prepareNativePointer = (input) => {
+    const { el } = validateAction(input);
+    if (!el) throw new Error('Browser pointer action requires a target');
+    const ownerDocument = el.ownerDocument || document;
+    const ownerWindow = ownerDocument.defaultView || window;
+    let rect = el.getBoundingClientRect();
+    if (rect.top < 0 || rect.left < 0 || rect.bottom > ownerWindow.innerHeight || rect.right > ownerWindow.innerWidth) {
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      rect = el.getBoundingClientRect();
+    }
+    const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    if (point.x < 0 || point.y < 0 || point.x >= ownerWindow.innerWidth || point.y >= ownerWindow.innerHeight) {
+      throw new Error('Browser pointer target is outside the viewport');
+    }
+    const hit = ownerDocument.elementFromPoint(point.x, point.y);
+    if (!hit || (hit !== el && !el.contains(hit))) {
+      throw new Error('Browser pointer target is covered by another element');
+    }
+    return { bounds: viewportBoundsOf(el) };
+  };
   runtime.act = (input) => {
     const { el, end } = validateAction(input);
     runtime.synthetic = true;
@@ -602,6 +622,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     observe: () => runtime.observe(),
     previewAction: (input) => runtime.previewAction(input),
     validateAction: (input) => runtime.validateAction(input),
+    prepareNativePointer: (input) => runtime.prepareNativePointer(input),
     act: (input) => runtime.act(input),
     invalidateForUserTakeover: () => runtime.invalidateForUserTakeover(),
     beginPick: (mode) => runtime.beginPick(mode),

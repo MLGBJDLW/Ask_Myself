@@ -153,6 +153,8 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
 fn agent_interactions_have_a_visible_two_phase_cursor_and_complete_pointer_sequences() {
     assert!(BROWSER_INIT_SCRIPT.contains("previewAction"));
     assert!(BROWSER_INIT_SCRIPT.contains("validateAction"));
+    assert!(BROWSER_INIT_SCRIPT.contains("prepareNativePointer"));
+    assert!(BROWSER_INIT_SCRIPT.contains("elementFromPoint"));
     assert!(BROWSER_INIT_SCRIPT.contains("data-nexa-agent-cursor"));
     assert!(BROWSER_INIT_SCRIPT.contains("prefers-reduced-motion: reduce"));
     assert!(BROWSER_INIT_SCRIPT.contains("cubic-bezier(.22,.8,.24,1)"));

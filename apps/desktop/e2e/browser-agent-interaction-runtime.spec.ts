@@ -103,6 +103,34 @@ test('Agent drag uses observation-scoped endpoints and takeover removes its visu
   await expect(page.locator('[data-nexa-agent-cursor]')).toHaveCount(0);
 });
 
+test('Agent pointer preparation scrolls targets into view and rejects covered elements', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.setContent('<!doctype html><button id="target" style="margin-top:1800px">Far target</button>');
+  await page.addScriptTag({ content: runtimeSource });
+
+  const observation = await observe(page);
+  const targetRef = observation.elements.find(element => element.name === 'Far target')!.ref;
+  const prepared = await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareNativePointer(value), actionInput(observation, 'hover', targetRef));
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+  expect(prepared.bounds.y).toBeGreaterThanOrEqual(0);
+  expect(prepared.bounds.y + prepared.bounds.height).toBeLessThanOrEqual(600);
+
+  await page.setContent(`
+    <!doctype html>
+    <button id="covered">Covered target</button>
+    <div style="position:fixed;inset:0;z-index:10;background:white">Overlay</div>
+  `);
+  await page.addScriptTag({ content: runtimeSource });
+  const coveredObservation = await observe(page);
+  const coveredRef = coveredObservation.elements.find(element => element.name === 'Covered target')!.ref;
+  await expect(page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareNativePointer(value), actionInput(coveredObservation, 'hover', coveredRef)))
+    .rejects.toThrow(/covered by another element/);
+});
+
 async function observe(page: import('@playwright/test').Page): Promise<BrowserObservation> {
   return page.evaluate(() => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
@@ -154,6 +182,7 @@ interface BrowserActionInput {
 interface BrowserBridge {
   observe(): BrowserObservation;
   previewAction(input: BrowserActionInput): { durationMs: number };
+  prepareNativePointer(input: BrowserActionInput): { bounds: { x: number; y: number; width: number; height: number } };
   act(input: BrowserActionInput): boolean;
   invalidateForUserTakeover(): void;
 }

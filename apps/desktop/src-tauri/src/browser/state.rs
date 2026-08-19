@@ -876,6 +876,14 @@ impl BrowserState {
                 .sessions
                 .get_mut(request.session_id)
                 .ok_or_else(|| format!("Unknown browser session '{}'", request.session_id))?;
+            if matches!(request.action, "move" | "hover")
+                && session.active_tab_id.as_deref() != Some(request.tab_id)
+            {
+                return Err(
+                    "Browser pointer actions require the target tab to be active and visible"
+                        .to_string(),
+                );
+            }
             if matches!(session.control_lease.owner(), BrowserControlOwner::User) {
                 return Err(
                     "Browser control belongs to the user; wait until they hand it back".to_string(),
@@ -965,7 +973,6 @@ impl BrowserState {
                 navigation_approval = Some((target, is_form_submitter || implicit_form_submit));
             }
         }
-        let target_bounds = expected.as_ref().map(|element| element.bounds.clone());
         let action_input = serde_json::to_string(&serde_json::json!({
             "action": request.action,
             "targetRef": request.target_ref,
@@ -1014,8 +1021,8 @@ impl BrowserState {
             tokio::time::sleep(Duration::from_millis(duration_ms)).await;
         }
         if matches!(request.action, "move" | "hover") {
-            let validate_expression = format!(
-                "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.validateAction({action_input}); }})()"
+            let prepare_expression = format!(
+                "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.prepareNativePointer({action_input}); }})()"
             );
             self.emit(
                 "agentAction",
@@ -1027,21 +1034,22 @@ impl BrowserState {
                     "targetRef": request.target_ref,
                 }),
             );
-            let validation = self.dispatch_agent_action(
+            let preparation = self.dispatch_agent_action(
                 request.session_id,
                 request.tab_id,
                 request.observation_id,
                 request.call_id,
-                &validate_expression,
+                &prepare_expression,
             )?;
-            validation.resolve().await?;
-            self.move_native_pointer_to_target(
-                request.session_id,
-                request.tab_id,
-                target_bounds.as_ref().ok_or_else(|| {
-                    "Browser pointer action requires an observed target".to_string()
-                })?,
-            )?;
+            let prepared = preparation.resolve().await?;
+            let target_bounds = prepared.get("bounds").cloned().ok_or_else(|| {
+                "Browser pointer preparation returned no target bounds".to_string()
+            })?;
+            let target_bounds: BrowserElementBounds = serde_json::from_value(target_bounds)
+                .map_err(|error| {
+                    format!("Browser pointer preparation returned invalid bounds: {error}")
+                })?;
+            self.move_native_pointer_to_target(request.session_id, request.tab_id, &target_bounds)?;
             tokio::time::sleep(Duration::from_millis(80)).await;
             let observation = self
                 .observe(request.session_id, request.tab_id, request.call_id)
