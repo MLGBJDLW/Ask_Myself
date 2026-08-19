@@ -104,6 +104,8 @@ const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string
 
 const THEME_VARIABLES = [
   '--theme-surface-opacity', '--theme-glass-blur', '--theme-shadow-intensity', '--theme-density-scale',
+  '--theme-titlebar-height', '--theme-rail-brand-height', '--theme-space-1', '--theme-space-2',
+  '--theme-space-2-5', '--theme-space-4', '--theme-space-5', '--theme-space-14',
   '--theme-background-image', '--theme-background-color', '--theme-background-fit', '--theme-background-repeat',
   '--theme-background-position', '--theme-background-opacity', '--theme-background-dim', '--theme-background-blur',
   '--theme-background-overlay', '--theme-font-sans', '--theme-font-mono', '--theme-base-font-size',
@@ -229,7 +231,18 @@ export function customThemeToCssVariables(
   if (normalized.effects.surfaceOpacity !== undefined) variables['--theme-surface-opacity'] = String(normalized.effects.surfaceOpacity);
   if (normalized.effects.glassBlur !== undefined) variables['--theme-glass-blur'] = `${normalized.effects.glassBlur}px`;
   if (normalized.effects.shadowIntensity !== undefined) variables['--theme-shadow-intensity'] = String(normalized.effects.shadowIntensity);
-  if (normalized.effects.densityScale !== undefined) variables['--theme-density-scale'] = String(normalized.effects.densityScale);
+  if (normalized.effects.densityScale !== undefined) {
+    const density = normalized.effects.densityScale;
+    variables['--theme-density-scale'] = String(density);
+    variables['--theme-titlebar-height'] = `${2.25 * density}rem`;
+    variables['--theme-rail-brand-height'] = `${3.5 * density}rem`;
+    variables['--theme-space-1'] = `${0.25 * density}rem`;
+    variables['--theme-space-2'] = `${0.5 * density}rem`;
+    variables['--theme-space-2-5'] = `${0.625 * density}rem`;
+    variables['--theme-space-4'] = `${density}rem`;
+    variables['--theme-space-5'] = `${1.25 * density}rem`;
+    variables['--theme-space-14'] = `${3.5 * density}rem`;
+  }
   if (normalized.effects.radiusScale !== undefined) {
     variables['--radius-sm'] = `${6 * normalized.effects.radiusScale}px`;
     variables['--radius-md'] = `${10 * normalized.effects.radiusScale}px`;

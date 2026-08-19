@@ -9,6 +9,7 @@ registerHooks({
 });
 
 const {
+  customThemeToCssVariables,
   normalizeThemeResourcePlugin,
   parseCustomTheme,
   serializeThemeResourcePlugin,
@@ -29,7 +30,7 @@ const profile = {
     textSecondary: '#a8bed1',
     accent: '#38bdf8',
   },
-  effects: { surfaceOpacity: 0.9, glassBlur: 14 },
+  effects: { surfaceOpacity: 0.9, glassBlur: 14, densityScale: 0.8 },
   typography: { fontFamily: 'Inter Variable, sans-serif', baseSize: 15, lineHeight: 1.6 },
   motion: { durationScale: 0.85, cursorStyle: 'fluid' },
   brand: { logoVariant: 'accent', logoForeground: '#bae6fd', logoOpacity: 0.88 },
@@ -66,6 +67,7 @@ test('theme resources expose safe type, motion, brand, copy, and component slots
   assert.equal(plugin.theme.brand.logoVariant, 'accent');
   assert.equal(plugin.theme.content.tagline, 'Quiet focus');
   assert.equal(plugin.theme.components.rail?.borderColor, '#164e63');
+  assert.equal(customThemeToCssVariables(themeResourcePluginToCustomTheme(plugin))['--theme-titlebar-height'], '1.8rem');
 });
 
 test('theme resources keep executable CSS and remote fonts outside the contract', () => {

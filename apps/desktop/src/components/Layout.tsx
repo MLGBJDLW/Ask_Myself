@@ -264,7 +264,7 @@ export function Layout() {
         </nav>
 
         {/* Stable metadata and update controls */}
-        <div className="space-y-1 border-t border-border px-2 py-2">
+        <div className="space-y-1 border-t border-border px-2 py-2" data-theme-density-part="rail-footer">
           <Tooltip content={t('nav.settings')} side="right" delay={180}>
             <NavLink
               to="/settings"

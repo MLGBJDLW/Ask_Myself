@@ -208,7 +208,7 @@ export function ThemeStudio() {
   };
 
   return (
-    <div className="mt-5 space-y-4 rounded-xl border border-border bg-surface-1 p-4" data-testid="theme-studio">
+    <div className="mt-5 space-y-4 rounded-xl border border-border bg-surface-1 p-4" data-testid="theme-studio" data-theme-density-surface="studio">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary"><WandSparkles size={16} /> {t('themeStudio.title')}</div>

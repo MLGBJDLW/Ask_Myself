@@ -30,7 +30,7 @@ const example: CustomThemeDefinition = {
     accent: '#38bdf8',
     contextPrompts: '#22d3ee',
   },
-  effects: { glassBlur: 18, surfaceOpacity: 0.82, radiusScale: 1.1 },
+  effects: { glassBlur: 18, surfaceOpacity: 0.82, radiusScale: 1.1, densityScale: 0.8 },
   typography: { fontFamily: 'Inter Variable, sans-serif', monoFontFamily: 'Cascadia Mono, monospace', baseSize: 15 },
   motion: { durationScale: 0.75, cursorStyle: 'fluid' },
   brand: { logoVariant: 'accent', logoForeground: '#bae6fd', logoOpacity: 0.9 },
@@ -48,6 +48,7 @@ equal(vars['--theme-glass-blur'], '18px');
 equal(vars['--theme-background-image'], 'linear-gradient(145deg, #07111f, #172554)');
 equal(vars['--theme-font-sans'], 'Inter Variable, sans-serif');
 equal(vars['--theme-duration-scale'], '0.75');
+equal(vars['--theme-titlebar-height'], '1.8rem');
 equal(vars['--theme-logo-foreground'], '#bae6fd');
 equal(vars['--theme-component-rail-border'], '#164e63');
 equal(Object.keys(vars).some((key) => key.includes('display')), false);

@@ -443,7 +443,7 @@ export function BrowserDock({
           onPointerDown={resize}
         />
       )}
-      <header className="shrink-0 border-b border-border/70 bg-[linear-gradient(110deg,rgba(8,47,73,.3),transparent_55%)] px-2.5 pb-2 pt-2">
+      <header className="shrink-0 border-b border-border/70 bg-[linear-gradient(110deg,rgba(8,47,73,.3),transparent_55%)] px-2.5 pb-2 pt-2" data-theme-density-surface="browser-header">
         <div className="flex items-center gap-2">
           <div className="grid h-8 w-8 place-items-center rounded-md border border-cyan-400/20 bg-cyan-400/10 text-cyan-300">
             <Globe2 size={16} />
