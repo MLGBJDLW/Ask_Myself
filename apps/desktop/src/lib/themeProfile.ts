@@ -108,6 +108,9 @@ const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string
 
 const THEME_VARIABLES = [
   '--theme-surface-opacity', '--theme-glass-blur', '--theme-shadow-intensity', '--theme-density-scale',
+  '--theme-chrome-surface-alpha', '--theme-content-surface-alpha', '--theme-shadow-alpha',
+  '--theme-chrome-surface-0', '--theme-chrome-surface-1', '--theme-chrome-surface-2',
+  '--theme-content-surface-0', '--theme-content-surface-1', '--theme-content-surface-2',
   '--theme-titlebar-height', '--theme-rail-brand-height', '--theme-space-1', '--theme-space-2',
   '--theme-space-2-5', '--theme-space-4', '--theme-space-5', '--theme-space-14',
   '--theme-background-image', '--theme-background-color', '--theme-background-fit', '--theme-background-repeat',
@@ -122,6 +125,7 @@ const THEME_VARIABLES = [
 ] as const;
 
 const COMPONENT_SLOTS: ThemeComponentSlot[] = ['rail', 'header', 'card', 'browser'];
+const MIN_CONTENT_SURFACE_OPACITY = 0.82;
 const SAFE_COLOR = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|rgba|hsl|hsla|oklch|oklab)\([0-9a-z.% ,/+\-]+\)|transparent)$/i;
 const SAFE_GRADIENT = /^(?:linear|radial|conic)-gradient\([#0-9a-z.%(), /+\-]+\)$/i;
 const SAFE_FONT = /^[a-z0-9 _,'".\-]+$/i;
@@ -232,9 +236,19 @@ export function customThemeToCssVariables(
     const value = normalized.colors[key];
     if (value) variables[variable] = value;
   }
-  if (normalized.effects.surfaceOpacity !== undefined) variables['--theme-surface-opacity'] = String(normalized.effects.surfaceOpacity);
-  if (normalized.effects.glassBlur !== undefined) variables['--theme-glass-blur'] = `${normalized.effects.glassBlur}px`;
-  if (normalized.effects.shadowIntensity !== undefined) variables['--theme-shadow-intensity'] = String(normalized.effects.shadowIntensity);
+  const surfaceOpacity = normalized.effects.surfaceOpacity ?? 1;
+  const contentSurfaceOpacity = Math.max(surfaceOpacity, MIN_CONTENT_SURFACE_OPACITY);
+  const shadowIntensity = normalized.effects.shadowIntensity ?? 1;
+  variables['--theme-surface-opacity'] = String(surfaceOpacity);
+  variables['--theme-chrome-surface-alpha'] = `${surfaceOpacity * 100}%`;
+  variables['--theme-content-surface-alpha'] = `${contentSurfaceOpacity * 100}%`;
+  variables['--theme-glass-blur'] = `${normalized.effects.glassBlur ?? 0}px`;
+  variables['--theme-shadow-intensity'] = String(shadowIntensity);
+  variables['--theme-shadow-alpha'] = `${Math.min(40, shadowIntensity * 18)}%`;
+  for (const surface of [0, 1, 2] as const) {
+    variables[`--theme-chrome-surface-${surface}`] = `color-mix(in srgb, var(--color-surface-${surface}) var(--theme-chrome-surface-alpha), transparent)`;
+    variables[`--theme-content-surface-${surface}`] = `color-mix(in srgb, var(--color-surface-${surface}) var(--theme-content-surface-alpha), transparent)`;
+  }
   if (normalized.effects.densityScale !== undefined) {
     const density = normalized.effects.densityScale;
     variables['--theme-density-scale'] = String(density);
@@ -356,6 +370,7 @@ export function applyCustomTheme(theme: CustomThemeDefinition, resolvedBackgroun
   for (const [key, value] of Object.entries(customThemeToCssVariables(normalized, resolvedBackgroundUrl))) root.style.setProperty(key, value);
   root.dataset.customTheme = 'true';
   root.dataset.themeMode = normalized.mode;
+  root.dataset.themeBackdrop = normalized.background.kind === 'none' ? 'false' : 'true';
   root.dataset.cursorStyle = normalized.motion.cursorStyle ?? 'fluid';
   root.dataset.logoVariant = normalized.brand.logoVariant ?? 'auto';
 }
@@ -366,6 +381,7 @@ export function clearCustomThemeVariables(): void {
   for (const variable of THEME_VARIABLES) root.style.removeProperty(variable);
   delete root.dataset.customTheme;
   delete root.dataset.themeMode;
+  delete root.dataset.themeBackdrop;
   delete root.dataset.cursorStyle;
   delete root.dataset.logoVariant;
 }

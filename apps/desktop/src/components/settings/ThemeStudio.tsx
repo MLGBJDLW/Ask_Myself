@@ -337,13 +337,38 @@ export function ThemeStudio() {
         </div>
 
         <div className="space-y-3">
-          <div className="relative min-h-64 overflow-hidden rounded-xl border border-border p-4" style={variables as CSSProperties}>
-            <div className="absolute inset-0" style={{ backgroundColor: variables['--theme-background-color'], backgroundImage: variables['--theme-background-image'], backgroundPosition: variables['--theme-background-position'], backgroundSize: variables['--theme-background-fit'], backgroundRepeat: variables['--theme-background-repeat'], opacity: Number(variables['--theme-background-opacity'] ?? 1), filter: `blur(${variables['--theme-background-blur'] ?? '0px'})` }} />
-            <div className="relative rounded-lg border p-4 shadow-lg" style={{ color: variables['--color-text-primary'], background: variables['--theme-component-card-background'] ?? variables['--color-surface-0'], borderColor: variables['--theme-component-card-border'] ?? variables['--color-border'], boxShadow: variables['--theme-component-card-shadow'] }}>
+          <div
+            className={`theme-${draft.baseTheme} relative min-h-64 overflow-hidden rounded-xl border border-border p-4`}
+            data-testid="theme-live-preview"
+            style={variables as CSSProperties}
+          >
+            <div
+              className="absolute inset-0 scale-[1.03]"
+              style={{
+                backgroundColor: 'var(--theme-background-color, var(--color-surface-0))',
+                backgroundImage: 'linear-gradient(color-mix(in srgb, var(--theme-background-overlay, #000) calc(var(--theme-background-dim, 0) * 100%), transparent), color-mix(in srgb, var(--theme-background-overlay, #000) calc(var(--theme-background-dim, 0) * 100%), transparent)), var(--theme-background-image, none)',
+                backgroundPosition: 'var(--theme-background-position, center)',
+                backgroundSize: 'var(--theme-background-fit, cover)',
+                backgroundRepeat: 'var(--theme-background-repeat, no-repeat)',
+                opacity: Number(variables['--theme-background-opacity'] ?? 1),
+                filter: `blur(${variables['--theme-background-blur'] ?? '0px'})`,
+              }}
+            />
+            <div
+              className="relative rounded-lg border p-4 shadow-lg"
+              style={{
+                color: 'var(--color-text-primary)',
+                background: variables['--theme-component-card-background'] ?? 'var(--theme-content-surface-0)',
+                borderColor: variables['--theme-component-card-border'] ?? 'var(--color-border)',
+                boxShadow: variables['--theme-component-card-shadow'],
+                WebkitBackdropFilter: `blur(${variables['--theme-glass-blur'] ?? '0px'})`,
+                backdropFilter: `blur(${variables['--theme-glass-blur'] ?? '0px'})`,
+              }}
+            >
               <div className="text-sm font-semibold">{draft.content.statusText || t('themeStudio.livePreview')}</div>
-              <p className="mt-2 text-xs" style={{ color: variables['--color-text-secondary'] }}>{draft.content.tagline || t('themeStudio.previewDescription')}</p>
-              {draft.content.quote && <blockquote className="mt-3 border-l-2 pl-2 text-xs italic" style={{ color: variables['--color-text-secondary'], borderColor: variables['--color-accent'] }}>{draft.content.quote}</blockquote>}
-              <button type="button" className="mt-4 rounded-md px-3 py-1.5 text-xs" style={{ background: variables['--color-accent'], color: variables['--color-text-inverse'] ?? '#fff' }}>{t('themeStudio.accentAction')}</button>
+              <p className="mt-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>{draft.content.tagline || t('themeStudio.previewDescription')}</p>
+              {draft.content.quote && <blockquote className="mt-3 border-l-2 pl-2 text-xs italic" style={{ color: 'var(--color-text-secondary)', borderColor: 'var(--color-accent)' }}>{draft.content.quote}</blockquote>}
+              <button type="button" className="mt-4 rounded-md px-3 py-1.5 text-xs" style={{ background: 'var(--color-accent)', color: 'var(--color-text-inverse, #fff)' }}>{t('themeStudio.accentAction')}</button>
             </div>
           </div>
           {contrast !== null && contrast < 4.5 && <div className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning">{t('themeStudio.contrastWarning', { ratio: contrast.toFixed(2) })}</div>}

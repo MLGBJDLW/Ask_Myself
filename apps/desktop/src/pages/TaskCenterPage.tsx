@@ -834,7 +834,7 @@ export function TaskCenterPage() {
   const investigationOpenQuestions = investigationGraph?.openQuestions ?? [];
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-0">
+    <div className="flex h-full min-h-0 flex-col bg-surface-0" data-theme-surface="page">
       <header className="shrink-0 border-b border-border/70 bg-surface-1/85 px-5 py-4 backdrop-blur">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">

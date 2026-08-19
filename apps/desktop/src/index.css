@@ -420,6 +420,53 @@ html[data-companion-window="true"] #root {
   }
 }
 
+/* Explicit dark scope for nested previews. The application root uses the
+   @theme defaults for dark mode, but nested previews must not inherit a named
+   light palette from an ancestor. */
+.theme-dark {
+  --color-surface-0: #0a0a0f;
+  --color-surface-1: #12121a;
+  --color-surface-2: #1a1a25;
+  --color-surface-3: #242430;
+  --color-surface-4: #2e2e3a;
+  --color-text-primary: #f0f0f5;
+  --color-text-secondary: #a0a0b0;
+  --color-text-tertiary: #606070;
+  --color-text-inverse: #0a0a0f;
+  --color-accent: #14B8A6;
+  --color-accent-hover: #2DD4BF;
+  --color-accent-subtle: #14B8A620;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-danger-hover: #f87171;
+  --color-info: #3b82f6;
+  --context-prompts: #38bdf8;
+  --context-conversation: #2dd4bf;
+  --context-tool-results: #f59e0b;
+  --context-tools: #a78bfa;
+  --context-mcp: #f472b6;
+  --context-overhead: #94a3b8;
+  --context-segment-separator: rgba(10, 10, 15, 0.42);
+  --color-border: #ffffff10;
+  --color-border-hover: #ffffff20;
+  --color-border-active: #14B8A680;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 20px rgba(20,184,166,0.15);
+  --graph-canvas-glow-center: rgba(59, 130, 246, 0.14);
+  --graph-canvas-glow-mid: rgba(20, 184, 166, 0.07);
+  --graph-canvas-glow-edge: rgba(10, 10, 15, 0);
+  --graph-node-frost: rgba(255, 255, 255, 0.22);
+  --graph-label-background: rgba(18, 18, 26, 0.94);
+  --graph-label-border: rgba(255, 255, 255, 0.14);
+  --graph-transfer-core: rgba(240, 240, 245, 0.94);
+  --graph-suggestion-background: rgba(18, 18, 26, 0.96);
+  --graph-shadow-color: #000000;
+  --graph-shadow-opacity: 0.38;
+}
+
 /* ── Light theme ──────────────────────────────────────────────────── */
 .theme-light {
   --color-surface-0: #f8fafc;
@@ -685,8 +732,8 @@ html[data-companion-window="true"] #root {
 }
 
 .theme-dream .app-theme-backdrop,
-[data-custom-theme='true'] .app-theme-backdrop {
-  position: fixed;
+[data-theme-backdrop='true'] .app-theme-backdrop {
+  position: absolute;
   z-index: 0;
   inset: 0;
   display: block;
@@ -700,9 +747,9 @@ html[data-companion-window="true"] #root {
     linear-gradient(145deg, #180d27 0%, #251038 47%, #12172d 100%);
 }
 
-[data-custom-theme='true'] .app-theme-backdrop {
+[data-theme-backdrop='true'] .app-theme-backdrop {
   opacity: var(--theme-background-opacity, 1);
-  background-color: var(--theme-background-color, transparent);
+  background-color: var(--theme-background-color, var(--color-surface-0));
   background-image:
     linear-gradient(color-mix(in srgb, var(--theme-background-overlay, #000) calc(var(--theme-background-dim, 0) * 100%), transparent), color-mix(in srgb, var(--theme-background-overlay, #000) calc(var(--theme-background-dim, 0) * 100%), transparent)),
     var(--theme-background-image, none);
@@ -795,6 +842,41 @@ samp {
   box-shadow: var(--theme-component-rail-shadow, none);
 }
 
+/* Wallpaper appearances use a small set of semantic composition roles instead
+   of asking every page and control to understand image backgrounds. */
+.theme-dream [data-theme-surface='workspace'],
+.theme-dream [data-theme-surface='transparent'],
+.theme-dream [data-theme-surface='page'],
+html[data-theme-backdrop='true'] [data-theme-surface='workspace'],
+html[data-theme-backdrop='true'] [data-theme-surface='transparent'],
+html[data-theme-backdrop='true'] [data-theme-surface='page'] {
+  background: transparent;
+}
+
+html[data-theme-backdrop='true'] [data-theme-surface='content'] {
+  background: var(--theme-content-surface-0);
+}
+
+html[data-theme-backdrop='true'] [data-theme-surface='chrome'] {
+  background: var(--theme-chrome-surface-1);
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+}
+
+html[data-theme-backdrop='true'] .app-titlebar {
+  background: var(--theme-component-header-background, var(--theme-chrome-surface-1));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  box-shadow: var(--theme-component-header-shadow, 0 1px 10px color-mix(in srgb, #000 var(--theme-shadow-alpha, 18%), transparent));
+}
+
+html[data-theme-backdrop='true'] [data-testid='app-navigation-rail'] {
+  background: var(--theme-component-rail-background, var(--theme-chrome-surface-1));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  box-shadow: var(--theme-component-rail-shadow, 1px 0 14px color-mix(in srgb, #000 var(--theme-shadow-alpha, 18%), transparent));
+}
+
 [data-testid='app-navigation-rail'] > :first-child {
   height: var(--theme-rail-brand-height);
 }
@@ -814,12 +896,47 @@ samp {
   box-shadow: var(--theme-component-browser-shadow, -24px 0 60px rgba(0, 0, 0, .2));
 }
 
+html[data-theme-backdrop='true'] [data-testid='browser-dock'] {
+  background: var(--theme-component-browser-background, var(--theme-chrome-surface-1));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  box-shadow: var(--theme-component-browser-shadow, -24px 0 60px color-mix(in srgb, #000 var(--theme-shadow-alpha, 18%), transparent));
+}
+
 [data-theme-component='card'] {
   background: var(--theme-component-card-background, transparent);
   border: 1px solid var(--theme-component-card-border, transparent);
   box-shadow: var(--theme-component-card-shadow, none);
   border-radius: var(--radius-lg);
   padding: var(--theme-space-14) var(--theme-space-5);
+}
+
+html[data-theme-backdrop='true'] [data-theme-component='card'] {
+  background: var(--theme-component-card-background, var(--theme-content-surface-1));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+}
+
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  html[data-theme-backdrop='true'] .app-theme-backdrop {
+    display: none;
+  }
+
+  html[data-theme-backdrop='true'] :is(
+    [data-theme-surface='workspace'],
+    [data-theme-surface='content'],
+    [data-theme-surface='chrome'],
+    [data-theme-surface='transparent'],
+    [data-theme-surface='page'],
+    .app-titlebar,
+    [data-testid='app-navigation-rail'],
+    [data-testid='browser-dock'],
+    [data-theme-component='card']
+  ) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--color-surface-1);
+  }
 }
 
 [data-theme-density-surface='studio'] {

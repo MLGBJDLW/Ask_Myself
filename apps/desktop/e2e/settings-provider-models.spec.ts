@@ -14,6 +14,20 @@ async function expectNexaValue(trigger: Locator, value: string) {
   await expect(trigger).toHaveAttribute("data-value", value);
 }
 
+async function backgroundAlpha(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => {
+    const color = getComputedStyle(element).backgroundColor.trim();
+    if (color === "transparent") return 0;
+    const rgb = color.match(/^rgba?\((.+)\)$/i);
+    if (rgb) {
+      const parts = rgb[1].split(/[\s,\/]+/).filter(Boolean);
+      return parts.length >= 4 ? Number(parts[3]) : 1;
+    }
+    const functionalAlpha = color.match(/\/\s*([0-9.]+)\s*\)$/);
+    return functionalAlpha ? Number(functionalAlpha[1]) : 1;
+  });
+}
+
 async function expectNexaOptions(trigger: Locator, expectedNames: string[]) {
   await trigger.click();
   const options = trigger.page().getByRole("option");
@@ -343,6 +357,9 @@ test.beforeEach(async ({ page }) => {
         case "list_conversations_cmd":
           return [];
         case "list_sources":
+        case "list_workflow_templates_cmd":
+        case "list_workflow_automations_cmd":
+        case "list_due_workflow_automations_cmd":
         case "list_projects_cmd":
         case "get_conversation_sources_cmd":
         case "list_checkpoints_cmd":
@@ -354,6 +371,7 @@ test.beforeEach(async ({ page }) => {
         case "update_conversation_system_prompt_cmd":
         case "compact_conversation_cmd":
         case "agent_stop_cmd":
+        case "get_learning_governance_snapshot_cmd":
           return null;
         case "get_index_stats":
           return { totalDocuments: 0, totalChunks: 0, ftsRows: 0 };
@@ -1376,6 +1394,20 @@ test("appearance installs the backend-normalized theme draft only after explicit
   })).toEqual({ name: "Generated Ocean", active: "theme-generated-ocean" });
 });
 
+test("Theme Studio isolates a dark draft from the active light palette", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("nexa-active-theme-v1", "light");
+    localStorage.setItem("nexa-theme", "light");
+  });
+  await page.goto("/settings");
+  await page.getByTestId("theme-summary-card").getByRole("button", { name: "Open Theme Studio" }).click();
+
+  const previewSurface2 = await page.getByTestId("theme-live-preview").evaluate((element) => (
+    getComputedStyle(element).getPropertyValue("--color-surface-2").trim().toLowerCase()
+  ));
+  expect(previewSurface2).toBe("#1a1a25");
+});
+
 test("settings offers Qwen key reuse plus Jina and Mistral embedding presets", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "Models & Embedding" }).click();
@@ -1422,13 +1454,131 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
   const shell = page.locator('[data-app-area]');
+  const workspace = page.locator('[data-theme-surface="workspace"]');
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'home'));
   const homeBackdrop = shell.locator('.app-theme-backdrop');
   await expect(homeBackdrop).toHaveCSS('pointer-events', 'none');
   await expect(homeBackdrop).toHaveCSS('opacity', '0.92');
+  expect(await backgroundAlpha(workspace)).toBe(0);
   await page.screenshot({ path: 'test-results/dream-home.png', fullPage: true });
 
   await shell.evaluate((element) => element.setAttribute('data-app-area', 'task'));
   await expect(shell.locator('.app-theme-backdrop')).toHaveCSS('opacity', '0.42');
   await page.screenshot({ path: 'test-results/dream-settings.png', fullPage: true });
+});
+
+test("custom wallpaper appearances cover every workspace surface without sacrificing chat readability", async ({ page }) => {
+  await page.addInitScript(() => {
+    const plugin = {
+      manifestVersion: 2,
+      kind: "theme-resource",
+      id: "wallpaper-coverage",
+      name: "Wallpaper Coverage",
+      theme: {
+        baseTheme: "light",
+        mode: "light",
+        colors: {
+          surface0: "#f6eee8",
+          surface1: "#fff8f2",
+          surface2: "#f4ded2",
+          surface3: "#ead0c2",
+          surface4: "#dfbca9",
+          textPrimary: "#251913",
+          textSecondary: "#59443a",
+          textTertiary: "#786056",
+          accent: "#c85d2e",
+        },
+        effects: { surfaceOpacity: 0.72, glassBlur: 18 },
+        typography: {},
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: {
+          kind: "gradient",
+          value: "linear-gradient(135deg, #4f2418, #e09158)",
+          opacity: 1,
+          dim: 0.18,
+          overlayColor: "#1f100b",
+        },
+      },
+    };
+    localStorage.setItem("nexa-theme-resource-plugins-v2", JSON.stringify([plugin]));
+    localStorage.setItem("nexa-active-theme-v1", plugin.id);
+  });
+
+  await page.goto("/settings");
+  await expect(page.locator("html")).toHaveAttribute("data-custom-theme", "true");
+  await expect(page.locator(".app-theme-backdrop")).toBeVisible();
+
+  const settingsContent = page.locator("main");
+  const rail = page.getByTestId("app-navigation-rail");
+  const titlebar = page.getByTestId("app-titlebar");
+  const backdropBounds = await page.locator(".app-theme-backdrop").boundingBox();
+  const frameBounds = await page.locator(".app-window-frame").boundingBox();
+  expect(backdropBounds).not.toBeNull();
+  expect(frameBounds).not.toBeNull();
+  expect(backdropBounds!.x).toBeLessThanOrEqual(frameBounds!.x);
+  expect(backdropBounds!.y).toBeLessThanOrEqual(frameBounds!.y);
+  expect(backdropBounds!.x + backdropBounds!.width).toBeGreaterThanOrEqual(frameBounds!.x + frameBounds!.width);
+  expect(backdropBounds!.y + backdropBounds!.height).toBeGreaterThanOrEqual(frameBounds!.y + frameBounds!.height);
+  const surfaceAlphas = {
+    settingsContent: await backgroundAlpha(settingsContent),
+    rail: await backgroundAlpha(rail),
+    titlebar: await backgroundAlpha(titlebar),
+    workflowPage: 0,
+    chatSidebar: 0,
+    chatContent: 0,
+  };
+
+  await page.goto("/workflows");
+  const workflowSurface = page.locator("main .min-h-full.bg-surface-0").first();
+  await expect(workflowSurface).toBeVisible();
+  surfaceAlphas.workflowPage = await backgroundAlpha(workflowSurface);
+
+  await page.goto("/chat");
+  const chatSidebar = page.getByTestId("chat-history-sidebar").locator(":scope > div > div");
+  const chatContent = page.getByTestId("chat-history-sidebar").locator("xpath=following-sibling::div[1]");
+  await expect(chatSidebar).toBeVisible();
+  surfaceAlphas.chatSidebar = await backgroundAlpha(chatSidebar);
+  surfaceAlphas.chatContent = await backgroundAlpha(chatContent);
+
+  expect(surfaceAlphas).toEqual({
+    settingsContent: 0.82,
+    rail: 0.72,
+    titlebar: 0.72,
+    workflowPage: 0,
+    chatSidebar: 0.72,
+    chatContent: 0.82,
+  });
+});
+
+test("custom appearances without a visual background keep the ordinary opaque shell", async ({ page }) => {
+  await page.addInitScript(() => {
+    const plugin = {
+      manifestVersion: 2,
+      kind: "theme-resource",
+      id: "palette-only",
+      name: "Palette Only",
+      theme: {
+        baseTheme: "dark",
+        mode: "dark",
+        colors: { accent: "#22c55e" },
+        effects: { surfaceOpacity: 0.35, glassBlur: 24 },
+        typography: {},
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: { kind: "none" },
+      },
+    };
+    localStorage.setItem("nexa-theme-resource-plugins-v2", JSON.stringify([plugin]));
+    localStorage.setItem("nexa-active-theme-v1", plugin.id);
+  });
+
+  await page.goto("/settings");
+  await expect(page.locator("html")).toHaveAttribute("data-theme-backdrop", "false");
+  await expect(page.locator(".app-theme-backdrop")).toBeHidden();
+  expect(await backgroundAlpha(page.getByTestId("app-navigation-rail"))).toBe(1);
 });
