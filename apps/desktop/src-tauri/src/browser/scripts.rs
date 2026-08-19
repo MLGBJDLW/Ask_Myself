@@ -292,24 +292,29 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     runtime.cursorPoint = to;
     return duration;
   };
-  const pointerOptions = (input, point, detail = 1) => ({
+  const mouseButtonOf = (input) => ({ left: 0, middle: 1, right: 2 })[input.button] ?? 0;
+  const pressedButtonsOf = (input) => ({ left: 1, middle: 4, right: 2 })[input.button] ?? 1;
+  const pointerOptions = (input, point, detail = 1, pressed = false) => ({
     bubbles: true,
     cancelable: true,
     composed: true,
     clientX: point.x,
     clientY: point.y,
-    button: ({ left: 0, middle: 1, right: 2 })[input.button] ?? 0,
-    buttons: 1,
+    button: mouseButtonOf(input),
+    buttons: pressed ? pressedButtonsOf(input) : 0,
+    pointerId: 1,
+    pointerType: 'mouse',
+    isPrimary: true,
     detail,
     altKey: input.modifiers?.includes('Alt') || false,
     ctrlKey: input.modifiers?.includes('Control') || false,
     metaKey: input.modifiers?.includes('Meta') || false,
     shiftKey: input.modifiers?.includes('Shift') || false,
   });
-  const dispatchPointer = (el, type, input, point, detail = 1) => {
+  const dispatchPointer = (el, type, input, point, detail = 1, pressed = false) => {
     const realm = el.ownerDocument?.defaultView || window;
     const EventType = type.startsWith('pointer') && realm.PointerEvent ? realm.PointerEvent : realm.MouseEvent;
-    el.dispatchEvent(new EventType(type, pointerOptions(input, point, detail)));
+    el.dispatchEvent(new EventType(type, pointerOptions(input, point, detail, pressed)));
   };
   const pulseAt = (el, point) => {
     const ownerDocument = el.ownerDocument || document;
@@ -329,11 +334,11 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   const clickAt = (el, input, detail = 1) => {
     const point = centerOf(el);
     hoverAt(el, input, point);
-    dispatchPointer(el, 'pointerdown', input, point, detail);
-    dispatchPointer(el, 'mousedown', input, point, detail);
+    dispatchPointer(el, 'pointerdown', input, point, detail, true);
+    dispatchPointer(el, 'mousedown', input, point, detail, true);
     dispatchPointer(el, 'pointerup', input, point, detail);
     dispatchPointer(el, 'mouseup', input, point, detail);
-    const button = ({ left: 0, middle: 1, right: 2 })[input.button] ?? 0;
+    const button = mouseButtonOf(input);
     if (button === 0 && !(input.modifiers?.length)) el.click();
     else dispatchPointer(el, button === 1 ? 'auxclick' : button === 2 ? 'contextmenu' : 'click', input, point, detail);
     pulseAt(el, point);
@@ -345,13 +350,23 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     let transfer = null;
     try { transfer = realm.DataTransfer ? new realm.DataTransfer() : null; } catch (_) {}
     const dragEvent = (target, type, point) => {
-      if (realm.DragEvent) target.dispatchEvent(new realm.DragEvent(type, { ...pointerOptions(input, point), dataTransfer: transfer }));
-      else dispatchPointer(target, type, input, point);
+      if (realm.DragEvent) target.dispatchEvent(new realm.DragEvent(type, { ...pointerOptions(input, point, 1, true), dataTransfer: transfer }));
+      else dispatchPointer(target, type, input, point, 1, true);
     };
     hoverAt(source, input, from);
-    dispatchPointer(source, 'pointerdown', input, from);
-    dispatchPointer(source, 'mousedown', input, from);
+    dispatchPointer(source, 'pointerdown', input, from, 1, true);
+    dispatchPointer(source, 'mousedown', input, from, 1, true);
     dragEvent(source, 'dragstart', from);
+    const ownerDocument = source.ownerDocument || document;
+    for (let step = 1; step <= 8; step += 1) {
+      const progress = step / 8;
+      const point = { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress };
+      const target = ownerDocument === destination.ownerDocument
+        ? ownerDocument.elementFromPoint(point.x, point.y) || destination
+        : destination;
+      dispatchPointer(target, 'pointermove', input, point, 1, true);
+      dispatchPointer(target, 'mousemove', input, point, 1, true);
+    }
     dragEvent(destination, 'dragenter', to);
     dragEvent(destination, 'dragover', to);
     dragEvent(destination, 'drop', to);

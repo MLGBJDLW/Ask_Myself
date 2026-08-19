@@ -94,6 +94,34 @@ fn condition_matches(observation: &serde_json::Value, condition: &serde_json::Va
     }
 }
 
+pub(super) fn browser_action_names() -> Vec<&'static str> {
+    let mut actions = vec![
+        "create_session",
+        "list_sessions",
+        "list_tabs",
+        "open_tab",
+        "activate_tab",
+        "navigate",
+        "go_back",
+        "go_forward",
+        "reload",
+        "observe",
+        "click",
+        "double_click",
+        "drag",
+        "type",
+        "select",
+        "press",
+        "scroll",
+        "wait_for",
+        "close_tab",
+        "close_session",
+    ];
+    #[cfg(target_os = "windows")]
+    actions.extend(["move", "hover"]);
+    actions
+}
+
 #[async_trait]
 impl Tool for NativeBrowserSessionTool {
     fn name(&self) -> &str {
@@ -105,10 +133,11 @@ impl Tool for NativeBrowserSessionTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        let actions = browser_action_names();
         serde_json::json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["create_session", "list_sessions", "list_tabs", "open_tab", "activate_tab", "navigate", "go_back", "go_forward", "reload", "observe", "move", "hover", "click", "double_click", "drag", "type", "select", "press", "scroll", "wait_for", "close_tab", "close_session"] },
+                "action": { "type": "string", "enum": actions },
                 "sessionId": { "type": "string" },
                 "tabId": { "type": "string" },
                 "url": { "type": "string" },
@@ -175,6 +204,11 @@ impl Tool for NativeBrowserSessionTool {
             Self::invalid(format!("Invalid browser_session arguments: {error}"))
         })?;
         let action = args.action.trim().to_ascii_lowercase();
+        if !browser_action_names().contains(&action.as_str()) {
+            return Err(Self::invalid(format!(
+                "Unsupported browser_session action '{action}' on this platform"
+            )));
+        }
         let conversation_id = context.conversation_id;
 
         if action == "create_session" {

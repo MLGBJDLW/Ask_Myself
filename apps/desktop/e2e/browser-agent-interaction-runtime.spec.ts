@@ -16,7 +16,7 @@ test('Agent browser interaction shows cursor motion and commits verified pointer
     <script>
       window.actionEvents = [];
       for (const type of ['pointerover', 'pointermove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'dragstart', 'dragenter', 'dragover', 'drop', 'dragend']) {
-        document.addEventListener(type, event => window.actionEvents.push({ type, target: event.target.id }), true);
+        document.addEventListener(type, event => window.actionEvents.push({ type, target: event.target.id, buttons: event.buttons }), true);
       }
     </script>
   `);
@@ -44,6 +44,12 @@ test('Agent browser interaction shows cursor motion and commits verified pointer
   expect(clickEvents).toEqual(expect.arrayContaining([
     'pointerover', 'pointermove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click',
   ]));
+  const buttonStates = await page.evaluate(() => (
+    window as unknown as { actionEvents: Array<{ type: string; buttons: number }> }
+  ).actionEvents.filter(event => ['pointermove', 'pointerdown', 'pointerup'].includes(event.type)));
+  expect(buttonStates.find(event => event.type === 'pointermove')?.buttons).toBe(0);
+  expect(buttonStates.find(event => event.type === 'pointerdown')?.buttons).toBe(1);
+  expect(buttonStates.find(event => event.type === 'pointerup')?.buttons).toBe(0);
   await expect(page.locator('[data-nexa-agent-click]')).toBeVisible();
 
   const next = await observe(page);
@@ -63,8 +69,8 @@ test('Agent drag uses observation-scoped endpoints and takeover removes its visu
     <div id="destination" class="drop-zone">Drop zone</div>
     <script>
       window.actionEvents = [];
-      for (const type of ['dragstart', 'dragenter', 'dragover', 'drop', 'dragend']) {
-        document.addEventListener(type, event => { window.actionEvents.push({ type, target: event.target.id }); event.preventDefault(); }, true);
+      for (const type of ['pointermove', 'mousemove', 'dragstart', 'dragenter', 'dragover', 'drop', 'dragend']) {
+        document.addEventListener(type, event => { window.actionEvents.push({ type, target: event.target.id, buttons: event.buttons }); event.preventDefault(); }, true);
       }
     </script>
   `);
@@ -82,11 +88,15 @@ test('Agent drag uses observation-scoped endpoints and takeover removes its visu
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
   ).__NEXA_BROWSER_RUNTIME__.act(value), input);
 
-  expect(await page.evaluate(() => (
-    window as unknown as { actionEvents: Array<{ type: string }> }
-  ).actionEvents.map(event => event.type))).toEqual([
+  const dragEvents = await page.evaluate(() => (
+    window as unknown as { actionEvents: Array<{ type: string; buttons: number }> }
+  ).actionEvents);
+  expect(dragEvents.filter(event => event.type.startsWith('drag') || event.type === 'drop').map(event => event.type)).toEqual([
     'dragstart', 'dragenter', 'dragover', 'drop', 'dragend',
   ]);
+  const pointerMoves = dragEvents.filter(event => event.type === 'pointermove' && event.buttons === 1);
+  expect(pointerMoves).toHaveLength(8);
+  expect(dragEvents.some(event => event.type === 'pointermove' && event.buttons === 0)).toBe(true);
   await page.evaluate(() => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
   ).__NEXA_BROWSER_RUNTIME__.invalidateForUserTakeover());

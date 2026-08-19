@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::agent_tool::browser_action_names;
 use super::policy::{
     classify_agent_action, form_navigation_approval_key, navigation_preapproved,
     normalize_browser_url, BrowserActionRisk, NavigationActor,
@@ -102,6 +103,21 @@ fn takeover_script_uses_an_unforgeable_all_frame_navigation_signal() {
     assert!(script.contains("nexa-user-input://takeover-secret"));
     assert!(!script.contains("document.title"));
     assert!(!BROWSER_INIT_SCRIPT.contains("__NEXA_USER_TAKEOVER__"));
+}
+
+#[test]
+fn browser_tool_advertises_only_platform_supported_pointer_actions() {
+    let actions = browser_action_names();
+    #[cfg(target_os = "windows")]
+    {
+        assert!(actions.contains(&"move"));
+        assert!(actions.contains(&"hover"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        assert!(!actions.contains(&"move"));
+        assert!(!actions.contains(&"hover"));
+    }
 }
 
 #[test]
