@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.18](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.17...nexa-monorepo-v0.12.18) (2026-08-19)
+
+
+### Bug Fixes
+
+* compose wallpaper themes across app surfaces ([366192e](https://github.com/MLGBJDLW/Nexa/commit/366192e6a6ca57bbd668fb93553f0001cbe33c6c))
+* **theme:** compose wallpapers across app surfaces ([2b8c257](https://github.com/MLGBJDLW/Nexa/commit/2b8c257d04e9678a18c142445c45ed403b14007a))
+* **theme:** isolate dark preview palette ([acce9e0](https://github.com/MLGBJDLW/Nexa/commit/acce9e05d49f34d72c793e48be72ab87708df5ed))
+* **theme:** preserve Dream backdrop composition ([75d35b2](https://github.com/MLGBJDLW/Nexa/commit/75d35b2c9d1e3c4c4690a1b625b3e5d40a8a0f9e))
+
 ## [0.12.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.16...nexa-monorepo-v0.12.17) (2026-08-19)
 
 
