@@ -1,0 +1,49 @@
+name: Install Ubuntu packages
+description: Install an explicit package set with bounded retries and non-interactive service handling.
+
+inputs:
+  packages:
+    description: One Ubuntu package name per line.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Configure Ubuntu APT
+      uses: ./.github/actions/configure-ubuntu-apt
+
+    - name: Install packages
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: a
+        NEXA_UBUNTU_PACKAGES: ${{ inputs.packages }}
+      run: |
+        packages=()
+        while IFS= read -r package; do
+          package="${package%$'\r'}"
+          if [[ -n "$package" ]]; then
+            if [[ ! "$package" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9][a-z0-9-]*)?$ ]]; then
+              echo "::error::Invalid Ubuntu package name: $package"
+              exit 1
+            fi
+            packages+=("$package")
+          fi
+        done <<< "$NEXA_UBUNTU_PACKAGES"
+
+        if [[ ${#packages[@]} -eq 0 ]]; then
+          echo "::error::At least one Ubuntu package is required."
+          exit 1
+        fi
+
+        sudo apt-get \
+          -o Acquire::Retries=3 \
+          -o Acquire::http::Timeout=30 \
+          -o Acquire::https::Timeout=30 \
+          update
+        sudo --preserve-env=DEBIAN_FRONTEND,NEEDRESTART_MODE apt-get \
+          -o Acquire::Retries=3 \
+          -o Acquire::http::Timeout=30 \
+          -o Acquire::https::Timeout=30 \
+          install -y --no-install-recommends \
+          "${packages[@]}"

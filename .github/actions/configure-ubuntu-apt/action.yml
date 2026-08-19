@@ -1,0 +1,31 @@
+name: Configure Ubuntu APT
+description: Prefer the canonical Ubuntu HTTPS archive over the hosted-runner Azure mirror.
+
+runs:
+  using: composite
+  steps:
+    - name: Configure Ubuntu archive
+      shell: bash
+      run: |
+        mirror_file=/etc/apt/apt-mirrors.txt
+        if [[ -f "$mirror_file" ]]; then
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' \
+            | sudo tee "$mirror_file" >/dev/null
+        fi
+
+        source_files=(
+          /etc/apt/sources.list
+          /etc/apt/sources.list.d/ubuntu.sources
+        )
+        for source_file in "${source_files[@]}"; do
+          if [[ -f "$source_file" ]]; then
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              "$source_file"
+          fi
+        done
+
+        if [[ -f "$mirror_file" ]]; then
+          echo "Ubuntu APT mirror list:"
+          cat "$mirror_file"
+        fi
