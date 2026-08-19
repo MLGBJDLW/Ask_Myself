@@ -1559,12 +1559,18 @@ export function SettingsPage() {
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6 p-4 sm:p-6">
+    <div
+      className="mx-auto w-full max-w-5xl space-y-6 p-4 sm:p-6"
+      data-testid="settings-page"
+    >
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25 }}
+        className="settings-page-header"
+        data-theme-surface="chrome"
+        data-testid="settings-page-header"
       >
         <h1 className="text-xl font-bold text-text-primary">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-text-secondary">{t('settings.subtitle')}</p>
@@ -1575,6 +1581,7 @@ export function SettingsPage() {
         <div
           ref={tabStripRef}
           className="flex gap-1 rounded-lg border border-border bg-surface-1 p-1 overflow-x-auto"
+          data-theme-surface="chrome"
         >
           {tabs.map((tab) => (
             <button

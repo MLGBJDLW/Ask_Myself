@@ -78,17 +78,20 @@ test('theme resources expose safe type, motion, brand, copy, and component slots
   assert.equal(variables['--theme-titlebar-height'], '1.8rem');
   assert.equal(variables['--theme-chrome-surface-alpha'], '90%');
   assert.equal(variables['--theme-content-surface-alpha'], '90%');
+  assert.equal(variables['--theme-reading-surface-alpha'], '90%');
   assert.match(variables['--theme-content-surface-0'], /color-mix.*--color-surface-0/);
 });
 
-test('wallpaper themes keep reading surfaces above the legibility floor', () => {
+test('wallpaper themes separate translucent panels from the reading legibility floor', () => {
   const variables = customThemeToCssVariables({
     ...profile,
     effects: { ...profile.effects, surfaceOpacity: 0.35 },
   });
 
   assert.equal(variables['--theme-chrome-surface-alpha'], '35%');
-  assert.equal(variables['--theme-content-surface-alpha'], '82%');
+  assert.equal(variables['--theme-content-surface-alpha'], '68%');
+  assert.equal(variables['--theme-reading-surface-alpha'], '82%');
+  assert.match(variables['--theme-reading-surface-0'], /color-mix.*--color-surface-0/);
   assert.equal(variables['--theme-glass-blur'], '14px');
 });
 

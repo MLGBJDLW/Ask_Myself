@@ -298,7 +298,7 @@ export function Layout() {
       {/* Main content */}
       <main
         className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto"
-        data-theme-surface={location.pathname.startsWith('/chat') ? 'transparent' : 'content'}
+        data-theme-surface={location.pathname.startsWith('/chat') ? 'transparent' : 'page'}
       >
         <Outlet />
       </main>
