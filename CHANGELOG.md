@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.12.17](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.16...nexa-monorepo-v0.12.17) (2026-08-19)
+
+
+### Features
+
+* **browser:** add visible two-phase agent interactions ([1d28476](https://github.com/MLGBJDLW/Nexa/commit/1d284761a77db13f61e74df14b0e6ec76d3272af))
+* deepen appearance and browser interactions ([102615a](https://github.com/MLGBJDLW/Nexa/commit/102615a805be5cd300f000dc97364d7d9932e8ad))
+* **shell:** make startup and navigation theme adaptive ([b49b33a](https://github.com/MLGBJDLW/Nexa/commit/b49b33adcea325530da1022555ed764d69908802))
+* **theme:** add durable agent-managed appearance profiles ([5085731](https://github.com/MLGBJDLW/Nexa/commit/50857319c101ff10b8e481b463345079c5fb6f00))
+
+
+### Bug Fixes
+
+* **browser:** gate pointer actions and preserve button state ([e29a43b](https://github.com/MLGBJDLW/Nexa/commit/e29a43bd1e88f4d314ac43d0f6d8a57b79940629))
+* **browser:** honor native hover and drop targets ([4a37a43](https://github.com/MLGBJDLW/Nexa/commit/4a37a4320e7b5033b8f45e00aad90d273cfb22c3))
+* **browser:** validate native pointer targets ([defb5f5](https://github.com/MLGBJDLW/Nexa/commit/defb5f51de11ab6682867cabbb644f37e16e2d52))
+* **security:** update h2 for RUSTSEC-2026-0258 ([3d8b901](https://github.com/MLGBJDLW/Nexa/commit/3d8b9014e90903cfb82cc709657678f1c54c1500))
+* **theme:** apply density scale to host layouts ([a9b3d7d](https://github.com/MLGBJDLW/Nexa/commit/a9b3d7df9240f429dc9eb7ebd9ab2811b324a10c))
+* **theme:** preserve rollback and scale rem typography ([ce8f985](https://github.com/MLGBJDLW/Nexa/commit/ce8f9855c6899e49836192507e84d65221083d2f))
+* **theme:** recover optimistic appearance mutations ([f08fbb4](https://github.com/MLGBJDLW/Nexa/commit/f08fbb4ba5f5f8c377c3a9f65c85f8621bc7765a))
+* **theme:** synchronize appearance contracts and styling ([aa74c97](https://github.com/MLGBJDLW/Nexa/commit/aa74c9773b74685026e9aec1bbfeebdeb4b8f449))
+
 ## [0.12.16](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.15...nexa-monorepo-v0.12.16) (2026-08-17)
 
 
