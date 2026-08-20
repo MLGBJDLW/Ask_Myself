@@ -242,19 +242,63 @@ test('conversation actions offer archive and delete with reversible archive', as
   await expect(page.getByTestId('conversation-item-conv-active')).toBeHidden();
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
+});
 
+test('archive feedback remains an overlay and never participates in the app layout', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+
+  const appMain = page.locator('main');
+  const before = await appMain.boundingBox();
+  if (!before) throw new Error('app main layout is not measurable');
+
+  const removedSonnerStyles = await page.evaluate(() => {
+    const styles = Array.from(document.querySelectorAll('style'));
+    const sonnerStyles = styles.filter((style) => style.textContent?.includes('[data-sonner-toaster]'));
+    sonnerStyles.forEach((style) => style.remove());
+    return sonnerStyles.length;
+  });
+  expect(removedSonnerStyles).toBeGreaterThan(0);
+
+  await page.getByTestId('conversation-item-conv-active').hover();
+  await page.getByTestId('conversation-actions-trigger-conv-active').click();
+  await page.getByTestId('conversation-actions-conv-active').getByRole('button', { name: 'Archive' }).click();
+  await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
+
+  const notificationLayout = await page.locator('[data-sonner-toaster]').evaluate((toaster) => {
+    const rect = toaster.getBoundingClientRect();
+    const style = getComputedStyle(toaster);
+    return {
+      position: style.position,
+      right: window.innerWidth - rect.right,
+      bottom: window.innerHeight - rect.bottom,
+      portaledToBody: toaster.closest('section')?.parentElement === document.body,
+    };
+  });
+  const after = await appMain.boundingBox();
+  if (!after) throw new Error('app main layout disappeared after archive feedback');
+
+  expect(notificationLayout).toMatchObject({ position: 'fixed', portaledToBody: true });
+  expect(notificationLayout.right).toBeGreaterThanOrEqual(0);
+  expect(notificationLayout.bottom).toBeGreaterThanOrEqual(0);
+  expect(after).toEqual(before);
+});
+
+test('new chat stays an unpersisted draft until the first send', async ({ page }) => {
+  await page.goto('/chat/conv-active');
   await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await expect(page).toHaveURL(/\/chat$/);
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
-      .__CREATE_CONVERSATION_ARGS__[0],
-  )).toMatchObject({
-    provider: 'open_ai',
-    model: 'gpt-4.1',
-  });
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(0);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
   expect(await page.evaluate(() =>
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
-      .__CREATE_CONVERSATION_ARGS__[0]?.systemPrompt ?? null,
-  )).toBeNull();
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(0);
 });
 
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Search, FolderOpen, MessageCircle, Settings, Brain, BotMessageSquare, ClipboardList, Workflow, Download, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
@@ -235,7 +236,8 @@ export function Layout() {
   const unifiedReadingCanvas = isUnifiedReadingCanvasRoute(location.pathname);
 
   return (
-    <div
+    <>
+      <div
       className="relative flex h-full min-h-0 overflow-hidden bg-surface-0 text-text-primary"
       data-theme-surface="workspace"
     >
@@ -337,9 +339,24 @@ export function Layout() {
           <BotMessageSquare size={22} />
         </button>
       )}
-
-      {/* Toast notifications */}
-      <Toaster theme={isLightTheme(theme) ? 'light' : 'dark'} richColors position="bottom-right" />
-    </div>
+      </div>
+      {createPortal(
+        <Toaster
+          theme={isLightTheme(theme) ? 'light' : 'dark'}
+          richColors
+          position="bottom-right"
+          style={{
+            position: 'fixed',
+            right: 16,
+            bottom: 16,
+            top: 'auto',
+            left: 'auto',
+            zIndex: 80,
+            maxWidth: 'calc(100vw - 2rem)',
+          }}
+        />,
+        document.body,
+      )}
+    </>
   );
 }

@@ -256,6 +256,8 @@ export interface UseChatSessionOptions {
   getCurrentSourceScope?: () => string[] | null | undefined;
   /** Optional collection context to persist on the conversation */
   initialCollectionContext?: Conversation['collectionContext'];
+  /** Optional project to assign when the first send persists a new draft */
+  initialProjectId?: string | null;
   /** UI-selected persona to inject for the next agent turn */
   activePersonaId?: string | null;
 }
@@ -374,6 +376,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     initialSourceIds = [],
     getCurrentSourceScope,
     initialCollectionContext = null,
+    initialProjectId = null,
     activePersonaId = null,
   } = options;
 
@@ -1119,14 +1122,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               configForSend.model,
               customSystemPrompt || undefined,
               collectionContextForSend,
-              undefined,
+              initialProjectId ?? undefined,
               personaForSend,
             )
             : await api.createConversation(
             configForSend.provider,
             configForSend.model,
             customSystemPrompt || undefined,
-            undefined,
+            initialProjectId ?? undefined,
             personaForSend,
           );
           convId = conv.id;
@@ -1211,7 +1214,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         options?.interactionContinuation === true,
       );
     },
-    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialProjectId, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {
