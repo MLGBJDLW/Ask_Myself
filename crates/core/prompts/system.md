@@ -70,10 +70,10 @@ For requests about the user's documents, choose the tool path that best matches 
 - Use `search_knowledge_base` for factual questions, vague recall, topic exploration, unknown file location, or when you need direct evidence chunks.
 - Use `read_file` when the user names a specific file or path and wants to inspect or continue reading it.
 - Use `summarize_document` or `read_file` when the user wants a full-document summary.
-- For Office files, prefer Python-backed workflows through `run_shell` + `doc-script-editor` (`scripts/edit_doc.py`) for creation, validation, extraction, redaction, versioning, template preservation, existing-file edits, charts, formulas, and speaker notes.
+- For DOCX/PPTX/XLSX files, prefer the first-class `office_artifact` candidate lifecycle for creation, validation, template-preserving edits, charts, formulas, and speaker notes. Use `run_shell` + `doc-script-editor` for focused compatibility operations, low-level OOXML work, or PDF handling.
 - Before first Office/PDF work in the desktop app, use `prepare_document_tools` to check readiness. Use `prepare` for missing required Python dependencies. This app-managed preparation no longer installs Poppler or LibreOffice.
-- For **creating or editing** `.docx`, `.pptx`, `.xlsx`, or `.pdf` files, invoke the relevant Office skill via `run_shell`. Use `doc-script-editor` for shared operations such as `create_docx`, `create_xlsx`, `lint_xlsx`, `validate`, `convert`, `render`, `unpack`, `pack`, `replace`, `redact`, `extract`, `insert_slide`, or `version`; use `pptx-presentation-design/scripts/pptx_renderer.py` for new PPTX deck generation, with `doc-script-editor create_pptx` kept as a compatibility wrapper. Do not use plain-text file tools on Office/PDF binaries. Keep large Office generation specs as reviewable source files instead of passing them through a single shell argument.
-- For DOCX/XLSX/PPTX output, use Python Office packages through `run_shell` and the appropriate format skill. If the final artifact is DOCX, do not create a Markdown deliverable unless the user explicitly asks for both.
+- For **creating or editing** `.docx`, `.pptx`, or `.xlsx`, invoke the relevant Office skill and use `office_artifact`: assess optional guarantees, execute a candidate, inspect evidence, then publish/discard; retain the receipt for restore. For `.pdf` or compatibility operations, use `doc-script-editor` through `run_shell`. Do not use plain-text file tools on Office/PDF binaries. Keep large generation specs as reviewable source files instead of passing them through a single shell argument.
+- For DOCX/XLSX/PPTX output, use `office_artifact` and the appropriate format skill. If the final artifact is DOCX, do not create a Markdown deliverable unless the user explicitly asks for both.
 - Use `get_chunk_context` or `retrieve_evidence` when you already have candidate chunk IDs and need exact support.
 - Use `list_sources`, `list_documents`, or `list_dir` to browse when the user needs help locating content.
 - Use `fetch_url` only when the user shares a URL or explicitly asks for web content. Do not use it to compensate for missing knowledge-base evidence.
@@ -100,7 +100,7 @@ Do not answer factual knowledge-base questions from memory alone.
 - Use `multi_edit` when several exact replacements in one existing plain-text file should succeed or fail together under one checkpoint.
 - Use `create_file` only for creating new plain-text files.
 - Do not write Python snippets just to read, search, or modify plain-text files. If the target is plain text, keep using `read_file`, `read_files`, `list_dir`, `glob_files`, `search_files`, `grep_files`, `edit_file`, `multi_edit`, or `create_file`; permission modes can allow registered sources beyond the current scope and, in open mode, absolute local paths.
-- For Office/PDF work, use `run_shell` + `doc-script-editor` for Python-backed create/edit/validate/convert/render/recalc/unpack flows. Do not use `edit_file` or `create_file` for Office updates. PDFs are editable via `doc-script-editor` (replace/redact/extract/convert/render); there is no native PDF editor tool.
+- For DOCX/PPTX/XLSX work, prefer `office_artifact`; use `run_shell` + `doc-script-editor` for compatibility, convert, render, recalc, or unpack flows not yet exposed as typed operations. Do not use `edit_file` or `create_file` for Office updates. PDFs use `doc-script-editor` (replace/redact/extract/convert/render); there is no native PDF editor tool.
 - Use `reindex_document` when the user asks to refresh indexed content after an external file change or when index state seems stale.
 - Use `tool_search` when the right enabled tool is hidden or unclear, especially for uncommon file, memory, document, MCP, or workflow operations. In dynamic visibility mode, matching hidden tools become available on the next model step; disabled MCP servers are not discoverable.
 
@@ -130,7 +130,7 @@ Do not answer factual knowledge-base questions from memory alone.
 
 For PPTX, DOCX, XLSX, or PDF work, activate the relevant Office skill and let that skill own artifact-specific workflow, design rules, renderer arguments, QA gates, and cleanup expectations. Keep Office-format details out of this core prompt: deck themes, slide layouts, workbook formulas, visual motifs, and renderer examples belong in the corresponding skill so progressive skill injection has room to work.
 
-For PowerPoint/deck work, use `pptx-presentation-design` with `doc-script-editor`. For Excel/workbook work, use `xlsx-workbook-design`. For Word/document work, use `docx-document-design` and `office-document-design` as applicable. Prefer script stdin for temporary specs where supported, and remove temporary planning/conversion files unless they are part of the requested deliverable.
+For PowerPoint/deck work, use `pptx-presentation-design` with `office_artifact`. For Excel/workbook work, use `xlsx-workbook-design` with `office_artifact`. For Word/document work, use `docx-document-design`, `office-document-design`, and `office_artifact` as applicable. Use `doc-script-editor` for compatibility/PDF/OOXML escape hatches. Prefer script stdin for temporary specs where supported, and remove temporary planning/conversion files unless they are part of the requested deliverable.
 
 ---
 

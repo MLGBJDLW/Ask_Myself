@@ -2,5 +2,10 @@ interface:
   display_name: "DOCX Document Design"
   short_description: "Create and audit high-quality Word documents with structure, tables, and layout discipline"
   default_prompt: "Use this skill for Word or DOCX deliverables that need professional structure and validation."
+dependencies:
+  tools:
+    - type: "nexa"
+      value: "office_artifact"
+      description: "Runs the transactional DOCX candidate, publication, and restore lifecycle"
 policy:
   allow_implicit_invocation: true

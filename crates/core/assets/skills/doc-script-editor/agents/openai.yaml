@@ -5,6 +5,9 @@ interface:
 dependencies:
   tools:
     - type: "nexa"
+      value: "office_artifact"
+      description: "Runs the transactional DOCX, XLSX, and PPTX candidate, publication, and restore lifecycle"
+    - type: "nexa"
       value: "prepare_document_tools"
       description: "Checks and prepares the app-managed document editing Python environment"
 policy:

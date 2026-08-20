@@ -1,0 +1,62 @@
+{
+  "name": "office_artifact",
+  "description": "Assess, create, edit, verify, publish, discard, or restore DOCX, XLSX, and PPTX artifacts through Nexa's transactional OfficeArtifactEngine. Prefer this over manually composing run_shell document pipelines. execute creates a validated candidate by default; decide publishes or discards that candidate; restore uses a receipt and refuses to overwrite newer work.",
+  "parameters": {
+    "type": "object",
+    "required": ["action", "workspace_root"],
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["capabilities", "assess", "execute", "decide", "restore"],
+        "description": "Lifecycle action. Use assess before guarantees that require optional native/render backends."
+      },
+      "workspace_root": {
+        "type": "string",
+        "description": "Registered local source directory that contains every source, destination, spec, manifest, candidate, and receipt path."
+      },
+      "request": {
+        "type": "object",
+        "description": "OfficeArtifact requestVersion 2 payload for assess or execute.",
+        "properties": {
+          "requestVersion": {"type": "integer", "enum": [2]},
+          "format": {"type": "string", "enum": ["docx", "xlsx", "pptx"]},
+          "intent": {"type": "string", "enum": ["create", "modify", "verify"]},
+          "source": {"type": "string"},
+          "destination": {"type": "string"},
+          "operations": {"type": "array", "items": {"type": "object"}},
+          "guarantees": {
+            "type": "object",
+            "properties": {
+              "quality": {"type": "string", "enum": ["draft", "standard", "publish", "native"]},
+              "preservation": {"type": "string", "enum": ["strict", "balanced", "replace"]},
+              "calculation": {"type": "string", "enum": ["not_required", "static", "compatible", "native"]},
+              "render": {"type": "string", "enum": ["none", "important_surfaces", "all"]}
+            }
+          },
+          "validation": {},
+          "delivery": {
+            "type": "object",
+            "properties": {
+              "mode": {"type": "string", "enum": ["candidate", "publish"]},
+              "manifest": {"type": "string"}
+            }
+          }
+        },
+        "required": ["requestVersion", "format", "intent", "operations"]
+      },
+      "candidate_id": {
+        "type": "string",
+        "description": "Candidate id returned by execute; required for decide."
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["publish", "discard"],
+        "description": "Candidate decision; required for decide."
+      },
+      "receipt_id": {
+        "type": "string",
+        "description": "Publication receipt id; required for restore."
+      }
+    }
+  }
+}

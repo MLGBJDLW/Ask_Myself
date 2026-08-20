@@ -232,7 +232,7 @@ impl Tool for CreateFileTool {
                 return Ok(error_result(
                     &call_id,
                     edit_guidance_for_path(&canonical).unwrap_or_else(|| {
-                        "Use run_shell + doc-script-editor for Office/PDF creation, validation, conversion, rendering, template work, and rich edits. For Office files, pair it with docx-document-design, pptx-presentation-design, or xlsx-workbook-design as appropriate."
+                        "Use office_artifact for DOCX/XLSX/PPTX creation and edits; use run_shell + doc-script-editor for PDF, conversion/rendering, or OOXML compatibility work. Pair it with the matching format skill."
                             .to_string()
                     }),
                 ));

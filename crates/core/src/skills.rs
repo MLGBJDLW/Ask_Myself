@@ -1083,6 +1083,8 @@ mod tests {
             "scripts/edit_doc.py",
             "scripts/office_artifact_runtime.py",
             "scripts/office_artifact_service.py",
+            "scripts/office_artifact_engine.py",
+            "scripts/test_office_artifact_engine.py",
             "scripts/test_office_artifact_runtime.py",
             "scripts/requirements.txt",
         ] {

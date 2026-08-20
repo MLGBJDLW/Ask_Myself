@@ -4,7 +4,7 @@ description: Activate when creating, editing, validating, converting, rendering,
 ---
 
 ## Trigger
-Creating, editing, validating, converting, rendering, unpacking, or analyzing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk via `scripts/edit_doc.py`; use `scripts/office_artifact_service.py` when the work should run as one structured, transactional Job/Result with a delivery manifest.
+Creating, editing, validating, converting, rendering, unpacking, or analyzing a `.docx` / `.pptx` / `.pdf` / `.xlsx` file on disk. For DOCX/PPTX/XLSX, prefer the `office_artifact` tool and its candidate → decide → receipt lifecycle. Use `scripts/edit_doc.py` for focused compatibility operations and PDF work; `scripts/office_artifact_service.py` remains the jobVersion 1 compatibility layer.
 
 ## Pairing
 Use this skill as the execution backend. Pair it with the format skill that carries design and QA rules:
@@ -38,13 +38,50 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 
 ## Tool discipline
 
+- Prefer `office_artifact` for DOCX/PPTX/XLSX create, modify, verify, publish, and restore work. It validates path roles, negotiates guarantees, keeps output as a candidate by default, and publishes only after `decide`.
 - Use `create_file`, `edit_file`, or `multi_edit` for durable text inputs: Markdown bodies, JSON specs, CSV data, and reusable Python scripts.
 - Use `run_shell` only to execute the bundled renderer/editor scripts or a short command against files that already exist on disk.
 - Do not write a large one-off Python program inside a single `run_shell` argument. If custom code is genuinely needed, create a small script file in the workspace, run it, validate the output, then remove only temporary scratch files the user did not ask to keep.
 - For new Office binaries, keep a reviewable source artifact next to the output whenever possible: `.md` for DOCX body content, `.json` for PPTX/XLSX specs, plus validation/audit output for layout-sensitive work.
 - Large generated specs should never be passed through argv or `python -c`. For generated or transient PPTX/HTML-deck specs, prefer the renderer stdin contract (`--spec -` plus `run_shell.stdin`) so raw HTML/CSS/JSON is not embedded in argv. Create a separate JSON spec file only when the spec is meant to remain as a durable, reviewable source artifact.
 
-## Invocation pattern
+## Preferred OfficeArtifactEngine v2 pattern
+
+1. Call `office_artifact` with `action: "capabilities"` or `action: "assess"` when native calculation, final Office validation, or rendered evidence may be required.
+2. Call `action: "execute"` with `requestVersion: 2`, `format`, `intent`, source/destination, typed `operations`, `guarantees`, and optional `validation`. Leave `delivery.mode` as `candidate` for review-sensitive work.
+3. Inspect the returned validation, preservation, calculation, and rendered-preview evidence. Never describe a missing evidence class as passed.
+4. Call `action: "decide"` with `publish` or `discard`. Publication returns a receipt.
+5. Call `action: "restore"` with that receipt only when rollback is requested. Restore fails closed if the destination changed after publication.
+
+Example request body:
+
+```json
+{
+  "requestVersion": 2,
+  "format": "docx",
+  "intent": "modify",
+  "source": "/abs/source/report.docx",
+  "destination": "/abs/source/report-revised.docx",
+  "operations": [{
+    "op": "replace",
+    "find": "Q3",
+    "replace": "Q4",
+    "expectedSha256": "<hash-from-inspection>",
+    "expectedMatches": 1
+  }],
+  "guarantees": {
+    "quality": "standard",
+    "preservation": "strict",
+    "render": "none"
+  },
+  "validation": {"required_text": ["Q4"]},
+  "delivery": {"mode": "candidate"}
+}
+```
+
+`quality: "publish"` requires rendered evidence; `quality: "native"` additionally requires Microsoft Office COM. `calculation: "compatible"` uses LibreOffice and must be labeled compatible, not Excel-native. `calculation: "native"` requires Excel COM. If `assess.ready` is false, lower the guarantee only with user agreement or install/enable the required backend.
+
+## Compatibility script pattern
 For this skill, invoke the bundled document script through `run_shell` with `python` (or `python3`). This is a Python backend requirement for the Office/PDF workflow, not a general restriction on other `run_shell` programs or less-restricted shell access modes:
 
 1. DOCX text replace (with preview first):
@@ -119,12 +156,12 @@ For this skill, invoke the bundled document script through `run_shell` with `pyt
    python <SKILL_DIR>/scripts/edit_doc.py --path /abs/source/model.xlsx validate
    ```
 
-10. Run a transactional Office job from a reviewable JSON contract:
+10. Run a legacy transactional Office job only for jobVersion 1 callers:
    ```
    python <SKILL_DIR>/scripts/office_artifact_service.py --preflight
    python <SKILL_DIR>/scripts/office_artifact_service.py --job /abs/source/office-job.json
    ```
-   Use `jobVersion: 1`, `format`, `intent`, `input`/`output`, `operations`, `preservationPolicy`, `validationContract`, and `renderPolicy`. The default `nexa-openxml` backend is local. `officecli` is an optional installed binary for explicit `create_new` jobs only and also requires `allowNetworkBackend: true`; never select it implicitly because hosted mode may transmit prompts or files. Microsoft Office COM is an explicit Windows-only finalizer.
+   Use `jobVersion: 1`, `format`, `intent`, `input`/`output`, `operations`, `preservationPolicy`, `validationContract`, and `renderPolicy`. New work should use `office_artifact` requestVersion 2. The default `nexa-openxml` backend is local. `officecli` is an optional installed binary for explicit `create_new` jobs only and also requires `allowNetworkBackend: true`; never select it implicitly because hosted mode may transmit prompts or files. Microsoft Office COM is an explicit Windows-only finalizer.
 
 Always call `check` first in a fresh environment:
 ```
@@ -133,7 +170,7 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 
 ## Decision tree
 
-1. Existing Office/PDF file? Prefer a transactional job for multi-step or risky changes. Direct `replace`, `redact`, `insert_slide`, `pack`, and create commands stage, validate, snapshot, and atomically publish automatically; use `version` for an extra user-addressable checkpoint.
+1. Existing DOCX/PPTX/XLSX file? Prefer `office_artifact` for multi-step or risky changes. Use direct commands only for compatibility or a tightly scoped operation. Existing PDF file? Use the direct PDF commands.
 2. New DOCX/XLSX/PPTX and Python is available? Use `create_docx`, `create_xlsx`, `create_pptx`, or `create_html_pptx` first. Prefer a JSON spec for spreadsheets/decks and a markdown/body input for documents.
 3. Need template fidelity, comments, tracked changes, precise image replacement, relationship repair, or layout surgery? Use `unpack` → XML/media edit → `pack` → `validate`; do not use rigid one-shot generators.
 4. Need PDF/image preview or conversion QA? Use `render` when system Poppler is already available, or `convert --to pdf` with system LibreOffice already available, then inspect/extract.
@@ -158,7 +195,7 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Conversion QA** — `convert` uses LibreOffice headless with an isolated user profile for PDF previews and format conversion
 - **OOXML escape hatch** — `unpack` / `pack` make low-level template and relationship fixes possible without passing binary data through tool arguments
 - **Formula safety** — `lint_xlsx` supports workbook contracts and risk inventory; `recalc_xlsx` performs a real guarded LibreOffice open/save, verifies the rewritten artifact, scans cached errors, and publishes only after validation
-- **Transactional runtime** — `office_artifact_service.py` exposes backend preflight, structured Job/Result, capability routing, staging/publish/rollback, and one `artifact-manifest.json`
+- **Transactional runtime** — `office_artifact` and `office_artifact_engine.py` expose assess/execute/decide/restore, typed errors, capability routing, candidate gating, receipts, hash-guarded restore, and evidence-rich manifests; `office_artifact_service.py` preserves jobVersion 1 compatibility
 
 ## Dependencies
 In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.

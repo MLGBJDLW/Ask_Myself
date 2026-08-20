@@ -4,6 +4,7 @@
 //! that dependency story explicit, auditable, and local to the app.
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -141,6 +142,78 @@ impl PythonCommand {
         apply_quiet_command_options(&mut cmd);
         with_suppressed_process_error_dialogs(|| cmd.output())
     }
+
+    fn run_with_input(
+        &self,
+        args: &[&str],
+        cwd: &Path,
+        input: &str,
+    ) -> std::io::Result<std::process::Output> {
+        let mut cmd = Command::new(&self.program);
+        cmd.args(&self.prefix_args)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_quiet_command_options(&mut cmd);
+        with_suppressed_process_error_dialogs(|| {
+            let mut child = cmd.spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(input.as_bytes())?;
+            }
+            child.wait_with_output()
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeArtifactExecution {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn execute_office_artifact_engine(
+    app_data_dir: &Path,
+    workspace_root: &Path,
+    arguments: &[String],
+    request_json: &str,
+) -> Result<OfficeArtifactExecution, CoreError> {
+    let python = find_existing_python(app_data_dir).ok_or_else(|| {
+        CoreError::InvalidInput(
+            "Office artifact engine requires Python; run prepare_document_tools first".to_string(),
+        )
+    })?;
+    let engine = crate::skills::builtin_skill_dir(app_data_dir, DOC_SCRIPT_SKILL)
+        .join("scripts")
+        .join("office_artifact_engine.py");
+    if !engine.is_file() {
+        return Err(CoreError::Internal(format!(
+            "Office artifact engine script is missing: {}",
+            engine.display()
+        )));
+    }
+    if !workspace_root.is_dir() {
+        return Err(CoreError::InvalidInput(format!(
+            "Office artifact workspace is not a directory: {}",
+            workspace_root.display()
+        )));
+    }
+    let mut owned_args = vec![engine.display().to_string()];
+    owned_args.extend(arguments.iter().cloned());
+    let borrowed_args = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = python
+        .run_with_input(&borrowed_args, workspace_root, request_json)
+        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))?;
+    Ok(OfficeArtifactExecution {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
 }
 
 fn office_env_dir(app_data_dir: &Path) -> PathBuf {

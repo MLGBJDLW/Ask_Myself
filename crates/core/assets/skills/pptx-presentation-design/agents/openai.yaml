@@ -2,5 +2,10 @@ interface:
   display_name: "PPTX Presentation Design"
   short_description: "Create, rewrite, audit, and package polished PowerPoint decks"
   default_prompt: "Use this skill for slide decks, presentation redesign, PPTX generation, and visual QA."
+dependencies:
+  tools:
+    - type: "nexa"
+      value: "office_artifact"
+      description: "Runs the transactional PPTX candidate, publication, and restore lifecycle"
 policy:
   allow_implicit_invocation: true

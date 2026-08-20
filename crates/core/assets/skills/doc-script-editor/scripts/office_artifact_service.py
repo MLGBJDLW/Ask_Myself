@@ -127,13 +127,19 @@ def _load_job(raw: str) -> dict[str, Any]:
     return payload
 
 
-def _run(command: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str],
+    *,
+    timeout: int = 180,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, Any] = {
         "text": True,
         "capture_output": True,
         "check": False,
         "timeout": timeout,
         "env": {**os.environ, "NEXA_OFFICE_SKIP_SNAPSHOT": "1"},
+        "cwd": str(cwd) if cwd is not None else None,
     }
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -164,10 +170,15 @@ def _run_editor(
     command: str,
     arguments: list[str],
     actions: list[dict[str, Any]],
+    workspace_root: Path,
     *,
     timeout: int = 180,
 ) -> str:
-    completed = _run(_editor_command(path, command, *arguments), timeout=timeout)
+    completed = _run(
+        _editor_command(path, command, *arguments),
+        timeout=timeout,
+        cwd=workspace_root,
+    )
     action = {
         "command": command,
         "status": "ok" if completed.returncode == 0 else "failed",
@@ -256,13 +267,13 @@ def _native_create(
             if operation.get(key) is not None:
                 path = _operation_path(operation[key], workspace_root, must_exist=True)
                 arguments.extend([flag, str(path)])
-        _run_editor(working, "create_docx", arguments, actions)
+        _run_editor(working, "create_docx", arguments, actions, workspace_root)
     elif job.format == "xlsx":
         spec = operation.get("spec")
         if not spec:
             raise ValueError("create_new XLSX requires operations[0].spec")
         spec_path = _operation_path(spec, workspace_root, must_exist=True)
-        _run_editor(working, "create_xlsx", ["--spec", str(spec_path)], actions)
+        _run_editor(working, "create_xlsx", ["--spec", str(spec_path)], actions, workspace_root)
     else:
         spec = operation.get("spec")
         if not spec:
@@ -276,7 +287,7 @@ def _native_create(
             arguments = ["--spec", str(spec_path), "--outdir", str(outdir_path)]
             arguments.extend(["--mode", str(operation.get("mode", "hybrid"))])
             arguments.extend(["--screenshot", str(operation.get("screenshot", "auto"))])
-            _run_editor(working, "create_html_pptx", arguments, actions, timeout=300)
+            _run_editor(working, "create_html_pptx", arguments, actions, workspace_root, timeout=300)
         else:
             spec_path = _operation_path(spec, workspace_root, must_exist=True)
             arguments = ["--spec", str(spec_path)]
@@ -285,10 +296,15 @@ def _native_create(
                     operation["template"], workspace_root, must_exist=True
                 )
                 arguments.extend(["--template", str(template_path)])
-            _run_editor(working, "create_pptx", arguments, actions)
+            _run_editor(working, "create_pptx", arguments, actions, workspace_root)
 
 
-def _native_operations(job: OfficeArtifactJob, working: Path, actions: list[dict[str, Any]]) -> list[str]:
+def _native_operations(
+    job: OfficeArtifactJob,
+    working: Path,
+    actions: list[dict[str, Any]],
+    workspace_root: Path,
+) -> list[str]:
     changed: list[str] = []
     for index, operation in enumerate(job.operations):
         name = str(operation.get("op", "")).lower()
@@ -304,7 +320,7 @@ def _native_operations(job: OfficeArtifactJob, working: Path, actions: list[dict
                 arguments.extend(["--expected-sha256", str(operation["expectedSha256"])])
             if operation.get("expectedMatches") is not None:
                 arguments.extend(["--expected-count", str(operation["expectedMatches"])])
-            _run_editor(working, name, arguments, actions)
+            _run_editor(working, name, arguments, actions, workspace_root)
             changed.append(element_id)
         elif name == "insert_slide":
             if job.format != "pptx":
@@ -314,7 +330,7 @@ def _native_operations(job: OfficeArtifactJob, working: Path, actions: list[dict
                 "--title", str(operation.get("title", "")),
                 "--body", str(operation.get("body", "")),
             ]
-            _run_editor(working, name, arguments, actions)
+            _run_editor(working, name, arguments, actions, workspace_root)
             changed.append(element_id)
         elif name in {"validate", "render", "recalculate"}:
             continue
@@ -575,7 +591,7 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
         elif backend == "windows-com":
             _windows_com_finalize(working, job.format, actions)
         else:
-            result["changedElements"] = _native_operations(job, working, actions)
+            result["changedElements"] = _native_operations(job, working, actions, workspace_root)
 
         needs_recalculation = job.intent in {"recalculate", "finalize"} or any(
             str(operation.get("op", "")).lower() == "recalculate"
@@ -585,7 +601,7 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
             if job.format != "xlsx":
                 raise ValueError("recalculate currently supports XLSX only")
             arguments = ["--allow-risky"] if job.preservation_policy == "replace" else []
-            _run_editor(working, "recalc_xlsx", arguments, actions, timeout=300)
+            _run_editor(working, "recalc_xlsx", arguments, actions, workspace_root, timeout=300)
 
         if job.input is not None and input_risk is not None:
             preservation = _preservation_evidence(job.input, working, input_risk)
@@ -604,17 +620,36 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
             temporary_root = Path(tmp)
             contract = _contract_path(job, temporary_root, workspace_root)
             if contract is not None and job.format == "xlsx":
-                _run_editor(working, "lint_xlsx", ["--contract", str(contract)], actions)
+                _run_editor(
+                    working,
+                    "lint_xlsx",
+                    ["--contract", str(contract)],
+                    actions,
+                    workspace_root,
+                )
 
             validation_arguments = ["--json"]
             if contract is not None:
                 validation_arguments.extend(["--contract", str(contract)])
-            validation_output = _run_editor(working, "validate", validation_arguments, actions)
+            validation_output = _run_editor(
+                working,
+                "validate",
+                validation_arguments,
+                actions,
+                workspace_root,
+            )
             result["validation"] = json.loads(validation_output)
 
             if job.render_policy != "none":
                 render_dir = job.output.parent / f"{job.output.stem}-rendered"
-                _run_editor(working, "render", ["--outdir", str(render_dir)], actions, timeout=300)
+                _run_editor(
+                    working,
+                    "render",
+                    ["--outdir", str(render_dir)],
+                    actions,
+                    workspace_root,
+                    timeout=300,
+                )
                 result["renderedPreviews"] = [
                     str(path) for path in sorted(render_dir.glob("page*")) if path.is_file()
                 ]
