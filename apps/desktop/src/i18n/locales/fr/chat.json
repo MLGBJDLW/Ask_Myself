@@ -5,6 +5,8 @@
   "generatedImagePromptMode.verbatim": "Mot pour mot",
   "generatedImagePromptMode.agentRefined": "Affinée par l’agent",
   "generatedImagePromptMode.providerEnhanced": "Améliorée par le fournisseur",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "Amélioration du fournisseur indisponible",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "Amélioration du fournisseur non appliquée",
   "archive": "Archiver",
   "unarchive": "Désarchiver",
   "archivedConversations": "Conversations archivées",

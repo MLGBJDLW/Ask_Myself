@@ -5,6 +5,8 @@
   "generatedImagePromptMode.verbatim": "原样传输",
   "generatedImagePromptMode.agentRefined": "Agent 精炼",
   "generatedImagePromptMode.providerEnhanced": "提供商增强",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "提供商增强不可用",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "提供商增强未应用",
   "archive": "归档",
   "unarchive": "取消归档",
   "archivedConversations": "已归档对话",

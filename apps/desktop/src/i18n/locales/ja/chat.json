@@ -5,6 +5,8 @@
   "generatedImagePromptMode.verbatim": "原文のまま",
   "generatedImagePromptMode.agentRefined": "エージェント調整",
   "generatedImagePromptMode.providerEnhanced": "プロバイダー拡張",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "プロバイダー拡張は利用不可",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "プロバイダー拡張は未適用",
   "archive": "アーカイブ",
   "unarchive": "アーカイブを解除",
   "archivedConversations": "アーカイブ済みの会話",

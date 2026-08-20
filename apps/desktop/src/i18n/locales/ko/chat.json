@@ -5,6 +5,8 @@
   "generatedImagePromptMode.verbatim": "원문 그대로",
   "generatedImagePromptMode.agentRefined": "에이전트 정제",
   "generatedImagePromptMode.providerEnhanced": "공급자 향상",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "공급자 향상 사용 불가",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "공급자 향상 미적용",
   "archive": "보관",
   "unarchive": "보관 해제",
   "archivedConversations": "보관된 대화",

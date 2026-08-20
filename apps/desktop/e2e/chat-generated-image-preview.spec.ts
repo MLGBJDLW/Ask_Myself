@@ -116,13 +116,78 @@ test.beforeEach(async ({ page }) => {
         thinking: null,
         imageAttachments: null,
       },
+      {
+        id: 'm-assistant-provider-enhancement',
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: '',
+        toolCallId: null,
+        toolCalls: [{
+          id: 'call-provider-enhancement',
+          name: 'generate_image',
+          arguments: JSON.stringify({
+            prompt: 'A red circle on a neutral background',
+            prompt_mode: 'provider_enhanced',
+            size: '1024x1024',
+          }),
+        }],
+        artifacts: null,
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 3,
+        thinking: null,
+        imageAttachments: null,
+      },
+      {
+        id: 'm-tool-provider-enhancement',
+        conversationId: conversation.id,
+        role: 'tool',
+        content: 'Generated image ready for preview. Provider prompt enhancement is unavailable for the selected provider.',
+        toolCallId: 'call-provider-enhancement',
+        toolCalls: [],
+        artifacts: {
+          kind: 'generatedImage',
+          provider: 'OpenAI',
+          model: 'gpt-image-1',
+          dataUrl: imageDataUrl,
+          mediaType: 'image/png',
+          bytes: 68,
+          prompt: 'A red circle on a neutral background',
+          requestedPrompt: 'A red circle on a neutral background',
+          promptMode: 'provider_enhanced',
+          effectivePrompt: 'A red circle on a neutral background',
+          promptIntegrity: 'exact',
+          providerPromptEnhanced: false,
+          providerPromptEnhancementRequested: true,
+          providerPromptEnhancementSupported: false,
+          promptRewriteObservable: false,
+          suggestedFilename: 'red-circle.png',
+          saved: false,
+          transient: true,
+        },
+        tokenCount: 0,
+        createdAt: nowIso,
+        sortOrder: 4,
+        thinking: null,
+        imageAttachments: null,
+      },
     ];
 
+    const providerEnhancementConversation: Conversation = {
+      ...conversation,
+      id: 'conv-provider-enhancement',
+      title: 'Provider enhancement unavailable',
+    };
     const conversations: Record<string, Conversation> = {
       [conversation.id]: conversation,
+      [providerEnhancementConversation.id]: providerEnhancementConversation,
     };
     const messagesByConversation: Record<string, Message[]> = {
-      [conversation.id]: messages,
+      [conversation.id]: messages.slice(0, 3),
+      [providerEnhancementConversation.id]: messages.slice(3).map((message) => ({
+        ...message,
+        conversationId: providerEnhancementConversation.id,
+      })),
     };
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handler: (event: unknown) => void }>();
@@ -270,6 +335,7 @@ test('generate_image renders an unsaved preview and saves only when requested', 
     .toContainText('A centered small blue square on a neutral background');
   await expect(preview.getByTestId('generated-image-prompt-revised'))
     .toContainText('Provider reported a revised prompt.');
+
   await page.screenshot({ path: 'test-results/generated-image-prompt-audit.png', fullPage: true });
 
   await preview.getByRole('button', { name: 'Save as...' }).click();
@@ -281,4 +347,13 @@ test('generate_image renders an unsaved preview and saves only when requested', 
   expect(saved?.outputPath).toBe('D:\\Exports\\blue-square.png');
   expect(saved?.sourcePath).toBeNull();
   expect(saved?.dataUrl).toContain('data:image/png;base64,');
+});
+
+test('generate_image reports when requested provider enhancement is unavailable', async ({ page }) => {
+  await page.goto('/chat/conv-provider-enhancement');
+
+  const preview = page.getByTestId('generated-image-preview').first();
+  await expect(preview).toBeVisible();
+  await expect(preview.getByTestId('generated-image-prompt-mode'))
+    .toHaveText('Provider enhancement unavailable');
 });

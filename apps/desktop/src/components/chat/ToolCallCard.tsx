@@ -1084,7 +1084,11 @@ function GeneratedImagePreview({
     : image.promptMode === 'agent_refined'
       ? t('chat.generatedImagePromptMode.agentRefined')
       : image.promptMode === 'provider_enhanced'
-        ? t('chat.generatedImagePromptMode.providerEnhanced')
+        ? image.providerPromptEnhanced === true
+          ? t('chat.generatedImagePromptMode.providerEnhanced')
+          : image.providerPromptEnhancementSupported === false
+            ? t('chat.generatedImagePromptMode.providerEnhancementUnavailable')
+            : t('chat.generatedImagePromptMode.providerEnhancementNotApplied')
         : null;
   const maxHeight = compact ? 'max-h-32' : 'max-h-[28rem]';
   const suggestedFilename = generatedImageSuggestedFilename(image);

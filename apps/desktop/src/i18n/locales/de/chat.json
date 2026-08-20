@@ -5,6 +5,8 @@
   "generatedImagePromptMode.verbatim": "Wörtlich",
   "generatedImagePromptMode.agentRefined": "Vom Agenten verfeinert",
   "generatedImagePromptMode.providerEnhanced": "Vom Anbieter erweitert",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "Anbietererweiterung nicht verfügbar",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "Anbietererweiterung nicht angewendet",
   "archive": "Archivieren",
   "unarchive": "Aus Archiv holen",
   "archivedConversations": "Archivierte Unterhaltungen",
