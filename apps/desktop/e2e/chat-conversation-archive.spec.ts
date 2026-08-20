@@ -15,7 +15,7 @@ test.beforeEach(async ({ page }) => {
       systemPrompt: 'Legacy copied project prompt',
       collectionContext: null,
       projectId: 'project-legacy',
-      personaId: null,
+      personaId: 'programmer',
       titleIsAuto: false,
       archivedAt: null,
       createdAt: nowIso,
@@ -119,6 +119,7 @@ test.beforeEach(async ({ page }) => {
             title: '',
             systemPrompt: String(args.systemPrompt ?? ''),
             projectId: args.projectId == null ? null : String(args.projectId),
+            personaId: args.personaId == null ? null : String(args.personaId),
           };
           active = [conversation, ...active];
           return clone(conversation);
@@ -164,9 +165,33 @@ test.beforeEach(async ({ page }) => {
         case 'list_user_memories_cmd':
         case 'list_skills_cmd':
         case 'list_mcp_servers_cmd':
-        case 'list_personas_cmd':
         case 'list_checkpoints_cmd':
           return [];
+        case 'list_personas_cmd':
+          return [
+            {
+              id: 'default',
+              name: 'Default',
+              description: 'Balanced assistant',
+              instructions: '',
+              enabled: true,
+              builtin: true,
+              defaultSkillIds: [],
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+            {
+              id: 'programmer',
+              name: 'Programmer',
+              description: 'Software engineering assistant',
+              instructions: 'Act as a programmer.',
+              enabled: true,
+              builtin: true,
+              defaultSkillIds: [],
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+          ];
         case 'list_projects_cmd':
           return [{
             id: 'project-legacy',
@@ -299,6 +324,22 @@ test('new chat stays an unpersisted draft until the first send', async ({ page }
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
       .__CREATE_CONVERSATION_ARGS__.length,
   )).toBe(0);
+});
+
+test('new chat resets the previous conversation persona before first persistence', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await expect(page.getByRole('button', { name: 'Personas' })).toHaveAttribute('title', /Programmer/);
+
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByRole('button', { name: 'Personas' })).toHaveAttribute('title', /Default/);
+  await page.getByPlaceholder('Type a message...').fill('Hello from a fresh draft.');
+  await page.getByPlaceholder('Type a message...').press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__[0],
+  )).toMatchObject({ personaId: 'default' });
 });
 
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {

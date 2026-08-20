@@ -1099,6 +1099,7 @@ export function ChatPage() {
     // Keep an untouched New Chat as a local draft. useChatSession persists it
     // atomically on the first send, which prevents empty history entries while
     // retaining the project selected in the sidebar.
+    setActivePersonaId('default');
     chat.createNewConversation();
     navigate('/chat', {
       state: projectId ? { projectId } satisfies ChatRouteState : null,
