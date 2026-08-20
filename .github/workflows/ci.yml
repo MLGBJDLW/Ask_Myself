@@ -118,11 +118,13 @@ jobs:
         run: |
           python3 -m venv /tmp/nexa-office-venv
           /tmp/nexa-office-venv/bin/python -m pip install --disable-pip-version-check -r crates/core/assets/skills/doc-script-editor/scripts/requirements.txt
-          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/doc-script-editor/scripts/test_office_artifact_runtime.py -v
-          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/xlsx-workbook-design/scripts/test_xlsx_model_renderer.py -v
-          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_renderer.py -v
-          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_html_deck_renderer.py -v
-          /tmp/nexa-office-venv/bin/python crates/core/assets/skills/pptx-presentation-design/scripts/test_pptx_upgrade_pipeline.py -v
+          for suite in \
+            crates/core/assets/skills/doc-script-editor/scripts \
+            crates/core/assets/skills/docx-document-design/scripts \
+            crates/core/assets/skills/xlsx-workbook-design/scripts \
+            crates/core/assets/skills/pptx-presentation-design/scripts; do
+            /tmp/nexa-office-venv/bin/python -m unittest discover -v -s "$suite" -p 'test_*.py'
+          done
 
   frontend:
     name: Frontend Contracts & Build
