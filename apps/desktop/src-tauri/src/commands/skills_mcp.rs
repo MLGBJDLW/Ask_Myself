@@ -276,6 +276,40 @@ pub async fn reject_skill_change_proposal_cmd(
 
 // ── MCP Commands ────────────────────────────────────────────────────
 
+fn user_mcp_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app_data_dir_for_skills(app_handle)?;
+    Ok(nexa_core::mcp::config_file::user_mcp_config_path(&data_dir))
+}
+
+#[tauri::command]
+pub async fn prepare_mcp_config_file_cmd(app_handle: AppHandle) -> Result<String, String> {
+    let path = user_mcp_config_path(&app_handle)?;
+    nexa_core::mcp::config_file::ensure_user_mcp_config(&path)
+        .map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn reload_mcp_config_file_cmd(
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    mcp_state: tauri::State<'_, McpManagerState>,
+) -> Result<nexa_core::mcp::config_file::McpConfigReloadReport, String> {
+    let path = user_mcp_config_path(&app_handle)?;
+    let report = nexa_core::mcp::config_file::reload_user_mcp_config(&state.db, &path)
+        .map_err(|error| error.to_string())?;
+    let mut manager = mcp_state.manager.lock().await;
+    match sync_enabled_mcp_servers(&state.db, &mut manager).await {
+        Ok(errors) => {
+            for (server_id, error) in errors {
+                warn!("Failed to sync MCP connector {server_id} after config reload: {error}");
+            }
+        }
+        Err(error) => warn!("Failed to refresh MCP connectors after config reload: {error}"),
+    }
+    Ok(report)
+}
+
 #[tauri::command]
 pub async fn list_mcp_servers_cmd(
     state: tauri::State<'_, AppState>,

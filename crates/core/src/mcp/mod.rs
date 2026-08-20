@@ -1,6 +1,7 @@
 //! MCP (Model Context Protocol) module — client, manager, and data models.
 
 pub mod client;
+pub mod config_file;
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -156,6 +157,48 @@ fn normalize_json_string_map(
     serde_json::to_string(&parsed)
         .map(Some)
         .map_err(CoreError::from)
+}
+
+fn resolve_env_placeholders(value: &str) -> Result<String, CoreError> {
+    let mut resolved = String::with_capacity(value.len());
+    let mut remaining = value;
+    while let Some(start) = remaining.find("${env:") {
+        resolved.push_str(&remaining[..start]);
+        let placeholder = &remaining[start + 6..];
+        let Some(end) = placeholder.find('}') else {
+            return Err(CoreError::InvalidInput(
+                "Invalid MCP environment reference: missing closing '}'".into(),
+            ));
+        };
+        let variable = &placeholder[..end];
+        if variable.is_empty()
+            || !variable
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "Invalid MCP environment reference '${{env:{variable}}}'"
+            )));
+        }
+        let secret = std::env::var(variable).map_err(|_| {
+            CoreError::InvalidInput(format!(
+                "MCP connector requires environment variable '{variable}'"
+            ))
+        })?;
+        resolved.push_str(&secret);
+        remaining = &placeholder[end + 1..];
+    }
+    resolved.push_str(remaining);
+    Ok(resolved)
+}
+
+fn resolve_mcp_config_map(field: &str, raw: &str) -> Result<HashMap<String, String>, CoreError> {
+    let values: HashMap<String, String> = serde_json::from_str(raw)
+        .map_err(|error| CoreError::InvalidInput(format!("Invalid {field}: {error}")))?;
+    values
+        .into_iter()
+        .map(|(key, value)| resolve_env_placeholders(&value).map(|value| (key, value)))
+        .collect()
 }
 
 fn normalize_http_url(field: &str, value: &Option<String>) -> Result<Option<String>, CoreError> {
@@ -710,13 +753,10 @@ impl McpManager {
                     None => Vec::new(),
                 };
 
-                let env: Option<HashMap<String, String>> =
-                    match &server.env_json {
-                        Some(env_json) => Some(serde_json::from_str(env_json).map_err(|e| {
-                            CoreError::InvalidInput(format!("Invalid envJson: {e}"))
-                        })?),
-                        None => None,
-                    };
+                let env: Option<HashMap<String, String>> = match &server.env_json {
+                    Some(env_json) => Some(resolve_mcp_config_map("envJson", env_json)?),
+                    None => None,
+                };
 
                 let mut client =
                     McpClient::connect_stdio(command, &args, env.as_ref(), &server.name).await?;
@@ -752,9 +792,7 @@ impl McpManager {
 
                 let headers: Option<HashMap<String, String>> = match &server.headers_json {
                     Some(headers_json) => {
-                        Some(serde_json::from_str(headers_json).map_err(|e| {
-                            CoreError::InvalidInput(format!("Invalid headersJson: {e}"))
-                        })?)
+                        Some(resolve_mcp_config_map("headersJson", headers_json)?)
                     }
                     None => None,
                 };
@@ -1044,6 +1082,21 @@ mod tests {
                 "D:/vault".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn environment_placeholders_resolve_without_persisting_secret_values() {
+        let path = std::env::var("PATH").expect("PATH is available in the test environment");
+        assert_eq!(
+            resolve_env_placeholders("Bearer ${env:PATH}").unwrap(),
+            format!("Bearer {path}")
+        );
+
+        let error = resolve_env_placeholders("${env:NEXA_MCP_MISSING_ENV_TEST_9F31}")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("NEXA_MCP_MISSING_ENV_TEST_9F31"));
+        assert!(!error.contains(&path));
     }
 
     #[test]

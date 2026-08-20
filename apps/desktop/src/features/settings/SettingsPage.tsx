@@ -1191,6 +1191,8 @@ export function SettingsPage() {
   const [skillProposals, setSkillProposals] = useState<SkillChangeProposal[]>([]);
   const [skillProposalBusyId, setSkillProposalBusyId] = useState<string | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [mcpConfigPath, setMcpConfigPath] = useState('');
+  const [mcpConfigReloading, setMcpConfigReloading] = useState(false);
   const [editingPersona, setEditingPersona] = useState<PersonaProfile | null>(null);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
   const [editingMcpServer, setEditingMcpServer] = useState<McpServer | null>(null);
@@ -1237,14 +1239,21 @@ export function SettingsPage() {
     });
   }, []);
 
+  const loadMcpConfigPath = useCallback(() => {
+    api.prepareMcpConfigFile().then(setMcpConfigPath).catch(() => {
+      setMcpConfigPath('');
+    });
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'extensions') {
       loadPersonas();
       loadSkills();
       loadSkillProposals();
       loadMcpServers();
+      loadMcpConfigPath();
     }
-  }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpServers]);
+  }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpConfigPath, loadMcpServers]);
 
   const handleSavePersona = async (input: SavePersonaInput) => {
     try {
@@ -1402,6 +1411,32 @@ export function SettingsPage() {
       }
     } catch {
       toast.error(t('common.error'));
+    }
+  };
+
+  const handleOpenMcpConfig = async () => {
+    try {
+      const path = mcpConfigPath || await api.prepareMcpConfigFile();
+      setMcpConfigPath(path);
+      await api.openFileInDefaultApp(path);
+    } catch (error) {
+      toast.error(String(error));
+    }
+  };
+
+  const handleReloadMcpConfig = async () => {
+    setMcpConfigReloading(true);
+    try {
+      const report = await api.reloadMcpConfigFile();
+      setMcpConfigPath(report.path);
+      loadMcpServers();
+      setMcpToolCounts({});
+      setMcpToolsExpanded({});
+      toast.success(t('common.success'));
+    } catch (error) {
+      toast.error(String(error), { duration: 8000 });
+    } finally {
+      setMcpConfigReloading(false);
     }
   };
 
@@ -1891,6 +1926,8 @@ export function SettingsPage() {
           deleteSkillTarget={deleteSkillTarget}
           viewSkill={viewSkill}
           mcpServers={mcpServers}
+          mcpConfigPath={mcpConfigPath}
+          mcpConfigReloading={mcpConfigReloading}
           showMcpForm={showMcpForm}
           editingMcpServer={editingMcpServer}
           deleteMcpTarget={deleteMcpTarget}
@@ -1930,6 +1967,8 @@ export function SettingsPage() {
           onApplySkillProposal={(id) => { void handleApplySkillProposal(id); }}
           onRejectSkillProposal={(id) => { void handleRejectSkillProposal(id); }}
           onAddMcpServer={() => { setEditingMcpServer(null); setShowMcpForm(true); }}
+          onOpenMcpConfig={() => { void handleOpenMcpConfig(); }}
+          onReloadMcpConfig={() => { void handleReloadMcpConfig(); }}
           onSaveMcpServer={handleSaveMcpServer}
           onCancelMcpForm={() => {
             setMcpFormDirty(false);

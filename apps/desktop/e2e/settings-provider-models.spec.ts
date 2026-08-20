@@ -392,6 +392,19 @@ test.beforeEach(async ({ page }) => {
         case "list_mcp_servers_cmd":
         case "get_web_search_status_cmd":
           return [];
+        case "prepare_mcp_config_file_cmd":
+          return "C:\\Users\\Test\\AppData\\Roaming\\Nexa\\mcp-connectors.json";
+        case "reload_mcp_config_file_cmd":
+          localStorage.setItem("e2e-mcp-config-reloaded", "1");
+          return {
+            path: "C:\\Users\\Test\\AppData\\Roaming\\Nexa\\mcp-connectors.json",
+            imported: 0,
+            removed: 0,
+            disabledAfterChange: 0,
+          };
+        case "open_file_in_default_app":
+          localStorage.setItem("e2e-opened-mcp-config", String(_args.path ?? ""));
+          return null;
         case "get_recent_queries": {
           const recentQueries = JSON.parse(localStorage.getItem("nexa-e2e-recent-queries") ?? "[]") as unknown;
           return clone(Array.isArray(recentQueries) ? recentQueries : []);
@@ -1744,6 +1757,26 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     chatSidebar: 0.72,
     chatContent: 0.82,
   });
+});
+
+test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Extensions", exact: true }).click();
+
+  const mcpSection = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "MCP Connectors", exact: true }),
+  });
+  await mcpSection.getByRole("button").first().click();
+  await expect(mcpSection.getByText(/mcp-connectors\.json/)).toBeVisible();
+  await expect(mcpSection.getByRole("button", { name: "Open JSON", exact: true })).toBeVisible();
+  await expect(mcpSection.getByRole("button", { name: "Reload JSON", exact: true })).toBeVisible();
+
+  await mcpSection.getByRole("button", { name: "Open JSON", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-opened-mcp-config")))
+    .toContain("mcp-connectors.json");
+  await mcpSection.getByRole("button", { name: "Reload JSON", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-mcp-config-reloaded")))
+    .toBe("1");
 });
 
 test("custom appearances without a visual background keep the ordinary opaque shell", async ({ page }) => {

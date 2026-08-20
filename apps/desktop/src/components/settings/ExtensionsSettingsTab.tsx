@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Plug, Plus, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
+import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, FileJson, Loader2, Pencil, Plug, Plus, RefreshCw, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { PersonaProfile, SavePersonaInput } from '../../lib/api';
@@ -38,6 +38,8 @@ interface ExtensionsSettingsTabProps {
   deleteSkillTarget: Skill | null;
   viewSkill: Skill | null;
   mcpServers: McpServer[];
+  mcpConfigPath: string;
+  mcpConfigReloading: boolean;
   showMcpForm: boolean;
   editingMcpServer: McpServer | null;
   deleteMcpTarget: McpServer | null;
@@ -69,6 +71,8 @@ interface ExtensionsSettingsTabProps {
   onApplySkillProposal: (id: string) => void;
   onRejectSkillProposal: (id: string) => void;
   onAddMcpServer: () => void;
+  onOpenMcpConfig: () => void;
+  onReloadMcpConfig: () => void;
   onSaveMcpServer: (input: SaveMcpServerInput) => Promise<void>;
   onCancelMcpForm: () => void;
   onMcpFormDirtyChange: (dirty: boolean) => void;
@@ -404,6 +408,8 @@ export function ExtensionsSettingsTab({
   deleteSkillTarget,
   viewSkill,
   mcpServers,
+  mcpConfigPath,
+  mcpConfigReloading,
   showMcpForm,
   editingMcpServer,
   deleteMcpTarget,
@@ -435,6 +441,8 @@ export function ExtensionsSettingsTab({
   onApplySkillProposal,
   onRejectSkillProposal,
   onAddMcpServer,
+  onOpenMcpConfig,
+  onReloadMcpConfig,
   onSaveMcpServer,
   onCancelMcpForm,
   onMcpFormDirtyChange,
@@ -981,10 +989,36 @@ export function ExtensionsSettingsTab({
           />
         ) : (
           <div className="space-y-4">
-            <div className="flex justify-end">
-              <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={onAddMcpServer}>
-                {t('settings.addMcpServer')}
-              </Button>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-1/55 p-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-xs font-medium text-text-primary">
+                  <FileJson size={14} className="text-accent" />
+                  {t('settings.mcpConfigFile')}
+                </div>
+                <p className="mt-1 truncate font-mono text-[10px] text-text-tertiary" title={mcpConfigPath}>
+                  {mcpConfigPath || t('common.loading')}
+                </p>
+                <p className="mt-1 text-[11px] leading-4 text-text-tertiary">
+                  {t('settings.mcpConfigDescription')}
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <Button variant="ghost" size="sm" icon={<FileJson size={14} />} onClick={onOpenMcpConfig}>
+                  {t('settings.mcpOpenConfig')}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<RefreshCw size={14} className={mcpConfigReloading ? 'animate-spin' : ''} />}
+                  onClick={onReloadMcpConfig}
+                  disabled={mcpConfigReloading}
+                >
+                  {t('settings.mcpReloadConfig')}
+                </Button>
+                <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={onAddMcpServer}>
+                  {t('settings.addMcpServer')}
+                </Button>
+              </div>
             </div>
             {mcpServers.length === 0 ? (
               <div className="py-8 text-center">
@@ -1006,6 +1040,9 @@ export function ExtensionsSettingsTab({
                           <p className="text-sm font-medium text-text-primary truncate">{server.name}</p>
                           {server.builtinId && (
                             <Badge variant="default" className="ml-1 text-xs">{t('settings.mcpBuiltIn')}</Badge>
+                          )}
+                          {server.id.startsWith('user-json:') && (
+                            <Badge variant="default" className="ml-1 text-xs">JSON</Badge>
                           )}
                           <Badge variant="default" className="text-[10px] shrink-0">{server.transport}</Badge>
                           {server.enabled && mcpToolCounts[server.id] && !mcpToolCounts[server.id].loading && !mcpToolCounts[server.id].error && (
@@ -1059,14 +1096,16 @@ export function ExtensionsSettingsTab({
                         >
                           {mcpTestLoading === server.id ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
                         </button>
-                        <button
-                          onClick={() => onEditMcpServer(server)}
-                          className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
-                          aria-label={t('common.edit')}
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        {!server.builtinId && (
+                        {!server.id.startsWith('user-json:') && (
+                          <button
+                            onClick={() => onEditMcpServer(server)}
+                            className="rounded p-1.5 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                            aria-label={t('common.edit')}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {!server.builtinId && !server.id.startsWith('user-json:') && (
                           <button
                             onClick={() => onDeleteMcpTargetChange(server)}
                             className="rounded p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
