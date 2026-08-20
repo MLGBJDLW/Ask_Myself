@@ -428,7 +428,12 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
                   {t('chat.steeringLabel')}
                 </span>
               )}
-              <span className="whitespace-pre-wrap">{visibleContent}</span>
+              <span
+                data-testid="chat-user-message-text"
+                className="whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {visibleContent}
+              </span>
               {visibleAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {visibleAttachments.map((att, i) => (

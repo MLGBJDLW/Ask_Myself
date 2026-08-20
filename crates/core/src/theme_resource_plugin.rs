@@ -253,6 +253,9 @@ impl ThemeResourcePlugin {
             if !safe_color(color) {
                 return invalid(format!("Invalid semantic color: {slot}"));
             }
+            if slot.starts_with("surface") && color.eq_ignore_ascii_case("transparent") {
+                return invalid(format!("Surface color cannot be transparent: {slot}"));
+            }
         }
         clamp(&mut self.theme.effects.surface_opacity, 0.35, 1.0);
         clamp(&mut self.theme.effects.glass_blur, 0.0, 48.0);
@@ -571,6 +574,16 @@ mod tests {
         let error = ThemeResourcePlugin::from_generated_value(value, "image")
             .expect_err("unmanaged image must fail");
         assert!(error.to_string().contains("managed local asset id"));
+    }
+
+    #[test]
+    fn semantic_surface_colors_cannot_bypass_effect_opacity() {
+        let mut value = generated_theme();
+        value["theme"]["colors"]["surface0"] = Value::String("transparent".into());
+
+        let error = ThemeResourcePlugin::from_generated_value(value, "transparent surface")
+            .expect_err("surface opacity must remain the only transparency authority");
+        assert!(error.to_string().contains("cannot be transparent"));
     }
 
     #[test]

@@ -596,8 +596,16 @@ export function TerminalDock({
   }
 
   return (
-    <div className="shrink-0 border-t border-border/60 bg-surface-1/90 backdrop-blur">
-      <div className="flex min-h-10 flex-wrap items-center gap-2 px-3 py-1.5">
+    <div
+      className="shrink-0 border-t border-border/60 bg-surface-1/90"
+      data-testid="terminal-dock"
+      data-theme-surface="transparent"
+    >
+      <div
+        className="flex min-h-10 flex-wrap items-center gap-2 px-3 py-1.5"
+        data-testid="terminal-dock-header"
+        data-theme-surface="chrome"
+      >
         <button
           type="button"
           onClick={isOpen ? toggleTerminalPanel : handleOpen}
@@ -747,7 +755,11 @@ export function TerminalDock({
         </div>
       </div>
       {isOpen && (
-        <div className={`border-t border-border/50 bg-surface-0 ${panelHeight}`}>
+        <div
+          className={`border-t border-border/50 bg-surface-0 ${panelHeight}`}
+          data-theme-surface="overlay"
+          data-theme-overlay-tone="canvas"
+        >
           <div ref={hostRef} data-testid="terminal-screen" className="h-full w-full overflow-hidden px-2 py-2" />
         </div>
       )}

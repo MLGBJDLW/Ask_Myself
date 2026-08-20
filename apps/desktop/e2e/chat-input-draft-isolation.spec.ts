@@ -1,4 +1,62 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Locator, test } from '@playwright/test';
+
+async function paintedSurfaceStyle(locator: Locator, includeSelf = true) {
+  return locator.evaluate((target, includeTarget) => {
+    const alphaOf = (color: string): number => {
+      const normalized = color.trim();
+      if (normalized === 'transparent') return 0;
+      const rgb = normalized.match(/^rgba?\((.+)\)$/i);
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,\/]+/).filter(Boolean);
+        if (parts.length < 4) return 1;
+        const alpha = parts[3];
+        return alpha.endsWith('%') ? Number(alpha.slice(0, -1)) / 100 : Number(alpha);
+      }
+      const functionalAlpha = normalized.match(/\/\s*([0-9.]+)(%)?\s*\)$/);
+      if (!functionalAlpha) return 1;
+      const alpha = Number(functionalAlpha[1]);
+      return functionalAlpha[2] ? alpha / 100 : alpha;
+    };
+    let element: Element | null = includeTarget ? target : target.parentElement;
+    while (element) {
+      const style = getComputedStyle(element);
+      const backgroundAlpha = alphaOf(style.backgroundColor);
+      const backdropFilter = style.backdropFilter
+        || style.getPropertyValue('-webkit-backdrop-filter')
+        || 'none';
+      if (backgroundAlpha > 0 || backdropFilter !== 'none') {
+        return {
+          surface: element.getAttribute('data-theme-surface'),
+          backgroundAlpha: Number(backgroundAlpha.toFixed(2)),
+          backdropFilter,
+        };
+      }
+      element = element.parentElement;
+    }
+    throw new Error('No painted surface found');
+  }, includeSelf);
+}
+
+async function backdropFilterOwners(locator: Locator) {
+  return locator.evaluate((target) => {
+    const owners: Array<{ surface: string | null; filter: string }> = [];
+    let element: Element | null = target;
+    while (element) {
+      const style = getComputedStyle(element);
+      const filter = style.backdropFilter
+        || style.getPropertyValue('-webkit-backdrop-filter')
+        || 'none';
+      if (filter !== 'none') {
+        owners.push({
+          surface: element.getAttribute('data-theme-surface'),
+          filter,
+        });
+      }
+      element = element.parentElement;
+    }
+    return owners;
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -73,7 +131,13 @@ test.beforeEach(async ({ page }) => {
           id: 'm-draft-assistant-1',
           conversationId: 'conv-draft-a',
           role: 'assistant',
-          content: 'first saved answer',
+          content: [
+            'first saved answer',
+            '',
+            '```text',
+            'theme-surface-local-scroll-contract-0123456789abcdefghijklmnopqrstuvwxyz-0123456789abcdefghijklmnopqrstuvwxyz-0123456789abcdefghijklmnopqrstuvwxyz-0123456789abcdefghijklmnopqrstuvwxyz',
+            '```',
+          ].join('\n'),
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -247,6 +311,229 @@ test('keeps an input draft after leaving and returning to chat', async ({ page }
 
   await page.getByRole('button', { name: /Draft A/ }).click();
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('draft survives page switch');
+});
+
+test('routes one custom wallpaper chrome surface through the active chat sidebar, toolbar, and composer', async ({ page }) => {
+  await page.addInitScript(() => {
+    const plugin = {
+      manifestVersion: 2,
+      kind: 'theme-resource',
+      id: 'chat-chrome-contract',
+      name: 'Chat Chrome Contract',
+      theme: {
+        baseTheme: 'light',
+        mode: 'light',
+        colors: {
+          surface0: 'rgba(246, 238, 232, 0.12)',
+          surface1: 'rgba(255, 248, 242, 0.15)',
+          surface2: 'rgba(244, 222, 210, 0.18)',
+          surface3: '#ead0c2', surface4: '#dfbca9', textPrimary: '#251913',
+          textSecondary: '#59443a', textTertiary: '#786056', accent: '#c85d2e',
+        },
+        effects: { surfaceOpacity: 0.37, glassBlur: 23 },
+        typography: {}, motion: {}, brand: {}, content: {},
+        components: {
+          header: { background: 'rgba(247, 240, 228, 0.43)' },
+          card: { background: 'rgba(251, 246, 237, 0.52)' },
+        },
+        background: {
+          kind: 'gradient', value: 'linear-gradient(135deg, #4f2418, #e09158)',
+          opacity: 1, dim: 0.18, overlayColor: '#1f100b',
+        },
+      },
+    };
+    localStorage.setItem('nexa-theme-resource-plugins-v2', JSON.stringify([plugin]));
+    localStorage.setItem('nexa-active-theme-v1', plugin.id);
+  });
+
+  await page.goto('/chat/conv-draft-a');
+  await expect(page.locator('html')).toHaveAttribute('data-theme-backdrop', 'true');
+
+  const sidebar = page.getByTestId('chat-history-sidebar').locator('[data-theme-surface=chrome]');
+  const toolbarControl = page.getByTestId('chat-auto-tts-toggle');
+  const composer = page.getByTestId('chat-input');
+  const composerPanel = page.getByTestId('chat-composer-surface');
+  const readingSurface = page.getByTestId('chat-reading-surface');
+  await expect(sidebar).toBeVisible();
+  await expect(toolbarControl).toBeVisible();
+  await expect(composer).toBeVisible();
+  await expect(composerPanel).toHaveAttribute('data-theme-surface', 'panel');
+  await expect(readingSurface).toBeVisible();
+
+  expect({
+    sidebar: await paintedSurfaceStyle(sidebar),
+    toolbar: await paintedSurfaceStyle(toolbarControl, false),
+    composer: await paintedSurfaceStyle(composer),
+    composerPanel: await paintedSurfaceStyle(composerPanel),
+    reading: await paintedSurfaceStyle(readingSurface),
+  }).toEqual({
+    sidebar: { surface: 'chrome', backgroundAlpha: 0.37, backdropFilter: 'blur(23px)' },
+    toolbar: { surface: 'chrome', backgroundAlpha: 0.43, backdropFilter: 'blur(23px)' },
+    composer: { surface: 'chrome', backgroundAlpha: 0.37, backdropFilter: 'blur(23px)' },
+    composerPanel: { surface: 'panel', backgroundAlpha: 0.68, backdropFilter: 'none' },
+    reading: { surface: 'content', backgroundAlpha: 0.82, backdropFilter: 'blur(23px)' },
+  });
+  const composerRecipe = await composerPanel.evaluate((element) => (
+    getComputedStyle(element).backgroundImage
+  ));
+  expect(composerRecipe).toContain('rgba(251, 246, 237, 0.52)');
+  expect({
+    toolbar: await backdropFilterOwners(toolbarControl),
+    composer: await backdropFilterOwners(page.getByTestId('chat-input-textarea')),
+    reading: await backdropFilterOwners(readingSurface),
+  }).toEqual({
+    toolbar: [{ surface: 'chrome', filter: 'blur(23px)' }],
+    composer: [{ surface: 'chrome', filter: 'blur(23px)' }],
+    reading: [{ surface: 'content', filter: 'blur(23px)' }],
+  });
+
+  const textarea = page.getByTestId('chat-input-textarea');
+  const restingComposerFocus = await composerPanel.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { borderColor: style.borderColor, outlineWidth: style.outlineWidth };
+  });
+  await textarea.focus();
+  await expect(textarea).toBeFocused();
+  const activeComposerFocus = await composerPanel.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { borderColor: style.borderColor, outlineWidth: style.outlineWidth };
+  });
+  expect(activeComposerFocus.borderColor).not.toBe(restingComposerFocus.borderColor);
+  expect(activeComposerFocus.outlineWidth).not.toBe(restingComposerFocus.outlineWidth);
+  const composerPanelLayout = await composerPanel.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      paddingTop: style.paddingTop,
+      paddingBottom: style.paddingBottom,
+      height: element.getBoundingClientRect().height,
+    };
+  });
+  expect(composerPanelLayout).toEqual({
+    paddingTop: '0px',
+    paddingBottom: '0px',
+    height: expect.any(Number),
+  });
+  expect(composerPanelLayout.height).toBeLessThan(210);
+
+  const paletteFocusStyle = await composerPanel.evaluate((panel) => {
+    const root = document.documentElement;
+    root.setAttribute('data-theme-backdrop', 'false');
+    const style = getComputedStyle(panel);
+    const result = {
+      borderColor: style.borderColor,
+      outlineWidth: style.outlineWidth,
+      backgroundImage: style.backgroundImage,
+    };
+    root.setAttribute('data-theme-backdrop', 'true');
+    return result;
+  });
+  expect(paletteFocusStyle.borderColor).not.toBe(restingComposerFocus.borderColor);
+  expect(paletteFocusStyle.outlineWidth).toBe('1px');
+  expect(paletteFocusStyle.backgroundImage).toContain('rgba(251, 246, 237, 0.52)');
+
+  await page.screenshot({
+    path: 'test-results/custom-wallpaper-chat-surfaces.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 820, height: 720 });
+  await expect(toolbarControl).toBeVisible();
+  await expect(page.getByTestId('chat-input-textarea')).toBeVisible();
+  const compactViewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(compactViewport.scrollWidth).toBeLessThanOrEqual(compactViewport.clientWidth);
+  const compactComposerBounds = await composer.boundingBox();
+  expect(compactComposerBounds).not.toBeNull();
+  expect(compactComposerBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(compactComposerBounds!.x + compactComposerBounds!.width).toBeLessThanOrEqual(820);
+  await page.screenshot({
+    path: 'test-results/custom-wallpaper-chat-surfaces-compact.png',
+    fullPage: true,
+  });
+
+  const cdpSession = await page.context().newCDPSession(page);
+  await cdpSession.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+  });
+  await expect(page.locator('.app-theme-backdrop')).toBeHidden();
+  await expect.poll(async () => (
+    await paintedSurfaceStyle(composer)
+  ).backgroundAlpha).toBe(1);
+  expect({
+    toolbar: await paintedSurfaceStyle(toolbarControl, false),
+    composer: await paintedSurfaceStyle(composer),
+    reading: await paintedSurfaceStyle(readingSurface),
+  }).toEqual({
+    toolbar: { surface: 'chrome', backgroundAlpha: 1, backdropFilter: 'none' },
+    composer: { surface: 'chrome', backgroundAlpha: 1, backdropFilter: 'none' },
+    reading: { surface: 'content', backgroundAlpha: 1, backdropFilter: 'none' },
+  });
+  await cdpSession.send('Emulation.setEmulatedMedia', { features: [] });
+  await cdpSession.detach();
+  await expect(page.locator('.app-theme-backdrop')).toBeVisible();
+
+  await page.emulateMedia({ forcedColors: 'active' });
+  await expect(page.locator('.app-theme-backdrop')).toBeHidden();
+  expect({
+    toolbar: await backdropFilterOwners(toolbarControl),
+    composer: await backdropFilterOwners(textarea),
+    reading: await backdropFilterOwners(readingSurface),
+  }).toEqual({ toolbar: [], composer: [], reading: [] });
+});
+
+test('keeps the chat message root vertical-only', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
+
+  const messageRoot = page.locator('[data-chat-scroll-root=true]');
+  await expect(messageRoot).toBeVisible();
+
+  const scrollContract = await messageRoot.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      overflowX: style.overflowX,
+      horizontalOverflowPx: Math.max(0, element.scrollWidth - element.clientWidth),
+    };
+  });
+  const rootCanShowHorizontalScrollbar = scrollContract.horizontalOverflowPx > 0
+    && !['hidden', 'clip'].includes(scrollContract.overflowX);
+  expect(
+    rootCanShowHorizontalScrollbar,
+    `chat message root must not own horizontal scrolling: ${JSON.stringify(scrollContract)}`,
+  ).toBe(false);
+
+  const baselineRootOverflow = scrollContract.horizontalOverflowPx;
+  const userMessageText = page.getByTestId('chat-user-message-text').last();
+  await userMessageText.evaluate((element) => {
+    element.textContent = `https://example.invalid/${'x'.repeat(2_000)}`;
+  });
+  const rootOverflowAfterLongUserText = await messageRoot.evaluate((element) => (
+    Math.max(0, element.scrollWidth - element.clientWidth)
+  ));
+  expect(rootOverflowAfterLongUserText).toBeLessThanOrEqual(baselineRootOverflow);
+  const longUserTextLayout = await userMessageText.evaluate((element) => {
+    const bubble = element.parentElement;
+    const textRects = Array.from(element.getClientRects());
+    const bubbleBounds = bubble?.getBoundingClientRect();
+    return {
+      overflowWrap: getComputedStyle(element).overflowWrap,
+      lineCount: textRects.length,
+      rightEdge: Math.max(...textRects.map((rect) => rect.right)),
+      bubbleRightEdge: bubbleBounds?.right ?? 0,
+    };
+  });
+  expect(longUserTextLayout.overflowWrap).toBe('anywhere');
+  expect(longUserTextLayout.lineCount).toBeGreaterThan(1);
+  expect(longUserTextLayout.rightEdge).toBeLessThanOrEqual(longUserTextLayout.bubbleRightEdge + 1);
+
+  const localCodeScroller = messageRoot.locator('pre.overflow-x-auto').first();
+  await expect(localCodeScroller).toBeVisible();
+  const localScrollContract = await localCodeScroller.evaluate((element) => ({
+    overflowX: getComputedStyle(element).overflowX,
+    horizontalOverflowPx: Math.max(0, element.scrollWidth - element.clientWidth),
+  }));
+  expect(localScrollContract.overflowX).toBe('auto');
+  expect(localScrollContract.horizontalOverflowPx).toBeGreaterThan(0);
 });
 
 test('navigates previous user inputs from the textarea boundary and restores the draft', async ({ page }) => {

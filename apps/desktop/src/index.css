@@ -849,6 +849,12 @@ samp {
   box-shadow: var(--theme-component-header-shadow, inset 0 1px color-mix(in srgb, var(--color-text-primary) 4%, transparent));
 }
 
+[data-theme-component='header'] {
+  background: var(--theme-component-header-background, color-mix(in srgb, var(--color-surface-1) 85%, transparent));
+  border-color: var(--theme-component-header-border, color-mix(in srgb, var(--color-border) 60%, transparent));
+  box-shadow: var(--theme-component-header-shadow, none);
+}
+
 [data-testid='app-navigation-rail'] {
   background: var(--theme-component-rail-background, var(--color-surface-1));
   border-color: var(--theme-component-rail-border, var(--color-border));
@@ -871,10 +877,19 @@ samp {
   backdrop-filter: blur(var(--theme-glass-blur, 0px));
 }
 
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='content'][data-theme-blur-owner='false'] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 :is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='chrome'] {
   background: var(--theme-chrome-surface-1);
   -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
   backdrop-filter: blur(var(--theme-glass-blur, 0px));
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='chrome'][data-dragging='true'] {
+  background: var(--color-accent-subtle);
 }
 
 :is(html.theme-dream, html[data-theme-backdrop='true']) .settings-page-header {
@@ -904,15 +919,69 @@ samp {
 
 :is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='panel'] {
   background: var(--theme-component-card-background, var(--theme-content-surface-1));
+  border-color: var(--theme-component-card-border, var(--color-border));
   -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
   backdrop-filter: blur(var(--theme-glass-blur, 0px));
   box-shadow: var(--theme-component-card-shadow, 0 10px 30px color-mix(in srgb, #000 var(--theme-shadow-alpha, 16%), transparent));
+}
+
+html[data-custom-theme='true'][data-theme-backdrop='false'] [data-theme-surface='panel'] {
+  background: var(--theme-component-card-background, var(--color-surface-1));
+  border-color: var(--theme-component-card-border, var(--color-border));
+  box-shadow: var(--theme-component-card-shadow, none);
+}
+
+html[data-custom-theme='true'][data-theme-backdrop='false'] [data-theme-surface='panel'][data-theme-readable='true'] {
+  background-color: var(--color-surface-0);
+  background-image: var(--theme-component-card-background-layer, none);
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) :is(
+  [data-theme-surface='chrome'],
+  [data-theme-surface='content'],
+  [data-theme-surface='panel']
+):not([data-theme-blur-owner='false']) [data-theme-surface='panel'] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-surface='panel'][data-theme-readable='true'] {
+  background-color: var(--theme-content-surface-1);
+  background-image: var(--theme-component-card-background-layer, none);
+}
+
+:is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='panel'][data-theme-focus-surface='true']:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  outline-offset: 1px;
+}
+
+:is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='overlay'] {
+  background: var(
+    --theme-opaque-surface-1,
+    rgb(from var(--color-surface-1) r g b / 1)
+  );
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='overlay'][data-theme-overlay-tone='canvas'] {
+  background: var(
+    --theme-opaque-surface-0,
+    rgb(from var(--color-surface-0) r g b / 1)
+  );
 }
 
 html[data-theme-backdrop='true'] .app-titlebar {
   background: var(--theme-component-header-background, var(--theme-chrome-surface-1));
   -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
   backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  box-shadow: var(--theme-component-header-shadow, 0 1px 10px color-mix(in srgb, #000 var(--theme-shadow-alpha, 18%), transparent));
+}
+
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-component='header'] {
+  background: var(--theme-component-header-background, var(--theme-chrome-surface-1));
+  border-color: var(--theme-component-header-border, var(--color-border));
   box-shadow: var(--theme-component-header-shadow, 0 1px 10px color-mix(in srgb, #000 var(--theme-shadow-alpha, 18%), transparent));
 }
 
@@ -959,16 +1028,14 @@ html[data-theme-backdrop='true'] [data-testid='browser-dock'] {
 
 html[data-theme-backdrop='true'] [data-theme-component='card'] {
   background: var(--theme-component-card-background, var(--theme-content-surface-1));
-  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
-  backdrop-filter: blur(var(--theme-glass-blur, 0px));
 }
 
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  :is(html.theme-dream, html[data-theme-backdrop='true']) .app-theme-backdrop {
+  :is(html.theme-dream, html[data-custom-theme='true']) .app-theme-backdrop {
     display: none;
   }
 
-  :is(html.theme-dream, html[data-theme-backdrop='true']) :is(
+  :is(html.theme-dream, html[data-custom-theme='true']) :is(
     [data-theme-surface='workspace'],
     [data-theme-surface='content'],
     [data-theme-surface='chrome'],
@@ -985,7 +1052,20 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
   ) {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    background: var(--color-surface-1);
+    background: var(
+      --theme-opaque-surface-1,
+      rgb(from var(--color-surface-1) r g b / 1)
+    );
+  }
+
+  :is(html.theme-dream, html[data-custom-theme='true']) [data-theme-effect='backdrop-blur'] {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  :is([data-theme-surface], [data-theme-effect='backdrop-blur']) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 
