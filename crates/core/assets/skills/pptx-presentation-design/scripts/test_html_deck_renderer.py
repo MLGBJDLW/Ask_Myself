@@ -116,6 +116,9 @@ class HtmlDeckRendererTests(unittest.TestCase):
             self.assertTrue(pptx_path.exists())
             self.assertEqual("warn", result["qa"]["status"])
             self.assertEqual(1.0, result["manifest"]["pptx"]["metrics"]["editabilityScore"])
+            self.assertEqual("fully_editable", result["manifest"]["pptx"]["metrics"]["editabilityLevel"])
+            self.assertFalse(result["manifest"]["pptx"]["metrics"]["finalPptxRenderVerified"])
+            self.assertTrue(any("not been rendered" in warning for warning in result["qa"]["warnings"]))
             self.assertEqual(2, result["manifest"]["pptx"]["metrics"]["animationTargets"])
 
             with zipfile.ZipFile(pptx_path) as zf:

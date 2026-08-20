@@ -8,6 +8,7 @@ publishability signal that can be used by local smoke tests or CI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -52,6 +53,8 @@ def evaluate_audit(
     min_notes_coverage: float | None = None,
     max_text_chars: int | None = None,
     max_text_paragraphs: int | None = None,
+    rendered_previews: list[str] | None = None,
+    require_render: bool = False,
 ) -> dict[str, Any]:
     slides = list(report.get("slide_details") or [])
     content_slides = [slide for slide in slides if int(slide.get("index", 0)) > 1]
@@ -79,6 +82,35 @@ def evaluate_audit(
         checks.append(_check("slide_count", FAIL, slide_count, min_slides))
     else:
         checks.append(_check("slide_count", PASS, slide_count, min_slides))
+
+    validation_errors = list(report.get("validation_errors") or [])
+    if validation_errors:
+        failures.extend(f"package validation: {message}" for message in validation_errors)
+        checks.append(_check("package_graph", FAIL, len(validation_errors), 0))
+    else:
+        checks.append(_check("package_graph", PASS, 0, 0))
+
+    render_paths = [Path(path) for path in (rendered_previews or [])]
+    existing_render_paths = [path for path in render_paths if path.is_file()]
+    render_hashes = {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in existing_render_paths
+    }
+    render_coverage = _ratio(len(existing_render_paths), slide_count)
+    if require_render and len(existing_render_paths) != slide_count:
+        failures.append(
+            f"final PPTX render coverage incomplete: {len(existing_render_paths)} != {slide_count}"
+        )
+        checks.append(_check("final_pptx_render", FAIL, len(existing_render_paths), slide_count))
+    elif existing_render_paths:
+        status = PASS if len(existing_render_paths) == slide_count else WARN
+        if status == WARN:
+            cautions.append("final PPTX render coverage is partial")
+        checks.append(_check("final_pptx_render", status, len(existing_render_paths), slide_count))
+    else:
+        checks.append(_check("final_pptx_render", WARN, 0, slide_count))
+        if slide_count:
+            cautions.append("final PPTX render evidence is absent")
 
     if len(warnings) > max_warnings:
         failures.append(f"audit warnings exceed budget: {len(warnings)} > {max_warnings}")
@@ -183,6 +215,13 @@ def evaluate_audit(
             "picture_slides": picture_slides,
             "visual_issues": visual_issues,
             "visual_failures": visual_failures,
+            "render_coverage": round(render_coverage, 3),
+        },
+        "render_evidence": {
+            "required": require_render,
+            "expectedSlides": slide_count,
+            "renderedSlides": len(existing_render_paths),
+            "files": render_hashes,
         },
         "audit": report,
         "visual_qa": visual_report,
@@ -199,10 +238,19 @@ def main() -> int:
     parser.add_argument("--max-warnings", type=int, default=0, help="Maximum allowed audit warnings")
     parser.add_argument("--min-notes-coverage", type=float, default=None, help="Override required notes coverage, 0.0-1.0")
     parser.add_argument("--visual-qa", default=None, help="Optional JSON report from pptx_visual_qa.py")
+    parser.add_argument("--render-dir", default=None, help="Directory containing final-PPTX slide images")
+    parser.add_argument("--require-render", action="store_true", help="Fail unless final-PPTX render count equals display slide count")
     args = parser.parse_args()
 
     report = pptx_audit.audit(Path(args.path))
     visual_report = json.loads(Path(args.visual_qa).read_text(encoding="utf-8")) if args.visual_qa else None
+    rendered_previews = []
+    if args.render_dir:
+        render_dir = Path(args.render_dir)
+        rendered_previews = [
+            str(path) for path in sorted(render_dir.iterdir())
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
     result = evaluate_audit(
         report,
         visual_report=visual_report,
@@ -211,6 +259,8 @@ def main() -> int:
         min_slides=args.min_slides,
         max_warnings=args.max_warnings,
         min_notes_coverage=args.min_notes_coverage,
+        rendered_previews=rendered_previews,
+        require_render=args.require_render,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0 if result["status"] == PASS else 4

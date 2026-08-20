@@ -142,6 +142,106 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
             )))
         self.assertEqual("Q4 Q4", docx.Document(path).paragraphs[0].text)
 
+    def test_docx_replace_targets_story_scope_and_occurrence(self) -> None:
+        import docx
+
+        path = self.root / "scoped.docx"
+        document = docx.Document()
+        document.add_paragraph("Token Token Token")
+        document.sections[0].header.paragraphs[0].text = "Token"
+        document.save(path)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, edit_doc.cmd_replace(argparse.Namespace(
+                path=str(path), find="Token", replace="Header", dry_run=False,
+                expected_sha256=None, expected_count=1, scope="header",
+                occurrence=1, allow_style_merge=False,
+            )))
+        reopened = docx.Document(path)
+        self.assertEqual("Token Token Token", reopened.paragraphs[0].text)
+        self.assertEqual("Header", reopened.sections[0].header.paragraphs[0].text)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, edit_doc.cmd_replace(argparse.Namespace(
+                path=str(path), find="Token", replace="Selected", dry_run=False,
+                expected_sha256=None, expected_count=3, scope="body",
+                occurrence=2, allow_style_merge=False,
+            )))
+        self.assertEqual("Token Selected Token", docx.Document(path).paragraphs[0].text)
+
+    def test_docx_replace_blocks_incompatible_run_style_boundary(self) -> None:
+        import docx
+
+        path = self.root / "style-boundary.docx"
+        document = docx.Document()
+        paragraph = document.add_paragraph()
+        paragraph.add_run("Secret").bold = True
+        paragraph.add_run("Value")
+        document.save(path)
+        before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_replace(argparse.Namespace(
+                    path=str(path), find="SecretValue", replace="Safe", dry_run=False,
+                    expected_sha256=None, expected_count=1, scope="body",
+                    occurrence=1, allow_style_merge=False,
+                ))
+        self.assertEqual(before, hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_secure_docx_redaction_removes_body_header_and_metadata_text(self) -> None:
+        import docx
+
+        path = self.root / "secure.docx"
+        document = docx.Document()
+        paragraph = document.add_paragraph()
+        paragraph.add_run("Top")
+        paragraph.add_run("Secret")
+        document.sections[0].header.paragraphs[0].text = "TopSecret"
+        document.core_properties.author = "TopSecret"
+        document.save(path)
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(0, edit_doc.cmd_secure_redact(argparse.Namespace(
+                path=str(path),
+                find="TopSecret",
+                replace="[REDACTED]",
+                expected_count=3,
+                expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                privacy_scrub=True,
+            )))
+
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["verification"]["originalTextAbsent"])
+        self.assertEqual(3, result["redactedOccurrences"])
+        with zipfile.ZipFile(path) as archive:
+            for name in archive.namelist():
+                self.assertNotIn(b"TopSecret", archive.read(name), name)
+        reopened = docx.Document(path)
+        self.assertEqual("[REDACTED]", reopened.paragraphs[0].text)
+        self.assertEqual("[REDACTED]", reopened.sections[0].header.paragraphs[0].text)
+        self.assertEqual("", reopened.core_properties.author or "")
+
+    def test_secure_docx_redaction_fails_closed_on_uninspectable_media(self) -> None:
+        import docx
+
+        path = self.root / "media.docx"
+        document = docx.Document()
+        document.add_paragraph("TopSecret")
+        document.save(path)
+        with_media = self.root / "media-uninspectable.docx"
+        _rewrite_zip(path, {}, {"word/media/uninspectable.bin": b"opaque"}, with_media)
+        before = hashlib.sha256(with_media.read_bytes()).hexdigest()
+
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_secure_redact(argparse.Namespace(
+                    path=str(with_media), find="TopSecret", replace="[REDACTED]",
+                    expected_count=1, expected_sha256=None, privacy_scrub=False,
+                ))
+        self.assertEqual(before, hashlib.sha256(with_media.read_bytes()).hexdigest())
+
     def test_pptx_replace_matches_across_runs(self) -> None:
         from pptx import Presentation
 
@@ -456,6 +556,24 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
                 )
         self.assertTrue(source.exists())
 
+    def test_validator_and_unpack_reject_high_ratio_zip_before_extraction(self) -> None:
+        path = self.root / "bomb.docx"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", b"0" * (2 * 1024 * 1024))
+            archive.writestr("_rels/.rels", "<Relationships/>")
+            archive.writestr("word/document.xml", "<document/>")
+        report = validate_ooxml_package(path)
+        self.assertEqual("fail", report.status)
+        self.assertTrue(any(issue.code == "zip.compression_ratio" for issue in report.errors))
+
+        outdir = self.root / "bomb-unpacked"
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_unpack(
+                    argparse.Namespace(path=str(path), outdir=str(outdir), overwrite=False)
+                )
+        self.assertFalse(outdir.exists())
+
     def test_windows_automation_security_is_forced_disabled_and_restored(self) -> None:
         class FakeOfficeApplication:
             AutomationSecurity = 1
@@ -466,6 +584,21 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertEqual(3, app.AutomationSecurity)
         office_artifact_service._restore_automation_security(app, previous)
         self.assertEqual(1, app.AutomationSecurity)
+
+    def test_excel_calculation_wait_completes_and_times_out(self) -> None:
+        class FakeExcel:
+            def __init__(self, states):
+                self.states = iter(states)
+                self.last = 0
+
+            @property
+            def CalculationState(self):
+                self.last = next(self.states, self.last)
+                return self.last
+
+        office_artifact_service._wait_for_excel_calculation(FakeExcel([1, 2, 0]), 1.0)
+        with self.assertRaises(TimeoutError):
+            office_artifact_service._wait_for_excel_calculation(FakeExcel([1]), 0.0)
 
     def test_validate_reports_missing_xlsx_formula_cache_without_claiming_calculation(self) -> None:
         import openpyxl

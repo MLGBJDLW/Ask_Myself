@@ -18,6 +18,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -497,7 +498,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
 # replace / redact (shared core)
 # ---------------------------------------------------------------------------
 
-def _replace_across_text_nodes(nodes: list[Any], find: str, replace: str, apply: bool) -> int:
+def _replace_across_text_nodes(
+    nodes: list[Any],
+    find: str,
+    replace: str,
+    apply: bool,
+    occurrence: int | None = None,
+) -> int:
     fragments = [node.text or "" for node in nodes]
     combined = "".join(fragments)
     if not combined or find not in combined:
@@ -521,7 +528,11 @@ def _replace_across_text_nodes(nodes: list[Any], find: str, replace: str, apply:
     if not apply:
         return len(matches)
 
-    for start, end in reversed(matches):
+    selected = matches if occurrence is None else (
+        [matches[occurrence - 1]] if 1 <= occurrence <= len(matches) else []
+    )
+
+    for start, end in reversed(selected):
         start_index = max(0, bisect_right(starts, start) - 1)
         end_index = max(0, bisect_right(starts, end - 1) - 1)
         start_offset = start - starts[start_index]
@@ -538,10 +549,31 @@ def _replace_across_text_nodes(nodes: list[Any], find: str, replace: str, apply:
     return len(matches)
 
 
-def _docx_text_groups(doc) -> list[list[Any]]:
+def _docx_group_scope(part_name: str, paragraph: Any) -> str:
+    lowered = part_name.lower()
+    if "/header" in lowered:
+        return "header"
+    if "/footer" in lowered:
+        return "footer"
+    if "/comments" in lowered:
+        return "comments"
+    if "/footnotes" in lowered:
+        return "footnotes"
+    if "/endnotes" in lowered:
+        return "endnotes"
+    ancestors = list(paragraph.iterancestors()) if hasattr(paragraph, "iterancestors") else []
+    ancestor_names = {ancestor.tag.rsplit("}", 1)[-1] for ancestor in ancestors}
+    if "txbxContent" in ancestor_names:
+        return "textbox"
+    if "tc" in ancestor_names:
+        return "table"
+    return "body"
+
+
+def _docx_text_groups(doc, scopes: set[str] | None = None) -> list[dict[str, Any]]:
     from docx.oxml.ns import qn  # type: ignore
 
-    groups: list[list[Any]] = []
+    groups: list[dict[str, Any]] = []
     seen_roots: set[int] = set()
     for part in doc.part.package.parts:
         root = getattr(part, "element", None)
@@ -550,11 +582,77 @@ def _docx_text_groups(doc) -> list[list[Any]]:
         if root is None or id(root) in seen_roots:
             continue
         seen_roots.add(id(root))
+        part_name = str(getattr(part, "partname", ""))
         for paragraph in root.iter(qn("w:p")):
             nodes = list(paragraph.iter(qn("w:t")))
             if nodes:
-                groups.append(nodes)
+                scope = _docx_group_scope(part_name, paragraph)
+                if scopes is None or scope in scopes:
+                    groups.append({
+                        "scope": scope,
+                        "part": part_name,
+                        "nodes": nodes,
+                    })
     return groups
+
+
+def _docx_run_signature(node: Any) -> tuple[str, bool]:
+    run = node.getparent() if hasattr(node, "getparent") else None
+    properties = ""
+    if run is not None:
+        for child in run:
+            if child.tag.rsplit("}", 1)[-1] == "rPr":
+                properties = str(getattr(child, "xml", ""))
+                break
+    hyperlink = False
+    parent = run.getparent() if run is not None and hasattr(run, "getparent") else None
+    while parent is not None:
+        if parent.tag.rsplit("}", 1)[-1] == "hyperlink":
+            hyperlink = True
+            break
+        parent = parent.getparent() if hasattr(parent, "getparent") else None
+    return properties, hyperlink
+
+
+def _assert_docx_container_compatible(
+    nodes: list[Any],
+    find: str,
+    occurrence: int | None,
+    allow_style_merge: bool,
+) -> None:
+    if allow_style_merge:
+        return
+    fragments = [node.text or "" for node in nodes]
+    combined = "".join(fragments)
+    starts: list[int] = []
+    cursor = 0
+    for fragment in fragments:
+        starts.append(cursor)
+        cursor += len(fragment)
+    matches: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        start = combined.find(find, cursor)
+        if start < 0:
+            break
+        matches.append((start, start + len(find)))
+        cursor = start + len(find)
+    selected = matches if occurrence is None else (
+        [matches[occurrence - 1]] if 1 <= occurrence <= len(matches) else []
+    )
+    for start, end in selected:
+        start_index = max(0, bisect_right(starts, start) - 1)
+        end_index = max(0, bisect_right(starts, end - 1) - 1)
+        signatures = {
+            _docx_run_signature(nodes[index])
+            for index in range(start_index, end_index + 1)
+        }
+        if len(signatures) > 1:
+            _die(
+                "CONTAINER_BOUNDARY: replacement crosses incompatible run style or hyperlink boundaries; "
+                "target a narrower span or explicitly pass --allow-style-merge",
+                1,
+            )
 
 
 def _assert_expected_match_count(count: int, expected_count: int | None) -> None:
@@ -571,6 +669,9 @@ def _replace_docx(
     replace: str,
     dry_run: bool,
     expected_count: int | None = None,
+    scopes: set[str] | None = None,
+    occurrence: int | None = None,
+    allow_style_merge: bool = False,
 ) -> int:
     try:
         import docx  # type: ignore
@@ -578,15 +679,46 @@ def _replace_docx(
         _missing("python-docx")
     working = path if dry_run else _staged_copy(path)
     doc = docx.Document(str(working))
-    groups = _docx_text_groups(doc)
-    before_lines = ["".join(node.text or "" for node in nodes) for nodes in groups]
-    count = sum(_replace_across_text_nodes(nodes, find, replace, apply=False) for nodes in groups)
+    groups = _docx_text_groups(doc, scopes)
+    before_lines = [
+        f"[{group['scope']}] " + "".join(node.text or "" for node in group["nodes"])
+        for group in groups
+    ]
+    group_counts = [
+        _replace_across_text_nodes(group["nodes"], find, replace, apply=False)
+        for group in groups
+    ]
+    count = sum(group_counts)
     if expected_count is not None and count != expected_count and not dry_run:
         working.unlink(missing_ok=True)
     _assert_expected_match_count(count, expected_count)
+    if occurrence is not None and not 1 <= occurrence <= count:
+        if not dry_run:
+            working.unlink(missing_ok=True)
+        _die(f"PRECONDITION_FAILED: occurrence {occurrence} is outside 1..{count}", 1)
     if not dry_run and count:
-        for nodes in groups:
-            _replace_across_text_nodes(nodes, find, replace, apply=True)
+        global_start = 1
+        for group, group_count in zip(groups, group_counts, strict=True):
+            local_occurrence = None
+            should_apply = occurrence is None
+            if occurrence is not None and global_start <= occurrence < global_start + group_count:
+                local_occurrence = occurrence - global_start + 1
+                should_apply = True
+            if should_apply and group_count:
+                _assert_docx_container_compatible(
+                    group["nodes"],
+                    find,
+                    local_occurrence,
+                    allow_style_merge,
+                )
+                _replace_across_text_nodes(
+                    group["nodes"],
+                    find,
+                    replace,
+                    apply=True,
+                    occurrence=local_occurrence,
+                )
+            global_start += group_count
     if dry_run:
         after_lines = [line.replace(find, replace) for line in before_lines]
         diff = difflib.unified_diff(
@@ -797,7 +929,21 @@ def cmd_replace(args: argparse.Namespace) -> int:
         _die("ERROR: --expected-count cannot be negative", 3)
     ext = _ext(path)
     if ext == "docx":
-        return _replace_docx(path, args.find, args.replace or "", args.dry_run, expected_count)
+        raw_scope = getattr(args, "scope", None)
+        scopes = {item.strip().lower() for item in raw_scope.split(",") if item.strip()} if raw_scope else None
+        supported_scopes = {"body", "table", "textbox", "header", "footer", "comments", "footnotes", "endnotes"}
+        if scopes is not None and not scopes <= supported_scopes:
+            _die(f"ERROR: unsupported DOCX scope(s): {', '.join(sorted(scopes - supported_scopes))}", 3)
+        return _replace_docx(
+            path,
+            args.find,
+            args.replace or "",
+            args.dry_run,
+            expected_count,
+            scopes,
+            getattr(args, "occurrence", None),
+            bool(getattr(args, "allow_style_merge", False)),
+        )
     if ext == "pptx":
         return _replace_pptx(path, args.find, args.replace or "", args.dry_run, expected_count)
     if ext == "xlsx":
@@ -807,9 +953,147 @@ def cmd_replace(args: argparse.Namespace) -> int:
 
 
 def cmd_redact(args: argparse.Namespace) -> int:
-    # redact is replace with a default mask token
+    # Compatibility command: visible-story text replacement only. Use
+    # secure_redact when the original must be proven absent from package text.
     args.replace = args.replace if args.replace is not None else "[REDACTED]"
     return cmd_replace(args)
+
+
+def _replace_secret_in_xml(data: bytes, secret: str, replacement: str) -> tuple[bytes, int]:
+    root = ET.fromstring(data)
+    count = 0
+    text_tags = {"t", "delText", "instrText"}
+    for paragraph in [element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "p"]:
+        nodes = [
+            element for element in paragraph.iter()
+            if element.tag.rsplit("}", 1)[-1] in text_tags
+        ]
+        if nodes:
+            matches = _replace_across_text_nodes(nodes, secret, replacement, apply=True)
+            count += matches
+    for element in root.iter():
+        local = element.tag.rsplit("}", 1)[-1]
+        if local not in text_tags and element.text and secret in element.text:
+            occurrences = element.text.count(secret)
+            element.text = element.text.replace(secret, replacement)
+            count += occurrences
+        if element.tail and secret in element.tail:
+            occurrences = element.tail.count(secret)
+            element.tail = element.tail.replace(secret, replacement)
+            count += occurrences
+        for attribute, value in list(element.attrib.items()):
+            if secret in value:
+                occurrences = value.count(secret)
+                element.set(attribute, value.replace(secret, replacement))
+                count += occurrences
+    if count == 0:
+        return data, 0
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True), count
+
+
+def _privacy_scrub_docx_part(name: str, data: bytes) -> bytes:
+    if name == "docProps/custom.xml":
+        root = ET.fromstring(data)
+        for child in list(root):
+            root.remove(child)
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    if name != "docProps/core.xml":
+        return data
+    root = ET.fromstring(data)
+    scrub_names = {"creator", "lastModifiedBy", "keywords", "description", "subject"}
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] in scrub_names:
+            element.text = ""
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def cmd_secure_redact(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "docx":
+        _die("ERROR: secure_redact currently requires a .docx file", 3)
+    secret = str(args.find or "")
+    if not secret:
+        _die("ERROR: --find is required", 3)
+    replacement = args.replace if args.replace is not None else "[REDACTED]"
+    expected_sha256 = getattr(args, "expected_sha256", None)
+    if expected_sha256:
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_sha256.lower() != str(expected_sha256).lower():
+            _die(
+                "PRECONDITION_FAILED: artifact SHA-256 changed since it was inspected "
+                f"(expected {expected_sha256}, actual {actual_sha256})",
+                1,
+            )
+    expected_count = getattr(args, "expected_count", None)
+    blocked_prefixes = ("word/embeddings/", "word/oleObjects/", "word/media/")
+    with zipfile.ZipFile(path) as archive:
+        blocked_parts = sorted(
+            name for name in archive.namelist()
+            if not name.endswith("/") and name.startswith(blocked_prefixes)
+        )
+    if blocked_parts:
+        _die(
+            "UNINSPECTABLE_CONTENT: secure redaction cannot prove that the secret is absent from "
+            "embedded objects or media: " + ", ".join(blocked_parts),
+            1,
+        )
+    staged = staging_path(path)
+    redacted_parts: dict[str, int] = {}
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as source, zipfile.ZipFile(staged, "w") as destination:
+            for info in source.infolist():
+                data = source.read(info.filename)
+                if info.filename.endswith((".xml", ".rels")):
+                    try:
+                        data, matches = _replace_secret_in_xml(
+                            data,
+                            secret,
+                            str(replacement),
+                        )
+                    except ET.ParseError as error:
+                        _die(f"SECURE_REDACTION_FAILED: XML part cannot be inspected: {info.filename}: {error}", 1)
+                    if matches:
+                        redacted_parts[info.filename] = matches
+                        total += matches
+                    if getattr(args, "privacy_scrub", False):
+                        data = _privacy_scrub_docx_part(info.filename, data)
+                destination.writestr(info, data)
+        _assert_expected_match_count(total, expected_count)
+        if total == 0:
+            _die("PRECONDITION_FAILED: secure redaction found no matches", 1)
+        secret_encodings = [secret.encode("utf-8"), secret.encode("utf-16le")]
+        residual_parts: list[str] = []
+        with zipfile.ZipFile(staged) as archive:
+            for name in archive.namelist():
+                data = archive.read(name)
+                if any(needle and needle in data for needle in secret_encodings):
+                    residual_parts.append(name)
+        if residual_parts:
+            _die(
+                "SECURE_REDACTION_FAILED: original text remains in package parts: "
+                + ", ".join(residual_parts),
+                1,
+            )
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    print(json.dumps({
+        "kind": "secureDocxRedaction",
+        "path": str(path),
+        "redactedOccurrences": total,
+        "redactedParts": redacted_parts,
+        "privacyScrubbed": bool(getattr(args, "privacy_scrub", False)),
+        "verification": {
+            "utf8ResidualParts": [],
+            "utf16ResidualParts": [],
+            "uninspectableParts": [],
+            "originalTextAbsent": True,
+        },
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    }, ensure_ascii=False, indent=2))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1364,29 @@ def cmd_create_docx(args: argparse.Namespace) -> int:
         _missing("python-docx")
     path = _validate_output_path(args.path, {"docx"})
     staged = staging_path(path)
+    if getattr(args, "spec", None):
+        spec_path = _validate_path(args.spec)
+        payload = _read_json(str(spec_path))
+        skills_root = Path(__file__).resolve().parents[2]
+        renderer_dir = skills_root / "docx-document-design" / "scripts"
+        if str(renderer_dir) not in sys.path:
+            sys.path.insert(0, str(renderer_dir))
+        try:
+            from docx_renderer import render_docx  # type: ignore
+        except ImportError as exc:
+            _die(f"ERROR: failed to load DOCX renderer: {exc}", 1)
+        try:
+            result = render_docx(payload, staged, Path.cwd())
+            snapshot, validation = _publish_edit(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+        result.update({
+            "path": str(path),
+            "snapshot": str(snapshot) if snapshot else None,
+            "validation": validation,
+        })
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     doc = docx.Document(str(_validate_path(args.template))) if args.template else docx.Document()
     if args.font:
         doc.styles["Normal"].font.name = args.font
@@ -1167,6 +1474,42 @@ def _load_xlsx_renderer():
     return create_xlsx_from_spec, audit_xlsx_formula_integrity, inspect_formula_cache
 
 
+def _load_xlsx_structured_editor():
+    skills_root = Path(__file__).resolve().parents[2]
+    editor_dir = skills_root / "xlsx-workbook-design" / "scripts"
+    if str(editor_dir) not in sys.path:
+        sys.path.insert(0, str(editor_dir))
+    try:
+        from xlsx_structured_editor import patch_xlsx  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load XLSX structured editor: {exc}", 1)
+    return patch_xlsx
+
+
+def cmd_edit_xlsx(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "xlsx":
+        _die("ERROR: edit_xlsx requires a .xlsx file", 3)
+    payload = _read_json(args.spec)
+    operations = payload.get("operations", payload)
+    if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
+        _die("ERROR: XLSX edit spec must contain an operations array", 3)
+    staged = staging_path(path)
+    patch_xlsx = _load_xlsx_structured_editor()
+    try:
+        result = patch_xlsx(path, staged, operations)
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    result.update({
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _load_pptx_renderer():
     skills_root = Path(__file__).resolve().parents[2]
     renderer_dir = skills_root / "pptx-presentation-design" / "scripts"
@@ -1180,6 +1523,87 @@ def _load_pptx_renderer():
     except ImportError as exc:
         _die(f"ERROR: failed to load PPTX renderer: {exc}", 1)
     return create_pptx_from_spec
+
+
+def _load_pptx_structured_editor():
+    skills_root = Path(__file__).resolve().parents[2]
+    editor_dir = skills_root / "pptx-presentation-design" / "scripts"
+    if str(editor_dir) not in sys.path:
+        sys.path.insert(0, str(editor_dir))
+    try:
+        from pptx_structured_editor import patch_pptx  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load PPTX structured editor: {exc}", 1)
+    return patch_pptx
+
+
+def _load_docx_review_editor():
+    skills_root = Path(__file__).resolve().parents[2]
+    editor_dir = skills_root / "docx-document-design" / "scripts"
+    if str(editor_dir) not in sys.path:
+        sys.path.insert(0, str(editor_dir))
+    try:
+        from docx_review_editor import extract_comments, patch_docx_reviews  # type: ignore
+    except ImportError as exc:
+        _die(f"ERROR: failed to load DOCX review editor: {exc}", 1)
+    return patch_docx_reviews, extract_comments
+
+
+def cmd_review_docx(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "docx":
+        _die("ERROR: review_docx requires a .docx file", 3)
+    payload = _read_json(args.spec)
+    operations = payload.get("operations", payload)
+    if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
+        _die("ERROR: DOCX review spec must contain an operations array", 3)
+    patch_docx_reviews, _ = _load_docx_review_editor()
+    staged = staging_path(path)
+    try:
+        result = patch_docx_reviews(path, staged, operations)
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    result.update({
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_comments_docx(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "docx":
+        _die("ERROR: comments_docx requires a .docx file", 3)
+    _, extract_comments = _load_docx_review_editor()
+    print(json.dumps(extract_comments(path), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_edit_pptx(args: argparse.Namespace) -> int:
+    path = _validate_path(args.path)
+    if _ext(path) != "pptx":
+        _die("ERROR: edit_pptx requires a .pptx file", 3)
+    payload = _read_json(args.spec)
+    operations = payload.get("operations", payload)
+    if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
+        _die("ERROR: PPTX edit spec must contain an operations array", 3)
+    staged = staging_path(path)
+    patch_pptx = _load_pptx_structured_editor()
+    try:
+        result = patch_pptx(path, staged, operations)
+        snapshot, validation = _publish_edit(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+    result.update({
+        "path": str(path),
+        "snapshot": str(snapshot) if snapshot else None,
+        "validation": validation,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _load_html_deck_renderer():
@@ -1260,6 +1684,13 @@ def cmd_unpack(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if _ext(path) not in {"docx", "pptx", "xlsx"}:
         _die("ERROR: unpack supports .docx/.pptx/.xlsx only", 3)
+    preflight = validate_ooxml_package(path)
+    if preflight.status == "fail":
+        _die(
+            "VALIDATION_FAILED: package is unsafe or structurally invalid and was not unpacked\n"
+            + json.dumps(preflight.to_dict(), ensure_ascii=False),
+            1,
+        )
     outdir = _validate_output_dir(args.outdir, allow_existing=True)
     if any(outdir.iterdir()):
         if not args.overwrite:
@@ -1386,25 +1817,11 @@ def cmd_render(args: argparse.Namespace) -> int:
 
 
 def _scan_xlsx_formula_errors(path: Path) -> tuple[int, dict[str, list[str]]]:
-    try:
-        import openpyxl  # type: ignore
-    except ImportError:
-        _missing("openpyxl")
-    wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
-    found: dict[str, list[str]] = {err: [] for err in EXCEL_ERRORS}
-    try:
-        for sheet_name in wb.sheetnames:
-            for row in wb[sheet_name].iter_rows():
-                for cell in row:
-                    if isinstance(cell.value, str):
-                        for err in EXCEL_ERRORS:
-                            if err in cell.value:
-                                found[err].append(f"{sheet_name}!{cell.coordinate}")
-                                break
-    finally:
-        wb.close()
-    total = sum(len(locations) for locations in found.values())
-    return total, {err: locs for err, locs in found.items() if locs}
+    _load_xlsx_renderer()
+    from xlsx_model_renderer import inspect_formula_errors  # type: ignore
+
+    evidence = inspect_formula_errors(path)
+    return int(evidence["count"]), dict(evidence["byValue"])
 
 
 def _count_xlsx_formulas(path: Path) -> int:
@@ -1441,7 +1858,7 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
     unsafe_features = {
         key: parts
         for key, parts in risk["features"].items()
-        if parts and key in {"macros", "signatures", "externalLinks", "pivotCaches", "dataModel"}
+        if parts
     }
     if unsafe_features and not args.allow_risky:
         print(json.dumps({
@@ -1454,6 +1871,9 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
         return 5
 
     _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
+    from xlsx_model_renderer import inspect_formula_inventory  # type: ignore
+
+    formula_inventory_before = inspect_formula_inventory(path)
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix=".nexa-recalc-", dir=path.parent) as tmp:
         root = Path(tmp)
@@ -1495,6 +1915,18 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
             }, ensure_ascii=False, indent=2))
             return 1
         formula_qa = audit_xlsx_formula_integrity(recalculated)
+        formula_inventory_after = inspect_formula_inventory(recalculated)
+        if formula_inventory_before["fingerprint"] != formula_inventory_after["fingerprint"]:
+            print(json.dumps({
+                "status": "fail",
+                "recalculated": False,
+                "reason": "LibreOffice changed formula definitions; recalculated workbook was not published.",
+                "formulaFingerprintBefore": formula_inventory_before["fingerprint"],
+                "formulaFingerprintAfter": formula_inventory_after["fingerprint"],
+                "formulaCountBefore": formula_inventory_before["formulaCells"],
+                "formulaCountAfter": formula_inventory_after["formulaCells"],
+            }, ensure_ascii=False, indent=2))
+            return 1
         cached_error_total, cached_errors = _scan_xlsx_formula_errors(recalculated)
         if formula_qa["status"] == "fail" or cached_error_total:
             print(json.dumps({
@@ -1512,12 +1944,19 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
     after_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     result = {
         "status": formula_qa["status"],
-        "backend": "libreoffice",
+        "backend": "libreoffice-compatible",
         "recalculated": True,
         "rewritten": True,
         "contentChanged": before_hash != after_hash,
         "formula_qa": formula_qa,
-        "calculation": inspect_formula_cache(path),
+        "calculation": {
+            **inspect_formula_cache(path),
+            "engine": "libreoffice",
+            "profile": "compatible",
+            "excelNative": False,
+        },
+        "formulaFingerprintBefore": formula_inventory_before["fingerprint"],
+        "formulaFingerprintAfter": formula_inventory_after["fingerprint"],
         "cached_formula_errors": cached_errors,
         "total_formulas": _count_xlsx_formulas(path),
         "risk": risk,
@@ -1696,6 +2135,132 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                 "minimum": int(minimum),
                 "actual": actual,
             })
+    required_styles = [str(item) for item in contract.get("required_styles", [])]
+    used_styles = {
+        paragraph.style.name
+        for paragraph in document.paragraphs
+        if paragraph.style is not None
+    }
+    missing_styles = [style for style in required_styles if style not in used_styles]
+    checks["requiredStyles"] = {"required": required_styles, "missing": missing_styles}
+    for style in missing_styles:
+        errors.append({"code": "style.missing", "style": style})
+
+    heading_levels: list[int] = []
+    for paragraph in document.paragraphs:
+        style_name = paragraph.style.name if paragraph.style is not None else ""
+        match = re.fullmatch(r"Heading ([1-6])", style_name)
+        if match:
+            heading_levels.append(int(match.group(1)))
+    heading_jumps = [
+        {"from": previous, "to": current, "position": index}
+        for index, (previous, current) in enumerate(zip(heading_levels, heading_levels[1:]), start=2)
+        if current > previous + 1
+    ]
+    if heading_levels and heading_levels[0] != 1:
+        heading_jumps.insert(0, {"from": 0, "to": heading_levels[0], "position": 1})
+    checks["headingOrder"] = {"levels": heading_levels, "jumps": heading_jumps}
+    if contract.get("no_heading_level_skips") and heading_jumps:
+        errors.append({"code": "heading.level_skip", "jumps": heading_jumps})
+
+    package_checks = {
+        "pictures": 0,
+        "picturesWithAltText": 0,
+        "tables": 0,
+        "tablesWithHeaderRows": 0,
+        "tablesWithFixedLayout": 0,
+        "languageValues": [],
+        "comments": 0,
+        "trackedInsertions": 0,
+        "trackedDeletions": 0,
+    }
+    with zipfile.ZipFile(path) as archive:
+        for name in archive.namelist():
+            if not name.startswith("word/") or not name.endswith(".xml"):
+                continue
+            root = ET.fromstring(archive.read(name))
+            for element in root.iter():
+                local = element.tag.rsplit("}", 1)[-1]
+                if local == "docPr":
+                    package_checks["pictures"] += 1
+                    if str(element.attrib.get("descr", "")).strip():
+                        package_checks["picturesWithAltText"] += 1
+                elif local == "tbl":
+                    package_checks["tables"] += 1
+                    first_row = next((child for child in element if child.tag.rsplit("}", 1)[-1] == "tr"), None)
+                    if first_row is not None and any(
+                        descendant.tag.rsplit("}", 1)[-1] == "tblHeader"
+                        for descendant in first_row.iter()
+                    ):
+                        package_checks["tablesWithHeaderRows"] += 1
+                    if any(
+                        descendant.tag.rsplit("}", 1)[-1] == "tblLayout"
+                        and descendant.attrib.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type") == "fixed"
+                        for descendant in element.iter()
+                    ):
+                        package_checks["tablesWithFixedLayout"] += 1
+                elif local == "lang":
+                    for attribute, value in element.attrib.items():
+                        if attribute.rsplit("}", 1)[-1] in {"val", "eastAsia", "bidi"} and value:
+                            package_checks["languageValues"].append(value)
+                elif local == "comment" and name == "word/comments.xml":
+                    package_checks["comments"] += 1
+                elif local == "ins":
+                    package_checks["trackedInsertions"] += 1
+                elif local == "del":
+                    package_checks["trackedDeletions"] += 1
+    package_checks["languageValues"] = sorted(set(package_checks["languageValues"]))
+    checks["accessibilityAndLayout"] = package_checks
+    if (
+        contract.get("require_alt_text")
+        and package_checks["picturesWithAltText"] != package_checks["pictures"]
+    ):
+        errors.append({
+            "code": "image.alt_text_missing",
+            "pictures": package_checks["pictures"],
+            "withAltText": package_checks["picturesWithAltText"],
+        })
+    if (
+        contract.get("require_table_header_rows")
+        and package_checks["tablesWithHeaderRows"] != package_checks["tables"]
+    ):
+        errors.append({
+            "code": "table.header_row_missing",
+            "tables": package_checks["tables"],
+            "withHeaderRows": package_checks["tablesWithHeaderRows"],
+        })
+    if (
+        contract.get("require_fixed_table_layout")
+        and package_checks["tablesWithFixedLayout"] != package_checks["tables"]
+    ):
+        errors.append({
+            "code": "table.fixed_layout_missing",
+            "tables": package_checks["tables"],
+            "withFixedLayout": package_checks["tablesWithFixedLayout"],
+        })
+    required_language = contract.get("required_language")
+    if required_language and str(required_language) not in package_checks["languageValues"]:
+        errors.append({
+            "code": "document.language_missing",
+            "required": str(required_language),
+            "actual": package_checks["languageValues"],
+        })
+    minimum_comments = int(contract.get("min_comments", 0) or 0)
+    if package_checks["comments"] < minimum_comments:
+        errors.append({
+            "code": "comments.minimum",
+            "minimum": minimum_comments,
+            "actual": package_checks["comments"],
+        })
+    revision_count = package_checks["trackedInsertions"] + package_checks["trackedDeletions"]
+    if contract.get("require_tracked_changes") and revision_count == 0:
+        errors.append({"code": "tracked_changes.missing"})
+    if contract.get("require_no_tracked_changes") and revision_count:
+        errors.append({
+            "code": "tracked_changes.present",
+            "insertions": package_checks["trackedInsertions"],
+            "deletions": package_checks["trackedDeletions"],
+        })
     return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
 
 
@@ -1797,6 +2362,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
             _missing("python-pptx")
         prs = Presentation(str(path))
         result["backend"] = {"id": "python-pptx", "slides": len(prs.slides)}
+        skills_root = Path(__file__).resolve().parents[2]
+        audit_dir = skills_root / "pptx-presentation-design" / "scripts"
+        if str(audit_dir) not in sys.path:
+            sys.path.insert(0, str(audit_dir))
+        try:
+            import pptx_audit  # type: ignore
+
+            package_graph = pptx_audit.audit(path)
+            result["packageGraph"] = package_graph
+            if package_graph.get("validation_errors"):
+                result["status"] = "fail"
+        except Exception as exc:  # noqa: BLE001
+            result["packageGraphWarning"] = f"{type(exc).__name__}: {exc}"
+            if result["status"] == "pass":
+                result["status"] = "warn"
     elif ext == "xlsx":
         try:
             import openpyxl  # type: ignore
@@ -1898,6 +2478,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--dry-run", action="store_true")
     p_rep.add_argument("--expected-sha256", default=None, help="Fail if the artifact changed since inspection")
     p_rep.add_argument("--expected-count", type=int, default=None, help="Fail unless exactly this many matches exist")
+    p_rep.add_argument("--scope", default=None, help="DOCX story scopes: body,table,textbox,header,footer,comments,footnotes,endnotes")
+    p_rep.add_argument("--occurrence", type=int, default=None, help="Replace only this 1-based match within the selected DOCX scopes")
+    p_rep.add_argument("--allow-style-merge", action="store_true", help="Allow a DOCX replacement to cross incompatible style/hyperlink runs")
     p_rep.set_defaults(func=cmd_replace)
 
     p_red = sub.add_parser("redact", help="Redact text (docx/pptx/xlsx)")
@@ -1906,7 +2489,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_red.add_argument("--dry-run", action="store_true")
     p_red.add_argument("--expected-sha256", default=None, help="Fail if the artifact changed since inspection")
     p_red.add_argument("--expected-count", type=int, default=None, help="Fail unless exactly this many matches exist")
+    p_red.add_argument("--scope", default=None, help="DOCX story scopes; this command is visible-text replacement, not secure redaction")
+    p_red.add_argument("--occurrence", type=int, default=None)
+    p_red.add_argument("--allow-style-merge", action="store_true")
     p_red.set_defaults(func=cmd_redact)
+
+    p_secure_red = sub.add_parser(
+        "secure_redact",
+        help="Redact DOCX package text and prove the original is absent; fail on uninspectable media/embeddings",
+    )
+    p_secure_red.add_argument("--find", required=True)
+    p_secure_red.add_argument("--replace", default="[REDACTED]")
+    p_secure_red.add_argument("--expected-count", type=int, default=None)
+    p_secure_red.add_argument("--expected-sha256", default=None)
+    p_secure_red.add_argument("--privacy-scrub", action="store_true")
+    p_secure_red.set_defaults(func=cmd_secure_redact)
 
     p_ext = sub.add_parser("extract", help="Extract plain text (docx/pdf/pptx/xlsx)")
     p_ext.add_argument("--pages", default=None, help="e.g. 1-3 or 1,3,5")
@@ -1923,6 +2520,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ver.set_defaults(func=cmd_version)
 
     p_cd = sub.add_parser("create_docx", help="Create a DOCX using python-docx")
+    p_cd.add_argument("--spec", default=None, help="Absolute DOCX Spec v2 JSON path")
     p_cd.add_argument("--title", default="")
     p_cd.add_argument("--subtitle", default="")
     p_cd.add_argument("--body", default="")
@@ -1941,6 +2539,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_cp.add_argument("--spec", required=True, help="Absolute path to deck JSON spec, or '-' to read JSON from stdin")
     p_cp.add_argument("--template", default=None, help="Optional absolute .pptx template path")
     p_cp.set_defaults(func=cmd_create_pptx)
+
+    p_edit_pptx = sub.add_parser("edit_pptx", help="Apply typed PPTX display-order, shape text, clone, or transition edits")
+    p_edit_pptx.add_argument("--spec", required=True, help="Absolute JSON file containing an operations array")
+    p_edit_pptx.set_defaults(func=cmd_edit_pptx)
+
+    p_review_docx = sub.add_parser("review_docx", help="Apply typed DOCX comment or tracked-change operations")
+    p_review_docx.add_argument("--spec", required=True, help="Absolute JSON file containing an operations array")
+    p_review_docx.set_defaults(func=cmd_review_docx)
+
+    p_comments_docx = sub.add_parser("comments_docx", help="Extract DOCX comments as JSON")
+    p_comments_docx.set_defaults(func=cmd_comments_docx)
 
     p_chp = sub.add_parser("create_html_pptx", help="Create a PPTX from an HTML-first deck spec")
     p_chp.add_argument("--spec", required=True, help="Absolute path to HTML deck JSON spec, or '-' to read JSON from stdin")
@@ -1971,6 +2580,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional absolute JSON workbook contract with sheets, names, hardcodes, rows, and sentinels",
     )
     p_lint.set_defaults(func=cmd_lint_xlsx)
+
+    p_edit_xlsx = sub.add_parser("edit_xlsx", help="Apply typed direct-OOXML XLSX value, formula, range, clear, or style edits")
+    p_edit_xlsx.add_argument("--spec", required=True, help="Absolute JSON file containing an operations array")
+    p_edit_xlsx.set_defaults(func=cmd_edit_xlsx)
 
     p_recalc = sub.add_parser("recalc_xlsx", help="Recalculate and resave XLSX with LibreOffice")
     p_recalc.add_argument(

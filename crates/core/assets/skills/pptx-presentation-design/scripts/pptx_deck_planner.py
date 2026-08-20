@@ -14,7 +14,7 @@ URL_RE = re.compile(r"https?://[^\s)\]}>,]+")
 
 INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
     "healthcare": {
-        "tokens": ["healthcare", "patient", "clinical", "hospital", "care", "medical", "provider"],
+        "tokens": ["healthcare", "patient", "clinical", "hospital", "care", "medical", "provider", "医疗", "患者", "临床", "医院"],
         "theme": "healthcare-trust",
         "background_presets": ["clinical_grid", "soft_geometry", "spotlight"],
         "icons": ["trust", "check", "workflow"],
@@ -22,7 +22,7 @@ INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
         "image_usage": "prefer authentic care-context images as soft backgrounds or side-by-side human context",
     },
     "finance": {
-        "tokens": ["finance", "capital", "portfolio", "investment", "revenue", "margin", "risk", "market"],
+        "tokens": ["finance", "capital", "portfolio", "investment", "revenue", "margin", "risk", "market", "金融", "投资", "营收", "利润", "风险", "市场"],
         "theme": "finance-precision",
         "background_presets": ["data_grid", "blueprint_grid", "spotlight"],
         "icons": ["trend", "shield", "signal"],
@@ -30,7 +30,7 @@ INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
         "image_usage": "use charts, data grids, and restrained market imagery instead of decorative photos",
     },
     "education": {
-        "tokens": ["education", "student", "learning", "school", "curriculum", "training", "course"],
+        "tokens": ["education", "student", "learning", "school", "curriculum", "training", "course", "教育", "学生", "学习", "学校", "培训", "课程"],
         "theme": "education-bright",
         "background_presets": ["paper_texture", "soft_geometry", "spotlight"],
         "icons": ["spark", "check", "workflow"],
@@ -38,7 +38,7 @@ INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
         "image_usage": "use warm learning-context images sparingly and keep instructions readable",
     },
     "technology": {
-        "tokens": ["ai", "agent", "software", "api", "developer", "technical", "architecture", "platform"],
+        "tokens": ["ai", "agent", "software", "api", "developer", "technical", "architecture", "platform", "智能体", "软件", "开发者", "技术", "架构", "平台"],
         "theme": "nexa-dark",
         "background_presets": ["blueprint_grid", "gradient_mesh", "data_grid"],
         "icons": ["network", "signal", "spark"],
@@ -46,7 +46,7 @@ INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
         "image_usage": "prefer diagrams, architecture visuals, product screenshots, and annotated flows",
     },
     "industrial": {
-        "tokens": ["manufacturing", "factory", "supply", "logistics", "industrial", "operations", "plant"],
+        "tokens": ["manufacturing", "factory", "supply", "logistics", "industrial", "operations", "plant", "制造", "工厂", "供应链", "物流", "运营"],
         "theme": "industrial-contrast",
         "background_presets": ["blueprint_grid", "diagonal", "spotlight"],
         "icons": ["workflow", "check", "shield"],
@@ -57,7 +57,7 @@ INDUSTRY_PROFILES: dict[str, dict[str, Any]] = {
 
 
 def _clean_line(line: str) -> str:
-    return re.sub(r"^[-*#\d.\s]+", "", line.strip()).strip()
+    return re.sub(r"^\s*(?:(?:[-*#•]+)|(?:\d+[.)]))\s+", "", line.strip()).strip()
 
 
 def _source_lines(text: str) -> list[str]:
@@ -89,12 +89,13 @@ def _message_title(point: str, fallback: str) -> str:
 
 def _layout_for(points: list[str], index: int) -> str:
     joined = " ".join(points).lower()
-    if any(token in joined for token in ["roadmap", "timeline", "q1", "q2", "q3", "q4"]):
+    if any(token in joined for token in ["roadmap", "timeline", "q1", "q2", "q3", "q4", "路线图", "时间线", "里程碑", "第一季度", "第二季度", "第三季度", "第四季度"]):
         return "timeline"
-    if any(token in joined for token in ["versus", " vs ", "tradeoff", "pros", "cons"]):
+    if any(token in joined for token in ["versus", " vs ", "tradeoff", "pros", "cons", "对比", "比较", "取舍", "优点", "缺点"]):
         return "comparison"
-    if sum(1 for point in points if re.search(r"\d+%|\$?\d+[,.]?\d*", point)) >= 2:
-        return "chart"
+    # Text numbers are not typed chart data. Years, percentages, currencies,
+    # and counts may use incompatible units, so deterministic planning keeps
+    # them as source text until a caller supplies a chart spec explicitly.
     if index % 4 == 0:
         return "process"
     return "body"
@@ -379,6 +380,7 @@ def plan_deck(
             "audience": audience,
             "industry": industry,
             "source_links": source_urls,
+            "chart_inference": "disabled_without_typed_data",
             "visual_strategy": f"message-title rhythm with {visual_language['tone']} and editable native motifs",
             "design_brief": _design_brief(
                 audience=audience,

@@ -9,7 +9,9 @@ module so callers express outcomes and guarantees instead of shell pipelines.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -23,6 +25,8 @@ from office_artifact_runtime import (
     office_backend_statuses,
     publish_staged_artifact,
     rollback_published_artifact,
+    scan_ooxml_risks,
+    snapshot_file,
     staging_path,
     validate_ooxml_package,
     workspace_path,
@@ -82,9 +86,18 @@ class LocalOpenXmlFormatAdapter:
 
 
 FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
-    "docx": LocalOpenXmlFormatAdapter("docx", frozenset({"create", "replace", "redact", "validate", "render"})),
-    "xlsx": LocalOpenXmlFormatAdapter("xlsx", frozenset({"create", "replace", "redact", "validate", "render", "recalculate"})),
-    "pptx": LocalOpenXmlFormatAdapter("pptx", frozenset({"create", "replace", "redact", "insert_slide", "validate", "render"})),
+    "docx": LocalOpenXmlFormatAdapter("docx", frozenset({
+        "create", "replace", "redact", "secure_redact", "validate", "render",
+        "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+    })),
+    "xlsx": LocalOpenXmlFormatAdapter("xlsx", frozenset({
+        "create", "replace", "redact", "validate", "render", "recalculate",
+        "set_value", "set_formula", "set_range", "clear_range", "set_style",
+    })),
+    "pptx": LocalOpenXmlFormatAdapter("pptx", frozenset({
+        "create", "replace", "redact", "insert_slide", "validate", "render",
+        "set_text", "clone_slide", "reorder_slides", "set_transition",
+    })),
 }
 
 
@@ -207,6 +220,7 @@ class OfficeArtifactEngine:
         self.state_root = self.workspace_root / ".nexa" / "office-artifacts"
         self.candidates_root = self.state_root / "candidates"
         self.receipts_root = self.state_root / "receipts"
+        self.locks_root = self.state_root / "locks"
 
     def capabilities(self) -> dict[str, Any]:
         backends = office_backend_statuses()
@@ -231,6 +245,7 @@ class OfficeArtifactEngine:
         backend = self._backend_for(request)
         readiness = next(item for item in office_backend_statuses() if item["id"] == backend)
         blockers: list[dict[str, Any]] = []
+        source_profile: dict[str, Any] | None = None
         if backend != "nexa-openxml" and readiness["status"] != "ready":
             blockers.append({
                 "code": "backend.unavailable",
@@ -245,6 +260,37 @@ class OfficeArtifactEngine:
                     "backend": "libreoffice",
                     "detail": statuses["libreoffice"].get("detail"),
                 })
+        if request.source is not None:
+            risk = scan_ooxml_risks(request.source)
+            source_profile = {"risk": risk}
+            if (
+                request.preservation == "strict"
+                and risk["features"].get("signatures")
+                and request.intent != "verify"
+            ):
+                blockers.append({
+                    "code": "preservation.digital_signature",
+                    "detail": "Any package mutation invalidates the digital signature.",
+                    "parts": risk["features"]["signatures"],
+                })
+            if request.format == "xlsx":
+                formula_profile = self._xlsx_formula_profile(request.source)
+                source_profile["formulaProfile"] = formula_profile
+                if request.calculation == "compatible":
+                    sensitive = {
+                        name: parts for name, parts in risk["features"].items() if parts
+                    }
+                    if sensitive:
+                        blockers.append({
+                            "code": "calculation.compatible_roundtrip_risk",
+                            "backend": "libreoffice",
+                            "features": sensitive,
+                        })
+                    if formula_profile["requiresExcelNative"]:
+                        blockers.append({
+                            "code": "calculation.excel_native_required",
+                            "features": formula_profile["nativeFeatures"],
+                        })
         return {
             "kind": "officeArtifactAssessment",
             "requestVersion": REQUEST_VERSION,
@@ -260,6 +306,7 @@ class OfficeArtifactEngine:
             },
             "ready": not blockers,
             "blockers": blockers,
+            "sourceProfile": source_profile,
         }
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -288,6 +335,8 @@ class OfficeArtifactEngine:
             "destination": str(request.destination),
             "requestedManifest": str(request.manifest),
             "candidatePath": str(candidate_path),
+            "destinationExistedAtExecute": request.destination.exists(),
+            "destinationBaseSha256": _sha256(request.destination) if request.destination.exists() else None,
             "request": payload,
         }
         write_artifact_manifest(state_path, state, self.workspace_root)
@@ -356,24 +405,47 @@ class OfficeArtifactEngine:
                 "candidate.hash_mismatch",
                 "candidate changed after verification; execute it again",
             )
-        staged = staging_path(destination)
-        shutil.copy2(candidate, staged)
+        lock_path = self._acquire_destination_lock(destination, candidate_id)
+        staged: Path | None = None
         snapshot = None
         sidecar_records: list[dict[str, Any]] = []
         published = False
+        receipt_path: Path | None = None
+        receipt: dict[str, Any] | None = None
         try:
+            self._assert_destination_precondition(state, destination)
+            destination_existed = destination.exists()
+            if destination_existed and os.environ.get("NEXA_OFFICE_SKIP_SNAPSHOT") == "1":
+                raise OfficeArtifactError(
+                    "transaction.snapshot_disabled",
+                    "refusing to overwrite an existing destination while snapshots are disabled",
+                )
+            staged = staging_path(destination)
+            shutil.copy2(candidate, staged)
             snapshot, validation = publish_staged_artifact(
                 staged,
                 destination,
                 self.workspace_root,
                 validate=True,
             )
+            if destination_existed and snapshot is None:
+                raise OfficeArtifactError(
+                    "transaction.snapshot_missing",
+                    "existing destination was published without a restorable snapshot",
+                )
             published = True
             candidate_qa = candidate.with_suffix(".xlsx.qa.json")
             if candidate_qa.exists():
                 destination_qa = destination.with_suffix(".xlsx.qa.json")
                 staged_qa = staging_path(destination_qa)
-                shutil.copy2(candidate_qa, staged_qa)
+                qa_payload = json.loads(candidate_qa.read_text(encoding="utf-8"))
+                qa_payload["path"] = str(destination)
+                qa_payload["qaPath"] = str(destination_qa)
+                staged_qa.write_text(
+                    json.dumps(qa_payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                qa_existed = destination_qa.exists()
                 qa_snapshot, _ = publish_staged_artifact(
                     staged_qa,
                     destination_qa,
@@ -383,9 +455,33 @@ class OfficeArtifactEngine:
                 sidecar_records.append({
                     "path": str(destination_qa),
                     "snapshot": str(qa_snapshot) if qa_snapshot else None,
+                    "existedBefore": qa_existed,
                 })
             receipt_id = uuid.uuid4().hex
             receipt_path = self.receipts_root / f"{receipt_id}.json"
+            outcome = self._candidate_outcome(state)
+            outcome.update({
+                "status": "published",
+                "path": str(destination),
+                "receiptId": receipt_id,
+                "sha256": _sha256(destination),
+            })
+            requested_manifest = workspace_path(
+                Path(state["requestedManifest"]), self.workspace_root
+            )
+            manifest_existed = requested_manifest.exists()
+            manifest_snapshot = snapshot_file(requested_manifest, self.workspace_root)
+            if manifest_existed and manifest_snapshot is None:
+                raise OfficeArtifactError(
+                    "transaction.manifest_snapshot_missing",
+                    "existing delivery manifest could not be snapshotted",
+                )
+            write_artifact_manifest(requested_manifest, outcome, self.workspace_root)
+            sidecar_records.append({
+                "path": str(requested_manifest),
+                "snapshot": str(manifest_snapshot) if manifest_snapshot else None,
+                "existedBefore": manifest_existed,
+            })
             receipt = {
                 "kind": "officeArtifactReceipt",
                 "version": 1,
@@ -395,6 +491,7 @@ class OfficeArtifactEngine:
                 "destination": str(destination),
                 "destinationSha256": _sha256(destination),
                 "snapshot": str(snapshot) if snapshot else None,
+                "existedBefore": destination_existed,
                 "sidecars": sidecar_records,
                 "candidateId": candidate_id,
             }
@@ -407,21 +504,10 @@ class OfficeArtifactEngine:
                 "validation": validation.to_dict() if validation is not None else None,
             })
             write_artifact_manifest(state_path, state, self.workspace_root)
-            outcome = self._candidate_outcome(state)
-            outcome.update({
-                "status": "published",
-                "path": str(destination),
-                "receiptId": receipt_id,
-                "sha256": receipt["destinationSha256"],
-            })
-            write_artifact_manifest(
-                workspace_path(Path(state["requestedManifest"]), self.workspace_root),
-                outcome,
-                self.workspace_root,
-            )
             return outcome
-        except Exception:
-            staged.unlink(missing_ok=True)
+        except Exception as error:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
             for record in reversed(sidecar_records):
                 rollback_published_artifact(
                     Path(record["path"]),
@@ -430,7 +516,22 @@ class OfficeArtifactEngine:
                 )
             if published:
                 rollback_published_artifact(destination, snapshot, self.workspace_root)
+            if receipt_path is not None and receipt_path.exists():
+                failure_receipt = receipt or {
+                    "kind": "officeArtifactReceipt",
+                    "version": 1,
+                    "receiptId": receipt_path.stem,
+                    "candidateId": candidate_id,
+                }
+                failure_receipt.update({
+                    "status": "rolled_back",
+                    "rolledBackAt": _utc_now(),
+                    "error": f"{type(error).__name__}: {error}",
+                })
+                write_artifact_manifest(receipt_path, failure_receipt, self.workspace_root)
             raise
+        finally:
+            lock_path.unlink(missing_ok=True)
 
     def restore(self, receipt_id: str) -> dict[str, Any]:
         if not CANDIDATE_ID_RE.fullmatch(receipt_id):
@@ -451,12 +552,22 @@ class OfficeArtifactEngine:
                 "destination changed after publication; refusing to overwrite newer work",
             )
         for record in reversed(receipt.get("sidecars", [])):
+            if record.get("existedBefore") and not record.get("snapshot"):
+                raise OfficeArtifactError(
+                    "restore.sidecar_snapshot_missing",
+                    f"cannot restore pre-existing sidecar without snapshot: {record['path']}",
+                )
             rollback_published_artifact(
                 Path(record["path"]),
                 Path(record["snapshot"]) if record.get("snapshot") else None,
                 self.workspace_root,
             )
         snapshot = Path(receipt["snapshot"]) if receipt.get("snapshot") else None
+        if receipt.get("existedBefore") and snapshot is None:
+            raise OfficeArtifactError(
+                "restore.snapshot_missing",
+                "cannot restore pre-existing destination without snapshot",
+            )
         rollback_published_artifact(destination, snapshot, self.workspace_root)
         receipt.update({"status": "restored", "restoredAt": _utc_now()})
         write_artifact_manifest(receipt_path, receipt, self.workspace_root)
@@ -468,12 +579,92 @@ class OfficeArtifactEngine:
             "restoredSnapshot": str(snapshot) if snapshot else None,
         }
 
+    def _acquire_destination_lock(self, destination: Path, candidate_id: str) -> Path:
+        self.locks_root.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(str(destination).casefold().encode("utf-8")).hexdigest()[:24]
+        lock_path = self.locks_root / f"{key}.lock"
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as error:
+            detail = lock_path.read_text(encoding="utf-8", errors="replace") if lock_path.exists() else ""
+            raise OfficeArtifactError(
+                "publish.conflict",
+                "another Office artifact publication owns the destination lock",
+                retryable=True,
+                details={"destination": str(destination), "lock": detail},
+            ) from error
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({
+                "kind": "officeArtifactDestinationLock",
+                "candidateId": candidate_id,
+                "destination": str(destination),
+                "pid": os.getpid(),
+                "createdAt": _utc_now(),
+            }, handle, ensure_ascii=False)
+        return lock_path
+
+    def _assert_destination_precondition(
+        self,
+        state: dict[str, Any],
+        destination: Path,
+    ) -> None:
+        existed = bool(state.get("destinationExistedAtExecute"))
+        if destination.exists() != existed:
+            raise OfficeArtifactError(
+                "publish.destination_changed",
+                "destination existence changed after candidate execution",
+                retryable=True,
+            )
+        if existed:
+            current = _sha256(destination)
+            if current != state.get("destinationBaseSha256"):
+                raise OfficeArtifactError(
+                    "publish.destination_changed",
+                    "destination content changed after candidate execution",
+                    retryable=True,
+                    details={
+                        "expectedSha256": state.get("destinationBaseSha256"),
+                        "actualSha256": current,
+                    },
+                )
+
     def _backend_for(self, request: ArtifactRequest) -> str:
         if request.quality == "native" or request.calculation == "native":
             return "windows-com"
         if request.calculation == "compatible":
             return "libreoffice"
         return "nexa-openxml"
+
+    def _xlsx_formula_profile(self, path: Path) -> dict[str, Any]:
+        skills_root = Path(__file__).resolve().parents[2]
+        renderer_dir = skills_root / "xlsx-workbook-design" / "scripts"
+        if str(renderer_dir) not in sys.path:
+            sys.path.insert(0, str(renderer_dir))
+        from xlsx_model_renderer import inspect_formula_inventory  # type: ignore
+
+        inventory = inspect_formula_inventory(path)
+        native_features: set[str] = set()
+        dynamic_functions = {
+            "FILTER", "SORT", "SORTBY", "UNIQUE", "SEQUENCE", "RANDARRAY",
+            "XLOOKUP", "XMATCH", "LET", "LAMBDA", "TAKE", "DROP", "CHOOSECOLS", "CHOOSEROWS",
+        }
+        for formula in inventory["formulas"]:
+            text = str(formula.get("formula", "")).upper()
+            for function in dynamic_functions:
+                if re.search(rf"(?:_XLFN\.)?{function}\s*\(", text):
+                    native_features.add(f"function:{function}")
+            if "#" in text:
+                native_features.add("spill-reference")
+            formula_type = str(formula.get("type", "normal"))
+            if formula_type in {"array", "dataTable"}:
+                native_features.add(f"formula-type:{formula_type}")
+        return {
+            "formulaCells": inventory["formulaCells"],
+            "formulaKinds": inventory["formulaKinds"],
+            "fingerprint": inventory["fingerprint"],
+            "requiresExcelNative": bool(native_features),
+            "nativeFeatures": sorted(native_features),
+        }
 
     def _v1_payload(
         self,
@@ -550,6 +741,9 @@ class OfficeArtifactEngine:
 
     def _candidate_outcome(self, state: dict[str, Any]) -> dict[str, Any]:
         execution = state.get("execution", {})
+        openxml_execution = execution.get("openXml", execution) if isinstance(execution, dict) else {}
+        native_execution = execution.get("native") if isinstance(execution, dict) else None
+        calculation = self._calculation_evidence(openxml_execution, native_execution)
         return {
             "kind": "officeArtifactOutcome",
             "requestVersion": REQUEST_VERSION,
@@ -559,11 +753,72 @@ class OfficeArtifactEngine:
             "destination": state["destination"],
             "sha256": state.get("candidateSha256"),
             "assessment": state.get("assessment"),
-            "validation": execution.get("validation") if isinstance(execution, dict) else None,
-            "preservationEvidence": execution.get("preservationEvidence") if isinstance(execution, dict) else None,
-            "renderedPreviews": execution.get("renderedPreviews", []) if isinstance(execution, dict) else [],
-            "warnings": execution.get("warnings", []) if isinstance(execution, dict) else [],
+            "validation": (
+                native_execution.get("validation")
+                if isinstance(native_execution, dict)
+                else openxml_execution.get("validation")
+            ),
+            "preservationEvidence": openxml_execution.get("preservationEvidence"),
+            "calculationEvidence": calculation,
+            "renderedPreviews": (
+                native_execution.get("renderedPreviews", [])
+                if isinstance(native_execution, dict)
+                else openxml_execution.get("renderedPreviews", [])
+            ),
+            "warnings": list(openxml_execution.get("warnings", [])) + (
+                list(native_execution.get("warnings", [])) if isinstance(native_execution, dict) else []
+            ),
         }
+
+    def _calculation_evidence(
+        self,
+        openxml_execution: dict[str, Any],
+        native_execution: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if isinstance(native_execution, dict) and native_execution.get("format") == "xlsx":
+            native_action = next(
+                (
+                    action for action in native_execution.get("actions", [])
+                    if action.get("command") == "windows-com-finalize"
+                ),
+                {},
+            )
+            return {
+                "level": "native",
+                "engine": "microsoft-excel-com",
+                "engineVersion": native_action.get("engineVersion"),
+                "profile": "excel-native",
+                "excelNative": True,
+                "macros": native_action.get("macros", "force-disabled"),
+                "externalLinks": native_action.get("externalLinks", "update-disabled"),
+            }
+        for action in openxml_execution.get("actions", []):
+            if action.get("command") != "recalc_xlsx" or not action.get("stdout"):
+                continue
+            try:
+                recalculation = json.loads(action["stdout"])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(recalculation.get("calculation"), dict):
+                return recalculation["calculation"]
+        validation = openxml_execution.get("validation")
+        if isinstance(validation, dict):
+            backend = validation.get("backend", validation)
+            if isinstance(backend, dict):
+                formula_qa = backend.get("formulaQa")
+                if isinstance(formula_qa, dict) and isinstance(formula_qa.get("calculation"), dict):
+                    evidence = dict(formula_qa["calculation"])
+                    evidence.setdefault("engine", "none")
+                    evidence.setdefault("profile", "static")
+                    evidence.setdefault("excelNative", False)
+                    return evidence
+                if isinstance(backend.get("calculation"), dict):
+                    evidence = dict(backend["calculation"])
+                    evidence.setdefault("engine", "none")
+                    evidence.setdefault("profile", "static")
+                    evidence.setdefault("excelNative", False)
+                    return evidence
+        return None
 
 
 def _utc_now() -> str:

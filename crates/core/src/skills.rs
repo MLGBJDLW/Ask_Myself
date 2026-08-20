@@ -1054,12 +1054,31 @@ mod tests {
             "scripts/pptx_asset_pack.py",
             "scripts/pptx_regression_suite.py",
             "scripts/pptx_delivery_pack.py",
+            "scripts/pptx_structured_editor.py",
             "scripts/html_deck_renderer.py",
             "scripts/test_html_deck_renderer.py",
         ] {
             assert!(
                 pptx_dir.join(path).exists(),
                 "expected materialized PPTX skill resource {path}"
+            );
+        }
+
+        let docx_dir = base.join("docx-document-design");
+        for path in [
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/docx-playbook.md",
+            "references/docx-spec-v2.schema.json",
+            "scripts/docx_audit.py",
+            "scripts/docx_renderer.py",
+            "scripts/docx_review_editor.py",
+            "scripts/test_docx_renderer.py",
+            "scripts/test_docx_review_editor.py",
+        ] {
+            assert!(
+                docx_dir.join(path).exists(),
+                "expected materialized DOCX skill resource {path}"
             );
         }
 
@@ -1070,6 +1089,7 @@ mod tests {
             "references/xlsx-playbook.md",
             "scripts/xlsx_audit.py",
             "scripts/xlsx_model_renderer.py",
+            "scripts/xlsx_structured_editor.py",
             "scripts/test_xlsx_model_renderer.py",
         ] {
             assert!(

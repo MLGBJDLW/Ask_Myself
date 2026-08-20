@@ -31,6 +31,10 @@ MAIN_PARTS = {
     ".pptx": "ppt/presentation.xml",
     ".xlsx": "xl/workbook.xml",
 }
+MAX_PACKAGE_PARTS = 20_000
+MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PART_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 500.0
 
 
 @dataclass
@@ -277,8 +281,57 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
 
     try:
         with zipfile.ZipFile(path) as archive:
-            member_names = [name for name in archive.namelist() if not name.endswith("/")]
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            member_names = [info.filename for info in infos]
             names = set(member_names)
+            if len(infos) > MAX_PACKAGE_PARTS:
+                report.error(
+                    "zip.part_budget",
+                    f"Package has {len(infos)} parts; maximum is {MAX_PACKAGE_PARTS}",
+                )
+            total_uncompressed = sum(info.file_size for info in infos)
+            if total_uncompressed > MAX_PACKAGE_UNCOMPRESSED_BYTES:
+                report.error(
+                    "zip.uncompressed_budget",
+                    "Package uncompressed size exceeds safety budget",
+                )
+            for info in infos:
+                name = info.filename
+                normalized = name.replace("\\", "/")
+                pure = PurePosixPath(normalized)
+                if normalized != name or pure.is_absolute() or ".." in pure.parts:
+                    report.error(
+                        "zip.unsafe_path",
+                        f"ZIP member path is unsafe: {name}",
+                        name,
+                    )
+                if info.flag_bits & 0x1:
+                    report.error("zip.encrypted_part", "Encrypted ZIP parts are unsupported", name)
+                if info.file_size > MAX_PART_UNCOMPRESSED_BYTES:
+                    report.error(
+                        "zip.part_size_budget",
+                        "ZIP member exceeds uncompressed part-size budget",
+                        name,
+                    )
+                ratio = (
+                    float("inf")
+                    if info.file_size and info.compress_size == 0
+                    else info.file_size / max(1, info.compress_size)
+                )
+                if ratio > MAX_COMPRESSION_RATIO:
+                    report.error(
+                        "zip.compression_ratio",
+                        f"ZIP member compression ratio {ratio:.1f} exceeds {MAX_COMPRESSION_RATIO:.0f}",
+                        name,
+                    )
+            report.checks["uncompressedBytes"] = total_uncompressed
+            report.checks["maxCompressionRatio"] = max(
+                (
+                    info.file_size / max(1, info.compress_size)
+                    for info in infos
+                ),
+                default=0.0,
+            )
             if len(names) != len(member_names):
                 duplicates = sorted(
                     name for name in names if member_names.count(name) > 1
@@ -290,6 +343,8 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                         name,
                     )
             report.checks["parts"] = len(names)
+            if report.status == "fail":
+                return report
             bad_member = archive.testzip()
             if bad_member:
                 report.error("zip.crc", "ZIP member failed its CRC check", bad_member)

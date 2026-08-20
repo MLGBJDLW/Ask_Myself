@@ -718,6 +718,8 @@ def _export_pptx(
     prs.slide_height = _inches(size["height_in"])
     blank = _blank_layout(prs)
     raster_slides = 0
+    hybrid_slides = 0
+    editable_slides = 0
     native_elements = 0
     animation_count = 0
     slide_outputs: list[dict[str, Any]] = []
@@ -765,6 +767,17 @@ def _export_pptx(
                 if element_id and shape_id:
                     shape_ids[element_id] = shape_id
 
+        if use_raster and elements and mode != "raster":
+            editability_class = "partial-raster-backplate"
+            hybrid_slides += 1
+        elif use_raster:
+            editability_class = "raster"
+        elif elements:
+            editability_class = "native-editable"
+            editable_slides += 1
+        else:
+            editability_class = "background-only"
+
         _apply_notes(slide, slide_spec.get("notes"))
         _apply_transition(slide, slide_spec.get("transition") or spec.get("transition"))
         animation_targets = _collect_animation_targets(slide_spec, shape_ids)
@@ -776,6 +789,7 @@ def _export_pptx(
             {
                 "index": index,
                 "mode": "raster" if use_raster else "native",
+                "editabilityClass": editability_class,
                 "nativeElements": len(elements) if mode != "raster" else 0,
                 "animationTargets": len(animation_targets),
                 "screenshotPath": screenshot_path,
@@ -785,6 +799,15 @@ def _export_pptx(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     total_slides = max(1, len(slides))
+    conservative_editability = (
+        editable_slides + hybrid_slides * 0.35
+    ) / total_slides
+    if raster_slides == 0 and editable_slides == len(slides):
+        editability_level = "fully_editable"
+    elif editable_slides or hybrid_slides:
+        editability_level = "partially_editable"
+    else:
+        editability_level = "raster"
     return {
         "path": str(out_path),
         "mode": mode,
@@ -792,9 +815,13 @@ def _export_pptx(
         "metrics": {
             "slides": len(slides),
             "rasterSlides": raster_slides,
+            "hybridSlides": hybrid_slides,
+            "editableSlides": editable_slides,
             "nativeElements": native_elements,
             "animationTargets": animation_count,
-            "editabilityScore": round(max(0.0, min(1.0, (total_slides - raster_slides) / total_slides)), 3),
+            "editabilityScore": round(max(0.0, min(1.0, conservative_editability)), 3),
+            "editabilityLevel": editability_level,
+            "finalPptxRenderVerified": False,
         },
     }
 
@@ -861,7 +888,10 @@ def _evaluate_qa(
 
     if pptx_result:
         editability = float(_as_dict(pptx_result.get("metrics")).get("editabilityScore") or 0)
-        checks.append({"name": "editability_score", "status": "pass" if editability >= 0.5 else "warn", "metric": editability, "threshold": 0.5})
+        editability_level = str(_as_dict(pptx_result.get("metrics")).get("editabilityLevel") or "unknown")
+        checks.append({"name": "editability_score", "status": "pass" if editability >= 0.8 else "warn", "metric": editability, "threshold": 0.8, "level": editability_level})
+        checks.append({"name": "final_pptx_render", "status": "warn", "metric": False, "threshold": True, "detail": "HTML/browser screenshots are source previews, not final-PPTX render evidence."})
+        warnings.append("final exported PPTX has not been rendered; browser screenshots do not prove PowerPoint layout fidelity")
         checks.append({"name": "animation_mapping", "status": "pass" if int(_as_dict(pptx_result.get("metrics")).get("animationTargets") or 0) else "warn", "metric": _as_dict(pptx_result.get("metrics")).get("animationTargets") or 0, "threshold": 1})
 
     status = "fail" if any(check["status"] == "fail" for check in checks) else "warn" if any(check["status"] == "warn" for check in checks) else "pass"

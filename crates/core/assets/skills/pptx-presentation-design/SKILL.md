@@ -16,6 +16,8 @@ description: Create, edit, inspect, and validate PowerPoint PPTX presentations w
 10. Run `scripts/pptx_quality_gate.py --path <file> --visual-qa <visual.json> --pretty` on finished decks; use `--strict` or `--require-notes` for presenter-ready or production decks.
 11. For final delivery, use `quality: publish` so missing final-PPTX rendered evidence blocks delivery, then run `scripts/pptx_delivery_pack.py --path <file> --out-dir <dir> --pretty` to save the deck, audit, visual QA, asset manifest, and quality gate result together.
 12. Use OOXML unpack/pack for speaker notes, media replacement, relationship repair, master/layout work, or precise template surgery.
+13. For an existing deck, prefer stable/display-order typed operations: `set_text` targets a shape id/name on a stable slide id or display index; `reorder_slides` requires every stable slide id exactly once; `set_transition` supports a bounded transition set; `clone_slide` performs exact package clone and copy-on-write for charts, embedded workbooks, notes, comments, diagrams, and OLE dependencies.
+14. Audit and validation must follow `p:sldIdLst` plus presentation relationships, never `slideN.xml` filename order. Chart validation checks missing parts, embedded workbook ZIP validity, and category/value cache dimensions before publication.
 
 ## Quality Rules
 1. One idea per slide. Put the message in the title, not only the body.
@@ -68,6 +70,7 @@ Use `scripts/pptx_asset_pack.py` to inventory embedded media, external links, an
 Use `scripts/pptx_regression_suite.py` to write or render canonical PPT samples for smoke testing renderer changes.
 
 Use `scripts/pptx_delivery_pack.py` to assemble a final delivery directory with the PPTX, audit, visual QA, asset manifest, quality gate output, and manifest.
+Use `scripts/pptx_structured_editor.py` as the exact-clone/display-order edit adapter behind `office_artifact`. In strict delivery, pass final-PPTX render images to the quality gate; HTML screenshots are source-only evidence.
 
 ### Backgrounds And Visual Motifs
 

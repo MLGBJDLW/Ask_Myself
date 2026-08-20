@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -252,6 +253,9 @@ def _native_create(
     operation = job.operations[0] if job.operations else {}
     if job.format == "docx":
         arguments: list[str] = []
+        if operation.get("spec") is not None:
+            spec_path = _operation_path(operation["spec"], workspace_root, must_exist=True)
+            arguments.extend(["--spec", str(spec_path)])
         mapping = {
             "title": "--title",
             "subtitle": "--subtitle",
@@ -306,10 +310,88 @@ def _native_operations(
     workspace_root: Path,
 ) -> list[str]:
     changed: list[str] = []
+    xlsx_typed = {"set_value", "set_formula", "set_range", "clear_range", "set_style"}
+    pptx_typed = {"set_text", "clone_slide", "reorder_slides", "set_transition"}
+    docx_review = {"add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes"}
     for index, operation in enumerate(job.operations):
         name = str(operation.get("op", "")).lower()
         element_id = str(operation.get("elementId") or f"/{job.format}/operation[{index}]")
-        if name in {"replace", "redact"}:
+        if job.format == "xlsx" and name in xlsx_typed:
+            spec_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".json",
+                    prefix=".nexa-xlsx-operation-",
+                    dir=working.parent,
+                    delete=False,
+                ) as handle:
+                    json.dump({"operations": [operation]}, handle, ensure_ascii=False)
+                    spec_path = Path(handle.name)
+                output = _run_editor(
+                    working,
+                    "edit_xlsx",
+                    ["--spec", str(spec_path)],
+                    actions,
+                    workspace_root,
+                )
+                payload = json.loads(output)
+                changed.extend(str(item) for item in payload.get("changedCells", []))
+            finally:
+                if spec_path is not None:
+                    spec_path.unlink(missing_ok=True)
+        elif job.format == "docx" and name in docx_review:
+            spec_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".json",
+                    prefix=".nexa-docx-review-operation-",
+                    dir=working.parent,
+                    delete=False,
+                ) as handle:
+                    json.dump({"operations": [operation]}, handle, ensure_ascii=False)
+                    spec_path = Path(handle.name)
+                output = _run_editor(
+                    working,
+                    "review_docx",
+                    ["--spec", str(spec_path)],
+                    actions,
+                    workspace_root,
+                )
+                payload = json.loads(output)
+                changed.extend(str(item) for item in payload.get("changedParts", []))
+            finally:
+                if spec_path is not None:
+                    spec_path.unlink(missing_ok=True)
+        elif job.format == "pptx" and name in pptx_typed:
+            spec_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".json",
+                    prefix=".nexa-pptx-operation-",
+                    dir=working.parent,
+                    delete=False,
+                ) as handle:
+                    json.dump({"operations": [operation]}, handle, ensure_ascii=False)
+                    spec_path = Path(handle.name)
+                output = _run_editor(
+                    working,
+                    "edit_pptx",
+                    ["--spec", str(spec_path)],
+                    actions,
+                    workspace_root,
+                )
+                payload = json.loads(output)
+                changed.extend(str(item) for item in payload.get("changedParts", []))
+            finally:
+                if spec_path is not None:
+                    spec_path.unlink(missing_ok=True)
+        elif name in {"replace", "redact", "secure_redact"}:
             find = str(operation.get("find", ""))
             if not find:
                 raise ValueError(f"operations[{index}].find is required")
@@ -320,6 +402,21 @@ def _native_operations(
                 arguments.extend(["--expected-sha256", str(operation["expectedSha256"])])
             if operation.get("expectedMatches") is not None:
                 arguments.extend(["--expected-count", str(operation["expectedMatches"])])
+            if name == "secure_redact" and any(
+                operation.get(field) is not None
+                for field in ("scope", "occurrence", "allowStyleMerge")
+            ):
+                raise ValueError("secure_redact always inspects every textual package story and does not accept scope/occurrence/style-merge options")
+            if name != "secure_redact" and operation.get("scope") is not None:
+                scope = operation["scope"]
+                scope_text = ",".join(str(item) for item in scope) if isinstance(scope, list) else str(scope)
+                arguments.extend(["--scope", scope_text])
+            if name != "secure_redact" and operation.get("occurrence") is not None:
+                arguments.extend(["--occurrence", str(operation["occurrence"])])
+            if name != "secure_redact" and operation.get("allowStyleMerge"):
+                arguments.append("--allow-style-merge")
+            if name == "secure_redact" and operation.get("privacyScrub"):
+                arguments.append("--privacy-scrub")
             _run_editor(working, name, arguments, actions, workspace_root)
             changed.append(element_id)
         elif name == "insert_slide":
@@ -396,6 +493,23 @@ def _restore_automation_security(app: Any, previous: Any) -> None:
         raise RuntimeError(f"could not restore Office automation security: {error}") from error
 
 
+def _wait_for_excel_calculation(app: Any, timeout_seconds: float = 120.0) -> None:
+    """Wait until Excel reports xlDone (0), failing closed on timeout."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            state = int(app.CalculationState)
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeError(f"could not read Excel calculation state: {error}") from error
+        if state == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Excel calculation did not reach xlDone within {timeout_seconds:g} seconds"
+            )
+        time.sleep(0.1)
+
+
 def _sensitive_part_hashes(path: Path, risk: dict[str, Any]) -> dict[str, str]:
     names = {
         str(name)
@@ -454,11 +568,15 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         app = win32com.client.DispatchEx("Excel.Application")
         app.Visible = False
         app.DisplayAlerts = False
+        app.EnableEvents = False
+        app.AskToUpdateLinks = False
         document = None
         previous_security = _force_disable_macros(app)
+        office_version = str(getattr(app, "Version", "unknown"))
         try:
             document = app.Workbooks.Open(str(path.resolve()), UpdateLinks=0, ReadOnly=False)
             app.CalculateFullRebuild()
+            _wait_for_excel_calculation(app)
             document.Save()
         finally:
             try:
@@ -505,7 +623,16 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
                     _restore_automation_security(app, previous_security)
                 finally:
                     app.Quit()
-    actions.append({"command": "windows-com-finalize", "status": "ok", "exitCode": 0})
+    action = {"command": "windows-com-finalize", "status": "ok", "exitCode": 0}
+    if artifact_format == "xlsx":
+        action.update({
+            "engine": "microsoft-excel-com",
+            "engineVersion": office_version,
+            "calculationProfile": "excel-native",
+            "macros": "force-disabled",
+            "externalLinks": "update-disabled",
+        })
+    actions.append(action)
 
 
 def _contract_path(
@@ -576,6 +703,22 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
             )
 
     try:
+        mutating_operations = [
+            operation
+            for operation in job.operations
+            if str(operation.get("op", "")).lower() not in {"validate", "render"}
+        ]
+        if job.intent in {"recalculate", "finalize"}:
+            mutating_operations.append({"op": job.intent})
+        if (
+            input_risk is not None
+            and input_risk["features"].get("signatures")
+            and job.preservation_policy == "strict"
+            and mutating_operations
+        ):
+            raise RuntimeError(
+                "strict preservation blocks edits to digitally signed Office packages because any package mutation invalidates the signature"
+            )
         if backend != "nexa-openxml" and status["status"] != "ready":
             raise RuntimeError(status.get("detail") or f"backend {backend} is not ready")
         _assert_backend_support(job, backend)

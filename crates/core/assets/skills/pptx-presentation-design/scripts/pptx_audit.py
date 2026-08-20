@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import posixpath
 import re
 import sys
 import zipfile
@@ -16,6 +18,8 @@ NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
 }
 
 
@@ -55,9 +59,78 @@ def rel_targets(zf: zipfile.ZipFile, part_name: str) -> list[dict[str, str]]:
         mode = rel.attrib.get("TargetMode", "")
         rel_type = rel.attrib.get("Type", "")
         if mode != "External" and not target.startswith("/"):
-            target = f"{base}/{target}"
+            target = posixpath.normpath(f"{base}/{target}")
         out.append({"type": rel_type, "target": target, "mode": mode, "target_mode": mode or "Internal"})
     return out
+
+
+def presentation_slide_order(zf: zipfile.ZipFile) -> tuple[list[dict[str, str]], list[str]]:
+    errors: list[str] = []
+    root = parse_xml(read_text(zf, "ppt/presentation.xml"))
+    rels = parse_xml(read_text(zf, "ppt/_rels/presentation.xml.rels"))
+    if root is None or rels is None:
+        return [], ["presentation slide order graph is missing or invalid"]
+    rel_map: dict[str, str] = {}
+    for rel in rels.findall("rel:Relationship", NS):
+        relationship_id = rel.attrib.get("Id", "")
+        target = rel.attrib.get("Target", "")
+        if relationship_id and target and rel.attrib.get("TargetMode") != "External":
+            rel_map[relationship_id] = posixpath.normpath(
+                target.lstrip("/") if target.startswith("/") else f"ppt/{target}"
+            )
+    ordered: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for slide_id in root.findall(".//p:sldIdLst/p:sldId", NS):
+        stable_id = slide_id.attrib.get("id", "")
+        relationship_id = slide_id.attrib.get(f"{{{NS['r']}}}id", "")
+        if stable_id in seen_ids:
+            errors.append(f"duplicate slide id: {stable_id}")
+        seen_ids.add(stable_id)
+        part = rel_map.get(relationship_id)
+        if not part:
+            errors.append(f"slide relationship is unresolved: {relationship_id}")
+            continue
+        ordered.append({
+            "id": stable_id,
+            "relationship_id": relationship_id,
+            "part": part,
+        })
+    return ordered, errors
+
+
+def validate_charts(
+    zf: zipfile.ZipFile,
+    chart_parts: list[str],
+) -> list[str]:
+    names = set(zf.namelist())
+    errors: list[str] = []
+    for chart_part in sorted(set(chart_parts)):
+        if chart_part not in names:
+            errors.append(f"chart part is missing: {chart_part}")
+            continue
+        root = parse_xml(read_text(zf, chart_part))
+        if root is None:
+            errors.append(f"chart XML is invalid: {chart_part}")
+            continue
+        for series_index, series in enumerate(root.findall(".//c:ser", NS), start=1):
+            category_points = series.findall(".//c:cat//c:pt", NS)
+            value_points = series.findall(".//c:val//c:pt", NS)
+            if category_points and value_points and len(category_points) != len(value_points):
+                errors.append(
+                    f"chart cache dimension mismatch: {chart_part} series {series_index} "
+                    f"categories={len(category_points)} values={len(value_points)}"
+                )
+        for relationship in rel_targets(zf, chart_part):
+            if relationship.get("target_mode") == "External":
+                continue
+            target = relationship["target"]
+            if target not in names:
+                errors.append(f"chart dependency is missing: {chart_part} -> {target}")
+                continue
+            if target.startswith("ppt/embeddings/") and target.lower().endswith(".xlsx"):
+                if not zipfile.is_zipfile(io.BytesIO(zf.read(target))):
+                    errors.append(f"chart embedded workbook is invalid: {target}")
+    return errors
 
 
 def slide_text(root) -> str:
@@ -130,20 +203,32 @@ def audit(path: Path) -> dict:
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
         slide_size = presentation_size(zf)
-        slide_names = sorted(
+        physical_slide_names = sorted(
             [name for name in names if re.match(r"ppt/slides/slide\d+\.xml$", name)],
             key=natural_key,
         )
+        slide_order, order_errors = presentation_slide_order(zf)
+        if slide_order:
+            slide_names = [record["part"] for record in slide_order]
+        else:
+            slide_names = physical_slide_names
+            warnings.append("presentation order graph unavailable; using physical slide part order")
+        ordered_set = set(slide_names)
+        orphan_parts = sorted(set(physical_slide_names) - ordered_set, key=natural_key)
+        if orphan_parts:
+            order_errors.append("orphan slide parts: " + ", ".join(orphan_parts))
         layouts = [name for name in names if re.match(r"ppt/slideLayouts/slideLayout\d+\.xml$", name)]
         masters = [name for name in names if re.match(r"ppt/slideMasters/slideMaster\d+\.xml$", name)]
         themes = [name for name in names if re.match(r"ppt/theme/theme\d+\.xml$", name)]
 
         slides = []
+        chart_parts: list[str] = []
         for index, slide_name in enumerate(slide_names, start=1):
             root = parse_xml(read_text(zf, slide_name))
             rels = rel_targets(zf, slide_name)
             text = slide_text(root)
             chart_count = sum(1 for rel in rels if "/charts/" in rel["target"])
+            chart_parts.extend(rel["target"] for rel in rels if "/charts/" in rel["target"])
             image_count = sum(1 for rel in rels if "/media/" in rel["target"])
             notes_count = sum(1 for rel in rels if "notesSlide" in rel["type"])
             external_count = sum(1 for rel in rels if rel.get("target_mode") == "External")
@@ -170,6 +255,7 @@ def audit(path: Path) -> dict:
             slides.append(
                 {
                     "index": index,
+                    "slide_id": slide_order[index - 1]["id"] if slide_order else None,
                     "part": slide_name,
                     "text": text[:1200],
                     "text_chars": len(text),
@@ -191,6 +277,8 @@ def audit(path: Path) -> dict:
         if len(slides) > 3 and not any(slide["notes_relationships"] for slide in slides):
             warnings.append("deck has no speaker notes")
 
+        chart_errors = validate_charts(zf, chart_parts)
+        validation_errors = order_errors + chart_errors
         return {
             "path": str(path),
             "format": "pptx",
@@ -201,6 +289,10 @@ def audit(path: Path) -> dict:
             "themes": len(themes),
             "slide_size": slide_size,
             "slide_details": slides,
+            "slide_order": slide_order,
+            "validation_errors": validation_errors,
+            "chart_validation_errors": chart_errors,
+            "orphan_slide_parts": orphan_parts,
             "external_links": sum(slide["external_relationships"] for slide in slides),
             "hyperlinks": sum(slide["hyperlink_relationships"] for slide in slides),
             "warnings": warnings,

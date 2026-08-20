@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import sys
 import zipfile
@@ -18,7 +19,10 @@ NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 
-FORMULA_ERROR_VALUES = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A", "#NULL!", "#NUM!"}
+FORMULA_ERROR_VALUES = {
+    "#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A", "#NULL!", "#NUM!",
+    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#UNKNOWN!", "#CONNECT!", "#BUSY!",
+}
 
 
 def read_text(zf: zipfile.ZipFile, name: str) -> str:
@@ -45,14 +49,26 @@ def workbook_sheets(zf: zipfile.ZipFile) -> list[dict[str, str]]:
     root = parse_xml(read_text(zf, "xl/workbook.xml"))
     if root is None:
         return []
+    rels = parse_xml(read_text(zf, "xl/_rels/workbook.xml.rels"))
+    rel_map: dict[str, str] = {}
+    if rels is not None:
+        for rel in rels.findall("rel:Relationship", NS):
+            relationship_id = rel.attrib.get("Id", "")
+            target = rel.attrib.get("Target", "")
+            if relationship_id and target and rel.attrib.get("TargetMode") != "External":
+                rel_map[relationship_id] = posixpath.normpath(
+                    target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+                )
     sheets = []
     for sheet in root.findall(".//main:sheet", NS):
+        relationship_id = sheet.attrib.get(f"{{{NS['r']}}}id", "")
         sheets.append(
             {
                 "name": sheet.attrib.get("name", ""),
                 "state": sheet.attrib.get("state", "visible"),
                 "sheet_id": sheet.attrib.get("sheetId", ""),
-                "relationship_id": sheet.attrib.get(f"{{{NS['r']}}}id", ""),
+                "relationship_id": relationship_id,
+                "part": rel_map.get(relationship_id, ""),
             }
         )
     return sheets
@@ -95,8 +111,13 @@ def worksheet_summary(zf: zipfile.ZipFile, sheet_part: str, name: str, state: st
         if cell.attrib.get("t") != "e":
             continue
         value = cell.find("main:v", NS)
-        if value is not None and (value.text or "") in FORMULA_ERROR_VALUES:
-            formula_errors.append({"cell": cell.attrib.get("r", ""), "value": value.text})
+        if value is not None and (value.text or ""):
+            error_value = value.text or ""
+            formula_errors.append({
+                "cell": cell.attrib.get("r", ""),
+                "value": error_value,
+                "known": error_value in FORMULA_ERROR_VALUES,
+            })
 
     panes = root.findall(".//main:pane", NS)
     tables = sum(1 for rel in rels if "/tables/" in rel["target"])
@@ -123,14 +144,21 @@ def audit(path: Path) -> dict:
     warnings: list[str] = []
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
-        sheet_parts = sorted(
+        physical_sheet_parts = sorted(
             [name for name in names if re.match(r"xl/worksheets/sheet\d+\.xml$", name)],
             key=natural_key,
         )
         sheets = workbook_sheets(zf)
         sheet_summaries = []
-        for index, sheet_part in enumerate(sheet_parts):
-            sheet_meta = sheets[index] if index < len(sheets) else {}
+        referenced_parts: set[str] = set()
+        for index, sheet_meta in enumerate(sheets):
+            sheet_part = sheet_meta.get("part", "")
+            if not sheet_part or sheet_part not in names:
+                warnings.append(
+                    f"{sheet_meta.get('name', f'Sheet{index + 1}')} has an unresolved worksheet relationship"
+                )
+                continue
+            referenced_parts.add(sheet_part)
             summary = worksheet_summary(
                 zf,
                 sheet_part,
@@ -144,6 +172,9 @@ def audit(path: Path) -> dict:
             if summary.get("external_relationships"):
                 warnings.append(f"{summary['name']} has external relationships")
             sheet_summaries.append(summary)
+        orphan_parts = sorted(set(physical_sheet_parts) - referenced_parts, key=natural_key)
+        if orphan_parts:
+            warnings.append("orphan worksheet parts: " + ", ".join(orphan_parts))
 
         shared_strings = parse_xml(read_text(zf, "xl/sharedStrings.xml"))
         calc_chain_present = "xl/calcChain.xml" in names
@@ -160,6 +191,7 @@ def audit(path: Path) -> dict:
             "package_parts": len(names),
             "sheets": len(sheet_summaries),
             "sheet_details": sheet_summaries,
+            "orphan_sheet_parts": orphan_parts,
             "shared_strings": int(shared_strings.attrib.get("count", "0"))
             if shared_strings is not None
             else 0,

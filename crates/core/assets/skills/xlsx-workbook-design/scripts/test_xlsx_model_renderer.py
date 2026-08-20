@@ -6,12 +6,48 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
+import xlsx_audit
 import xlsx_model_renderer
 
 
 class XlsxModelRendererTests(unittest.TestCase):
+    def test_audit_maps_reordered_sheets_through_workbook_relationships(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.xlsx"
+            reordered = root / "reordered.xlsx"
+            wb = openpyxl.Workbook()
+            wb.active.title = "A"
+            wb.active["A1"] = "part-A"
+            wb.create_sheet("B")["A1"] = "part-B"
+            wb.save(original)
+            wb.close()
+            with zipfile.ZipFile(original) as source, zipfile.ZipFile(reordered, "w") as target:
+                for info in source.infolist():
+                    data = source.read(info.filename)
+                    if info.filename == "xl/workbook.xml":
+                        document = ET.fromstring(data)
+                        sheets = document.find(f"{{{xlsx_audit.NS['main']}}}sheets")
+                        self.assertIsNotNone(sheets)
+                        children = list(sheets)
+                        sheets.remove(children[0])
+                        sheets.append(children[0])
+                        data = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                    target.writestr(info, data)
+
+            report = xlsx_audit.audit(reordered)
+            self.assertEqual(["B", "A"], [sheet["name"] for sheet in report["sheet_details"]])
+            self.assertTrue(report["sheet_details"][0]["part"].endswith("sheet2.xml"))
+            self.assertTrue(report["sheet_details"][1]["part"].endswith("sheet1.xml"))
+
     def test_create_xlsx_from_spec_writes_tables_formulas_and_qa(self) -> None:
         try:
             import openpyxl  # type: ignore
@@ -149,6 +185,35 @@ class XlsxModelRendererTests(unittest.TestCase):
                 self.assertEqual("f", ws["B2"].data_type)
             finally:
                 wb.close()
+
+    def test_formula_inventory_fingerprints_definitions_and_scans_modern_unknown_errors(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evidence.xlsx"
+            workbook = openpyxl.Workbook()
+            workbook.active.title = "Model"
+            workbook.active["A1"] = 1
+            workbook.active["A2"] = "=Model!A1+1"
+            workbook.active["B1"] = "#SPILL!"
+            workbook.active["B1"].data_type = "e"
+            workbook.active["B2"] = "#FUTURE!"
+            workbook.active["B2"].data_type = "e"
+            workbook.save(path)
+            workbook.close()
+
+            inventory = xlsx_model_renderer.inspect_formula_inventory(path)
+            errors = xlsx_model_renderer.inspect_formula_errors(path)
+
+            self.assertEqual(1, inventory["formulaCells"])
+            self.assertEqual(64, len(inventory["fingerprint"]))
+            self.assertEqual("Model!A2", inventory["dependencyEdges"][0]["from"])
+            self.assertEqual(2, errors["count"])
+            by_cell = {item["cell"]: item for item in errors["cells"]}
+            self.assertTrue(by_cell["B1"]["known"])
+            self.assertFalse(by_cell["B2"]["known"])
 
 
 if __name__ == "__main__":

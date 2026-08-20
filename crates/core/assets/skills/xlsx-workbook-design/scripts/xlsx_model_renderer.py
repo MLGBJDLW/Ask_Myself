@@ -10,6 +10,7 @@ the OOXML/workbook structure itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -21,7 +22,10 @@ from xml.etree import ElementTree as ET
 
 EXCEL_MAX_ROW = 1_048_576
 EXCEL_MAX_COL = 16_384
-EXCEL_ERRORS = ("#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#N/A")
+EXCEL_ERRORS = (
+    "#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#N/A",
+    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#UNKNOWN!", "#CONNECT!", "#BUSY!",
+)
 DEFAULT_TABLE_STYLE = "TableStyleMedium2"
 DEFAULT_HEADER_FILL = "1F4E79"
 DEFAULT_HEADER_FONT = "FFFFFF"
@@ -764,6 +768,107 @@ def inspect_formula_cache(path: str | Path) -> dict[str, Any]:
     }
 
 
+def _workbook_sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    doc_rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    relationships = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    rel_map: dict[str, str] = {}
+    for relationship in relationships.findall(f"{{{rel_ns}}}Relationship"):
+        target = relationship.attrib.get("Target", "")
+        if not target or relationship.attrib.get("TargetMode") == "External":
+            continue
+        part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+        import posixpath
+
+        rel_map[relationship.attrib.get("Id", "")] = posixpath.normpath(part)
+    result = []
+    for sheet in workbook.iter():
+        if sheet.tag.rsplit("}", 1)[-1] != "sheet":
+            continue
+        relationship_id = sheet.attrib.get(f"{{{doc_rel_ns}}}id", "")
+        part = rel_map.get(relationship_id)
+        if part:
+            result.append((sheet.attrib.get("name", ""), part))
+    return result
+
+
+def inspect_formula_inventory(path: str | Path) -> dict[str, Any]:
+    """Inventory formula kinds, references, caches, and a cache-independent fingerprint."""
+    formula_items: list[dict[str, Any]] = []
+    dependency_edges: list[dict[str, str]] = []
+    with zipfile.ZipFile(Path(path).expanduser().resolve()) as archive:
+        for sheet_name, part in _workbook_sheet_parts(archive):
+            root = ET.fromstring(archive.read(part))
+            for cell in root.iter():
+                if cell.tag.rsplit("}", 1)[-1] != "c":
+                    continue
+                formula = next(
+                    (child for child in cell if child.tag.rsplit("}", 1)[-1] == "f"),
+                    None,
+                )
+                if formula is None:
+                    continue
+                coordinate = cell.attrib.get("r", "")
+                formula_text = formula.text or ""
+                item = {
+                    "sheet": sheet_name,
+                    "cell": coordinate,
+                    "formula": formula_text,
+                    "type": formula.attrib.get("t", "normal"),
+                    "ref": formula.attrib.get("ref"),
+                    "sharedIndex": formula.attrib.get("si"),
+                }
+                formula_items.append(item)
+                for match in SHEET_REF_RE.finditer(formula_text):
+                    dependency_edges.append({
+                        "from": f"{sheet_name}!{coordinate}",
+                        "to": f"{match.group('sheet')}!{match.group('ref')}",
+                    })
+    fingerprint_payload = json.dumps(
+        sorted(formula_items, key=lambda item: (item["sheet"].casefold(), item["cell"])),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    kinds: dict[str, int] = {}
+    for item in formula_items:
+        kinds[item["type"]] = kinds.get(item["type"], 0) + 1
+    return {
+        "formulaCells": len(formula_items),
+        "formulaKinds": kinds,
+        "formulas": formula_items,
+        "dependencyEdges": dependency_edges,
+        "fingerprint": hashlib.sha256(fingerprint_payload).hexdigest(),
+    }
+
+
+def inspect_formula_errors(path: str | Path) -> dict[str, Any]:
+    """Read every cached OOXML error cell, including future/unknown errors."""
+    errors: list[dict[str, Any]] = []
+    with zipfile.ZipFile(Path(path).expanduser().resolve()) as archive:
+        for sheet_name, part in _workbook_sheet_parts(archive):
+            root = ET.fromstring(archive.read(part))
+            for cell in root.iter():
+                if cell.tag.rsplit("}", 1)[-1] != "c" or cell.attrib.get("t") != "e":
+                    continue
+                value = next(
+                    (child for child in cell if child.tag.rsplit("}", 1)[-1] == "v"),
+                    None,
+                )
+                error = value.text if value is not None and value.text else "<empty-error>"
+                errors.append({
+                    "sheet": sheet_name,
+                    "cell": cell.attrib.get("r", ""),
+                    "value": error,
+                    "known": error in EXCEL_ERRORS,
+                })
+    by_value: dict[str, list[str]] = {}
+    for item in errors:
+        by_value.setdefault(item["value"], []).append(f"{item['sheet']}!{item['cell']}")
+    return {"count": len(errors), "cells": errors, "byValue": by_value}
+
+
 def _build_workbook(spec: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     libs = _load_openpyxl()
     wb = libs["Workbook"]()
@@ -859,6 +964,8 @@ def create_xlsx_from_spec(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(out_path))
     qa["calculation"] = inspect_formula_cache(out_path)
+    qa["formulaInventory"] = inspect_formula_inventory(out_path)
+    qa["cachedErrors"] = inspect_formula_errors(out_path)
     qa_path = out_path.with_suffix(".xlsx.qa.json")
     result = {
         "kind": "xlsxModelRender",

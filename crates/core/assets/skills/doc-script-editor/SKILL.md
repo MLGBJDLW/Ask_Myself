@@ -21,6 +21,8 @@ Keep format-specific generation logic in the format skill. In particular, `creat
 - Extracting plain text from a `.pdf` / `.docx` / `.pptx` / `.xlsx` for review or summarization
 - Inserting a new slide into an existing `.pptx` at a specific position
 - Redacting sensitive substrings across a document
+- Secure DOCX textual redaction with package-wide residual scanning and fail-closed media/embedding handling
+- Basic DOCX comments and tracked-change lifecycle operations
 - Validating Office ZIP structure and backend readability after generation/editing
 - Converting Office files to PDF or legacy formats via LibreOffice when available
 - Rendering DOCX/PPTX/XLSX/PDF pages to images for visual QA when LibreOffice and Poppler are available
@@ -196,6 +198,8 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **OOXML escape hatch** — `unpack` / `pack` make low-level template and relationship fixes possible without passing binary data through tool arguments
 - **Formula safety** — `lint_xlsx` supports workbook contracts and risk inventory; `recalc_xlsx` performs a real guarded LibreOffice open/save, verifies the rewritten artifact, scans cached errors, and publishes only after validation
 - **Transactional runtime** — `office_artifact` and `office_artifact_engine.py` expose assess/execute/decide/restore, typed errors, capability routing, candidate gating, receipts, hash-guarded restore, and evidence-rich manifests; `office_artifact_service.py` preserves jobVersion 1 compatibility
+- **Typed format edits** — direct-OOXML XLSX value/formula/range/style edits, PPTX stable slide/shape edits and dependency-cloning, and DOCX review operations run behind the same candidate contract
+- **Secure redaction boundary** — `redact` is visible-story replacement; `secure_redact` alone may claim package-text absence, and it blocks uninspectable media/embeddings
 
 ## Dependencies
 In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.
