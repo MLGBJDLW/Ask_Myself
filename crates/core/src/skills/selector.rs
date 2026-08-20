@@ -166,6 +166,38 @@ fn token_aliases(token: &str) -> &'static [&'static str] {
         {
             &["tdd", "test", "tests", "testing", "coverage"]
         }
+        _ if token.contains("ppt")
+            || token.contains("幻灯片")
+            || token.contains("演示文稿")
+            || token.contains("演示")
+            || token.contains("简报")
+            || token.contains("母版")
+            || token.contains("讲者备注")
+            || token.contains("演讲者备注") =>
+        {
+            &["slides", "deck", "presentation", "pptx"]
+        }
+        _ if token.contains("xlsx")
+            || token.contains("excel")
+            || token.contains("电子表格")
+            || token.contains("工作簿")
+            || token.contains("工作表")
+            || token.contains("单元格")
+            || token.contains("数据透视")
+            || token.contains("公式") =>
+        {
+            &["spreadsheet", "workbook", "xlsx", "excel"]
+        }
+        _ if token.contains("docx")
+            || token.contains("word")
+            || token.contains("文档")
+            || token.contains("合同")
+            || token.contains("备忘录")
+            || token.contains("批注")
+            || token.contains("修订") =>
+        {
+            &["report", "document", "docx"]
+        }
         _ if token.contains("小说")
             || token.contains("网文")
             || token.contains("故事")

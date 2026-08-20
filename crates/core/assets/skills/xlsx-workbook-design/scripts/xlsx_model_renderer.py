@@ -13,8 +13,10 @@ import argparse
 import json
 import re
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, Iterable
+from xml.etree import ElementTree as ET
 
 
 EXCEL_MAX_ROW = 1_048_576
@@ -202,7 +204,11 @@ def _write_matrix(ws: Any, start_cell: str, rows: list[list[Any]], libs: dict[st
     for row_offset, row in enumerate(rows):
         for col_offset in range(max_cols):
             value = row[col_offset] if col_offset < len(row) else None
-            ws.cell(row=start_row + row_offset, column=start_col + col_offset, value=value)
+            cell = ws.cell(row=start_row + row_offset, column=start_col + col_offset, value=value)
+            if isinstance(value, str) and value.startswith("="):
+                # Matrix/record data is untrusted literal input. Formulas must be
+                # expressed through the typed `formulas` collection below.
+                cell.data_type = "s"
     return _range_from_cells(start_cell, len(rows), max_cols, libs)
 
 
@@ -707,9 +713,55 @@ def audit_xlsx_formula_integrity(path: str | Path, spec: dict[str, Any] | None =
     libs = _load_openpyxl()
     wb = libs["load_workbook"](str(Path(path).expanduser().resolve()), data_only=False)
     try:
-        return audit_workbook_formulas(wb, spec=spec)
+        result = audit_workbook_formulas(wb, spec=spec)
     finally:
         wb.close()
+    result["calculation"] = inspect_formula_cache(path)
+    return result
+
+
+def inspect_formula_cache(path: str | Path) -> dict[str, Any]:
+    """Report whether formula cells have non-empty cached values in OOXML."""
+    formula_cells = 0
+    cached_formula_cells = 0
+    with zipfile.ZipFile(Path(path).expanduser().resolve()) as archive:
+        worksheet_names = sorted(
+            name for name in archive.namelist()
+            if name.startswith("xl/worksheets/") and name.endswith(".xml")
+        )
+        for name in worksheet_names:
+            root = ET.fromstring(archive.read(name))
+            for cell in root.iter():
+                if cell.tag.rsplit("}", 1)[-1] != "c":
+                    continue
+                formula = next(
+                    (child for child in cell if child.tag.rsplit("}", 1)[-1] == "f"),
+                    None,
+                )
+                if formula is None:
+                    continue
+                formula_cells += 1
+                cached = next(
+                    (child for child in cell if child.tag.rsplit("}", 1)[-1] == "v"),
+                    None,
+                )
+                if cached is not None and cached.text not in {None, ""}:
+                    cached_formula_cells += 1
+    if formula_cells == 0:
+        level = "not_applicable"
+    elif cached_formula_cells == formula_cells:
+        level = "cached_values_present"
+    elif cached_formula_cells == 0:
+        level = "not_calculated"
+    else:
+        level = "partially_cached"
+    return {
+        "level": level,
+        "formulaCells": formula_cells,
+        "cachedFormulaCells": cached_formula_cells,
+        "coverage": 1.0 if formula_cells == 0 else cached_formula_cells / formula_cells,
+        "nativeRecalculationProven": False,
+    }
 
 
 def _build_workbook(spec: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
@@ -806,6 +858,7 @@ def create_xlsx_from_spec(
     qa = audit_workbook_formulas(wb, spec=spec)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(out_path))
+    qa["calculation"] = inspect_formula_cache(out_path)
     qa_path = out_path.with_suffix(".xlsx.qa.json")
     result = {
         "kind": "xlsxModelRender",

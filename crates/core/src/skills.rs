@@ -507,6 +507,31 @@ mod tests {
     }
 
     #[test]
+    fn test_get_active_skills_matches_contiguous_chinese_office_queries() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        for (query, expected) in [
+            ("帮我做一个季度汇报PPT", "builtin-pptx-presentation-design"),
+            (
+                "请创建一份带公式的销售工作簿",
+                "builtin-xlsx-workbook-design",
+            ),
+            (
+                "把这份合同做成带批注和修订的Word文档",
+                "builtin-docx-document-design",
+            ),
+        ] {
+            let active = get_active_skills_for_query(&db, query, 5).unwrap();
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "{expected} should match contiguous Chinese query {query:?}; selected={:?}",
+                active.iter().map(|skill| &skill.id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn test_get_active_skills_matches_fiction_query() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();

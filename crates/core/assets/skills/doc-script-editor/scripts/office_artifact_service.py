@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,6 +95,11 @@ class OfficeArtifactJob:
 
         raw_manifest = payload.get("manifest") or str(output.parent / "artifact-manifest.json")
         manifest = workspace_path(Path(str(raw_manifest)), workspace_root)
+        artifact_paths = {output}
+        if input_path is not None:
+            artifact_paths.add(input_path)
+        if manifest in artifact_paths:
+            raise ValueError("manifest path must be distinct from input and output artifact paths")
         return cls(
             job_version=job_version,
             format=artifact_format,
@@ -293,6 +300,10 @@ def _native_operations(job: OfficeArtifactJob, working: Path, actions: list[dict
             arguments = ["--find", find]
             if operation.get("replace") is not None:
                 arguments.extend(["--replace", str(operation["replace"])])
+            if operation.get("expectedSha256") is not None:
+                arguments.extend(["--expected-sha256", str(operation["expectedSha256"])])
+            if operation.get("expectedMatches") is not None:
+                arguments.extend(["--expected-count", str(operation["expectedMatches"])])
             _run_editor(working, name, arguments, actions)
             changed.append(element_id)
         elif name == "insert_slide":
@@ -347,6 +358,76 @@ def _officecli_create(job: OfficeArtifactJob, working: Path, actions: list[dict[
         shutil.copy2(candidates[-1], working)
 
 
+def _force_disable_macros(app: Any) -> Any:
+    """Disable VBA before opening an untrusted Office artifact.
+
+    Office's AutomationSecurity property uses the MsoAutomationSecurity values;
+    3 is msoAutomationSecurityForceDisable. Failure is fatal because silently
+    opening with the process default would violate the backend's safety contract.
+    """
+    try:
+        previous = app.AutomationSecurity
+        app.AutomationSecurity = 3
+        return previous
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"could not force-disable Office macros: {error}") from error
+
+
+def _restore_automation_security(app: Any, previous: Any) -> None:
+    try:
+        app.AutomationSecurity = previous
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"could not restore Office automation security: {error}") from error
+
+
+def _sensitive_part_hashes(path: Path, risk: dict[str, Any]) -> dict[str, str]:
+    names = {
+        str(name)
+        for parts in risk.get("features", {}).values()
+        for name in parts
+    }
+    if not names:
+        return {}
+    with zipfile.ZipFile(path) as archive:
+        available = set(archive.namelist())
+        return {
+            name: hashlib.sha256(archive.read(name)).hexdigest()
+            for name in sorted(names & available)
+        }
+
+
+def _preservation_evidence(
+    source: Path,
+    candidate: Path,
+    risk: dict[str, Any],
+) -> dict[str, Any]:
+    before = _sensitive_part_hashes(source, risk)
+    after = _sensitive_part_hashes(candidate, risk)
+    missing = sorted(set(before) - set(after))
+    changed = sorted(
+        name for name, digest in before.items()
+        if name in after and after[name] != digest
+    )
+    unchanged = sorted(
+        name for name, digest in before.items()
+        if after.get(name) == digest
+    )
+    verified_features = sorted(
+        feature
+        for feature, names in risk.get("features", {}).items()
+        if names and all(str(name) in unchanged for name in names)
+    )
+    return {
+        "verified": not missing and not changed,
+        "method": "sha256-sensitive-package-parts",
+        "sourceParts": len(before),
+        "unchangedParts": unchanged,
+        "changedParts": changed,
+        "missingParts": missing,
+        "verifiedFeatures": verified_features,
+    }
+
+
 def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[str, Any]]) -> None:
     try:
         import win32com.client  # type: ignore
@@ -358,38 +439,56 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         app.Visible = False
         app.DisplayAlerts = False
         document = None
+        previous_security = _force_disable_macros(app)
         try:
             document = app.Workbooks.Open(str(path.resolve()), UpdateLinks=0, ReadOnly=False)
             app.CalculateFullRebuild()
             document.Save()
         finally:
-            if document is not None:
-                document.Close(SaveChanges=True)
-            app.Quit()
+            try:
+                if document is not None:
+                    document.Close(SaveChanges=True)
+            finally:
+                try:
+                    _restore_automation_security(app, previous_security)
+                finally:
+                    app.Quit()
     elif artifact_format == "docx":
         app = win32com.client.DispatchEx("Word.Application")
         app.Visible = False
         app.DisplayAlerts = 0
         document = None
+        previous_security = _force_disable_macros(app)
         try:
             document = app.Documents.Open(str(path.resolve()), ReadOnly=False, AddToRecentFiles=False)
             document.Fields.Update()
             document.Repaginate()
             document.Save()
         finally:
-            if document is not None:
-                document.Close(SaveChanges=True)
-            app.Quit()
+            try:
+                if document is not None:
+                    document.Close(SaveChanges=True)
+            finally:
+                try:
+                    _restore_automation_security(app, previous_security)
+                finally:
+                    app.Quit()
     else:
         app = win32com.client.DispatchEx("PowerPoint.Application")
         document = None
+        previous_security = _force_disable_macros(app)
         try:
             document = app.Presentations.Open(str(path.resolve()), WithWindow=False)
             document.Save()
         finally:
-            if document is not None:
-                document.Close()
-            app.Quit()
+            try:
+                if document is not None:
+                    document.Close()
+            finally:
+                try:
+                    _restore_automation_security(app, previous_security)
+                finally:
+                    app.Quit()
     actions.append({"command": "windows-com-finalize", "status": "ok", "exitCode": 0})
 
 
@@ -439,6 +538,7 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
         "backend": backend,
         "changedElements": [],
         "preservedFeatures": [],
+        "preservationEvidence": None,
         "warnings": [],
         "validation": None,
         "renderedPreviews": [],
@@ -454,9 +554,6 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
     job.output.parent.mkdir(parents=True, exist_ok=True)
     input_risk = scan_ooxml_risks(job.input) if job.input is not None else None
     if input_risk:
-        result["preservedFeatures"] = [
-            name for name, parts in input_risk["features"].items() if parts
-        ]
         if input_risk["riskLevel"] == "high" and job.preservation_policy == "strict":
             result["warnings"].append(
                 "High-risk package features detected; Nexa will use staged precise edits and validate before publish."
@@ -490,13 +587,29 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
             arguments = ["--allow-risky"] if job.preservation_policy == "replace" else []
             _run_editor(working, "recalc_xlsx", arguments, actions, timeout=300)
 
+        if job.input is not None and input_risk is not None:
+            preservation = _preservation_evidence(job.input, working, input_risk)
+            result["preservationEvidence"] = preservation
+            result["preservedFeatures"] = preservation["verifiedFeatures"]
+            if job.preservation_policy == "strict" and not preservation["verified"]:
+                raise RuntimeError(
+                    "strict preservation failed: "
+                    + json.dumps({
+                        "changedParts": preservation["changedParts"],
+                        "missingParts": preservation["missingParts"],
+                    }, ensure_ascii=False)
+                )
+
         with tempfile.TemporaryDirectory(prefix=".nexa-office-job-", dir=job.output.parent) as tmp:
             temporary_root = Path(tmp)
             contract = _contract_path(job, temporary_root, workspace_root)
             if contract is not None and job.format == "xlsx":
                 _run_editor(working, "lint_xlsx", ["--contract", str(contract)], actions)
 
-            validation_output = _run_editor(working, "validate", ["--json"], actions)
+            validation_arguments = ["--json"]
+            if contract is not None:
+                validation_arguments.extend(["--contract", str(contract)])
+            validation_output = _run_editor(working, "validate", validation_arguments, actions)
             result["validation"] = json.loads(validation_output)
 
             if job.render_policy != "none":

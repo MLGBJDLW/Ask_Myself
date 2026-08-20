@@ -26,7 +26,6 @@ import zipfile
 from bisect import bisect_right
 from pathlib import Path
 from typing import Any
-from xml.dom import minidom
 from xml.etree import ElementTree as ET
 
 from office_artifact_runtime import (
@@ -41,6 +40,7 @@ from office_artifact_runtime import (
 MAX_EXTRACT_BYTES = 50 * 1024
 HISTORY_DIR = ".nexa/doc-history"
 EXCEL_ERRORS = ("#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#N/A")
+UNPACK_MARKER = ".nexa-ooxml-unpack.json"
 
 
 # ---------------------------------------------------------------------------
@@ -123,11 +123,14 @@ def _validate_output_dir(raw: str, *, allow_existing: bool = True) -> Path:
         _die(f"ERROR: output directory must be absolute: {raw}", 3)
     try:
         resolved = p.resolve()
-        resolved.relative_to(Path.cwd().resolve())
+        workspace_root = Path.cwd().resolve()
+        resolved.relative_to(workspace_root)
     except ValueError:
         _die(f"ERROR: output directory escapes workspace: {raw}", 3)
     except OSError as e:
         _die(f"ERROR: cannot resolve output directory: {e}", 3)
+    if resolved == workspace_root:
+        _die("ERROR: output directory cannot be the workspace root", 3)
     if resolved.exists() and not allow_existing:
         _die(f"ERROR: output directory already exists: {resolved}", 3)
     resolved.mkdir(parents=True, exist_ok=True)
@@ -257,16 +260,6 @@ def _run_soffice_convert(path: Path, to: str, outdir: Path) -> subprocess.Comple
 def _expected_converted_path(input_path: Path, outdir: Path, to: str) -> Path:
     ext = to.split(":", 1)[0].split()[0].lstrip(".")
     return outdir / f"{input_path.stem}.{ext}"
-
-
-def _pretty_xml_file(path: Path) -> None:
-    try:
-        raw = path.read_bytes()
-        parsed = minidom.parseString(raw)
-        path.write_text(parsed.toprettyxml(indent="  "), encoding="utf-8")
-    except Exception:
-        # Not all Office XML parts are worth normalizing; keep original bytes if parsing fails.
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +557,21 @@ def _docx_text_groups(doc) -> list[list[Any]]:
     return groups
 
 
-def _replace_docx(path: Path, find: str, replace: str, dry_run: bool) -> int:
+def _assert_expected_match_count(count: int, expected_count: int | None) -> None:
+    if expected_count is not None and count != expected_count:
+        _die(
+            f"PRECONDITION_FAILED: expected {expected_count} text match(es), found {count}",
+            1,
+        )
+
+
+def _replace_docx(
+    path: Path,
+    find: str,
+    replace: str,
+    dry_run: bool,
+    expected_count: int | None = None,
+) -> int:
     try:
         import docx  # type: ignore
     except ImportError:
@@ -573,10 +580,13 @@ def _replace_docx(path: Path, find: str, replace: str, dry_run: bool) -> int:
     doc = docx.Document(str(working))
     groups = _docx_text_groups(doc)
     before_lines = ["".join(node.text or "" for node in nodes) for nodes in groups]
-    count = sum(
-        _replace_across_text_nodes(nodes, find, replace, apply=not dry_run)
-        for nodes in groups
-    )
+    count = sum(_replace_across_text_nodes(nodes, find, replace, apply=False) for nodes in groups)
+    if expected_count is not None and count != expected_count and not dry_run:
+        working.unlink(missing_ok=True)
+    _assert_expected_match_count(count, expected_count)
+    if not dry_run and count:
+        for nodes in groups:
+            _replace_across_text_nodes(nodes, find, replace, apply=True)
     if dry_run:
         after_lines = [line.replace(find, replace) for line in before_lines]
         diff = difflib.unified_diff(
@@ -621,7 +631,13 @@ def _pptx_text_groups(prs) -> list[list[Any]]:
     return groups
 
 
-def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
+def _replace_pptx(
+    path: Path,
+    find: str,
+    replace: str,
+    dry_run: bool,
+    expected_count: int | None = None,
+) -> int:
     try:
         from pptx import Presentation  # type: ignore
     except ImportError:
@@ -630,10 +646,13 @@ def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
     prs = Presentation(str(working))
     groups = _pptx_text_groups(prs)
     before_lines = ["".join(node.text or "" for node in nodes) for nodes in groups]
-    count = sum(
-        _replace_across_text_nodes(nodes, find, replace, apply=not dry_run)
-        for nodes in groups
-    )
+    count = sum(_replace_across_text_nodes(nodes, find, replace, apply=False) for nodes in groups)
+    if expected_count is not None and count != expected_count and not dry_run:
+        working.unlink(missing_ok=True)
+    _assert_expected_match_count(count, expected_count)
+    if not dry_run and count:
+        for nodes in groups:
+            _replace_across_text_nodes(nodes, find, replace, apply=True)
     if dry_run:
         before = "\n".join(before_lines)
         after = before.replace(find, replace)
@@ -659,7 +678,13 @@ def _replace_pptx(path: Path, find: str, replace: str, dry_run: bool) -> int:
     return 0
 
 
-def _replace_xlsx(path: Path, find: str, replace: str, dry_run: bool) -> int:
+def _replace_xlsx(
+    path: Path,
+    find: str,
+    replace: str,
+    dry_run: bool,
+    expected_count: int | None = None,
+) -> int:
     spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     text_tag = f"{{{spreadsheet_ns}}}t"
     container_tags = {
@@ -728,6 +753,7 @@ def _replace_xlsx(path: Path, find: str, replace: str, dry_run: bool) -> int:
             staged.unlink(missing_ok=True)
         raise
     if dry_run:
+        _assert_expected_match_count(count, expected_count)
         diff = difflib.unified_diff(
             before_lines, after_lines,
             fromfile=str(path), tofile=f"{path} (preview)", lineterm="",
@@ -735,6 +761,9 @@ def _replace_xlsx(path: Path, find: str, replace: str, dry_run: bool) -> int:
         sys.stdout.write("\n".join(diff) + "\n")
         print(f"\n[DRY-RUN] matches: {count}")
         return 0
+    if expected_count is not None and count != expected_count:
+        staged.unlink(missing_ok=True)
+        _assert_expected_match_count(count, expected_count)
     if count == 0:
         staged.unlink(missing_ok=True)
         print(f"replaced 0 occurrence(s) in {path}")
@@ -754,13 +783,25 @@ def cmd_replace(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if not args.find:
         _die("ERROR: --find is required", 3)
+    expected_sha256 = getattr(args, "expected_sha256", None)
+    if expected_sha256:
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_sha256.lower() != str(expected_sha256).lower():
+            _die(
+                "PRECONDITION_FAILED: artifact SHA-256 changed since it was inspected "
+                f"(expected {expected_sha256}, actual {actual_sha256})",
+                1,
+            )
+    expected_count = getattr(args, "expected_count", None)
+    if expected_count is not None and expected_count < 0:
+        _die("ERROR: --expected-count cannot be negative", 3)
     ext = _ext(path)
     if ext == "docx":
-        return _replace_docx(path, args.find, args.replace or "", args.dry_run)
+        return _replace_docx(path, args.find, args.replace or "", args.dry_run, expected_count)
     if ext == "pptx":
-        return _replace_pptx(path, args.find, args.replace or "", args.dry_run)
+        return _replace_pptx(path, args.find, args.replace or "", args.dry_run, expected_count)
     if ext == "xlsx":
-        return _replace_xlsx(path, args.find, args.replace or "", args.dry_run)
+        return _replace_xlsx(path, args.find, args.replace or "", args.dry_run, expected_count)
     _die(f"ERROR: replace supports .docx/.pptx/.xlsx only (got .{ext})", 3)
     return 1
 
@@ -1074,7 +1115,7 @@ def cmd_create_xlsx(args: argparse.Namespace) -> int:
     staged = staging_path(path)
     staged_qa = staged.with_suffix(".xlsx.qa.json")
     spec_path = _validate_path(args.spec)
-    create_xlsx_from_spec, _ = _load_xlsx_renderer()
+    create_xlsx_from_spec, _, _ = _load_xlsx_renderer()
     try:
         result = create_xlsx_from_spec(
             staged,
@@ -1119,10 +1160,11 @@ def _load_xlsx_renderer():
         from xlsx_model_renderer import (  # type: ignore
             audit_xlsx_formula_integrity,
             create_xlsx_from_spec,
+            inspect_formula_cache,
         )
     except ImportError as exc:
         _die(f"ERROR: failed to load XLSX renderer: {exc}", 1)
-    return create_xlsx_from_spec, audit_xlsx_formula_integrity
+    return create_xlsx_from_spec, audit_xlsx_formula_integrity, inspect_formula_cache
 
 
 def _load_pptx_renderer():
@@ -1222,16 +1264,41 @@ def cmd_unpack(args: argparse.Namespace) -> int:
     if any(outdir.iterdir()):
         if not args.overwrite:
             _die(f"ERROR: output directory is not empty: {outdir}. Pass --overwrite to replace it.", 3)
-        # Safety guard: _validate_output_dir already proved the resolved path is under cwd.
+        marker = outdir / UNPACK_MARKER
+        try:
+            marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            _die(
+                f"ERROR: refusing to overwrite unmanaged directory: {outdir}. "
+                f"Only directories created by this unpack command may be replaced.",
+                3,
+            )
+        if marker_payload.get("kind") != "nexa-ooxml-unpack" or marker_payload.get("version") != 1:
+            _die(f"ERROR: invalid managed-unpack marker in: {outdir}", 3)
         shutil.rmtree(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path) as zf:
+        for member in zf.infolist():
+            target = (outdir / member.filename).resolve()
+            try:
+                target.relative_to(outdir)
+            except ValueError:
+                _die(f"ERROR: unsafe ZIP member escapes output directory: {member.filename}", 3)
         zf.extractall(outdir)
-    xml_count = 0
-    for member in list(outdir.rglob("*.xml")) + list(outdir.rglob("*.rels")):
-        _pretty_xml_file(member)
-        xml_count += 1
-    print(f"unpacked {path.name} -> {outdir} ({xml_count} XML parts prettified)")
+        xml_count = sum(
+            1 for member in zf.infolist()
+            if member.filename.lower().endswith((".xml", ".rels"))
+        )
+    (outdir / UNPACK_MARKER).write_text(
+        json.dumps({
+            "kind": "nexa-ooxml-unpack",
+            "version": 1,
+            "source": str(path),
+            "sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"unpacked {path.name} -> {outdir} ({xml_count} XML parts preserved byte-for-byte)")
     return 0
 
 
@@ -1246,7 +1313,7 @@ def cmd_pack(args: argparse.Namespace) -> int:
     try:
         with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as zf:
             for item in sorted(input_dir.rglob("*")):
-                if item.is_file():
+                if item.is_file() and item.name != UNPACK_MARKER:
                     zf.write(item, item.relative_to(input_dir).as_posix())
         snapshot, validation = _publish_edit(staged, path)
     finally:
@@ -1285,6 +1352,10 @@ def cmd_render(args: argparse.Namespace) -> int:
     image_format = args.format.lower()
     if image_format not in {"png", "jpeg"}:
         _die("ERROR: --format must be png or jpeg", 3)
+    for pattern in ("page*.png", "page*.jpg", "page*.jpeg", "page*.ppm"):
+        for old_preview in outdir.glob(pattern):
+            if old_preview.is_file():
+                old_preview.unlink()
     with tempfile.TemporaryDirectory(prefix="nexa-render-") as tmp:
         pdf = path if _ext(path) == "pdf" else _convert_to_pdf(path, Path(tmp))
         prefix = outdir / "page"
@@ -1304,6 +1375,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     if completed.returncode != 0:
         return completed.returncode
     images = sorted(outdir.glob(f"page*.{'jpg' if image_format == 'jpeg' else 'png'}"))
+    if not images:
+        _die(f"ERROR: renderer completed without producing page images in {outdir}", 1)
     print(f"rendered {len(images)} page image(s) to {outdir}")
     for image in images[:20]:
         print(image)
@@ -1380,7 +1453,7 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
         }, ensure_ascii=False, indent=2))
         return 5
 
-    _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+    _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
     before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix=".nexa-recalc-", dir=path.parent) as tmp:
         root = Path(tmp)
@@ -1444,6 +1517,7 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
         "rewritten": True,
         "contentChanged": before_hash != after_hash,
         "formula_qa": formula_qa,
+        "calculation": inspect_formula_cache(path),
         "cached_formula_errors": cached_errors,
         "total_formulas": _count_xlsx_formulas(path),
         "risk": risk,
@@ -1458,7 +1532,7 @@ def cmd_lint_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if _ext(path) != "xlsx":
         _die("ERROR: lint_xlsx requires a .xlsx file", 3)
-    _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+    _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
     formula_qa = audit_xlsx_formula_integrity(path)
     total_errors, cached_errors = _scan_xlsx_formula_errors(path)
     contract_result = _validate_xlsx_contract(path, args.contract) if args.contract else None
@@ -1469,6 +1543,7 @@ def cmd_lint_xlsx(args: argparse.Namespace) -> int:
             or (contract_result is not None and contract_result["status"] == "fail")
         ) else formula_qa["status"],
         "formula_qa": formula_qa,
+        "calculation": inspect_formula_cache(path),
         "cached_formula_errors": cached_errors,
         "preservationRisk": scan_ooxml_risks(path),
         "contract": contract_result,
@@ -1485,6 +1560,7 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         _missing("openpyxl")
 
     contract = _read_json(contract_path)
+    _, _, inspect_formula_cache = _load_xlsx_renderer()
     wb = openpyxl.load_workbook(str(path), data_only=False, read_only=False)
     values_wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
     errors: list[dict[str, Any]] = []
@@ -1560,11 +1636,137 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                     "actual": actual,
                 })
         checks["sentinels"] = sentinel_checks
+        calculation = inspect_formula_cache(path)
+        checks["formulaCache"] = calculation
+        if contract.get("require_formula_cache") and calculation["coverage"] < 1.0:
+            errors.append({
+                "code": "formula.cache_missing",
+                "formulaCells": calculation["formulaCells"],
+                "cachedFormulaCells": calculation["cachedFormulaCells"],
+            })
     finally:
         wb.close()
         values_wb.close()
 
     return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+
+
+def _contract_text_checks(text: str, contract: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    required = [str(item) for item in contract.get("required_text", [])]
+    missing = [item for item in required if item not in text]
+    forbidden = [str(item) for item in contract.get("forbidden_text", [])]
+    present = [item for item in forbidden if item in text]
+    for item in missing:
+        errors.append({"code": "required_text.missing", "text": item})
+    for item in present:
+        errors.append({"code": "forbidden_text.present", "text": item})
+    return errors, {
+        "requiredText": {"required": required, "missing": missing},
+        "forbiddenText": {"forbidden": forbidden, "present": present},
+    }
+
+
+def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
+    try:
+        import docx  # type: ignore
+    except ImportError:
+        _missing("python-docx")
+    contract = _read_json(contract_path)
+    document = docx.Document(str(path))
+    stories: list[str] = [paragraph.text for paragraph in document.paragraphs]
+    for table in document.tables:
+        stories.extend(cell.text for row in table.rows for cell in row.cells)
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            stories.extend(paragraph.text for paragraph in story.paragraphs)
+            for table in story.tables:
+                stories.extend(cell.text for row in table.rows for cell in row.cells)
+    errors, checks = _contract_text_checks("\n".join(stories), contract)
+    measurements = {
+        "paragraphs": len(document.paragraphs),
+        "tables": len(document.tables),
+    }
+    checks["measurements"] = measurements
+    for key, actual in measurements.items():
+        minimum = contract.get(f"min_{key}")
+        if minimum is not None and actual < int(minimum):
+            errors.append({
+                "code": f"{key}.minimum",
+                "minimum": int(minimum),
+                "actual": actual,
+            })
+    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+
+
+def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
+    try:
+        from pptx import Presentation  # type: ignore
+    except ImportError:
+        _missing("python-pptx")
+    contract = _read_json(contract_path)
+    presentation = Presentation(str(path))
+    fragments: list[str] = []
+    titles: list[str] = []
+    slides_with_notes = 0
+    for slide in presentation.slides:
+        if slide.shapes.title is not None:
+            titles.append(slide.shapes.title.text)
+        if slide.has_notes_slide:
+            notes_text = "\n".join(
+                shape.text for shape in slide.notes_slide.shapes
+                if getattr(shape, "has_text_frame", False)
+            ).strip()
+            if notes_text:
+                slides_with_notes += 1
+                fragments.append(notes_text)
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False):
+                fragments.append(shape.text)
+            if getattr(shape, "has_table", False):
+                fragments.extend(cell.text for row in shape.table.rows for cell in row.cells)
+    errors, checks = _contract_text_checks("\n".join(fragments), contract)
+    slide_count = len(presentation.slides)
+    checks["measurements"] = {
+        "slides": slide_count,
+        "slidesWithNotes": slides_with_notes,
+        "titles": titles,
+    }
+    if contract.get("min_slides") is not None and slide_count < int(contract["min_slides"]):
+        errors.append({
+            "code": "slides.minimum",
+            "minimum": int(contract["min_slides"]),
+            "actual": slide_count,
+        })
+    if contract.get("max_slides") is not None and slide_count > int(contract["max_slides"]):
+        errors.append({
+            "code": "slides.maximum",
+            "maximum": int(contract["max_slides"]),
+            "actual": slide_count,
+        })
+    required_titles = [str(item) for item in contract.get("required_slide_titles", [])]
+    missing_titles = [item for item in required_titles if item not in titles]
+    checks["requiredSlideTitles"] = {"required": required_titles, "missing": missing_titles}
+    for title in missing_titles:
+        errors.append({"code": "slide_title.missing", "title": title})
+    if contract.get("require_speaker_notes") and slides_with_notes != slide_count:
+        errors.append({
+            "code": "speaker_notes.missing",
+            "slides": slide_count,
+            "slidesWithNotes": slides_with_notes,
+        })
+    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+
+
+def _validate_artifact_contract(path: Path, contract_path: str) -> dict[str, Any]:
+    if _ext(path) == "xlsx":
+        return _validate_xlsx_contract(path, contract_path)
+    if _ext(path) == "docx":
+        return _validate_docx_contract(path, contract_path)
+    if _ext(path) == "pptx":
+        return _validate_pptx_contract(path, contract_path)
+    _die("ERROR: validation contracts require DOCX, PPTX, or XLSX", 3)
+
 
 def cmd_validate(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
@@ -1619,9 +1821,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1
         try:
-            _, audit_xlsx_formula_integrity = _load_xlsx_renderer()
+            _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
             formula_qa = audit_xlsx_formula_integrity(path)
             result["formulaQa"] = formula_qa
+            result["calculation"] = inspect_formula_cache(path)
             if formula_qa["status"] == "fail":
                 result["status"] = "fail"
                 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1641,12 +1844,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
         result["backend"] = {"id": "pypdf", "pages": len(reader.pages)}
     else:
         _die(f"ERROR: validate does not support .{ext}", 3)
+    if getattr(args, "contract", None):
+        contract = _validate_artifact_contract(path, args.contract)
+        result["contract"] = contract
+        if contract["status"] == "fail":
+            result["status"] = "fail"
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         backend = result.get("backend", {})
         print(f"VALID {ext.upper()} backend={backend.get('id', 'structural')} status={result['status']}")
-    return 0
+    return 0 if result["status"] != "fail" else 1
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
@@ -1688,12 +1896,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--find", required=True)
     p_rep.add_argument("--replace", default="")
     p_rep.add_argument("--dry-run", action="store_true")
+    p_rep.add_argument("--expected-sha256", default=None, help="Fail if the artifact changed since inspection")
+    p_rep.add_argument("--expected-count", type=int, default=None, help="Fail unless exactly this many matches exist")
     p_rep.set_defaults(func=cmd_replace)
 
     p_red = sub.add_parser("redact", help="Redact text (docx/pptx/xlsx)")
     p_red.add_argument("--find", required=True)
     p_red.add_argument("--replace", default=None)
     p_red.add_argument("--dry-run", action="store_true")
+    p_red.add_argument("--expected-sha256", default=None, help="Fail if the artifact changed since inspection")
+    p_red.add_argument("--expected-count", type=int, default=None, help="Fail unless exactly this many matches exist")
     p_red.set_defaults(func=cmd_redact)
 
     p_ext = sub.add_parser("extract", help="Extract plain text (docx/pdf/pptx/xlsx)")
@@ -1770,6 +1982,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_val = sub.add_parser("validate", help="Validate OOXML structure, relationships, content types, and backend open")
     p_val.add_argument("--json", action="store_true", help="Emit machine-readable validation JSON")
+    p_val.add_argument(
+        "--contract",
+        default=None,
+        help="Optional absolute JSON contract for format-specific content and structure checks",
+    )
     p_val.set_defaults(func=cmd_validate)
 
     p_conv = sub.add_parser("convert", help="Convert via LibreOffice headless")

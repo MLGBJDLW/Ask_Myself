@@ -117,6 +117,39 @@ class XlsxModelRendererTests(unittest.TestCase):
         self.assertIn("missing sheet reference", messages)
         self.assertIn("#REF!", messages)
 
+    def test_rows_keep_leading_equals_literal_and_formula_specs_explicit(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            spec_path = root / "literal_formula_spec.json"
+            out_path = root / "literal_formula.xlsx"
+            spec_path.write_text(
+                json.dumps({
+                    "sheets": [{
+                        "name": "Inputs",
+                        "headers": ["Untrusted text", "Explicit formula"],
+                        "rows": [["=WEBSERVICE(\"https://example.invalid/\")", None]],
+                        "formulas": [{"cell": "B2", "formula": "=1+1"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            xlsx_model_renderer.create_xlsx_from_spec(out_path, spec_path, workspace_root=root)
+            wb = openpyxl.load_workbook(out_path, data_only=False)
+            try:
+                ws = wb["Inputs"]
+                self.assertEqual("=WEBSERVICE(\"https://example.invalid/\")", ws["A2"].value)
+                self.assertEqual("s", ws["A2"].data_type)
+                self.assertEqual("=1+1", ws["B2"].value)
+                self.assertEqual("f", ws["B2"].data_type)
+            finally:
+                wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

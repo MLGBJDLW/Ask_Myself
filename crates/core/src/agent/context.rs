@@ -123,16 +123,22 @@ pub fn prepare_messages_with_options(
         .saturating_sub(tool_overhead)
         .saturating_sub(context_safety_buffer(max_context));
     let system_prompt_budget = system_prompt_char_budget(effective_context, max_tokens_response);
-    let skill_budget = skill_prompt_char_budget(max_context, system_prompt_budget);
+    let skill_index_budget = skill_prompt_char_budget(max_context, system_prompt_budget);
+    // Loaded skills are executable workflow instructions, not catalog metadata.
+    // Prefer their complete bodies and spend only the remaining prompt budget on
+    // the available-skill index. This mirrors progressive disclosure: the index
+    // stays compact, while an activated skill is normally loaded in full.
+    let stable_prompt_floor = MIN_SYSTEM_PROMPT_CHARS.min(system_prompt_budget / 2);
+    let loaded_skills_budget = system_prompt_budget.saturating_sub(stable_prompt_floor);
     let loaded_skills_section = if options.include_skill_system_prompt {
-        crate::skills::build_loaded_skills_section_with_budget(
-            loaded_skills,
-            loaded_skill_prompt_char_budget(skill_budget, !skills.is_empty()),
-        )
+        crate::skills::build_loaded_skills_section_with_budget(loaded_skills, loaded_skills_budget)
     } else {
         String::new()
     };
-    let remaining_skill_budget = skill_budget.saturating_sub(loaded_skills_section.len());
+    let remaining_skill_budget = system_prompt_budget
+        .saturating_sub(stable_prompt_floor)
+        .saturating_sub(loaded_skills_section.len())
+        .min(skill_index_budget);
     let available_skills_section = if options.include_skill_system_prompt {
         crate::skills::build_skills_section_for_query_with_budget(
             skills,
@@ -142,13 +148,9 @@ pub fn prepare_messages_with_options(
     } else {
         String::new()
     };
-    let volatile_skill_budget = if !options.include_skill_system_prompt
-        || (skills.is_empty() && loaded_skills.is_empty())
-    {
-        0
-    } else {
-        skill_budget
-    };
+    let volatile_skill_budget = available_skills_section
+        .len()
+        .saturating_add(loaded_skills_section.len());
     let stable_system_prompt = cap_text_to_chars(
         system_prompt.to_string(),
         stable_system_prompt_char_budget(system_prompt_budget, volatile_skill_budget),
@@ -639,16 +641,6 @@ fn stable_system_prompt_char_budget(system_prompt_budget: usize, skill_budget: u
     system_prompt_budget.saturating_sub(skill_budget)
 }
 
-fn loaded_skill_prompt_char_budget(total_skill_budget: usize, keep_available_index: bool) -> usize {
-    if total_skill_budget == 0 {
-        return 0;
-    }
-    if !keep_available_index {
-        return total_skill_budget;
-    }
-    total_skill_budget.saturating_mul(3) / 4
-}
-
 fn combine_prompt_sections(first: String, second: String) -> String {
     match (first.is_empty(), second.is_empty()) {
         (true, true) => String::new(),
@@ -1057,6 +1049,56 @@ mod tests {
         assert!(sys_text.contains("skill_id: skill-loaded"));
         assert!(sys_text.contains("Draft scenes with concrete stakes"));
         assert!(sys_text.contains("Available Skills"));
+    }
+
+    #[test]
+    fn test_prepare_messages_keeps_large_loaded_skill_complete() {
+        let sentinel = "END_OF_SELECTED_SKILL";
+        let loaded_skills = vec![Skill {
+            id: "skill-large-loaded".into(),
+            name: "Large Loaded Skill".into(),
+            description: "Use when a complete long workflow is required".into(),
+            content: format!("{}\n{sentinel}", "x".repeat(24_000)),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin: true,
+            interface: crate::skills::SkillInterfaceMetadata {
+                display_name: "Large Loaded Skill".into(),
+                short_description: "Complete long workflow".into(),
+                icon_small: None,
+                icon_large: None,
+                default_prompt: None,
+            },
+            dependencies: crate::skills::SkillDependencies::default(),
+            policy: crate::skills::SkillPolicy::default(),
+            source_path: None,
+            resources: Vec::new(),
+            resource_bundle: Vec::new(),
+        }];
+
+        let result = prepare_messages(
+            &"system ".repeat(8_000),
+            &[],
+            &[ContentPart::Text {
+                text: "Run the complete workflow".to_string(),
+            }],
+            "gpt-4o",
+            4096,
+            Some(128_000),
+            &loaded_skills,
+            &loaded_skills,
+            &[],
+        );
+
+        let sys_text = result
+            .iter()
+            .filter(|msg| msg.role == Role::System)
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sys_text.contains(sentinel));
+        assert!(!sys_text.contains("...[loaded skills truncated]"));
     }
 
     #[test]

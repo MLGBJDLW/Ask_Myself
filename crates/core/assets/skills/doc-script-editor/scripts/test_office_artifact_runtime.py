@@ -98,6 +98,50 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         snapshots = list((self.root / ".nexa" / "doc-history").rglob("report.docx"))
         self.assertEqual(1, len(snapshots))
 
+    def test_replace_preconditions_prevent_stale_or_ambiguous_edits(self) -> None:
+        import docx
+
+        path = self.root / "preconditions.docx"
+        document = docx.Document()
+        document.add_paragraph("Q3 Q3")
+        document.save(path)
+        before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_replace(argparse.Namespace(
+                    path=str(path),
+                    find="Q3",
+                    replace="Q4",
+                    dry_run=False,
+                    expected_sha256="0" * 64,
+                    expected_count=2,
+                ))
+        self.assertEqual(before, hashlib.sha256(path.read_bytes()).hexdigest())
+
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_replace(argparse.Namespace(
+                    path=str(path),
+                    find="Q3",
+                    replace="Q4",
+                    dry_run=False,
+                    expected_sha256=before,
+                    expected_count=1,
+                ))
+        self.assertEqual(before, hashlib.sha256(path.read_bytes()).hexdigest())
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, edit_doc.cmd_replace(argparse.Namespace(
+                path=str(path),
+                find="Q3",
+                replace="Q4",
+                dry_run=False,
+                expected_sha256=before,
+                expected_count=2,
+            )))
+        self.assertEqual("Q4 Q4", docx.Document(path).paragraphs[0].text)
+
     def test_pptx_replace_matches_across_runs(self) -> None:
         from pptx import Presentation
 
@@ -144,6 +188,8 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
             {"xl/pivotCache/pivotCacheDefinition1.xml": sensitive},
             self.root / "model-sensitive.xlsx",
         )
+        source_copy = self.root / "model-sensitive-source.xlsx"
+        source_copy.write_bytes(path.read_bytes())
         with zipfile.ZipFile(path) as archive:
             untouched_sheet = archive.read("xl/worksheets/sheet1.xml")
 
@@ -157,6 +203,13 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
             self.assertEqual(sensitive, archive.read("xl/pivotCache/pivotCacheDefinition1.xml"))
             self.assertNotEqual(untouched_sheet, archive.read("xl/worksheets/sheet1.xml"))
         self.assertEqual("medium", scan_ooxml_risks(path)["riskLevel"])
+        evidence = office_artifact_service._preservation_evidence(
+            source_copy,
+            path,
+            scan_ooxml_risks(source_copy),
+        )
+        self.assertTrue(evidence["verified"])
+        self.assertIn("pivotCaches", evidence["verifiedFeatures"])
 
     def test_xlsx_replace_does_not_reserialize_unmatched_editable_parts(self) -> None:
         import openpyxl
@@ -280,6 +333,157 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertTrue(manifest["ok"])
         self.assertEqual("nexa-openxml", manifest["backend"])
         self.assertEqual("pass", validate_ooxml_package(output).status)
+
+    def test_docx_validation_contract_is_enforced_before_publish(self) -> None:
+        output = self.root / "contract-failed.docx"
+        payload = {
+            "jobVersion": 1,
+            "format": "docx",
+            "intent": "create_new",
+            "output": str(output),
+            "operations": [{"op": "create", "title": "Report", "body": "Draft body"}],
+            "validationContract": {
+                "required_text": ["Approved by Finance"],
+                "min_paragraphs": 2,
+            },
+        }
+        result, exit_code = execute_job(OfficeArtifactJob.from_dict(payload, self.root), self.root)
+
+        self.assertEqual(1, exit_code)
+        self.assertFalse(result["ok"])
+        self.assertFalse(output.exists())
+        self.assertIn("required_text.missing", result["error"])
+
+    def test_pptx_validation_contract_passes_for_required_content(self) -> None:
+        from pptx import Presentation
+
+        source = self.root / "contract-source.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        slide.shapes.title.text = "Executive Summary"
+        presentation.save(source)
+        output = self.root / "contract-result.pptx"
+        payload = {
+            "jobVersion": 1,
+            "format": "pptx",
+            "intent": "edit_existing",
+            "input": str(source),
+            "output": str(output),
+            "operations": [{"op": "replace", "find": "Executive", "replace": "Board"}],
+            "validationContract": {
+                "required_text": ["Board Summary"],
+                "min_slides": 1,
+                "max_slides": 1,
+            },
+        }
+        result, exit_code = execute_job(OfficeArtifactJob.from_dict(payload, self.root), self.root)
+
+        self.assertEqual(0, exit_code, result)
+        contract = result["validation"]["backend"]["contract"]
+        self.assertEqual("pass", contract["status"])
+        self.assertTrue(output.exists())
+
+    def test_job_rejects_manifest_path_equal_to_artifact_path(self) -> None:
+        output = self.root / "conflict.docx"
+        with self.assertRaisesRegex(ValueError, "manifest path must be distinct"):
+            OfficeArtifactJob.from_dict(
+                {
+                    "jobVersion": 1,
+                    "format": "docx",
+                    "intent": "create_new",
+                    "output": str(output),
+                    "manifest": str(output),
+                    "operations": [{"op": "create", "body": "Never published"}],
+                },
+                self.root,
+            )
+
+    def test_job_rejects_manifest_path_equal_to_input_path(self) -> None:
+        source = self.root / "source.docx"
+        source.write_bytes(b"placeholder")
+        with self.assertRaisesRegex(ValueError, "manifest path must be distinct"):
+            OfficeArtifactJob.from_dict(
+                {
+                    "jobVersion": 1,
+                    "format": "docx",
+                    "intent": "edit_existing",
+                    "input": str(source),
+                    "output": str(self.root / "result.docx"),
+                    "manifest": str(source),
+                },
+                self.root,
+            )
+
+    def test_unpack_is_lossless_and_overwrite_requires_managed_directory(self) -> None:
+        import docx
+
+        source = self.root / "lossless.docx"
+        document = docx.Document()
+        document.add_paragraph("Preserve exact XML bytes")
+        document.save(source)
+        with zipfile.ZipFile(source) as archive:
+            document_xml = archive.read("word/document.xml")
+
+        outdir = self.root / "unpacked"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                0,
+                edit_doc.cmd_unpack(
+                    argparse.Namespace(path=str(source), outdir=str(outdir), overwrite=False)
+                ),
+            )
+        self.assertEqual(document_xml, (outdir / "word" / "document.xml").read_bytes())
+        self.assertTrue((outdir / edit_doc.UNPACK_MARKER).exists())
+
+        unmanaged = self.root / "unmanaged"
+        unmanaged.mkdir()
+        (unmanaged / "keep.txt").write_text("user data", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_unpack(
+                    argparse.Namespace(path=str(source), outdir=str(unmanaged), overwrite=True)
+                )
+        self.assertEqual("user data", (unmanaged / "keep.txt").read_text(encoding="utf-8"))
+
+    def test_unpack_refuses_workspace_root_even_with_overwrite(self) -> None:
+        source = self.root / "minimal.docx"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc.cmd_unpack(
+                    argparse.Namespace(path=str(source), outdir=str(self.root), overwrite=True)
+                )
+        self.assertTrue(source.exists())
+
+    def test_windows_automation_security_is_forced_disabled_and_restored(self) -> None:
+        class FakeOfficeApplication:
+            AutomationSecurity = 1
+
+        app = FakeOfficeApplication()
+        previous = office_artifact_service._force_disable_macros(app)
+        self.assertEqual(1, previous)
+        self.assertEqual(3, app.AutomationSecurity)
+        office_artifact_service._restore_automation_security(app, previous)
+        self.assertEqual(1, app.AutomationSecurity)
+
+    def test_validate_reports_missing_xlsx_formula_cache_without_claiming_calculation(self) -> None:
+        import openpyxl
+
+        path = self.root / "uncalculated.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active["A1"] = 1
+        workbook.active["A2"] = "=A1+1"
+        workbook.save(path)
+        workbook.close()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(0, edit_doc.cmd_validate(argparse.Namespace(path=str(path), json=True)))
+        result = json.loads(output.getvalue())
+        self.assertEqual("not_calculated", result["calculation"]["level"])
+        self.assertEqual(1, result["calculation"]["formulaCells"])
+        self.assertEqual(0, result["calculation"]["cachedFormulaCells"])
 
     def test_job_rejects_nested_operation_paths_outside_workspace(self) -> None:
         outside_spec = self.root.parent / f"{self.root.name}-outside-spec.json"
