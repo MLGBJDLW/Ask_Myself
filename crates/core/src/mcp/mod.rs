@@ -7,7 +7,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::TcpListener;
 use std::process::{Child, Command as StdCommand};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -138,7 +138,9 @@ fn normalize_json_string_map(
         return Ok(None);
     };
 
-    let parsed: HashMap<String, String> = serde_json::from_str(&raw).map_err(|e| {
+    // Keep persisted connector maps canonical. Besides making diffs readable,
+    // this avoids treating a key-order-only rewrite as a runtime change.
+    let parsed: BTreeMap<String, String> = serde_json::from_str(&raw).map_err(|e| {
         CoreError::InvalidInput(format!(
             "Invalid {field}: expected a JSON object of string values ({e})"
         ))

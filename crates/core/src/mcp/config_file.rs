@@ -97,19 +97,20 @@ fn validate_connector_key(key: &str) -> Result<(), CoreError> {
 
 fn is_secret_shaped_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
-    [
-        "AUTHORIZATION",
-        "COOKIE",
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "API_KEY",
-        "APIKEY",
-        "PRIVATE_KEY",
-    ]
-    .iter()
-    .any(|needle| upper.contains(needle))
+    let tokens: Vec<&str> = upper
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+
+    tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "AUTHORIZATION" | "COOKIE" | "TOKEN" | "SECRET" | "PASSWORD" | "PASSWD"
+        )
+    }) || tokens
+        .windows(2)
+        .any(|pair| matches!(pair, ["API", "KEY"] | ["PRIVATE", "KEY"]))
+        || matches!(upper.as_str(), "APIKEY" | "PRIVATEKEY")
 }
 
 fn validate_env_references(value: &str) -> Result<bool, CoreError> {
@@ -224,8 +225,20 @@ fn same_trust_relevant_config(server: &McpServer, input: &SaveMcpServerInput) ->
         && server.command == input.command
         && server.args == input.args
         && server.url == input.url
-        && server.env_json == input.env_json
-        && server.headers_json == input.headers_json
+        && same_json_string_map(&server.env_json, &input.env_json)
+        && same_json_string_map(&server.headers_json, &input.headers_json)
+}
+
+fn same_json_string_map(left: &Option<String>, right: &Option<String>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            let left = serde_json::from_str::<BTreeMap<String, String>>(left);
+            let right = serde_json::from_str::<BTreeMap<String, String>>(right);
+            matches!((left, right), (Ok(left), Ok(right)) if left == right)
+        }
+        _ => false,
+    }
 }
 
 pub fn reload_user_mcp_config(
@@ -400,6 +413,41 @@ mod tests {
     }
 
     #[test]
+    fn reload_compares_environment_maps_independently_of_key_order() {
+        let dir = tempdir().unwrap();
+        let path = user_mcp_config_path(dir.path());
+        let db = Database::open_memory().unwrap();
+        write_config(
+            &path,
+            r#"{
+              "version": 1,
+              "connectors": {
+                "docs": {
+                  "name": "Docs",
+                  "transport": {
+                    "type": "stdio",
+                    "command": "docs-mcp",
+                    "env": { "ALPHA": "one", "BRAVO": "two" }
+                  }
+                }
+              }
+            }"#,
+        );
+        reload_user_mcp_config(&db, &path).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE mcp_servers SET env_json = ?1, enabled = 1 WHERE id = ?2",
+                params![r#"{"BRAVO":"two","ALPHA":"one"}"#, "user-json:docs"],
+            )
+            .unwrap();
+
+        let report = reload_user_mcp_config(&db, &path).unwrap();
+
+        assert_eq!(report.disabled_after_change, 0);
+        assert!(file_connector(&db, "docs").enabled);
+    }
+
+    #[test]
     fn invalid_json_retains_last_known_good_projection() {
         let dir = tempdir().unwrap();
         let path = user_mcp_config_path(dir.path());
@@ -474,5 +522,21 @@ mod tests {
             .unwrap()
             .into_iter()
             .all(|server| !server.id.starts_with(USER_JSON_ID_PREFIX)));
+    }
+
+    #[test]
+    fn ordinary_keys_containing_secret_substrings_accept_literal_values() {
+        let dir = tempdir().unwrap();
+        let path = user_mcp_config_path(dir.path());
+        let db = Database::open_memory().unwrap();
+        write_config(
+            &path,
+            r#"{"version":1,"connectors":{"tools":{"name":"Tools","transport":{"type":"stdio","command":"tools-mcp","env":{"KEYBOARD_LAYOUT":"us","HOTKEY":"ctrl-k","TOKENIZER_CACHE":"local"}}}}}"#,
+        );
+
+        let report = reload_user_mcp_config(&db, &path).unwrap();
+
+        assert_eq!(report.imported, 1);
+        assert_eq!(file_connector(&db, "tools").name, "Tools");
     }
 }
