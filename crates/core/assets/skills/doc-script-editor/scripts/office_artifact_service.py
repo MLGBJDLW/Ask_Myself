@@ -501,20 +501,38 @@ def _restore_automation_security(app: Any, previous: Any) -> None:
         raise RuntimeError(f"could not restore Office automation security: {error}") from error
 
 
-def _wait_for_excel_calculation(app: Any, timeout_seconds: float = 120.0) -> None:
-    """Wait until Excel reports xlDone (0), failing closed on timeout."""
+def _wait_for_excel_calculation(
+    app: Any,
+    timeout_seconds: float = 120.0,
+    pending_grace_seconds: float = 2.0,
+) -> str:
+    """Wait for xlDone, or return stable xlPending for post-save cache proof."""
     deadline = time.monotonic() + timeout_seconds
+    pending_since: float | None = None
     while True:
         try:
             state = int(app.CalculationState)
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"could not read Excel calculation state: {error}") from error
         if state == 0:
-            return
+            return "done"
+        now = time.monotonic()
+        if state == 2:
+            pending_since = pending_since or now
+            if now - pending_since >= pending_grace_seconds:
+                return "pending-requires-cache-proof"
+        else:
+            pending_since = None
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"Excel calculation did not reach xlDone within {timeout_seconds:g} seconds"
             )
+        try:
+            import pythoncom  # type: ignore
+
+            pythoncom.PumpWaitingMessages()
+        except (ImportError, OSError):
+            pass
         time.sleep(0.1)
 
 
@@ -573,6 +591,17 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         raise RuntimeError(f"Microsoft Office COM is unavailable: {error}") from error
 
     if artifact_format == "xlsx":
+        skills_root = Path(__file__).resolve().parents[2]
+        renderer_dir = skills_root / "xlsx-workbook-design" / "scripts"
+        if str(renderer_dir) not in sys.path:
+            sys.path.insert(0, str(renderer_dir))
+        from xlsx_model_renderer import (  # type: ignore
+            inspect_formula_cache,
+            inspect_formula_errors,
+            inspect_formula_inventory,
+        )
+
+        formula_before = inspect_formula_inventory(path)
         app = win32com.client.DispatchEx("Excel.Application")
         app.Visible = False
         app.DisplayAlerts = False
@@ -584,7 +613,7 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         try:
             document = app.Workbooks.Open(str(path.resolve()), UpdateLinks=0, ReadOnly=False)
             app.CalculateFullRebuild()
-            _wait_for_excel_calculation(app)
+            calculation_state = _wait_for_excel_calculation(app)
             document.Save()
         finally:
             try:
@@ -595,6 +624,28 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
                     _restore_automation_security(app, previous_security)
                 finally:
                     app.Quit()
+        formula_after = inspect_formula_inventory(path)
+        cache_evidence = inspect_formula_cache(path)
+        cache_evidence = {
+            **cache_evidence,
+            "nativeRecalculationProven": True,
+            "proof": "microsoft-excel-com-open-calculate-full-rebuild-save",
+        }
+        cached_errors = inspect_formula_errors(path)
+        if formula_before["fingerprint"] != formula_after["fingerprint"]:
+            raise RuntimeError(
+                "Excel-native recalculation changed formula definitions; candidate was rejected"
+            )
+        if cache_evidence["coverage"] < 1.0:
+            raise RuntimeError(
+                "Excel-native recalculation did not populate every formula cache: "
+                f"{cache_evidence['cachedFormulaCells']}/{cache_evidence['formulaCells']}"
+            )
+        if cached_errors["count"]:
+            raise RuntimeError(
+                "Excel-native recalculation produced cached formula errors: "
+                + json.dumps(cached_errors["byValue"], ensure_ascii=False)
+            )
     elif artifact_format == "docx":
         app = win32com.client.DispatchEx("Word.Application")
         app.Visible = False
@@ -658,6 +709,11 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         action.update({
             "calculationProfile": "excel-native",
             "externalLinks": "update-disabled",
+            "calculationState": calculation_state,
+            "formulaFingerprintBefore": formula_before["fingerprint"],
+            "formulaFingerprintAfter": formula_after["fingerprint"],
+            "cacheEvidence": cache_evidence,
+            "cachedErrors": cached_errors,
         })
     actions.append(action)
 
@@ -714,9 +770,10 @@ def _windows_com_render_pptx(
             prefix=".nexa-powerpoint-render-",
             dir=outdir.parent,
         ) as raw:
-            document.Export(str(Path(raw)), "PNG", 1600, 900)
+            export_dir = Path(raw) / "slides"
+            document.Export(str(export_dir), "PNG", 1600, 900)
             outputs = _collect_powerpoint_export_images(
-                Path(raw), outdir, expected_slides
+                export_dir, outdir, expected_slides
             )
     finally:
         try:

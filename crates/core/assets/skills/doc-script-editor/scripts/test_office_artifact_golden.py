@@ -113,6 +113,51 @@ class OfficeArtifactGoldenTests(unittest.TestCase):
             self.engine.execute(request)
         self.assertFalse(destination.exists())
 
+    def test_every_format_publishes_with_receipt_and_restores_without_residue(self) -> None:
+        requests = [
+            {
+                "requestVersion": 2,
+                "format": "docx",
+                "intent": "create",
+                "destination": str(self.root / "published.docx"),
+                "operations": [{"op": "create", "spec": str(self._copy_spec("docx-spec.json"))}],
+                "guarantees": {"quality": "standard", "render": "none"},
+                "validation": {"contractVersion": 2, "required_text": ["Approve the verified plan."]},
+            },
+            {
+                "requestVersion": 2,
+                "format": "xlsx",
+                "intent": "create",
+                "destination": str(self.root / "published.xlsx"),
+                "operations": [{"op": "create", "spec": str(self._copy_spec("xlsx-spec.json"))}],
+                "guarantees": {"quality": "standard", "calculation": "static", "render": "none"},
+                "validation": {"contractVersion": 2, "required_sheets": ["Summary"]},
+            },
+            {
+                "requestVersion": 2,
+                "format": "pptx",
+                "intent": "create",
+                "destination": str(self.root / "published.pptx"),
+                "operations": [{"op": "create", "spec": str(self._copy_spec("pptx-spec.json"))}],
+                "guarantees": {"quality": "standard", "render": "none"},
+                "validation": {"contractVersion": 2, "min_slides": 2, "max_slides": 2},
+            },
+        ]
+        for request in requests:
+            candidate = self.engine.execute(request)
+            published = self.engine.decide(candidate["candidateId"], "publish")
+            destination = Path(published["path"])
+            manifest = destination.with_suffix(f"{destination.suffix}.manifest.json")
+            self.assertTrue(destination.exists(), request["format"])
+            self.assertTrue(manifest.exists(), request["format"])
+            self.assertEqual(64, len(published["sha256"]))
+            restored = self.engine.restore(published["receiptId"])
+            self.assertEqual("restored", restored["status"])
+            self.assertFalse(destination.exists(), request["format"])
+            self.assertFalse(manifest.exists(), request["format"])
+            if request["format"] == "xlsx":
+                self.assertFalse(destination.with_suffix(".xlsx.qa.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

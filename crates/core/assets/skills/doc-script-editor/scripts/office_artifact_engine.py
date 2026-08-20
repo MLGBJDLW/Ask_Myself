@@ -979,6 +979,11 @@ class OfficeArtifactEngine:
                 "excelNative": True,
                 "macros": native_action.get("macros", "force-disabled"),
                 "externalLinks": native_action.get("externalLinks", "update-disabled"),
+                "calculationState": native_action.get("calculationState"),
+                "cacheEvidence": native_action.get("cacheEvidence"),
+                "cachedErrors": native_action.get("cachedErrors"),
+                "formulaFingerprintBefore": native_action.get("formulaFingerprintBefore"),
+                "formulaFingerprintAfter": native_action.get("formulaFingerprintAfter"),
             }
         for action in openxml_execution.get("actions", []):
             if action.get("command") != "recalc_xlsx" or not action.get("stdout"):

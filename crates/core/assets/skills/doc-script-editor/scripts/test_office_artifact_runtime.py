@@ -614,7 +614,16 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
                 self.last = next(self.states, self.last)
                 return self.last
 
-        office_artifact_service._wait_for_excel_calculation(FakeExcel([1, 2, 0]), 1.0)
+        self.assertEqual(
+            "done",
+            office_artifact_service._wait_for_excel_calculation(FakeExcel([1, 2, 0]), 1.0),
+        )
+        self.assertEqual(
+            "pending-requires-cache-proof",
+            office_artifact_service._wait_for_excel_calculation(
+                FakeExcel([2]), 1.0, pending_grace_seconds=0.0
+            ),
+        )
         with self.assertRaises(TimeoutError):
             office_artifact_service._wait_for_excel_calculation(FakeExcel([1]), 0.0)
 
@@ -642,6 +651,7 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
 
             def Export(self, output, image_format, width, height):
                 self.export = (image_format, width, height)
+                Path(output).mkdir(parents=True)
                 Path(output, "Slide1.PNG").write_bytes(b"one")
                 Path(output, "Slide2.PNG").write_bytes(b"two")
 
