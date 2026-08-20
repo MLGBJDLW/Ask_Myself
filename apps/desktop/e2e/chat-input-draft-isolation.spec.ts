@@ -313,6 +313,77 @@ test('keeps an input draft after leaving and returning to chat', async ({ page }
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('draft survives page switch');
 });
 
+test('centers only the composer for an empty chat and moves it to the bottom after the first send', async ({ page }) => {
+  await page.goto('/chat/conv-draft-b');
+
+  const composer = page.getByTestId('chat-input');
+  const textarea = page.getByTestId('chat-input-textarea');
+  await expect(composer).toHaveAttribute('data-placement', 'center');
+  await expect(page.getByRole('button', { name: 'Search Knowledge', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Summarize', exact: true })).toHaveCount(0);
+
+  await page.waitForTimeout(500);
+  const centeredBounds = await composer.boundingBox();
+  expect(centeredBounds).not.toBeNull();
+  await page.screenshot({ path: 'test-results/new-chat-centered-composer.png', fullPage: true });
+  await composer.evaluate((element) => {
+    const targetWindow = window as typeof window & { __composerMotionSamples?: number[] };
+    targetWindow.__composerMotionSamples = [];
+    const startedAt = performance.now();
+    const sample = () => {
+      targetWindow.__composerMotionSamples?.push(element.getBoundingClientRect().y);
+      if (performance.now() - startedAt < 800) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+
+  await textarea.fill('Start from the centered composer.');
+  await textarea.press('Enter');
+
+  await expect(composer).toHaveAttribute('data-placement', 'bottom');
+  await page.waitForTimeout(500);
+  const bottomBounds = await composer.boundingBox();
+  expect(bottomBounds).not.toBeNull();
+  expect(bottomBounds!.y).toBeGreaterThan(centeredBounds!.y + 80);
+  const motionSamples = await page.evaluate(() => (
+    (window as typeof window & { __composerMotionSamples?: number[] }).__composerMotionSamples ?? []
+  ));
+  const distinctPositions = new Set(motionSamples.map((value) => Math.round(value)));
+  expect(distinctPositions.size).toBeGreaterThan(3);
+  await page.screenshot({ path: 'test-results/new-chat-bottom-composer.png', fullPage: true });
+});
+
+test('moves the empty-chat composer without travel animation when reduced motion is requested', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/chat/conv-draft-b');
+
+  const composer = page.getByTestId('chat-input');
+  const textarea = page.getByTestId('chat-input-textarea');
+  await expect(composer).toHaveAttribute('data-placement', 'center');
+  await page.waitForTimeout(100);
+  await composer.evaluate((element) => {
+    const targetWindow = window as typeof window & { __reducedComposerMotionSamples?: number[] };
+    targetWindow.__reducedComposerMotionSamples = [];
+    const startedAt = performance.now();
+    const sample = () => {
+      targetWindow.__reducedComposerMotionSamples?.push(element.getBoundingClientRect().y);
+      if (performance.now() - startedAt < 250) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+
+  await textarea.fill('Move without animation.');
+  await textarea.press('Enter');
+  await expect(composer).toHaveAttribute('data-placement', 'bottom');
+  await page.waitForTimeout(300);
+
+  const motionSamples = await page.evaluate(() => (
+    (window as typeof window & { __reducedComposerMotionSamples?: number[] }).__reducedComposerMotionSamples ?? []
+  ));
+  const distinctPositions = new Set(motionSamples.map((value) => Math.round(value)));
+  expect(distinctPositions.size).toBeLessThanOrEqual(2);
+});
+
 test('routes one custom wallpaper chrome surface through the active chat sidebar, toolbar, and composer', async ({ page }) => {
   await page.addInitScript(() => {
     const plugin = {
@@ -354,9 +425,13 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
   const composer = page.getByTestId('chat-input');
   const composerPanel = page.getByTestId('chat-composer-surface');
   const readingSurface = page.getByTestId('chat-reading-surface');
+  const workspaceSurface = page.getByTestId('chat-workspace-surface');
   await expect(sidebar).toBeVisible();
   await expect(toolbarControl).toBeVisible();
   await expect(composer).toBeVisible();
+  await expect(workspaceSurface).toHaveAttribute('data-theme-surface', 'content');
+  await expect(composer).toHaveAttribute('data-theme-surface', 'transparent');
+  await expect(readingSurface).toHaveAttribute('data-theme-surface', 'transparent');
   await expect(composerPanel).toHaveAttribute('data-theme-surface', 'panel');
   await expect(readingSurface).toBeVisible();
 
@@ -368,8 +443,8 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     reading: await paintedSurfaceStyle(readingSurface),
   }).toEqual({
     sidebar: { surface: 'chrome', backgroundAlpha: 0.37, backdropFilter: 'blur(23px)' },
-    toolbar: { surface: 'chrome', backgroundAlpha: 0.43, backdropFilter: 'blur(23px)' },
-    composer: { surface: 'chrome', backgroundAlpha: 0.37, backdropFilter: 'blur(23px)' },
+    toolbar: { surface: 'content', backgroundAlpha: 0.82, backdropFilter: 'blur(23px)' },
+    composer: { surface: 'content', backgroundAlpha: 0.82, backdropFilter: 'blur(23px)' },
     composerPanel: { surface: 'panel', backgroundAlpha: 0.68, backdropFilter: 'none' },
     reading: { surface: 'content', backgroundAlpha: 0.82, backdropFilter: 'blur(23px)' },
   });
@@ -382,8 +457,8 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     composer: await backdropFilterOwners(page.getByTestId('chat-input-textarea')),
     reading: await backdropFilterOwners(readingSurface),
   }).toEqual({
-    toolbar: [{ surface: 'chrome', filter: 'blur(23px)' }],
-    composer: [{ surface: 'chrome', filter: 'blur(23px)' }],
+    toolbar: [{ surface: 'content', filter: 'blur(23px)' }],
+    composer: [{ surface: 'content', filter: 'blur(23px)' }],
     reading: [{ surface: 'content', filter: 'blur(23px)' }],
   });
 
@@ -465,9 +540,9 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     composer: await paintedSurfaceStyle(composer),
     reading: await paintedSurfaceStyle(readingSurface),
   }).toEqual({
-    toolbar: { surface: 'chrome', backgroundAlpha: 1, backdropFilter: 'none' },
-    composer: { surface: 'chrome', backgroundAlpha: 1, backdropFilter: 'none' },
-    reading: { surface: 'content', backgroundAlpha: 1, backdropFilter: 'none' },
+    toolbar: { surface: 'transparent', backgroundAlpha: 1, backdropFilter: 'none' },
+    composer: { surface: 'transparent', backgroundAlpha: 1, backdropFilter: 'none' },
+    reading: { surface: 'transparent', backgroundAlpha: 1, backdropFilter: 'none' },
   });
   await cdpSession.send('Emulation.setEmulatedMedia', { features: [] });
   await cdpSession.detach();

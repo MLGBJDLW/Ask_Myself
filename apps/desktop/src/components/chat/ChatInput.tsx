@@ -84,6 +84,7 @@ interface ChatInputProps {
   onPlanModeChange?: (enabled: boolean) => void;
   activeGoalContext?: ActiveGoalContext | null;
   contextIndicator?: ReactNode;
+  placement?: 'center' | 'bottom';
 }
 
 interface ChatDraftState {
@@ -355,6 +356,7 @@ export function ChatInput({
   onPlanModeChange,
   activeGoalContext,
   contextIndicator,
+  placement = 'bottom',
 }: ChatInputProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -1415,9 +1417,10 @@ export function ChatInput({
     >
     <div
       data-testid="chat-input"
-      data-theme-surface="chrome"
+      data-theme-surface="transparent"
+      data-placement={placement}
       data-dragging={isDragging ? "true" : "false"}
-      className={`relative shrink-0 border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
+      className={`relative min-w-0 w-full max-w-full px-4 py-3 transition-colors ${
         isDragging ? "ring-2 ring-accent/50 bg-accent-subtle" : ""
       }`}
       onDragOver={handleDragOver}

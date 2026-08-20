@@ -2,7 +2,7 @@ import { useCallback, useState, useEffect, useMemo, useRef, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { Archive, ArchiveRestore, Check, ChevronDown, Globe2, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Logo } from '../components/Logo';
 import { SourceSelector, SystemPromptEditor, ChatSidebar, ChatInput, ActiveExtensions, ChatRunOverview, TaskBoard, AgentModelPicker, ConnectionStatusBanner, type AgentModelSelection, type ChatInputSendOptions } from '../components/chat';
@@ -22,7 +22,6 @@ import { Button } from '../components/ui/Button';
 import { useOverlayRoot } from '../components/ui/overlay';
 import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
-import { useTheme } from '../lib/ThemeProvider';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
 import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
@@ -522,8 +521,8 @@ function SessionSelect({
 /* ------------------------------------------------------------------ */
 
 export function ChatPage() {
-  const { content: themeContent } = useTheme();
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -1514,6 +1513,19 @@ export function ChatPage() {
   const compactionTerminalText = activeCompactionStatus?.status === 'failed'
     ? `${t('chat.compactFailed')}: ${activeCompactionStatus.detail ?? t('chat.compactFailed')}`
     : undefined;
+  const centerComposer = !isArchivedConversation
+    && chat.messages.length === 0
+    && chat.toolCalls.length === 0
+    && chat.traceEvents.length === 0
+    && chat.streamRounds.length === 0
+    && !chat.taskRun
+    && !chat.error
+    && !activeInteraction
+    && !chat.loadingMsgs
+    && !chat.isStreaming
+    && !pendingGraphContext
+    && !isCompacting
+    && !compactCompleteVisible;
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null
@@ -1605,7 +1617,11 @@ export function ChatPage() {
       </motion.div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative" data-theme-surface="transparent">
+      <div
+        className="relative grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)_auto]"
+        data-testid="chat-workspace-surface"
+        data-theme-surface="content"
+      >
         {!chat.activeId && (
           <div className="absolute top-2 left-2 z-20">
             <button
@@ -1622,30 +1638,11 @@ export function ChatPage() {
             </button>
           </div>
         )}
-        {!chat.activeId && !chat.isStreaming && !pendingGraphContext ? (
-          <div
-            className="flex-1 flex items-center justify-center"
-            data-testid="chat-reading-surface"
-            data-theme-surface="content"
-          >
-            <EmptyState
-              icon={<Logo size={64} />}
-              title={themeContent.statusText || t('chat.noConversations')}
-              description={themeContent.tagline || t('chat.noConversationsDesc')}
-              quote={themeContent.quote}
-              action={{
-                label: t('chat.newChat'),
-                onClick: () => handleNewConversation(),
-              }}
-            />
-          </div>
-        ) : (
-          <>
+        <>
             {chat.activeId && (
               <div
-                data-theme-component="header"
-                data-theme-surface="chrome"
-                className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/85 px-3 py-1.5"
+                data-theme-surface="transparent"
+                className="sticky top-0 z-10 col-start-1 row-start-1 shrink-0 border-b border-border/45 bg-transparent px-3 py-1.5"
               >
                 <div className="flex min-h-10 flex-wrap items-center gap-2">
                   <button
@@ -1771,10 +1768,11 @@ export function ChatPage() {
                 </div>
               </div>
             )}
+            <div className="col-start-1 row-start-2 flex min-h-0 flex-col">
             <div
               className="flex min-h-0 flex-1 flex-col"
               data-testid="chat-reading-surface"
-              data-theme-surface="content"
+              data-theme-surface="transparent"
             >
               <ChatMessages
               conversationId={chat.activeId}
@@ -1799,7 +1797,6 @@ export function ChatPage() {
               }}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
-              onSuggestionClick={isArchivedConversation ? undefined : handleSuggestionClick}
               isCompacting={isCompacting}
               compactCompleteVisible={compactCompleteVisible}
               compactionPhaseLabel={compactionPhaseLabel}
@@ -1827,7 +1824,7 @@ export function ChatPage() {
             <div
               className="shrink-0"
               data-testid="chat-transient-surface"
-              data-theme-surface="content"
+              data-theme-surface="transparent"
               data-theme-blur-owner="false"
             >
               {pendingGraphContext && (
@@ -1879,10 +1876,11 @@ export function ChatPage() {
                 />
               )}
             </div>
+            </div>
             {isArchivedConversation ? (
               <div
-                className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3"
-                data-theme-surface="chrome"
+                className="col-start-1 row-start-3 shrink-0 border-t border-border/70 bg-transparent px-4 py-3"
+                data-theme-surface="transparent"
               >
                 <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 rounded-lg border border-border/70 bg-surface-2/70 px-3 py-2">
                   <div className="min-w-0">
@@ -1902,7 +1900,18 @@ export function ChatPage() {
                   </Button>
                 </div>
               </div>
-            ) : <>
+            ) : (
+            <motion.div
+              layout={shouldReduceMotion ? false : 'position'}
+              data-testid="chat-composer-layout"
+              data-placement={centerComposer ? 'center' : 'bottom'}
+              className={centerComposer
+                ? 'z-20 col-start-1 row-start-2 min-w-0 w-full max-w-4xl place-self-center'
+                : 'z-20 col-start-1 row-start-3 min-w-0 w-full max-w-full self-end'}
+              transition={shouldReduceMotion
+                ? { duration: 0 }
+                : { type: 'spring', stiffness: 220, damping: 28, mass: 0.9 }}
+            >
               <ChatInput
               onSend={handleComposerSend}
               onStop={chat.stop}
@@ -1935,13 +1944,14 @@ export function ChatPage() {
                 await chat.reloadMessages();
               } : undefined}
               onBranchCheckpoint={handleCheckpointBranch}
+              placement={centerComposer ? 'center' : 'bottom'}
               />
-            </>}
+            </motion.div>
+            )}
             {chat.activeId && !isArchivedConversation && (
               <ApprovalDialogMount conversationId={chat.activeId} />
             )}
           </>
-        )}
       </div>
       {chat.activeId && (
         <BrowserDock
