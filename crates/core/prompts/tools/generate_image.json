@@ -11,7 +11,8 @@
       "prompt_mode": {
         "type": "string",
         "enum": ["verbatim", "agent_refined", "provider_enhanced"],
-        "description": "Prompt provenance and rewrite policy. verbatim means the user supplied a ready prompt and it must be copied byte-for-byte. agent_refined means the agent authored the prompt from sparse intent and provider-side rewriting must stay disabled. provider_enhanced is explicit opt-in to provider rewriting and is only allowed when the user requested enhancement or ideation."
+        "default": "verbatim",
+        "description": "Prompt provenance and rewrite policy. Omission defaults to verbatim for compatibility. verbatim means the user supplied a ready prompt and it must be copied byte-for-byte. agent_refined means the agent authored the prompt from sparse intent and provider-side rewriting must stay disabled. provider_enhanced is explicit opt-in to provider rewriting and is only allowed when the user requested enhancement or ideation."
       },
       "provider": {
         "type": "string",
@@ -58,6 +59,6 @@
         "description": "Optional suggested filename shown if the user chooses Save As. Extension is inferred from output_format when missing."
       }
     },
-    "required": ["prompt", "prompt_mode"]
+    "required": ["prompt"]
   }
 }

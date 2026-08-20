@@ -1047,7 +1047,8 @@ mod tests {
             prompt_mode["enum"],
             json!(["verbatim", "agent_refined", "provider_enhanced"])
         );
-        assert!(definition["parameters"]["required"]
+        assert_eq!(prompt_mode["default"], "verbatim");
+        assert!(!definition["parameters"]["required"]
             .as_array()
             .is_some_and(|required| required.contains(&json!("prompt_mode"))));
         assert!(prompt_mode["description"]
