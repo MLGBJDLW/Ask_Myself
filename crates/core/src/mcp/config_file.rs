@@ -405,7 +405,14 @@ mod tests {
 
         let error = reload_user_mcp_config(&db, &path).unwrap_err().to_string();
         assert!(error.contains("line 1"));
-        assert_eq!(db.list_mcp_servers().unwrap().len(), 1);
+        assert_eq!(
+            db.list_mcp_servers()
+                .unwrap()
+                .into_iter()
+                .filter(|server| server.id.starts_with(USER_JSON_ID_PREFIX))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -435,8 +442,11 @@ mod tests {
         let report = reload_user_mcp_config(&db, &path).unwrap();
         let remaining = db.list_mcp_servers().unwrap();
         assert_eq!(report.removed, 1);
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "Managed");
+        assert!(remaining
+            .iter()
+            .all(|server| !server.id.starts_with(USER_JSON_ID_PREFIX)));
+        assert!(remaining.iter().any(|server| server.name == "Managed"));
+        assert!(remaining.iter().any(|server| server.builtin_id.is_some()));
     }
 
     #[test]
@@ -451,6 +461,10 @@ mod tests {
 
         let error = reload_user_mcp_config(&db, &path).unwrap_err().to_string();
         assert!(error.contains("${env:VARIABLE}"));
-        assert!(db.list_mcp_servers().unwrap().is_empty());
+        assert!(db
+            .list_mcp_servers()
+            .unwrap()
+            .into_iter()
+            .all(|server| !server.id.starts_with(USER_JSON_ID_PREFIX)));
     }
 }
