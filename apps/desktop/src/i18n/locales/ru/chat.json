@@ -1,4 +1,12 @@
 {
+  "generatedImageRequestedPrompt": "Исходный промпт",
+  "generatedImageEffectivePrompt": "Фактический промпт провайдера",
+  "generatedImagePromptRevisedWarning": "Провайдер сообщил об изменённом промпте.",
+  "generatedImagePromptMode.verbatim": "Без изменений",
+  "generatedImagePromptMode.agentRefined": "Уточнено агентом",
+  "generatedImagePromptMode.providerEnhanced": "Расширено провайдером",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "Улучшение провайдером недоступно",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "Улучшение провайдером не применено",
   "archive": "Архивировать",
   "unarchive": "Вернуть из архива",
   "archivedConversations": "Архивные разговоры",

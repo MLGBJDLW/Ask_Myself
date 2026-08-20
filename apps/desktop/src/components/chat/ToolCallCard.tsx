@@ -117,6 +117,14 @@ interface GeneratedImageArtifact {
   provider?: string;
   model?: string;
   prompt?: string;
+  requestedPrompt?: string;
+  promptMode?: 'verbatim' | 'agent_refined' | 'provider_enhanced';
+  effectivePrompt?: string;
+  promptIntegrity?: 'exact' | 'revised' | 'unknown';
+  providerPromptEnhanced?: boolean;
+  providerPromptEnhancementRequested?: boolean;
+  providerPromptEnhancementSupported?: boolean;
+  promptRewriteObservable?: boolean;
   revisedPrompt?: string;
   bytes?: number;
   saved?: boolean;
@@ -1069,7 +1077,19 @@ function GeneratedImagePreview({
   const [imageError, setImageError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [savedPath, setSavedPath] = useState('');
-  const prompt = image.revisedPrompt || image.prompt;
+  const requestedPrompt = image.requestedPrompt ?? image.prompt;
+  const effectivePrompt = image.effectivePrompt ?? image.revisedPrompt;
+  const promptModeLabel = image.promptMode === 'verbatim'
+    ? t('chat.generatedImagePromptMode.verbatim')
+    : image.promptMode === 'agent_refined'
+      ? t('chat.generatedImagePromptMode.agentRefined')
+      : image.promptMode === 'provider_enhanced'
+        ? image.providerPromptEnhanced === true
+          ? t('chat.generatedImagePromptMode.providerEnhanced')
+          : image.providerPromptEnhancementSupported === false
+            ? t('chat.generatedImagePromptMode.providerEnhancementUnavailable')
+            : t('chat.generatedImagePromptMode.providerEnhancementNotApplied')
+        : null;
   const maxHeight = compact ? 'max-h-32' : 'max-h-[28rem]';
   const suggestedFilename = generatedImageSuggestedFilename(image);
   const outputExtension = extensionForMediaType(image.mediaType);
@@ -1170,7 +1190,7 @@ function GeneratedImagePreview({
         {previewSrc && !imageError ? (
           <img
             src={previewSrc}
-            alt={image.prompt || t('chat.generatedImageAlt')}
+            alt={requestedPrompt || t('chat.generatedImageAlt')}
             className={`${maxHeight} w-full object-contain`}
             data-testid="generated-image-img"
             onError={() => setImageError(t('chat.generatedImageLoadFailed'))}
@@ -1208,9 +1228,28 @@ function GeneratedImagePreview({
               {formatByteCount(image.bytes)}
             </span>
           )}
+          {promptModeLabel && (
+            <span data-testid="generated-image-prompt-mode" className="rounded-md border border-border/50 bg-surface-0/50 px-1.5 py-0.5">
+              {promptModeLabel}
+            </span>
+          )}
         </div>
-        {!compact && prompt && (
-          <div className="line-clamp-2 text-text-secondary">{prompt}</div>
+        {!compact && requestedPrompt && (
+          <div data-testid="generated-image-requested-prompt" className="text-text-secondary" title={requestedPrompt}>
+            <span className="font-medium text-text-tertiary">{t('chat.generatedImageRequestedPrompt')}: </span>
+            <span className="line-clamp-2 whitespace-pre-wrap break-words">{requestedPrompt}</span>
+          </div>
+        )}
+        {!compact && effectivePrompt && effectivePrompt !== requestedPrompt && (
+          <div data-testid="generated-image-effective-prompt" className="text-text-secondary" title={effectivePrompt}>
+            <span className="font-medium text-text-tertiary">{t('chat.generatedImageEffectivePrompt')}: </span>
+            <span className="line-clamp-2 whitespace-pre-wrap break-words">{effectivePrompt}</span>
+          </div>
+        )}
+        {!compact && image.promptIntegrity === 'revised' && (
+          <div data-testid="generated-image-prompt-revised" className="text-warning">
+            {t('chat.generatedImagePromptRevisedWarning')}
+          </div>
         )}
         {!compact && (
           <div className="flex flex-wrap items-center gap-1.5">

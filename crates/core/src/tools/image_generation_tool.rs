@@ -27,9 +27,36 @@ const DEF_JSON: &str = include_str!("../../prompts/tools/generate_image.json");
 
 pub struct GenerateImageTool;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ImagePromptMode {
+    #[default]
+    Verbatim,
+    AgentRefined,
+    ProviderEnhanced,
+}
+
+impl ImagePromptMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Verbatim => "verbatim",
+            Self::AgentRefined => "agent_refined",
+            Self::ProviderEnhanced => "provider_enhanced",
+        }
+    }
+
+    fn provider_enhancement_enabled(self) -> bool {
+        matches!(self, Self::ProviderEnhanced)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GenerateImageArgs {
     prompt: String,
+    #[serde(default, alias = "promptMode")]
+    prompt_mode: Option<ImagePromptMode>,
+    #[serde(default, alias = "promptExtend")]
+    prompt_extend: Option<bool>,
     #[serde(default)]
     provider: Option<String>,
     #[serde(default, alias = "apiStyle")]
@@ -48,8 +75,6 @@ struct GenerateImageArgs {
     output_format: Option<String>,
     #[serde(default, alias = "negativePrompt")]
     negative_prompt: Option<String>,
-    #[serde(default, alias = "promptExtend")]
-    prompt_extend: Option<bool>,
     #[serde(default)]
     watermark: Option<bool>,
     #[serde(default)]
@@ -57,6 +82,16 @@ struct GenerateImageArgs {
 }
 
 impl GenerateImageArgs {
+    fn effective_prompt_mode(&self) -> ImagePromptMode {
+        self.prompt_mode.unwrap_or_else(|| {
+            if self.prompt_extend == Some(true) {
+                ImagePromptMode::ProviderEnhanced
+            } else {
+                ImagePromptMode::Verbatim
+            }
+        })
+    }
+
     fn runtime_request(&self) -> ImageGenerationRequest<'_> {
         ImageGenerationRequest {
             provider_config_id: self.provider_config_id.as_deref(),
@@ -106,11 +141,10 @@ impl Tool for GenerateImageTool {
             CoreError::InvalidInput(format!("Invalid generate_image arguments: {e}"))
         })?;
 
-        let prompt = args.prompt.trim();
-        if prompt.is_empty() {
+        if args.prompt.trim().is_empty() {
             return Ok(error_result(call_id, "Image prompt cannot be empty."));
         }
-        if prompt.chars().count() > 32_000 {
+        if args.prompt.chars().count() > 32_000 {
             return Ok(error_result(
                 call_id,
                 "Image prompt is too long; keep it under 32000 characters.",
@@ -119,6 +153,11 @@ impl Tool for GenerateImageTool {
 
         let runtime =
             crate::plugins::image_generation::resolve_runtime(db, &args.runtime_request())?;
+        let prompt_mode = args.effective_prompt_mode();
+        let provider_enhancement_requested = prompt_mode.provider_enhancement_enabled();
+        let provider_enhancement_supported = supports_explicit_prompt_enhancement(runtime.provider);
+        let provider_enhancement_applied =
+            provider_enhancement_requested && provider_enhancement_supported;
         if runtime.config.api_key.trim().is_empty() {
             return Ok(error_result(
                 call_id,
@@ -165,13 +204,32 @@ impl Tool for GenerateImageTool {
         std::fs::write(&preview_path, &generated.bytes)?;
 
         let size_bytes = generated.bytes.len();
+        let effective_prompt = generated.revised_prompt.as_deref();
+        let prompt_integrity = match effective_prompt {
+            Some(effective) if effective == args.prompt => "exact",
+            Some(_) => "revised",
+            None => "unknown",
+        };
+        let mut warnings = Vec::new();
+        if prompt_mode == ImagePromptMode::Verbatim && prompt_integrity == "revised" {
+            warnings.push("the provider reported a revised prompt; the requested prompt remains preserved in preview metadata");
+        }
+        if provider_enhancement_requested && !provider_enhancement_supported {
+            warnings.push("the selected provider adapter has no controllable prompt enhancer, so Nexa submitted the base prompt unchanged");
+        }
+        let warning_text = if warnings.is_empty() {
+            String::new()
+        } else {
+            format!("\nWarning: {}.", warnings.join("; "))
+        };
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: format!(
-                "Generated image ready for preview. It has not been saved to the workspace.\nProvider: {}\nModel: {}\nSize: {} bytes",
+                "Generated image ready for preview. It has not been saved to the workspace.\nProvider: {}\nModel: {}\nSize: {} bytes{}",
                 runtime.provider_name,
                 runtime.model,
-                size_bytes
+                size_bytes,
+                warning_text,
             ),
             is_error: false,
             artifacts: Some(json!({
@@ -185,8 +243,16 @@ impl Tool for GenerateImageTool {
                 "bytes": size_bytes,
                 "saved": false,
                 "transient": true,
-                "prompt": prompt,
-                "revisedPrompt": generated.revised_prompt,
+                "prompt": args.prompt.as_str(),
+                "requestedPrompt": args.prompt.as_str(),
+                "promptMode": prompt_mode.as_str(),
+                "effectivePrompt": effective_prompt,
+                "providerPromptEnhancementRequested": provider_enhancement_requested,
+                "providerPromptEnhancementSupported": provider_enhancement_supported,
+                "providerPromptEnhanced": provider_enhancement_applied,
+                "promptRewriteObservable": effective_prompt.is_some(),
+                "promptIntegrity": prompt_integrity,
+                "revisedPrompt": effective_prompt,
                 "providerImageUrl": generated.provider_image_url,
                 "usage": generated.usage,
             })),
@@ -217,6 +283,10 @@ fn selected_optional<'a>(arg: Option<&'a str>, configured: Option<&'a str>) -> O
         .find(|value| !value.is_empty())
 }
 
+fn supports_explicit_prompt_enhancement(provider: ImageProvider) -> bool {
+    matches!(provider, ImageProvider::Qwen)
+}
+
 fn google_image_config(size: Option<&str>) -> Option<Value> {
     let size = size.map(str::trim).filter(|value| !value.is_empty())?;
     let mut object = serde_json::Map::new();
@@ -238,6 +308,21 @@ fn google_image_config(size: Option<&str>) -> Option<Value> {
     } else {
         Some(Value::Object(object))
     }
+}
+
+fn build_google_image_body(args: &GenerateImageArgs, configured_size: Option<&str>) -> Value {
+    let mut generation_config = json!({
+        "responseModalities": ["TEXT", "IMAGE"]
+    });
+    if let Some(image_config) = google_image_config(args.size.as_deref().or(configured_size)) {
+        generation_config["responseFormat"] = json!({ "image": image_config });
+    }
+    json!({
+        "contents": [{
+            "parts": [{ "text": args.prompt.as_str() }]
+        }],
+        "generationConfig": generation_config
+    })
 }
 
 async fn generate_openai_image(
@@ -557,19 +642,7 @@ async fn generate_google_image(
     let base_url = config.endpoint_base_url("https://generativelanguage.googleapis.com/v1beta");
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/models/{model}:generateContent");
-    let mut generation_config = json!({
-        "responseModalities": ["TEXT", "IMAGE"]
-    });
-    if let Some(image_config) = google_image_config(args.size.as_deref().or(config.size.as_deref()))
-    {
-        generation_config["responseFormat"] = json!({ "image": image_config });
-    }
-    let body = json!({
-        "contents": [{
-            "parts": [{ "text": args.prompt.as_str() }]
-        }],
-        "generationConfig": generation_config
-    });
+    let body = build_google_image_body(args, config.size.as_deref());
 
     let response = client
         .post(url)
@@ -627,31 +700,7 @@ async fn generate_qwen_image(
     model: &str,
 ) -> Result<GeneratedImage, CoreError> {
     let url = config.qwen_endpoint();
-    let mut parameters = json!({
-        "prompt_extend": args.prompt_extend.unwrap_or(true),
-        "watermark": args.watermark.unwrap_or(false),
-    });
-    if let Some(size) = selected_optional(args.size.as_deref(), config.size.as_deref()) {
-        parameters["size"] = json!(size.replace('x', "*"));
-    }
-    if let Some(negative) = args
-        .negative_prompt
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        parameters["negative_prompt"] = json!(negative);
-    }
-
-    let body = json!({
-        "model": model,
-        "input": {
-            "messages": [{
-                "role": "user",
-                "content": [{ "text": args.prompt.as_str() }]
-            }]
-        },
-        "parameters": parameters
-    });
+    let body = build_qwen_image_body(config, args, model);
 
     let response = client
         .post(url)
@@ -699,6 +748,38 @@ async fn generate_qwen_image(
             .or_else(|| value.pointer("/output/results/0/orig_prompt"))
             .and_then(Value::as_str)
             .map(str::to_string),
+    })
+}
+
+fn build_qwen_image_body(
+    config: &ResolvedImageConfig,
+    args: &GenerateImageArgs,
+    model: &str,
+) -> Value {
+    let mut parameters = json!({
+        "prompt_extend": args.effective_prompt_mode().provider_enhancement_enabled(),
+        "watermark": args.watermark.unwrap_or(false),
+    });
+    if let Some(size) = selected_optional(args.size.as_deref(), config.size.as_deref()) {
+        parameters["size"] = json!(size.replace('x', "*"));
+    }
+    if let Some(negative) = args
+        .negative_prompt
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parameters["negative_prompt"] = json!(negative);
+    }
+
+    json!({
+        "model": model,
+        "input": {
+            "messages": [{
+                "role": "user",
+                "content": [{ "text": args.prompt.as_str() }]
+            }]
+        },
+        "parameters": parameters
     })
 }
 
@@ -942,6 +1023,8 @@ mod tests {
     fn test_args() -> GenerateImageArgs {
         GenerateImageArgs {
             prompt: "a precise product photo".to_string(),
+            prompt_mode: Some(ImagePromptMode::Verbatim),
+            prompt_extend: None,
             provider: None,
             api_style: None,
             provider_config_id: None,
@@ -951,7 +1034,6 @@ mod tests {
             background: None,
             output_format: None,
             negative_prompt: None,
-            prompt_extend: None,
             watermark: None,
             filename: None,
         }
@@ -968,6 +1050,104 @@ mod tests {
             quality: None,
             output_format: None,
         }
+    }
+
+    #[test]
+    fn tool_contract_exposes_three_auditable_prompt_policies() {
+        let definition: Value = serde_json::from_str(DEF_JSON).expect("valid tool definition");
+        let prompt_mode = &definition["parameters"]["properties"]["prompt_mode"];
+
+        assert_eq!(
+            prompt_mode["enum"],
+            json!(["verbatim", "agent_refined", "provider_enhanced"])
+        );
+        assert_eq!(prompt_mode["default"], "verbatim");
+        assert!(!definition["parameters"]["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&json!("prompt_mode"))));
+        assert!(prompt_mode["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("verbatim")));
+        let legacy_prompt_extend = &definition["parameters"]["properties"]["prompt_extend"];
+        assert_eq!(legacy_prompt_extend["type"], "boolean");
+        assert!(legacy_prompt_extend["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Deprecated compatibility")));
+    }
+
+    #[test]
+    fn prompt_mode_defaults_to_verbatim_for_legacy_callers() {
+        let args: GenerateImageArgs = serde_json::from_value(json!({
+            "prompt": "  保留标点：猫。\r\n--style raw  "
+        }))
+        .expect("legacy arguments parse");
+
+        assert_eq!(args.effective_prompt_mode(), ImagePromptMode::Verbatim);
+        assert_eq!(args.prompt, "  保留标点：猫。\r\n--style raw  ");
+    }
+
+    #[test]
+    fn legacy_prompt_extend_preserves_explicit_qwen_enhancement() {
+        let config = test_config("qwen", None);
+        for field in ["prompt_extend", "promptExtend"] {
+            let mut value = json!({
+                "prompt": "A legacy prompt that requested enhancement"
+            });
+            value[field] = json!(true);
+            let args: GenerateImageArgs =
+                serde_json::from_value(value).expect("legacy prompt enhancement arguments parse");
+
+            assert_eq!(
+                args.effective_prompt_mode(),
+                ImagePromptMode::ProviderEnhanced
+            );
+            assert_eq!(
+                build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]
+                    ["prompt_extend"],
+                true
+            );
+        }
+
+        let args: GenerateImageArgs = serde_json::from_value(json!({
+            "prompt": "Explicit new policy wins",
+            "prompt_mode": "verbatim",
+            "prompt_extend": true
+        }))
+        .expect("mixed legacy and current arguments parse");
+        assert_eq!(args.effective_prompt_mode(), ImagePromptMode::Verbatim);
+    }
+
+    #[test]
+    fn adapters_preserve_prompt_bytes_and_only_enhance_on_explicit_mode() {
+        let exact_prompt = "  保留标点：猫。\r\n--style raw  ";
+        let mut args = test_args();
+        args.prompt = exact_prompt.to_string();
+        let config = test_config("qwen", None);
+
+        let openai = build_openai_images_body(&config, &args, "gpt-image-2", "png");
+        let google = build_google_image_body(&args, None);
+        let qwen = build_qwen_image_body(&config, &args, "qwen-image-plus");
+        assert_eq!(openai["prompt"], exact_prompt);
+        assert_eq!(google["contents"][0]["parts"][0]["text"], exact_prompt);
+        assert_eq!(
+            qwen["input"]["messages"][0]["content"][0]["text"],
+            exact_prompt
+        );
+        assert_eq!(qwen["parameters"]["prompt_extend"], false);
+        assert!(supports_explicit_prompt_enhancement(ImageProvider::Qwen));
+        assert!(!supports_explicit_prompt_enhancement(ImageProvider::OpenAi));
+        assert!(!supports_explicit_prompt_enhancement(ImageProvider::Google));
+
+        args.prompt_mode = Some(ImagePromptMode::AgentRefined);
+        assert_eq!(
+            build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]["prompt_extend"],
+            false
+        );
+        args.prompt_mode = Some(ImagePromptMode::ProviderEnhanced);
+        assert_eq!(
+            build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]["prompt_extend"],
+            true
+        );
     }
 
     #[test]

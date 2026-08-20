@@ -25,6 +25,8 @@ const COLOR_SLOTS: &[&str] = &[
     "textSecondary",
     "textTertiary",
     "textInverse",
+    "thinkingText",
+    "replyText",
     "accent",
     "accentHover",
     "accentSubtle",
@@ -530,6 +532,8 @@ mod tests {
                     "surface1": "#102235",
                     "textPrimary": "#f2f8ff",
                     "textSecondary": "#a8bed1",
+                    "thinkingText": "#7dd3fc",
+                    "replyText": "#fef3c7",
                     "accent": "#38bdf8"
                 },
                 "effects": { "surfaceOpacity": 0.9, "glassBlur": 14 },
@@ -553,6 +557,8 @@ mod tests {
         assert_eq!(plugin.manifest_version, THEME_RESOURCE_PLUGIN_VERSION);
         assert!(plugin.id.starts_with("theme-"));
         assert_eq!(plugin.theme.colors["accent"], "#38bdf8");
+        assert_eq!(plugin.theme.colors["thinkingText"], "#7dd3fc");
+        assert_eq!(plugin.theme.colors["replyText"], "#fef3c7");
     }
 
     #[test]

@@ -40,6 +40,7 @@ const NAV_ORDER_KEY = 'sidebar-nav-order';
 const LAST_ROUTE_KEY = 'last-route';
 const INSTANT_TRANSITION = { duration: 0 };
 const WALLPAPER_ADAPTED_PAGE_ROUTES = ['/settings', '/tasks', '/workflows'] as const;
+const UNIFIED_READING_CANVAS_ROUTES = ['/', '/sources', '/knowledge'] as const;
 
 type NavItem = { to: string; labelKey: TranslationKey; icon: typeof Search };
 
@@ -81,6 +82,12 @@ function loadOrderedNavItems(): NavItem[] {
 
 function isWallpaperAdaptedPageRoute(pathname: string): boolean {
   return WALLPAPER_ADAPTED_PAGE_ROUTES.some((route) => (
+    pathname === route || pathname.startsWith(`${route}/`)
+  ));
+}
+
+function isUnifiedReadingCanvasRoute(pathname: string): boolean {
+  return UNIFIED_READING_CANVAS_ROUTES.some((route) => (
     pathname === route || pathname.startsWith(`${route}/`)
   ));
 }
@@ -225,6 +232,7 @@ export function Layout() {
     : isWallpaperAdaptedPageRoute(location.pathname)
       ? 'page'
       : 'content';
+  const unifiedReadingCanvas = isUnifiedReadingCanvasRoute(location.pathname);
 
   return (
     <div
@@ -311,6 +319,7 @@ export function Layout() {
       <main
         className="relative z-10 flex-1 min-w-0 min-h-0 overflow-y-auto"
         data-theme-surface={mainThemeSurface}
+        data-theme-unified-canvas={unifiedReadingCanvas ? 'true' : undefined}
       >
         <Outlet />
       </main>

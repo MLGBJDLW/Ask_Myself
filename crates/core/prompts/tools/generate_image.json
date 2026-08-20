@@ -1,12 +1,22 @@
 {
   "name": "generate_image",
-  "description": "Generate an image using the image generation provider configured in Settings and return an in-chat preview artifact. The tool does not save the image into the workspace; the user can review the preview and choose Save As from the UI. Before calling, understand the user's visual intent and pass an image-model-ready prompt; preserve the user's wording only when they explicitly provide a final prompt. Supports OpenAI Image API compatible providers, Google Gemini/Nano Banana, Alibaba DashScope/Qwen-Image, and Zhipu CogView/GLM Image presets.",
+  "description": "Generate an image using the provider configured in Settings and return an in-chat preview artifact. First decide whether the user supplied a ready-to-run prompt or only a sparse visual intent. A prompt is ready when it is labeled or quoted as a prompt, requested exactly, or already specifies the important subject, scene or style, composition, literal text, or constraints. Copy every ready prompt byte-for-byte with prompt_mode=verbatim: never translate, correct, reorder, summarize, or append quality/style tokens. For sparse intent, author one concise production prompt using only relevant deliverable/use, subject/action, setting, medium/style, composition, lighting/color/mood, exact visible text, and constraints; do not invent brands, copy, identities, facts, or data, and use prompt_mode=agent_refined. Provider enhancement is opt-in and may only use provider_enhanced when the user requests enhancement or ideation. The tool does not save the image into the workspace; the user reviews the preview and chooses Save As.",
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": {
         "type": "string",
-        "description": "Detailed image-model prompt. If the user only described an intent, rewrite it into a concise visual prompt covering subject, composition, style, mood, lighting, visible text, aspect ratio, and constraints. If the user explicitly supplied a final prompt, use it verbatim except for necessary safety or provider constraints."
+        "description": "The exact prompt Nexa submits. In verbatim mode copy the user's ready prompt byte-for-byte, including whitespace, punctuation, language, quoted text, weights, and provider syntax. In agent_refined mode write a compact visual brief from sparse intent without inventing high-impact content. Keep size, format, background, and negative prompt in their dedicated fields when available."
+      },
+      "prompt_mode": {
+        "type": "string",
+        "enum": ["verbatim", "agent_refined", "provider_enhanced"],
+        "default": "verbatim",
+        "description": "Prompt provenance and rewrite policy. Omission defaults to verbatim for compatibility. verbatim means the user supplied a ready prompt and it must be copied byte-for-byte. agent_refined means the agent authored the prompt from sparse intent and provider-side rewriting must stay disabled. provider_enhanced is explicit opt-in to provider rewriting and is only allowed when the user requested enhancement or ideation."
+      },
+      "prompt_extend": {
+        "type": "boolean",
+        "description": "Deprecated compatibility input; do not use in new calls. When prompt_mode is omitted, true maps to provider_enhanced and false maps to verbatim. An explicit prompt_mode takes precedence."
       },
       "provider": {
         "type": "string",
@@ -43,10 +53,6 @@
       "negative_prompt": {
         "type": "string",
         "description": "Optional negative prompt, currently used by Qwen/DashScope."
-      },
-      "prompt_extend": {
-        "type": "boolean",
-        "description": "Optional Qwen prompt rewriting flag. Defaults to true for Qwen."
       },
       "watermark": {
         "type": "boolean",

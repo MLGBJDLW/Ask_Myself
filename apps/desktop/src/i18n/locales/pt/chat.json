@@ -1,4 +1,12 @@
 {
+  "generatedImageRequestedPrompt": "Prompt solicitado",
+  "generatedImageEffectivePrompt": "Prompt efetivo do provedor",
+  "generatedImagePromptRevisedWarning": "O provedor informou um prompt revisado.",
+  "generatedImagePromptMode.verbatim": "Literal",
+  "generatedImagePromptMode.agentRefined": "Refinado pelo agente",
+  "generatedImagePromptMode.providerEnhanced": "Aprimorado pelo provedor",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "Aprimoramento do provedor indisponível",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "Aprimoramento do provedor não aplicado",
   "archive": "Arquivar",
   "unarchive": "Desarquivar",
   "archivedConversations": "Conversas arquivadas",

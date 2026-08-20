@@ -360,7 +360,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
               ? goalMessage
                 ? 'bg-transparent px-0 py-0 text-text-primary'
                 : 'rounded-lg bg-accent/20 px-3.5 py-2.5 text-text-primary'
-              : 'bg-transparent px-0 py-0 text-text-primary'
+              : 'chat-assistant-reply bg-transparent px-0 py-0'
             }`}
         >
           {msg.tokenCount > 0 && !isEditing && !goalMessage && (

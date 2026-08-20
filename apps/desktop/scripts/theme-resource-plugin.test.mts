@@ -29,6 +29,8 @@ const profile = {
     surface1: '#102235',
     textPrimary: '#f2f8ff',
     textSecondary: '#a8bed1',
+    thinkingText: '#7dd3fc',
+    replyText: '#fef3c7',
     accent: '#38bdf8',
   },
   effects: { surfaceOpacity: 0.9, glassBlur: 14, densityScale: 0.8 },
@@ -79,6 +81,8 @@ test('theme resources expose safe type, motion, brand, copy, and component slots
   assert.equal(variables['--theme-chrome-surface-alpha'], '90%');
   assert.equal(variables['--theme-content-surface-alpha'], '90%');
   assert.equal(variables['--theme-reading-surface-alpha'], '90%');
+  assert.equal(variables['--color-thinking-text'], '#7dd3fc');
+  assert.equal(variables['--color-reply-text'], '#fef3c7');
   assert.match(variables['--theme-opaque-surface-0'], /rgb\(from var\(--color-surface-0\).*\/ 1\)/);
   assert.match(variables['--theme-content-surface-0'], /color-mix.*--theme-opaque-surface-0/);
 });

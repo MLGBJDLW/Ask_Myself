@@ -1,4 +1,12 @@
 {
+  "generatedImageRequestedPrompt": "原始提示词",
+  "generatedImageEffectivePrompt": "提供商实际提示词",
+  "generatedImagePromptRevisedWarning": "提供商报告该提示词已被修改。",
+  "generatedImagePromptMode.verbatim": "原样传输",
+  "generatedImagePromptMode.agentRefined": "Agent 精炼",
+  "generatedImagePromptMode.providerEnhanced": "提供商增强",
+  "generatedImagePromptMode.providerEnhancementUnavailable": "提供商增强不可用",
+  "generatedImagePromptMode.providerEnhancementNotApplied": "提供商增强未应用",
   "archive": "归档",
   "unarchive": "取消归档",
   "archivedConversations": "已归档对话",

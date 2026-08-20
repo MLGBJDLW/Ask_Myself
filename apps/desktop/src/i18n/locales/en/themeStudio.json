@@ -1,4 +1,6 @@
 {
+  "color.thinkingText": "Thinking text",
+  "color.replyText": "Assistant reply text",
   "title": "Theme Studio",
   "description": "Install declarative theme-resource plugins with semantic colors, effects, and managed local backgrounds. Arbitrary CSS and remote URLs are blocked.",
   "describeTitle": "Describe your theme plugin",

@@ -16,13 +16,6 @@ import {
   AlertCircle,
   RotateCcw,
   X,
-  Search,
-  FileText,
-  Link2,
-  HelpCircle,
-  Presentation,
-  Table2,
-  ClipboardList,
   BookOpen,
   CheckCircle2,
 } from "lucide-react";
@@ -125,7 +118,6 @@ interface ChatMessagesProps {
   onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
-  onSuggestionClick?: (text: string) => void;
   isCompacting?: boolean;
   compactCompleteVisible?: boolean;
   compactionPhaseLabel?: string;
@@ -133,54 +125,6 @@ interface ChatMessagesProps {
   compactionTerminalText?: string;
   onCancelCompaction?: () => void;
 }
-
-const SUGGESTIONS: {
-  icon: typeof Search;
-  labelKey: keyof import("../../i18n").TranslationKeys;
-  promptKey: keyof import("../../i18n").TranslationKeys;
-}[] = [
-  {
-    icon: Search,
-    labelKey: "chat.suggestions.search",
-    promptKey: "chat.suggestions.search.prompt",
-  },
-  {
-    icon: FileText,
-    labelKey: "chat.suggestions.summarize",
-    promptKey: "chat.suggestions.summarize.prompt",
-  },
-  {
-    icon: Link2,
-    labelKey: "chat.suggestions.connections",
-    promptKey: "chat.suggestions.connections.prompt",
-  },
-  {
-    icon: HelpCircle,
-    labelKey: "chat.suggestions.question",
-    promptKey: "chat.suggestions.question.prompt",
-  },
-  {
-    icon: FileText,
-    labelKey: "chat.suggestions.report",
-    promptKey: "chat.suggestions.report.prompt",
-  },
-  {
-    icon: ClipboardList,
-    labelKey: "chat.suggestions.meeting",
-    promptKey: "chat.suggestions.meeting.prompt",
-  },
-  {
-    icon: Presentation,
-    labelKey: "chat.suggestions.slides",
-    promptKey: "chat.suggestions.slides.prompt",
-  },
-  {
-    icon: Table2,
-    labelKey: "chat.suggestions.table",
-    promptKey: "chat.suggestions.table.prompt",
-  },
-];
-
 
 interface TurnNavigationItem {
   id: string;
@@ -679,7 +623,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     onQuestionSubmit,
     loadingMsgs,
     lastCached,
-    onSuggestionClick,
     isCompacting = false,
     compactCompleteVisible = false,
     compactionPhaseLabel,
@@ -889,7 +832,7 @@ export function ChatMessages(props: ChatMessagesProps) {
 
       return (
         <div key={key} className="flex justify-start mb-4">
-          <div className="w-full min-w-0 text-sm leading-relaxed text-text-primary">
+          <div className="chat-assistant-reply w-full min-w-0 text-sm leading-relaxed">
             {evidenceItems.length > 0 && (
               <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
                 <div className="mb-1 flex items-center justify-between gap-2">
@@ -1998,49 +1941,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     !isCompacting &&
     !compactCompleteVisible
   ) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-x-hidden overflow-y-auto">
-        <div className="text-center max-w-md w-full px-4">
-          <div className="p-4 rounded-2xl bg-surface-2 text-text-tertiary inline-block mb-4">
-            <MessageCircle className="h-8 w-8" />
-          </div>
-          <p className="text-sm text-text-tertiary mb-6">
-            {t("chat.placeholder")}
-          </p>
-          {onSuggestionClick && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              {SUGGESTIONS.map((s, i) => {
-                const Icon = s.icon;
-                const prompt = t(s.promptKey);
-                return (
-                  <motion.button
-                    key={s.labelKey}
-                    type="button"
-                    initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={
-                      shouldReduceMotion
-                        ? INSTANT_TRANSITION
-                        : { delay: i * 0.07, duration: 0.3, ease: "easeOut" }
-                    }
-                    onClick={() => onSuggestionClick(prompt)}
-                    className="bg-surface-1 hover:bg-surface-2 border border-border rounded-lg p-4 cursor-pointer transition-colors text-left"
-                  >
-                    <Icon className="h-4 w-4 text-accent mb-2" />
-                    <p className="text-sm font-medium text-text-primary mb-1">
-                      {t(s.labelKey)}
-                    </p>
-                    <p className="text-xs text-text-tertiary truncate">
-                      {prompt}
-                    </p>
-                  </motion.button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    return <div className="min-h-0 flex-1" data-testid="chat-empty-message-space" aria-hidden="true" />;
   }
 
   if (loadingMsgs) {

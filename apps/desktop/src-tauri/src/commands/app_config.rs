@@ -277,7 +277,8 @@ Schema:
     "mode": "dark|light",
     "colors": {
       "surface0": "#RRGGBB", "surface1": "#RRGGBB", "surface2": "#RRGGBB",
-      "textPrimary": "#RRGGBB", "textSecondary": "#RRGGBB", "accent": "#RRGGBB",
+      "textPrimary": "#RRGGBB", "textSecondary": "#RRGGBB", "thinkingText": "#RRGGBB",
+      "replyText": "#RRGGBB", "accent": "#RRGGBB",
       "accentHover": "#RRGGBB", "accentSubtle": "#RRGGBB", "success": "#RRGGBB",
       "warning": "#RRGGBB", "danger": "#RRGGBB", "info": "#RRGGBB", "border": "#RRGGBB",
       "contextPrompts": "#RRGGBB", "contextConversation": "#RRGGBB",
@@ -346,6 +347,7 @@ pub async fn generate_theme_background_cmd(
         "prompt": format!(
             "Create a subtle desktop application background that leaves the center readable and contains no text, logos, UI, frames, or watermarks. Theme direction: {prompt}"
         ),
+        "prompt_mode": "agent_refined",
         "filename": "nexa-theme-background.png"
     })
     .to_string();

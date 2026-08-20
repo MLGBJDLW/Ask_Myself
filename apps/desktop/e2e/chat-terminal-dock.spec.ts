@@ -225,8 +225,11 @@ test('opens an interactive terminal dock from the chat screen', async ({ page, c
   });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/chat/conv-terminal-dock');
+  const composer = page.getByTestId('chat-input');
+  await expect(composer).toHaveAttribute('data-placement', 'center');
 
   await page.getByRole('button', { name: 'Toggle terminal' }).click();
+  await expect(composer).toHaveAttribute('data-placement', 'bottom');
   await expect(page.getByTestId('terminal-dock')).toHaveAttribute('data-theme-surface', 'transparent');
   const terminalHeader = page.getByTestId('terminal-dock-header');
   const terminalScreenSurface = page.getByTestId('terminal-screen').locator('..');
@@ -250,6 +253,7 @@ test('opens an interactive terminal dock from the chat screen', async ({ page, c
 
   await page.keyboard.press('Control+KeyJ');
   await expect(page.locator('.xterm')).toHaveCount(0);
+  await expect(composer).toHaveAttribute('data-placement', 'bottom');
 
   await page.keyboard.press('Control+KeyJ');
   await expect(page.locator('.xterm')).toBeVisible();
@@ -323,6 +327,7 @@ test('opens an interactive terminal dock from the chat screen', async ({ page, c
   await expect(page.getByText('Exited')).toBeVisible();
   await page.getByRole('button', { name: 'Close terminal' }).click();
   await expect(page.getByText('Exited')).toHaveCount(0);
+  await expect(composer).toHaveAttribute('data-placement', 'center');
 
   const afterStop = await page.evaluate(() => {
     const diagnostics = (window as unknown as {
