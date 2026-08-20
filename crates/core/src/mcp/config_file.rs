@@ -346,6 +346,14 @@ mod tests {
         fs::write(path, raw).unwrap();
     }
 
+    fn file_connector(db: &Database, id: &str) -> McpServer {
+        db.list_mcp_servers()
+            .unwrap()
+            .into_iter()
+            .find(|server| server.id == format!("{USER_JSON_ID_PREFIX}{id}"))
+            .unwrap_or_else(|| panic!("missing JSON connector {id}"))
+    }
+
     #[test]
     fn reload_keeps_unchanged_activation_and_disables_execution_changes() {
         let dir = tempdir().unwrap();
@@ -366,13 +374,13 @@ mod tests {
 
         let first = reload_user_mcp_config(&db, &path).unwrap();
         assert_eq!(first.imported, 1);
-        let server = db.list_mcp_servers().unwrap().remove(0);
+        let server = file_connector(&db, "docs");
         assert_eq!(server.id, "user-json:docs");
         assert!(!server.enabled);
 
         db.toggle_mcp_server(&server.id, true).unwrap();
         reload_user_mcp_config(&db, &path).unwrap();
-        assert!(db.list_mcp_servers().unwrap()[0].enabled);
+        assert!(file_connector(&db, "docs").enabled);
 
         write_config(
             &path,
@@ -388,7 +396,7 @@ mod tests {
         );
         let changed = reload_user_mcp_config(&db, &path).unwrap();
         assert_eq!(changed.disabled_after_change, 1);
-        assert!(!db.list_mcp_servers().unwrap()[0].enabled);
+        assert!(!file_connector(&db, "docs").enabled);
     }
 
     #[test]
