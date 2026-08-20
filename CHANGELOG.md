@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.21](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.20...nexa-monorepo-v0.12.21) (2026-08-20)
+
+
+### Bug Fixes
+
+* **theme:** unify chat surface composition ([6cbc27f](https://github.com/MLGBJDLW/Nexa/commit/6cbc27f96794df625cc018a14dc8d9bae96fea28))
+* **theme:** unify chat surface composition ([b5ab785](https://github.com/MLGBJDLW/Nexa/commit/b5ab7857d9508ba42d2b7018f8b37adabe31e2b0))
+
 ## [0.12.20](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.19...nexa-monorepo-v0.12.20) (2026-08-19)
 
 
