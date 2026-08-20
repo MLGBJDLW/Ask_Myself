@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "Prompt solicitado",
+  "generatedImageEffectivePrompt": "Prompt efetivo do provedor",
+  "generatedImagePromptRevisedWarning": "O provedor informou um prompt revisado.",
+  "generatedImagePromptMode.verbatim": "Literal",
+  "generatedImagePromptMode.agentRefined": "Refinado pelo agente",
+  "generatedImagePromptMode.providerEnhanced": "Aprimorado pelo provedor",
   "archive": "Arquivar",
   "unarchive": "Desarquivar",
   "archivedConversations": "Conversas arquivadas",

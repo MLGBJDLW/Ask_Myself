@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "要求プロンプト",
+  "generatedImageEffectivePrompt": "プロバイダー実効プロンプト",
+  "generatedImagePromptRevisedWarning": "プロバイダーがプロンプトの変更を報告しました。",
+  "generatedImagePromptMode.verbatim": "原文のまま",
+  "generatedImagePromptMode.agentRefined": "エージェント調整",
+  "generatedImagePromptMode.providerEnhanced": "プロバイダー拡張",
   "archive": "アーカイブ",
   "unarchive": "アーカイブを解除",
   "archivedConversations": "アーカイブ済みの会話",

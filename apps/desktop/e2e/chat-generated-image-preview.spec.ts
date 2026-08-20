@@ -74,6 +74,7 @@ test.beforeEach(async ({ page }) => {
           name: 'generate_image',
           arguments: JSON.stringify({
             prompt: 'A small blue square on a neutral background',
+            prompt_mode: 'verbatim',
             size: '1024x1024',
           }),
         }],
@@ -99,6 +100,12 @@ test.beforeEach(async ({ page }) => {
           mediaType: 'image/png',
           bytes: 68,
           prompt: 'A small blue square on a neutral background',
+          requestedPrompt: 'A small blue square on a neutral background',
+          promptMode: 'verbatim',
+          effectivePrompt: 'A centered small blue square on a neutral background',
+          promptIntegrity: 'revised',
+          providerPromptEnhanced: false,
+          promptRewriteObservable: true,
           suggestedFilename: 'blue-square.png',
           saved: false,
           transient: true,
@@ -256,6 +263,14 @@ test('generate_image renders an unsaved preview and saves only when requested', 
   await expect(preview).toContainText('Unsaved preview');
   await expect(preview).toContainText('OpenAI');
   await expect(preview).toContainText('PNG');
+  await expect(preview.getByTestId('generated-image-prompt-mode')).toHaveText('Verbatim');
+  await expect(preview.getByTestId('generated-image-requested-prompt'))
+    .toContainText('A small blue square on a neutral background');
+  await expect(preview.getByTestId('generated-image-effective-prompt'))
+    .toContainText('A centered small blue square on a neutral background');
+  await expect(preview.getByTestId('generated-image-prompt-revised'))
+    .toContainText('Provider reported a revised prompt.');
+  await page.screenshot({ path: 'test-results/generated-image-prompt-audit.png', fullPage: true });
 
   await preview.getByRole('button', { name: 'Save as...' }).click();
   await expect(preview).toContainText('D:\\Exports\\blue-square.png');

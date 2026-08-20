@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "Angeforderter Prompt",
+  "generatedImageEffectivePrompt": "Effektiver Anbieter-Prompt",
+  "generatedImagePromptRevisedWarning": "Der Anbieter meldet einen überarbeiteten Prompt.",
+  "generatedImagePromptMode.verbatim": "Wörtlich",
+  "generatedImagePromptMode.agentRefined": "Vom Agenten verfeinert",
+  "generatedImagePromptMode.providerEnhanced": "Vom Anbieter erweitert",
   "archive": "Archivieren",
   "unarchive": "Aus Archiv holen",
   "archivedConversations": "Archivierte Unterhaltungen",

@@ -346,6 +346,7 @@ pub async fn generate_theme_background_cmd(
         "prompt": format!(
             "Create a subtle desktop application background that leaves the center readable and contains no text, logos, UI, frames, or watermarks. Theme direction: {prompt}"
         ),
+        "prompt_mode": "agent_refined",
         "filename": "nexa-theme-background.png"
     })
     .to_string();

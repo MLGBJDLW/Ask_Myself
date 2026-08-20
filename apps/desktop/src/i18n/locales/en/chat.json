@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "Requested prompt",
+  "generatedImageEffectivePrompt": "Provider effective prompt",
+  "generatedImagePromptRevisedWarning": "Provider reported a revised prompt.",
+  "generatedImagePromptMode.verbatim": "Verbatim",
+  "generatedImagePromptMode.agentRefined": "Agent refined",
+  "generatedImagePromptMode.providerEnhanced": "Provider enhanced",
   "archive": "Archive",
   "unarchive": "Unarchive",
   "archivedConversations": "Archived conversations",

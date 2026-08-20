@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "原始提示詞",
+  "generatedImageEffectivePrompt": "提供者實際提示詞",
+  "generatedImagePromptRevisedWarning": "提供者回報該提示詞已被修改。",
+  "generatedImagePromptMode.verbatim": "原樣傳輸",
+  "generatedImagePromptMode.agentRefined": "Agent 精煉",
+  "generatedImagePromptMode.providerEnhanced": "提供者增強",
   "archive": "封存",
   "unarchive": "取消封存",
   "archivedConversations": "已封存對話",

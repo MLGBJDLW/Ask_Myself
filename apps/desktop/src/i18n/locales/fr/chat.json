@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "Invite demandée",
+  "generatedImageEffectivePrompt": "Invite effective du fournisseur",
+  "generatedImagePromptRevisedWarning": "Le fournisseur a signalé une invite révisée.",
+  "generatedImagePromptMode.verbatim": "Mot pour mot",
+  "generatedImagePromptMode.agentRefined": "Affinée par l’agent",
+  "generatedImagePromptMode.providerEnhanced": "Améliorée par le fournisseur",
   "archive": "Archiver",
   "unarchive": "Désarchiver",
   "archivedConversations": "Conversations archivées",

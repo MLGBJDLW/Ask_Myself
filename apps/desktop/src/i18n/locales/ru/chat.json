@@ -1,4 +1,10 @@
 {
+  "generatedImageRequestedPrompt": "Исходный промпт",
+  "generatedImageEffectivePrompt": "Фактический промпт провайдера",
+  "generatedImagePromptRevisedWarning": "Провайдер сообщил об изменённом промпте.",
+  "generatedImagePromptMode.verbatim": "Без изменений",
+  "generatedImagePromptMode.agentRefined": "Уточнено агентом",
+  "generatedImagePromptMode.providerEnhanced": "Расширено провайдером",
   "archive": "Архивировать",
   "unarchive": "Вернуть из архива",
   "archivedConversations": "Архивные разговоры",
