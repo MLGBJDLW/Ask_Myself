@@ -153,6 +153,23 @@ class XlsxModelRendererTests(unittest.TestCase):
         self.assertIn("missing sheet reference", messages)
         self.assertIn("#REF!", messages)
 
+    def test_formula_lint_matches_sheet_references_case_insensitively(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        wb = openpyxl.Workbook()
+        inputs = wb.active
+        inputs.title = "Inputs"
+        inputs["B2"] = 100
+        inputs["C2"] = 200
+        summary = wb.create_sheet("Summary")
+        summary["A1"] = "=SUM(Inputs!B2:C2)"
+
+        qa = xlsx_model_renderer.audit_workbook_formulas(wb)
+        self.assertEqual("pass", qa["status"], qa)
+
     def test_rows_keep_leading_equals_literal_and_formula_specs_explicit(self) -> None:
         try:
             import openpyxl  # type: ignore

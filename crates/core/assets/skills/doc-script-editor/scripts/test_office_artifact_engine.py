@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import re
 import tempfile
 import unittest
@@ -13,6 +14,22 @@ from office_artifact_engine import OfficeArtifactEngine, OfficeArtifactError
 
 
 class OfficeArtifactEngineTests(unittest.TestCase):
+    def test_windows_process_liveness_probe_never_uses_kill(self) -> None:
+        kernel = mock.MagicMock()
+        kernel.OpenProcess.return_value = 11
+
+        def write_still_active(process, output):
+            output._obj.value = 259
+            return 1
+
+        kernel.GetExitCodeProcess.side_effect = write_still_active
+        kernel.CloseHandle.return_value = 1
+        with mock.patch.object(office_artifact_engine.os, "name", "nt"), mock.patch.object(
+            office_artifact_engine.ctypes, "WinDLL", return_value=kernel
+        ), mock.patch.object(office_artifact_engine.os, "kill", side_effect=AssertionError("must not kill")):
+            self.assertTrue(office_artifact_engine._process_is_alive(4242))
+        kernel.CloseHandle.assert_called_once_with(11)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
@@ -67,6 +84,37 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(OfficeArtifactError, "changed after publication"):
             self.engine.restore(published["receiptId"])
 
+    def test_restore_refuses_changed_sidecar_and_tampered_receipt(self) -> None:
+        destination = self.root / "delivery.docx"
+        candidate = self.engine.execute(self._docx_request(destination))
+        published = self.engine.decide(candidate["candidateId"], "publish")
+        manifest = self.root / "delivery.docx.manifest.json"
+        manifest.write_text('{"user":"newer manifest"}\n', encoding="utf-8")
+
+        with self.assertRaisesRegex(OfficeArtifactError, "sidecar changed"):
+            self.engine.restore(published["receiptId"])
+        self.assertEqual('{"user":"newer manifest"}\n', manifest.read_text(encoding="utf-8"))
+        self.assertTrue(destination.exists())
+
+        # A separate publication proves that changing any receipt field is
+        # rejected before a path or snapshot is trusted.
+        second_destination = self.root / "second.docx"
+        second_candidate = self.engine.execute(self._docx_request(second_destination))
+        second = self.engine.decide(second_candidate["candidateId"], "publish")
+        receipt_path = (
+            self.root
+            / ".nexa"
+            / "office-artifacts"
+            / "receipts"
+            / f"{second['receiptId']}.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["destination"] = str(self.root / "forged.docx")
+        receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(OfficeArtifactError, "HMAC|integrity"):
+            self.engine.restore(second["receiptId"])
+        self.assertTrue(second_destination.exists())
+
     def test_publish_uses_destination_cas_and_exclusive_lock(self) -> None:
         destination = self.root / "cas.docx"
         candidate = self.engine.execute(self._docx_request(destination))
@@ -81,6 +129,37 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 self.engine.decide(candidate["candidateId"], "publish")
         finally:
             lock.unlink(missing_ok=True)
+
+    def test_shared_manifest_role_cas_prevents_cross_destination_overwrite(self) -> None:
+        manifest = self.root / "shared-manifest.json"
+        first_request = self._docx_request(self.root / "first.docx")
+        second_request = self._docx_request(self.root / "second.docx")
+        first_request["delivery"] = {"manifest": str(manifest)}
+        second_request["delivery"] = {"manifest": str(manifest)}
+        first = self.engine.execute(first_request)
+        second = self.engine.execute(second_request)
+
+        self.engine.decide(first["candidateId"], "publish")
+        first_manifest = manifest.read_bytes()
+        with self.assertRaisesRegex(OfficeArtifactError, "role existence changed"):
+            self.engine.decide(second["candidateId"], "publish")
+        self.assertEqual(first_manifest, manifest.read_bytes())
+        self.assertFalse((self.root / "second.docx").exists())
+
+    def test_candidate_state_hmac_blocks_destination_and_manifest_retargeting(self) -> None:
+        destination = self.root / "signed.docx"
+        forged_destination = self.root / "forged.docx"
+        candidate = self.engine.execute(self._docx_request(destination))
+        state_path = Path(candidate["candidatePath"]).parent / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["destination"] = str(forged_destination)
+        state["requestedManifest"] = str(self.root / "source-code.py")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaisesRegex(OfficeArtifactError, "candidate state HMAC"):
+            self.engine.decide(candidate["candidateId"], "publish")
+        self.assertFalse(destination.exists())
+        self.assertFalse(forged_destination.exists())
 
     def test_restore_reinstates_existing_destination_and_manifest(self) -> None:
         import docx
@@ -110,6 +189,112 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         self.assertEqual(original_hash, destination.read_bytes())
         self.assertEqual(old_manifest, manifest.read_bytes())
 
+    def test_restore_journal_recovers_partial_multi_role_restore(self) -> None:
+        import docx
+
+        destination = self.root / "restore-crash.docx"
+        manifest = self.root / "restore-crash-manifest.json"
+        original = docx.Document()
+        original.add_paragraph("Original destination")
+        original.save(destination)
+        original_bytes = destination.read_bytes()
+        manifest.write_text('{"status":"original"}\n', encoding="utf-8")
+        original_manifest = manifest.read_bytes()
+        request = self._docx_request(destination)
+        request["delivery"] = {"manifest": str(manifest)}
+        candidate = self.engine.execute(request)
+        published = self.engine.decide(candidate["candidateId"], "publish")
+        published_bytes = destination.read_bytes()
+        real_rollback = office_artifact_engine.rollback_published_artifact
+
+        def fail_destination(target, snapshot, workspace_root):
+            if Path(target).resolve() == destination.resolve():
+                raise OSError("injected destination restore failure")
+            return real_rollback(target, snapshot, workspace_root)
+
+        with mock.patch.object(
+            office_artifact_engine,
+            "rollback_published_artifact",
+            side_effect=fail_destination,
+        ):
+            with self.assertRaisesRegex(OSError, "injected destination"):
+                self.engine.restore(published["receiptId"])
+
+        self.assertEqual(original_manifest, manifest.read_bytes())
+        self.assertEqual(published_bytes, destination.read_bytes())
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        self.assertEqual(1, len(list(journals.glob("restore-*.json"))))
+
+        with mock.patch.object(office_artifact_engine, "_process_is_alive", return_value=False):
+            recovered_engine = OfficeArtifactEngine(self.root)
+        self.assertEqual(original_bytes, destination.read_bytes())
+        self.assertEqual(original_manifest, manifest.read_bytes())
+        self.assertEqual([], list(journals.glob("restore-*.json")))
+        receipt = json.loads(
+            (self.root / ".nexa" / "office-artifacts" / "receipts" / f"{published['receiptId']}.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual("restored", receipt["status"])
+        self.assertTrue(
+            hmac.compare_digest(
+                receipt["integrity"]["value"],
+                recovered_engine._receipt_integrity(receipt)["value"],
+            )
+        )
+
+    def test_restore_recovery_rejects_valid_receipt_replay_before_mutation(self) -> None:
+        first = self.engine.execute(self._docx_request(self.root / "first-replay.docx"))
+        first_published = self.engine.decide(first["candidateId"], "publish")
+        second = self.engine.execute(self._docx_request(self.root / "second-replay.docx"))
+        second_published = self.engine.decide(second["candidateId"], "publish")
+
+        receipts = self.root / ".nexa" / "office-artifacts" / "receipts"
+        first_receipt_path = receipts / f"{first_published['receiptId']}.json"
+        second_receipt_path = receipts / f"{second_published['receiptId']}.json"
+        first_receipt = json.loads(first_receipt_path.read_text(encoding="utf-8"))
+        first_destination = Path(first_receipt["destination"])
+        published_bytes = first_destination.read_bytes()
+
+        # Simulate internally inconsistent, but individually authenticated,
+        # candidate state. Recovery must bind all three records before it
+        # performs the first destructive restore step.
+        first_state_path, first_state = self.engine._load_candidate(first["candidateId"])
+        first_state["receiptId"] = second_published["receiptId"]
+        first_state["receiptSha256"] = office_artifact_engine._sha256(second_receipt_path)
+        self.engine._write_candidate_state(first_state_path, first_state)
+
+        journal = {
+            "kind": "officeArtifactRestoreJournal",
+            "version": 1,
+            "status": "active",
+            "pid": 2_147_483_647,
+            "candidateId": first["candidateId"],
+            "receiptId": first_published["receiptId"],
+            "destination": str(first_destination),
+            "lockRolePaths": [str(first_destination)],
+            "roles": [{
+                "path": str(first_destination),
+                "publishedSha256": first_receipt["destinationSha256"],
+                "snapshot": None,
+                "snapshotSha256": None,
+                "restoredSha256": None,
+                "existedBefore": False,
+                "restored": False,
+            }],
+        }
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        journals.mkdir(parents=True, exist_ok=True)
+        journal_path = journals / f"restore-{first_published['receiptId']}.json"
+        self.engine._write_journal(journal_path, journal)
+
+        with mock.patch.object(office_artifact_engine, "_process_is_alive", return_value=False):
+            OfficeArtifactEngine(self.root)
+
+        self.assertEqual(published_bytes, first_destination.read_bytes())
+        blocked = json.loads(journal_path.read_text(encoding="utf-8"))
+        self.assertEqual("recovery_blocked", blocked["status"])
+        self.assertIn("binding failed", blocked["recoveryBlockers"][0])
+
     def test_manifest_fault_after_artifact_publish_rolls_back_every_role(self) -> None:
         import docx
 
@@ -124,16 +309,16 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         request = self._docx_request(destination)
         request["delivery"] = {"manifest": str(manifest)}
         candidate = self.engine.execute(request)
-        real_write = office_artifact_engine.write_artifact_manifest
+        real_publish = self.engine._journal_publish_role
 
-        def fail_requested_manifest(path, payload, workspace_root):
-            if Path(path).resolve() == manifest.resolve():
+        def fail_requested_manifest(journal_path, journal, staged, target, *, validate):
+            if Path(target).resolve() == manifest.resolve():
                 raise OSError("injected manifest fault")
-            return real_write(path, payload, workspace_root)
+            return real_publish(journal_path, journal, staged, target, validate=validate)
 
         with mock.patch.object(
-            office_artifact_engine,
-            "write_artifact_manifest",
+            self.engine,
+            "_journal_publish_role",
             side_effect=fail_requested_manifest,
         ):
             with self.assertRaisesRegex(OSError, "injected manifest fault"):
@@ -146,6 +331,81 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         )
         self.assertEqual("candidate", state["status"])
         self.assertEqual([], list((self.root / ".nexa" / "office-artifacts" / "locks").glob("*.lock")))
+
+    def test_startup_recovers_crash_after_artifact_publication(self) -> None:
+        destination = self.root / "crash.docx"
+        destination.write_bytes(b"before")
+        snapshot = office_artifact_engine.snapshot_file(destination, self.root)
+        self.assertIsNotNone(snapshot)
+        destination.write_bytes(b"published")
+        candidate_id = "b" * 32
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        journals.mkdir(parents=True, exist_ok=True)
+        journal = {
+            "kind": "officeArtifactPublishJournal",
+            "version": 1,
+            "candidateId": candidate_id,
+            "status": "active",
+            "pid": 2_147_483_647,
+            "destination": str(destination),
+            "roles": [{
+                "path": str(destination),
+                "existedBefore": True,
+                "preexistingSha256": office_artifact_engine.hashlib.sha256(b"before").hexdigest(),
+                "snapshot": str(snapshot),
+                "snapshotSha256": office_artifact_engine._sha256(snapshot),
+                "intendedSha256": office_artifact_engine.hashlib.sha256(b"published").hexdigest(),
+                "published": True,
+            }],
+        }
+        journal["integrity"] = self.engine._journal_integrity(journal)
+        journal_path = journals / f"{candidate_id}.json"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+
+        OfficeArtifactEngine(self.root)
+        self.assertEqual(b"before", destination.read_bytes())
+        self.assertFalse(journal_path.exists())
+
+    def test_startup_quarantines_forged_journal_without_touching_user_files(self) -> None:
+        destination = self.root / "important.docx"
+        destination.write_bytes(b"keep me")
+        candidate_id = "c" * 32
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        journals.mkdir(parents=True, exist_ok=True)
+        forged = {
+            "kind": "officeArtifactPublishJournal",
+            "version": 1,
+            "candidateId": candidate_id,
+            "status": "active",
+            "pid": 2_147_483_647,
+            "destination": str(destination),
+            "roles": [{
+                "path": str(destination),
+                "existedBefore": False,
+                "snapshot": None,
+                "intendedSha256": office_artifact_engine._sha256(destination),
+            }],
+            "integrity": {"algorithm": "HMAC-SHA256", "value": "0" * 64},
+        }
+        journal_path = journals / f"{candidate_id}.json"
+        journal_path.write_text(json.dumps(forged), encoding="utf-8")
+
+        OfficeArtifactEngine(self.root)
+        self.assertEqual(b"keep me", destination.read_bytes())
+        self.assertFalse(journal_path.exists())
+        self.assertEqual(1, len(list(journals.glob(f"{candidate_id}.json.invalid-*.quarantine"))))
+
+    def test_startup_removes_signed_dead_orphan_lock_without_journal(self) -> None:
+        destination = self.root / "orphan.docx"
+        lock_path = self.engine._acquire_destination_lock(destination, "d" * 32)
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["pid"] = 2_147_483_647
+        lock["integrity"] = self.engine._lock_integrity(lock)
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+        with mock.patch.object(office_artifact_engine, "_process_is_alive", return_value=False):
+            OfficeArtifactEngine(self.root)
+        self.assertFalse(lock_path.exists())
 
     def test_assessment_reports_unsatisfied_publish_render_backend(self) -> None:
         request = self._docx_request(self.root / "publish.docx")
@@ -160,12 +420,48 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertFalse(assessment["ready"])
             self.assertIn("render.backend_unavailable", {item["code"] for item in assessment["blockers"]})
 
+        request = self._docx_request(self.root / "publish-bypass.docx")
+        request["guarantees"].update({"quality": "publish", "render": "none"})
+        with self.assertRaisesRegex(OfficeArtifactError, "requires final candidate render"):
+            self.engine.assess(request)
+
     def test_path_roles_and_candidate_ids_are_validated(self) -> None:
         destination = self.root / "conflict.docx"
         request = self._docx_request(destination)
         request["delivery"] = {"manifest": str(destination)}
         with self.assertRaisesRegex(OfficeArtifactError, "manifest must be distinct"):
             self.engine.execute(request)
+        request = self._docx_request(destination)
+        request["delivery"] = {
+            "manifest": str(
+                self.root
+                / ".nexa"
+                / "office-artifacts"
+                / "receipts"
+                / f"{'a' * 32}.json"
+            )
+        }
+        with self.assertRaisesRegex(OfficeArtifactError, "reserved .nexa state"):
+            self.engine.assess(request)
+        xlsx_destination = self.root / "conflict.xlsx"
+        spec = self.root / "conflict-spec.json"
+        spec.write_text(
+            json.dumps({"sheets": [{"name": "Sheet1", "rows": [["value"]]}]}),
+            encoding="utf-8",
+        )
+        request = {
+            "requestVersion": 2,
+            "format": "xlsx",
+            "intent": "create",
+            "destination": str(xlsx_destination),
+            "operations": [{"op": "create", "spec": str(spec)}],
+        }
+        request["delivery"] = {"manifest": str(xlsx_destination.with_suffix(".xlsx.qa.json"))}
+        with self.assertRaisesRegex(OfficeArtifactError, "XLSX QA sidecar"):
+            self.engine.assess(request)
+        request["delivery"] = {"manifest": str(spec)}
+        with self.assertRaisesRegex(OfficeArtifactError, "cannot overwrite request input"):
+            self.engine.assess(request)
         with self.assertRaisesRegex(OfficeArtifactError, "invalid candidate id"):
             self.engine.decide("../escape", "discard")
 
@@ -184,6 +480,43 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         request = self._docx_request(destination)
         request["validation"] = {"contractVersion": 2, "required_tex": ["missing t"]}
         with self.assertRaisesRegex(OfficeArtifactError, "unknown field.*validation"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["validation"] = 7
+        with self.assertRaisesRegex(OfficeArtifactError, "validation must be"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["validation"] = {"contractVersion": 2.9, "required_text": "BA"}
+        with self.assertRaisesRegex(OfficeArtifactError, "contractVersion must be 2"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["validation"] = {"contractVersion": 2, "required_text": "BA"}
+        with self.assertRaisesRegex(OfficeArtifactError, "array of strings"):
+            self.engine.assess(request)
+
+        contract_path = self.root / "missing-version-contract.json"
+        contract_path.write_text(json.dumps({"required_text": ["Verified body"]}), encoding="utf-8")
+        request = self._docx_request(destination)
+        request["validation"] = str(contract_path)
+        with self.assertRaisesRegex(OfficeArtifactError, "contractVersion is required"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["operations"] = [{
+            "op": "replace",
+            "find": "a",
+            "replace": "b",
+            "allowStyleMerge": "false",
+        }]
+        with self.assertRaisesRegex(OfficeArtifactError, "allowStyleMerge must be a boolean"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["requestVersion"] = 2.9
+        with self.assertRaisesRegex(OfficeArtifactError, "requestVersion must be 2"):
             self.engine.assess(request)
 
     def test_source_sha_precondition_is_format_wide(self) -> None:
@@ -496,6 +829,13 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertIn(b"commentRangeStart", xml)
             self.assertIn(b":ins", xml)
             self.assertIn(b":del", xml)
+        state_text = (Path(outcome["candidatePath"]).parent / "state.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Owner confirmation required.", state_text)
+        self.assertNotIn('"find": "Approve"', state_text)
+        self.assertNotIn('"replace": "new"', state_text)
+        self.assertIn("requestSha256", state_text)
 
 
 if __name__ == "__main__":

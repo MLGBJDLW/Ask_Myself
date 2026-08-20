@@ -34,7 +34,13 @@ def analyze_rendered_images(paths: list[Path]) -> dict[str, Any]:
                 stats = ImageStat.Stat(sample)
                 mean = float(stats.mean[0])
                 deviation = float(stats.stddev[0])
-                blank = mean >= 248.0 and deviation <= 1.5
+                histogram = sample.histogram()
+                pixels = max(1, sum(histogram))
+                ink_coverage = sum(histogram[:245]) / pixels
+                blank = (
+                    mean >= 248.0
+                    and (deviation <= 1.5 or ink_coverage < 0.012)
+                )
                 too_small = width < 320 or height < 180
                 if blank:
                     failures.append(f"render is nearly blank: {path}")
@@ -47,6 +53,7 @@ def analyze_rendered_images(paths: list[Path]) -> dict[str, Any]:
                     "height": height,
                     "grayscaleMean": round(mean, 3),
                     "grayscaleStdDev": round(deviation, 3),
+                    "inkCoverage": round(ink_coverage, 5),
                     "nearlyBlank": blank,
                     "tooSmall": too_small,
                 })

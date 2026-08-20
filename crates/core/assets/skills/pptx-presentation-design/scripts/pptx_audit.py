@@ -139,6 +139,56 @@ def slide_text(root) -> str:
     return " ".join(t.text or "" for t in root.findall(".//a:t", NS)).strip()
 
 
+def shape_inventory(root) -> list[dict[str, object]]:
+    """Return stable OOXML identifiers that typed edits can address."""
+    if root is None:
+        return []
+    inventory: list[dict[str, object]] = []
+    for kind, xpath in (
+        ("shape", ".//p:sp"),
+        ("picture", ".//p:pic"),
+        ("graphicFrame", ".//p:graphicFrame"),
+        ("connector", ".//p:cxnSp"),
+        ("group", ".//p:grpSp"),
+    ):
+        for shape in root.findall(xpath, NS):
+            properties = shape.find(".//p:cNvPr", NS)
+            if properties is None:
+                continue
+            text = " ".join(
+                item.text or "" for item in shape.findall(".//a:t", NS)
+            ).strip()
+            placeholder = shape.find(".//p:ph", NS)
+            transform = shape.find(".//a:xfrm", NS)
+            offset = transform.find("a:off", NS) if transform is not None else None
+            extent = transform.find("a:ext", NS) if transform is not None else None
+            inventory.append({
+                "shapeId": properties.attrib.get("id", ""),
+                "shapeName": properties.attrib.get("name", ""),
+                "kind": kind,
+                "text": text,
+                "placeholderType": placeholder.attrib.get("type") if placeholder is not None else None,
+                "isTitle": (
+                    placeholder is not None
+                    and placeholder.attrib.get("type") in {"title", "ctrTitle"}
+                ),
+                "bounds": {
+                    "x": int(offset.attrib.get("x", "0")) if offset is not None else None,
+                    "y": int(offset.attrib.get("y", "0")) if offset is not None else None,
+                    "cx": int(extent.attrib.get("cx", "0")) if extent is not None else None,
+                    "cy": int(extent.attrib.get("cy", "0")) if extent is not None else None,
+                },
+            })
+    return sorted(
+        inventory,
+        key=lambda item: (
+            int(item["bounds"]["y"] or 0),  # type: ignore[index]
+            int(item["bounds"]["x"] or 0),  # type: ignore[index]
+            int(str(item["shapeId"]) or 0),
+        ),
+    )
+
+
 def nonempty_text_paragraphs(root) -> int:
     if root is None:
         return 0
@@ -271,6 +321,7 @@ def audit(path: Path) -> dict:
                     "text_paragraphs": paragraph_count,
                     "has_visual_anchor": has_visual_anchor,
                     "full_slide_pictures": full_slide_pictures,
+                    "shape_details": shape_inventory(root),
                 }
             )
 

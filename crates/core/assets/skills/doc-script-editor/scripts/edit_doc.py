@@ -1075,7 +1075,15 @@ def cmd_secure_redact(args: argparse.Namespace) -> int:
                 + ", ".join(residual_parts),
                 1,
             )
-        snapshot, validation = _publish_edit(staged, path)
+        previous_snapshot_policy = os.environ.get("NEXA_OFFICE_SKIP_SNAPSHOT")
+        os.environ["NEXA_OFFICE_SKIP_SNAPSHOT"] = "1"
+        try:
+            snapshot, validation = _publish_edit(staged, path)
+        finally:
+            if previous_snapshot_policy is None:
+                os.environ.pop("NEXA_OFFICE_SKIP_SNAPSHOT", None)
+            else:
+                os.environ["NEXA_OFFICE_SKIP_SNAPSHOT"] = previous_snapshot_policy
     finally:
         staged.unlink(missing_ok=True)
     print(json.dumps({
@@ -1089,6 +1097,7 @@ def cmd_secure_redact(args: argparse.Namespace) -> int:
             "utf16ResidualParts": [],
             "uninspectableParts": [],
             "originalTextAbsent": True,
+            "scope": "final artifact package only",
         },
         "snapshot": str(snapshot) if snapshot else None,
         "validation": validation,
@@ -1692,30 +1701,49 @@ def cmd_unpack(args: argparse.Namespace) -> int:
             1,
         )
     outdir = _validate_output_dir(args.outdir, allow_existing=True)
-    if any(outdir.iterdir()):
-        if not args.overwrite:
-            _die(f"ERROR: output directory is not empty: {outdir}. Pass --overwrite to replace it.", 3)
-        marker = outdir / UNPACK_MARKER
-        try:
-            marker_payload = json.loads(marker.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            _die(
-                f"ERROR: refusing to overwrite unmanaged directory: {outdir}. "
-                f"Only directories created by this unpack command may be replaced.",
-                3,
-            )
-        if marker_payload.get("kind") != "nexa-ooxml-unpack" or marker_payload.get("version") != 1:
-            _die(f"ERROR: invalid managed-unpack marker in: {outdir}", 3)
-        shutil.rmtree(outdir)
-        outdir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path) as zf:
+        archive_files = {
+            member.filename.rstrip("/")
+            for member in zf.infolist()
+            if member.filename and not member.is_dir()
+        }
+        if any(outdir.iterdir()):
+            if not args.overwrite:
+                _die(f"ERROR: output directory is not empty: {outdir}. Pass --overwrite to replace it.", 3)
+            marker = outdir / UNPACK_MARKER
+            try:
+                marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                _die(
+                    f"ERROR: refusing to overwrite unmanaged directory: {outdir}. "
+                    f"Only directories created by this unpack command may be replaced.",
+                    3,
+                )
+            if marker_payload.get("kind") != "nexa-ooxml-unpack" or marker_payload.get("version") not in {1, 2}:
+                _die(f"ERROR: invalid managed-unpack marker in: {outdir}", 3)
+            existing_files = {
+                item.relative_to(outdir).as_posix()
+                for item in outdir.rglob("*")
+                if item.is_file() and item.name != UNPACK_MARKER
+            }
+            if existing_files != archive_files:
+                _die(
+                    "ERROR: refusing destructive managed-unpack overwrite because the existing "
+                    "member set differs from the new package; choose a new empty outdir",
+                    3,
+                )
         for member in zf.infolist():
             target = (outdir / member.filename).resolve()
             try:
                 target.relative_to(outdir)
             except ValueError:
                 _die(f"ERROR: unsafe ZIP member escapes output directory: {member.filename}", 3)
-        zf.extractall(outdir)
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
         xml_count = sum(
             1 for member in zf.infolist()
             if member.filename.lower().endswith((".xml", ".rels"))
@@ -1723,9 +1751,10 @@ def cmd_unpack(args: argparse.Namespace) -> int:
     (outdir / UNPACK_MARKER).write_text(
         json.dumps({
             "kind": "nexa-ooxml-unpack",
-            "version": 1,
+            "version": 2,
             "source": str(path),
             "sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "ownedEntries": sorted(archive_files),
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -1744,7 +1773,13 @@ def cmd_pack(args: argparse.Namespace) -> int:
     try:
         with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as zf:
             for item in sorted(input_dir.rglob("*")):
+                if item.is_symlink():
+                    _die(f"ERROR: refusing to pack symlinked OOXML content: {item}", 3)
                 if item.is_file() and item.name != UNPACK_MARKER:
+                    try:
+                        item.resolve().relative_to(input_dir.resolve())
+                    except ValueError:
+                        _die(f"ERROR: OOXML pack member escapes input directory: {item}", 3)
                     zf.write(item, item.relative_to(input_dir).as_posix())
         snapshot, validation = _publish_edit(staged, path)
     finally:
@@ -2129,14 +2164,56 @@ VALIDATION_CONTRACT_KEYS: dict[str, set[str]] = {
 
 
 def _validate_contract_keys(contract: dict[str, Any], artifact_format: str) -> None:
+    if not isinstance(contract, dict):
+        _die("CONTRACT_SCHEMA_FAILED: validation contract root must be an object", 3)
     unknown = sorted(set(contract) - VALIDATION_CONTRACT_KEYS[artifact_format])
     if unknown:
         _die(
             f"CONTRACT_SCHEMA_FAILED: unknown {artifact_format} validation field(s): {', '.join(unknown)}",
             3,
         )
-    if int(contract.get("contractVersion", 2)) != 2:
+    if "contractVersion" in contract and (
+        type(contract["contractVersion"]) is not int or contract["contractVersion"] != 2
+    ):
         _die("CONTRACT_SCHEMA_FAILED: contractVersion must be 2", 3)
+    string_arrays = {
+        "required_text", "forbidden_text", "required_sheets", "required_named_ranges",
+        "no_numeric_hardcodes_in", "required_styles", "required_slide_titles",
+    }
+    object_arrays = {"tie_outs", "reconciliations", "formula_patterns"}
+    integers = {"min_paragraphs", "min_tables", "min_comments", "min_slides", "max_slides"}
+    booleans = {
+        "require_formula_cache", "no_heading_level_skips", "require_alt_text",
+        "require_table_header_rows", "require_fixed_table_layout", "require_tracked_changes",
+        "require_no_tracked_changes", "require_speaker_notes",
+    }
+    for key in string_arrays & set(contract):
+        if not isinstance(contract[key], list) or not all(
+            isinstance(item, str) for item in contract[key]
+        ):
+            _die(f"CONTRACT_SCHEMA_FAILED: {key} must be an array of strings", 3)
+    for key in object_arrays & set(contract):
+        if not isinstance(contract[key], list) or not all(
+            isinstance(item, dict) for item in contract[key]
+        ):
+            _die(f"CONTRACT_SCHEMA_FAILED: {key} must be an array of objects", 3)
+    for key in integers & set(contract):
+        if type(contract[key]) is not int or contract[key] < 0:
+            _die(f"CONTRACT_SCHEMA_FAILED: {key} must be a non-negative integer", 3)
+    for key in booleans & set(contract):
+        if type(contract[key]) is not bool:
+            _die(f"CONTRACT_SCHEMA_FAILED: {key} must be a boolean", 3)
+    if "min_rows" in contract and (
+        not isinstance(contract["min_rows"], dict)
+        or not all(
+            isinstance(name, str) and type(count) is int and count >= 0
+            for name, count in contract["min_rows"].items()
+        )
+    ):
+        _die("CONTRACT_SCHEMA_FAILED: min_rows must map sheets to non-negative integers", 3)
+    for key in {"sentinels", "required_provenance"} & set(contract):
+        if not isinstance(contract[key], dict):
+            _die(f"CONTRACT_SCHEMA_FAILED: {key} must be an object", 3)
 
 
 def _contract_evidence(path: Path, contract_path: str) -> dict[str, str]:
@@ -2595,7 +2672,23 @@ def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
     slides_with_notes = 0
     for slide in presentation.slides:
         if slide.shapes.title is not None:
-            titles.append(slide.shapes.title.text)
+            title = slide.shapes.title.text.strip()
+            if title:
+                titles.append(title)
+        else:
+            # Renderers and imported decks frequently use a regular text box for
+            # the visual title.  Treat the top-most non-empty text frame as the
+            # semantic title instead of requiring a PowerPoint title placeholder.
+            text_shapes = [
+                shape for shape in slide.shapes
+                if getattr(shape, "has_text_frame", False) and shape.text.strip()
+            ]
+            if text_shapes:
+                title_shape = min(
+                    text_shapes,
+                    key=lambda shape: (int(shape.top), int(shape.left)),
+                )
+                titles.append(title_shape.text.strip())
         if slide.has_notes_slide:
             notes_text = "\n".join(
                 shape.text for shape in slide.notes_slide.shapes

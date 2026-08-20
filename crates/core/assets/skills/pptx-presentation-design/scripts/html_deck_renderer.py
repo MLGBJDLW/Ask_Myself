@@ -18,6 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 
 DEFAULT_WIDTH_PX = 1280
@@ -368,11 +370,32 @@ def _capture_screenshots(
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(args=["--disable-background-networking"])
             page = browser.new_page(
                 viewport={"width": int(size["width_px"]), "height": int(size["height_px"])},
                 device_scale_factor=1,
             )
+            project_root = out_dir.resolve()
+
+            def route_local_project_only(route, request):
+                parsed = urlparse(request.url)
+                if parsed.scheme in {"data", "blob"}:
+                    route.continue_()
+                    return
+                if parsed.scheme == "file" and not parsed.netloc:
+                    candidate = Path(url2pathname(parsed.path)).resolve()
+                    try:
+                        candidate.relative_to(project_root)
+                    except ValueError:
+                        route.abort()
+                    else:
+                        route.continue_()
+                    return
+                route.abort()
+
+            page.route("**", route_local_project_only)
+            if hasattr(page, "route_web_socket"):
+                page.route_web_socket("**", lambda socket: socket.close())
             for record in html_records:
                 html_path = Path(str(record["htmlPath"]))
                 png_path = rendered_dir / f"slide_{int(record['index']):02d}.png"
@@ -939,20 +962,11 @@ def render_html_deck(
     if output_dir == root:
         _die("ERROR: out-dir must be a managed subdirectory, not the workspace root", 3)
     if output_dir.exists():
-        marker = output_dir / ".html-deck-project"
-        managed_manifest = False
-        manifest_path = output_dir / "manifest.json"
-        if manifest_path.exists():
-            try:
-                managed_manifest = json.loads(manifest_path.read_text(encoding="utf-8")).get("kind") == "htmlDeckProject"
-            except Exception:
-                managed_manifest = False
-        if any(output_dir.iterdir()) and not marker.exists() and not managed_manifest:
+        if any(output_dir.iterdir()):
             _die(
-                f"ERROR: out-dir already exists and is not an HTML deck project: {output_dir}",
+                f"ERROR: out-dir must be empty; use a fresh unique HTML deck directory: {output_dir}",
                 3,
             )
-        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / ".html-deck-project").write_text("managed by html_deck_renderer\n", encoding="utf-8")
 

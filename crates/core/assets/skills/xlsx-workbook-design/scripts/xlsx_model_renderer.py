@@ -636,12 +636,13 @@ def _formula_issues_for_cell(
     if ";" in stripped:
         warnings.append("formula uses semicolon separators; OOXML formulas normally use commas")
 
+    normalized_sheet_names = {name.casefold() for name in sheet_names}
     found_sheet_spans: list[tuple[int, int]] = []
     for match in SHEET_REF_RE.finditer(stripped):
         found_sheet_spans.append(match.span())
         sheet_name = _unquote_sheet_name(match.group("sheet"))
         ref = match.group("ref")
-        if sheet_name not in sheet_names:
+        if sheet_name.casefold() not in normalized_sheet_names:
             issues.append(f"missing sheet reference: {sheet_name}")
         if not _validate_cell_bounds(ref, libs):
             issues.append(f"cell reference out of Excel bounds: {ref}")

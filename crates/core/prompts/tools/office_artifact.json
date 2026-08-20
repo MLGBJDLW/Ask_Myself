@@ -1,18 +1,27 @@
 {
   "name": "office_artifact",
-  "description": "Assess, create, edit, verify, publish, discard, or restore DOCX, XLSX, and PPTX artifacts through Nexa's transactional OfficeArtifactEngine. Prefer this over manually composing run_shell document pipelines. execute creates a validated candidate by default; decide publishes or discards that candidate; restore uses a receipt and refuses to overwrite newer work.",
+  "description": "Inspect, assess, create, edit, verify, publish, discard, or restore DOCX, XLSX, and PPTX artifacts through Nexa's transactional OfficeArtifactEngine. Inspect returns stable sheet, slide, and shape identifiers needed by typed edits. Prefer this over manually composing run_shell document pipelines. execute creates a validated candidate by default; decide publishes or discards that candidate; restore uses a receipt and refuses to overwrite newer work.",
   "parameters": {
     "type": "object",
     "required": ["action", "workspace_root"],
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["capabilities", "assess", "execute", "decide", "restore"],
+        "enum": ["capabilities", "inspect", "assess", "execute", "decide", "restore"],
         "description": "Lifecycle action. Use assess before guarantees that require optional native/render backends."
       },
       "workspace_root": {
         "type": "string",
         "description": "Registered local source directory that contains every source, destination, spec, manifest, candidate, and receipt path."
+      },
+      "source": {
+        "type": "string",
+        "description": "Existing Office artifact inside workspace_root; required for inspect."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["docx", "xlsx", "pptx"],
+        "description": "Optional format assertion for inspect; otherwise inferred from the Office extension."
       },
       "request": {
         "type": "object",

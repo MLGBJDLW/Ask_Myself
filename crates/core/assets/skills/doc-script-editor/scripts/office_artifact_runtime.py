@@ -13,7 +13,9 @@ import json
 import os
 import platform
 import posixpath
+import re
 import shutil
+import stat
 import subprocess
 import uuid
 import zipfile
@@ -26,27 +28,53 @@ from xml.etree import ElementTree as ET
 
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-OFFICE_SUFFIXES = {".docx", ".pptx", ".xlsx"}
 MAIN_PARTS = {
     ".docx": "word/document.xml",
+    ".docm": "word/document.xml",
+    ".dotx": "word/document.xml",
+    ".dotm": "word/document.xml",
     ".pptx": "ppt/presentation.xml",
+    ".pptm": "ppt/presentation.xml",
+    ".potx": "ppt/presentation.xml",
+    ".potm": "ppt/presentation.xml",
     ".xlsx": "xl/workbook.xml",
+    ".xlsm": "xl/workbook.xml",
+    ".xltx": "xl/workbook.xml",
+    ".xltm": "xl/workbook.xml",
 }
+OFFICE_SUFFIXES = set(MAIN_PARTS)
 MAX_PACKAGE_PARTS = 20_000
 MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PART_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 500.0
+MAX_XML_PART_BYTES = 32 * 1024 * 1024
+MAX_XML_TOTAL_BYTES = 256 * 1024 * 1024
 PINNED_PYTHON_DEPENDENCIES = {
     "python-docx": "1.2.0",
     "python-pptx": "1.0.2",
     "pypdf": "6.10.0",
     "openpyxl": "3.1.5",
 }
+FORMAT_PYTHON_DEPENDENCIES = {
+    "docx": {"python-docx"},
+    "pptx": {"python-pptx"},
+    "xlsx": {"openpyxl"},
+}
 
 
-def office_python_dependency_statuses() -> list[dict[str, Any]]:
+def office_python_dependency_statuses(
+    artifact_format: str | None = None,
+    needs: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    selected = set(PINNED_PYTHON_DEPENDENCIES)
+    if artifact_format is not None:
+        selected = set(FORMAT_PYTHON_DEPENDENCIES.get(artifact_format, set()))
+    if needs and "pdf" in needs:
+        selected.add("pypdf")
     statuses = []
     for distribution, expected in PINNED_PYTHON_DEPENDENCIES.items():
+        if distribution not in selected:
+            continue
         try:
             actual = importlib.metadata.version(distribution)
             status = "ready" if actual == expected else "version-mismatch"
@@ -119,19 +147,13 @@ class NexaOpenXmlBackend(OfficeBackend):
     id = "nexa-openxml"
 
     def preflight(self) -> BackendStatus:
-        dependencies = office_python_dependency_statuses()
-        ready = all(item["status"] == "ready" for item in dependencies)
         return BackendStatus(
             id=self.id,
             label="Nexa OpenXML",
-            status="ready" if ready else "missing",
+            status="ready",
             capabilities=["create", "edit", "inspect", "validate", "transaction"],
             local=True,
-            detail=(
-                "Default local backend; pinned Python dependencies are ready."
-                if ready
-                else "Pinned Python Office dependencies are missing or version-mismatched."
-            ),
+            detail="Request readiness is evaluated per format and required operation.",
         )
 
 
@@ -295,6 +317,25 @@ def _relationship_target(source_part: str | None, target: str) -> str | None:
     return str(PurePosixPath(normalized))
 
 
+def _windows_package_path_key(name: str) -> tuple[str | None, str | None]:
+    reserved = {"con", "prn", "aux", "nul"} | {
+        f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
+    }
+    segments: list[str] = []
+    for segment in name.split("/"):
+        if not segment:
+            return None, "empty Windows path segment"
+        if segment.endswith((".", " ")):
+            return None, "Windows path segment ends in dot or space"
+        if any(character in segment for character in '<>:"|?*'):
+            return None, "Windows path segment contains a reserved character"
+        stem = segment.split(".", 1)[0].casefold()
+        if stem in reserved:
+            return None, "Windows path segment uses a reserved device name"
+        segments.append(segment.casefold())
+    return "/".join(segments), None
+
+
 def validate_ooxml_package(path: Path) -> ValidationReport:
     """Validate ZIP integrity, XML parseability, content types, and rel targets."""
 
@@ -315,6 +356,7 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
             infos = [info for info in archive.infolist() if not info.is_dir()]
             member_names = [info.filename for info in infos]
             names = set(member_names)
+            windows_path_keys: dict[str, str] = {}
             if len(infos) > MAX_PACKAGE_PARTS:
                 report.error(
                     "zip.part_budget",
@@ -336,12 +378,32 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                         f"ZIP member path is unsafe: {name}",
                         name,
                     )
+                windows_key, windows_error = _windows_package_path_key(normalized)
+                if windows_error:
+                    report.error("zip.windows_path", windows_error, name)
+                elif windows_key in windows_path_keys:
+                    report.error(
+                        "zip.windows_path_collision",
+                        f"ZIP member collides on Windows with {windows_path_keys[windows_key]}",
+                        name,
+                    )
+                elif windows_key is not None:
+                    windows_path_keys[windows_key] = name
                 if info.flag_bits & 0x1:
                     report.error("zip.encrypted_part", "Encrypted ZIP parts are unsupported", name)
+                unix_mode = (info.external_attr >> 16) & 0o170000
+                if unix_mode == stat.S_IFLNK:
+                    report.error("zip.symlink", "Symbolic-link ZIP members are unsupported", name)
                 if info.file_size > MAX_PART_UNCOMPRESSED_BYTES:
                     report.error(
                         "zip.part_size_budget",
                         "ZIP member exceeds uncompressed part-size budget",
+                        name,
+                    )
+                if name.endswith((".xml", ".rels")) and info.file_size > MAX_XML_PART_BYTES:
+                    report.error(
+                        "xml.part_budget",
+                        "XML part exceeds the parser safety budget",
                         name,
                     )
                 ratio = (
@@ -356,6 +418,12 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                         name,
                     )
             report.checks["uncompressedBytes"] = total_uncompressed
+            total_xml_bytes = sum(
+                info.file_size for info in infos if info.filename.endswith((".xml", ".rels"))
+            )
+            report.checks["xmlBytes"] = total_xml_bytes
+            if total_xml_bytes > MAX_XML_TOTAL_BYTES:
+                report.error("xml.total_budget", "Total XML size exceeds the parser safety budget")
             report.checks["maxCompressionRatio"] = max(
                 (
                     info.file_size / max(1, info.compress_size)
@@ -389,7 +457,16 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                 if not name.endswith((".xml", ".rels")):
                     continue
                 try:
-                    parsed_xml[name] = ET.fromstring(archive.read(name))
+                    xml_bytes = archive.read(name)
+                    lowered = xml_bytes.lower()
+                    if b"<!doctype" in lowered or b"<!entity" in lowered:
+                        report.error(
+                            "xml.dtd_forbidden",
+                            "DTD and entity declarations are forbidden in Office package XML",
+                            name,
+                        )
+                        continue
+                    parsed_xml[name] = ET.fromstring(xml_bytes)
                 except (ET.ParseError, KeyError) as error:
                     report.error("xml.parse", f"XML part cannot be parsed: {error}", name)
             report.checks["xmlParts"] = len(parsed_xml)
@@ -477,12 +554,18 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
         "slicers": [],
         "dataModel": [],
         "embeddedObjects": [],
+        "xlmMacros": [],
+        "externalFormulaFunctions": [],
+        "unsafeExternalRelationships": [],
     }
     if not zipfile.is_zipfile(path):
         return {"riskLevel": "invalid", "features": features, "sensitiveParts": 0}
 
+    external_relationship_details: list[dict[str, str]] = []
+    external_formula_details: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as archive:
-        for name in archive.namelist():
+        for info in archive.infolist():
+            name = info.filename
             lowered = name.lower()
             if "vbaproject" in lowered or lowered.endswith("vbadata.xml"):
                 features["macros"].append(name)
@@ -500,14 +583,75 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
                 features["dataModel"].append(name)
             if "/embeddings/" in lowered or "/oleobjects/" in lowered:
                 features["embeddedObjects"].append(name)
+            if "xl/macrosheets/" in lowered or "xl/intlmacrosheets/" in lowered:
+                features["xlmMacros"].append(name)
+            if (
+                lowered.startswith("xl/worksheets/")
+                and lowered.endswith(".xml")
+                and info.file_size <= MAX_XML_PART_BYTES
+            ):
+                try:
+                    root = ET.fromstring(archive.read(name))
+                except ET.ParseError:
+                    continue
+                functions: set[str] = set()
+                for element in root.iter():
+                    if element.tag.rsplit("}", 1)[-1] != "f":
+                        continue
+                    formula = "".join(element.itertext())
+                    normalized = re.sub(r"\s+", "", formula).upper()
+                    functions.update(
+                        match.group(1)
+                        for match in re.finditer(
+                            r"(?:_XLFN\.)?(WEBSERVICE|RTD|DDE|CALL|EXEC|REGISTER\.ID)\(",
+                            normalized,
+                        )
+                    )
+                    if "|" in formula and "!" in formula:
+                        functions.add("DDE_PIPE")
+                if functions:
+                    features["externalFormulaFunctions"].append(name)
+                    external_formula_details.append({
+                        "part": name,
+                        "functions": sorted(functions),
+                    })
+            if lowered.endswith(".rels") and info.file_size <= MAX_XML_PART_BYTES:
+                try:
+                    relationships = ET.fromstring(archive.read(name))
+                except ET.ParseError:
+                    continue
+                for relationship in relationships:
+                    if (
+                        relationship.tag.rsplit("}", 1)[-1] != "Relationship"
+                        or relationship.attrib.get("TargetMode", "").lower() != "external"
+                    ):
+                        continue
+                    relation_type = relationship.attrib.get("Type", "")
+                    detail = {
+                        "part": name,
+                        "type": relation_type,
+                        "target": relationship.attrib.get("Target", ""),
+                    }
+                    external_relationship_details.append(detail)
+                    if not relation_type.lower().endswith("/hyperlink"):
+                        features["unsafeExternalRelationships"].append(name)
 
     sensitive_parts = sum(len(parts) for parts in features.values())
-    high_risk = any(features[key] for key in ("macros", "signatures", "externalLinks", "dataModel"))
+    high_risk = any(
+        features[key]
+        for key in (
+            "macros", "signatures", "externalLinks", "dataModel",
+            "xlmMacros", "externalFormulaFunctions",
+            "unsafeExternalRelationships",
+        )
+    )
     risk_level = "high" if high_risk else "medium" if sensitive_parts else "low"
     return {
         "riskLevel": risk_level,
-        "features": features,
+        "features": {key: sorted(set(value)) for key, value in features.items()},
         "sensitiveParts": sensitive_parts,
+        "externalRelationshipDetails": external_relationship_details,
+        "externalFormulaDetails": external_formula_details,
     }
 
 

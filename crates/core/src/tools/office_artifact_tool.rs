@@ -26,6 +26,10 @@ struct OfficeArtifactArgs {
     #[serde(default)]
     request: Option<Value>,
     #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
     candidate_id: Option<String>,
     #[serde(default)]
     decision: Option<String>,
@@ -48,6 +52,15 @@ fn engine_arguments(args: &OfficeArtifactArgs) -> Result<(Vec<String>, String), 
     let mut request_json = String::new();
     match action.as_str() {
         "capabilities" => {}
+        "inspect" => {
+            let source = args.source.as_deref().ok_or_else(|| {
+                CoreError::InvalidInput("office_artifact inspect requires source".to_string())
+            })?;
+            command.extend(["--source".to_string(), source.to_string()]);
+            if let Some(format) = args.format.as_deref() {
+                command.extend(["--format".to_string(), format.to_string()]);
+            }
+        }
         "assess" | "execute" => {
             let request = args.request.as_ref().ok_or_else(|| {
                 CoreError::InvalidInput(format!("office_artifact {action} requires request"))
@@ -119,10 +132,14 @@ impl Tool for OfficeArtifactTool {
     }
 
     fn requires_confirmation(&self, args: &Value) -> bool {
-        matches!(
-            args.get("action").and_then(Value::as_str),
-            Some("execute" | "decide" | "restore")
-        )
+        args.get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|action| {
+                action.eq_ignore_ascii_case("execute")
+                    || action.eq_ignore_ascii_case("decide")
+                    || action.eq_ignore_ascii_case("restore")
+            })
     }
 
     fn confirmation_message(&self, args: &Value) -> Option<String> {
@@ -136,10 +153,14 @@ impl Tool for OfficeArtifactTool {
     }
 
     fn is_read_only(&self, args: &Value) -> bool {
-        matches!(
-            args.get("action").and_then(Value::as_str),
-            Some("capabilities" | "assess")
-        )
+        args.get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|action| {
+                action.eq_ignore_ascii_case("capabilities")
+                    || action.eq_ignore_ascii_case("inspect")
+                    || action.eq_ignore_ascii_case("assess")
+            })
     }
 
     fn resource_keys(&self, args: &Value) -> Vec<String> {
@@ -153,6 +174,9 @@ impl Tool for OfficeArtifactTool {
                     keys.push(format!("file:{}", path.trim().replace('\\', "/")));
                 }
             }
+        }
+        if let Some(source) = args.get("source").and_then(Value::as_str) {
+            keys.push(format!("file:{}", source.trim().replace('\\', "/")));
         }
         if let Some(id) = args
             .get("candidate_id")
@@ -222,6 +246,7 @@ mod tests {
             .as_array()
             .expect("action enum");
         assert!(actions.contains(&json!("execute")));
+        assert!(actions.contains(&json!("inspect")));
         assert!(actions.contains(&json!("decide")));
         assert!(actions.contains(&json!("restore")));
     }
@@ -230,9 +255,13 @@ mod tests {
     fn lifecycle_actions_have_correct_mutability() {
         let tool = OfficeArtifactTool;
         assert!(tool.is_read_only(&json!({"action": "assess"})));
+        assert!(tool.is_read_only(&json!({"action": "inspect"})));
         assert!(!tool.requires_confirmation(&json!({"action": "capabilities"})));
         assert!(tool.requires_confirmation(&json!({"action": "execute"})));
         assert!(tool.requires_confirmation(&json!({"action": "decide"})));
+        assert!(tool.requires_confirmation(&json!({"action": " DECIDE "})));
+        assert!(tool.requires_confirmation(&json!({"action": "RESTORE"})));
+        assert!(!tool.is_read_only(&json!({"action": "RESTORE"})));
     }
 
     #[test]
@@ -241,6 +270,8 @@ mod tests {
             action: "decide".to_string(),
             workspace_root: ".".to_string(),
             request: None,
+            source: None,
+            format: None,
             candidate_id: None,
             decision: None,
             receipt_id: None,

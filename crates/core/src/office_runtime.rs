@@ -159,6 +159,7 @@ async fn run_python_with_input(
     cwd: &Path,
     input: &str,
     timeout: Duration,
+    integrity_root: Option<&Path>,
 ) -> Result<std::process::Output, CoreError> {
     use tokio::io::AsyncWriteExt;
 
@@ -171,6 +172,9 @@ async fn run_python_with_input(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(root) = integrity_root {
+        command.env("NEXA_OFFICE_INTEGRITY_ROOT", root);
+    }
     apply_quiet_command_options(command.as_std_mut());
     let mut child = command
         .spawn()
@@ -225,6 +229,7 @@ pub async fn execute_office_artifact_engine(
         workspace_root,
         request_json,
         Duration::from_secs(15 * 60),
+        Some(&app_data_dir.join("office-artifact-integrity")),
     )
     .await?;
     Ok(OfficeArtifactExecution {
@@ -736,10 +741,16 @@ mod tests {
         };
         let root = tempfile::tempdir().unwrap();
         let args = vec!["-c".to_string(), "import time; time.sleep(5)".to_string()];
-        let error =
-            run_python_with_input(&python, &args, root.path(), "", Duration::from_millis(25))
-                .await
-                .unwrap_err();
+        let error = run_python_with_input(
+            &python,
+            &args,
+            root.path(),
+            "",
+            Duration::from_millis(25),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("watchdog"));
     }
 }

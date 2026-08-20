@@ -134,6 +134,26 @@ class HtmlDeckRendererTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             html_deck_renderer._validate_spec({"slides": []})
 
+    def test_existing_managed_marker_never_authorizes_recursive_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            project = root / "project"
+            project.mkdir()
+            (project / ".html-deck-project").write_text("forged\n", encoding="utf-8")
+            keep = project / "keep.txt"
+            keep.write_text("user data", encoding="utf-8")
+            spec = root / "spec.json"
+            spec.write_text(json.dumps({"slides": [{"title": "One"}]}), encoding="utf-8")
+
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                html_deck_renderer.render_html_deck(
+                    spec_path=str(spec),
+                    out_dir=str(project),
+                    screenshot="skip",
+                    workspace_root=root,
+                )
+            self.assertEqual("user data", keep.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,29 @@ from office_artifact_engine import OfficeArtifactEngine
 
 
 class OfficeArtifactGoldenTests(unittest.TestCase):
+    def test_public_inspect_exposes_pptx_slide_and_shape_ids(self) -> None:
+        request = {
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "create",
+            "destination": str(self.root / "inspectable.pptx"),
+            "operations": [{"op": "create", "spec": str(self._copy_spec("pptx-spec.json"))}],
+            "guarantees": {"quality": "standard", "render": "none"},
+            "validation": {"contractVersion": 2, "min_slides": 2},
+        }
+        candidate = self.engine.execute(request)
+        inspected = self.engine.inspect(candidate["candidatePath"], "pptx")
+        slides = inspected["profile"]["slide_details"]
+        self.assertEqual(["256", "257"], [slide["slide_id"] for slide in slides])
+        text_shapes = [
+            shape
+            for slide in slides
+            for shape in slide["shape_details"]
+            if shape["text"]
+        ]
+        self.assertTrue(all(shape["shapeId"] for shape in text_shapes))
+        self.assertTrue(all(shape["shapeName"] for shape in text_shapes))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
@@ -140,7 +163,12 @@ class OfficeArtifactGoldenTests(unittest.TestCase):
                 "destination": str(self.root / "published.pptx"),
                 "operations": [{"op": "create", "spec": str(self._copy_spec("pptx-spec.json"))}],
                 "guarantees": {"quality": "standard", "render": "none"},
-                "validation": {"contractVersion": 2, "min_slides": 2, "max_slides": 2},
+                "validation": {
+                    "contractVersion": 2,
+                    "min_slides": 2,
+                    "max_slides": 2,
+                    "required_slide_titles": ["Golden Decision", "Decision options"],
+                },
             },
         ]
         for request in requests:

@@ -97,6 +97,28 @@ def _write_theme_pptx(path: Path) -> None:
 
 
 class PptxUpgradePipelineTests(unittest.TestCase):
+    def test_audit_exposes_stable_shape_identifiers_for_typed_edits(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "inspectable.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
+            shape.name = "Decision Title"
+            shape.text = "Inspect me"
+            presentation.save(deck)
+
+            report = pptx_audit.audit(deck)
+            details = report["slide_details"][0]["shape_details"]
+            inspected = next(item for item in details if item["shapeName"] == "Decision Title")
+            self.assertTrue(inspected["shapeId"])
+            self.assertEqual("Inspect me", inspected["text"])
+            self.assertEqual("shape", inspected["kind"])
+
     def test_audit_uses_presentation_display_order_not_part_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             deck = Path(tmp) / "reordered.pptx"

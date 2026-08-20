@@ -9,12 +9,16 @@ module so callers express outcomes and guarantees instead of shell pipelines.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
+import secrets
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,6 +42,11 @@ from office_artifact_service import OfficeArtifactJob, execute_job
 
 REQUEST_VERSION = 2
 FORMATS = {"docx", "pptx", "xlsx"}
+FORMAT_EXTENSIONS = {
+    "docx": {".docx", ".docm", ".dotx", ".dotm"},
+    "xlsx": {".xlsx", ".xlsm", ".xltx", ".xltm"},
+    "pptx": {".pptx", ".pptm", ".potx", ".potm"},
+}
 INTENTS = {"create", "modify", "verify"}
 QUALITY_LEVELS = {"draft", "standard", "publish", "native"}
 CALCULATION_LEVELS = {"not_required", "static", "compatible", "native"}
@@ -178,8 +187,8 @@ class ArtifactRequest:
     @classmethod
     def from_dict(cls, payload: dict[str, Any], workspace_root: Path) -> "ArtifactRequest":
         _reject_unknown_keys(payload, REQUEST_KEYS, "request")
-        version = int(payload.get("requestVersion", REQUEST_VERSION))
-        if version != REQUEST_VERSION:
+        version = payload.get("requestVersion", REQUEST_VERSION)
+        if type(version) is not int or version != REQUEST_VERSION:
             raise OfficeArtifactError(
                 "request.unsupported_version",
                 f"requestVersion must be {REQUEST_VERSION}",
@@ -243,6 +252,12 @@ class ArtifactRequest:
             )
         for index, operation in enumerate(operations):
             _validate_operation(artifact_format, operation, index)
+        if any(str(operation.get("op", "")).lower() == "secure_redact" for operation in operations):
+            if destination.exists():
+                raise OfficeArtifactError(
+                    "secure_redact.new_destination_required",
+                    "secure_redact must publish to a new destination so plaintext rollback snapshots are never retained",
+                )
 
         guarantees = payload.get("guarantees", {})
         if not isinstance(guarantees, dict):
@@ -264,6 +279,11 @@ class ArtifactRequest:
         render = str(guarantees.get("render", default_render)).lower()
         if render not in {"none", "important_surfaces", "all"}:
             raise OfficeArtifactError("request.invalid_render", "invalid render guarantee")
+        if quality in {"publish", "native"} and render == "none":
+            raise OfficeArtifactError(
+                "request.render_required",
+                f"quality={quality} requires final candidate render evidence",
+            )
 
         delivery = payload.get("delivery", {})
         if not isinstance(delivery, dict):
@@ -279,8 +299,87 @@ class ArtifactRequest:
                 "path.role_conflict",
                 "delivery manifest must be distinct from source and destination",
             )
-        if isinstance(payload.get("validation"), dict):
-            _validate_contract_shape(artifact_format, payload["validation"])
+        internal_state_root = (workspace_root / ".nexa").resolve()
+        protected_roles = {
+            "source": source,
+            "destination": destination,
+            "manifest": manifest,
+        }
+        for role, role_path in protected_roles.items():
+            if role_path is not None and (
+                role_path == internal_state_root or internal_state_root in role_path.parents
+            ):
+                raise OfficeArtifactError(
+                    "path.internal_state_conflict",
+                    f"{role} cannot target Nexa's reserved .nexa state",
+                    details={"role": role, "path": str(role_path)},
+                )
+        if artifact_format == "xlsx" and manifest == destination.with_suffix(".xlsx.qa.json"):
+            raise OfficeArtifactError(
+                "path.role_conflict",
+                "delivery manifest must be distinct from the XLSX QA sidecar",
+            )
+        validation = payload.get("validation")
+        if validation is not None and not isinstance(validation, (dict, str)):
+            raise OfficeArtifactError(
+                "request.invalid_validation",
+                "validation must be a contract object or a workspace-local JSON path",
+            )
+        if isinstance(validation, dict):
+            _validate_contract_shape(artifact_format, validation)
+        elif isinstance(validation, str):
+            validation_path = workspace_path(Path(validation), workspace_root, must_exist=True)
+            try:
+                loaded_validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise OfficeArtifactError(
+                    "validation.contract_invalid",
+                    f"validation contract JSON cannot be loaded: {error}",
+                ) from error
+            if not isinstance(loaded_validation, dict):
+                raise OfficeArtifactError(
+                    "validation.contract_invalid",
+                    "validation contract file root must be an object",
+                )
+            _validate_contract_shape(artifact_format, loaded_validation)
+            validation = str(validation_path)
+
+        input_roles: dict[str, Path] = {}
+        if source is not None:
+            input_roles["source"] = source
+        for index, operation in enumerate(operations):
+            for field in ("spec", "inputMd", "template"):
+                if operation.get(field):
+                    input_roles[f"operations[{index}].{field}"] = workspace_path(
+                        Path(str(operation[field])), workspace_root, must_exist=True
+                    )
+        if isinstance(validation, str):
+            input_roles["validation"] = Path(validation)
+        output_roles = {
+            "destination": destination,
+            "manifest": manifest,
+            **(
+                {"xlsxQa": destination.with_suffix(".xlsx.qa.json")}
+                if artifact_format == "xlsx"
+                else {}
+            ),
+        }
+        reserved = (workspace_root / ".nexa").resolve()
+        for role, path in {**input_roles, **output_roles}.items():
+            if path == reserved or reserved in path.parents:
+                raise OfficeArtifactError(
+                    "path.internal_state_conflict",
+                    f"{role} cannot target Nexa's reserved .nexa state",
+                )
+        for input_role, input_path in input_roles.items():
+            for output_role, output_path in output_roles.items():
+                if input_path == output_path and not (
+                    input_role == "source" and output_role == "destination"
+                ):
+                    raise OfficeArtifactError(
+                        "path.role_conflict",
+                        f"{output_role} cannot overwrite request input {input_role}",
+                    )
         return cls(
             format=artifact_format,
             intent=intent,
@@ -291,7 +390,7 @@ class ArtifactRequest:
             preservation=preservation,
             calculation=calculation,
             render=render,
-            validation=payload.get("validation"),
+            validation=validation,
             delivery_mode=delivery_mode,
             manifest=manifest,
         )
@@ -304,6 +403,11 @@ class OfficeArtifactEngine:
         self.candidates_root = self.state_root / "candidates"
         self.receipts_root = self.state_root / "receipts"
         self.locks_root = self.state_root / "locks"
+        self.journals_root = self.state_root / "journals"
+        self.integrity_root = _office_integrity_root()
+        self.integrity_key = _load_or_create_integrity_key(self.integrity_root)
+        self._recover_incomplete_journals()
+        self._recover_orphan_locks()
 
     def capabilities(self) -> dict[str, Any]:
         backends = office_backend_statuses()
@@ -326,6 +430,10 @@ class OfficeArtifactEngine:
             "calculationLevels": sorted(CALCULATION_LEVELS),
             "backends": backends,
             "pythonDependencies": office_python_dependency_statuses(),
+            "formatReadiness": {
+                artifact_format: office_python_dependency_statuses(artifact_format)
+                for artifact_format in sorted(FORMATS)
+            },
             "adapters": [
                 {
                     "adapterVersion": 1,
@@ -371,7 +479,7 @@ class OfficeArtifactEngine:
                     },
                     "limitations": [
                         "Explicit local Windows adapter; not an unattended server backend.",
-                        "Native image rendering is currently implemented for PPTX; DOCX/XLSX use compatible render evidence.",
+                        "Requires desktop Microsoft Office and an app-owned COM watchdog process.",
                     ],
                     "requires": ["microsoft-office", "pywin32"],
                 },
@@ -404,7 +512,86 @@ class OfficeArtifactEngine:
                 "adapter": "references/office-adapter-manifest-v1.schema.json",
                 "liveHost": "references/office-host-adapter-v1.schema.json",
             },
-            "lifecycle": ["assess", "execute", "decide", "restore"],
+            "lifecycle": ["inspect", "assess", "execute", "decide", "restore"],
+        }
+
+    def inspect(self, source: str, requested_format: str | None = None) -> dict[str, Any]:
+        path = workspace_path(Path(source), self.workspace_root, must_exist=True)
+        suffix = path.suffix.lower()
+        inferred = next(
+            (name for name, extensions in FORMAT_EXTENSIONS.items() if suffix in extensions),
+            None,
+        )
+        artifact_format = (requested_format or inferred or "").lower()
+        if artifact_format not in FORMATS:
+            raise OfficeArtifactError(
+                "inspect.unsupported_format",
+                f"could not infer a supported Office format from {path.name}",
+            )
+        if inferred and inferred != artifact_format:
+            raise OfficeArtifactError(
+                "inspect.format_mismatch",
+                f"requested format {artifact_format} does not match {path.name}",
+            )
+        structural = validate_ooxml_package(path).to_dict()
+        if structural.get("status") == "fail":
+            raise OfficeArtifactError(
+                "inspect.structural_failed",
+                "artifact failed OOXML package validation",
+                details={"structural": structural},
+            )
+        profile = self._inspect_format_profile(path, artifact_format)
+        return {
+            "kind": "officeArtifactInspection",
+            "requestVersion": REQUEST_VERSION,
+            "format": artifact_format,
+            "source": str(path),
+            "sha256": _sha256(path),
+            "structural": structural,
+            "risk": scan_ooxml_risks(path),
+            "profile": profile,
+        }
+
+    def _inspect_format_profile(self, path: Path, artifact_format: str) -> dict[str, Any]:
+        skills_root = Path(__file__).resolve().parents[2]
+        if artifact_format == "pptx":
+            scripts = skills_root / "pptx-presentation-design" / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from pptx_audit import audit  # type: ignore
+
+            return audit(path)
+        if artifact_format == "xlsx":
+            scripts = skills_root / "xlsx-workbook-design" / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from xlsx_audit import audit  # type: ignore
+
+            profile = audit(path)
+            profile["formulaProfile"] = self._xlsx_formula_profile(path)
+            return profile
+
+        try:
+            from docx import Document  # type: ignore
+        except ImportError as error:
+            raise OfficeArtifactError(
+                "inspect.dependency_missing",
+                "python-docx is required to inspect DOCX artifacts",
+            ) from error
+        document = Document(str(path))
+        headings = [
+            {"index": index, "style": paragraph.style.name, "text": paragraph.text}
+            for index, paragraph in enumerate(document.paragraphs)
+            if paragraph.text.strip() and paragraph.style.name.startswith("Heading")
+        ]
+        return {
+            "paragraphs": len(document.paragraphs),
+            "tables": len(document.tables),
+            "sections": len(document.sections),
+            "headings": headings,
+            "textPreview": "\n".join(
+                paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()
+            )[:4000],
         }
 
     def assess(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -419,18 +606,102 @@ class OfficeArtifactEngine:
                 "backend": backend,
                 "detail": readiness.get("detail"),
             })
+        openxml_dependencies = office_python_dependency_statuses(request.format)
+        unavailable_dependencies = [
+            item for item in openxml_dependencies if item["status"] != "ready"
+        ]
+        if unavailable_dependencies:
+            blockers.append({
+                "code": "dependency.unavailable",
+                "backend": "nexa-openxml",
+                "format": request.format,
+                "dependencies": unavailable_dependencies,
+            })
         if request.render != "none":
             statuses = {item["id"]: item for item in office_backend_statuses()}
-            native_powerpoint_render = request.quality == "native" and request.format == "pptx"
-            if not native_powerpoint_render and statuses["libreoffice"]["status"] != "ready":
+            native_render = backend == "windows-com"
+            if not native_render and statuses["libreoffice"]["status"] != "ready":
                 blockers.append({
                     "code": "render.backend_unavailable",
                     "backend": "libreoffice",
                     "detail": statuses["libreoffice"].get("detail"),
                 })
         if request.source is not None:
+            source_validation = validate_ooxml_package(request.source)
+            if source_validation.status == "fail":
+                blockers.append({
+                    "code": "source.structural_invalid",
+                    "detail": "source package failed safety/structure preflight",
+                    "validation": source_validation.to_dict(),
+                })
+                return {
+                    "kind": "officeArtifactAssessment",
+                    "requestVersion": REQUEST_VERSION,
+                    "format": request.format,
+                    "intent": request.intent,
+                    "adapter": FORMAT_ADAPTERS[request.format].id,
+                    "backend": backend,
+                    "quality": request.quality,
+                    "guarantees": {
+                        "preservation": request.preservation,
+                        "calculation": request.calculation,
+                        "render": request.render,
+                    },
+                    "ready": False,
+                    "blockers": blockers,
+                    "sourceProfile": None,
+                }
             risk = scan_ooxml_risks(request.source)
             source_profile = {"risk": risk}
+            if (
+                request.preservation == "strict"
+                and (request.quality == "native" or request.calculation == "native")
+                and request.intent != "verify"
+            ):
+                blockers.append({
+                    "code": "preservation.native_roundtrip_not_strict",
+                    "backend": "windows-com",
+                    "detail": (
+                        "Microsoft Office native open/save may rewrite package parts; "
+                        "use balanced preservation or local OpenXML strict editing."
+                    ),
+                })
+            executable_excel_features = {
+                key: risk["features"].get(key, [])
+                for key in (
+                    "xlmMacros", "externalFormulaFunctions", "externalLinks",
+                    "connections", "dataModel", "unsafeExternalRelationships",
+                )
+                if risk["features"].get(key)
+            }
+            if (
+                request.format == "xlsx"
+                and executable_excel_features
+                and (
+                    request.calculation in {"compatible", "native"}
+                    or request.quality == "native"
+                )
+            ):
+                blockers.append({
+                    "code": "calculation.external_execution_blocked",
+                    "detail": (
+                        "Native/compatible calculation is network-closed and will not execute "
+                        "XLM or external-data formula functions."
+                    ),
+                    "features": executable_excel_features,
+                })
+            if (
+                backend == "windows-com"
+                and risk["features"].get("unsafeExternalRelationships")
+            ):
+                blockers.append({
+                    "code": "native.external_relationship_blocked",
+                    "detail": (
+                        "Native Office open/render is fail-closed for external templates, "
+                        "images, OLE/package links, media, and data relationships."
+                    ),
+                    "relationships": risk.get("externalRelationshipDetails", []),
+                })
             if (
                 request.preservation == "strict"
                 and risk["features"].get("signatures")
@@ -500,14 +771,45 @@ class OfficeArtifactEngine:
             "candidateId": candidate_id,
             "status": "executing",
             "createdAt": _utc_now(),
+            "pid": os.getpid(),
             "destination": str(request.destination),
             "requestedManifest": str(request.manifest),
             "candidatePath": str(candidate_path),
             "destinationExistedAtExecute": request.destination.exists(),
             "destinationBaseSha256": _sha256(request.destination) if request.destination.exists() else None,
-            "request": payload,
+            "publishRoleBases": [
+                {
+                    "role": role,
+                    "path": str(path),
+                    "existed": path.exists(),
+                    "sha256": _sha256(path) if path.exists() else None,
+                }
+                for role, path in (
+                    ("destination", request.destination),
+                    ("manifest", request.manifest),
+                    *(([("xlsxQa", request.destination.with_suffix(".xlsx.qa.json"))]) if request.format == "xlsx" else []),
+                )
+            ],
+            # Candidate state is durable.  Persist only a content hash and
+            # non-sensitive routing metadata; replacement targets, comments,
+            # redaction needles, and validation literals must never become a
+            # second plaintext copy of user content.
+            "requestSha256": _json_sha256(payload),
+            "requestSummary": {
+                "format": request.format,
+                "intent": request.intent,
+                "quality": request.quality,
+                "preservation": request.preservation,
+                "calculation": request.calculation,
+                "render": request.render,
+                "deliveryMode": request.delivery_mode,
+                "operations": [str(item.get("op", "")).lower() for item in request.operations],
+                "validationSha256": _json_sha256(request.validation)
+                if request.validation is not None
+                else None,
+            },
         }
-        write_artifact_manifest(state_path, state, self.workspace_root)
+        self._write_candidate_state(state_path, state)
         try:
             job = OfficeArtifactJob.from_dict(v1_payload, self.workspace_root)
             execution, exit_code = execute_job(job, self.workspace_root)
@@ -547,7 +849,7 @@ class OfficeArtifactEngine:
                 "renderEvidence": render_evidence,
                 "updatedAt": _utc_now(),
             })
-            write_artifact_manifest(state_path, state, self.workspace_root)
+            self._write_candidate_state(state_path, state)
             outcome = self._candidate_outcome(state)
             if request.delivery_mode == "publish":
                 return self.decide(candidate_id, "publish")
@@ -555,7 +857,7 @@ class OfficeArtifactEngine:
         except Exception:
             state["status"] = "failed"
             state["updatedAt"] = _utc_now()
-            write_artifact_manifest(state_path, state, self.workspace_root)
+            self._write_candidate_state(state_path, state)
             raise
 
     def decide(self, candidate_id: str, decision: str) -> dict[str, Any]:
@@ -570,7 +872,7 @@ class OfficeArtifactEngine:
             candidate_dir = state_path.parent
             state["status"] = "discarded"
             state["updatedAt"] = _utc_now()
-            write_artifact_manifest(state_path, state, self.workspace_root)
+            self._write_candidate_state(state_path, state)
             shutil.rmtree(candidate_dir)
             return {
                 "kind": "officeArtifactOutcome",
@@ -582,20 +884,44 @@ class OfficeArtifactEngine:
 
         candidate = workspace_path(Path(state["candidatePath"]), self.workspace_root, must_exist=True)
         destination = workspace_path(Path(state["destination"]), self.workspace_root)
+        requested_manifest = workspace_path(Path(state["requestedManifest"]), self.workspace_root)
+        artifact_format = str(state.get("requestSummary", {}).get("format", ""))
+        if artifact_format not in FORMATS or candidate.suffix.lower() != f".{artifact_format}":
+            raise OfficeArtifactError("candidate.invalid_state_file", "candidate format binding is invalid")
+        role_paths = [destination, requested_manifest]
+        destination_qa = destination.with_suffix(".xlsx.qa.json") if artifact_format == "xlsx" else None
+        if destination_qa is not None:
+            role_paths.append(destination_qa)
+        self._validate_public_role_paths(role_paths)
         if _sha256(candidate) != state.get("candidateSha256"):
             raise OfficeArtifactError(
                 "candidate.hash_mismatch",
                 "candidate changed after verification; execute it again",
             )
-        lock_path = self._acquire_destination_lock(destination, candidate_id)
+        lock_paths = self._acquire_role_locks(role_paths, candidate_id)
         staged: Path | None = None
         snapshot = None
         sidecar_records: list[dict[str, Any]] = []
         published = False
         receipt_path: Path | None = None
         receipt: dict[str, Any] | None = None
+        self.journals_root.mkdir(parents=True, exist_ok=True)
+        journal_path = self.journals_root / f"{candidate_id}.json"
+        journal: dict[str, Any] = {
+            "kind": "officeArtifactPublishJournal",
+            "version": 1,
+            "candidateId": candidate_id,
+            "status": "active",
+            "createdAt": _utc_now(),
+            "pid": os.getpid(),
+            "ownerToken": secrets.token_hex(16),
+            "destination": str(destination),
+            "lockRolePaths": [str(path) for path in role_paths],
+            "roles": [],
+        }
         try:
-            self._assert_destination_precondition(state, destination)
+            self._write_journal(journal_path, journal)
+            self._assert_publish_role_preconditions(state, role_paths)
             destination_existed = destination.exists()
             if destination_existed and os.environ.get("NEXA_OFFICE_SKIP_SNAPSHOT") == "1":
                 raise OfficeArtifactError(
@@ -604,10 +930,11 @@ class OfficeArtifactEngine:
                 )
             staged = staging_path(destination)
             shutil.copy2(candidate, staged)
-            snapshot, validation = publish_staged_artifact(
+            snapshot, validation, destination_role = self._journal_publish_role(
+                journal_path,
+                journal,
                 staged,
                 destination,
-                self.workspace_root,
                 validate=True,
             )
             if destination_existed and snapshot is None:
@@ -627,20 +954,24 @@ class OfficeArtifactEngine:
                     json.dumps(qa_payload, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                qa_existed = destination_qa.exists()
-                qa_snapshot, _ = publish_staged_artifact(
+                qa_snapshot, _, qa_role = self._journal_publish_role(
+                    journal_path,
+                    journal,
                     staged_qa,
                     destination_qa,
-                    self.workspace_root,
                     validate=False,
                 )
                 sidecar_records.append({
                     "path": str(destination_qa),
                     "snapshot": str(qa_snapshot) if qa_snapshot else None,
-                    "existedBefore": qa_existed,
+                    "snapshotSha256": _sha256(qa_snapshot) if qa_snapshot else None,
+                    "existedBefore": qa_role["existedBefore"],
+                    "publishedSha256": _sha256(destination_qa),
                 })
             receipt_id = uuid.uuid4().hex
             receipt_path = self.receipts_root / f"{receipt_id}.json"
+            journal["receiptId"] = receipt_id
+            self._write_journal(journal_path, journal)
             outcome = self._candidate_outcome(state)
             outcome.update({
                 "status": "published",
@@ -648,21 +979,25 @@ class OfficeArtifactEngine:
                 "receiptId": receipt_id,
                 "sha256": _sha256(destination),
             })
-            requested_manifest = workspace_path(
-                Path(state["requestedManifest"]), self.workspace_root
+            staged_manifest = staging_path(requested_manifest)
+            staged = staged_manifest
+            staged_manifest.write_text(
+                json.dumps(outcome, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
             )
-            manifest_existed = requested_manifest.exists()
-            manifest_snapshot = snapshot_file(requested_manifest, self.workspace_root)
-            if manifest_existed and manifest_snapshot is None:
-                raise OfficeArtifactError(
-                    "transaction.manifest_snapshot_missing",
-                    "existing delivery manifest could not be snapshotted",
-                )
-            write_artifact_manifest(requested_manifest, outcome, self.workspace_root)
+            manifest_snapshot, _, manifest_role = self._journal_publish_role(
+                journal_path,
+                journal,
+                staged_manifest,
+                requested_manifest,
+                validate=False,
+            )
             sidecar_records.append({
                 "path": str(requested_manifest),
                 "snapshot": str(manifest_snapshot) if manifest_snapshot else None,
-                "existedBefore": manifest_existed,
+                "snapshotSha256": _sha256(manifest_snapshot) if manifest_snapshot else None,
+                "existedBefore": manifest_role["existedBefore"],
+                "publishedSha256": _sha256(requested_manifest),
             })
             receipt = {
                 "kind": "officeArtifactReceipt",
@@ -673,19 +1008,28 @@ class OfficeArtifactEngine:
                 "destination": str(destination),
                 "destinationSha256": _sha256(destination),
                 "snapshot": str(snapshot) if snapshot else None,
-                "existedBefore": destination_existed,
+                "snapshotSha256": _sha256(snapshot) if snapshot else None,
+                "existedBefore": destination_role["existedBefore"],
                 "sidecars": sidecar_records,
                 "candidateId": candidate_id,
+                "requestSha256": state.get("requestSha256"),
             }
+            receipt["integrity"] = self._receipt_integrity(receipt)
             write_artifact_manifest(receipt_path, receipt, self.workspace_root)
+            receipt_sha256 = _sha256(receipt_path)
             state.update({
                 "status": "published",
                 "receiptId": receipt_id,
                 "publishedAt": receipt["publishedAt"],
                 "destinationSha256": receipt["destinationSha256"],
+                "receiptSha256": receipt_sha256,
                 "validation": validation.to_dict() if validation is not None else None,
             })
-            write_artifact_manifest(state_path, state, self.workspace_root)
+            self._write_candidate_state(state_path, state)
+            journal["status"] = "committed"
+            journal["committedAt"] = _utc_now()
+            self._write_journal(journal_path, journal)
+            journal_path.unlink(missing_ok=True)
             return outcome
         except Exception as error:
             if staged is not None:
@@ -710,10 +1054,17 @@ class OfficeArtifactEngine:
                     "rolledBackAt": _utc_now(),
                     "error": f"{type(error).__name__}: {error}",
                 })
+                failure_receipt["integrity"] = self._receipt_integrity(failure_receipt)
                 write_artifact_manifest(receipt_path, failure_receipt, self.workspace_root)
+            journal["status"] = "rolled_back"
+            journal["rolledBackAt"] = _utc_now()
+            journal["error"] = f"{type(error).__name__}: {error}"
+            self._write_journal(journal_path, journal)
+            journal_path.unlink(missing_ok=True)
             raise
         finally:
-            lock_path.unlink(missing_ok=True)
+            for lock_path in lock_paths:
+                lock_path.unlink(missing_ok=True)
 
     def restore(self, receipt_id: str) -> dict[str, Any]:
         if not CANDIDATE_ID_RE.fullmatch(receipt_id):
@@ -722,44 +1073,504 @@ class OfficeArtifactEngine:
         if not receipt_path.is_file():
             raise OfficeArtifactError("receipt.not_found", f"receipt not found: {receipt_id}")
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not hmac.compare_digest(
+            str(receipt.get("integrity", {}).get("value", "")),
+            self._receipt_integrity(receipt)["value"],
+        ):
+            raise OfficeArtifactError(
+                "receipt.integrity_failed",
+                "receipt HMAC validation failed",
+            )
+        candidate_id = str(receipt.get("candidateId", ""))
+        state_path, state = self._load_candidate(candidate_id)
+        if (
+            state.get("receiptId") != receipt_id
+            or state.get("receiptSha256") != _sha256(receipt_path)
+        ):
+            raise OfficeArtifactError(
+                "receipt.integrity_failed",
+                "receipt content does not match the candidate's committed receipt hash",
+            )
         if receipt.get("status") != "published":
             raise OfficeArtifactError(
                 "receipt.invalid_state",
                 f"receipt {receipt_id} is in state {receipt.get('status')}",
             )
         destination = workspace_path(Path(receipt["destination"]), self.workspace_root)
-        if destination.exists() and _sha256(destination) != receipt.get("destinationSha256"):
-            raise OfficeArtifactError(
-                "restore.destination_changed",
-                "destination changed after publication; refusing to overwrite newer work",
-            )
-        for record in reversed(receipt.get("sidecars", [])):
-            if record.get("existedBefore") and not record.get("snapshot"):
+        sidecars = receipt.get("sidecars", [])
+        if not isinstance(sidecars, list) or not all(isinstance(item, dict) for item in sidecars):
+            raise OfficeArtifactError("receipt.integrity_failed", "receipt sidecars must be objects")
+        role_paths = [destination] + [
+            workspace_path(Path(str(record.get("path", ""))), self.workspace_root)
+            for record in sidecars
+        ]
+        self._validate_public_role_paths(role_paths)
+        lock_paths = self._acquire_role_locks(role_paths, f"restore:{receipt_id}")
+        restore_journal_path = self.journals_root / f"restore-{receipt_id}.json"
+        journal_active = False
+        try:
+            if not destination.exists() or _sha256(destination) != receipt.get("destinationSha256"):
                 raise OfficeArtifactError(
-                    "restore.sidecar_snapshot_missing",
-                    f"cannot restore pre-existing sidecar without snapshot: {record['path']}",
+                    "restore.destination_changed",
+                    "destination changed after publication; refusing to overwrite newer work",
                 )
-            rollback_published_artifact(
-                Path(record["path"]),
-                Path(record["snapshot"]) if record.get("snapshot") else None,
-                self.workspace_root,
-            )
-        snapshot = Path(receipt["snapshot"]) if receipt.get("snapshot") else None
-        if receipt.get("existedBefore") and snapshot is None:
+            resolved_sidecars: list[tuple[dict[str, Any], Path, Path | None]] = []
+            for record in sidecars:
+                if not isinstance(record, dict):
+                    raise OfficeArtifactError("receipt.integrity_failed", "invalid receipt sidecar record")
+                sidecar = workspace_path(Path(str(record.get("path", ""))), self.workspace_root)
+                expected = record.get("publishedSha256")
+                if not expected or not sidecar.is_file() or _sha256(sidecar) != expected:
+                    raise OfficeArtifactError(
+                        "restore.sidecar_changed",
+                        f"published sidecar changed after publication: {sidecar}",
+                    )
+                if record.get("existedBefore") and not record.get("snapshot"):
+                    raise OfficeArtifactError(
+                        "restore.sidecar_snapshot_missing",
+                        f"cannot restore pre-existing sidecar without snapshot: {sidecar}",
+                    )
+                sidecar_snapshot = None
+                if record.get("snapshot"):
+                    sidecar_snapshot = workspace_path(
+                        Path(str(record["snapshot"])),
+                        self.workspace_root,
+                        must_exist=True,
+                    )
+                    if _sha256(sidecar_snapshot) != record.get("snapshotSha256"):
+                        raise OfficeArtifactError(
+                            "restore.snapshot_changed",
+                            f"sidecar snapshot failed SHA-256 verification: {sidecar_snapshot}",
+                        )
+                resolved_sidecars.append((record, sidecar, sidecar_snapshot))
+            snapshot = None
+            if receipt.get("snapshot"):
+                snapshot = workspace_path(
+                    Path(str(receipt["snapshot"])),
+                    self.workspace_root,
+                    must_exist=True,
+                )
+                if _sha256(snapshot) != receipt.get("snapshotSha256"):
+                    raise OfficeArtifactError(
+                        "restore.snapshot_changed",
+                        f"destination snapshot failed SHA-256 verification: {snapshot}",
+                    )
+            if receipt.get("existedBefore") and snapshot is None:
+                raise OfficeArtifactError(
+                    "restore.snapshot_missing",
+                    "cannot restore pre-existing destination without snapshot",
+                )
+            restore_roles = [
+                {
+                    "path": str(sidecar),
+                    "publishedSha256": record["publishedSha256"],
+                    "snapshot": str(sidecar_snapshot) if sidecar_snapshot else None,
+                    "snapshotSha256": record.get("snapshotSha256"),
+                    "restoredSha256": record.get("snapshotSha256"),
+                    "existedBefore": bool(record.get("existedBefore")),
+                    "restored": False,
+                }
+                for record, sidecar, sidecar_snapshot in reversed(resolved_sidecars)
+            ]
+            restore_roles.append({
+                "path": str(destination),
+                "publishedSha256": receipt["destinationSha256"],
+                "snapshot": str(snapshot) if snapshot else None,
+                "snapshotSha256": receipt.get("snapshotSha256"),
+                "restoredSha256": receipt.get("snapshotSha256"),
+                "existedBefore": bool(receipt.get("existedBefore")),
+                "restored": False,
+            })
+            restore_journal = {
+                "kind": "officeArtifactRestoreJournal",
+                "version": 1,
+                "status": "active",
+                "pid": os.getpid(),
+                "ownerToken": secrets.token_hex(16),
+                "candidateId": candidate_id,
+                "receiptId": receipt_id,
+                "destination": str(destination),
+                "lockRolePaths": [str(path) for path in role_paths],
+                "createdAt": _utc_now(),
+                "roles": restore_roles,
+            }
+            self.journals_root.mkdir(parents=True, exist_ok=True)
+            self._write_journal(restore_journal_path, restore_journal)
+            journal_active = True
+            for role in restore_roles:
+                self._apply_restore_role(role)
+                role["restored"] = True
+                role["restoredAt"] = _utc_now()
+                self._write_journal(restore_journal_path, restore_journal)
+            receipt.update({"status": "restored", "restoredAt": _utc_now()})
+            receipt["integrity"] = self._receipt_integrity(receipt)
+            write_artifact_manifest(receipt_path, receipt, self.workspace_root)
+            state.update({
+                "status": "restored",
+                "restoredAt": receipt["restoredAt"],
+                "receiptSha256": _sha256(receipt_path),
+            })
+            self._write_candidate_state(state_path, state)
+            restore_journal["status"] = "committed"
+            restore_journal["committedAt"] = _utc_now()
+            self._write_journal(restore_journal_path, restore_journal)
+            restore_journal_path.unlink(missing_ok=True)
+            journal_active = False
+            return {
+                "kind": "officeArtifactOutcome",
+                "status": "restored",
+                "receiptId": receipt_id,
+                "path": str(destination),
+                "restoredSnapshot": str(snapshot) if snapshot else None,
+            }
+        finally:
+            if not journal_active:
+                for lock_path in lock_paths:
+                    lock_path.unlink(missing_ok=True)
+
+    def _apply_restore_role(self, role: dict[str, Any]) -> None:
+        target = workspace_path(Path(str(role["path"])), self.workspace_root)
+        snapshot = (
+            workspace_path(Path(str(role["snapshot"])), self.workspace_root, must_exist=True)
+            if role.get("snapshot")
+            else None
+        )
+        rollback_published_artifact(target, snapshot, self.workspace_root)
+
+    def _recover_restore_journal(self, path: Path, journal: dict[str, Any]) -> None:
+        receipt_id = str(journal.get("receiptId", ""))
+        candidate_id = str(journal.get("candidateId", ""))
+        if not CANDIDATE_ID_RE.fullmatch(receipt_id) or not CANDIDATE_ID_RE.fullmatch(candidate_id):
+            raise OfficeArtifactError("journal.integrity_failed", "restore journal identifiers are invalid")
+        receipt_path = self.receipts_root / f"{receipt_id}.json"
+        if not receipt_path.is_file():
+            raise OfficeArtifactError("receipt.not_found", "restore journal receipt is missing")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        actual_mac = str(receipt.get("integrity", {}).get("value", ""))
+        if not hmac.compare_digest(actual_mac, self._receipt_integrity(receipt)["value"]):
+            raise OfficeArtifactError("receipt.integrity_failed", "restore journal receipt HMAC failed")
+        state_path, state = self._load_candidate(candidate_id)
+        if (
+            receipt.get("status") != "published"
+            or receipt.get("candidateId") != candidate_id
+            or receipt.get("destination") != journal.get("destination")
+            or receipt.get("requestSha256") != state.get("requestSha256")
+            or state.get("status") != "published"
+            or state.get("receiptId") != receipt_id
+            or state.get("receiptSha256") != _sha256(receipt_path)
+        ):
             raise OfficeArtifactError(
-                "restore.snapshot_missing",
-                "cannot restore pre-existing destination without snapshot",
+                "receipt.integrity_failed",
+                "restore journal, candidate state, and receipt binding failed",
             )
-        rollback_published_artifact(destination, snapshot, self.workspace_root)
+        roles = journal.get("roles")
+        if not isinstance(roles, list) or not roles:
+            raise OfficeArtifactError("journal.integrity_failed", "restore journal roles are invalid")
+        pending: list[dict[str, Any]] = []
+        blockers: list[str] = []
+        for role in roles:
+            if not isinstance(role, dict):
+                blockers.append("invalid restore role")
+                continue
+            target = workspace_path(Path(str(role.get("path", ""))), self.workspace_root)
+            snapshot = None
+            if role.get("snapshot"):
+                snapshot = workspace_path(
+                    Path(str(role["snapshot"])), self.workspace_root, must_exist=True
+                )
+                if _sha256(snapshot) != role.get("snapshotSha256"):
+                    blockers.append(f"snapshot hash mismatch: {snapshot}")
+                    continue
+            current_sha = _sha256(target) if target.is_file() else None
+            if current_sha == role.get("publishedSha256"):
+                pending.append(role)
+            elif current_sha == role.get("restoredSha256") and (
+                role.get("existedBefore") or current_sha is None
+            ):
+                role["restored"] = True
+            else:
+                blockers.append(f"restore target changed: {target}")
+        if blockers:
+            journal["status"] = "recovery_blocked"
+            journal["recoveryBlockers"] = blockers
+            journal["updatedAt"] = _utc_now()
+            self._write_journal(path, journal)
+            self._remove_stale_lock(journal)
+            return
+        for role in pending:
+            self._apply_restore_role(role)
+            role["restored"] = True
+            role["restoredAt"] = _utc_now()
+            self._write_journal(path, journal)
         receipt.update({"status": "restored", "restoredAt": _utc_now()})
+        receipt["integrity"] = self._receipt_integrity(receipt)
         write_artifact_manifest(receipt_path, receipt, self.workspace_root)
-        return {
-            "kind": "officeArtifactOutcome",
+        state.update({
             "status": "restored",
-            "receiptId": receipt_id,
-            "path": str(destination),
-            "restoredSnapshot": str(snapshot) if snapshot else None,
+            "restoredAt": receipt["restoredAt"],
+            "receiptSha256": _sha256(receipt_path),
+        })
+        self._write_candidate_state(state_path, state)
+        journal["status"] = "committed"
+        journal["committedAt"] = _utc_now()
+        self._write_journal(path, journal)
+        self._remove_stale_lock(journal)
+        path.unlink(missing_ok=True)
+
+    def _journal_publish_role(
+        self,
+        journal_path: Path,
+        journal: dict[str, Any],
+        staged: Path,
+        target: Path,
+        *,
+        validate: bool,
+    ) -> tuple[Path | None, Any, dict[str, Any]]:
+        staged = workspace_path(staged, self.workspace_root, must_exist=True)
+        target = workspace_path(target, self.workspace_root)
+        if staged.parent != target.parent:
+            raise OfficeArtifactError(
+                "transaction.non_atomic_staging",
+                "journaled publication requires staging beside the target",
+            )
+        validation = validate_ooxml_package(staged) if validate else None
+        if validation is not None and validation.status == "fail":
+            raise OfficeArtifactError(
+                "validation.structural_failed",
+                "staged publication failed OOXML validation",
+                details={"validation": validation.to_dict()},
+            )
+        existed = target.exists()
+        preexisting_sha = _sha256(target) if existed else None
+        snapshot = snapshot_file(target, self.workspace_root)
+        if existed and snapshot is None:
+            raise OfficeArtifactError(
+                "transaction.snapshot_missing",
+                f"cannot journal publication without a snapshot: {target}",
+            )
+        role = {
+            "path": str(target),
+            "existedBefore": existed,
+            "preexistingSha256": preexisting_sha,
+            "snapshot": str(snapshot) if snapshot else None,
+            "snapshotSha256": _sha256(snapshot) if snapshot else None,
+            "intendedSha256": _sha256(staged),
+            "published": False,
         }
+        journal["roles"].append(role)
+        self._write_journal(journal_path, journal)
+        os.replace(staged, target)
+        role["published"] = True
+        role["publishedAt"] = _utc_now()
+        self._write_journal(journal_path, journal)
+        return snapshot, validation, role
+
+    def _recover_incomplete_journals(self) -> None:
+        if not self.journals_root.is_dir():
+            return
+        for path in sorted(self.journals_root.glob("*.json")):
+            try:
+                journal = json.loads(path.read_text(encoding="utf-8"))
+                if journal.get("kind") not in {
+                    "officeArtifactPublishJournal",
+                    "officeArtifactRestoreJournal",
+                }:
+                    continue
+                actual_mac = str(journal.get("integrity", {}).get("value", ""))
+                if not hmac.compare_digest(actual_mac, self._journal_integrity(journal)["value"]):
+                    path.rename(path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}.quarantine"))
+                    continue
+                if journal.get("status") != "active":
+                    path.unlink(missing_ok=True)
+                    continue
+                pid = int(journal.get("pid", 0) or 0)
+                if pid and _process_is_alive(pid):
+                    continue
+                if journal.get("kind") == "officeArtifactRestoreJournal":
+                    self._recover_restore_journal(path, journal)
+                    continue
+                candidate_id = str(journal.get("candidateId", ""))
+                state_path = self.candidates_root / candidate_id / "state.json"
+                try:
+                    _, state = self._load_candidate(candidate_id)
+                except OfficeArtifactError:
+                    state = {}
+                receipt_id = str(state.get("receiptId") or journal.get("receiptId") or "")
+                if state.get("status") == "published" and CANDIDATE_ID_RE.fullmatch(receipt_id):
+                    receipt_path = self.receipts_root / f"{receipt_id}.json"
+                    if receipt_path.is_file():
+                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                        actual_mac = str(receipt.get("integrity", {}).get("value", ""))
+                        if (
+                            hmac.compare_digest(actual_mac, self._receipt_integrity(receipt)["value"])
+                            and receipt.get("status") == "published"
+                            and receipt.get("candidateId") == candidate_id
+                            and receipt.get("destination") == journal.get("destination")
+                            and state.get("receiptId") == receipt_id
+                            and state.get("receiptSha256") == _sha256(receipt_path)
+                            and receipt.get("requestSha256") == state.get("requestSha256")
+                        ):
+                            self._remove_stale_lock(journal)
+                            path.unlink(missing_ok=True)
+                            continue
+
+                roles = journal.get("roles", [])
+                if not isinstance(roles, list):
+                    raise ValueError("journal roles must be an array")
+                recovery: list[tuple[Path, Path | None, bool]] = []
+                blockers: list[str] = []
+                for role in roles:
+                    if not isinstance(role, dict):
+                        blockers.append("invalid role record")
+                        continue
+                    target = workspace_path(Path(str(role.get("path", ""))), self.workspace_root)
+                    snapshot = None
+                    if role.get("snapshot"):
+                        snapshot = workspace_path(
+                            Path(str(role["snapshot"])),
+                            self.workspace_root,
+                            must_exist=True,
+                        )
+                        if _sha256(snapshot) != role.get("snapshotSha256"):
+                            blockers.append(f"snapshot hash mismatch: {snapshot}")
+                            continue
+                    current_sha = _sha256(target) if target.is_file() else None
+                    if current_sha == role.get("intendedSha256"):
+                        recovery.append((target, snapshot, True))
+                    elif (
+                        bool(role.get("existedBefore"))
+                        and current_sha == role.get("preexistingSha256")
+                    ) or (not role.get("existedBefore") and current_sha is None):
+                        recovery.append((target, snapshot, False))
+                    else:
+                        blockers.append(f"target changed during recovery: {target}")
+                if blockers:
+                    journal["status"] = "recovery_blocked"
+                    journal["recoveryBlockers"] = blockers
+                    journal["updatedAt"] = _utc_now()
+                    self._write_journal(path, journal)
+                    self._remove_stale_lock(journal)
+                    continue
+                for target, snapshot, should_restore in reversed(recovery):
+                    if should_restore:
+                        rollback_published_artifact(target, snapshot, self.workspace_root)
+                if state:
+                    state.update({"status": "recovered_rolled_back", "updatedAt": _utc_now()})
+                    self._write_candidate_state(state_path, state)
+                if CANDIDATE_ID_RE.fullmatch(receipt_id):
+                    receipt_path = self.receipts_root / f"{receipt_id}.json"
+                    if receipt_path.is_file():
+                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                        receipt.update({"status": "recovered_rolled_back", "rolledBackAt": _utc_now()})
+                        receipt["integrity"] = self._receipt_integrity(receipt)
+                        write_artifact_manifest(receipt_path, receipt, self.workspace_root)
+                self._remove_stale_lock(journal)
+                path.unlink(missing_ok=True)
+            except Exception as error:  # noqa: BLE001
+                try:
+                    journal = json.loads(path.read_text(encoding="utf-8"))
+                    journal["status"] = "recovery_blocked"
+                    journal["recoveryBlockers"] = [f"{type(error).__name__}: {error}"]
+                    journal["updatedAt"] = _utc_now()
+                    self._write_journal(path, journal)
+                except Exception:
+                    continue
+
+    def _remove_stale_lock(self, journal: dict[str, Any]) -> None:
+        raw_paths = journal.get("lockRolePaths") or [journal.get("destination")]
+        for raw_path in raw_paths:
+            destination = workspace_path(Path(str(raw_path)), self.workspace_root)
+            key = hashlib.sha256(str(destination).casefold().encode("utf-8")).hexdigest()[:24]
+            lock_path = self.locks_root / f"{key}.lock"
+            if not lock_path.is_file():
+                continue
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            actual_mac = str(lock.get("integrity", {}).get("value", ""))
+            if not hmac.compare_digest(actual_mac, self._lock_integrity(lock)["value"]):
+                continue
+            if lock.get("candidateId") in {
+                journal.get("candidateId"),
+                f"restore:{journal.get('receiptId')}",
+            }:
+                lock_path.unlink(missing_ok=True)
+
+    def _receipt_integrity(self, receipt: dict[str, Any]) -> dict[str, str]:
+        payload = {key: value for key, value in receipt.items() if key != "integrity"}
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "algorithm": "HMAC-SHA256",
+            "value": hmac.new(self.integrity_key, encoded, hashlib.sha256).hexdigest(),
+        }
+
+    def _state_integrity(self, state: dict[str, Any]) -> dict[str, str]:
+        payload = {key: value for key, value in state.items() if key != "integrity"}
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "algorithm": "HMAC-SHA256",
+            "value": hmac.new(self.integrity_key, encoded, hashlib.sha256).hexdigest(),
+        }
+
+    def _write_candidate_state(self, path: Path, state: dict[str, Any]) -> None:
+        state["integrity"] = self._state_integrity(state)
+        write_artifact_manifest(path, state, self.workspace_root)
+
+    def _journal_integrity(self, journal: dict[str, Any]) -> dict[str, str]:
+        payload = {key: value for key, value in journal.items() if key != "integrity"}
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "algorithm": "HMAC-SHA256",
+            "value": hmac.new(self.integrity_key, encoded, hashlib.sha256).hexdigest(),
+        }
+
+    def _write_journal(self, path: Path, journal: dict[str, Any]) -> None:
+        journal["integrity"] = self._journal_integrity(journal)
+        write_artifact_manifest(path, journal, self.workspace_root)
+
+    def _lock_integrity(self, lock: dict[str, Any]) -> dict[str, str]:
+        payload = {key: value for key, value in lock.items() if key != "integrity"}
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "algorithm": "HMAC-SHA256",
+            "value": hmac.new(self.integrity_key, encoded, hashlib.sha256).hexdigest(),
+        }
+
+    def _recover_orphan_locks(self) -> None:
+        if not self.locks_root.is_dir():
+            return
+        for path in self.locks_root.glob("*.lock"):
+            try:
+                lock = json.loads(path.read_text(encoding="utf-8"))
+                actual_mac = str(lock.get("integrity", {}).get("value", ""))
+                if not hmac.compare_digest(actual_mac, self._lock_integrity(lock)["value"]):
+                    path.rename(path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}.quarantine"))
+                    continue
+                if not _process_is_alive(int(lock.get("pid", 0) or 0)):
+                    path.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                continue
 
     def _acquire_destination_lock(self, destination: Path, candidate_id: str) -> Path:
         self.locks_root.mkdir(parents=True, exist_ok=True)
@@ -776,14 +1587,76 @@ class OfficeArtifactEngine:
                 details={"destination": str(destination), "lock": detail},
             ) from error
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump({
+            lock = {
                 "kind": "officeArtifactDestinationLock",
                 "candidateId": candidate_id,
                 "destination": str(destination),
                 "pid": os.getpid(),
                 "createdAt": _utc_now(),
-            }, handle, ensure_ascii=False)
+                "ownerToken": secrets.token_hex(16),
+            }
+            lock["integrity"] = self._lock_integrity(lock)
+            json.dump(lock, handle, ensure_ascii=False)
         return lock_path
+
+    def _acquire_role_locks(self, paths: list[Path], owner_id: str) -> list[Path]:
+        resolved = sorted(
+            {workspace_path(path, self.workspace_root) for path in paths},
+            key=lambda path: str(path).casefold(),
+        )
+        acquired: list[Path] = []
+        try:
+            for path in resolved:
+                acquired.append(self._acquire_destination_lock(path, owner_id))
+            return acquired
+        except Exception:
+            for lock in acquired:
+                lock.unlink(missing_ok=True)
+            raise
+
+    def _validate_public_role_paths(self, paths: list[Path]) -> None:
+        canonical = [workspace_path(path, self.workspace_root) for path in paths]
+        if len(set(canonical)) != len(canonical):
+            raise OfficeArtifactError("path.role_conflict", "publication roles must be distinct")
+        reserved = (self.workspace_root / ".nexa").resolve()
+        for path in canonical:
+            if path == reserved or reserved in path.parents:
+                raise OfficeArtifactError(
+                    "path.internal_state_conflict",
+                    f"publication role cannot target Nexa's reserved .nexa state: {path}",
+                )
+
+    def _assert_publish_role_preconditions(
+        self,
+        state: dict[str, Any],
+        paths: list[Path],
+    ) -> None:
+        records = state.get("publishRoleBases")
+        if not isinstance(records, list):
+            raise OfficeArtifactError("candidate.invalid_state_file", "publish role bases are missing")
+        by_path = {
+            str(workspace_path(Path(str(record.get("path", ""))), self.workspace_root)): record
+            for record in records
+            if isinstance(record, dict)
+        }
+        expected_paths = {str(workspace_path(path, self.workspace_root)) for path in paths}
+        if set(by_path) != expected_paths:
+            raise OfficeArtifactError("candidate.invalid_state_file", "publish role graph changed")
+        for path_text, record in by_path.items():
+            path = Path(path_text)
+            existed = bool(record.get("existed"))
+            if path.exists() != existed:
+                raise OfficeArtifactError(
+                    "publish.role_changed",
+                    f"publication role existence changed after execute: {path}",
+                    retryable=True,
+                )
+            if existed and _sha256(path) != record.get("sha256"):
+                raise OfficeArtifactError(
+                    "publish.role_changed",
+                    f"publication role content changed after execute: {path}",
+                    retryable=True,
+                )
 
     def _assert_destination_precondition(
         self,
@@ -854,7 +1727,11 @@ class OfficeArtifactEngine:
         candidate_path: Path,
         manifest: Path,
     ) -> dict[str, Any]:
-        operations = list(request.operations)
+        operations = [dict(operation) for operation in request.operations]
+        if request.format == "pptx":
+            for operation in operations:
+                if operation.get("htmlFirst"):
+                    operation["outdir"] = str(candidate_path.parent / "html-project")
         if request.calculation == "compatible" and not any(
             str(operation.get("op", "")).lower() == "recalculate"
             for operation in operations
@@ -871,7 +1748,7 @@ class OfficeArtifactEngine:
             "validationContract": request.validation,
             "renderPolicy": (
                 "none"
-                if request.quality == "native" and request.format == "pptx"
+                if request.quality == "native" or request.calculation == "native"
                 else request.render
             ),
             # The local adapter performs the structural edit/create first. Its
@@ -896,7 +1773,9 @@ class OfficeArtifactEngine:
             "input": str(candidate_path),
             "output": str(candidate_path),
             "operations": [],
-            "preservationPolicy": request.preservation,
+            "preservationPolicy": (
+                "balanced" if request.intent == "create" else request.preservation
+            ),
             "validationContract": request.validation,
             "renderPolicy": request.render,
             "backend": "windows-com",
@@ -923,6 +1802,12 @@ class OfficeArtifactEngine:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state.get("candidateId") != candidate_id or state.get("kind") != "officeArtifactCandidateState":
             raise OfficeArtifactError("candidate.invalid_state_file", "candidate state marker is invalid")
+        actual_mac = str(state.get("integrity", {}).get("value", ""))
+        if not hmac.compare_digest(actual_mac, self._state_integrity(state)["value"]):
+            raise OfficeArtifactError(
+                "candidate.integrity_failed",
+                "candidate state HMAC validation failed",
+            )
         return state_path, state
 
     def _candidate_outcome(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -1118,12 +2003,21 @@ class OfficeArtifactEngine:
             "files": files,
             "outsideCandidatePaths": outside,
             "renderer": (
-                "microsoft-powerpoint-native"
-                if any(
-                    action.get("command") == "windows-com-render-pptx"
-                    for action in source.get("actions", [])
+                next(
+                    (
+                        renderer
+                        for command, renderer in (
+                            ("windows-com-render-docx", "microsoft-word-native"),
+                            ("windows-com-render-xlsx", "microsoft-excel-native"),
+                            ("windows-com-render-pptx", "microsoft-powerpoint-native"),
+                        )
+                        if any(
+                            action.get("command") == command
+                            for action in source.get("actions", [])
+                        )
+                    ),
+                    "libreoffice-compatible" if files else None,
                 )
-                else "libreoffice-compatible" if files else None
             ),
             "surfaceManifest": surface_manifest,
             "visualQa": visual_qa,
@@ -1173,6 +2067,92 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        process = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not process:
+            return ctypes.get_last_error() != 87  # invalid PID is dead; access denied is live
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(process)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def _office_integrity_root() -> Path:
+    configured = os.environ.get("NEXA_OFFICE_INTEGRITY_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "Nexa" / "office-artifact-integrity"
+    data_home = os.environ.get("XDG_DATA_HOME")
+    return (
+        Path(data_home).expanduser() / "nexa" / "office-artifact-integrity"
+        if data_home
+        else Path.home() / ".local" / "share" / "nexa" / "office-artifact-integrity"
+    )
+
+
+def _load_or_create_integrity_key(root: Path) -> bytes:
+    root.mkdir(parents=True, exist_ok=True)
+    key_path = root / "receipt-hmac.key"
+    try:
+        descriptor = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        key = b""
+        for _ in range(100):
+            try:
+                key = key_path.read_bytes()
+            except OSError:
+                key = b""
+            if len(key) == 32:
+                break
+            time.sleep(0.02)
+    else:
+        key = secrets.token_bytes(32)
+        try:
+            os.write(descriptor, key)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    if len(key) != 32:
+        raise OfficeArtifactError(
+            "integrity.key_invalid",
+            f"Office receipt integrity key must be 32 bytes: {key_path}",
+        )
+    return key
+
+
+def _json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _reject_unknown_keys(value: dict[str, Any], allowed: set[str], location: str) -> None:
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -1184,7 +2164,9 @@ def _reject_unknown_keys(value: dict[str, Any], allowed: set[str], location: str
 
 
 def _validate_operation(artifact_format: str, operation: dict[str, Any], index: int) -> None:
-    name = str(operation.get("op", "")).lower()
+    if not isinstance(operation.get("op"), str):
+        raise OfficeArtifactError("schema.operation_type", f"operations[{index}].op must be a string")
+    name = operation["op"].lower()
     allowed = COMMON_OPERATION_KEYS | OPERATION_KEYS[artifact_format].get(name, set())
     _reject_unknown_keys(operation, allowed, f"operations[{index}]")
     missing = sorted(
@@ -1207,6 +2189,66 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         raise OfficeArtifactError(
             "schema.missing_field",
             f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
+        )
+    boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst"}
+    integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId"}
+    string_fields = {
+        "elementId", "spec", "title", "subtitle", "body", "font", "footer", "author",
+        "inputMd", "template", "find", "replace", "expectedSha256", "scope", "comment",
+        "initials", "date", "sheet", "cell", "range", "formula", "shapeName", "text",
+        "transition", "speed", "direction", "outdir", "mode", "screenshot", "prompt",
+    }
+    for field in boolean_fields & set(operation):
+        if type(operation[field]) is not bool:
+            raise OfficeArtifactError(
+                "schema.operation_type",
+                f"operations[{index}].{field} must be a boolean",
+            )
+    for field in integer_fields & set(operation):
+        value = operation[field]
+        minimum = 1 if field in {"occurrence", "slideIndex"} else 0
+        if type(value) is not int or value < minimum:
+            raise OfficeArtifactError(
+                "schema.operation_type",
+                f"operations[{index}].{field} must be an integer >= {minimum}",
+            )
+    for field in string_fields & set(operation):
+        if field == "scope" and isinstance(operation[field], list):
+            if all(isinstance(item, str) for item in operation[field]):
+                continue
+        if not isinstance(operation[field], str):
+            raise OfficeArtifactError(
+                "schema.operation_type",
+                f"operations[{index}].{field} must be a string",
+            )
+    for field in {"slideId", "shapeId"} & set(operation):
+        if type(operation[field]) not in {int, str}:
+            raise OfficeArtifactError(
+                "schema.operation_type",
+                f"operations[{index}].{field} must be a string or integer",
+            )
+    if "order" in operation and (
+        not isinstance(operation["order"], list)
+        or not all(type(item) in {int, str} for item in operation["order"])
+    ):
+        raise OfficeArtifactError(
+            "schema.operation_type",
+            f"operations[{index}].order must be an array of slide ids",
+        )
+    if "values" in operation and (
+        not isinstance(operation["values"], list)
+        or not all(isinstance(row, list) for row in operation["values"])
+    ):
+        raise OfficeArtifactError(
+            "schema.operation_type",
+            f"operations[{index}].values must be a two-dimensional array",
+        )
+    if "expectedSha256" in operation and not re.fullmatch(
+        r"[0-9A-Fa-f]{64}", operation["expectedSha256"]
+    ):
+        raise OfficeArtifactError(
+            "schema.operation_type",
+            f"operations[{index}].expectedSha256 must be a SHA-256 hex digest",
         )
 
 
@@ -1236,11 +2278,61 @@ def _validate_contract_shape(artifact_format: str, contract: dict[str, Any]) -> 
             "schema.missing_field",
             "validation.contractVersion is required for requestVersion 2",
         )
-    version = int(contract["contractVersion"])
-    if version != 2:
+    if type(contract["contractVersion"]) is not int or contract["contractVersion"] != 2:
         raise OfficeArtifactError(
             "schema.contract_version",
             "validation.contractVersion must be 2",
+        )
+    string_arrays = {
+        "required_text", "forbidden_text", "required_sheets", "required_named_ranges",
+        "no_numeric_hardcodes_in", "required_styles", "required_slide_titles",
+    }
+    object_arrays = {"tie_outs", "reconciliations", "formula_patterns"}
+    nonnegative_integers = {"min_rows", "min_paragraphs", "min_tables", "min_comments", "min_slides", "max_slides"}
+    booleans = {
+        "require_formula_cache", "no_heading_level_skips", "require_alt_text",
+        "require_table_header_rows", "require_fixed_table_layout", "require_tracked_changes",
+        "require_no_tracked_changes", "require_speaker_notes",
+    }
+    for key in string_arrays & set(contract):
+        value = contract[key]
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise OfficeArtifactError("schema.contract_type", f"validation.{key} must be an array of strings")
+    for key in object_arrays & set(contract):
+        value = contract[key]
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            raise OfficeArtifactError("schema.contract_type", f"validation.{key} must be an array of objects")
+    for key in nonnegative_integers & set(contract):
+        if key == "min_rows":
+            value = contract[key]
+            if not isinstance(value, dict) or not all(
+                isinstance(name, str) and type(count) is int and count >= 0
+                for name, count in value.items()
+            ):
+                raise OfficeArtifactError(
+                    "schema.contract_type",
+                    "validation.min_rows must map sheet names to non-negative integers",
+                )
+            continue
+        value = contract[key]
+        if type(value) is not int or value < 0:
+            raise OfficeArtifactError("schema.contract_type", f"validation.{key} must be a non-negative integer")
+    for key in booleans & set(contract):
+        if type(contract[key]) is not bool:
+            raise OfficeArtifactError("schema.contract_type", f"validation.{key} must be a boolean")
+    if "required_language" in contract and not isinstance(contract["required_language"], str):
+        raise OfficeArtifactError("schema.contract_type", "validation.required_language must be a string")
+    for key in {"sentinels", "required_provenance"} & set(contract):
+        if not isinstance(contract[key], dict):
+            raise OfficeArtifactError("schema.contract_type", f"validation.{key} must be an object")
+    if (
+        type(contract.get("min_slides")) is int
+        and type(contract.get("max_slides")) is int
+        and contract["min_slides"] > contract["max_slides"]
+    ):
+        raise OfficeArtifactError(
+            "schema.contract_range",
+            "validation.min_slides cannot exceed max_slides",
         )
 
 
@@ -1272,9 +2364,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--action",
         required=True,
-        choices=["capabilities", "assess", "execute", "decide", "restore"],
+        choices=["capabilities", "inspect", "assess", "execute", "decide", "restore"],
     )
     parser.add_argument("--request", help="Absolute request JSON path or '-' for stdin")
+    parser.add_argument("--source", help="Office artifact path for inspect")
+    parser.add_argument("--format", choices=sorted(FORMATS), help="Optional format assertion for inspect")
     parser.add_argument("--candidate-id")
     parser.add_argument("--decision", choices=["publish", "discard"])
     parser.add_argument("--receipt-id")
@@ -1287,6 +2381,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "capabilities":
             result = engine.capabilities()
+        elif args.action == "inspect":
+            if not args.source:
+                raise OfficeArtifactError("inspect.source_required", "inspect requires source")
+            result = engine.inspect(args.source, args.format)
         elif args.action == "assess":
             result = engine.assess(_read_request(args.request))
         elif args.action == "execute":
