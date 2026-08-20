@@ -276,6 +276,10 @@ pub async fn reject_skill_change_proposal_cmd(
 
 // ── MCP Commands ────────────────────────────────────────────────────
 
+fn disconnect_after_mcp_test(server: &McpServer) -> bool {
+    !server.enabled
+}
+
 fn user_mcp_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let data_dir = app_data_dir_for_skills(app_handle)?;
     Ok(nexa_core::mcp::config_file::user_mcp_config_path(&data_dir))
@@ -397,9 +401,9 @@ pub async fn test_mcp_server_cmd(
         .connect_server(&server, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await
         .map_err(|e| e.to_string())?;
-    // For built-in managed servers that aren't enabled, disconnect after
-    // testing to stop the managed process.
-    if server.builtin_id.is_some() && !server.enabled {
+    // Testing is diagnostic only. A disabled connector must not retain a
+    // client, background HTTP stream, or stdio child process after discovery.
+    if disconnect_after_mcp_test(&server) {
         let _ = manager.disconnect_server(&server.id).await;
     }
     Ok(tools)
@@ -462,4 +466,33 @@ pub async fn list_mcp_tools_cmd(
         .connect_server(&server, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod mcp_command_tests {
+    use super::*;
+
+    fn test_server(enabled: bool, builtin: bool) -> McpServer {
+        McpServer {
+            id: "test-connector".into(),
+            name: "Test Connector".into(),
+            transport: "stdio".into(),
+            command: Some("test-mcp".into()),
+            args: None,
+            url: None,
+            env_json: None,
+            headers_json: None,
+            enabled,
+            created_at: String::new(),
+            updated_at: String::new(),
+            builtin_id: builtin.then(|| "builtin-test".into()),
+        }
+    }
+
+    #[test]
+    fn tests_retain_only_explicitly_enabled_connector_connections() {
+        assert!(disconnect_after_mcp_test(&test_server(false, false)));
+        assert!(disconnect_after_mcp_test(&test_server(false, true)));
+        assert!(!disconnect_after_mcp_test(&test_server(true, false)));
+    }
 }
