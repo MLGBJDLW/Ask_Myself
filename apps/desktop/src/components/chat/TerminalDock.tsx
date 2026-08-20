@@ -162,12 +162,14 @@ interface TerminalDockProps {
   conversationId?: string;
   agentLabel?: string;
   onSendSelectionToAgent?: (selection: TerminalAgentSelection) => void;
+  onRenderedChange?: (rendered: boolean) => void;
 }
 
 export function TerminalDock({
   conversationId,
   agentLabel,
   onSendSelectionToAgent,
+  onRenderedChange,
 }: TerminalDockProps) {
   const { theme } = useTheme();
   const { t } = useTranslation();
@@ -590,6 +592,14 @@ export function TerminalDock({
   const statusText = terminalStatusLabel(status);
   const panelHeight = isTall ? 'h-[42vh] min-h-72' : 'h-64 min-h-48';
   const shouldRenderDock = isOpen || status !== 'idle' || Boolean(session) || Boolean(error);
+
+  useEffect(() => {
+    onRenderedChange?.(shouldRenderDock);
+  }, [onRenderedChange, shouldRenderDock]);
+
+  useEffect(() => () => {
+    onRenderedChange?.(false);
+  }, [onRenderedChange]);
 
   if (!shouldRenderDock) {
     return null;

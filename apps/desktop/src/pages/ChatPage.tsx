@@ -854,6 +854,7 @@ export function ChatPage() {
   const handleToggleTerminal = useCallback(() => {
     window.dispatchEvent(new Event(TERMINAL_TOGGLE_EVENT));
   }, []);
+  const [terminalDockRendered, setTerminalDockRendered] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserDockStatus>({ tabCount: 0, state: 'empty' });
   const handleToggleBrowser = useCallback(() => setBrowserOpen((value) => !value), []);
@@ -1525,7 +1526,8 @@ export function ChatPage() {
     && !chat.isStreaming
     && !pendingGraphContext
     && !isCompacting
-    && !compactCompleteVisible;
+    && !compactCompleteVisible
+    && !terminalDockRendered;
 
   const pendingChatAction = (
     location.state as { pendingChatAction?: string } | null
@@ -1819,6 +1821,7 @@ export function ChatPage() {
                 conversationId={chat.activeId ?? undefined}
                 agentLabel={selectedAgentConfig?.name || chat.agentConfig?.model}
                 onSendSelectionToAgent={handleTerminalSelection}
+                onRenderedChange={setTerminalDockRendered}
               />
             )}
             <div
