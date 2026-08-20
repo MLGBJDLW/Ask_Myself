@@ -1100,12 +1100,23 @@ mod tests {
 
         let editor_dir = base.join("doc-script-editor");
         for path in [
+            "references/office-artifact-request-v2.schema.json",
+            "references/office-validation-contract-v2.schema.json",
+            "references/office-adapter-manifest-v1.schema.json",
+            "references/office-host-adapter-v1.schema.json",
             "scripts/edit_doc.py",
             "scripts/office_artifact_runtime.py",
             "scripts/office_artifact_service.py",
+            "scripts/office_visual_qa.py",
             "scripts/office_artifact_engine.py",
             "scripts/test_office_artifact_engine.py",
+            "scripts/test_office_artifact_golden.py",
             "scripts/test_office_artifact_runtime.py",
+            "scripts/test_office_visual_qa.py",
+            "tests/golden/docx-spec.json",
+            "tests/golden/xlsx-spec.json",
+            "tests/golden/pptx-spec.json",
+            "tests/golden/expectations.json",
             "scripts/requirements.txt",
         ] {
             assert!(

@@ -7,9 +7,11 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree as ET
 
 import edit_doc
@@ -361,7 +363,23 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
                     argparse.Namespace(path=str(path), outdir=str(render_dir), dpi=90, format="png")
                 ),
             )
-        self.assertTrue(list(render_dir.glob("page*.png")))
+        self.assertTrue(list(render_dir.glob("*.png")))
+
+    def test_xlsx_render_surface_plan_distinguishes_all_active_and_named_sheets(self) -> None:
+        import openpyxl
+
+        path = self.root / "surface-plan.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active.title = "Summary"
+        workbook.create_sheet("Detail")
+        workbook.create_sheet("Hidden").sheet_state = "hidden"
+        workbook.active = 1
+        workbook.save(path)
+        workbook.close()
+
+        self.assertEqual(["Summary", "Detail"], edit_doc._xlsx_render_surfaces(path, "all"))
+        self.assertEqual(["Detail"], edit_doc._xlsx_render_surfaces(path, "active"))
+        self.assertEqual(["Summary"], edit_doc._xlsx_render_surfaces(path, "Summary"))
 
     def test_validator_rejects_missing_relationship_target(self) -> None:
         import docx
@@ -600,6 +618,75 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             office_artifact_service._wait_for_excel_calculation(FakeExcel([1]), 0.0)
 
+    def test_powerpoint_native_export_images_are_counted_and_normalized(self) -> None:
+        raw = self.root / "powerpoint-raw"
+        out = self.root / "powerpoint-normalized"
+        raw.mkdir()
+        for name, payload in (("Slide3.PNG", b"3"), ("Slide1.PNG", b"1"), ("Slide2.PNG", b"2")):
+            (raw / name).write_bytes(payload)
+        outputs = office_artifact_service._collect_powerpoint_export_images(raw, out, 3)
+        self.assertEqual(
+            ["slide-001.png", "slide-002.png", "slide-003.png"],
+            [path.name for path in outputs],
+        )
+        self.assertEqual([b"1", b"2", b"3"], [path.read_bytes() for path in outputs])
+        with self.assertRaisesRegex(RuntimeError, "expected 4"):
+            office_artifact_service._collect_powerpoint_export_images(raw, out, 4)
+
+    def test_powerpoint_native_render_force_disables_macros_before_open(self) -> None:
+        class FakeSlides:
+            Count = 2
+
+        class FakePresentation:
+            Slides = FakeSlides()
+
+            def Export(self, output, image_format, width, height):
+                self.export = (image_format, width, height)
+                Path(output, "Slide1.PNG").write_bytes(b"one")
+                Path(output, "Slide2.PNG").write_bytes(b"two")
+
+            def Close(self):
+                self.closed = True
+
+        class FakePresentations:
+            def __init__(self, app):
+                self.app = app
+
+            def Open(self, path, WithWindow=False):
+                self.app.security_when_opened = self.app.AutomationSecurity
+                return FakePresentation()
+
+        class FakeApplication:
+            def __init__(self):
+                self.AutomationSecurity = 1
+                self.Version = "99.0"
+                self.Presentations = FakePresentations(self)
+                self.security_when_opened = None
+
+            def Quit(self):
+                self.quit = True
+
+        app = FakeApplication()
+        client = types.ModuleType("win32com.client")
+        client.DispatchEx = lambda name: app
+        package = types.ModuleType("win32com")
+        package.client = client
+        actions = []
+        with mock.patch.dict(
+            "sys.modules",
+            {"win32com": package, "win32com.client": client},
+        ):
+            outputs = office_artifact_service._windows_com_render_pptx(
+                self.root / "input.pptx",
+                self.root / "native-render",
+                actions,
+            )
+
+        self.assertEqual(3, app.security_when_opened)
+        self.assertEqual(1, app.AutomationSecurity)
+        self.assertEqual(["slide-001.png", "slide-002.png"], [path.name for path in outputs])
+        self.assertEqual("powerpoint-native", actions[0]["renderProfile"])
+
     def test_validate_reports_missing_xlsx_formula_cache_without_claiming_calculation(self) -> None:
         import openpyxl
 
@@ -617,6 +704,62 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertEqual("not_calculated", result["calculation"]["level"])
         self.assertEqual(1, result["calculation"]["formulaCells"])
         self.assertEqual(0, result["calculation"]["cachedFormulaCells"])
+
+    def test_xlsx_contract_v2_checks_tie_out_reconciliation_formula_pattern_and_sha_binding(self) -> None:
+        import openpyxl
+
+        path = self.root / "contract-v2.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Model"
+        sheet["A1"], sheet["A2"], sheet["A3"] = 1, 2, 3
+        sheet["B1"], sheet["B2"] = 3, 6
+        sheet["C1"], sheet["C2"] = "=A1*2", "=A2*2"
+        workbook.save(path)
+        workbook.close()
+        contract_path = self.root / "contract-v2.json"
+        contract_path.write_text(json.dumps({
+            "contractVersion": 2,
+            "required_sheets": ["Model"],
+            "tie_outs": [{"left": "Model!A3", "right": "Model!B1", "tolerance": 0}],
+            "reconciliations": [{"sumRange": "Model!A1:A2", "equals": "Model!B1", "tolerance": 0}],
+            "formula_patterns": [{
+                "sheet": "Model",
+                "range": "C1:C2",
+                "pattern": "^=A[12]\\*2$",
+                "minMatches": 2,
+                "requireConsistentRelativePattern": True,
+            }],
+        }), encoding="utf-8")
+
+        result = edit_doc._validate_xlsx_contract(path, str(contract_path))
+
+        self.assertEqual("pass", result["status"])
+        self.assertEqual(64, len(result["evidence"]["artifactSha256"]))
+        self.assertEqual(64, len(result["evidence"]["contractSha256"]))
+        self.assertTrue(result["checks"]["tieOuts"][0]["matches"])
+        self.assertTrue(result["checks"]["reconciliations"][0]["matches"])
+        self.assertTrue(result["checks"]["formulaPatterns"][0]["consistentRelativePattern"])
+
+        failing = json.loads(contract_path.read_text(encoding="utf-8"))
+        failing["reconciliations"][0]["sumRange"] = "Model!A1:A1"
+        contract_path.write_text(json.dumps(failing), encoding="utf-8")
+        failed = edit_doc._validate_xlsx_contract(path, str(contract_path))
+        self.assertEqual("fail", failed["status"])
+        self.assertTrue(any(error["code"] == "reconciliation.mismatch" for error in failed["errors"]))
+
+    def test_direct_validation_contract_rejects_unknown_fields(self) -> None:
+        import docx
+
+        path = self.root / "unknown-contract.docx"
+        document = docx.Document()
+        document.add_paragraph("text")
+        document.save(path)
+        contract = self.root / "unknown-contract.json"
+        contract.write_text(json.dumps({"contractVersion": 2, "required_tex": ["text"]}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                edit_doc._validate_docx_contract(path, str(contract))
 
     def test_job_rejects_nested_operation_paths_outside_workspace(self) -> None:
         outside_spec = self.root.parent / f"{self.root.name}-outside-spec.json"

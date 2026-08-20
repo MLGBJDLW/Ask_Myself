@@ -4,9 +4,9 @@
 //! that dependency story explicit, auditable, and local to the app.
 
 use std::ffi::OsString;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -142,29 +142,6 @@ impl PythonCommand {
         apply_quiet_command_options(&mut cmd);
         with_suppressed_process_error_dialogs(|| cmd.output())
     }
-
-    fn run_with_input(
-        &self,
-        args: &[&str],
-        cwd: &Path,
-        input: &str,
-    ) -> std::io::Result<std::process::Output> {
-        let mut cmd = Command::new(&self.program);
-        cmd.args(&self.prefix_args)
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_quiet_command_options(&mut cmd);
-        with_suppressed_process_error_dialogs(|| {
-            let mut child = cmd.spawn()?;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(input.as_bytes())?;
-            }
-            child.wait_with_output()
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -176,7 +153,45 @@ pub struct OfficeArtifactExecution {
     pub stderr: String,
 }
 
-pub fn execute_office_artifact_engine(
+async fn run_python_with_input(
+    python: &PythonCommand,
+    args: &[String],
+    cwd: &Path,
+    input: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, CoreError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut command = tokio::process::Command::new(&python.program);
+    command
+        .args(&python.prefix_args)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    apply_quiet_command_options(command.as_std_mut());
+    let mut child = command
+        .spawn()
+        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes()).await.map_err(|error| {
+            CoreError::Internal(format!("Office artifact stdin failed: {error}"))
+        })?;
+    }
+    tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            CoreError::Internal(format!(
+                "Office artifact engine exceeded its {} second watchdog",
+                timeout.as_secs()
+            ))
+        })?
+        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))
+}
+
+pub async fn execute_office_artifact_engine(
     app_data_dir: &Path,
     workspace_root: &Path,
     arguments: &[String],
@@ -204,10 +219,14 @@ pub fn execute_office_artifact_engine(
     }
     let mut owned_args = vec![engine.display().to_string()];
     owned_args.extend(arguments.iter().cloned());
-    let borrowed_args = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
-    let output = python
-        .run_with_input(&borrowed_args, workspace_root, request_json)
-        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))?;
+    let output = run_python_with_input(
+        &python,
+        &owned_args,
+        workspace_root,
+        request_json,
+        Duration::from_secs(15 * 60),
+    )
+    .await?;
     Ok(OfficeArtifactExecution {
         success: output.status.success(),
         exit_code: output.status.code(),
@@ -331,6 +350,7 @@ fn check_python_module(
     id: &str,
     module: &str,
     required: bool,
+    expected_version: &str,
 ) -> OfficeDependencyStatus {
     let Some(python) = python else {
         return OfficeDependencyStatus {
@@ -342,23 +362,43 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some("Python is not available yet".to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         };
     };
 
     let code = format!("import {module} as m; print(getattr(m, '__version__', 'unknown'))");
     match python.run(&["-c", &code]) {
-        Ok(output) if output.status.success() => OfficeDependencyStatus {
-            id: id.to_string(),
-            label: id.to_string(),
-            kind: "python-package".to_string(),
-            required,
-            status: "ready".to_string(),
-            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            path: None,
-            detail: None,
-            install_hint: None,
-        },
+        Ok(output) if output.status.success() => {
+            let actual_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if actual_version != expected_version {
+                return OfficeDependencyStatus {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                    kind: "python-package".to_string(),
+                    required,
+                    status: "version-mismatch".to_string(),
+                    version: Some(actual_version.clone()),
+                    path: None,
+                    detail: Some(format!(
+                        "Expected pinned version {expected_version}, found {actual_version}"
+                    )),
+                    install_hint: Some(format!(
+                        "python -m pip install --upgrade --force-reinstall {id}=={expected_version}"
+                    )),
+                };
+            }
+            OfficeDependencyStatus {
+                id: id.to_string(),
+                label: id.to_string(),
+                kind: "python-package".to_string(),
+                required,
+                status: "ready".to_string(),
+                version: Some(actual_version),
+                path: None,
+                detail: None,
+                install_hint: None,
+            }
+        }
         Ok(output) => OfficeDependencyStatus {
             id: id.to_string(),
             label: id.to_string(),
@@ -368,7 +408,7 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         },
         Err(e) => OfficeDependencyStatus {
             id: id.to_string(),
@@ -379,7 +419,7 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some(e.to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         },
     }
 }
@@ -457,20 +497,29 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
         "python-docx",
         "docx",
         true,
+        "1.2.0",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "openpyxl",
         "openpyxl",
         true,
+        "3.1.5",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "python-pptx",
         "pptx",
         true,
+        "1.0.2",
     ));
-    dependencies.push(check_python_module(python.as_ref(), "pypdf", "pypdf", true));
+    dependencies.push(check_python_module(
+        python.as_ref(),
+        "pypdf",
+        "pypdf",
+        true,
+        "6.10.0",
+    ));
     let (status, summary) = derive_status(python.is_some(), &dependencies);
     let skill_dir = crate::skills::builtin_skill_dir(app_data_dir, DOC_SCRIPT_SKILL);
     let system_python = find_system_python_for_venv();
@@ -678,5 +727,19 @@ mod tests {
         } else {
             assert!(rendered.ends_with("runtime/bin/python"));
         }
+    }
+
+    #[tokio::test]
+    async fn office_artifact_python_watchdog_times_out_and_kills_child() {
+        let Some(python) = find_system_python_for_venv() else {
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let args = vec!["-c".to_string(), "import time; time.sleep(5)".to_string()];
+        let error =
+            run_python_with_input(&python, &args, root.path(), "", Duration::from_millis(25))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("watchdog"));
     }
 }

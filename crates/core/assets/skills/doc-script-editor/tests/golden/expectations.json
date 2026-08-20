@@ -1,0 +1,5 @@
+{
+  "docx": {"paragraphsAtLeast": 3, "tables": 1, "requiredText": "Approve the verified plan."},
+  "xlsx": {"sheets": ["Summary"], "formulas": 2, "requiredCell": "Summary!B4"},
+  "pptx": {"slides": 2, "requiredText": "Candidate-bound evidence"}
+}

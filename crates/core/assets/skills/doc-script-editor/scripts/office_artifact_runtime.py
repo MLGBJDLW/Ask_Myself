@@ -8,6 +8,7 @@ capability preflight without silently enabling network or native automation.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -35,6 +36,30 @@ MAX_PACKAGE_PARTS = 20_000
 MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PART_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 500.0
+PINNED_PYTHON_DEPENDENCIES = {
+    "python-docx": "1.2.0",
+    "python-pptx": "1.0.2",
+    "pypdf": "6.10.0",
+    "openpyxl": "3.1.5",
+}
+
+
+def office_python_dependency_statuses() -> list[dict[str, Any]]:
+    statuses = []
+    for distribution, expected in PINNED_PYTHON_DEPENDENCIES.items():
+        try:
+            actual = importlib.metadata.version(distribution)
+            status = "ready" if actual == expected else "version-mismatch"
+        except importlib.metadata.PackageNotFoundError:
+            actual = None
+            status = "missing"
+        statuses.append({
+            "id": distribution,
+            "expectedVersion": expected,
+            "actualVersion": actual,
+            "status": status,
+        })
+    return statuses
 
 
 @dataclass
@@ -94,13 +119,19 @@ class NexaOpenXmlBackend(OfficeBackend):
     id = "nexa-openxml"
 
     def preflight(self) -> BackendStatus:
+        dependencies = office_python_dependency_statuses()
+        ready = all(item["status"] == "ready" for item in dependencies)
         return BackendStatus(
             id=self.id,
             label="Nexa OpenXML",
-            status="ready",
+            status="ready" if ready else "missing",
             capabilities=["create", "edit", "inspect", "validate", "transaction"],
             local=True,
-            detail="Default local backend; no Office application or network required.",
+            detail=(
+                "Default local backend; pinned Python dependencies are ready."
+                if ready
+                else "Pinned Python Office dependencies are missing or version-mismatched."
+            ),
         )
 
 

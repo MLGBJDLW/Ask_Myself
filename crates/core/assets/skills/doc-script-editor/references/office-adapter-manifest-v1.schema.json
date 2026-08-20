@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexa.local/schemas/office-adapter-manifest-v1.schema.json",
+  "title": "Nexa Office Adapter Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adapterVersion", "id", "deployment", "formats", "operations", "guarantees"],
+  "properties": {
+    "adapterVersion": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "deployment": {"enum": ["local-file", "native-host", "live-officejs", "cloud-api"]},
+    "formats": {"type": "array", "items": {"enum": ["docx", "xlsx", "pptx"]}},
+    "operations": {"type": "array", "items": {"type": "string"}},
+    "guarantees": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preservation": {"type": "array", "items": {"type": "string"}},
+        "calculation": {"type": "array", "items": {"type": "string"}},
+        "render": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "requires": {"type": "array", "items": {"type": "string"}}
+  }
+}

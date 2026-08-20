@@ -1,0 +1,14 @@
+{
+  "theme": "consulting-clean",
+  "title": "Golden Deck",
+  "slides": [
+    {"layout": "title", "title": "Golden Decision", "subtitle": "Verified Office pipeline"},
+    {
+      "layout": "comparison",
+      "title": "Decision options",
+      "left": {"heading": "Current", "bullets": ["Manual evidence"]},
+      "right": {"heading": "Target", "bullets": ["Candidate-bound evidence"]},
+      "notes": "Explain why the target is safer."
+    }
+  ]
+}

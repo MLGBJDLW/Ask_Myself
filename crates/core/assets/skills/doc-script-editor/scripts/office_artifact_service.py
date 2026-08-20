@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -136,10 +137,17 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, Any] = {
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
         "capture_output": True,
         "check": False,
         "timeout": timeout,
-        "env": {**os.environ, "NEXA_OFFICE_SKIP_SNAPSHOT": "1"},
+        "env": {
+            **os.environ,
+            "NEXA_OFFICE_SKIP_SNAPSHOT": "1",
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        },
         "cwd": str(cwd) if cwd is not None else None,
     }
     if os.name == "nt":
@@ -593,8 +601,16 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         app.DisplayAlerts = 0
         document = None
         previous_security = _force_disable_macros(app)
+        office_version = str(getattr(app, "Version", "unknown"))
         try:
-            document = app.Documents.Open(str(path.resolve()), ReadOnly=False, AddToRecentFiles=False)
+            document = app.Documents.Open(
+                str(path.resolve()),
+                ConfirmConversions=False,
+                ReadOnly=False,
+                AddToRecentFiles=False,
+                OpenAndRepair=False,
+                NoEncodingDialog=True,
+            )
             document.Fields.Update()
             document.Repaginate()
             document.Save()
@@ -611,6 +627,7 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
         app = win32com.client.DispatchEx("PowerPoint.Application")
         document = None
         previous_security = _force_disable_macros(app)
+        office_version = str(getattr(app, "Version", "unknown"))
         try:
             document = app.Presentations.Open(str(path.resolve()), WithWindow=False)
             document.Save()
@@ -623,16 +640,104 @@ def _windows_com_finalize(path: Path, artifact_format: str, actions: list[dict[s
                     _restore_automation_security(app, previous_security)
                 finally:
                     app.Quit()
-    action = {"command": "windows-com-finalize", "status": "ok", "exitCode": 0}
+    native_engine = {
+        "xlsx": "microsoft-excel-com",
+        "docx": "microsoft-word-com",
+        "pptx": "microsoft-powerpoint-com",
+    }[artifact_format]
+    action = {
+        "command": "windows-com-finalize",
+        "status": "ok",
+        "exitCode": 0,
+        "engine": native_engine,
+        "engineVersion": office_version,
+        "nativeOpenSave": True,
+        "macros": "force-disabled",
+    }
     if artifact_format == "xlsx":
         action.update({
-            "engine": "microsoft-excel-com",
-            "engineVersion": office_version,
             "calculationProfile": "excel-native",
-            "macros": "force-disabled",
             "externalLinks": "update-disabled",
         })
     actions.append(action)
+
+
+def _collect_powerpoint_export_images(
+    raw_dir: Path,
+    outdir: Path,
+    expected_slides: int,
+) -> list[Path]:
+    def export_key(path: Path) -> tuple[int, str]:
+        match = re.search(r"(\d+)$", path.stem)
+        return (int(match.group(1)) if match else 2**31 - 1, path.name.casefold())
+
+    images = sorted(
+        (
+            path for path in raw_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ),
+        key=export_key,
+    )
+    if len(images) != expected_slides:
+        raise RuntimeError(
+            f"PowerPoint exported {len(images)} slide images; expected {expected_slides}"
+        )
+    outdir.mkdir(parents=True, exist_ok=True)
+    for old in outdir.glob("slide-*.png"):
+        if old.is_file():
+            old.unlink()
+    outputs: list[Path] = []
+    for index, source in enumerate(images, start=1):
+        destination = outdir / f"slide-{index:03d}.png"
+        shutil.copy2(source, destination)
+        outputs.append(destination)
+    return outputs
+
+
+def _windows_com_render_pptx(
+    path: Path,
+    outdir: Path,
+    actions: list[dict[str, Any]],
+) -> list[Path]:
+    try:
+        import win32com.client  # type: ignore
+    except (ImportError, OSError) as error:
+        raise RuntimeError(f"Microsoft PowerPoint COM is unavailable: {error}") from error
+    app = win32com.client.DispatchEx("PowerPoint.Application")
+    document = None
+    previous_security = _force_disable_macros(app)
+    office_version = str(getattr(app, "Version", "unknown"))
+    try:
+        document = app.Presentations.Open(str(path.resolve()), WithWindow=False)
+        expected_slides = int(document.Slides.Count)
+        with tempfile.TemporaryDirectory(
+            prefix=".nexa-powerpoint-render-",
+            dir=outdir.parent,
+        ) as raw:
+            document.Export(str(Path(raw)), "PNG", 1600, 900)
+            outputs = _collect_powerpoint_export_images(
+                Path(raw), outdir, expected_slides
+            )
+    finally:
+        try:
+            if document is not None:
+                document.Close()
+        finally:
+            try:
+                _restore_automation_security(app, previous_security)
+            finally:
+                app.Quit()
+    actions.append({
+        "command": "windows-com-render-pptx",
+        "status": "ok",
+        "exitCode": 0,
+        "engine": "microsoft-powerpoint-com",
+        "engineVersion": office_version,
+        "renderProfile": "powerpoint-native",
+        "slides": len(outputs),
+        "macros": "force-disabled",
+    })
+    return outputs
 
 
 def _contract_path(
@@ -785,17 +890,31 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
 
             if job.render_policy != "none":
                 render_dir = job.output.parent / f"{job.output.stem}-rendered"
-                _run_editor(
-                    working,
-                    "render",
-                    ["--outdir", str(render_dir)],
-                    actions,
-                    workspace_root,
-                    timeout=300,
-                )
-                result["renderedPreviews"] = [
-                    str(path) for path in sorted(render_dir.glob("page*")) if path.is_file()
-                ]
+                if backend == "windows-com" and job.format == "pptx":
+                    result["renderedPreviews"] = [
+                        str(path)
+                        for path in _windows_com_render_pptx(working, render_dir, actions)
+                    ]
+                else:
+                    render_arguments = ["--outdir", str(render_dir)]
+                    if job.format == "xlsx":
+                        render_arguments.extend([
+                            "--sheets",
+                            "all" if job.render_policy == "all" else "active",
+                        ])
+                    _run_editor(
+                        working,
+                        "render",
+                        render_arguments,
+                        actions,
+                        workspace_root,
+                        timeout=300,
+                    )
+                    result["renderedPreviews"] = [
+                        str(path)
+                        for path in sorted(render_dir.iterdir())
+                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+                    ]
 
         final_validation = validate_ooxml_package(working)
         if final_validation.status == "fail":

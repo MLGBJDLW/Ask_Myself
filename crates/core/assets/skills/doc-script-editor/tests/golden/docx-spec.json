@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "preset": "executive",
+  "title": "Golden Decision Report",
+  "language": "en-US",
+  "footer": {"text": "Golden", "pageNumber": true},
+  "blocks": [
+    {"type": "heading", "level": 1, "text": "Recommendation"},
+    {"type": "paragraph", "text": "Approve the verified plan."},
+    {
+      "type": "table",
+      "headers": ["Owner", "Status"],
+      "rows": [["Operations", "Ready"], ["Finance", "Checked"]],
+      "columnWidths": [3.0, 2.0],
+      "repeatHeader": true,
+      "allowRowBreaks": false
+    }
+  ]
+}

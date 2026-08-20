@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexa.local/schemas/office-artifact-request-v2.schema.json",
+  "title": "Nexa OfficeArtifact Request v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestVersion", "format", "intent", "operations"],
+  "properties": {
+    "requestVersion": {"const": 2},
+    "format": {"enum": ["docx", "xlsx", "pptx"]},
+    "intent": {"enum": ["create", "modify", "verify"]},
+    "source": {"type": "string"},
+    "destination": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["op"]
+      }
+    },
+    "guarantees": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quality": {"enum": ["draft", "standard", "publish", "native"]},
+        "preservation": {"enum": ["strict", "balanced", "replace"]},
+        "calculation": {"enum": ["not_required", "static", "compatible", "native"]},
+        "render": {"enum": ["none", "important_surfaces", "all"]}
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceSha256": {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$"}
+      }
+    },
+    "validation": {
+      "oneOf": [
+        {"type": "string"},
+        {"$ref": "office-validation-contract-v2.schema.json"}
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["candidate", "publish"]},
+        "manifest": {"type": "string"}
+      }
+    }
+  }
+}

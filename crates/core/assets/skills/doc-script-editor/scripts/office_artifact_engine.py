@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 from office_artifact_runtime import (
     office_backend_statuses,
+    office_python_dependency_statuses,
     publish_staged_artifact,
     rollback_published_artifact,
     scan_ooxml_risks,
@@ -42,6 +43,64 @@ QUALITY_LEVELS = {"draft", "standard", "publish", "native"}
 CALCULATION_LEVELS = {"not_required", "static", "compatible", "native"}
 DELIVERY_MODES = {"candidate", "publish"}
 CANDIDATE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+REQUEST_KEYS = {
+    "requestVersion", "format", "intent", "source", "destination", "operations",
+    "guarantees", "validation", "delivery", "preconditions",
+}
+GUARANTEE_KEYS = {"quality", "preservation", "calculation", "render"}
+DELIVERY_KEYS = {"mode", "manifest"}
+PRECONDITION_KEYS = {"sourceSha256"}
+COMMON_OPERATION_KEYS = {"op", "elementId"}
+OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
+    "docx": {
+        "create": {"spec", "title", "subtitle", "body", "font", "footer", "author", "inputMd", "template"},
+        "replace": {"find", "replace", "expectedSha256", "expectedMatches", "scope", "occurrence", "allowStyleMerge"},
+        "redact": {"find", "replace", "expectedSha256", "expectedMatches", "scope", "occurrence", "allowStyleMerge"},
+        "secure_redact": {"find", "replace", "expectedSha256", "expectedMatches", "privacyScrub"},
+        "add_comment": {"find", "comment", "author", "initials", "date", "occurrence"},
+        "strip_comments": set(),
+        "tracked_replace": {"find", "replace", "author", "date", "occurrence"},
+        "accept_changes": set(),
+        "reject_changes": set(),
+        "validate": set(),
+        "render": set(),
+    },
+    "xlsx": {
+        "create": {"spec"},
+        "replace": {"find", "replace", "expectedSha256", "expectedMatches"},
+        "redact": {"find", "replace", "expectedSha256", "expectedMatches"},
+        "set_value": {"sheet", "cell", "value"},
+        "set_formula": {"sheet", "cell", "formula", "cachedValue"},
+        "set_range": {"sheet", "range", "values"},
+        "clear_range": {"sheet", "range"},
+        "set_style": {"sheet", "cell", "range", "styleId"},
+        "recalculate": set(),
+        "validate": set(),
+        "render": set(),
+    },
+    "pptx": {
+        "create": {"spec", "template", "htmlFirst", "outdir", "mode", "screenshot", "title", "prompt"},
+        "replace": {"find", "replace", "expectedSha256", "expectedMatches"},
+        "redact": {"find", "replace", "expectedSha256", "expectedMatches"},
+        "insert_slide": {"after", "title", "body"},
+        "set_text": {"slideId", "slideIndex", "shapeId", "shapeName", "text"},
+        "clone_slide": {"slideId", "slideIndex", "afterIndex"},
+        "reorder_slides": {"order"},
+        "set_transition": {"slideId", "slideIndex", "transition", "speed", "direction"},
+        "validate": set(),
+        "render": set(),
+    },
+}
+REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
+    "set_value": {"sheet", "cell", "value"},
+    "set_formula": {"sheet", "cell", "formula"},
+    "set_range": {"sheet", "range", "values"},
+    "clear_range": {"sheet", "range"},
+    "reorder_slides": {"order"},
+    "secure_redact": {"find"},
+    "add_comment": {"find", "comment"},
+    "tracked_replace": {"find", "replace"},
+}
 
 
 class OfficeArtifactError(Exception):
@@ -118,6 +177,7 @@ class ArtifactRequest:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], workspace_root: Path) -> "ArtifactRequest":
+        _reject_unknown_keys(payload, REQUEST_KEYS, "request")
         version = int(payload.get("requestVersion", REQUEST_VERSION))
         if version != REQUEST_VERSION:
             raise OfficeArtifactError(
@@ -137,6 +197,23 @@ class ArtifactRequest:
             raise OfficeArtifactError("request.source_required", f"source is required for intent={intent}")
         if source is not None and source.suffix.lower() != f".{artifact_format}":
             raise OfficeArtifactError("request.source_format", f"source must end with .{artifact_format}")
+        preconditions = payload.get("preconditions", {})
+        if not isinstance(preconditions, dict):
+            raise OfficeArtifactError("request.invalid_preconditions", "preconditions must be an object")
+        _reject_unknown_keys(preconditions, PRECONDITION_KEYS, "preconditions")
+        expected_source_sha = preconditions.get("sourceSha256")
+        if expected_source_sha and source is not None:
+            actual_source_sha = _sha256(source)
+            if actual_source_sha.lower() != str(expected_source_sha).lower():
+                raise OfficeArtifactError(
+                    "precondition.source_changed",
+                    "source SHA-256 does not match the inspected artifact",
+                    retryable=True,
+                    details={
+                        "expectedSha256": str(expected_source_sha),
+                        "actualSha256": actual_source_sha,
+                    },
+                )
 
         raw_destination = payload.get("destination")
         if intent == "verify" and raw_destination is None and source is not None:
@@ -164,10 +241,13 @@ class ArtifactRequest:
                 f"{artifact_format} adapter does not support: {', '.join(unsupported)}",
                 details={"adapter": adapter.id, "operations": unsupported},
             )
+        for index, operation in enumerate(operations):
+            _validate_operation(artifact_format, operation, index)
 
         guarantees = payload.get("guarantees", {})
         if not isinstance(guarantees, dict):
             raise OfficeArtifactError("request.invalid_guarantees", "guarantees must be an object")
+        _reject_unknown_keys(guarantees, GUARANTEE_KEYS, "guarantees")
         quality = str(guarantees.get("quality", "standard")).lower()
         if quality not in QUALITY_LEVELS:
             raise OfficeArtifactError("request.invalid_quality", "quality must be draft, standard, publish, or native")
@@ -188,6 +268,7 @@ class ArtifactRequest:
         delivery = payload.get("delivery", {})
         if not isinstance(delivery, dict):
             raise OfficeArtifactError("request.invalid_delivery", "delivery must be an object")
+        _reject_unknown_keys(delivery, DELIVERY_KEYS, "delivery")
         delivery_mode = str(delivery.get("mode", "candidate")).lower()
         if delivery_mode not in DELIVERY_MODES:
             raise OfficeArtifactError("request.invalid_delivery_mode", "delivery.mode must be candidate or publish")
@@ -198,6 +279,8 @@ class ArtifactRequest:
                 "path.role_conflict",
                 "delivery manifest must be distinct from source and destination",
             )
+        if isinstance(payload.get("validation"), dict):
+            _validate_contract_shape(artifact_format, payload["validation"])
         return cls(
             format=artifact_format,
             intent=intent,
@@ -224,9 +307,14 @@ class OfficeArtifactEngine:
 
     def capabilities(self) -> dict[str, Any]:
         backends = office_backend_statuses()
+        local_operations = sorted(
+            {operation for adapter in FORMAT_ADAPTERS.values() for operation in adapter.supported_operations}
+            - {"render", "recalculate"}
+        )
         return {
             "kind": "officeArtifactCapabilities",
             "requestVersion": REQUEST_VERSION,
+            "adapterContractVersion": 1,
             "formats": {
                 name: {
                     "adapter": adapter.id,
@@ -237,6 +325,85 @@ class OfficeArtifactEngine:
             "qualityLevels": sorted(QUALITY_LEVELS),
             "calculationLevels": sorted(CALCULATION_LEVELS),
             "backends": backends,
+            "pythonDependencies": office_python_dependency_statuses(),
+            "adapters": [
+                {
+                    "adapterVersion": 1,
+                    "id": "nexa-openxml",
+                    "deployment": "local-file",
+                    "formats": sorted(FORMAT_ADAPTERS),
+                    "operations": local_operations,
+                    "guarantees": {
+                        "preservation": ["strict", "balanced", "replace"],
+                        "calculation": ["not_required", "static"],
+                        "render": ["none"],
+                    },
+                    "limitations": [
+                        "Does not prove Microsoft Office native layout without a render/native adapter.",
+                        "Does not execute macros or refresh external data.",
+                    ],
+                    "requires": ["python"],
+                },
+                {
+                    "adapterVersion": 1,
+                    "id": "libreoffice",
+                    "deployment": "native-host",
+                    "formats": ["docx", "xlsx", "pptx"],
+                    "operations": ["render", "recalculate"],
+                    "guarantees": {
+                        "preservation": ["balanced"],
+                        "calculation": ["compatible"],
+                        "render": ["important_surfaces", "all"],
+                    },
+                    "limitations": ["Compatible output is not Microsoft Office-native evidence."],
+                    "requires": ["libreoffice", "poppler"],
+                },
+                {
+                    "adapterVersion": 1,
+                    "id": "windows-com",
+                    "deployment": "native-host",
+                    "formats": ["docx", "xlsx", "pptx"],
+                    "operations": ["finalize", "recalculate", "render"],
+                    "guarantees": {
+                        "preservation": ["balanced"],
+                        "calculation": ["native"],
+                        "render": ["all"],
+                    },
+                    "limitations": [
+                        "Explicit local Windows adapter; not an unattended server backend.",
+                        "Native image rendering is currently implemented for PPTX; DOCX/XLSX use compatible render evidence.",
+                    ],
+                    "requires": ["microsoft-office", "pywin32"],
+                },
+                {
+                    "adapterVersion": 1,
+                    "id": "officejs-live",
+                    "deployment": "live-officejs",
+                    "formats": ["docx", "xlsx", "pptx"],
+                    "operations": [
+                        "read-current-document", "set-text", "set-range", "add-comment",
+                        "insert-slide", "native-object-edit",
+                    ],
+                    "guarantees": {
+                        "preservation": ["native-host"],
+                        "calculation": ["native"],
+                        "render": ["host-visible"],
+                    },
+                    "limitations": [
+                        "Requires a separately connected and user-authorized Office.js add-in host.",
+                        "Not available through the local-file engine until a host session is registered.",
+                    ],
+                    "requires": ["officejs-host-session", "requirement-set-negotiation", "user-consent"],
+                    "status": "not-connected",
+                },
+            ],
+            "externalAdapterDeclarations": self._external_adapter_declarations(),
+            "schemas": {
+                "request": "references/office-artifact-request-v2.schema.json",
+                "validation": "references/office-validation-contract-v2.schema.json",
+                "adapter": "references/office-adapter-manifest-v1.schema.json",
+                "liveHost": "references/office-host-adapter-v1.schema.json",
+            },
             "lifecycle": ["assess", "execute", "decide", "restore"],
         }
 
@@ -246,7 +413,7 @@ class OfficeArtifactEngine:
         readiness = next(item for item in office_backend_statuses() if item["id"] == backend)
         blockers: list[dict[str, Any]] = []
         source_profile: dict[str, Any] | None = None
-        if backend != "nexa-openxml" and readiness["status"] != "ready":
+        if readiness["status"] != "ready":
             blockers.append({
                 "code": "backend.unavailable",
                 "backend": backend,
@@ -254,7 +421,8 @@ class OfficeArtifactEngine:
             })
         if request.render != "none":
             statuses = {item["id"]: item for item in office_backend_statuses()}
-            if statuses["libreoffice"]["status"] != "ready":
+            native_powerpoint_render = request.quality == "native" and request.format == "pptx"
+            if not native_powerpoint_render and statuses["libreoffice"]["status"] != "ready":
                 blockers.append({
                     "code": "render.backend_unavailable",
                     "backend": "libreoffice",
@@ -358,11 +526,25 @@ class OfficeArtifactEngine:
                     "candidate failed final OOXML validation",
                     details={"validation": validation.to_dict()},
                 )
+            candidate_sha256 = _sha256(candidate_path)
+            render_evidence = self._render_evidence(
+                candidate_path,
+                execution,
+                request.format,
+                request.render,
+            )
+            if request.render != "none" and not render_evidence["complete"]:
+                raise OfficeArtifactError(
+                    "render.incomplete_evidence",
+                    "requested render guarantee did not produce complete candidate-bound evidence",
+                    details={"renderEvidence": render_evidence},
+                )
             state.update({
                 "status": "candidate",
                 "execution": execution,
                 "assessment": assessment,
-                "candidateSha256": _sha256(candidate_path),
+                "candidateSha256": candidate_sha256,
+                "renderEvidence": render_evidence,
                 "updatedAt": _utc_now(),
             })
             write_artifact_manifest(state_path, state, self.workspace_root)
@@ -687,7 +869,11 @@ class OfficeArtifactEngine:
             "operations": operations,
             "preservationPolicy": request.preservation,
             "validationContract": request.validation,
-            "renderPolicy": request.render,
+            "renderPolicy": (
+                "none"
+                if request.quality == "native" and request.format == "pptx"
+                else request.render
+            ),
             # The local adapter performs the structural edit/create first. Its
             # guarded recalculation step then invokes LibreOffice when the
             # compatible guarantee is requested, including create workflows.
@@ -760,11 +946,13 @@ class OfficeArtifactEngine:
             ),
             "preservationEvidence": openxml_execution.get("preservationEvidence"),
             "calculationEvidence": calculation,
+            "nativeEvidence": self._native_host_evidence(native_execution),
             "renderedPreviews": (
                 native_execution.get("renderedPreviews", [])
                 if isinstance(native_execution, dict)
                 else openxml_execution.get("renderedPreviews", [])
             ),
+            "renderEvidence": state.get("renderEvidence"),
             "warnings": list(openxml_execution.get("warnings", [])) + (
                 list(native_execution.get("warnings", [])) if isinstance(native_execution, dict) else []
             ),
@@ -820,9 +1008,235 @@ class OfficeArtifactEngine:
                     return evidence
         return None
 
+    def _native_host_evidence(
+        self,
+        native_execution: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(native_execution, dict):
+            return None
+        finalize = next(
+            (
+                action for action in native_execution.get("actions", [])
+                if action.get("command") == "windows-com-finalize"
+            ),
+            None,
+        )
+        if not isinstance(finalize, dict):
+            return None
+        return {
+            "kind": "officeNativeEvidence",
+            "engine": finalize.get("engine"),
+            "engineVersion": finalize.get("engineVersion"),
+            "nativeOpenSave": bool(finalize.get("nativeOpenSave")),
+            "macros": finalize.get("macros"),
+            "externalLinks": finalize.get("externalLinks"),
+        }
+
+    def _render_evidence(
+        self,
+        candidate_path: Path,
+        execution: dict[str, Any],
+        artifact_format: str,
+        render_policy: str,
+    ) -> dict[str, Any]:
+        openxml_execution = execution.get("openXml", execution) if isinstance(execution, dict) else {}
+        native_execution = execution.get("native") if isinstance(execution, dict) else None
+        source = native_execution if isinstance(native_execution, dict) else openxml_execution
+        previews = [Path(str(value)) for value in source.get("renderedPreviews", [])]
+        candidate_root = candidate_path.parent.resolve()
+        files: list[dict[str, Any]] = []
+        outside: list[str] = []
+        for preview in previews:
+            resolved = preview.resolve()
+            try:
+                resolved.relative_to(candidate_root)
+            except ValueError:
+                outside.append(str(resolved))
+                continue
+            if resolved.is_file():
+                files.append({
+                    "path": str(resolved),
+                    "sha256": _sha256(resolved),
+                    "bytes": resolved.stat().st_size,
+                })
+        expected_surfaces: int | None = None
+        rendered_surfaces = len(files)
+        surface_manifest: dict[str, Any] | None = None
+        if artifact_format == "pptx":
+            validation = source.get("validation")
+            if isinstance(validation, dict):
+                backend = validation.get("backend", validation)
+                if isinstance(backend, dict):
+                    package_graph = backend.get("packageGraph")
+                    if isinstance(package_graph, dict):
+                        expected_surfaces = int(package_graph.get("slides", 0))
+                    elif isinstance(backend.get("backend"), dict):
+                        expected_surfaces = int(backend["backend"].get("slides", 0))
+        elif artifact_format == "xlsx" and previews:
+            manifest_path = previews[0].parent / "render-manifest.json"
+            if manifest_path.is_file():
+                try:
+                    surface_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    expected_surfaces = int(surface_manifest.get("expectedSurfaces", 0))
+                    rendered_surfaces = int(surface_manifest.get("renderedSurfaces", 0))
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    surface_manifest = None
+        if render_policy == "none":
+            complete = not files and not outside
+        elif artifact_format == "pptx" and expected_surfaces is not None:
+            complete = len(files) == expected_surfaces and not outside and expected_surfaces > 0
+        elif artifact_format == "xlsx":
+            complete = bool(
+                surface_manifest
+                and surface_manifest.get("complete")
+                and surface_manifest.get("artifactSha256") == _sha256(candidate_path)
+                and expected_surfaces
+                and rendered_surfaces == expected_surfaces
+                and not outside
+            )
+        else:
+            complete = bool(files) and not outside
+        visual_qa: dict[str, Any] | None = None
+        if files:
+            from office_visual_qa import analyze_rendered_images
+
+            visual_qa = analyze_rendered_images([Path(item["path"]) for item in files])
+            complete = complete and visual_qa.get("status") in {"pass", "warn"}
+        return {
+            "kind": "officeRenderEvidence",
+            "policy": render_policy,
+            "artifactSha256": _sha256(candidate_path),
+            "format": artifact_format,
+            "expectedSurfaces": expected_surfaces,
+            "renderedSurfaces": rendered_surfaces,
+            "complete": complete,
+            "files": files,
+            "outsideCandidatePaths": outside,
+            "renderer": (
+                "microsoft-powerpoint-native"
+                if any(
+                    action.get("command") == "windows-com-render-pptx"
+                    for action in source.get("actions", [])
+                )
+                else "libreoffice-compatible" if files else None
+            ),
+            "surfaceManifest": surface_manifest,
+            "visualQa": visual_qa,
+        }
+
+    def _external_adapter_declarations(self) -> list[dict[str, Any]]:
+        root = self.workspace_root / ".nexa" / "office-adapters"
+        if not root.is_dir():
+            return []
+        declarations: list[dict[str, Any]] = []
+        allowed = {
+            "adapterVersion", "id", "deployment", "formats", "operations", "guarantees",
+            "limitations", "requires",
+        }
+        seen: set[str] = set()
+        for path in sorted(root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("manifest root must be an object")
+                unknown = sorted(set(payload) - allowed)
+                if unknown:
+                    raise ValueError("unknown fields: " + ", ".join(unknown))
+                if int(payload.get("adapterVersion", 0)) != 1:
+                    raise ValueError("adapterVersion must be 1")
+                adapter_id = str(payload.get("id", ""))
+                if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", adapter_id):
+                    raise ValueError("invalid adapter id")
+                if adapter_id in seen:
+                    raise ValueError("duplicate adapter id")
+                seen.add(adapter_id)
+                declarations.append({
+                    **payload,
+                    "manifestPath": str(path),
+                    "status": "declared-not-loaded",
+                })
+            except (OSError, json.JSONDecodeError, ValueError) as error:
+                declarations.append({
+                    "manifestPath": str(path),
+                    "status": "invalid",
+                    "error": str(error),
+                })
+        return declarations
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _reject_unknown_keys(value: dict[str, Any], allowed: set[str], location: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise OfficeArtifactError(
+            "schema.unknown_field",
+            f"unknown field(s) at {location}: {', '.join(unknown)}",
+            details={"location": location, "unknownFields": unknown},
+        )
+
+
+def _validate_operation(artifact_format: str, operation: dict[str, Any], index: int) -> None:
+    name = str(operation.get("op", "")).lower()
+    allowed = COMMON_OPERATION_KEYS | OPERATION_KEYS[artifact_format].get(name, set())
+    _reject_unknown_keys(operation, allowed, f"operations[{index}]")
+    missing = sorted(
+        key for key in REQUIRED_OPERATION_KEYS.get(name, set())
+        if key not in operation
+    )
+    if name == "create" and not any(key in operation for key in ("spec", "body", "inputMd", "prompt")):
+        missing.append("spec/body/inputMd/prompt")
+    if name in {"replace", "redact"} and not operation.get("find"):
+        missing.append("find")
+    if name in {"set_text", "clone_slide", "set_transition"} and not any(
+        key in operation for key in ("slideId", "slideIndex")
+    ):
+        missing.append("slideId/slideIndex")
+    if name == "set_text" and not any(key in operation for key in ("shapeId", "shapeName")):
+        missing.append("shapeId/shapeName")
+    if name == "set_style" and not any(key in operation for key in ("cell", "range")):
+        missing.append("cell/range")
+    if missing:
+        raise OfficeArtifactError(
+            "schema.missing_field",
+            f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
+        )
+
+
+CONTRACT_KEYS: dict[str, set[str]] = {
+    "docx": {
+        "contractVersion", "required_text", "forbidden_text", "min_paragraphs", "min_tables",
+        "required_styles", "no_heading_level_skips", "require_alt_text",
+        "require_table_header_rows", "require_fixed_table_layout", "required_language",
+        "min_comments", "require_tracked_changes", "require_no_tracked_changes",
+    },
+    "pptx": {
+        "contractVersion", "required_text", "forbidden_text", "min_slides", "max_slides",
+        "required_slide_titles", "require_speaker_notes",
+    },
+    "xlsx": {
+        "contractVersion", "required_sheets", "required_named_ranges", "no_numeric_hardcodes_in",
+        "min_rows", "sentinels", "require_formula_cache", "tie_outs", "reconciliations",
+        "formula_patterns", "required_provenance",
+    },
+}
+
+
+def _validate_contract_shape(artifact_format: str, contract: dict[str, Any]) -> None:
+    _reject_unknown_keys(contract, CONTRACT_KEYS[artifact_format], "validation")
+    if "contractVersion" not in contract:
+        raise OfficeArtifactError(
+            "schema.missing_field",
+            "validation.contractVersion is required for requestVersion 2",
+        )
+    version = int(contract["contractVersion"])
+    if version != 2:
+        raise OfficeArtifactError(
+            "schema.contract_version",
+            "validation.contractVersion must be 2",
+        )
 
 
 def _sha256(path: Path) -> str:

@@ -33,6 +33,15 @@
               "render": {"type": "string", "enum": ["none", "important_surfaces", "all"]}
             }
           },
+          "preconditions": {
+            "type": "object",
+            "properties": {
+              "sourceSha256": {
+                "type": "string",
+                "description": "Fail if the source no longer matches the inspected SHA-256."
+              }
+            }
+          },
           "validation": {},
           "delivery": {
             "type": "object",

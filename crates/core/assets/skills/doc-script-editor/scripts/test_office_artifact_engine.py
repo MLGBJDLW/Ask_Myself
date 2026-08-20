@@ -6,7 +6,9 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
+import office_artifact_engine
 from office_artifact_engine import OfficeArtifactEngine, OfficeArtifactError
 
 
@@ -35,7 +37,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 "preservation": "strict",
                 "render": "none",
             },
-            "validation": {"required_text": ["Verified body"]},
+            "validation": {"contractVersion": 2, "required_text": ["Verified body"]},
         }
 
     def test_execute_publish_restore_lifecycle_keeps_destination_gated(self) -> None:
@@ -108,6 +110,43 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         self.assertEqual(original_hash, destination.read_bytes())
         self.assertEqual(old_manifest, manifest.read_bytes())
 
+    def test_manifest_fault_after_artifact_publish_rolls_back_every_role(self) -> None:
+        import docx
+
+        destination = self.root / "fault.docx"
+        manifest = self.root / "fault-manifest.json"
+        original = docx.Document()
+        original.add_paragraph("Before fault")
+        original.save(destination)
+        before = destination.read_bytes()
+        manifest.write_text('{"status":"before"}\n', encoding="utf-8")
+        manifest_before = manifest.read_bytes()
+        request = self._docx_request(destination)
+        request["delivery"] = {"manifest": str(manifest)}
+        candidate = self.engine.execute(request)
+        real_write = office_artifact_engine.write_artifact_manifest
+
+        def fail_requested_manifest(path, payload, workspace_root):
+            if Path(path).resolve() == manifest.resolve():
+                raise OSError("injected manifest fault")
+            return real_write(path, payload, workspace_root)
+
+        with mock.patch.object(
+            office_artifact_engine,
+            "write_artifact_manifest",
+            side_effect=fail_requested_manifest,
+        ):
+            with self.assertRaisesRegex(OSError, "injected manifest fault"):
+                self.engine.decide(candidate["candidateId"], "publish")
+
+        self.assertEqual(before, destination.read_bytes())
+        self.assertEqual(manifest_before, manifest.read_bytes())
+        state = json.loads(
+            (Path(candidate["candidatePath"]).parent / "state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("candidate", state["status"])
+        self.assertEqual([], list((self.root / ".nexa" / "office-artifacts" / "locks").glob("*.lock")))
+
     def test_assessment_reports_unsatisfied_publish_render_backend(self) -> None:
         request = self._docx_request(self.root / "publish.docx")
         request["guarantees"]["quality"] = "publish"
@@ -129,6 +168,91 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.engine.execute(request)
         with self.assertRaisesRegex(OfficeArtifactError, "invalid candidate id"):
             self.engine.decide("../escape", "discard")
+
+    def test_request_operation_and_contract_schemas_reject_unknown_fields(self) -> None:
+        destination = self.root / "strict.docx"
+        request = self._docx_request(destination)
+        request["typo"] = True
+        with self.assertRaisesRegex(OfficeArtifactError, "unknown field.*request"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["operations"][0]["titel"] = "typo"
+        with self.assertRaisesRegex(OfficeArtifactError, r"operations\[0\]"):
+            self.engine.assess(request)
+
+        request = self._docx_request(destination)
+        request["validation"] = {"contractVersion": 2, "required_tex": ["missing t"]}
+        with self.assertRaisesRegex(OfficeArtifactError, "unknown field.*validation"):
+            self.engine.assess(request)
+
+    def test_source_sha_precondition_is_format_wide(self) -> None:
+        source = self.root / "precondition.docx"
+        source.write_bytes(b"changed")
+        request = {
+            "requestVersion": 2,
+            "format": "docx",
+            "intent": "verify",
+            "source": str(source),
+            "destination": str(self.root / "verified.docx"),
+            "operations": [],
+            "preconditions": {"sourceSha256": "0" * 64},
+        }
+        with self.assertRaisesRegex(OfficeArtifactError, "source SHA-256"):
+            self.engine.assess(request)
+
+    def test_capabilities_validate_external_adapter_declarations_without_loading_code(self) -> None:
+        adapter_dir = self.root / ".nexa" / "office-adapters"
+        adapter_dir.mkdir(parents=True)
+        (adapter_dir / "valid.json").write_text(json.dumps({
+            "adapterVersion": 1,
+            "id": "example-live",
+            "deployment": "live-officejs",
+            "formats": ["docx"],
+            "operations": ["set_text"],
+            "guarantees": {"preservation": ["native"], "calculation": [], "render": []},
+            "limitations": ["declaration only"],
+            "requires": ["officejs-host"],
+        }), encoding="utf-8")
+        (adapter_dir / "invalid.json").write_text('{"adapterVersion":2,"id":"Bad ID"}', encoding="utf-8")
+
+        declarations = self.engine.capabilities()["externalAdapterDeclarations"]
+        by_name = {Path(item["manifestPath"]).name: item for item in declarations}
+        self.assertEqual("declared-not-loaded", by_name["valid.json"]["status"])
+        self.assertEqual("invalid", by_name["invalid.json"]["status"])
+
+    def test_xlsx_render_evidence_requires_surface_manifest_bound_to_candidate_sha(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        candidate_dir = self.root / ".nexa" / "office-artifacts" / "candidates" / ("a" * 32)
+        render_dir = candidate_dir / "artifact-rendered"
+        render_dir.mkdir(parents=True)
+        candidate = candidate_dir / "artifact.xlsx"
+        candidate.write_bytes(b"candidate-bytes")
+        pages = [render_dir / "sheet-001-page-1.png", render_dir / "sheet-002-page-1.png"]
+        for index, page in enumerate(pages, start=1):
+            Image.new("RGB", (640, 360), (40 * index, 80, 140)).save(page)
+        manifest = {
+            "kind": "officeRenderManifest",
+            "format": "xlsx",
+            "artifactSha256": office_artifact_engine._sha256(candidate),
+            "expectedSurfaces": 2,
+            "renderedSurfaces": 2,
+            "complete": True,
+        }
+        (render_dir / "render-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        execution = {"renderedPreviews": [str(page) for page in pages]}
+
+        evidence = self.engine._render_evidence(candidate, execution, "xlsx", "all")
+        self.assertTrue(evidence["complete"])
+        self.assertEqual(2, evidence["expectedSurfaces"])
+        self.assertEqual(2, evidence["renderedSurfaces"])
+
+        candidate.write_bytes(b"tampered")
+        stale = self.engine._render_evidence(candidate, execution, "xlsx", "all")
+        self.assertFalse(stale["complete"])
 
     def test_discard_removes_only_owned_candidate_directory(self) -> None:
         destination = self.root / "discarded.docx"
@@ -264,6 +388,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "operations": [{"op": "create", "spec": str(spec_path)}],
             "guarantees": {"quality": "standard", "render": "none"},
             "validation": {
+                "contractVersion": 2,
                 "required_text": ["Approve the controlled rollout."],
                 "min_tables": 1,
                 "required_styles": ["Heading 1"],
@@ -317,7 +442,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 {"op": "set_transition", "slideIndex": 2, "transition": "fade", "speed": "fast"},
             ],
             "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
-            "validation": {"min_slides": 2, "max_slides": 2, "required_text": ["Cloned decision"]},
+            "validation": {"contractVersion": 2, "min_slides": 2, "max_slides": 2, "required_text": ["Cloned decision"]},
         })
 
         candidate = Path(outcome["candidatePath"])
@@ -361,7 +486,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 {"op": "tracked_replace", "find": "old", "replace": "new", "author": "Nexa"},
             ],
             "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
-            "validation": {"min_comments": 1, "require_tracked_changes": True},
+            "validation": {"contractVersion": 2, "min_comments": 1, "require_tracked_changes": True},
         })
 
         self.assertEqual("candidate", outcome["status"])

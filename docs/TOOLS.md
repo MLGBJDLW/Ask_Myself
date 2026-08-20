@@ -441,7 +441,9 @@ Do not use `create_file` for DOCX/XLSX/PPTX/PDF. Use `office_artifact` for DOCX/
 
 The preferred DOCX/XLSX/PPTX lifecycle is `capabilities`/`assess` → `execute` → `decide` → optional `restore`. `execute` creates a validated candidate by default and does not touch the destination. `decide: publish` atomically publishes it and returns a receipt; `restore` refuses to overwrite a destination that changed after publication.
 
-Requests use `requestVersion: 2`, a format and intent, typed operations, and explicit guarantees (`quality`, `preservation`, `calculation`, `render`). `quality: publish` requires rendered evidence. `quality: native` and XLSX `calculation: native` require Microsoft Office COM. LibreOffice recalculation is labeled `compatible`, never Excel-native.
+Requests use `requestVersion: 2`, a format and intent, typed operations, optional `preconditions.sourceSha256`, and explicit guarantees (`quality`, `preservation`, `calculation`, `render`). Inline validation requires `contractVersion: 2`; all schema fields are closed and unknown fields fail. `quality: publish` requires candidate-SHA-bound rendered evidence. `quality: native` and XLSX `calculation: native` require Microsoft Office COM. LibreOffice recalculation is labeled `compatible`, never Excel-native.
+
+The adapter contract reports local Open XML, LibreOffice-compatible, Windows COM, and disconnected Office.js-live surfaces separately. A local `.nexa/office-adapters/*.json` declaration is schema-validated and discoverable but is not executable merely because it exists. Live Office.js requires a separately authorized host session.
 
 ### Office compatibility and PDF operations
 
@@ -482,6 +484,8 @@ Runtime readiness:
 - After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
 - If Python itself is not installed, Nexa does not silently install a system runtime. The UI shows the Python download URL and keeps native generators available as simple compatibility fallback.
 - LibreOffice and Poppler remain optional system-level applications for conversion and rendering. Excel formula QA uses the internal XLSX linter and does not require LibreOffice.
+- Required Python Office packages are exact-pinned. Readiness reports version mismatch instead of treating any newer/older package as equivalent.
+- Native PowerPoint rendering uses COM slide export with macros disabled. The Rust tool host applies a 15-minute kill-on-drop watchdog to Python/native Office execution.
 - Python Playwright remains optional for HTML-first PPTX screenshot QA. Without it, `create_html_pptx --screenshot auto` still writes HTML, PPTX, manifest, and QA, but reports screenshot coverage as a warning.
 
 ---

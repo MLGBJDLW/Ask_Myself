@@ -1772,6 +1772,110 @@ def _convert_to_pdf(path: Path, outdir: Path) -> Path:
     return pdf
 
 
+def _xlsx_render_surfaces(path: Path, selection: str | None) -> list[str]:
+    try:
+        import openpyxl  # type: ignore
+    except ImportError:
+        _missing("openpyxl")
+    workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=False)
+    try:
+        visible = [sheet.title for sheet in workbook.worksheets if sheet.sheet_state == "visible"]
+        if not visible:
+            _die("ERROR: XLSX has no visible worksheets to render", 1)
+        requested = str(selection or "all").strip()
+        if requested == "all":
+            return visible
+        if requested == "active":
+            active = workbook.active.title
+            return [active] if active in visible else [visible[0]]
+        names = [item.strip() for item in requested.split(",") if item.strip()]
+        missing = [name for name in names if name not in visible]
+        if missing:
+            _die(f"ERROR: requested render sheet(s) are not visible: {', '.join(missing)}", 3)
+        return names
+    finally:
+        workbook.close()
+
+
+def _render_xlsx_surfaces(
+    path: Path,
+    outdir: Path,
+    *,
+    selection: str | None,
+    image_format: str,
+    dpi: int,
+    pdftoppm: str,
+) -> int:
+    try:
+        import openpyxl  # type: ignore
+    except ImportError:
+        _missing("openpyxl")
+    surfaces = _xlsx_render_surfaces(path, selection)
+    records: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix=".nexa-xlsx-render-", dir=path.parent) as tmp:
+        temporary_root = Path(tmp)
+        for index, sheet_name in enumerate(surfaces, start=1):
+            workbook = openpyxl.load_workbook(str(path), data_only=False, keep_links=True)
+            try:
+                for worksheet in workbook.worksheets:
+                    worksheet.sheet_state = "visible" if worksheet.title == sheet_name else "hidden"
+                workbook.active = workbook.sheetnames.index(sheet_name)
+                surface_path = temporary_root / f"surface-{index:03d}.xlsx"
+                workbook.save(surface_path)
+            finally:
+                workbook.close()
+            pdf_dir = temporary_root / f"pdf-{index:03d}"
+            pdf_dir.mkdir()
+            pdf = _convert_to_pdf(surface_path, pdf_dir)
+            prefix = outdir / f"sheet-{index:03d}-page"
+            command = [
+                pdftoppm,
+                f"-{image_format}",
+                "-r",
+                str(dpi),
+                str(pdf),
+                str(prefix),
+            ]
+            completed = _run_subprocess(command, text=True, capture_output=True, check=False)
+            if completed.returncode != 0:
+                _die(
+                    completed.stderr.strip() or completed.stdout.strip() or f"render failed for sheet {sheet_name}",
+                    completed.returncode or 1,
+                )
+            suffix = "jpg" if image_format == "jpeg" else "png"
+            images = sorted(outdir.glob(f"sheet-{index:03d}-page*.{suffix}"))
+            if not images:
+                _die(f"ERROR: renderer produced no images for worksheet: {sheet_name}", 1)
+            records.append({
+                "surfaceId": f"worksheet:{sheet_name}",
+                "sheet": sheet_name,
+                "files": [
+                    {
+                        "path": str(image),
+                        "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+                    }
+                    for image in images
+                ],
+            })
+    manifest = {
+        "kind": "officeRenderManifest",
+        "version": 1,
+        "format": "xlsx",
+        "renderer": "libreoffice-compatible-via-temporary-openpyxl-surface-copy",
+        "artifact": str(path),
+        "artifactSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "selection": selection or "all",
+        "expectedSurfaces": len(surfaces),
+        "renderedSurfaces": len(records),
+        "complete": len(records) == len(surfaces),
+        "surfaces": records,
+        "preservationNote": "The source workbook was never rewritten; temporary per-sheet copies may not preserve unsupported Excel-only features.",
+    }
+    write_artifact_manifest(outdir / "render-manifest.json", manifest, Path.cwd())
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     if _ext(path) not in {"docx", "pptx", "xlsx", "pdf"}:
@@ -1783,10 +1887,23 @@ def cmd_render(args: argparse.Namespace) -> int:
     image_format = args.format.lower()
     if image_format not in {"png", "jpeg"}:
         _die("ERROR: --format must be png or jpeg", 3)
-    for pattern in ("page*.png", "page*.jpg", "page*.jpeg", "page*.ppm"):
+    for pattern in (
+        "page*.png", "page*.jpg", "page*.jpeg", "page*.ppm",
+        "sheet-*-page*.png", "sheet-*-page*.jpg", "sheet-*-page*.jpeg",
+    ):
         for old_preview in outdir.glob(pattern):
             if old_preview.is_file():
                 old_preview.unlink()
+    (outdir / "render-manifest.json").unlink(missing_ok=True)
+    if _ext(path) == "xlsx":
+        return _render_xlsx_surfaces(
+            path,
+            outdir,
+            selection=getattr(args, "sheets", None),
+            image_format=image_format,
+            dpi=args.dpi,
+            pdftoppm=pdftoppm,
+        )
     with tempfile.TemporaryDirectory(prefix="nexa-render-") as tmp:
         pdf = path if _ext(path) == "pdf" else _convert_to_pdf(path, Path(tmp))
         prefix = outdir / "page"
@@ -1992,6 +2109,85 @@ def cmd_lint_xlsx(args: argparse.Namespace) -> int:
     return 0 if result["status"] != "fail" else 1
 
 
+VALIDATION_CONTRACT_KEYS: dict[str, set[str]] = {
+    "docx": {
+        "contractVersion", "required_text", "forbidden_text", "min_paragraphs", "min_tables",
+        "required_styles", "no_heading_level_skips", "require_alt_text",
+        "require_table_header_rows", "require_fixed_table_layout", "required_language",
+        "min_comments", "require_tracked_changes", "require_no_tracked_changes",
+    },
+    "pptx": {
+        "contractVersion", "required_text", "forbidden_text", "min_slides", "max_slides",
+        "required_slide_titles", "require_speaker_notes",
+    },
+    "xlsx": {
+        "contractVersion", "required_sheets", "required_named_ranges", "no_numeric_hardcodes_in",
+        "min_rows", "sentinels", "require_formula_cache", "tie_outs", "reconciliations",
+        "formula_patterns", "required_provenance",
+    },
+}
+
+
+def _validate_contract_keys(contract: dict[str, Any], artifact_format: str) -> None:
+    unknown = sorted(set(contract) - VALIDATION_CONTRACT_KEYS[artifact_format])
+    if unknown:
+        _die(
+            f"CONTRACT_SCHEMA_FAILED: unknown {artifact_format} validation field(s): {', '.join(unknown)}",
+            3,
+        )
+    if int(contract.get("contractVersion", 2)) != 2:
+        _die("CONTRACT_SCHEMA_FAILED: contractVersion must be 2", 3)
+
+
+def _contract_evidence(path: Path, contract_path: str) -> dict[str, str]:
+    contract = _validate_path(contract_path)
+    return {
+        "artifactSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "contractSha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
+    }
+
+
+def _xlsx_reference_value(workbook: Any, reference: str) -> Any:
+    sheet_name, separator, coordinate = str(reference).rpartition("!")
+    if not separator or sheet_name not in workbook.sheetnames:
+        raise ValueError(f"invalid workbook reference: {reference}")
+    return workbook[sheet_name][coordinate].value
+
+
+def _xlsx_relative_formula_pattern(formula: str, coordinate: str) -> str:
+    try:
+        from openpyxl.utils.cell import coordinate_to_tuple, column_index_from_string  # type: ignore
+    except ImportError:
+        _missing("openpyxl")
+    origin_row, origin_col = coordinate_to_tuple(coordinate)
+    reference_re = re.compile(r"(?<![A-Za-z0-9_])(?P<col>\$?[A-Z]{1,3})(?P<row>\$?\d+)")
+
+    def replace(match: re.Match[str]) -> str:
+        raw_col = match.group("col")
+        raw_row = match.group("row")
+        col = column_index_from_string(raw_col.replace("$", ""))
+        row = int(raw_row.replace("$", ""))
+        row_token = str(row) if raw_row.startswith("$") else f"[{row - origin_row}]"
+        col_token = str(col) if raw_col.startswith("$") else f"[{col - origin_col}]"
+        return f"R{row_token}C{col_token}"
+
+    return reference_re.sub(replace, formula.upper())
+
+
+def _xlsx_custom_properties(path: Path) -> dict[str, str]:
+    with zipfile.ZipFile(path) as archive:
+        if "docProps/custom.xml" not in archive.namelist():
+            return {}
+        root = ET.fromstring(archive.read("docProps/custom.xml"))
+    properties: dict[str, str] = {}
+    for prop in root:
+        name = prop.attrib.get("name", "")
+        value = "".join(child.text or "" for child in prop)
+        if name:
+            properties[name] = value
+    return properties
+
+
 def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
     try:
         import openpyxl  # type: ignore
@@ -1999,6 +2195,7 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         _missing("openpyxl")
 
     contract = _read_json(contract_path)
+    _validate_contract_keys(contract, "xlsx")
     _, _, inspect_formula_cache = _load_xlsx_renderer()
     wb = openpyxl.load_workbook(str(path), data_only=False, read_only=False)
     values_wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
@@ -2075,6 +2272,116 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                     "actual": actual,
                 })
         checks["sentinels"] = sentinel_checks
+        tie_out_checks: list[dict[str, Any]] = []
+        for item in contract.get("tie_outs", []):
+            if not isinstance(item, dict):
+                errors.append({"code": "tie_out.invalid"})
+                continue
+            left_ref = str(item.get("left", ""))
+            right_ref = str(item.get("right", ""))
+            tolerance = float(item.get("tolerance", 0) or 0)
+            try:
+                left = _xlsx_reference_value(values_wb, left_ref)
+                right = _xlsx_reference_value(values_wb, right_ref)
+                difference = abs(float(left) - float(right))
+                matches = difference <= tolerance
+            except (TypeError, ValueError) as error:
+                left = right = None
+                difference = None
+                matches = False
+                errors.append({"code": "tie_out.invalid_reference", "detail": str(error)})
+            check = {
+                "left": left_ref, "right": right_ref, "leftValue": left,
+                "rightValue": right, "difference": difference, "tolerance": tolerance,
+                "matches": matches,
+            }
+            tie_out_checks.append(check)
+            if not matches and difference is not None:
+                errors.append({"code": "tie_out.mismatch", **check})
+        checks["tieOuts"] = tie_out_checks
+
+        reconciliation_checks: list[dict[str, Any]] = []
+        for item in contract.get("reconciliations", []):
+            if not isinstance(item, dict):
+                errors.append({"code": "reconciliation.invalid"})
+                continue
+            range_ref = str(item.get("sumRange", ""))
+            equals_ref = str(item.get("equals", ""))
+            tolerance = float(item.get("tolerance", 0) or 0)
+            try:
+                sheet_name, separator, coordinates = range_ref.rpartition("!")
+                if not separator or sheet_name not in values_wb.sheetnames:
+                    raise ValueError(f"invalid range: {range_ref}")
+                values = [
+                    cell.value for row in values_wb[sheet_name][coordinates] for cell in row
+                    if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+                ]
+                total = float(sum(values))
+                expected = float(_xlsx_reference_value(values_wb, equals_ref))
+                difference = abs(total - expected)
+                matches = difference <= tolerance
+            except (TypeError, ValueError) as error:
+                total = expected = difference = None
+                matches = False
+                errors.append({"code": "reconciliation.invalid_reference", "detail": str(error)})
+            check = {
+                "sumRange": range_ref, "equals": equals_ref, "sum": total,
+                "expected": expected, "difference": difference, "tolerance": tolerance,
+                "matches": matches,
+            }
+            reconciliation_checks.append(check)
+            if not matches and difference is not None:
+                errors.append({"code": "reconciliation.mismatch", **check})
+        checks["reconciliations"] = reconciliation_checks
+
+        formula_pattern_checks: list[dict[str, Any]] = []
+        for item in contract.get("formula_patterns", []):
+            if not isinstance(item, dict):
+                errors.append({"code": "formula_pattern.invalid"})
+                continue
+            sheet_name = str(item.get("sheet", ""))
+            coordinate_range = str(item.get("range", ""))
+            pattern = str(item.get("pattern", ".*"))
+            minimum = int(item.get("minMatches", 1))
+            formulas: list[tuple[str, str]] = []
+            if sheet_name in wb.sheetnames and coordinate_range:
+                for row in wb[sheet_name][coordinate_range]:
+                    for cell in row:
+                        if isinstance(cell.value, str) and cell.value.startswith("="):
+                            formulas.append((cell.coordinate, cell.value))
+            matches = [(coordinate, formula) for coordinate, formula in formulas if re.search(pattern, formula)]
+            relative_patterns = {
+                _xlsx_relative_formula_pattern(formula, coordinate)
+                for coordinate, formula in formulas
+            }
+            consistent = len(relative_patterns) <= 1
+            check = {
+                "sheet": sheet_name, "range": coordinate_range, "pattern": pattern,
+                "formulaCells": len(formulas), "matches": len(matches),
+                "minimum": minimum, "relativePatternCount": len(relative_patterns),
+                "consistentRelativePattern": consistent,
+            }
+            formula_pattern_checks.append(check)
+            if len(matches) < minimum:
+                errors.append({"code": "formula_pattern.minimum", **check})
+            if item.get("requireConsistentRelativePattern") and not consistent:
+                errors.append({"code": "formula_pattern.inconsistent", **check})
+        checks["formulaPatterns"] = formula_pattern_checks
+
+        provenance = _xlsx_custom_properties(path)
+        required_provenance = contract.get("required_provenance", {})
+        provenance_mismatches = {
+            str(name): {"expected": expected, "actual": provenance.get(str(name))}
+            for name, expected in required_provenance.items()
+            if provenance.get(str(name)) != str(expected)
+        } if isinstance(required_provenance, dict) else {"<contract>": {"expected": "object", "actual": type(required_provenance).__name__}}
+        checks["provenance"] = {
+            "properties": provenance,
+            "required": required_provenance,
+            "mismatches": provenance_mismatches,
+        }
+        for name, detail in provenance_mismatches.items():
+            errors.append({"code": "provenance.mismatch", "name": name, **detail})
         calculation = inspect_formula_cache(path)
         checks["formulaCache"] = calculation
         if contract.get("require_formula_cache") and calculation["coverage"] < 1.0:
@@ -2087,7 +2394,12 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         wb.close()
         values_wb.close()
 
-    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+    return {
+        "status": "fail" if errors else "pass",
+        "errors": errors,
+        "checks": checks,
+        "evidence": _contract_evidence(path, contract_path),
+    }
 
 
 def _contract_text_checks(text: str, contract: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2112,6 +2424,7 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
     except ImportError:
         _missing("python-docx")
     contract = _read_json(contract_path)
+    _validate_contract_keys(contract, "docx")
     document = docx.Document(str(path))
     stories: list[str] = [paragraph.text for paragraph in document.paragraphs]
     for table in document.tables:
@@ -2261,7 +2574,12 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
             "insertions": package_checks["trackedInsertions"],
             "deletions": package_checks["trackedDeletions"],
         })
-    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+    return {
+        "status": "fail" if errors else "pass",
+        "errors": errors,
+        "checks": checks,
+        "evidence": _contract_evidence(path, contract_path),
+    }
 
 
 def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
@@ -2270,6 +2588,7 @@ def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
     except ImportError:
         _missing("python-pptx")
     contract = _read_json(contract_path)
+    _validate_contract_keys(contract, "pptx")
     presentation = Presentation(str(path))
     fragments: list[str] = []
     titles: list[str] = []
@@ -2320,7 +2639,12 @@ def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
             "slides": slide_count,
             "slidesWithNotes": slides_with_notes,
         })
-    return {"status": "fail" if errors else "pass", "errors": errors, "checks": checks}
+    return {
+        "status": "fail" if errors else "pass",
+        "errors": errors,
+        "checks": checks,
+        "evidence": _contract_evidence(path, contract_path),
+    }
 
 
 def _validate_artifact_contract(path: Path, contract_path: str) -> dict[str, Any]:
@@ -2571,6 +2895,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--outdir", required=True, help="Absolute output directory for page images")
     p_render.add_argument("--dpi", type=int, default=150)
     p_render.add_argument("--format", default="png", choices=["png", "jpeg"])
+    p_render.add_argument("--sheets", default=None, help="XLSX only: all, active, or comma-separated visible sheet names")
     p_render.set_defaults(func=cmd_render)
 
     p_lint = sub.add_parser("lint_xlsx", help="Lint XLSX formulas without LibreOffice or Excel automation")

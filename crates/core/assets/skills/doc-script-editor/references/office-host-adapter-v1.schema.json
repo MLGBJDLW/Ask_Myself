@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexa.local/schemas/office-host-adapter-v1.schema.json",
+  "title": "Nexa Live Office Host Adapter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["hostVersion", "sessionId", "application", "requirementSets", "capabilities"],
+  "properties": {
+    "hostVersion": {"const": 1},
+    "sessionId": {"type": "string"},
+    "application": {"enum": ["word", "excel", "powerpoint"]},
+    "documentId": {"type": "string"},
+    "requirementSets": {"type": "object"},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": {"type": "boolean"},
+        "write": {"type": "boolean"}
+      }
+    }
+  }
+}

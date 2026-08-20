@@ -83,6 +83,10 @@ Example request body:
 
 `quality: "publish"` requires rendered evidence; `quality: "native"` additionally requires Microsoft Office COM. `calculation: "compatible"` uses LibreOffice and must be labeled compatible, not Excel-native. `calculation: "native"` requires Excel COM. If `assess.ready` is false, lower the guarantee only with user agreement or install/enable the required backend.
 
+Every inline validation object in requestVersion 2 must include `contractVersion: 2`. Request, guarantee, delivery, operation, and format-specific contract fields are closed schemas: a typo is a failure, never an ignored option. Use `preconditions.sourceSha256` for any workflow that starts from an inspected source. Canonical schemas are in `references/office-artifact-request-v2.schema.json`, `references/office-validation-contract-v2.schema.json`, and `references/office-adapter-manifest-v1.schema.json`.
+
+Rendered evidence is stored under the owned candidate directory and includes the candidate SHA plus per-image hashes and deterministic visual QA. PPTX requires one final image per display-order slide. XLSX `all` renders each visible worksheet through an isolated temporary surface copy and records worksheet-to-image coverage; it remains LibreOffice-compatible evidence, not Excel-native evidence. A connected Office.js host is a separate deployment surface described by `references/office-host-adapter-v1.schema.json`; absence is reported as `not-connected` rather than silently falling back.
+
 ## Compatibility script pattern
 For this skill, invoke the bundled document script through `run_shell` with `python` (or `python3`). This is a Python backend requirement for the Office/PDF workflow, not a general restriction on other `run_shell` programs or less-restricted shell access modes:
 
@@ -200,9 +204,11 @@ python <SKILL_DIR>/scripts/edit_doc.py check
 - **Transactional runtime** — `office_artifact` and `office_artifact_engine.py` expose assess/execute/decide/restore, typed errors, capability routing, candidate gating, receipts, hash-guarded restore, and evidence-rich manifests; `office_artifact_service.py` preserves jobVersion 1 compatibility
 - **Typed format edits** — direct-OOXML XLSX value/formula/range/style edits, PPTX stable slide/shape edits and dependency-cloning, and DOCX review operations run behind the same candidate contract
 - **Secure redaction boundary** — `redact` is visible-story replacement; `secure_redact` alone may claim package-text absence, and it blocks uninspectable media/embeddings
+- **Golden/fault corpus** — `tests/golden` and `test_office_artifact_golden.py` exercise all three formats through the public interface, bind contract/render evidence to artifact SHA, and prove failures do not publish
+- **Native boundary** — Excel/Word/PowerPoint COM force-disable macros before opening; Excel disables link updates and waits for calculation; PowerPoint native quality exports deterministic per-slide images; the Rust host enforces a 15-minute kill-on-drop watchdog
 
 ## Dependencies
-In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the bundled requirements there, and makes `run_shell` prefer that managed Python path automatically. It does not install or manage Poppler or LibreOffice.
+In the desktop app, first prefer `prepare_document_tools` when that tool is available. Call `action: "check"` to inspect readiness, then call `action: "prepare"` for missing required Python dependencies. The same flow is exposed in Settings → Models → Document tools. It creates an app-managed virtual environment, installs the exact pinned versions in bundled `requirements.txt`, and makes `run_shell` prefer that managed Python path automatically. A version mismatch is not reported as ready. It does not install or manage Poppler or LibreOffice.
 
 For CLI/dev environments, install before first Office/PDF operation (only what's needed for the target format):
 ```

@@ -183,34 +183,29 @@ impl Tool for OfficeArtifactTool {
         let workspace = resolve_workspace(&args.workspace_root, db, source_scope)?;
         let app_data = app_data_dir_from_db(db)?;
         let (engine_args, request_json) = engine_arguments(&args)?;
-        let call_id = call_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let execution = office_runtime::execute_office_artifact_engine(
-                &app_data,
-                &workspace,
-                &engine_args,
-                &request_json,
-            )?;
-            let artifacts = serde_json::from_str::<Value>(&execution.stdout)
-                .ok()
-                .or_else(|| serde_json::to_value(&execution).ok());
-            let content = if execution.stdout.is_empty() {
-                execution.stderr.clone()
-            } else if execution.stderr.is_empty() {
-                execution.stdout.clone()
-            } else {
-                format!("{}\n\nDiagnostics:\n{}", execution.stdout, execution.stderr)
-            };
-            Ok(ToolResult {
-                call_id,
-                content,
-                is_error: !execution.success,
-                artifacts,
-            })
+        let execution = office_runtime::execute_office_artifact_engine(
+            &app_data,
+            &workspace,
+            &engine_args,
+            &request_json,
+        )
+        .await?;
+        let artifacts = serde_json::from_str::<Value>(&execution.stdout)
+            .ok()
+            .or_else(|| serde_json::to_value(&execution).ok());
+        let content = if execution.stdout.is_empty() {
+            execution.stderr.clone()
+        } else if execution.stderr.is_empty() {
+            execution.stdout.clone()
+        } else {
+            format!("{}\n\nDiagnostics:\n{}", execution.stdout, execution.stderr)
+        };
+        Ok(ToolResult {
+            call_id: call_id.to_string(),
+            content,
+            is_error: !execution.success,
+            artifacts,
         })
-        .await
-        .map_err(|error| CoreError::Internal(format!("office_artifact task: {error}")))?
     }
 }
 
