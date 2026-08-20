@@ -1503,6 +1503,17 @@ test("dream theme is decorative and quieter away from home", async ({ page }) =>
   expect(appearancePanelAlpha).toBeGreaterThanOrEqual(0.62);
   expect(appearancePanelAlpha).toBeLessThanOrEqual(0.78);
   await page.screenshot({ path: 'test-results/dream-settings.png', fullPage: true });
+
+  const cdpSession = await page.context().newCDPSession(page);
+  await cdpSession.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
+  });
+  await expect(homeBackdrop).toBeHidden();
+  expect(await backgroundAlpha(workspace)).toBe(1);
+  await expect(workspace).toHaveCSS("backdrop-filter", "none");
+  await expect(workspace).not.toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await cdpSession.send("Emulation.setEmulatedMedia", { features: [] });
+  await cdpSession.detach();
 });
 
 test("custom wallpaper appearances cover every workspace surface without sacrificing chat readability", async ({ page }) => {
@@ -1630,6 +1641,24 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   }
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  const nestedAppearancePanel = settingsPage
+    .locator('[data-theme-surface="panel"] [data-theme-surface="panel"]')
+    .first();
+  await expect(nestedAppearancePanel).toBeVisible();
+  const nestedPanelBlurOwners = await nestedAppearancePanel.evaluate((target) => {
+    const owners: string[] = [];
+    let element: Element | null = target;
+    while (element) {
+      const style = getComputedStyle(element);
+      const filter = style.backdropFilter
+        || style.getPropertyValue("-webkit-backdrop-filter")
+        || "none";
+      if (filter !== "none") owners.push(filter);
+      element = element.parentElement;
+    }
+    return owners;
+  });
+  expect(nestedPanelBlurOwners).toEqual(["blur(18px)"]);
   await page.screenshot({ path: 'test-results/custom-wallpaper-settings.png', fullPage: true });
 
   await page.goto("/");
@@ -1663,8 +1692,12 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
 
   await page.goto("/chat");
   const chatSidebar = page.getByTestId("chat-history-sidebar").locator(":scope > div > div");
-  const chatContent = page.getByTestId("chat-history-sidebar").locator("xpath=following-sibling::div[1]");
+  const chatContent = page.getByTestId("chat-reading-surface");
   await expect(chatSidebar).toBeVisible();
+  const emptyChatCard = chatContent.locator('[data-theme-component="card"]');
+  await expect(emptyChatCard).toBeVisible();
+  await expect(emptyChatCard).toHaveCSS("backdrop-filter", "none");
+  await expect(chatContent).toHaveCSS("backdrop-filter", "blur(18px)");
   surfaceAlphas.chatSidebar = await backgroundAlpha(chatSidebar);
   surfaceAlphas.chatContent = await backgroundAlpha(chatContent);
 
@@ -1698,7 +1731,10 @@ test("custom appearances without a visual background keep the ordinary opaque sh
         motion: {},
         brand: {},
         content: {},
-        components: {},
+        components: {
+          header: { background: "rgba(20, 32, 45, 0.74)" },
+          card: { background: "rgba(32, 48, 64, 0.66)" },
+        },
         background: { kind: "none" },
       },
     };
@@ -1710,4 +1746,9 @@ test("custom appearances without a visual background keep the ordinary opaque sh
   await expect(page.locator("html")).toHaveAttribute("data-theme-backdrop", "false");
   await expect(page.locator(".app-theme-backdrop")).toBeHidden();
   expect(await backgroundAlpha(page.getByTestId("app-navigation-rail"))).toBe(1);
+  expect(await backgroundAlpha(page.getByTestId("app-titlebar"))).toBe(0.74);
+  const appearancePanel = page.getByRole("heading", { name: "Appearance", exact: true })
+    .locator("xpath=ancestor::section[1]");
+  expect(await backgroundAlpha(appearancePanel)).toBe(0.66);
+  await expect(appearancePanel).toHaveCSS("backdrop-filter", "none");
 });

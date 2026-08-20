@@ -270,6 +270,7 @@ export function DecisionTray({
     {highRisk && (
       <div
         data-testid="decision-tray-modal-backdrop"
+        data-theme-effect="backdrop-blur"
         aria-hidden="true"
         className="fixed inset-0 z-[89] bg-black/55 backdrop-blur-sm"
       />
@@ -277,6 +278,8 @@ export function DecisionTray({
     <section
       ref={modalRef}
       data-testid="decision-tray"
+      data-theme-surface={highRisk ? 'overlay' : 'panel'}
+      data-theme-readable={highRisk ? undefined : 'true'}
       aria-label={t('chat.questionRequestTitle')}
       role={highRisk ? 'alertdialog' : undefined}
       aria-modal={highRisk || undefined}

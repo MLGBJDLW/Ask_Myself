@@ -109,6 +109,7 @@ const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string
 const THEME_VARIABLES = [
   '--theme-surface-opacity', '--theme-glass-blur', '--theme-shadow-intensity', '--theme-density-scale',
   '--theme-chrome-surface-alpha', '--theme-content-surface-alpha', '--theme-shadow-alpha',
+  '--theme-opaque-surface-0', '--theme-opaque-surface-1', '--theme-opaque-surface-2',
   '--theme-chrome-surface-0', '--theme-chrome-surface-1', '--theme-chrome-surface-2',
   '--theme-content-surface-0', '--theme-content-surface-1', '--theme-content-surface-2',
   '--theme-reading-surface-alpha', '--theme-reading-surface-0', '--theme-reading-surface-1', '--theme-reading-surface-2',
@@ -123,6 +124,8 @@ const THEME_VARIABLES = [
   '--theme-component-header-background', '--theme-component-header-border', '--theme-component-header-shadow',
   '--theme-component-card-background', '--theme-component-card-border', '--theme-component-card-shadow',
   '--theme-component-browser-background', '--theme-component-browser-border', '--theme-component-browser-shadow',
+  '--theme-component-rail-background-layer', '--theme-component-header-background-layer',
+  '--theme-component-card-background-layer', '--theme-component-browser-background-layer',
 ] as const;
 
 const COMPONENT_SLOTS: ThemeComponentSlot[] = ['rail', 'header', 'card', 'browser'];
@@ -150,6 +153,9 @@ export function normalizeCustomTheme(value: unknown): CustomThemeDefinition {
     const color = input.colors?.[key];
     if (color === undefined || color === '') continue;
     if (typeof color !== 'string' || !SAFE_COLOR.test(color.trim())) throw new Error(`Invalid color: ${key}`);
+    if (key.startsWith('surface') && color.trim().toLowerCase() === 'transparent') {
+      throw new Error(`Surface color cannot be transparent: ${key}`);
+    }
     colors[key] = color.trim();
   }
 
@@ -250,9 +256,11 @@ export function customThemeToCssVariables(
   variables['--theme-shadow-intensity'] = String(shadowIntensity);
   variables['--theme-shadow-alpha'] = `${Math.min(40, shadowIntensity * 18)}%`;
   for (const surface of [0, 1, 2] as const) {
-    variables[`--theme-chrome-surface-${surface}`] = `color-mix(in srgb, var(--color-surface-${surface}) var(--theme-chrome-surface-alpha), transparent)`;
-    variables[`--theme-content-surface-${surface}`] = `color-mix(in srgb, var(--color-surface-${surface}) var(--theme-content-surface-alpha), transparent)`;
-    variables[`--theme-reading-surface-${surface}`] = `color-mix(in srgb, var(--color-surface-${surface}) var(--theme-reading-surface-alpha), transparent)`;
+    const opaqueSurface = `--theme-opaque-surface-${surface}` as const;
+    variables[opaqueSurface] = `rgb(from var(--color-surface-${surface}) r g b / 1)`;
+    variables[`--theme-chrome-surface-${surface}`] = `color-mix(in srgb, var(${opaqueSurface}) var(--theme-chrome-surface-alpha), transparent)`;
+    variables[`--theme-content-surface-${surface}`] = `color-mix(in srgb, var(${opaqueSurface}) var(--theme-content-surface-alpha), transparent)`;
+    variables[`--theme-reading-surface-${surface}`] = `color-mix(in srgb, var(${opaqueSurface}) var(--theme-reading-surface-alpha), transparent)`;
   }
   if (normalized.effects.densityScale !== undefined) {
     const density = normalized.effects.densityScale;
@@ -282,7 +290,12 @@ export function customThemeToCssVariables(
   if (normalized.brand.logoOpacity !== undefined) variables['--theme-logo-opacity'] = String(normalized.brand.logoOpacity);
   for (const slot of COMPONENT_SLOTS) {
     const style = normalized.components[slot];
-    if (style?.background) variables[`--theme-component-${slot}-background`] = style.background;
+    if (style?.background) {
+      variables[`--theme-component-${slot}-background`] = style.background;
+      variables[`--theme-component-${slot}-background-layer`] = SAFE_GRADIENT.test(style.background)
+        ? style.background
+        : `linear-gradient(${style.background}, ${style.background})`;
+    }
     if (style?.borderColor) variables[`--theme-component-${slot}-border`] = style.borderColor;
     if (style?.boxShadow) variables[`--theme-component-${slot}-shadow`] = style.boxShadow;
   }

@@ -191,10 +191,57 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('opens an interactive terminal dock from the chat screen', async ({ page, context }) => {
+  await page.addInitScript(() => {
+    const plugin = {
+      manifestVersion: 2,
+      kind: 'theme-resource',
+      id: 'terminal-wallpaper',
+      name: 'Terminal Wallpaper',
+      theme: {
+        baseTheme: 'light',
+        mode: 'light',
+        colors: {
+          surface0: 'rgba(246, 238, 232, 0.12)',
+          surface1: 'rgba(255, 248, 242, 0.15)',
+          textPrimary: '#251913',
+          textSecondary: '#59443a',
+          textTertiary: '#786056',
+          accent: '#c85d2e',
+        },
+        effects: { surfaceOpacity: 0.37, glassBlur: 23 },
+        typography: {},
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: {
+          kind: 'gradient',
+          value: 'linear-gradient(135deg, #4f2418, #e09158)',
+        },
+      },
+    };
+    localStorage.setItem('nexa-theme-resource-plugins-v2', JSON.stringify([plugin]));
+    localStorage.setItem('nexa-active-theme-v1', plugin.id);
+  });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/chat/conv-terminal-dock');
 
   await page.getByRole('button', { name: 'Toggle terminal' }).click();
+  await expect(page.getByTestId('terminal-dock')).toHaveAttribute('data-theme-surface', 'transparent');
+  const terminalHeader = page.getByTestId('terminal-dock-header');
+  const terminalScreenSurface = page.getByTestId('terminal-screen').locator('..');
+  await expect(terminalHeader).toHaveAttribute('data-theme-surface', 'chrome');
+  await expect(terminalHeader).toHaveCSS('backdrop-filter', 'blur(23px)');
+  await expect(terminalScreenSurface).toHaveAttribute('data-theme-surface', 'overlay');
+  await expect(terminalScreenSurface).toHaveCSS('backdrop-filter', 'none');
+  const terminalScreenAlpha = await terminalScreenSurface.evaluate((element) => {
+    const color = getComputedStyle(element).backgroundColor;
+    const parts = color.match(/^rgba?\((.+)\)$/i)?.[1]
+      .split(/[\s,\/]+/)
+      .filter(Boolean);
+    return parts && parts.length >= 4 ? Number(parts[3]) : 1;
+  });
+  expect(terminalScreenAlpha).toBe(1);
 
   await expect(page.locator('.xterm')).toBeVisible();
   await expect(page.getByText('Running')).toBeVisible();

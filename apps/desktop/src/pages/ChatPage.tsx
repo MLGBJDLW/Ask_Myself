@@ -1538,7 +1538,11 @@ export function ChatPage() {
   /* ── No provider configured ─────────────────────────────────────── */
   if (!chat.loadingConfig && !chat.agentConfig) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div
+        className="flex items-center justify-center h-full"
+        data-testid="chat-reading-surface"
+        data-theme-surface="content"
+      >
         <EmptyState
           icon={<><Logo size={48} className="mx-auto mb-2" /><Settings className="h-8 w-8" /></>}
           title={t('chat.noProvider')}
@@ -1601,13 +1605,14 @@ export function ChatPage() {
       </motion.div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative" data-theme-surface="content">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative" data-theme-surface="transparent">
         {!chat.activeId && (
           <div className="absolute top-2 left-2 z-20">
             <button
               type="button"
+              data-theme-surface="panel"
               onClick={toggleSidebar}
-              className="p-1.5 rounded-md bg-surface-2/80 backdrop-blur border border-border/50
+              className="p-1.5 rounded-md bg-surface-2/80 border border-border/50
                 text-text-tertiary hover:text-text-primary hover:bg-surface-3
                 transition-colors cursor-pointer"
               title={t('chat.toggleSidebar')}
@@ -1618,7 +1623,11 @@ export function ChatPage() {
           </div>
         )}
         {!chat.activeId && !chat.isStreaming && !pendingGraphContext ? (
-          <div className="flex-1 flex items-center justify-center">
+          <div
+            className="flex-1 flex items-center justify-center"
+            data-testid="chat-reading-surface"
+            data-theme-surface="content"
+          >
             <EmptyState
               icon={<Logo size={64} />}
               title={themeContent.statusText || t('chat.noConversations')}
@@ -1633,7 +1642,11 @@ export function ChatPage() {
         ) : (
           <>
             {chat.activeId && (
-              <div className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/85 px-3 py-1.5 backdrop-blur">
+              <div
+                data-theme-component="header"
+                data-theme-surface="chrome"
+                className="sticky top-0 z-10 shrink-0 border-b border-border/60 bg-surface-1/85 px-3 py-1.5"
+              >
                 <div className="flex min-h-10 flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1758,7 +1771,12 @@ export function ChatPage() {
                 </div>
               </div>
             )}
-            <ChatMessages
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              data-testid="chat-reading-surface"
+              data-theme-surface="content"
+            >
+              <ChatMessages
               conversationId={chat.activeId}
               messages={chat.messages}
               turns={chat.turns}
@@ -1790,7 +1808,8 @@ export function ChatPage() {
               onCancelCompaction={isCompacting && activeCompactionStatus?.operationId
                 ? handleCancelCompaction
                 : undefined}
-            />
+              />
+            </div>
             <TaskBoard
               messages={chat.messages}
               toolCalls={chat.toolCalls}
@@ -1805,56 +1824,66 @@ export function ChatPage() {
                 onSendSelectionToAgent={handleTerminalSelection}
               />
             )}
-            {pendingGraphContext && (
-              <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Network className="h-4 w-4 shrink-0 text-accent" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-medium text-text-primary">
-                      {t('chat.graphContextFromKnowledge', { name: pendingGraphContext.node.label })}
+            <div
+              className="shrink-0"
+              data-testid="chat-transient-surface"
+              data-theme-surface="content"
+              data-theme-blur-owner="false"
+            >
+              {pendingGraphContext && (
+                <div className="mx-4 mb-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Network className="h-4 w-4 shrink-0 text-accent" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium text-text-primary">
+                        {t('chat.graphContextFromKnowledge', { name: pendingGraphContext.node.label })}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
+                        {[
+                          pendingGraphContext.sourceLabel,
+                          pendingGraphContext.pathPrefix,
+                          t('chat.graphContextStats', {
+                            nodes: String(new Set([
+                              pendingGraphContext.node.id,
+                              ...pendingGraphContext.edges.flatMap((edge) => [edge.source, edge.target]),
+                            ]).size),
+                            documents: String(pendingGraphContext.documents.length),
+                            saved: String(pendingGraphContext.tokenEstimate.savedPctEstimate),
+                          }),
+                        ].filter(Boolean).join(' · ')}
+                      </div>
                     </div>
-                    <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
-                      {[
-                        pendingGraphContext.sourceLabel,
-                        pendingGraphContext.pathPrefix,
-                        t('chat.graphContextStats', {
-                          nodes: String(new Set([
-                            pendingGraphContext.node.id,
-                            ...pendingGraphContext.edges.flatMap((edge) => [edge.source, edge.target]),
-                          ]).size),
-                          documents: String(pendingGraphContext.documents.length),
-                          saved: String(pendingGraphContext.tokenEstimate.savedPctEstimate),
-                        }),
-                      ].filter(Boolean).join(' · ')}
-                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      iconOnly
+                      icon={<X size={14} />}
+                      aria-label={t('chat.removeGraphContext')}
+                      title={t('chat.removeGraphContext')}
+                      onClick={handleClearGraphContext}
+                    />
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    iconOnly
-                    icon={<X size={14} />}
-                    aria-label={t('chat.removeGraphContext')}
-                    title={t('chat.removeGraphContext')}
-                    onClick={handleClearGraphContext}
-                  />
                 </div>
-              </div>
-            )}
-            {!isArchivedConversation && (
-              <ConnectionStatusBanner connection={chat.connectionState} />
-            )}
-            {!isArchivedConversation && activeInteraction && (
-              <DecisionTray
-                request={activeInteraction}
-                draft={interactionState.draftsById[activeInteraction.interactionId]}
-                queuePosition={1}
-                queueTotal={activeInteractionQueue.length}
-                onSubmit={handleInteractionSubmit}
-                onCancelTask={handleInteractionCancel}
-              />
-            )}
+              )}
+              {!isArchivedConversation && (
+                <ConnectionStatusBanner connection={chat.connectionState} />
+              )}
+              {!isArchivedConversation && activeInteraction && (
+                <DecisionTray
+                  request={activeInteraction}
+                  draft={interactionState.draftsById[activeInteraction.interactionId]}
+                  queuePosition={1}
+                  queueTotal={activeInteractionQueue.length}
+                  onSubmit={handleInteractionSubmit}
+                  onCancelTask={handleInteractionCancel}
+                />
+              )}
+            </div>
             {isArchivedConversation ? (
-              <div className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3">
+              <div
+                className="shrink-0 border-t border-border/70 bg-surface-1 px-4 py-3"
+                data-theme-surface="chrome"
+              >
                 <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 rounded-lg border border-border/70 bg-surface-2/70 px-3 py-2">
                   <div className="min-w-0">
                     <div className="text-xs font-medium text-text-primary">{t('chat.archivedReadOnly')}</div>

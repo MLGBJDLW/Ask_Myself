@@ -79,7 +79,8 @@ test('theme resources expose safe type, motion, brand, copy, and component slots
   assert.equal(variables['--theme-chrome-surface-alpha'], '90%');
   assert.equal(variables['--theme-content-surface-alpha'], '90%');
   assert.equal(variables['--theme-reading-surface-alpha'], '90%');
-  assert.match(variables['--theme-content-surface-0'], /color-mix.*--color-surface-0/);
+  assert.match(variables['--theme-opaque-surface-0'], /rgb\(from var\(--color-surface-0\).*\/ 1\)/);
+  assert.match(variables['--theme-content-surface-0'], /color-mix.*--theme-opaque-surface-0/);
 });
 
 test('wallpaper themes separate translucent panels from the reading legibility floor', () => {
@@ -91,8 +92,26 @@ test('wallpaper themes separate translucent panels from the reading legibility f
   assert.equal(variables['--theme-chrome-surface-alpha'], '35%');
   assert.equal(variables['--theme-content-surface-alpha'], '68%');
   assert.equal(variables['--theme-reading-surface-alpha'], '82%');
-  assert.match(variables['--theme-reading-surface-0'], /color-mix.*--color-surface-0/);
+  assert.match(variables['--theme-reading-surface-0'], /color-mix.*--theme-opaque-surface-0/);
   assert.equal(variables['--theme-glass-blur'], '14px');
+});
+
+test('component background layers preserve safe colors and gradients', () => {
+  const colorVariables = customThemeToCssVariables({
+    ...profile,
+    components: { card: { background: 'rgba(251, 246, 237, 0.52)' } },
+  });
+  assert.equal(
+    colorVariables['--theme-component-card-background-layer'],
+    'linear-gradient(rgba(251, 246, 237, 0.52), rgba(251, 246, 237, 0.52))',
+  );
+
+  const gradient = 'linear-gradient(90deg, #fff8f2, #f4ded2)';
+  const gradientVariables = customThemeToCssVariables({
+    ...profile,
+    components: { card: { background: gradient } },
+  });
+  assert.equal(gradientVariables['--theme-component-card-background-layer'], gradient);
 });
 
 test('theme resources keep executable CSS and remote fonts outside the contract', () => {
@@ -116,6 +135,19 @@ test('theme resources keep executable CSS and remote fonts outside the contract'
       theme: { ...themeToResourcePlugin(profile).theme, components: { rail: { background: '#000; display:none' } } },
     }),
     /Invalid rail background/,
+  );
+});
+
+test('semantic surface colors cannot bypass effect opacity with transparent', () => {
+  assert.throws(
+    () => normalizeThemeResourcePlugin({
+      ...themeToResourcePlugin(profile),
+      theme: {
+        ...themeToResourcePlugin(profile).theme,
+        colors: { ...profile.colors, surface0: 'transparent' },
+      },
+    }),
+    /Surface color cannot be transparent/,
   );
 });
 

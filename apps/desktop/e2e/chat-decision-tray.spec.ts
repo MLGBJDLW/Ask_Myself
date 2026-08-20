@@ -423,6 +423,9 @@ test('restores a per-question draft, distinguishes supplements, and collapses af
 
   const tray = page.getByTestId('decision-tray');
   await expect(tray).toBeVisible();
+  await expect(tray).toHaveAttribute('data-theme-surface', 'panel');
+  await expect(tray.locator('..')).toHaveAttribute('data-theme-surface', 'content');
+  await expect(tray.locator('..')).toHaveAttribute('data-theme-blur-owner', 'false');
   await expect(tray).toContainText('Question 1 of 2');
   await tray.getByRole('radio', { name: /Architectural refactor/ }).click();
   await expect(tray).toContainText('Question 2 of 2');
@@ -500,13 +503,85 @@ test('four-question requests remain a progressive wizard', async ({ page }) => {
 });
 
 test('high-risk requests block the chat in an accessible modal', async ({ page }) => {
+  await page.addInitScript(() => {
+    const plugin = {
+      manifestVersion: 2,
+      kind: 'theme-resource',
+      id: 'decision-wallpaper',
+      name: 'Decision Wallpaper',
+      theme: {
+        baseTheme: 'light',
+        mode: 'light',
+        colors: {
+          surface0: 'rgba(246, 238, 232, 0.12)',
+          surface1: 'rgba(255, 248, 242, 0.15)',
+          textPrimary: '#251913',
+          textSecondary: '#59443a',
+          textTertiary: '#786056',
+          accent: '#c85d2e',
+        },
+        effects: { surfaceOpacity: 0.4, glassBlur: 20 },
+        typography: {},
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: {
+          kind: 'gradient',
+          value: 'linear-gradient(135deg, #4f2418, #e09158)',
+        },
+      },
+    };
+    localStorage.setItem('nexa-theme-resource-plugins-v2', JSON.stringify([plugin]));
+    localStorage.setItem('nexa-active-theme-v1', plugin.id);
+  });
   await page.goto('/chat/conv-decision-tray?risk=high');
 
   const modal = page.getByRole('alertdialog', { name: 'A decision is needed' });
   await expect(modal).toBeVisible();
   await expect(modal).toHaveAttribute('aria-modal', 'true');
   await expect(modal.getByRole('heading', { name: 'Input required' })).toBeVisible();
-  await expect(page.getByTestId('decision-tray-modal-backdrop')).toBeVisible();
+  const modalBackdrop = page.getByTestId('decision-tray-modal-backdrop');
+  await expect(modalBackdrop).toBeVisible();
+  await expect(modal.locator('..')).toHaveAttribute('data-theme-blur-owner', 'false');
+  const viewport = page.viewportSize();
+  const chatViewportBounds = await page.locator("main").first().boundingBox();
+  const backdropBounds = await modalBackdrop.boundingBox();
+  const modalBounds = await modal.boundingBox();
+  expect(viewport).not.toBeNull();
+  expect(chatViewportBounds).not.toBeNull();
+  expect(backdropBounds).not.toBeNull();
+  expect(modalBounds).not.toBeNull();
+  const edgeTolerance = 3;
+  expect(backdropBounds!.x).toBeLessThanOrEqual(chatViewportBounds!.x + edgeTolerance);
+  expect(backdropBounds!.y).toBeLessThanOrEqual(chatViewportBounds!.y + edgeTolerance);
+  expect(backdropBounds!.x + backdropBounds!.width)
+    .toBeGreaterThanOrEqual(chatViewportBounds!.x + chatViewportBounds!.width - edgeTolerance);
+  expect(backdropBounds!.y + backdropBounds!.height)
+    .toBeGreaterThanOrEqual(chatViewportBounds!.y + chatViewportBounds!.height - edgeTolerance);
+  expect(Math.abs(
+    modalBounds!.x + modalBounds!.width / 2
+      - (chatViewportBounds!.x + chatViewportBounds!.width / 2),
+  )).toBeLessThan(2);
+  expect(Math.abs(
+    modalBounds!.y + modalBounds!.height / 2
+      - (chatViewportBounds!.y + chatViewportBounds!.height / 2),
+  )).toBeLessThan(2);
+  const modalBackgroundAlpha = await modal.evaluate((element) => {
+    const color = getComputedStyle(element).backgroundColor;
+    const parts = color.match(/^rgba?\((.+)\)$/i)?.[1]
+      .split(/[\s,\/]+/)
+      .filter(Boolean);
+    return parts && parts.length >= 4 ? Number(parts[3]) : 1;
+  });
+  expect(modalBackgroundAlpha).toBe(1);
+  const cdpSession = await page.context().newCDPSession(page);
+  await cdpSession.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+  });
+  await expect(modalBackdrop).toHaveCSS('backdrop-filter', 'none');
+  await cdpSession.send('Emulation.setEmulatedMedia', { features: [] });
+  await cdpSession.detach();
   await expect.poll(() => modal.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await page.keyboard.press('Shift+Tab');
   await expect.poll(() => modal.evaluate((element) => element.contains(document.activeElement))).toBe(true);

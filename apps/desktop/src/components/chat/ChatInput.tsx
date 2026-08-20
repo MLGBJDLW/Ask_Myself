@@ -1415,6 +1415,8 @@ export function ChatInput({
     >
     <div
       data-testid="chat-input"
+      data-theme-surface="chrome"
+      data-dragging={isDragging ? "true" : "false"}
       className={`relative shrink-0 border-t border-border bg-surface-1 px-4 py-3 transition-colors ${
         isDragging ? "ring-2 ring-accent/50 bg-accent-subtle" : ""
       }`}
@@ -1587,6 +1589,10 @@ export function ChatInput({
         {qualityProfileBanner}
 
         <div
+          data-testid="chat-composer-surface"
+          data-theme-surface="panel"
+          data-theme-readable="true"
+          data-theme-focus-surface="true"
           className={`overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
             effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
           }`}
@@ -1707,6 +1713,7 @@ export function ChatInput({
           onSelect={updateCaretFromTextarea}
           onPaste={handlePaste}
           placeholder={isCompacting ? `${t("chat.compacting")} (>_<)` : t("chat.placeholder")}
+          aria-label={t("chat.placeholder")}
           disabled={inputLocked}
           rows={1}
           className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
