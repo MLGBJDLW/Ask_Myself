@@ -144,7 +144,7 @@ test.beforeEach(async ({ page }) => {
           tokenCount: 4,
           createdAt: nowIso,
           sortOrder: 1,
-          thinking: null,
+          thinking: 'Checked the theme contrast before replying.',
           imageAttachments: null,
         },
         {
@@ -399,7 +399,8 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
           surface1: 'rgba(255, 248, 242, 0.15)',
           surface2: 'rgba(244, 222, 210, 0.18)',
           surface3: '#ead0c2', surface4: '#dfbca9', textPrimary: '#251913',
-          textSecondary: '#59443a', textTertiary: '#786056', accent: '#c85d2e',
+          textSecondary: '#59443a', textTertiary: '#786056',
+          thinkingText: '#14532d', replyText: '#7c2d12', accent: '#c85d2e',
         },
         effects: { surfaceOpacity: 0.37, glassBlur: 23 },
         typography: {}, motion: {}, brand: {}, content: {},
@@ -461,6 +462,12 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     composer: [{ surface: 'content', filter: 'blur(23px)' }],
     reading: [{ surface: 'content', filter: 'blur(23px)' }],
   });
+
+  const assistantReply = page.locator('.chat-assistant-reply').first();
+  await expect(assistantReply).toHaveCSS('color', 'rgb(124, 45, 18)');
+  await page.getByTestId('thinking-trace-toggle').first().click();
+  await expect(page.locator('.chat-thinking-text .thinking-trace-body').first())
+    .toHaveCSS('color', 'rgb(20, 83, 45)');
 
   const textarea = page.getByTestId('chat-input-textarea');
   const restingComposerFocus = await composerPanel.evaluate((element) => {

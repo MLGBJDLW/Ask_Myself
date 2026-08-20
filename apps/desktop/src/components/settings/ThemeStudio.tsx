@@ -44,6 +44,7 @@ function newTheme(t: Translate): CustomThemeDefinition {
 const COLOR_SLOTS: Array<[keyof CustomThemeDefinition['colors'], string]> = [
   ['surface0', 'canvas'], ['surface1', 'panel'], ['surface2', 'raisedPanel'], ['surface3', 'hoverSurface'], ['surface4', 'strongSurface'],
   ['textPrimary', 'primaryText'], ['textSecondary', 'secondaryText'], ['textTertiary', 'tertiaryText'], ['textInverse', 'inverseText'],
+  ['thinkingText', 'thinkingText'], ['replyText', 'replyText'],
   ['accent', 'accent'], ['accentHover', 'accentHover'], ['accentSubtle', 'accentSubtle'],
   ['success', 'success'], ['warning', 'warning'], ['danger', 'danger'], ['info', 'info'],
   ['border', 'border'], ['borderHover', 'borderHover'], ['borderActive', 'borderActive'],
@@ -367,6 +368,14 @@ export function ThemeStudio() {
             >
               <div className="text-sm font-semibold">{draft.content.statusText || t('themeStudio.livePreview')}</div>
               <p className="mt-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>{draft.content.tagline || t('themeStudio.previewDescription')}</p>
+              <div className="mt-3 space-y-1 rounded-md border border-border/60 p-2 text-xs">
+                <div data-testid="theme-preview-thinking-text" style={{ color: 'var(--color-thinking-text, var(--color-text-secondary))' }}>
+                  {t('themeStudio.color.thinkingText')}
+                </div>
+                <div data-testid="theme-preview-reply-text" style={{ color: 'var(--color-reply-text, var(--color-text-primary))' }}>
+                  {t('themeStudio.color.replyText')}
+                </div>
+              </div>
               {draft.content.quote && <blockquote className="mt-3 border-l-2 pl-2 text-xs italic" style={{ color: 'var(--color-text-secondary)', borderColor: 'var(--color-accent)' }}>{draft.content.quote}</blockquote>}
               <button type="button" className="mt-4 rounded-md px-3 py-1.5 text-xs" style={{ background: 'var(--color-accent)', color: 'var(--color-text-inverse, #fff)' }}>{t('themeStudio.accentAction')}</button>
             </div>

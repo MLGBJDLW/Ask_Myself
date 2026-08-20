@@ -47,6 +47,7 @@ export interface CustomThemeDefinition {
   colors: {
     surface0?: string; surface1?: string; surface2?: string; surface3?: string; surface4?: string;
     textPrimary?: string; textSecondary?: string; textTertiary?: string; textInverse?: string;
+    thinkingText?: string; replyText?: string;
     accent?: string; accentHover?: string; accentSubtle?: string;
     success?: string; warning?: string; danger?: string; info?: string;
     border?: string; borderHover?: string; borderActive?: string;
@@ -98,6 +99,7 @@ const COLOR_VARIABLES: Record<keyof CustomThemeDefinition['colors'], `--${string
   surface3: '--color-surface-3', surface4: '--color-surface-4',
   textPrimary: '--color-text-primary', textSecondary: '--color-text-secondary',
   textTertiary: '--color-text-tertiary', textInverse: '--color-text-inverse',
+  thinkingText: '--color-thinking-text', replyText: '--color-reply-text',
   accent: '--color-accent', accentHover: '--color-accent-hover', accentSubtle: '--color-accent-subtle',
   success: '--color-success', warning: '--color-warning', danger: '--color-danger', info: '--color-info',
   border: '--color-border', borderHover: '--color-border-hover', borderActive: '--color-border-active',

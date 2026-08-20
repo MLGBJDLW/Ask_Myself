@@ -1030,6 +1030,16 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
   background: var(--theme-component-card-background, var(--theme-content-surface-1));
 }
 
+/* Search, sources, and knowledge use one readable canvas. Their empty state is
+   content, not a second full-size glass card layered over the same backdrop. */
+:is(html.theme-dream, html[data-theme-backdrop='true']) [data-theme-unified-canvas='true'] [data-theme-component='card'] {
+  background: transparent;
+  border-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
   :is(html.theme-dream, html[data-custom-theme='true']) .app-theme-backdrop {
     display: none;
@@ -1140,6 +1150,20 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
   line-height: 1.625;
   word-break: normal;
   overflow-wrap: break-word;
+}
+
+.chat-assistant-reply {
+  color: var(--color-reply-text, var(--color-text-primary));
+}
+
+.chat-assistant-reply .prose-chat .katex {
+  color: inherit;
+}
+
+.chat-thinking-text,
+.chat-thinking-text .thinking-trace-header,
+.chat-thinking-text .thinking-trace-body {
+  color: var(--color-thinking-text, var(--color-text-secondary));
 }
 
 .prose-chat > *:first-child {
@@ -1717,7 +1741,7 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
   position: relative;
   display: inline-flex;
   align-items: center;
-  color: var(--color-text-secondary);
+  color: var(--color-thinking-text, var(--color-text-secondary));
   font-weight: 500;
 }
 
@@ -1736,7 +1760,7 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
 }
 
 .thinking-status-text-active {
-  color: var(--color-accent-hover);
+  color: var(--color-thinking-text, var(--color-accent-hover));
   animation: thinking-text-breathe 2.8s ease-in-out infinite;
 }
 

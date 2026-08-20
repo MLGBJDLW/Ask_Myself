@@ -212,7 +212,7 @@ export function ThinkingBlock({
 
   return (
     <div
-      className="thinking-trace mb-2"
+      className="thinking-trace chat-thinking-text mb-2"
       data-trace-active={traceActive ? 'true' : 'false'}
     >
       <span className="thinking-trace-node" aria-hidden="true" />

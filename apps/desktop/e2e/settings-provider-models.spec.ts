@@ -597,6 +597,8 @@ test.beforeEach(async ({ page }) => {
                 surface1: "#102235",
                 textPrimary: "#f2f8ff",
                 textSecondary: "#a8bed1",
+                thinkingText: "#7dd3fc",
+                replyText: "#fef3c7",
                 accent: "#38bdf8",
               },
               effects: { surfaceOpacity: 0.9, glassBlur: 14 },
@@ -1392,6 +1394,8 @@ test("appearance installs the backend-normalized theme draft only after explicit
   await page.getByPlaceholder(/calm moonlit ocean/i).fill(requestedDescription);
   await page.getByRole("button", { name: "Generate theme draft" }).click();
   await expect(page.getByLabel("Name")).toHaveValue("Generated Ocean");
+  await expect(page.getByTestId("theme-preview-thinking-text")).toHaveCSS("color", "rgb(125, 211, 252)");
+  await expect(page.getByTestId("theme-preview-reply-text")).toHaveCSS("color", "rgb(254, 243, 199)");
   await page.getByRole("button", { name: "Controlled component styles" }).click();
   await page.getByRole("group", { name: "Navigation rail" }).getByLabel("Background").fill("rgba(8, 19, 31, 0.92)");
   await expect.poll(() => page.evaluate(() => (
@@ -1609,6 +1613,8 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     rail: await backgroundAlpha(rail),
     titlebar: await backgroundAlpha(titlebar),
     searchPage: 0,
+    sourcesPage: 0,
+    knowledgePage: 0,
     taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0,
@@ -1664,11 +1670,34 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   await page.goto("/");
   const routeSurface = page.locator("main[data-theme-surface]").first();
   await expect(routeSurface).toHaveAttribute("data-theme-surface", "content");
+  await expect(routeSurface).toHaveAttribute("data-theme-unified-canvas", "true");
   surfaceAlphas.searchPage = await backgroundAlpha(routeSurface);
   await page.getByRole("textbox").first().focus();
   const recentQueryDropdown = page.getByTestId("recent-query-dropdown");
   await expect(recentQueryDropdown).toBeVisible();
   expect(await backgroundAlpha(recentQueryDropdown)).toBe(1);
+  await page.keyboard.press("Escape");
+  const searchEmptyState = page.locator('[data-theme-unified-canvas="true"] [data-theme-component="card"]').first();
+  await expect(searchEmptyState).toBeVisible();
+  expect(await backgroundAlpha(searchEmptyState)).toBe(0);
+  await page.screenshot({ path: 'test-results/custom-wallpaper-search.png', fullPage: true });
+
+  await page.goto("/sources");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "content");
+  await expect(routeSurface).toHaveAttribute("data-theme-unified-canvas", "true");
+  await expect(page.getByRole("heading", { name: "Source Management", exact: true })).toBeVisible();
+  surfaceAlphas.sourcesPage = await backgroundAlpha(routeSurface);
+  const sourcesEmptyState = page.locator('[data-theme-unified-canvas="true"] [data-theme-component="card"]').first();
+  await expect(sourcesEmptyState).toBeVisible();
+  expect(await backgroundAlpha(sourcesEmptyState)).toBe(0);
+  await page.screenshot({ path: 'test-results/custom-wallpaper-sources.png', fullPage: true });
+
+  await page.goto("/knowledge");
+  await expect(routeSurface).toHaveAttribute("data-theme-surface", "content");
+  await expect(routeSurface).toHaveAttribute("data-theme-unified-canvas", "true");
+  await expect(page.getByRole("heading", { name: "Knowledge", exact: true })).toBeVisible();
+  surfaceAlphas.knowledgePage = await backgroundAlpha(routeSurface);
+  await page.screenshot({ path: 'test-results/custom-wallpaper-knowledge.png', fullPage: true });
 
   await page.goto("/tasks");
   await expect(routeSurface).toHaveAttribute("data-theme-surface", "page");
@@ -1693,13 +1722,13 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   await page.goto("/chat");
   const chatSidebar = page.getByTestId("chat-history-sidebar").locator(":scope > div > div");
   const chatContent = page.getByTestId("chat-reading-surface");
+  const chatWorkspace = page.getByTestId("chat-workspace-surface");
   await expect(chatSidebar).toBeVisible();
-  const emptyChatCard = chatContent.locator('[data-theme-component="card"]');
-  await expect(emptyChatCard).toBeVisible();
-  await expect(emptyChatCard).toHaveCSS("backdrop-filter", "none");
-  await expect(chatContent).toHaveCSS("backdrop-filter", "blur(18px)");
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("data-placement", "center");
+  await expect(chatContent).toHaveCSS("backdrop-filter", "none");
+  await expect(chatWorkspace).toHaveCSS("backdrop-filter", "blur(18px)");
   surfaceAlphas.chatSidebar = await backgroundAlpha(chatSidebar);
-  surfaceAlphas.chatContent = await backgroundAlpha(chatContent);
+  surfaceAlphas.chatContent = await backgroundAlpha(chatWorkspace);
 
   expect(surfaceAlphas).toEqual({
     settingsContent: 0,
@@ -1708,6 +1737,8 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
     rail: 0.72,
     titlebar: 0.72,
     searchPage: 0.82,
+    sourcesPage: 0.82,
+    knowledgePage: 0.82,
     taskPage: 0,
     workflowPage: 0,
     chatSidebar: 0.72,

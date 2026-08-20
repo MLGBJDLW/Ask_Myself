@@ -277,7 +277,8 @@ Schema:
     "mode": "dark|light",
     "colors": {
       "surface0": "#RRGGBB", "surface1": "#RRGGBB", "surface2": "#RRGGBB",
-      "textPrimary": "#RRGGBB", "textSecondary": "#RRGGBB", "accent": "#RRGGBB",
+      "textPrimary": "#RRGGBB", "textSecondary": "#RRGGBB", "thinkingText": "#RRGGBB",
+      "replyText": "#RRGGBB", "accent": "#RRGGBB",
       "accentHover": "#RRGGBB", "accentSubtle": "#RRGGBB", "success": "#RRGGBB",
       "warning": "#RRGGBB", "danger": "#RRGGBB", "info": "#RRGGBB", "border": "#RRGGBB",
       "contextPrompts": "#RRGGBB", "contextConversation": "#RRGGBB",
