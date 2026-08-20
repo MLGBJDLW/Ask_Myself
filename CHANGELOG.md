@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.20](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.19...nexa-monorepo-v0.12.20) (2026-08-19)
+
+
+### Bug Fixes
+
+* **ci:** bypass stalled runner apt mirror ([801b0bb](https://github.com/MLGBJDLW/Nexa/commit/801b0bbb151590c09aeffcf52f1ddefbd6d5436b))
+
 ## [0.12.19](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.18...nexa-monorepo-v0.12.19) (2026-08-19)
 
 
