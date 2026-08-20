@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.22](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.21...nexa-monorepo-v0.12.22) (2026-08-20)
+
+
+### Features
+
+* **chat:** streamline new conversations and chat canvas ([e504fb0](https://github.com/MLGBJDLW/Nexa/commit/e504fb06ed8739ade76ea19fa735308dc958daca))
+* **desktop:** streamline chat, image prompts, and themes ([ca9ee9b](https://github.com/MLGBJDLW/Nexa/commit/ca9ee9b1a714a88455a26809932ffd282d5cd640))
+* **image:** add auditable generation prompt policies ([b24d785](https://github.com/MLGBJDLW/Nexa/commit/b24d7856d0c09c91eb4315c4305b3bb06e05aabe))
+* **theme:** unify reading canvases and chat text colors ([5daebb2](https://github.com/MLGBJDLW/Nexa/commit/5daebb2b4a97e36b0389d4403b6b38ee86e90e2a))
+
+
+### Bug Fixes
+
+* **chat:** avoid composer terminal overlap ([6550792](https://github.com/MLGBJDLW/Nexa/commit/65507923ae8ecf7cf3b331c8e0dcfced13700888))
+* **image:** honor legacy prompt enhancement ([889d6ab](https://github.com/MLGBJDLW/Nexa/commit/889d6ab7466909602a06408c13ff70e5f11d8f64))
+* **image:** preserve legacy prompt-only calls ([3e33f5b](https://github.com/MLGBJDLW/Nexa/commit/3e33f5b6ef4ad456635032709b0b8ab228048f99))
+* **image:** report provider enhancement state ([d1fcc9c](https://github.com/MLGBJDLW/Nexa/commit/d1fcc9c08968f078217ed74f61caf7dec1de1c4a))
+
 ## [0.12.21](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.20...nexa-monorepo-v0.12.21) (2026-08-20)
 
 
