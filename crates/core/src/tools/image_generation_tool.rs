@@ -54,7 +54,9 @@ impl ImagePromptMode {
 struct GenerateImageArgs {
     prompt: String,
     #[serde(default, alias = "promptMode")]
-    prompt_mode: ImagePromptMode,
+    prompt_mode: Option<ImagePromptMode>,
+    #[serde(default, alias = "promptExtend")]
+    prompt_extend: Option<bool>,
     #[serde(default)]
     provider: Option<String>,
     #[serde(default, alias = "apiStyle")]
@@ -80,6 +82,16 @@ struct GenerateImageArgs {
 }
 
 impl GenerateImageArgs {
+    fn effective_prompt_mode(&self) -> ImagePromptMode {
+        self.prompt_mode.unwrap_or_else(|| {
+            if self.prompt_extend == Some(true) {
+                ImagePromptMode::ProviderEnhanced
+            } else {
+                ImagePromptMode::Verbatim
+            }
+        })
+    }
+
     fn runtime_request(&self) -> ImageGenerationRequest<'_> {
         ImageGenerationRequest {
             provider_config_id: self.provider_config_id.as_deref(),
@@ -141,7 +153,8 @@ impl Tool for GenerateImageTool {
 
         let runtime =
             crate::plugins::image_generation::resolve_runtime(db, &args.runtime_request())?;
-        let provider_enhancement_requested = args.prompt_mode.provider_enhancement_enabled();
+        let prompt_mode = args.effective_prompt_mode();
+        let provider_enhancement_requested = prompt_mode.provider_enhancement_enabled();
         let provider_enhancement_supported = supports_explicit_prompt_enhancement(runtime.provider);
         let provider_enhancement_applied =
             provider_enhancement_requested && provider_enhancement_supported;
@@ -198,7 +211,7 @@ impl Tool for GenerateImageTool {
             None => "unknown",
         };
         let mut warnings = Vec::new();
-        if args.prompt_mode == ImagePromptMode::Verbatim && prompt_integrity == "revised" {
+        if prompt_mode == ImagePromptMode::Verbatim && prompt_integrity == "revised" {
             warnings.push("the provider reported a revised prompt; the requested prompt remains preserved in preview metadata");
         }
         if provider_enhancement_requested && !provider_enhancement_supported {
@@ -232,7 +245,7 @@ impl Tool for GenerateImageTool {
                 "transient": true,
                 "prompt": args.prompt.as_str(),
                 "requestedPrompt": args.prompt.as_str(),
-                "promptMode": args.prompt_mode.as_str(),
+                "promptMode": prompt_mode.as_str(),
                 "effectivePrompt": effective_prompt,
                 "providerPromptEnhancementRequested": provider_enhancement_requested,
                 "providerPromptEnhancementSupported": provider_enhancement_supported,
@@ -744,7 +757,7 @@ fn build_qwen_image_body(
     model: &str,
 ) -> Value {
     let mut parameters = json!({
-        "prompt_extend": args.prompt_mode.provider_enhancement_enabled(),
+        "prompt_extend": args.effective_prompt_mode().provider_enhancement_enabled(),
         "watermark": args.watermark.unwrap_or(false),
     });
     if let Some(size) = selected_optional(args.size.as_deref(), config.size.as_deref()) {
@@ -1010,7 +1023,8 @@ mod tests {
     fn test_args() -> GenerateImageArgs {
         GenerateImageArgs {
             prompt: "a precise product photo".to_string(),
-            prompt_mode: ImagePromptMode::Verbatim,
+            prompt_mode: Some(ImagePromptMode::Verbatim),
+            prompt_extend: None,
             provider: None,
             api_style: None,
             provider_config_id: None,
@@ -1054,6 +1068,11 @@ mod tests {
         assert!(prompt_mode["description"]
             .as_str()
             .is_some_and(|description| description.contains("verbatim")));
+        let legacy_prompt_extend = &definition["parameters"]["properties"]["prompt_extend"];
+        assert_eq!(legacy_prompt_extend["type"], "boolean");
+        assert!(legacy_prompt_extend["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Deprecated compatibility")));
     }
 
     #[test]
@@ -1063,8 +1082,39 @@ mod tests {
         }))
         .expect("legacy arguments parse");
 
-        assert_eq!(args.prompt_mode, ImagePromptMode::Verbatim);
+        assert_eq!(args.effective_prompt_mode(), ImagePromptMode::Verbatim);
         assert_eq!(args.prompt, "  保留标点：猫。\r\n--style raw  ");
+    }
+
+    #[test]
+    fn legacy_prompt_extend_preserves_explicit_qwen_enhancement() {
+        let config = test_config("qwen", None);
+        for field in ["prompt_extend", "promptExtend"] {
+            let mut value = json!({
+                "prompt": "A legacy prompt that requested enhancement"
+            });
+            value[field] = json!(true);
+            let args: GenerateImageArgs =
+                serde_json::from_value(value).expect("legacy prompt enhancement arguments parse");
+
+            assert_eq!(
+                args.effective_prompt_mode(),
+                ImagePromptMode::ProviderEnhanced
+            );
+            assert_eq!(
+                build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]
+                    ["prompt_extend"],
+                true
+            );
+        }
+
+        let args: GenerateImageArgs = serde_json::from_value(json!({
+            "prompt": "Explicit new policy wins",
+            "prompt_mode": "verbatim",
+            "prompt_extend": true
+        }))
+        .expect("mixed legacy and current arguments parse");
+        assert_eq!(args.effective_prompt_mode(), ImagePromptMode::Verbatim);
     }
 
     #[test]
@@ -1088,12 +1138,12 @@ mod tests {
         assert!(!supports_explicit_prompt_enhancement(ImageProvider::OpenAi));
         assert!(!supports_explicit_prompt_enhancement(ImageProvider::Google));
 
-        args.prompt_mode = ImagePromptMode::AgentRefined;
+        args.prompt_mode = Some(ImagePromptMode::AgentRefined);
         assert_eq!(
             build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]["prompt_extend"],
             false
         );
-        args.prompt_mode = ImagePromptMode::ProviderEnhanced;
+        args.prompt_mode = Some(ImagePromptMode::ProviderEnhanced);
         assert_eq!(
             build_qwen_image_body(&config, &args, "qwen-image-plus")["parameters"]["prompt_extend"],
             true

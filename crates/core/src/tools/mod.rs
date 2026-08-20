@@ -1802,6 +1802,28 @@ mod tests {
     }
 
     #[test]
+    fn generate_image_legacy_prompt_extend_alias_reaches_the_runtime() {
+        let registry = default_tool_registry();
+        let schema = registry
+            .get("generate_image")
+            .expect("generate_image should be registered")
+            .parameters_schema();
+
+        let normalized = normalize_tool_arguments(
+            "generate_image",
+            r#"{"prompt":"A legacy enhanced prompt","promptExtend":true}"#,
+            &schema,
+        )
+        .expect("legacy prompt enhancement should reach the tool runtime");
+        let value: serde_json::Value =
+            serde_json::from_str(&normalized).expect("normalized arguments should be JSON");
+
+        assert_eq!(value["prompt"], "A legacy enhanced prompt");
+        assert_eq!(value["prompt_extend"], true);
+        assert!(value.get("promptExtend").is_none());
+    }
+
+    #[test]
     fn select_tools_keeps_manage_persona_available_for_direct_turns() {
         let registry = default_tool_registry();
         let defs = registry.select_tools("Say hello briefly.", false);

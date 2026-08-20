@@ -14,6 +14,10 @@
         "default": "verbatim",
         "description": "Prompt provenance and rewrite policy. Omission defaults to verbatim for compatibility. verbatim means the user supplied a ready prompt and it must be copied byte-for-byte. agent_refined means the agent authored the prompt from sparse intent and provider-side rewriting must stay disabled. provider_enhanced is explicit opt-in to provider rewriting and is only allowed when the user requested enhancement or ideation."
       },
+      "prompt_extend": {
+        "type": "boolean",
+        "description": "Deprecated compatibility input; do not use in new calls. When prompt_mode is omitted, true maps to provider_enhanced and false maps to verbatim. An explicit prompt_mode takes precedence."
+      },
       "provider": {
         "type": "string",
         "description": "Optional provider override: openai, openai_compatible, google, gemini, nano_banana, qwen, dashscope, aliyun, or alibaba."
