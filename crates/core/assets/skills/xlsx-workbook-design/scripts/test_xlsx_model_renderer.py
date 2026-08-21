@@ -6,12 +6,48 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
+import xlsx_audit
 import xlsx_model_renderer
 
 
 class XlsxModelRendererTests(unittest.TestCase):
+    def test_audit_maps_reordered_sheets_through_workbook_relationships(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.xlsx"
+            reordered = root / "reordered.xlsx"
+            wb = openpyxl.Workbook()
+            wb.active.title = "A"
+            wb.active["A1"] = "part-A"
+            wb.create_sheet("B")["A1"] = "part-B"
+            wb.save(original)
+            wb.close()
+            with zipfile.ZipFile(original) as source, zipfile.ZipFile(reordered, "w") as target:
+                for info in source.infolist():
+                    data = source.read(info.filename)
+                    if info.filename == "xl/workbook.xml":
+                        document = ET.fromstring(data)
+                        sheets = document.find(f"{{{xlsx_audit.NS['main']}}}sheets")
+                        self.assertIsNotNone(sheets)
+                        children = list(sheets)
+                        sheets.remove(children[0])
+                        sheets.append(children[0])
+                        data = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                    target.writestr(info, data)
+
+            report = xlsx_audit.audit(reordered)
+            self.assertEqual(["B", "A"], [sheet["name"] for sheet in report["sheet_details"]])
+            self.assertTrue(report["sheet_details"][0]["part"].endswith("sheet2.xml"))
+            self.assertTrue(report["sheet_details"][1]["part"].endswith("sheet1.xml"))
+
     def test_create_xlsx_from_spec_writes_tables_formulas_and_qa(self) -> None:
         try:
             import openpyxl  # type: ignore
@@ -116,6 +152,116 @@ class XlsxModelRendererTests(unittest.TestCase):
         messages = " ".join(issue["message"] for issue in qa["issues"])
         self.assertIn("missing sheet reference", messages)
         self.assertIn("#REF!", messages)
+
+    def test_formula_lint_matches_sheet_references_case_insensitively(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        wb = openpyxl.Workbook()
+        inputs = wb.active
+        inputs.title = "Inputs"
+        inputs["B2"] = 100
+        inputs["C2"] = 200
+        summary = wb.create_sheet("Summary")
+        summary["A1"] = "=SUM(Inputs!B2:C2)"
+
+        qa = xlsx_model_renderer.audit_workbook_formulas(wb)
+        self.assertEqual("pass", qa["status"], qa)
+
+    def test_rows_keep_leading_equals_literal_and_formula_specs_explicit(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            spec_path = root / "literal_formula_spec.json"
+            out_path = root / "literal_formula.xlsx"
+            spec_path.write_text(
+                json.dumps({
+                    "sheets": [{
+                        "name": "Inputs",
+                        "headers": ["Untrusted text", "Explicit formula"],
+                        "rows": [["=WEBSERVICE(\"https://example.invalid/\")", None]],
+                        "formulas": [{"cell": "B2", "formula": "=1+1"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            xlsx_model_renderer.create_xlsx_from_spec(out_path, spec_path, workspace_root=root)
+            wb = openpyxl.load_workbook(out_path, data_only=False)
+            try:
+                ws = wb["Inputs"]
+                self.assertEqual("=WEBSERVICE(\"https://example.invalid/\")", ws["A2"].value)
+                self.assertEqual("s", ws["A2"].data_type)
+                self.assertEqual("=1+1", ws["B2"].value)
+                self.assertEqual("f", ws["B2"].data_type)
+            finally:
+                wb.close()
+
+    def test_formula_inventory_fingerprints_definitions_and_scans_modern_unknown_errors(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evidence.xlsx"
+            workbook = openpyxl.Workbook()
+            workbook.active.title = "Model"
+            workbook.active["A1"] = 1
+            workbook.active["A2"] = "=Model!A1+1"
+            workbook.active["B1"] = "#SPILL!"
+            workbook.active["B1"].data_type = "e"
+            workbook.active["B2"] = "#FUTURE!"
+            workbook.active["B2"].data_type = "e"
+            workbook.save(path)
+            workbook.close()
+
+            inventory = xlsx_model_renderer.inspect_formula_inventory(path)
+            errors = xlsx_model_renderer.inspect_formula_errors(path)
+
+            self.assertEqual(1, inventory["formulaCells"])
+            self.assertEqual(64, len(inventory["fingerprint"]))
+            self.assertEqual("Model!A2", inventory["dependencyEdges"][0]["from"])
+            self.assertEqual(2, errors["count"])
+            by_cell = {item["cell"]: item for item in errors["cells"]}
+            self.assertTrue(by_cell["B1"]["known"])
+            self.assertFalse(by_cell["B2"]["known"])
+
+    def test_formula_inventory_tokenizes_local_ranges_and_reports_circular_models(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "circular.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Model"
+            sheet["A1"] = "=SUM(B1:B2)"
+            sheet["B1"] = "=A1+1"
+            sheet["B2"] = "=_xlfn.FILTER(C1:C2,C1:C2>0)"
+            workbook.calculation.iterate = True
+            workbook.calculation.iterateCount = 50
+            workbook.save(path)
+            workbook.close()
+
+            inventory = xlsx_model_renderer.inspect_formula_inventory(path)
+            self.assertEqual("openpyxl.formula.Tokenizer", inventory["tokenizer"])
+            self.assertIn(
+                {"from": "Model!A1", "to": "Model!B1"},
+                inventory["dependencyEdges"],
+            )
+            self.assertTrue(
+                any({"Model!A1", "Model!B1"} <= set(cycle) for cycle in inventory["circularReferences"]),
+                inventory["circularReferences"],
+            )
+            self.assertIn("Model!B2", inventory["dynamicArrayAnchors"])
+            self.assertEqual("1", inventory["calculationSettings"]["iterate"])
 
 
 if __name__ == "__main__":

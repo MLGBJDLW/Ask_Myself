@@ -8,11 +8,14 @@ capability preflight without silently enabling network or native automation.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
 import posixpath
+import re
 import shutil
+import stat
 import subprocess
 import uuid
 import zipfile
@@ -23,14 +26,92 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
+from xlsx_formula_inventory import dangerous_formula_functions, inventory_xlsx_formulas
+
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-OFFICE_SUFFIXES = {".docx", ".pptx", ".xlsx"}
 MAIN_PARTS = {
     ".docx": "word/document.xml",
+    ".docm": "word/document.xml",
+    ".dotx": "word/document.xml",
+    ".dotm": "word/document.xml",
     ".pptx": "ppt/presentation.xml",
+    ".pptm": "ppt/presentation.xml",
+    ".potx": "ppt/presentation.xml",
+    ".potm": "ppt/presentation.xml",
     ".xlsx": "xl/workbook.xml",
+    ".xlsm": "xl/workbook.xml",
+    ".xltx": "xl/workbook.xml",
+    ".xltm": "xl/workbook.xml",
 }
+OFFICE_SUFFIXES = set(MAIN_PARTS)
+MAX_PACKAGE_PARTS = 20_000
+MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PART_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 500.0
+MAX_XML_PART_BYTES = 32 * 1024 * 1024
+MAX_XML_TOTAL_BYTES = 256 * 1024 * 1024
+PINNED_PYTHON_DEPENDENCIES = {
+    "python-docx": "1.2.0",
+    "python-pptx": "1.0.2",
+    "pypdf": "6.10.0",
+    "openpyxl": "3.1.5",
+}
+FORMAT_PYTHON_DEPENDENCIES = {
+    "docx": {"python-docx"},
+    "pptx": {"python-pptx"},
+    "xlsx": {"openpyxl"},
+}
+WINDOWS_COM_DEPENDENCY = {"name": "pywin32", "version": "312"}
+
+
+def office_dependency_lock_status() -> dict[str, Any]:
+    scripts_dir = Path(__file__).resolve().parent
+    lock = scripts_dir / "requirements.lock"
+    sbom = scripts_dir / "office-python.sbom.json"
+    if not lock.is_file() or not sbom.is_file():
+        return {
+            "status": "missing",
+            "requireHashes": True,
+            "lockPath": "scripts/requirements.lock",
+            "sbomPath": "scripts/office-python.sbom.json",
+        }
+    return {
+        "status": "ready",
+        "requireHashes": True,
+        "lockPath": "scripts/requirements.lock",
+        "lockSha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+        "sbomPath": "scripts/office-python.sbom.json",
+        "sbomSha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+    }
+
+
+def office_python_dependency_statuses(
+    artifact_format: str | None = None,
+    needs: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    selected = set(PINNED_PYTHON_DEPENDENCIES)
+    if artifact_format is not None:
+        selected = set(FORMAT_PYTHON_DEPENDENCIES.get(artifact_format, set()))
+    if needs and "pdf" in needs:
+        selected.add("pypdf")
+    statuses = []
+    for distribution, expected in PINNED_PYTHON_DEPENDENCIES.items():
+        if distribution not in selected:
+            continue
+        try:
+            actual = importlib.metadata.version(distribution)
+            status = "ready" if actual == expected else "version-mismatch"
+        except importlib.metadata.PackageNotFoundError:
+            actual = None
+            status = "missing"
+        statuses.append({
+            "id": distribution,
+            "expectedVersion": expected,
+            "actualVersion": actual,
+            "status": status,
+        })
+    return statuses
 
 
 @dataclass
@@ -96,7 +177,7 @@ class NexaOpenXmlBackend(OfficeBackend):
             status="ready",
             capabilities=["create", "edit", "inspect", "validate", "transaction"],
             local=True,
-            detail="Default local backend; no Office application or network required.",
+            detail="Request readiness is evaluated per format and required operation.",
         )
 
 
@@ -189,6 +270,170 @@ class OfficeCliBackend(OfficeBackend):
         )
 
 
+class PptxGenJsBackend(OfficeBackend):
+    id = "pptxgenjs"
+
+    def preflight(self) -> BackendStatus:
+        configured_node = os.environ.get("NEXA_PPTXGENJS_NODE")
+        node = (
+            str(Path(configured_node).expanduser().resolve())
+            if configured_node and Path(configured_node).expanduser().is_file()
+            else shutil.which("node")
+        )
+        if not node:
+            return BackendStatus(
+                id=self.id,
+                label="PptxGenJS",
+                status="missing",
+                capabilities=["create", "masters", "charts", "svg", "media"],
+                local=True,
+                detail="Node.js is unavailable; the Python PPTX author remains available.",
+            )
+        configured_modules = os.environ.get("NEXA_PPTXGENJS_MODULE_ROOT")
+        module_root = (
+            Path(configured_modules).expanduser().resolve().parent
+            if configured_modules
+            and (Path(configured_modules).expanduser() / "pptxgenjs" / "package.json").is_file()
+            else next(
+                (
+                    parent for parent in Path(__file__).resolve().parents
+                    if (parent / "node_modules" / "pptxgenjs" / "package.json").is_file()
+                ),
+                None,
+            )
+        )
+        if module_root is None:
+            return BackendStatus(
+                id=self.id,
+                label="PptxGenJS",
+                status="missing",
+                capabilities=["create", "masters", "charts", "svg", "media"],
+                local=True,
+                path=node,
+                detail=(
+                    "Node.js is present, but reviewed pptxgenjs@4.0.1 is not installed "
+                    "in the app-managed Office author runtime."
+                ),
+            )
+        return BackendStatus(
+            id=self.id,
+            label="PptxGenJS",
+            status="ready",
+            capabilities=["create", "masters", "charts", "svg", "media"],
+            local=True,
+            path=node,
+            version="4.0.1",
+            detail="Network-closed author adapter restricted to reviewed local assets.",
+        )
+
+
+def find_openxml_sdk_validator() -> tuple[str, list[str]] | None:
+    configured = os.environ.get("NEXA_OPENXML_VALIDATOR")
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+    repository = next(
+        (parent for parent in Path(__file__).resolve().parents if (parent / "tools" / "openxml-validator").is_dir()),
+        None,
+    )
+    if repository is not None:
+        publish = repository / "tools" / "openxml-validator" / "bin" / "Release" / "net8.0" / "publish"
+        candidates.extend([
+            publish / "Nexa.OpenXml.Validator.exe",
+            publish / "Nexa.OpenXml.Validator",
+            publish / "Nexa.OpenXml.Validator.dll",
+        ])
+    commands: list[tuple[str, list[str]]] = []
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() == ".dll":
+            configured_dotnet = os.environ.get("NEXA_DOTNET")
+            dotnet = (
+                str(Path(configured_dotnet).expanduser().resolve())
+                if configured_dotnet and Path(configured_dotnet).expanduser().is_file()
+                else shutil.which("dotnet")
+            )
+            if dotnet:
+                commands.append((dotnet, [str(candidate)]))
+            continue
+        commands.append((str(candidate), []))
+    for program, prefix in commands:
+        try:
+            completed = subprocess.run(
+                [program, *prefix, "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+            payload = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            continue
+        if (
+            completed.returncode == 0
+            and payload.get("kind") == "openXmlSdkValidatorStatus"
+            and payload.get("engineVersion") == "3.5.1"
+            and payload.get("status") == "ready"
+        ):
+            return program, prefix
+    return None
+
+
+def run_openxml_sdk_validator(path: Path) -> dict[str, Any]:
+    command = find_openxml_sdk_validator()
+    if command is None:
+        raise RuntimeError("Microsoft Open XML SDK validator adapter is unavailable")
+    program, prefix = command
+    completed = subprocess.run(
+        [program, *prefix, str(path.resolve())],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "Open XML SDK validator returned non-JSON output: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        ) from error
+    if not isinstance(payload, dict) or payload.get("kind") != "openXmlSdkValidation":
+        raise RuntimeError("Open XML SDK validator returned an invalid evidence envelope")
+    payload["exitCode"] = completed.returncode
+    return payload
+
+
+class OpenXmlSdkValidatorBackend(OfficeBackend):
+    id = "openxml-sdk"
+
+    def preflight(self) -> BackendStatus:
+        command = find_openxml_sdk_validator()
+        if command is None:
+            return BackendStatus(
+                id=self.id,
+                label="Microsoft Open XML SDK Validator",
+                status="missing",
+                capabilities=["schema-validate"],
+                local=True,
+                version="3.5.1",
+                detail="Build or install the pinned Nexa OpenXmlValidator adapter.",
+            )
+        program, prefix = command
+        return BackendStatus(
+            id=self.id,
+            label="Microsoft Open XML SDK Validator",
+            status="ready",
+            capabilities=["schema-validate"],
+            local=True,
+            version="3.5.1",
+            path=" ".join([program, *prefix]),
+            detail="Official DocumentFormat.OpenXml OpenXmlValidator, Microsoft365 schema set.",
+        )
+
+
 class WindowsComBackend(OfficeBackend):
     id = "windows-com"
 
@@ -213,12 +458,27 @@ class WindowsComBackend(OfficeBackend):
                 local=True,
                 detail=f"pywin32 or Microsoft Office is unavailable: {error}",
             )
+        try:
+            pywin32_version = importlib.metadata.version(WINDOWS_COM_DEPENDENCY["name"])
+        except importlib.metadata.PackageNotFoundError:
+            pywin32_version = None
+        if pywin32_version != WINDOWS_COM_DEPENDENCY["version"]:
+            return BackendStatus(
+                id=self.id,
+                label="Microsoft Office COM",
+                status="version-mismatch",
+                capabilities=["finalize", "recalculate", "render"],
+                local=True,
+                version=pywin32_version,
+                detail=f"pywin32 {WINDOWS_COM_DEPENDENCY['version']} is required.",
+            )
         return BackendStatus(
             id=self.id,
             label="Microsoft Office COM",
             status="ready",
             capabilities=["finalize", "recalculate", "render"],
             local=True,
+            version=pywin32_version,
             detail="Optional native finalizer; never used without an explicit job backend.",
         )
 
@@ -229,6 +489,8 @@ def office_backend_statuses() -> list[dict[str, Any]]:
         for backend in (
             NexaOpenXmlBackend(),
             LibreOfficeBackend(),
+            PptxGenJsBackend(),
+            OpenXmlSdkValidatorBackend(),
             OfficeCliBackend(),
             WindowsComBackend(),
         )
@@ -260,6 +522,50 @@ def _relationship_target(source_part: str | None, target: str) -> str | None:
     return str(PurePosixPath(normalized))
 
 
+def _windows_package_path_key(name: str) -> tuple[str | None, str | None]:
+    reserved = {"con", "prn", "aux", "nul"} | {
+        f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
+    }
+    segments: list[str] = []
+    for segment in name.split("/"):
+        if not segment:
+            return None, "empty Windows path segment"
+        if segment.endswith((".", " ")):
+            return None, "Windows path segment ends in dot or space"
+        if any(character in segment for character in '<>:"|?*'):
+            return None, "Windows path segment contains a reserved character"
+        stem = segment.split(".", 1)[0].casefold()
+        if stem in reserved:
+            return None, "Windows path segment uses a reserved device name"
+        segments.append(segment.casefold())
+    return "/".join(segments), None
+
+
+def _decode_xml_for_security_scan(data: bytes) -> str:
+    """Decode XML using the small encoding set accepted by this Office runtime.
+
+    The security preflight must inspect decoded characters, not ASCII byte
+    substrings: UTF-16 inserts NUL bytes between the characters in DOCTYPE and
+    ENTITY declarations. OOXML producers normally use UTF-8, but UTF-16 is
+    legal XML and is therefore handled explicitly. UTF-32 is rejected rather
+    than passed to a parser without an equivalent declaration scan.
+    """
+
+    if data.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")) or data.startswith(
+        (b"\x00\x00\x00<", b"<\x00\x00\x00")
+    ):
+        raise ValueError("UTF-32 XML is unsupported by the fail-closed security scanner")
+    if data.startswith(b"\xff\xfe"):
+        return data.decode("utf-16")
+    if data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16")
+    if len(data) >= 4 and data[0] == 0x3C and data[1] == 0 and data[3] == 0:
+        return data.decode("utf-16-le")
+    if len(data) >= 4 and data[0] == 0 and data[1] == 0x3C and data[2] == 0:
+        return data.decode("utf-16-be")
+    return data.decode("utf-8-sig")
+
+
 def validate_ooxml_package(path: Path) -> ValidationReport:
     """Validate ZIP integrity, XML parseability, content types, and rel targets."""
 
@@ -277,8 +583,84 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
 
     try:
         with zipfile.ZipFile(path) as archive:
-            member_names = [name for name in archive.namelist() if not name.endswith("/")]
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            member_names = [info.filename for info in infos]
             names = set(member_names)
+            windows_path_keys: dict[str, str] = {}
+            if len(infos) > MAX_PACKAGE_PARTS:
+                report.error(
+                    "zip.part_budget",
+                    f"Package has {len(infos)} parts; maximum is {MAX_PACKAGE_PARTS}",
+                )
+            total_uncompressed = sum(info.file_size for info in infos)
+            if total_uncompressed > MAX_PACKAGE_UNCOMPRESSED_BYTES:
+                report.error(
+                    "zip.uncompressed_budget",
+                    "Package uncompressed size exceeds safety budget",
+                )
+            for info in infos:
+                name = info.filename
+                normalized = name.replace("\\", "/")
+                pure = PurePosixPath(normalized)
+                if normalized != name or pure.is_absolute() or ".." in pure.parts:
+                    report.error(
+                        "zip.unsafe_path",
+                        f"ZIP member path is unsafe: {name}",
+                        name,
+                    )
+                windows_key, windows_error = _windows_package_path_key(normalized)
+                if windows_error:
+                    report.error("zip.windows_path", windows_error, name)
+                elif windows_key in windows_path_keys:
+                    report.error(
+                        "zip.windows_path_collision",
+                        f"ZIP member collides on Windows with {windows_path_keys[windows_key]}",
+                        name,
+                    )
+                elif windows_key is not None:
+                    windows_path_keys[windows_key] = name
+                if info.flag_bits & 0x1:
+                    report.error("zip.encrypted_part", "Encrypted ZIP parts are unsupported", name)
+                unix_mode = (info.external_attr >> 16) & 0o170000
+                if unix_mode == stat.S_IFLNK:
+                    report.error("zip.symlink", "Symbolic-link ZIP members are unsupported", name)
+                if info.file_size > MAX_PART_UNCOMPRESSED_BYTES:
+                    report.error(
+                        "zip.part_size_budget",
+                        "ZIP member exceeds uncompressed part-size budget",
+                        name,
+                    )
+                if name.endswith((".xml", ".rels")) and info.file_size > MAX_XML_PART_BYTES:
+                    report.error(
+                        "xml.part_budget",
+                        "XML part exceeds the parser safety budget",
+                        name,
+                    )
+                ratio = (
+                    float("inf")
+                    if info.file_size and info.compress_size == 0
+                    else info.file_size / max(1, info.compress_size)
+                )
+                if ratio > MAX_COMPRESSION_RATIO:
+                    report.error(
+                        "zip.compression_ratio",
+                        f"ZIP member compression ratio {ratio:.1f} exceeds {MAX_COMPRESSION_RATIO:.0f}",
+                        name,
+                    )
+            report.checks["uncompressedBytes"] = total_uncompressed
+            total_xml_bytes = sum(
+                info.file_size for info in infos if info.filename.endswith((".xml", ".rels"))
+            )
+            report.checks["xmlBytes"] = total_xml_bytes
+            if total_xml_bytes > MAX_XML_TOTAL_BYTES:
+                report.error("xml.total_budget", "Total XML size exceeds the parser safety budget")
+            report.checks["maxCompressionRatio"] = max(
+                (
+                    info.file_size / max(1, info.compress_size)
+                    for info in infos
+                ),
+                default=0.0,
+            )
             if len(names) != len(member_names):
                 duplicates = sorted(
                     name for name in names if member_names.count(name) > 1
@@ -290,6 +672,8 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                         name,
                     )
             report.checks["parts"] = len(names)
+            if report.status == "fail":
+                return report
             bad_member = archive.testzip()
             if bad_member:
                 report.error("zip.crc", "ZIP member failed its CRC check", bad_member)
@@ -303,8 +687,18 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                 if not name.endswith((".xml", ".rels")):
                     continue
                 try:
-                    parsed_xml[name] = ET.fromstring(archive.read(name))
-                except (ET.ParseError, KeyError) as error:
+                    xml_bytes = archive.read(name)
+                    decoded_xml = _decode_xml_for_security_scan(xml_bytes)
+                    lowered = decoded_xml.casefold()
+                    if "<!doctype" in lowered or "<!entity" in lowered:
+                        report.error(
+                            "xml.dtd_forbidden",
+                            "DTD and entity declarations are forbidden in Office package XML",
+                            name,
+                        )
+                        continue
+                    parsed_xml[name] = ET.fromstring(xml_bytes)
+                except (ET.ParseError, KeyError, UnicodeError, ValueError) as error:
                     report.error("xml.parse", f"XML part cannot be parsed: {error}", name)
             report.checks["xmlParts"] = len(parsed_xml)
 
@@ -391,12 +785,18 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
         "slicers": [],
         "dataModel": [],
         "embeddedObjects": [],
+        "xlmMacros": [],
+        "externalFormulaFunctions": [],
+        "unsafeExternalRelationships": [],
     }
     if not zipfile.is_zipfile(path):
         return {"riskLevel": "invalid", "features": features, "sensitiveParts": 0}
 
+    external_relationship_details: list[dict[str, str]] = []
+    external_formula_details: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as archive:
-        for name in archive.namelist():
+        for info in archive.infolist():
+            name = info.filename
             lowered = name.lower()
             if "vbaproject" in lowered or lowered.endswith("vbadata.xml"):
                 features["macros"].append(name)
@@ -414,14 +814,57 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
                 features["dataModel"].append(name)
             if "/embeddings/" in lowered or "/oleobjects/" in lowered:
                 features["embeddedObjects"].append(name)
+            if "xl/macrosheets/" in lowered or "xl/intlmacrosheets/" in lowered:
+                features["xlmMacros"].append(name)
+            if lowered.endswith(".rels") and info.file_size <= MAX_XML_PART_BYTES:
+                try:
+                    relationships = ET.fromstring(archive.read(name))
+                except ET.ParseError:
+                    continue
+                for relationship in relationships:
+                    if (
+                        relationship.tag.rsplit("}", 1)[-1] != "Relationship"
+                        or relationship.attrib.get("TargetMode", "").lower() != "external"
+                    ):
+                        continue
+                    relation_type = relationship.attrib.get("Type", "")
+                    detail = {
+                        "part": name,
+                        "type": relation_type,
+                        "target": relationship.attrib.get("Target", ""),
+                    }
+                    external_relationship_details.append(detail)
+                    if not relation_type.lower().endswith("/hyperlink"):
+                        features["unsafeExternalRelationships"].append(name)
+
+        formula_risks: dict[str, set[str]] = {}
+        for item in inventory_xlsx_formulas(archive):
+            functions = dangerous_formula_functions(str(item.get("formula", "")))
+            if functions:
+                formula_risks.setdefault(str(item["part"]), set()).update(functions)
+        for part, functions in sorted(formula_risks.items()):
+            features["externalFormulaFunctions"].append(part)
+            external_formula_details.append({
+                "part": part,
+                "functions": sorted(functions),
+            })
 
     sensitive_parts = sum(len(parts) for parts in features.values())
-    high_risk = any(features[key] for key in ("macros", "signatures", "externalLinks", "dataModel"))
+    high_risk = any(
+        features[key]
+        for key in (
+            "macros", "signatures", "externalLinks", "dataModel",
+            "xlmMacros", "externalFormulaFunctions",
+            "unsafeExternalRelationships",
+        )
+    )
     risk_level = "high" if high_risk else "medium" if sensitive_parts else "low"
     return {
         "riskLevel": risk_level,
-        "features": features,
+        "features": {key: sorted(set(value)) for key, value in features.items()},
         "sensitiveParts": sensitive_parts,
+        "externalRelationshipDetails": external_relationship_details,
+        "externalFormulaDetails": external_formula_details,
     }
 
 

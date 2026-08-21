@@ -1,0 +1,17 @@
+{
+  "title": "Golden Workbook",
+  "active_sheet": "Summary",
+  "qa": {"min_formulas": 2},
+  "sheets": [
+    {
+      "name": "Summary",
+      "headers": ["Metric", "Value"],
+      "rows": [["Revenue", 100], ["Cost", 40], ["Profit", null]],
+      "formulas": [
+        {"cell": "B4", "formula": "=B2-B3"},
+        {"cell": "B5", "formula": "=SUM(B2:B4)"}
+      ],
+      "column_widths": {"A": 20, "B": 14}
+    }
+  ]
+}

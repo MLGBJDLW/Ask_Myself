@@ -18,6 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 
 DEFAULT_WIDTH_PX = 1280
@@ -368,11 +370,32 @@ def _capture_screenshots(
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(args=["--disable-background-networking"])
             page = browser.new_page(
                 viewport={"width": int(size["width_px"]), "height": int(size["height_px"])},
                 device_scale_factor=1,
             )
+            project_root = out_dir.resolve()
+
+            def route_local_project_only(route, request):
+                parsed = urlparse(request.url)
+                if parsed.scheme in {"data", "blob"}:
+                    route.continue_()
+                    return
+                if parsed.scheme == "file" and not parsed.netloc:
+                    candidate = Path(url2pathname(parsed.path)).resolve()
+                    try:
+                        candidate.relative_to(project_root)
+                    except ValueError:
+                        route.abort()
+                    else:
+                        route.continue_()
+                    return
+                route.abort()
+
+            page.route("**", route_local_project_only)
+            if hasattr(page, "route_web_socket"):
+                page.route_web_socket("**", lambda socket: socket.close())
             for record in html_records:
                 html_path = Path(str(record["htmlPath"]))
                 png_path = rendered_dir / f"slide_{int(record['index']):02d}.png"
@@ -718,6 +741,8 @@ def _export_pptx(
     prs.slide_height = _inches(size["height_in"])
     blank = _blank_layout(prs)
     raster_slides = 0
+    hybrid_slides = 0
+    editable_slides = 0
     native_elements = 0
     animation_count = 0
     slide_outputs: list[dict[str, Any]] = []
@@ -765,6 +790,17 @@ def _export_pptx(
                 if element_id and shape_id:
                     shape_ids[element_id] = shape_id
 
+        if use_raster and elements and mode != "raster":
+            editability_class = "partial-raster-backplate"
+            hybrid_slides += 1
+        elif use_raster:
+            editability_class = "raster"
+        elif elements:
+            editability_class = "native-editable"
+            editable_slides += 1
+        else:
+            editability_class = "background-only"
+
         _apply_notes(slide, slide_spec.get("notes"))
         _apply_transition(slide, slide_spec.get("transition") or spec.get("transition"))
         animation_targets = _collect_animation_targets(slide_spec, shape_ids)
@@ -776,6 +812,7 @@ def _export_pptx(
             {
                 "index": index,
                 "mode": "raster" if use_raster else "native",
+                "editabilityClass": editability_class,
                 "nativeElements": len(elements) if mode != "raster" else 0,
                 "animationTargets": len(animation_targets),
                 "screenshotPath": screenshot_path,
@@ -785,6 +822,15 @@ def _export_pptx(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     total_slides = max(1, len(slides))
+    conservative_editability = (
+        editable_slides + hybrid_slides * 0.35
+    ) / total_slides
+    if raster_slides == 0 and editable_slides == len(slides):
+        editability_level = "fully_editable"
+    elif editable_slides or hybrid_slides:
+        editability_level = "partially_editable"
+    else:
+        editability_level = "raster"
     return {
         "path": str(out_path),
         "mode": mode,
@@ -792,9 +838,13 @@ def _export_pptx(
         "metrics": {
             "slides": len(slides),
             "rasterSlides": raster_slides,
+            "hybridSlides": hybrid_slides,
+            "editableSlides": editable_slides,
             "nativeElements": native_elements,
             "animationTargets": animation_count,
-            "editabilityScore": round(max(0.0, min(1.0, (total_slides - raster_slides) / total_slides)), 3),
+            "editabilityScore": round(max(0.0, min(1.0, conservative_editability)), 3),
+            "editabilityLevel": editability_level,
+            "finalPptxRenderVerified": False,
         },
     }
 
@@ -861,7 +911,10 @@ def _evaluate_qa(
 
     if pptx_result:
         editability = float(_as_dict(pptx_result.get("metrics")).get("editabilityScore") or 0)
-        checks.append({"name": "editability_score", "status": "pass" if editability >= 0.5 else "warn", "metric": editability, "threshold": 0.5})
+        editability_level = str(_as_dict(pptx_result.get("metrics")).get("editabilityLevel") or "unknown")
+        checks.append({"name": "editability_score", "status": "pass" if editability >= 0.8 else "warn", "metric": editability, "threshold": 0.8, "level": editability_level})
+        checks.append({"name": "final_pptx_render", "status": "warn", "metric": False, "threshold": True, "detail": "HTML/browser screenshots are source previews, not final-PPTX render evidence."})
+        warnings.append("final exported PPTX has not been rendered; browser screenshots do not prove PowerPoint layout fidelity")
         checks.append({"name": "animation_mapping", "status": "pass" if int(_as_dict(pptx_result.get("metrics")).get("animationTargets") or 0) else "warn", "metric": _as_dict(pptx_result.get("metrics")).get("animationTargets") or 0, "threshold": 1})
 
     status = "fail" if any(check["status"] == "fail" for check in checks) else "warn" if any(check["status"] == "warn" for check in checks) else "pass"
@@ -909,20 +962,11 @@ def render_html_deck(
     if output_dir == root:
         _die("ERROR: out-dir must be a managed subdirectory, not the workspace root", 3)
     if output_dir.exists():
-        marker = output_dir / ".html-deck-project"
-        managed_manifest = False
-        manifest_path = output_dir / "manifest.json"
-        if manifest_path.exists():
-            try:
-                managed_manifest = json.loads(manifest_path.read_text(encoding="utf-8")).get("kind") == "htmlDeckProject"
-            except Exception:
-                managed_manifest = False
-        if any(output_dir.iterdir()) and not marker.exists() and not managed_manifest:
+        if any(output_dir.iterdir()):
             _die(
-                f"ERROR: out-dir already exists and is not an HTML deck project: {output_dir}",
+                f"ERROR: out-dir must be empty; use a fresh unique HTML deck directory: {output_dir}",
                 3,
             )
-        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / ".html-deck-project").write_text("managed by html_deck_renderer\n", encoding="utf-8")
 

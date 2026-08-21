@@ -1,19 +1,21 @@
 ---
 name: xlsx-workbook-design
-description: Create, edit, analyze, lint, and validate Excel XLSX workbooks with Python-backed workflows. Activate for XLSX files, Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, or spreadsheet QA; use with `doc-script-editor`, openpyxl, pandas, and the skill-owned XLSX renderer.
+description: Create, edit, analyze, lint, and validate Excel XLSX/XLSM/XLTX/XLTM workbooks with Python-backed workflows. Activate for Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, spreadsheet QA, 工作簿, 电子表格, 表格, 公式, 数据透视表, 条件格式, or 宏工作簿; use with `doc-script-editor`, openpyxl, pandas, and the skill-owned XLSX renderer.
 ---
 
 ## Workflow
-1. Use `doc-script-editor` for file operations: `check`, `create_xlsx`, `lint_xlsx`, `recalc_xlsx`, `replace`, `extract`, `version`, `unpack`, `pack`, `render`, `convert`, and `validate`; use its Office artifact service for multi-step transactional jobs.
+1. Prefer the `office_artifact` requestVersion 2 lifecycle for XLSX create/modify/verify work; it separates candidates from publication and reports calculation evidence. Use `doc-script-editor` direct commands for focused compatibility operations and OOXML inspection.
 2. For a new workbook, create or edit a JSON spec as a workspace file, then run `create_xlsx`; it delegates to `scripts/xlsx_model_renderer.py`.
 3. Run `scripts/xlsx_audit.py --path <file> --pretty` before editing existing workbooks and after generating formula-heavy files.
 4. Use pandas only for data loading/transforms, then format with `openpyxl`; do not use ad-hoc one-shot Python when the renderer spec covers the task.
 5. For financial or scenario models, put assumptions in input cells and formulas in calculation cells. Do not hardcode derived numbers.
-6. After writing formulas, run `lint_xlsx` and `validate`. Add `--contract <json>` for required sheets/names, hardcode bans, minimum rows, and sentinels. When verified cached values are required, run the guarded `recalc_xlsx`; it uses LibreOffice and refuses risky macro, signature, external-link, pivot-cache, or data-model round-trips unless explicitly reviewed.
+6. Express calculation truth explicitly: `static` means formula lint only, `compatible` means LibreOffice recalculated, and `native` means Excel COM recalculated. An empty formula cache is `not_calculated`, even if structural validation passes. Add a validation contract for required sheets/names, hardcode bans, minimum rows, sentinels, and `require_formula_cache` when cached values are mandatory.
 7. For existing workbooks, inspect the preservation-risk inventory first. Text replacement uses precise OOXML part edits; broad library round-trips must not be used for complex workbooks. Transactional commands snapshot and publish only after validation.
-8. Use an OfficeCLI-style ladder: L1 read/audit, L2 structured workbook edits, and L3 raw OOXML only for features the normal writer cannot express. Prefer deterministic workbook state over ad-hoc cell poking.
-9. For user-facing workbooks, render or preview important sheets after creation when tooling is available; fix clipped text, unusable widths, missing formats, and unreadable charts before delivery.
-10. Remove temporary CSV extracts, Python conversion scratch files, rendered previews, and unpacked OOXML folders unless the user requested an audit/debug bundle.
+8. For existing workbooks, prefer typed `set_value`, `set_formula`, `set_range`, `clear_range`, `set_style`, `rename_sheet`, `set_defined_name`, `set_data_validation`, `create_table`, `set_number_format`, `set_chart_title`, and `set_chart_data` operations. They resolve sheets through workbook relationships, address names case-insensitively, treat values as literals, require formulas to be explicit, and patch only authorized parts. `set_chart_data` updates the selected series' local range formulas, caches, and source cells as one atomic edit; it rejects external references, overlapping targets, invalid series indexes, non-finite values, and range-length drift. `set_style` reuses an existing `cellXfs` style id; creating new style records remains a creation-spec task.
+9. Formula evidence includes a cache-independent definition fingerprint, formula kinds, dependency edges, circular references, unresolved references, cache coverage, and every OOXML `t=e` value including modern/unknown errors. Chart evidence reconciles cache points against referenced worksheet cells whenever those cells have usable cached/literal values. Compatible recalculation is rejected if it changes the formula fingerprint. Dynamic arrays, data tables, spill references, circular/iterative models, unresolved references, or preservation-sensitive packages require the Excel-native adapter for strong calculation guarantees.
+10. Use an OfficeCLI-style ladder: L1 read/audit, L2 structured workbook edits, and L3 raw OOXML only for features the normal writer cannot express. Prefer deterministic workbook state over ad-hoc cell poking.
+11. For user-facing workbooks, render or preview important sheets after creation when tooling is available; fix clipped text, unusable widths, missing formats, and unreadable charts before delivery.
+12. Remove temporary CSV extracts, Python conversion scratch files, rendered previews, and unpacked OOXML folders unless the user requested an audit/debug bundle.
 
 ## Quality Rules
 1. Put an executive summary or dashboard first when the workbook is user-facing.
@@ -54,3 +56,4 @@ Minimal formula-model spec:
 ```
 
 Use `scripts/xlsx_audit.py` for a deterministic XLSX JSON inventory: sheets, dimensions, rows, cells, formulas, formula errors, tables, drawings, autofilters, frozen panes, calculation metadata, and warnings. It uses only Python stdlib and reads OOXML directly.
+Use `scripts/xlsx_structured_editor.py` as the direct-OOXML typed edit adapter. It preserves every non-target package part byte-for-byte.

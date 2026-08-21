@@ -507,6 +507,85 @@ mod tests {
     }
 
     #[test]
+    fn test_get_active_skills_matches_contiguous_chinese_office_queries() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        for (query, expected) in [
+            ("帮我做一个季度汇报PPT", "builtin-pptx-presentation-design"),
+            (
+                "请创建一份带公式的销售工作簿",
+                "builtin-xlsx-workbook-design",
+            ),
+            (
+                "把这份合同做成带批注和修订的Word文档",
+                "builtin-docx-document-design",
+            ),
+        ] {
+            let active = get_active_skills_for_query(&db, query, 5).unwrap();
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "{expected} should match contiguous Chinese query {query:?}; selected={:?}",
+                active.iter().map(|skill| &skill.id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_office_routing_corpus_covers_attachments_templates_macros_and_multi_format() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        for (query, expected) in [
+            ("附件：董事会简报.pptm", "builtin-pptx-presentation-design"),
+            (
+                "请按母版完善演示文稿并补齐讲者备注",
+                "builtin-pptx-presentation-design",
+            ),
+            ("附件 Q4-budget.xlsm", "builtin-xlsx-workbook-design"),
+            ("保留宏工作簿和数据透视表", "builtin-xlsx-workbook-design"),
+            ("附件：合同模板.dotm", "builtin-docx-document-design"),
+            ("请保留批注修订和内容控件", "builtin-docx-document-design"),
+        ] {
+            let active = get_active_skills_for_query(&db, query, 8).unwrap();
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "{expected} should match Office routing corpus query {query:?}; selected={:?}",
+                active.iter().map(|skill| &skill.id).collect::<Vec<_>>()
+            );
+        }
+
+        let active =
+            get_active_skills_for_query(&db, "把报告.docx和模型.xlsx整理后制作成简报.pptx", 12)
+                .unwrap();
+        for expected in [
+            "builtin-docx-document-design",
+            "builtin-xlsx-workbook-design",
+            "builtin-pptx-presentation-design",
+        ] {
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_office_file_request_does_not_force_office_skills() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let active =
+            get_active_skills_for_query(&db, "请只重构src parser模块并运行Rust单元测试", 8)
+                .unwrap();
+        assert!(active.iter().all(|skill| ![
+            "builtin-docx-document-design",
+            "builtin-xlsx-workbook-design",
+            "builtin-pptx-presentation-design",
+        ]
+        .contains(&skill.id.as_str())));
+    }
+
+    #[test]
     fn test_get_active_skills_matches_fiction_query() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -1029,12 +1108,34 @@ mod tests {
             "scripts/pptx_asset_pack.py",
             "scripts/pptx_regression_suite.py",
             "scripts/pptx_delivery_pack.py",
+            "scripts/pptx_structured_editor.py",
+            "scripts/test_pptx_structured_editor.py",
+            "scripts/pptxgenjs_adapter.mjs",
+            "scripts/test_pptxgenjs_adapter.py",
             "scripts/html_deck_renderer.py",
             "scripts/test_html_deck_renderer.py",
         ] {
             assert!(
                 pptx_dir.join(path).exists(),
                 "expected materialized PPTX skill resource {path}"
+            );
+        }
+
+        let docx_dir = base.join("docx-document-design");
+        for path in [
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/docx-playbook.md",
+            "references/docx-spec-v2.schema.json",
+            "scripts/docx_audit.py",
+            "scripts/docx_renderer.py",
+            "scripts/docx_review_editor.py",
+            "scripts/test_docx_renderer.py",
+            "scripts/test_docx_review_editor.py",
+        ] {
+            assert!(
+                docx_dir.join(path).exists(),
+                "expected materialized DOCX skill resource {path}"
             );
         }
 
@@ -1045,6 +1146,8 @@ mod tests {
             "references/xlsx-playbook.md",
             "scripts/xlsx_audit.py",
             "scripts/xlsx_model_renderer.py",
+            "scripts/xlsx_structured_editor.py",
+            "scripts/test_xlsx_structured_editor.py",
             "scripts/test_xlsx_model_renderer.py",
         ] {
             assert!(
@@ -1055,11 +1158,31 @@ mod tests {
 
         let editor_dir = base.join("doc-script-editor");
         for path in [
+            "references/office-artifact-request-v2.schema.json",
+            "references/office-validation-contract-v2.schema.json",
+            "references/office-adapter-manifest-v1.schema.json",
+            "references/office-host-adapter-v1.schema.json",
             "scripts/edit_doc.py",
             "scripts/office_artifact_runtime.py",
             "scripts/office_artifact_service.py",
+            "scripts/office_visual_qa.py",
+            "scripts/office_artifact_engine.py",
+            "scripts/office_schema.py",
+            "scripts/office_synthetic_preview.py",
+            "scripts/test_office_artifact_engine.py",
+            "scripts/test_office_artifact_golden.py",
             "scripts/test_office_artifact_runtime.py",
+            "scripts/test_office_visual_qa.py",
+            "scripts/test_office_schema.py",
+            "scripts/test_openxml_sdk_validator.py",
+            "scripts/test_office_synthetic_preview.py",
+            "tests/golden/docx-spec.json",
+            "tests/golden/xlsx-spec.json",
+            "tests/golden/pptx-spec.json",
+            "tests/golden/expectations.json",
             "scripts/requirements.txt",
+            "scripts/requirements.lock",
+            "scripts/office-python.sbom.json",
         ] {
             assert!(
                 editor_dir.join(path).exists(),

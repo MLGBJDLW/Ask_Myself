@@ -168,6 +168,11 @@ mod tests {
         assert_eq!(office.category, "document_analysis");
         assert!(office.can_read);
         assert!(!office.can_write);
+
+        let office_artifact = by_name("office_artifact");
+        assert_eq!(office_artifact.owner.id, "office-documents");
+        assert_eq!(office_artifact.category, "filesystem");
+        assert!(office_artifact.can_execute);
     }
 
     #[test]

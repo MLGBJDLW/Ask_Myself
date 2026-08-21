@@ -106,9 +106,8 @@ fn first_non_core_category(categories: &[ToolCategory]) -> ToolCategory {
 pub fn capability_render_kind(name: &str) -> ToolRenderKind {
     match name {
         "run_shell" => ToolRenderKind::CommandExecution,
-        "edit_file" | "multi_edit" | "create_file" | "write_note" | "download_asset" => {
-            ToolRenderKind::FileChange
-        }
+        "edit_file" | "multi_edit" | "create_file" | "write_note" | "download_asset"
+        | "office_artifact" => ToolRenderKind::FileChange,
         "fetch_url"
         | "browser_evidence_capture"
         | "web_search"
@@ -176,6 +175,7 @@ pub fn capability_input_streaming(name: &str) -> ToolInputStreamingMode {
         | "compare_documents"
         | "summarize_document"
         | "compile_document"
+        | "office_artifact"
         | "search_knowledge_base"
         | "retrieve_evidence"
         | "search_files"
@@ -424,6 +424,29 @@ pub fn infer_tool_access_profile(
             true,
             ApprovalRisk::Medium,
             "Prepares required Python document-processing helpers.",
+        ),
+        "office_artifact" => (
+            "filesystem",
+            true,
+            !matches!(
+                args.get("action").and_then(|value| value.as_str()),
+                Some("capabilities" | "assess")
+            ),
+            true,
+            false,
+            !matches!(
+                args.get("action").and_then(|value| value.as_str()),
+                Some("capabilities" | "assess")
+            ),
+            if matches!(
+                args.get("action").and_then(|value| value.as_str()),
+                Some("restore" | "decide")
+            ) {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            },
+            "Runs the local transactional Office candidate, publication, or restoration lifecycle.",
         ),
         "manage_source" => (
             "source_management",

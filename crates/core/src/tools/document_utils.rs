@@ -30,7 +30,7 @@ pub(crate) fn supports_document_fallback(path: &Path) -> bool {
 pub(crate) fn edit_guidance_for_path(path: &Path) -> Option<String> {
     if let Some(format) = generated_document_mime(path) {
         return Some(format!(
-            "Office documents are not plain-text editable with edit_file/create_file. Use run_shell + doc-script-editor (python scripts/edit_doc.py) for Office creation, validation, conversion, rendering, extraction, redaction, text replacement, formula QA, OOXML/template-preserving edits, and rich existing-file work. Pair it with docx-document-design, pptx-presentation-design, or xlsx-workbook-design for format-specific Office work. Detected format: '{}'.",
+            "Office documents are not plain-text editable with edit_file/create_file. Use office_artifact for transactional DOCX/XLSX/PPTX creation, modification, validation, publication, and restore. Use run_shell + doc-script-editor for PDF, conversion/rendering, or low-level OOXML compatibility work. Pair it with docx-document-design, pptx-presentation-design, or xlsx-workbook-design. Detected format: '{}'.",
             format
         ));
     }

@@ -244,6 +244,7 @@ const OFFICE_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclaratio
     surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
         "prepare_document_tools",
+        "office_artifact",
         "get_document_info",
         #[cfg(feature = "ocr")]
         "extract_image_text",

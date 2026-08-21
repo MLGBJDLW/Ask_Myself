@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 import pptx_quality_gate
 
@@ -91,6 +93,24 @@ class PptxQualityGateTests(unittest.TestCase):
         self.assertEqual("fail", result["status"])
         self.assertIn("visual QA failures: 2", result["failures"])
         self.assertEqual(2, result["metrics"]["visual_failures"])
+
+    def test_publish_gate_requires_final_pptx_render_for_every_display_slide(self) -> None:
+        report = {
+            "slides": 2,
+            "warnings": [],
+            "slide_details": [_slide(1), _slide(2)],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "page-1.png"
+            page.write_bytes(b"render-one")
+            result = pptx_quality_gate.evaluate_audit(
+                report,
+                rendered_previews=[str(page)],
+                require_render=True,
+            )
+        self.assertEqual("fail", result["status"])
+        self.assertIn("final PPTX render coverage incomplete: 1 != 2", result["failures"])
+        self.assertEqual(0.5, result["metrics"]["render_coverage"])
 
 
 if __name__ == "__main__":

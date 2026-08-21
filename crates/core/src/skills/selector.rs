@@ -166,6 +166,38 @@ fn token_aliases(token: &str) -> &'static [&'static str] {
         {
             &["tdd", "test", "tests", "testing", "coverage"]
         }
+        _ if token.contains("ppt")
+            || token.contains("幻灯片")
+            || token.contains("演示文稿")
+            || token.contains("演示")
+            || token.contains("简报")
+            || token.contains("母版")
+            || token.contains("讲者备注")
+            || token.contains("演讲者备注") =>
+        {
+            &["slides", "deck", "presentation", "pptx"]
+        }
+        _ if token.contains("xlsx")
+            || token.contains("excel")
+            || token.contains("电子表格")
+            || token.contains("工作簿")
+            || token.contains("工作表")
+            || token.contains("单元格")
+            || token.contains("数据透视")
+            || token.contains("公式") =>
+        {
+            &["spreadsheet", "workbook", "xlsx", "excel"]
+        }
+        _ if token.contains("docx")
+            || token.contains("word")
+            || token.contains("文档")
+            || token.contains("合同")
+            || token.contains("备忘录")
+            || token.contains("批注")
+            || token.contains("修订") =>
+        {
+            &["report", "document", "docx"]
+        }
         _ if token.contains("小说")
             || token.contains("网文")
             || token.contains("故事")
@@ -194,6 +226,63 @@ pub(crate) fn enrich_tokens(tokens: &[String]) -> Vec<String> {
         expanded.insert(token.clone());
         for alias in token_aliases(token) {
             expanded.insert((*alias).to_string());
+        }
+        // A contiguous CJK token can describe more than one Office artifact,
+        // for example `docx和模型xlsx整理成简报pptx`. `token_aliases` returns
+        // one intent family for ordinary queries, so accumulate every Office
+        // family independently instead of letting the first match hide the
+        // remaining attachment types.
+        for (matches, aliases) in [
+            (
+                [
+                    "ppt",
+                    "幻灯片",
+                    "演示文稿",
+                    "演示",
+                    "简报",
+                    "母版",
+                    "讲者备注",
+                ]
+                .as_slice(),
+                ["slides", "deck", "presentation", "pptx"].as_slice(),
+            ),
+            (
+                [
+                    "xlsx",
+                    "xlsm",
+                    "xltx",
+                    "xltm",
+                    "excel",
+                    "电子表格",
+                    "工作簿",
+                    "工作表",
+                    "单元格",
+                    "数据透视",
+                    "公式",
+                ]
+                .as_slice(),
+                ["spreadsheet", "workbook", "xlsx", "excel"].as_slice(),
+            ),
+            (
+                [
+                    "docx",
+                    "docm",
+                    "dotx",
+                    "dotm",
+                    "word",
+                    "文档",
+                    "合同",
+                    "备忘录",
+                    "批注",
+                    "修订",
+                ]
+                .as_slice(),
+                ["report", "document", "docx"].as_slice(),
+            ),
+        ] {
+            if matches.iter().any(|needle| token.contains(needle)) {
+                expanded.extend(aliases.iter().map(|alias| (*alias).to_string()));
+            }
         }
     }
     expanded.into_iter().collect()
@@ -322,6 +411,17 @@ fn is_skill_explicitly_requested(skill: &Skill, query: &str) -> bool {
         || (!display.trim().is_empty() && query_lower.contains(&display))
 }
 
+fn has_explicit_office_artifact_signal(skill: &Skill, query: &str) -> bool {
+    let query = query.to_lowercase();
+    let extensions: &[&str] = match skill.id.as_str() {
+        "builtin-docx-document-design" => &[".docx", ".docm", ".dotx", ".dotm"],
+        "builtin-xlsx-workbook-design" => &[".xlsx", ".xlsm", ".xltx", ".xltm"],
+        "builtin-pptx-presentation-design" => &[".pptx", ".pptm", ".potx", ".potm"],
+        _ => &[],
+    };
+    extensions.iter().any(|extension| query.contains(extension))
+}
+
 pub fn select_skills_from_pool(skills: Vec<Skill>, query: &str, max_skills: usize) -> Vec<Skill> {
     if skills.is_empty() || max_skills == 0 {
         return Vec::new();
@@ -343,7 +443,8 @@ pub fn select_skills_from_pool(skills: Vec<Skill>, query: &str, max_skills: usiz
     let mut scored: Vec<(f32, Skill)> = skills
         .into_iter()
         .map(|skill| {
-            let explicit = is_skill_explicitly_requested(&skill, query);
+            let explicit = is_skill_explicitly_requested(&skill, query)
+                || has_explicit_office_artifact_signal(&skill, query);
             let score = if explicit {
                 f32::MAX
             } else if query_tokens.len() >= 2 {

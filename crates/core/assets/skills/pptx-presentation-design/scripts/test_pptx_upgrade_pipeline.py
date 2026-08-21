@@ -7,11 +7,14 @@ import json
 import tempfile
 import unittest
 import zipfile
+from datetime import date
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 import pptx_asset_pack
 import pptx_deck_planner
 import pptx_delivery_pack
+import pptx_audit
 import pptx_regression_suite
 import pptx_rewrite_plan
 import pptx_semantic_rewriter
@@ -95,6 +98,163 @@ def _write_theme_pptx(path: Path) -> None:
 
 
 class PptxUpgradePipelineTests(unittest.TestCase):
+    def test_audit_exposes_stable_shape_identifiers_for_typed_edits(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "inspectable.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
+            shape.name = "Decision Title"
+            shape.text = "Inspect me"
+            presentation.save(deck)
+
+            report = pptx_audit.audit(deck)
+            details = report["slide_details"][0]["shape_details"]
+            inspected = next(item for item in details if item["shapeName"] == "Decision Title")
+            self.assertTrue(inspected["shapeId"])
+            self.assertEqual("Inspect me", inspected["text"])
+            self.assertEqual("shape", inspected["kind"])
+
+    def test_audit_uses_presentation_display_order_not_part_number(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            deck = Path(tmp) / "reordered.pptx"
+            presentation = """<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+ <p:sldIdLst>
+  <p:sldId id="258" r:id="rId3"/><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/>
+ </p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/>
+</p:presentation>"""
+            relationships = """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Id="rId1" Type="x/slide" Target="slides/slide1.xml"/>
+ <Relationship Id="rId2" Type="x/slide" Target="slides/slide2.xml"/>
+ <Relationship Id="rId3" Type="x/slide" Target="slides/slide3.xml"/>
+</Relationships>"""
+            with zipfile.ZipFile(deck, "w") as archive:
+                archive.writestr("ppt/presentation.xml", presentation)
+                archive.writestr("ppt/_rels/presentation.xml.rels", relationships)
+                for number, label in enumerate(("A", "B", "C"), start=1):
+                    archive.writestr(
+                        f"ppt/slides/slide{number}.xml",
+                        f'<p:sld xmlns:p="{pptx_audit.NS["p"]}" xmlns:a="{pptx_audit.NS["a"]}"><p:cSld><p:spTree><a:t>{label}</a:t></p:spTree></p:cSld></p:sld>',
+                    )
+
+            report = pptx_audit.audit(deck)
+            self.assertEqual(["C", "A", "B"], [slide["text"] for slide in report["slide_details"]])
+            self.assertEqual(["258", "256", "257"], [slide["slide_id"] for slide in report["slide_details"]])
+            self.assertEqual([], report["validation_errors"])
+
+    def test_audit_rejects_chart_cache_dimension_mismatch(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.chart.data import ChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "chart.pptx"
+            broken = root / "chart-broken.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = ["A", "B"]
+            data.add_series("Value", (1, 2))
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.COLUMN_CLUSTERED,
+                Inches(1), Inches(1), Inches(5), Inches(3), data,
+            )
+            presentation.save(source)
+            with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(broken, "w") as output_archive:
+                for info in input_archive.infolist():
+                    payload = input_archive.read(info.filename)
+                    if info.filename == "ppt/charts/chart1.xml":
+                        chart = ET.fromstring(payload)
+                        points = chart.findall(f".//{{{pptx_audit.NS['c']}}}val//{{{pptx_audit.NS['c']}}}pt")
+                        parent = next(
+                            element for element in chart.iter()
+                            if points[0] in list(element)
+                        )
+                        parent.remove(points[0])
+                        payload = ET.tostring(chart, encoding="utf-8", xml_declaration=True)
+                    output_archive.writestr(info, payload)
+
+            report = pptx_audit.audit(broken)
+            self.assertTrue(any("dimension mismatch" in error for error in report["chart_validation_errors"]))
+
+    def test_audit_rejects_chart_cache_values_that_disagree_with_embedded_workbook(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.chart.data import ChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "chart-values.pptx"
+            broken = root / "chart-values-broken.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = ["A", "B"]
+            data.add_series("Value", (10, 20))
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.COLUMN_CLUSTERED,
+                Inches(1), Inches(1), Inches(5), Inches(3), data,
+            )
+            presentation.save(source)
+            with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(broken, "w") as output_archive:
+                for info in input_archive.infolist():
+                    payload = input_archive.read(info.filename)
+                    if info.filename == "ppt/charts/chart1.xml":
+                        chart = ET.fromstring(payload)
+                        value = chart.find(
+                            f".//{{{pptx_audit.NS['c']}}}val//{{{pptx_audit.NS['c']}}}pt"
+                            f"/{{{pptx_audit.NS['c']}}}v"
+                        )
+                        self.assertIsNotNone(value)
+                        value.text = "999"
+                        payload = ET.tostring(chart, encoding="utf-8", xml_declaration=True)
+                    output_archive.writestr(info, payload)
+
+            report = pptx_audit.audit(broken)
+            self.assertTrue(
+                any("cache/workbook value mismatch" in error for error in report["chart_validation_errors"]),
+                report["chart_validation_errors"],
+            )
+
+    def test_audit_compares_date_category_caches_using_excel_serials(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.chart.data import ChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "chart-dates.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = [date(2026, 1, 1), date(2026, 2, 1)]
+            data.add_series("Value", (10, 20))
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.LINE,
+                Inches(1), Inches(1), Inches(5), Inches(3), data,
+            )
+            presentation.save(source)
+
+            report = pptx_audit.audit(source)
+            self.assertEqual([], report["chart_validation_errors"])
+
     def test_visual_qa_detects_overlap_and_repairs_dense_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             deck = Path(tmp) / "deck.pptx"
@@ -199,6 +359,20 @@ Clinical quality should improve without more manual work
         self.assertIn("clinical_grid", brief["visual_language"]["background_presets"])
         self.assertIn("trust", brief["visual_language"]["tone"])
         self.assertTrue(any(slide.get("icon") for slide in spec["slides"]))
+
+    def test_deck_planner_preserves_years_and_does_not_mix_untyped_numeric_units_into_chart(self) -> None:
+        text = """2026 年经营计划
+营收增长 18%
+预算为 ¥200 万
+客户数量 35 家
+路线图：第一季度完成试点
+"""
+        spec = pptx_deck_planner.plan_deck(text, audience="管理层", target_slides=5)
+
+        self.assertEqual("2026 年经营计划", spec["slides"][0]["title"])
+        self.assertEqual("disabled_without_typed_data", spec["metadata"]["chart_inference"])
+        self.assertFalse(any(slide["layout"] == "chart" for slide in spec["slides"]))
+        self.assertTrue(any(slide["layout"] == "timeline" for slide in spec["slides"]))
 
     def test_asset_pack_inventories_media_links_and_missing_spec_assets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

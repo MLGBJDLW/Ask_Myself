@@ -1,0 +1,24 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "nexa-office-python-runtime",
+      "version": "3"
+    }
+  },
+  "components": [
+    {"type": "library", "name": "et-xmlfile", "version": "2.0.0", "purl": "pkg:pypi/et-xmlfile@2.0.0", "licenses": [{"license": {"id": "MIT"}}]},
+    {"type": "library", "name": "lxml", "version": "6.1.1", "purl": "pkg:pypi/lxml@6.1.1", "licenses": [{"license": {"id": "BSD-3-Clause"}}]},
+    {"type": "library", "name": "openpyxl", "version": "3.1.5", "purl": "pkg:pypi/openpyxl@3.1.5", "licenses": [{"license": {"id": "MIT"}}]},
+    {"type": "library", "name": "pillow", "version": "12.3.0", "purl": "pkg:pypi/pillow@12.3.0", "licenses": [{"license": {"id": "HPND"}}]},
+    {"type": "library", "name": "pypdf", "version": "6.10.0", "purl": "pkg:pypi/pypdf@6.10.0", "licenses": [{"license": {"id": "BSD-3-Clause"}}]},
+    {"type": "library", "name": "python-docx", "version": "1.2.0", "purl": "pkg:pypi/python-docx@1.2.0", "licenses": [{"license": {"id": "MIT"}}]},
+    {"type": "library", "name": "python-pptx", "version": "1.0.2", "purl": "pkg:pypi/python-pptx@1.0.2", "licenses": [{"license": {"id": "MIT"}}]},
+    {"type": "library", "name": "pywin32", "version": "312", "purl": "pkg:pypi/pywin32@312", "licenses": [{"license": {"id": "PSF-2.0"}}]},
+    {"type": "library", "name": "typing-extensions", "version": "4.16.0", "purl": "pkg:pypi/typing-extensions@4.16.0", "licenses": [{"license": {"id": "PSF-2.0"}}]},
+    {"type": "library", "name": "xlsxwriter", "version": "3.2.9", "purl": "pkg:pypi/xlsxwriter@3.2.9", "licenses": [{"license": {"id": "BSD-2-Clause"}}]}
+  ]
+}

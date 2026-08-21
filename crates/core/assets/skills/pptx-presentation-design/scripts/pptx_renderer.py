@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 
 PPTX_THEME_PRESETS = {
@@ -767,17 +766,10 @@ def _image_fit(slide_spec: dict[str, Any], default: str = "cover") -> str:
 def _resolve_image_reference(ref: str, temp_paths: list[Path], workspace_root: Path) -> Path:
     parsed = urlparse(ref)
     if parsed.scheme in {"http", "https"}:
-        suffix = Path(parsed.path).suffix.lower()
-        if suffix not in IMAGE_SUFFIXES:
-            suffix = ".png"
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        temp_path = Path(tmp.name)
-        tmp.close()
-        request = Request(ref, headers={"User-Agent": "Nexa PPTX Renderer/1.0"})
-        with urlopen(request, timeout=20) as response:
-            temp_path.write_bytes(response.read())
-        temp_paths.append(temp_path)
-        return temp_path
+        raise ValueError(
+            "remote image URLs are blocked in the local Office renderer; "
+            "download an approved asset into the workspace first"
+        )
 
     path = Path(ref)
     if not path.is_absolute():
@@ -800,6 +792,10 @@ def _add_image_or_placeholder(
     fill_width_only: bool = False,
     fit: str = "cover",
 ) -> None:
+    if ref and urlparse(ref).scheme in {"http", "https"}:
+        raise ValueError(
+            "remote image URLs are blocked; use a reviewed workspace-local asset"
+        )
     try:
         if ref:
             image_path = _resolve_image_reference(ref, temp_paths, workspace_root)

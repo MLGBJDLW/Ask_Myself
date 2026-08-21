@@ -1,0 +1,116 @@
+{
+  "name": "office_artifact",
+  "description": "Inspect, assess, create, edit, verify, publish, discard, or restore DOCX, XLSX, and PPTX artifacts through Nexa's transactional OfficeArtifactEngine. Inspect returns stable sheet, slide, and shape identifiers needed by typed edits. Prefer this over manually composing run_shell document pipelines. execute creates a validated candidate by default; decide publishes or discards that candidate; restore uses a receipt and refuses to overwrite newer work.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["action", "workspace_root"],
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["capabilities", "inspect", "assess", "execute", "decide", "restore", "live_status", "live_pairing", "live_execute"],
+        "description": "Lifecycle action. Use assess before guarantees that require optional native/render backends."
+      },
+      "workspace_root": {
+        "type": "string",
+        "description": "Registered local source directory that contains every source, destination, spec, manifest, candidate, and receipt path."
+      },
+      "source": {
+        "type": "string",
+        "description": "Existing Office artifact inside workspace_root; required for inspect."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["docx", "xlsx", "pptx"],
+        "description": "Optional format assertion for inspect; otherwise inferred from the Office extension."
+      },
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "OfficeArtifact requestVersion 2 payload for assess or execute.",
+        "properties": {
+          "requestVersion": {"type": "integer", "enum": [2]},
+          "format": {"type": "string", "enum": ["docx", "xlsx", "pptx"]},
+          "intent": {"type": "string", "enum": ["create", "modify", "verify"]},
+          "source": {"type": "string"},
+          "destination": {"type": "string"},
+          "operations": {"type": "array", "items": {"type": "object"}, "description": "Closed format-discriminated typed operations. insert_field instructions are limited to PAGE, NUMPAGES, SECTIONPAGES, TOC, REF, and SEQ; unknown or misspelled fields fail at the Rust boundary."},
+          "guarantees": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "quality": {"type": "string", "enum": ["draft", "standard", "publish", "native"]},
+              "preservation": {"type": "string", "enum": ["strict", "balanced", "replace"]},
+              "calculation": {"type": "string", "enum": ["not_required", "static", "compatible", "native"]},
+              "render": {"type": "string", "enum": ["none", "important_surfaces", "all"]}
+            }
+          },
+          "preconditions": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sourceSha256": {
+                "type": "string",
+                "pattern": "^[0-9A-Fa-f]{64}$",
+                "description": "Fail if the source no longer matches the inspected SHA-256."
+              }
+            }
+          },
+          "validation": {},
+          "delivery": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mode": {"type": "string", "enum": ["candidate", "publish"]},
+              "manifest": {"type": "string"}
+            }
+          }
+        },
+        "required": ["requestVersion", "format", "intent", "operations"],
+        "allOf": [
+          {"if": {"properties": {"intent": {"enum": ["modify", "verify"]}}, "required": ["intent"]}, "then": {"required": ["source", "preconditions"], "properties": {"preconditions": {"required": ["sourceSha256"]}}}}
+        ]
+      },
+      "candidate_id": {
+        "type": "string",
+        "description": "Candidate id returned by execute; required for decide."
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["publish", "discard"],
+        "description": "Candidate decision; required for decide."
+      },
+      "receipt_id": {
+        "type": "string",
+        "description": "Publication receipt id; required for restore."
+      },
+      "live_session_id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "description": "Connected Office.js host session id returned by live_status; required for live_execute."
+      },
+      "live_operation": {
+        "description": "Capability-checked operation for the currently open Word, Excel, or PowerPoint document.",
+        "oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["op", "search", "replacement"], "properties": {"op": {"const": "word_replace_text"}, "search": {"type": "string"}, "replacement": {"type": "string"}, "matchCase": {"type": "boolean"}, "matchWholeWord": {"type": "boolean"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "location", "text"], "properties": {"op": {"const": "word_insert_text"}, "location": {"enum": ["selection", "start", "end"]}, "text": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "search", "comment"], "properties": {"op": {"const": "word_add_comment"}, "search": {"type": "string"}, "comment": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "mode"], "properties": {"op": {"const": "word_set_change_tracking"}, "mode": {"enum": ["off", "track_all", "track_mine_only"]}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "search", "tag"], "properties": {"op": {"const": "word_wrap_content_control"}, "search": {"type": "string", "minLength": 1}, "tag": {"type": "string", "minLength": 1, "maxLength": 255}, "title": {"type": "string", "maxLength": 255}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "commentId", "comment"], "properties": {"op": {"const": "word_reply_comment"}, "commentId": {"type": "string", "minLength": 1, "maxLength": 256}, "comment": {"type": "string", "minLength": 1}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "commentId", "resolved"], "properties": {"op": {"const": "word_resolve_comment"}, "commentId": {"type": "string", "minLength": 1, "maxLength": 256}, "resolved": {"type": "boolean"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "values"], "properties": {"op": {"const": "excel_set_range"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "values": {"type": "array", "items": {"type": "array"}}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "formulas"], "properties": {"op": {"const": "excel_set_formula"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "formulas": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "format"], "properties": {"op": {"const": "excel_format_range"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "format": {"type": "object", "additionalProperties": false, "minProperties": 1, "properties": {"fillColor": {"type": "string", "pattern": "^(#[0-9A-Fa-f]{6}|[A-Za-z]{1,32})$"}, "fontColor": {"type": "string", "pattern": "^(#[0-9A-Fa-f]{6}|[A-Za-z]{1,32})$"}, "fontBold": {"type": "boolean"}, "columnWidth": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000}, "rowHeight": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000}, "numberFormat": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "hasHeaders"], "properties": {"op": {"const": "excel_create_table"}, "sheet": {"type": "string"}, "address": {"type": "string", "minLength": 1}, "hasHeaders": {"type": "boolean"}, "name": {"type": "string", "minLength": 1, "maxLength": 255}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "sourceAddress", "chartType"], "properties": {"op": {"const": "excel_add_chart"}, "sheet": {"type": "string"}, "sourceAddress": {"type": "string", "minLength": 1}, "chartType": {"enum": ["column_clustered", "bar_clustered", "line", "line_markers", "area", "pie", "doughnut"]}, "seriesBy": {"enum": ["auto", "columns", "rows"]}, "name": {"type": "string", "minLength": 1, "maxLength": 255}, "title": {"type": "string", "maxLength": 1024}, "positionStart": {"type": "string", "minLength": 1}, "positionEnd": {"type": "string", "minLength": 1}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "calculationType"], "properties": {"op": {"const": "excel_calculate"}, "calculationType": {"enum": ["recalculate", "full", "full_rebuild"]}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "text"], "allOf": [{"oneOf": [{"required": ["slideId"]}, {"required": ["slideIndex"]}]}, {"oneOf": [{"required": ["shapeId"]}, {"required": ["shapeName"]}]}], "properties": {"op": {"const": "powerpoint_set_text"}, "slideId": {"type": "string"}, "slideIndex": {"type": "integer", "minimum": 1}, "shapeId": {"type": "string"}, "shapeName": {"type": "string"}, "text": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op"], "properties": {"op": {"const": "powerpoint_add_slide"}, "layoutId": {"type": "string"}, "title": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "text", "left", "top", "width", "height"], "oneOf": [{"required": ["slideId"]}, {"required": ["slideIndex"]}], "properties": {"op": {"const": "powerpoint_add_textbox"}, "slideId": {"type": "string", "minLength": 1}, "slideIndex": {"type": "integer", "minimum": 1}, "text": {"type": "string"}, "name": {"type": "string", "minLength": 1, "maxLength": 255}, "left": {"type": "number", "minimum": -10000, "maximum": 10000}, "top": {"type": "number", "minimum": -10000, "maximum": 10000}, "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000}, "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "shapeType", "left", "top", "width", "height"], "oneOf": [{"required": ["slideId"]}, {"required": ["slideIndex"]}], "properties": {"op": {"const": "powerpoint_add_shape"}, "slideId": {"type": "string", "minLength": 1}, "slideIndex": {"type": "integer", "minimum": 1}, "shapeType": {"enum": ["rectangle", "round_rectangle", "ellipse", "triangle", "diamond", "hexagon", "chevron", "right_arrow", "flow_chart_process", "flow_chart_decision"]}, "text": {"type": "string"}, "name": {"type": "string", "minLength": 1, "maxLength": 255}, "left": {"type": "number", "minimum": -10000, "maximum": 10000}, "top": {"type": "number", "minimum": -10000, "maximum": 10000}, "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000}, "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000}, "fillColor": {"type": "string", "pattern": "^(#[0-9A-Fa-f]{6}|[A-Za-z]{1,32})$"}, "fontColor": {"type": "string", "pattern": "^(#[0-9A-Fa-f]{6}|[A-Za-z]{1,32})$"}, "fontBold": {"type": "boolean"}}}
+        ]
+      }
+    }
+  }
+}

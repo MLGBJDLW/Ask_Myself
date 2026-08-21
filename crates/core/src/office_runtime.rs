@@ -4,14 +4,20 @@
 //! that dependency story explicit, auditable, and local to the app.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::CoreError;
 
 pub const OFFICE_PYTHON_BIN_DIR_ENV: &str = "NEXA_OFFICE_PYTHON_BIN_DIR";
+pub const OPENXML_VALIDATOR_ENV: &str = "NEXA_OPENXML_VALIDATOR";
+pub const OFFICE_ADDIN_MANIFEST_ENV: &str = "NEXA_OFFICE_ADDIN_MANIFEST";
+pub const PPTXGENJS_NODE_ENV: &str = "NEXA_PPTXGENJS_NODE";
+pub const PPTXGENJS_MODULE_ROOT_ENV: &str = "NEXA_PPTXGENJS_MODULE_ROOT";
 
 const OFFICE_ENV_DIR: &str = "runtimes/office-python";
 const DOC_SCRIPT_SKILL: &str = "doc-script-editor";
@@ -143,6 +149,102 @@ impl PythonCommand {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeArtifactExecution {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+async fn run_python_with_input(
+    python: &PythonCommand,
+    args: &[String],
+    cwd: &Path,
+    input: &str,
+    timeout: Duration,
+    integrity_root: Option<&Path>,
+) -> Result<std::process::Output, CoreError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut command = tokio::process::Command::new(&python.program);
+    command
+        .args(&python.prefix_args)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(root) = integrity_root {
+        command.env("NEXA_OFFICE_INTEGRITY_ROOT", root);
+    }
+    apply_quiet_command_options(command.as_std_mut());
+    let mut child = command
+        .spawn()
+        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes()).await.map_err(|error| {
+            CoreError::Internal(format!("Office artifact stdin failed: {error}"))
+        })?;
+    }
+    tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            CoreError::Internal(format!(
+                "Office artifact engine exceeded its {} second watchdog",
+                timeout.as_secs()
+            ))
+        })?
+        .map_err(|error| CoreError::Internal(format!("Office artifact engine failed: {error}")))
+}
+
+pub async fn execute_office_artifact_engine(
+    app_data_dir: &Path,
+    workspace_root: &Path,
+    arguments: &[String],
+    request_json: &str,
+) -> Result<OfficeArtifactExecution, CoreError> {
+    let python = find_existing_python(app_data_dir).ok_or_else(|| {
+        CoreError::InvalidInput(
+            "Office artifact engine requires Python; run prepare_document_tools first".to_string(),
+        )
+    })?;
+    let engine = crate::skills::builtin_skill_dir(app_data_dir, DOC_SCRIPT_SKILL)
+        .join("scripts")
+        .join("office_artifact_engine.py");
+    if !engine.is_file() {
+        return Err(CoreError::Internal(format!(
+            "Office artifact engine script is missing: {}",
+            engine.display()
+        )));
+    }
+    if !workspace_root.is_dir() {
+        return Err(CoreError::InvalidInput(format!(
+            "Office artifact workspace is not a directory: {}",
+            workspace_root.display()
+        )));
+    }
+    let mut owned_args = vec![engine.display().to_string()];
+    owned_args.extend(arguments.iter().cloned());
+    let output = run_python_with_input(
+        &python,
+        &owned_args,
+        workspace_root,
+        request_json,
+        Duration::from_secs(15 * 60),
+        Some(&app_data_dir.join("office-artifact-integrity")),
+    )
+    .await?;
+    Ok(OfficeArtifactExecution {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
 fn office_env_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(OFFICE_ENV_DIR)
 }
@@ -177,6 +279,325 @@ pub fn configure_app_managed_python_env(app_data_dir: &Path) -> Option<PathBuf> 
     } else {
         None
     }
+}
+
+pub fn configure_bundled_openxml_validator(
+    app_data_dir: &Path,
+    resource_dir: &Path,
+) -> Result<Option<PathBuf>, CoreError> {
+    let filename = if cfg!(windows) {
+        "Nexa.OpenXml.Validator.exe"
+    } else {
+        "Nexa.OpenXml.Validator"
+    };
+    let source = resource_dir.join("openxml-validator").join(filename);
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let destination_dir = app_data_dir.join("runtimes/openxml-validator/3.5.1");
+    std::fs::create_dir_all(&destination_dir).map_err(CoreError::Io)?;
+    let destination = destination_dir.join(filename);
+    let source_sha256 = file_sha256(&source)?;
+    let should_copy = !destination.is_file() || file_sha256(&destination)? != source_sha256;
+    if should_copy {
+        std::fs::copy(&source, &destination).map_err(CoreError::Io)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&destination)
+            .map_err(CoreError::Io)?
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&destination, permissions).map_err(CoreError::Io)?;
+    }
+    std::env::set_var(OPENXML_VALIDATOR_ENV, &destination);
+    Ok(Some(destination))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PptxGenRuntimeManifest {
+    kind: String,
+    manifest_version: u8,
+    runtime_version: String,
+    node_version: String,
+    node_file: String,
+    module_root: String,
+    modules: Vec<String>,
+    files: Vec<PptxGenRuntimeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PptxGenRuntimeFile {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+fn checked_runtime_relative_path(value: &str) -> Result<PathBuf, CoreError> {
+    if value.is_empty() || value.contains('\\') || value.contains(':') {
+        return Err(CoreError::InvalidInput(format!(
+            "PptxGenJS runtime path is not portable: {value}"
+        )));
+    }
+    let path = PathBuf::from(value);
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CoreError::InvalidInput(format!(
+            "PptxGenJS runtime path is not a normal relative path: {value}"
+        )));
+    }
+    Ok(path)
+}
+
+fn file_sha256(path: &Path) -> Result<String, CoreError> {
+    let bytes = std::fs::read(path).map_err(CoreError::Io)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+const PPTXGENJS_RUNTIME_MODULES: &[&str] = &[
+    "pptxgenjs",
+    "image-size",
+    "jszip",
+    "lie",
+    "immediate",
+    "pako",
+    "readable-stream",
+    "core-util-is",
+    "inherits",
+    "isarray",
+    "process-nextick-args",
+    "safe-buffer",
+    "string_decoder",
+    "util-deprecate",
+    "setimmediate",
+    "https",
+];
+
+fn runtime_files_on_disk(root: &Path) -> Result<std::collections::HashSet<PathBuf>, CoreError> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        files: &mut std::collections::HashSet<PathBuf>,
+    ) -> Result<(), CoreError> {
+        for entry in std::fs::read_dir(directory).map_err(CoreError::Io)? {
+            let entry = entry.map_err(CoreError::Io)?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(CoreError::Io)?;
+            if metadata.file_type().is_symlink() {
+                return Err(CoreError::InvalidInput(format!(
+                    "PptxGenJS runtime contains a symbolic link: {}",
+                    path.display()
+                )));
+            }
+            if metadata.is_dir() {
+                visit(root, &path, files)?;
+            } else if metadata.is_file() {
+                let relative = path.strip_prefix(root).map_err(|_| {
+                    CoreError::InvalidInput("PptxGenJS runtime escaped its root".to_string())
+                })?;
+                files.insert(relative.to_path_buf());
+            } else {
+                return Err(CoreError::InvalidInput(format!(
+                    "PptxGenJS runtime contains an unsupported filesystem entry: {}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    let metadata = std::fs::symlink_metadata(root).map_err(CoreError::Io)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime root must be a real directory".to_string(),
+        ));
+    }
+    let mut files = std::collections::HashSet::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn verify_pptxgenjs_runtime(
+    root: &Path,
+    manifest: &PptxGenRuntimeManifest,
+) -> Result<(), CoreError> {
+    if manifest.kind != "nexaPptxGenJsRuntime"
+        || manifest.manifest_version != 1
+        || manifest.runtime_version != "4.0.1-nexa.1"
+        || !manifest.node_version.starts_with('v')
+        || manifest.files.is_empty()
+        || manifest.files.len() > 2_048
+        || manifest.modules
+            != PPTXGENJS_RUNTIME_MODULES
+                .iter()
+                .map(|module| (*module).to_string())
+                .collect::<Vec<_>>()
+    {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime manifest identity or bounds are invalid".to_string(),
+        ));
+    }
+    let mut total_size = 0_u64;
+    let mut seen = std::collections::HashSet::new();
+    for file in &manifest.files {
+        let relative = checked_runtime_relative_path(&file.path)?;
+        if !seen.insert(relative.clone())
+            || file.sha256.len() != 64
+            || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "PptxGenJS runtime file identity is invalid: {}",
+                file.path
+            )));
+        }
+        total_size = total_size.checked_add(file.size).ok_or_else(|| {
+            CoreError::InvalidInput("PptxGenJS runtime size overflow".to_string())
+        })?;
+        if total_size > 256 * 1024 * 1024 {
+            return Err(CoreError::InvalidInput(
+                "PptxGenJS runtime exceeds the 256 MiB package budget".to_string(),
+            ));
+        }
+        let candidate = root.join(relative);
+        let metadata = std::fs::symlink_metadata(&candidate).map_err(CoreError::Io)?;
+        if !metadata.file_type().is_file()
+            || metadata.len() != file.size
+            || file_sha256(&candidate)? != file.sha256.to_ascii_lowercase()
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "PptxGenJS runtime file failed SHA-256 verification: {}",
+                candidate.display()
+            )));
+        }
+    }
+    let node = checked_runtime_relative_path(&manifest.node_file)?;
+    let modules = checked_runtime_relative_path(&manifest.module_root)?;
+    if !seen.contains(&node)
+        || !root.join(&modules).is_dir()
+        || PPTXGENJS_RUNTIME_MODULES
+            .iter()
+            .any(|module| !root.join(&modules).join(module).is_dir())
+    {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime node or module root is not manifest-bound".to_string(),
+        ));
+    }
+    let mut actual_files = runtime_files_on_disk(root)?;
+    actual_files.remove(&PathBuf::from("runtime-manifest.json"));
+    if actual_files != seen {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime contains missing or unmanifested files".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn configure_bundled_pptxgenjs_runtime(
+    app_data_dir: &Path,
+    resource_dir: &Path,
+) -> Result<Option<(PathBuf, PathBuf)>, CoreError> {
+    let source = resource_dir.join("pptxgenjs-runtime");
+    let manifest_path = source.join("runtime-manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let bundled_manifest_bytes = std::fs::read(&manifest_path).map_err(CoreError::Io)?;
+    let manifest: PptxGenRuntimeManifest = serde_json::from_slice(&bundled_manifest_bytes)
+        .map_err(|error| {
+            CoreError::InvalidInput(format!("Invalid PptxGenJS runtime manifest: {error}"))
+        })?;
+    verify_pptxgenjs_runtime(&source, &manifest)?;
+
+    let parent = app_data_dir.join("runtimes/pptxgenjs");
+    std::fs::create_dir_all(&parent).map_err(CoreError::Io)?;
+    let destination = parent.join(&manifest.runtime_version);
+    if destination.exists() {
+        let installed_manifest_path = destination.join("runtime-manifest.json");
+        let installed_manifest_bytes =
+            std::fs::read(&installed_manifest_path).map_err(CoreError::Io)?;
+        if installed_manifest_bytes != bundled_manifest_bytes {
+            return Err(CoreError::InvalidInput(
+                "Installed PptxGenJS manifest does not match the trusted bundled manifest"
+                    .to_string(),
+            ));
+        }
+        let installed_manifest: PptxGenRuntimeManifest =
+            serde_json::from_slice(&installed_manifest_bytes).map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid installed PptxGenJS manifest: {error}"))
+            })?;
+        verify_pptxgenjs_runtime(&destination, &installed_manifest)?;
+    } else {
+        let staging = parent.join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&staging).map_err(CoreError::Io)?;
+        for file in &manifest.files {
+            let relative = checked_runtime_relative_path(&file.path)?;
+            let target = staging.join(&relative);
+            if let Some(target_parent) = target.parent() {
+                std::fs::create_dir_all(target_parent).map_err(CoreError::Io)?;
+            }
+            std::fs::copy(source.join(&relative), &target).map_err(CoreError::Io)?;
+        }
+        std::fs::copy(&manifest_path, staging.join("runtime-manifest.json"))
+            .map_err(CoreError::Io)?;
+        verify_pptxgenjs_runtime(&staging, &manifest)?;
+        std::fs::rename(&staging, &destination).map_err(CoreError::Io)?;
+    }
+
+    let node = destination.join(checked_runtime_relative_path(&manifest.node_file)?);
+    let module_root = destination.join(checked_runtime_relative_path(&manifest.module_root)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&node)
+            .map_err(CoreError::Io)?
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&node, permissions).map_err(CoreError::Io)?;
+    }
+    std::env::set_var(PPTXGENJS_NODE_ENV, &node);
+    std::env::set_var(PPTXGENJS_MODULE_ROOT_ENV, &module_root);
+    Ok(Some((node, module_root)))
+}
+
+pub fn configure_bundled_office_addin(
+    app_data_dir: &Path,
+    resource_dir: &Path,
+) -> Result<Option<PathBuf>, CoreError> {
+    let source_dir = resource_dir.join("office-addin");
+    let manifest = source_dir.join("manifest.xml");
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    let destination_dir = app_data_dir.join("runtimes/office-addin/1.0.0");
+    std::fs::create_dir_all(&destination_dir).map_err(CoreError::Io)?;
+    for filename in [
+        "manifest.xml",
+        "manifest.template.xml",
+        "taskpane.html",
+        "taskpane.js",
+        "support.html",
+        "icon.png",
+        "render_manifest.py",
+        "serve_https.py",
+        "README.md",
+    ] {
+        let source = source_dir.join(filename);
+        if !source.is_file() {
+            return Err(CoreError::Internal(format!(
+                "Bundled Office.js add-in resource is missing: {}",
+                source.display()
+            )));
+        }
+        std::fs::copy(&source, destination_dir.join(filename)).map_err(CoreError::Io)?;
+    }
+    let installed_manifest = destination_dir.join("manifest.xml");
+    std::env::set_var(OFFICE_ADDIN_MANIFEST_ENV, &installed_manifest);
+    Ok(Some(installed_manifest))
 }
 
 fn command_success(cmd: &PythonCommand, args: &[&str]) -> bool {
@@ -258,6 +679,7 @@ fn check_python_module(
     id: &str,
     module: &str,
     required: bool,
+    expected_version: &str,
 ) -> OfficeDependencyStatus {
     let Some(python) = python else {
         return OfficeDependencyStatus {
@@ -269,23 +691,43 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some("Python is not available yet".to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         };
     };
 
     let code = format!("import {module} as m; print(getattr(m, '__version__', 'unknown'))");
     match python.run(&["-c", &code]) {
-        Ok(output) if output.status.success() => OfficeDependencyStatus {
-            id: id.to_string(),
-            label: id.to_string(),
-            kind: "python-package".to_string(),
-            required,
-            status: "ready".to_string(),
-            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            path: None,
-            detail: None,
-            install_hint: None,
-        },
+        Ok(output) if output.status.success() => {
+            let actual_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if actual_version != expected_version {
+                return OfficeDependencyStatus {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                    kind: "python-package".to_string(),
+                    required,
+                    status: "version-mismatch".to_string(),
+                    version: Some(actual_version.clone()),
+                    path: None,
+                    detail: Some(format!(
+                        "Expected pinned version {expected_version}, found {actual_version}"
+                    )),
+                    install_hint: Some(format!(
+                        "python -m pip install --upgrade --force-reinstall {id}=={expected_version}"
+                    )),
+                };
+            }
+            OfficeDependencyStatus {
+                id: id.to_string(),
+                label: id.to_string(),
+                kind: "python-package".to_string(),
+                required,
+                status: "ready".to_string(),
+                version: Some(actual_version),
+                path: None,
+                detail: None,
+                install_hint: None,
+            }
+        }
         Ok(output) => OfficeDependencyStatus {
             id: id.to_string(),
             label: id.to_string(),
@@ -295,7 +737,7 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         },
         Err(e) => OfficeDependencyStatus {
             id: id.to_string(),
@@ -306,7 +748,7 @@ fn check_python_module(
             version: None,
             path: None,
             detail: Some(e.to_string()),
-            install_hint: Some(format!("python -m pip install {id}")),
+            install_hint: Some(format!("python -m pip install {id}=={expected_version}")),
         },
     }
 }
@@ -383,21 +825,30 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
         python.as_ref(),
         "python-docx",
         "docx",
-        true,
+        false,
+        "1.2.0",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "openpyxl",
         "openpyxl",
-        true,
+        false,
+        "3.1.5",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "python-pptx",
         "pptx",
-        true,
+        false,
+        "1.0.2",
     ));
-    dependencies.push(check_python_module(python.as_ref(), "pypdf", "pypdf", true));
+    dependencies.push(check_python_module(
+        python.as_ref(),
+        "pypdf",
+        "pypdf",
+        false,
+        "6.10.0",
+    ));
     let (status, summary) = derive_status(python.is_some(), &dependencies);
     let skill_dir = crate::skills::builtin_skill_dir(app_data_dir, DOC_SCRIPT_SKILL);
     let system_python = find_system_python_for_venv();
@@ -417,7 +868,7 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
             .to_string(),
         requirements_path: skill_dir
             .join("scripts")
-            .join("requirements.txt")
+            .join("requirements.lock")
             .display()
             .to_string(),
         can_prepare: system_python.is_some() || managed_python.exists(),
@@ -521,13 +972,14 @@ pub fn prepare_office_runtime_with_options(
 
     let requirements = crate::skills::builtin_skill_dir(app_data_dir, DOC_SCRIPT_SKILL)
         .join("scripts")
-        .join("requirements.txt");
+        .join("requirements.lock");
     match run_step(
         &managed,
         &[
             "-m",
             "pip",
             "install",
+            "--require-hashes",
             "-r",
             &requirements.to_string_lossy(),
         ],
@@ -605,5 +1057,164 @@ mod tests {
         } else {
             assert!(rendered.ends_with("runtime/bin/python"));
         }
+    }
+
+    #[tokio::test]
+    async fn office_artifact_python_watchdog_times_out_and_kills_child() {
+        let Some(python) = find_system_python_for_venv() else {
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let args = vec!["-c".to_string(), "import time; time.sleep(5)".to_string()];
+        let error = run_python_with_input(
+            &python,
+            &args,
+            root.path(),
+            "",
+            Duration::from_millis(25),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("watchdog"));
+    }
+
+    #[test]
+    fn bundled_openxml_validator_is_copied_to_app_owned_runtime() {
+        let app_data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let filename = if cfg!(windows) {
+            "Nexa.OpenXml.Validator.exe"
+        } else {
+            "Nexa.OpenXml.Validator"
+        };
+        let source_dir = resources.path().join("openxml-validator");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join(filename), b"validator-binary").unwrap();
+
+        let configured = configure_bundled_openxml_validator(app_data.path(), resources.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&configured).unwrap(), b"validator-binary");
+        std::fs::write(&configured, b"same-size-stale!").unwrap();
+        assert_eq!(
+            std::fs::metadata(&configured).unwrap().len(),
+            b"validator-binary".len() as u64
+        );
+        let refreshed = configure_bundled_openxml_validator(app_data.path(), resources.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed, configured);
+        assert_eq!(std::fs::read(&configured).unwrap(), b"validator-binary");
+        assert_eq!(
+            std::env::var_os(OPENXML_VALIDATOR_ENV),
+            Some(configured.into_os_string())
+        );
+    }
+
+    #[test]
+    fn bundled_office_addin_is_copied_as_a_closed_resource_set() {
+        let app_data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let source = resources.path().join("office-addin");
+        std::fs::create_dir_all(&source).unwrap();
+        for filename in [
+            "manifest.xml",
+            "manifest.template.xml",
+            "taskpane.html",
+            "taskpane.js",
+            "support.html",
+            "icon.png",
+            "render_manifest.py",
+            "serve_https.py",
+            "README.md",
+        ] {
+            std::fs::write(source.join(filename), filename.as_bytes()).unwrap();
+        }
+        let manifest = configure_bundled_office_addin(app_data.path(), resources.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&manifest).unwrap(), "manifest.xml");
+        assert_eq!(
+            std::env::var_os(OFFICE_ADDIN_MANIFEST_ENV),
+            Some(manifest.into_os_string())
+        );
+    }
+
+    #[test]
+    fn bundled_pptxgenjs_runtime_is_hash_verified_and_copied() {
+        let app_data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let source = resources.path().join("pptxgenjs-runtime");
+        std::fs::create_dir_all(source.join("node_modules/pptxgenjs")).unwrap();
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let mut files = Vec::new();
+        let mut fixtures = vec![(node_name.to_string(), b"node-binary".as_slice())];
+        fixtures.extend(PPTXGENJS_RUNTIME_MODULES.iter().map(|module| {
+            (
+                format!("node_modules/{module}/package.json"),
+                b"{}".as_slice(),
+            )
+        }));
+        for (relative, content) in fixtures {
+            let path = source.join(&relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, content).unwrap();
+            files.push(serde_json::json!({
+                "path": relative.replace('\\', "/"),
+                "size": content.len(),
+                "sha256": file_sha256(&path).unwrap(),
+            }));
+        }
+        let manifest = serde_json::json!({
+            "kind": "nexaPptxGenJsRuntime",
+            "manifestVersion": 1,
+            "runtimeVersion": "4.0.1-nexa.1",
+            "nodeVersion": "v24.0.0",
+            "nodeFile": node_name,
+            "moduleRoot": "node_modules",
+            "modules": PPTXGENJS_RUNTIME_MODULES,
+            "files": files,
+        });
+        std::fs::write(
+            source.join("runtime-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let (node, modules) =
+            configure_bundled_pptxgenjs_runtime(app_data.path(), resources.path())
+                .unwrap()
+                .unwrap();
+        assert_eq!(std::fs::read(&node).unwrap(), b"node-binary");
+        assert!(modules.join("pptxgenjs/package.json").is_file());
+        assert_eq!(
+            std::env::var_os(PPTXGENJS_NODE_ENV),
+            Some(node.into_os_string())
+        );
+
+        std::fs::write(modules.join("pptxgenjs/package.json"), b"tampered").unwrap();
+        assert!(configure_bundled_pptxgenjs_runtime(app_data.path(), resources.path()).is_err());
+
+        let installed_manifest_path = modules.parent().unwrap().join("runtime-manifest.json");
+        let mut installed_manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&installed_manifest_path).unwrap()).unwrap();
+        let tampered_path = modules.join("pptxgenjs/package.json");
+        let file = installed_manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == "node_modules/pptxgenjs/package.json")
+            .unwrap();
+        file["size"] = serde_json::json!(std::fs::metadata(&tampered_path).unwrap().len());
+        file["sha256"] = serde_json::json!(file_sha256(&tampered_path).unwrap());
+        std::fs::write(
+            &installed_manifest_path,
+            serde_json::to_vec_pretty(&installed_manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(configure_bundled_pptxgenjs_runtime(app_data.path(), resources.path()).is_err());
     }
 }

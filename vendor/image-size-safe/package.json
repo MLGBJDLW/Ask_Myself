@@ -1,0 +1,17 @@
+{
+  "name": "image-size",
+  "version": "2.0.3-nexa.1",
+  "description": "Nexa-reviewed compatibility subset of image-size for PptxGenJS",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "files": [
+    "index.cjs",
+    "index.d.ts",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

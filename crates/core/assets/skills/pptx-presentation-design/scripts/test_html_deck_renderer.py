@@ -116,6 +116,9 @@ class HtmlDeckRendererTests(unittest.TestCase):
             self.assertTrue(pptx_path.exists())
             self.assertEqual("warn", result["qa"]["status"])
             self.assertEqual(1.0, result["manifest"]["pptx"]["metrics"]["editabilityScore"])
+            self.assertEqual("fully_editable", result["manifest"]["pptx"]["metrics"]["editabilityLevel"])
+            self.assertFalse(result["manifest"]["pptx"]["metrics"]["finalPptxRenderVerified"])
+            self.assertTrue(any("not been rendered" in warning for warning in result["qa"]["warnings"]))
             self.assertEqual(2, result["manifest"]["pptx"]["metrics"]["animationTargets"])
 
             with zipfile.ZipFile(pptx_path) as zf:
@@ -130,6 +133,26 @@ class HtmlDeckRendererTests(unittest.TestCase):
     def test_validate_spec_rejects_empty_slides(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             html_deck_renderer._validate_spec({"slides": []})
+
+    def test_existing_managed_marker_never_authorizes_recursive_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            project = root / "project"
+            project.mkdir()
+            (project / ".html-deck-project").write_text("forged\n", encoding="utf-8")
+            keep = project / "keep.txt"
+            keep.write_text("user data", encoding="utf-8")
+            spec = root / "spec.json"
+            spec.write_text(json.dumps({"slides": [{"title": "One"}]}), encoding="utf-8")
+
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                html_deck_renderer.render_html_deck(
+                    spec_path=str(spec),
+                    out_dir=str(project),
+                    screenshot="skip",
+                    workspace_root=root,
+                )
+            self.assertEqual("user data", keep.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

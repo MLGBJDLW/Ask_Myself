@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nexa Office Live Bridge</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    body { margin: 0; padding: 18px; font: 14px/1.45 system-ui, sans-serif; color: #17213a; background: #f6f8fc; }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p { color: #536078; }
+    label { display: block; margin-top: 12px; font-size: 12px; font-weight: 650; }
+    input { box-sizing: border-box; width: 100%; margin-top: 4px; padding: 9px; border: 1px solid #c8d2e5; border-radius: 7px; }
+    button { width: 100%; margin-top: 14px; padding: 10px; border: 0; border-radius: 7px; color: white; background: #2457d6; font-weight: 650; }
+    #status { margin-top: 14px; padding: 10px; border-radius: 7px; background: white; border: 1px solid #dbe2ef; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Nexa Office Live Bridge</h1>
+  <p>Open Nexa’s <strong>live_pairing</strong> action, then enter the loopback endpoint and one-time code. Nexa can only edit this currently open document while this pane remains connected.</p>
+  <label for="endpoint">Loopback endpoint</label>
+  <input id="endpoint" inputmode="url" placeholder="http://127.0.0.1:12345">
+  <label for="pairing">One-time pairing code</label>
+  <input id="pairing" inputmode="numeric" maxlength="6" placeholder="000000">
+  <button id="connect" type="button">Pair and connect</button>
+  <div id="status" role="status">Waiting for Office…</div>
+  <script type="module" src="./taskpane.js"></script>
+</body>
+</html>

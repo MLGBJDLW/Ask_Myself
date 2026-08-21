@@ -16,6 +16,15 @@ import pptx_renderer
 
 
 class PptxRendererValidationTests(unittest.TestCase):
+    def test_remote_image_resolution_is_network_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "remote image URLs are blocked"):
+                pptx_renderer._resolve_image_reference(
+                    "http://127.0.0.1/private.png",
+                    [],
+                    Path(tmp),
+                )
+
     def test_theme_presets_include_distinct_design_directions(self) -> None:
         for preset in [
             "consulting-clean",

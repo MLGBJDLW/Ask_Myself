@@ -1,6 +1,6 @@
 ---
 name: office-document-design
-description: Route polished Microsoft Office work to the correct Python-backed workflow. Activate when a request mentions DOCX, Word, reports, XLSX, Excel, spreadsheets, workbooks, PPTX, PowerPoint, slides, decks, presentations, or multi-format Office deliverables; pair this with the format-specific Office skill and `doc-script-editor`.
+description: Route polished Microsoft Office work to the correct transactional workflow. Activate for DOCX/DOCM/DOTX/DOTM, Word, reports, XLSX/XLSM/XLTX/XLTM, Excel, spreadsheets, workbooks, PPTX/PPTM/POTX/POTM, PowerPoint, slides, decks, presentations, attachment-only Office filenames, or multi-format Office deliverables; pair this with the format-specific Office skill and `doc-script-editor`.
 ---
 
 ## Role

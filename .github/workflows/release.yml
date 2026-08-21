@@ -74,6 +74,21 @@ jobs:
             exit 1
           fi
 
+      - name: Require successful native Office acceptance for this SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          accepted=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/office-native-acceptance.yml/runs" \
+            -f head_sha="$GITHUB_SHA" \
+            -f status=completed \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$accepted" -lt 1 ]; then
+            echo "::error::Release SHA $GITHUB_SHA has no successful Native Office Acceptance run."
+            exit 1
+          fi
+
   build:
     needs: [release-please, preflight]
     if: needs.release-please.outputs.release_created == 'true'
@@ -125,7 +140,58 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/package-lock.json
+
+      - name: Build reviewed PptxGenJS runtime bundle
+        shell: bash
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run office:supply-chain:test
+          npm run office:pptxgenjs:bundle
+          test -f apps/desktop/src-tauri/resources/pptxgenjs-runtime/runtime-manifest.json
+
+      - name: Setup .NET for Open XML schema validator
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.424
+
+      - name: Bundle self-contained Open XML schema validator
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) rid="win-x64" ;;
+            Linux) rid="linux-x64" ;;
+            macOS) rid="osx-arm64" ;;
+            *) echo "Unsupported validator runner: ${{ runner.os }}"; exit 1 ;;
+          esac
+          output="apps/desktop/src-tauri/resources/openxml-validator"
+          dotnet publish tools/openxml-validator/Nexa.OpenXml.Validator.csproj \
+            -c Release -r "$rid" --self-contained true \
+            -p:PublishSingleFile=true -p:PublishTrimmed=false \
+            -o "$output"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            test -f "$output/Nexa.OpenXml.Validator.exe"
+          else
+            test -x "$output/Nexa.OpenXml.Validator"
+          fi
+
+      - name: Bundle reviewed Office.js add-in
+        shell: bash
+        run: |
+          destination="apps/desktop/src-tauri/resources/office-addin"
+          mkdir -p "$destination"
+          cp integrations/office-addin/manifest.xml "$destination/"
+          cp integrations/office-addin/manifest.template.xml "$destination/"
+          cp integrations/office-addin/taskpane.html "$destination/"
+          cp integrations/office-addin/taskpane.js "$destination/"
+          cp integrations/office-addin/support.html "$destination/"
+          cp integrations/office-addin/icon.png "$destination/"
+          cp integrations/office-addin/render_manifest.py "$destination/"
+          cp integrations/office-addin/serve_https.py "$destination/"
+          cp integrations/office-addin/README.md "$destination/"
 
       - name: Install frontend dependencies
         working-directory: apps/desktop

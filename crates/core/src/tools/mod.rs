@@ -124,6 +124,7 @@ pub mod mcp_tool;
 pub mod multi_edit_tool;
 #[cfg(feature = "ocr")]
 pub mod ocr_tool;
+pub mod office_artifact_tool;
 pub mod path_utils;
 pub mod persona_tool;
 pub mod playbook_tool;
@@ -1436,6 +1437,7 @@ pub fn default_tool_registry() -> ToolRegistry {
     registry.register(Box::new(create_file_tool::CreateFileTool));
     registry.register(Box::new(submit_feedback_tool::SubmitFeedbackTool));
     registry.register(Box::new(document_info_tool::GetDocumentInfoTool));
+    registry.register(Box::new(office_artifact_tool::OfficeArtifactTool));
     registry.register(Box::new(reindex_tool::ReindexTool));
     registry.register(Box::new(compare_tool::CompareTool));
     registry.register(Box::new(manage_source_tool::ManageSourceTool));

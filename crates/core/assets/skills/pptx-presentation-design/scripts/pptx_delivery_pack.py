@@ -22,6 +22,7 @@ def create_delivery_pack(
     *,
     spec: Path | None = None,
     strict: bool = False,
+    render_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -30,8 +31,18 @@ def create_delivery_pack(
     shutil.copy2(path, copied)
 
     audit = pptx_audit.audit(path)
-    gate = pptx_quality_gate.evaluate_audit(audit, strict=strict, require_notes=strict)
-    visual = pptx_visual_qa.analyze_pptx(path)
+    rendered_previews = [
+        str(item) for item in sorted(render_dir.iterdir())
+        if item.is_file() and item.suffix.lower() in {".png", ".jpg", ".jpeg"}
+    ] if render_dir and render_dir.is_dir() else []
+    gate = pptx_quality_gate.evaluate_audit(
+        audit,
+        strict=strict,
+        require_notes=strict,
+        rendered_previews=rendered_previews,
+        require_render=strict,
+    )
+    visual = pptx_visual_qa.analyze_pptx(path, render_dir)
     assets: dict[str, Any] = {"pptx": pptx_asset_pack.inventory_pptx_assets(path)}
     if spec:
         assets["spec"] = pptx_asset_pack.validate_spec_assets(spec, Path.cwd())
@@ -65,9 +76,16 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True, help="Output package directory")
     parser.add_argument("--spec", default=None, help="Optional renderer JSON spec")
     parser.add_argument("--strict", action="store_true", help="Use strict quality gate rules")
+    parser.add_argument("--render-dir", default=None, help="Final-PPTX slide render directory; required for strict delivery")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     args = parser.parse_args()
-    manifest = create_delivery_pack(Path(args.path), Path(args.out_dir), spec=Path(args.spec) if args.spec else None, strict=args.strict)
+    manifest = create_delivery_pack(
+        Path(args.path),
+        Path(args.out_dir),
+        spec=Path(args.spec) if args.spec else None,
+        strict=args.strict,
+        render_dir=Path(args.render_dir) if args.render_dir else None,
+    )
     print(json.dumps(manifest, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0 if manifest["status"] == "pass" else 4
 

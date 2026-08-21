@@ -125,7 +125,8 @@ Use this quick routing guide when a request is about files or documents:
 | Create a new plain-text file | `create_file` | Text-based files only | yes | For new `.md`, `.txt`, `.json`, `.rs`, etc. |
 | Edit an existing plain-text file | `edit_file` | Text-based files only | yes | Exact `str_replace` only; must match once |
 | Apply several coordinated text edits | `multi_edit` | Text-based files only | yes | Atomic multi-replacement with one checkpoint; all edits succeed or no file changes |
-| Create or edit an Office/PDF file | `run_shell` + `doc-script-editor` | DOCX, XLSX, PPTX, PDF | yes | Python-backed creation, extraction, redaction, templates, validation, conversion, rendering, OOXML edits, and formula QA |
+| Create, edit, verify, publish, or restore an Office file | `office_artifact` | DOCX, XLSX, PPTX | yes | Typed guarantees, candidate gating, validation/evidence, receipts, and hash-guarded restore |
+| Edit/convert/render PDF or use an Office escape hatch | `run_shell` + `doc-script-editor` | DOCX, XLSX, PPTX, PDF | yes | Compatibility operations, extraction, conversion, rendering, and low-level OOXML edits |
 | Compatibility fallback for very simple new Office files | `generate_docx`/`generate_xlsx`/`ppt_generate` | DOCX, XLSX, PPTX | yes | Use only when Python is unavailable or the schema fully covers the request |
 | Refresh indexed content after file changes | `reindex_document` | File path or whole source | yes for file path | Use when external edits are not reflected in search/results yet |
 
@@ -430,15 +431,23 @@ Create a new plain-text file within a registered source directory. Paths may be 
 | `content` | string | yes | Plain-text content to write |
 | `overwrite` | boolean | no | Overwrite an existing file if true |
 
-Do not use `create_file` for DOCX/XLSX/PPTX/PDF. Use `run_shell` + `doc-script-editor` for Python-backed Office/PDF work. The format-specific generators are compatibility fallbacks for very simple new files only.
+Do not use `create_file` for DOCX/XLSX/PPTX/PDF. Use `office_artifact` for DOCX/XLSX/PPTX work and `run_shell` + `doc-script-editor` for PDF or compatibility escape hatches. The format-specific generators are fallbacks for very simple new files only.
 
 > **Example:** Create a new Markdown draft under `notes/` or add a config file in a nested folder.
 
 ---
 
-### Office generation and editing
+### `office_artifact`
 
-For Office/PDF work, invoke the bundled Python script through `run_shell`:
+The preferred DOCX/XLSX/PPTX lifecycle is `capabilities`/`assess` → `execute` → `decide` → optional `restore`. `execute` creates a validated candidate by default and does not touch the destination. `decide: publish` atomically publishes it and returns a receipt; `restore` refuses to overwrite a destination that changed after publication.
+
+Requests use `requestVersion: 2`, a format and intent, typed operations, optional `preconditions.sourceSha256`, and explicit guarantees (`quality`, `preservation`, `calculation`, `render`). Inline validation requires `contractVersion: 2`; all schema fields are closed and unknown fields fail. `quality: publish` requires candidate-SHA-bound rendered evidence. `quality: native` and XLSX `calculation: native` require Microsoft Office COM. LibreOffice recalculation is labeled `compatible`, never Excel-native.
+
+The adapter contract reports local Open XML, LibreOffice-compatible, Windows COM, and disconnected Office.js-live surfaces separately. A local `.nexa/office-adapters/*.json` declaration is schema-validated and discoverable but is not executable merely because it exists. Live Office.js requires a separately authorized host session and exposes only the typed operations declared by that host: Word text/comments/change tracking/content controls, Excel ranges/tables/charts/calculation, and PowerPoint slides/text boxes/geometric shapes. Production deployment pins one exact HTTPS add-in origin and requires a user- or IT-provisioned trusted loopback certificate; Nexa never mutates the certificate trust store. Native release evidence is produced by the protected, SHA-bound Word/Excel/PowerPoint acceptance workflow.
+
+### Office compatibility and PDF operations
+
+For PDF work and Office operations not yet expressed by the typed engine, invoke the bundled Python script through `run_shell`:
 
 ```
 python <SKILL_DIR>/scripts/edit_doc.py check
@@ -466,7 +475,7 @@ PPT deep-generation workflows live in the `pptx-presentation-design` skill, not 
 
 For generated HTML-first decks, call `create_html_pptx` with `--spec -` and pass the JSON deck spec through `run_shell.stdin`. Do not put raw HTML/CSS/JSON deck content in `run_shell.args`; argv is only for command tokens.
 
-`generate_docx`, `generate_xlsx`, and `ppt_generate` remain registered for compatibility, but they are fallback tools. Prefer the Python path because it supports validation, templates, rendering, formulas, speaker notes, and follow-up edits without passing binary content through tool arguments. `create_xlsx` delegates to the XLSX skill renderer for formula fill-down/fill-right, tables, named ranges, validations, conditional formatting, charts, and internal formula QA.
+`generate_docx`, `generate_xlsx`, and `ppt_generate` remain registered for compatibility, but they are fallback tools. Prefer `office_artifact` because it supports validation, templates, rendering, formulas, speaker notes, candidate review, and rollback without passing binary content through tool arguments. `create_xlsx` delegates to the XLSX skill renderer for formula fill-down/fill-right, tables, named ranges, validations, conditional formatting, charts, and internal formula QA.
 
 Runtime readiness:
 
@@ -475,6 +484,8 @@ Runtime readiness:
 - After preparation, `run_shell` prepends the app-managed Python `Scripts`/`bin` directory to `PATH`, so `python <SKILL_DIR>/scripts/edit_doc.py ...` uses the prepared Office environment automatically.
 - If Python itself is not installed, Nexa does not silently install a system runtime. The UI shows the Python download URL and keeps native generators available as simple compatibility fallback.
 - LibreOffice and Poppler remain optional system-level applications for conversion and rendering. Excel formula QA uses the internal XLSX linter and does not require LibreOffice.
+- Required Python Office packages are exact-pinned. Readiness reports version mismatch instead of treating any newer/older package as equivalent.
+- Native PowerPoint rendering uses COM slide export with macros disabled. The Rust tool host applies a 15-minute kill-on-drop watchdog to Python/native Office execution.
 - Python Playwright remains optional for HTML-first PPTX screenshot QA. Without it, `create_html_pptx --screenshot auto` still writes HTML, PPTX, manifest, and QA, but reports screenshot coverage as a warning.
 
 ---

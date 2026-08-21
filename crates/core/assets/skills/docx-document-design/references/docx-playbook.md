@@ -9,7 +9,9 @@
 ### Editing Existing DOCX
 - Take a `version` snapshot before destructive or broad edits.
 - Use text replacement only for small formatting-preserving changes.
-- Use OOXML unpack/pack when the task involves comments, tracked changes, fields, relationships, embedded images, or precise template repair.
+- Prefer the typed candidate lifecycle for comments, threaded replies, resolution state, tracked replacement, bookmarks, safe fields, content controls, protection, and template binding. Address a comment thread by its inspected `commentId`; do not guess IDs from visible order.
+- Inspect `trackedChanges.unsupportedForAcceptReject` before accepting or rejecting revisions. Insertions and deletions are handled directly across Word story parts; moves, property/table revisions, conflicts, and custom-XML revisions must fail closed or use native Word automation.
+- Use manual OOXML unpack/pack only for an explicitly inspected object that has no typed operation, and keep changed-part and relationship evidence.
 - Preserve headers, footers, numbering, section breaks, margins, and named styles unless asked to redesign.
 
 ### Visual Quality

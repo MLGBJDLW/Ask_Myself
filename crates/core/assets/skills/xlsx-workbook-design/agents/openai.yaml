@@ -2,5 +2,10 @@ interface:
   display_name: "XLSX Workbook Design"
   short_description: "Create and audit spreadsheets, financial models, formulas, and workbook structure"
   default_prompt: "Use this skill for Excel or XLSX deliverables that need formulas, sheet design, or validation."
+dependencies:
+  tools:
+    - type: "nexa"
+      value: "office_artifact"
+      description: "Runs the transactional XLSX candidate, publication, and restore lifecycle"
 policy:
   allow_implicit_invocation: true
