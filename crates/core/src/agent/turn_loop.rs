@@ -1159,8 +1159,10 @@ impl AgentExecutor {
             let verified_tool_calls = match VerifiedToolCallBatch::seal(
                 tool_calls,
                 tool_call_assembly_rejected,
-                matches!(step_finish_reason_kind, Some(FinishReason::ToolCalls))
-                    && !tool_calls_truncated_by_output_limit,
+                matches!(
+                    step_finish_reason_kind,
+                    Some(FinishReason::ToolCalls | FinishReason::Stop)
+                ) && !tool_calls_truncated_by_output_limit,
             ) {
                 Ok(verified) => verified,
                 Err(rejected) => {
