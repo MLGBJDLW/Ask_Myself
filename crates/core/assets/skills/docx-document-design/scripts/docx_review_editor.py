@@ -248,11 +248,14 @@ def _current_part(
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
     name: str,
+    deletions: set[str] | None = None,
 ) -> bytes | None:
     if name in replacements:
         return replacements[name]
     if name in additions:
         return additions[name]
+    if deletions is not None and name in deletions:
+        return None
     if name in archive.namelist():
         return archive.read(name)
     return None
@@ -264,6 +267,7 @@ def _store_part(
     additions: dict[str, bytes],
     name: str,
     data: bytes,
+    deletions: set[str] | None = None,
 ) -> None:
     if name in archive.namelist():
         replacements[name] = data
@@ -271,6 +275,8 @@ def _store_part(
     else:
         additions[name] = data
         replacements.pop(name, None)
+    if deletions is not None:
+        deletions.discard(name)
 
 
 def _next_hex_identifier(values: list[str]) -> str:
@@ -299,11 +305,12 @@ def _save_comment_thread_package(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
+    deletions: set[str],
     comments: ET.Element,
 ) -> dict[str, dict[str, Any]]:
     roots: dict[str, ET.Element] = {}
     for name, (namespace, root_name, _, _) in COMMENT_METADATA.items():
-        data = _current_part(archive, replacements, additions, name)
+        data = _current_part(archive, replacements, additions, name, deletions)
         roots[name] = ET.fromstring(data) if data else ET.Element(_qn(namespace, root_name))
 
     extended = roots["word/commentsExtended.xml"]
@@ -391,6 +398,7 @@ def _save_comment_thread_package(
         additions,
         "word/comments.xml",
         _serialize(comments),
+        deletions,
     )
     for name, root in roots.items():
         _store_part(
@@ -399,10 +407,11 @@ def _save_comment_thread_package(
             additions,
             name,
             _serialize(root),
+            deletions,
         )
 
     rels_name = "word/_rels/document.xml.rels"
-    rels_data = _current_part(archive, replacements, additions, rels_name)
+    rels_data = _current_part(archive, replacements, additions, rels_name, deletions)
     if rels_data is None:
         raise DocxReviewError("document relationships part is missing")
     rels = ET.fromstring(rels_data)
@@ -430,10 +439,11 @@ def _save_comment_thread_package(
         additions,
         rels_name,
         ET.tostring(rels, encoding="utf-8", xml_declaration=True),
+        deletions,
     )
 
     content_types_data = _current_part(
-        archive, replacements, additions, "[Content_Types].xml"
+        archive, replacements, additions, "[Content_Types].xml", deletions
     )
     if content_types_data is None:
         raise DocxReviewError("[Content_Types].xml is missing")
@@ -455,6 +465,7 @@ def _save_comment_thread_package(
         additions,
         "[Content_Types].xml",
         ET.tostring(content_types, encoding="utf-8", xml_declaration=True),
+        deletions,
     )
     return by_comment_id
 
@@ -463,11 +474,12 @@ def _add_comment(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
+    deletions: set[str],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
     document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
     comments_data = _current_part(
-        archive, replacements, additions, "word/comments.xml"
+        archive, replacements, additions, "word/comments.xml", deletions
     )
     comments = ET.fromstring(comments_data) if comments_data else ET.Element(_q("comments"))
     comment_id = _next_word_id([document, comments])
@@ -508,7 +520,7 @@ def _add_comment(
     ET.SubElement(comment_run, _q("t")).text = str(operation.get("comment", ""))
     replacements["word/document.xml"] = _serialize(document)
     metadata = _save_comment_thread_package(
-        archive, replacements, additions, comments
+        archive, replacements, additions, deletions, comments
     )[comment_id]
     return {
         "commentId": comment_id,
@@ -522,10 +534,11 @@ def _set_comment_extended_attributes(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
+    deletions: set[str],
     updates: dict[str, dict[str, str]],
 ) -> None:
     name = "word/commentsExtended.xml"
-    data = _current_part(archive, replacements, additions, name)
+    data = _current_part(archive, replacements, additions, name, deletions)
     if data is None:
         raise DocxReviewError("commentsExtended metadata is missing")
     root = ET.fromstring(data)
@@ -547,6 +560,7 @@ def _set_comment_extended_attributes(
         additions,
         name,
         _serialize(root),
+        deletions,
     )
 
 
@@ -597,19 +611,20 @@ def _reply_comment(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
+    deletions: set[str],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
     parent_id = str(operation.get("commentId", ""))
     if not parent_id:
         raise DocxReviewError("reply_comment requires commentId")
     comments_data = _current_part(
-        archive, replacements, additions, "word/comments.xml"
+        archive, replacements, additions, "word/comments.xml", deletions
     )
     if comments_data is None:
         raise DocxReviewError("reply_comment requires an existing comments.xml part")
     comments = ET.fromstring(comments_data)
     metadata = _save_comment_thread_package(
-        archive, replacements, additions, comments
+        archive, replacements, additions, deletions, comments
     )
     if parent_id not in metadata:
         raise DocxReviewError(f"commentId not found: {parent_id}")
@@ -628,7 +643,7 @@ def _reply_comment(
     run = ET.SubElement(paragraph, _q("r"))
     ET.SubElement(run, _q("t")).text = str(operation.get("comment", ""))
     metadata = _save_comment_thread_package(
-        archive, replacements, additions, comments
+        archive, replacements, additions, deletions, comments
     )
     parent_para_id = str(metadata[parent_id]["paraId"])
     reply_para_id = str(metadata[reply_id]["paraId"])
@@ -636,6 +651,7 @@ def _reply_comment(
         archive,
         replacements,
         additions,
+        deletions,
         {reply_para_id: {"paraIdParent": parent_para_id, "done": "0"}},
     )
     replacements["word/document.xml"] = _serialize(document)
@@ -651,24 +667,25 @@ def _resolve_comment(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
     additions: dict[str, bytes],
+    deletions: set[str],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
     comment_id = str(operation.get("commentId", ""))
     if not comment_id:
         raise DocxReviewError("resolve_comment requires commentId")
     comments_data = _current_part(
-        archive, replacements, additions, "word/comments.xml"
+        archive, replacements, additions, "word/comments.xml", deletions
     )
     if comments_data is None:
         raise DocxReviewError("resolve_comment requires an existing comments.xml part")
     comments = ET.fromstring(comments_data)
     metadata = _save_comment_thread_package(
-        archive, replacements, additions, comments
+        archive, replacements, additions, deletions, comments
     )
     if comment_id not in metadata:
         raise DocxReviewError(f"commentId not found: {comment_id}")
     extended_data = _current_part(
-        archive, replacements, additions, "word/commentsExtended.xml"
+        archive, replacements, additions, "word/commentsExtended.xml", deletions
     )
     if extended_data is None:
         raise DocxReviewError("commentsExtended metadata is missing")
@@ -693,6 +710,7 @@ def _resolve_comment(
         archive,
         replacements,
         additions,
+        deletions,
         {para_id: {"done": "1" if resolved else "0"} for para_id in affected},
     )
     by_para = {
@@ -996,6 +1014,7 @@ def _unsupported_revisions(data: bytes) -> list[str]:
 def _strip_comments(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     deletions: set[str],
 ) -> dict[str, Any]:
     removed_markers = 0
@@ -1015,10 +1034,16 @@ def _strip_comments(
         if changed:
             replacements[name] = _serialize(root)
     comment_parts = {
-        name for name in archive.namelist()
+        name for name in set(archive.namelist()) | set(replacements) | set(additions)
         if name.startswith("word/comments") or "/comments" in name and name.endswith(".xml")
     }
-    deletions.update(comment_parts)
+    for name in comment_parts:
+        replacements.pop(name, None)
+        additions.pop(name, None)
+        if name in archive.namelist():
+            deletions.add(name)
+        else:
+            deletions.discard(name)
     rels_name = "word/_rels/document.xml.rels"
     rels = ET.fromstring(replacements.get(rels_name, archive.read(rels_name)))
     for relationship in list(rels):
@@ -1048,13 +1073,21 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
             if name not in SUPPORTED_OPERATIONS:
                 raise DocxReviewError(f"unsupported review operation at index {index}: {name}")
             if name == "add_comment":
-                detail = _add_comment(archive, replacements, additions, operation)
+                detail = _add_comment(
+                    archive, replacements, additions, deletions, operation
+                )
             elif name == "reply_comment":
-                detail = _reply_comment(archive, replacements, additions, operation)
+                detail = _reply_comment(
+                    archive, replacements, additions, deletions, operation
+                )
             elif name == "resolve_comment":
-                detail = _resolve_comment(archive, replacements, additions, operation)
+                detail = _resolve_comment(
+                    archive, replacements, additions, deletions, operation
+                )
             elif name == "strip_comments":
-                detail = _strip_comments(archive, replacements, deletions)
+                detail = _strip_comments(
+                    archive, replacements, additions, deletions
+                )
             elif name == "tracked_replace":
                 detail = _tracked_replace(archive, replacements, operation)
             elif name == "add_bookmark":

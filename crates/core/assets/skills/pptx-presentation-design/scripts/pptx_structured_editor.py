@@ -61,11 +61,49 @@ def _relative_target(source_part: str, target_part: str) -> str:
     return posixpath.relpath(target_part, posixpath.dirname(source_part))
 
 
-def _relationship_map(archive: zipfile.ZipFile, part: str) -> dict[str, dict[str, str]]:
+def _current_part(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    name: str,
+) -> bytes | None:
+    if name in replacements:
+        return replacements[name]
+    if name in additions:
+        return additions[name]
+    if name in archive.namelist():
+        return archive.read(name)
+    return None
+
+
+def _store_part(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    name: str,
+    data: bytes,
+) -> None:
+    if name in archive.namelist():
+        replacements[name] = data
+        additions.pop(name, None)
+    else:
+        additions[name] = data
+        replacements.pop(name, None)
+
+
+def _relationship_map(
+    archive: zipfile.ZipFile,
+    part: str,
+    replacements: dict[str, bytes] | None = None,
+    additions: dict[str, bytes] | None = None,
+) -> dict[str, dict[str, str]]:
     rels_name = _rels_path(part)
-    if rels_name not in archive.namelist():
+    data = _current_part(
+        archive, replacements or {}, additions or {}, rels_name
+    )
+    if data is None:
         return {}
-    root = ET.fromstring(archive.read(rels_name))
+    root = ET.fromstring(data)
     relationships: dict[str, dict[str, str]] = {}
     for relationship in root:
         if _local(relationship.tag) != "Relationship":
@@ -146,22 +184,26 @@ def _should_duplicate_relationship(relationship_type: str, target_part: str) -> 
 
 def _discover_clone_closure(
     archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     source_slide: str,
     clone_slide: str,
 ) -> dict[str, str]:
-    occupied = set(archive.namelist())
+    occupied = set(archive.namelist()) | set(additions)
     mapping = {source_slide: clone_slide}
     queue = [source_slide]
     while queue:
         source_part = queue.pop(0)
-        for relationship in _relationship_map(archive, source_part).values():
+        for relationship in _relationship_map(
+            archive, source_part, replacements, additions
+        ).values():
             if relationship["mode"] == "External" or not relationship["target"]:
                 continue
             target = _resolve_target(source_part, relationship["target"])
             if target in mapping:
                 continue
             if _should_duplicate_relationship(relationship["type"], target):
-                if target not in archive.namelist():
+                if _current_part(archive, replacements, additions, target) is None:
                     raise PptxEditError(f"clone dependency is missing: {target}")
                 mapping[target] = _allocate_part(target, occupied)
                 queue.append(target)
@@ -170,14 +212,17 @@ def _discover_clone_closure(
 
 def _rewrite_relationship_part(
     archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     old_part: str,
     new_part: str,
     mapping: dict[str, str],
 ) -> tuple[str, bytes] | None:
     old_rels = _rels_path(old_part)
-    if old_rels not in archive.namelist():
+    data = _current_part(archive, replacements, additions, old_rels)
+    if data is None:
         return None
-    root = ET.fromstring(archive.read(old_rels))
+    root = ET.fromstring(data)
     for relationship in root:
         if _local(relationship.tag) != "Relationship" or relationship.attrib.get("TargetMode") == "External":
             continue
@@ -221,14 +266,21 @@ def _clone_slide(
     additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order(archive)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     source = _target_slide(operation, order)
     occupied = set(archive.namelist()) | set(additions)
     clone_part = _allocate_part(source["part"], occupied)
-    mapping = _discover_clone_closure(archive, source["part"], clone_part)
+    mapping = _discover_clone_closure(
+        archive, replacements, additions, source["part"], clone_part
+    )
     for old_part, new_part in mapping.items():
-        additions[new_part] = archive.read(old_part)
-        rewritten = _rewrite_relationship_part(archive, old_part, new_part, mapping)
+        data = _current_part(archive, replacements, additions, old_part)
+        if data is None:
+            raise PptxEditError(f"clone source part is missing: {old_part}")
+        additions[new_part] = data
+        rewritten = _rewrite_relationship_part(
+            archive, replacements, additions, old_part, new_part, mapping
+        )
         if rewritten is not None:
             additions[rewritten[0]] = rewritten[1]
 
@@ -357,7 +409,7 @@ def _insert_slide(
     additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     after = int(operation.get("after", 0))
     if after < 0 or after > len(order):
         raise PptxEditError(f"after out of range: {after}")
@@ -365,7 +417,9 @@ def _insert_slide(
     layout_relationship = next(
         (
             relationship
-            for relationship in _relationship_map(archive, reference["part"]).values()
+            for relationship in _relationship_map(
+                archive, reference["part"], replacements, additions
+            ).values()
             if relationship["type"].rsplit("/", 1)[-1] == "slideLayout"
             and relationship["mode"] != "External"
         ),
@@ -374,7 +428,7 @@ def _insert_slide(
     if layout_relationship is None:
         raise PptxEditError("insert_slide requires an existing internal slide layout relationship")
     layout_part = _resolve_target(reference["part"], layout_relationship["target"])
-    if layout_part not in archive.namelist():
+    if _current_part(archive, replacements, additions, layout_part) is None:
         raise PptxEditError(f"insert_slide layout is missing: {layout_part}")
 
     occupied = set(archive.namelist()) | set(additions)
@@ -452,13 +506,15 @@ def _find_shape(root: ET.Element, operation: dict[str, Any]) -> ET.Element:
 def _pptx_chart_targets(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, str]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
-    slide_root = ET.fromstring(
-        replacements.get(slide["part"], archive.read(slide["part"]))
-    )
+    slide_data = _current_part(archive, replacements, additions, slide["part"])
+    if slide_data is None:
+        raise PptxEditError(f"target slide part is missing: {slide['part']}")
+    slide_root = ET.fromstring(slide_data)
     shape = _find_shape(slide_root, operation)
     chart_nodes = [item for item in shape.iter() if _local(item.tag) == "chart"]
     if len(chart_nodes) != 1:
@@ -466,7 +522,9 @@ def _pptx_chart_targets(
             f"target shape must contain exactly one chart reference; found {len(chart_nodes)}"
         )
     relationship_id = chart_nodes[0].attrib.get(f"{{{R_NS}}}id", "")
-    relationship = _relationship_map(archive, slide["part"]).get(relationship_id)
+    relationship = _relationship_map(
+        archive, slide["part"], replacements, additions
+    ).get(relationship_id)
     if (
         relationship is None
         or relationship["mode"] == "External"
@@ -474,7 +532,7 @@ def _pptx_chart_targets(
     ):
         raise PptxEditError("target chart relationship is missing, external, or invalid")
     chart_part = _resolve_target(slide["part"], relationship["target"])
-    if chart_part not in archive.namelist():
+    if _current_part(archive, replacements, additions, chart_part) is None:
         raise PptxEditError(f"target chart part is missing: {chart_part}")
     requested_chart_part = str(operation.get("chartPart", ""))
     if requested_chart_part and requested_chart_part != chart_part:
@@ -483,12 +541,16 @@ def _pptx_chart_targets(
         )
     embedded = [
         _resolve_target(chart_part, item["target"])
-        for item in _relationship_map(archive, chart_part).values()
+        for item in _relationship_map(
+            archive, chart_part, replacements, additions
+        ).values()
         if item["mode"] != "External"
         and item["type"].rsplit("/", 1)[-1] == "package"
         and item["target"].lower().endswith(".xlsx")
     ]
-    if len(embedded) != 1 or embedded[0] not in archive.namelist():
+    if len(embedded) != 1 or _current_part(
+        archive, replacements, additions, embedded[0]
+    ) is None:
         raise PptxEditError(
             f"chart must have exactly one existing embedded XLSX package; found {len(embedded)}"
         )
@@ -503,6 +565,7 @@ def _pptx_chart_targets(
 def _set_chart_data(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
     categories = operation.get("categories")
@@ -533,14 +596,19 @@ def _set_chart_data(
             _cache_text(value, numeric=True)
         for category in categories:
             _cache_text(category, numeric=False)
-        targets = _pptx_chart_targets(archive, replacements, operation)
-        chart_root = ET.fromstring(
-            replacements.get(targets["chartPart"], archive.read(targets["chartPart"]))
+        targets = _pptx_chart_targets(
+            archive, replacements, additions, operation
         )
+        chart_data = _current_part(
+            archive, replacements, additions, targets["chartPart"]
+        )
+        workbook_data = _current_part(
+            archive, replacements, additions, targets["workbookPart"]
+        )
+        if chart_data is None or workbook_data is None:
+            raise PptxEditError("chart or embedded workbook part is missing")
+        chart_root = ET.fromstring(chart_data)
         series = _chart_series(chart_root, int(operation.get("seriesIndex", 0)))
-        workbook_data = replacements.get(
-            targets["workbookPart"], archive.read(targets["workbookPart"])
-        )
         workbook_input = io.BytesIO(workbook_data)
         with zipfile.ZipFile(workbook_input) as workbook_archive:
             sheet_parts = _workbook_sheet_parts(workbook_archive)
@@ -652,9 +720,19 @@ def _set_chart_data(
                             info.filename, workbook_archive.read(info.filename)
                         ),
                     )
-        replacements[targets["workbookPart"]] = workbook_output.getvalue()
-        replacements[targets["chartPart"]] = ET.tostring(
-            chart_root, encoding="utf-8", xml_declaration=True
+        _store_part(
+            archive,
+            replacements,
+            additions,
+            targets["workbookPart"],
+            workbook_output.getvalue(),
+        )
+        _store_part(
+            archive,
+            replacements,
+            additions,
+            targets["chartPart"],
+            ET.tostring(chart_root, encoding="utf-8", xml_declaration=True),
         )
     except XlsxEditError as error:
         raise PptxEditError(str(error)) from error
@@ -669,11 +747,15 @@ def _set_chart_data(
 def _set_text(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
-    root = ET.fromstring(replacements.get(slide["part"], archive.read(slide["part"])))
+    data = _current_part(archive, replacements, additions, slide["part"])
+    if data is None:
+        raise PptxEditError(f"target slide part is missing: {slide['part']}")
+    root = ET.fromstring(data)
     shape = _find_shape(root, operation)
     nodes = [element for element in shape.iter() if _local(element.tag) == "t"]
     if not nodes:
@@ -682,18 +764,28 @@ def _set_text(
     nodes[0].text = str(operation.get("text", ""))
     for node in nodes[1:]:
         node.text = ""
-    replacements[slide["part"]] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        slide["part"],
+        ET.tostring(root, encoding="utf-8", xml_declaration=True),
+    )
     return {"slideId": slide["slideId"], "part": slide["part"], "before": before, "after": str(operation.get("text", ""))}
 
 
 def _set_alt_text(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
-    root = ET.fromstring(replacements.get(slide["part"], archive.read(slide["part"])))
+    data = _current_part(archive, replacements, additions, slide["part"])
+    if data is None:
+        raise PptxEditError(f"target slide part is missing: {slide['part']}")
+    root = ET.fromstring(data)
     shape = _find_shape(root, operation)
     properties = next((item for item in shape.iter() if _local(item.tag) == "cNvPr"), None)
     if properties is None:
@@ -702,18 +794,27 @@ def _set_alt_text(
     properties.set("descr", str(operation.get("altText", "")))
     if operation.get("title") is not None:
         properties.set("title", str(operation["title"]))
-    replacements[slide["part"]] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        slide["part"],
+        ET.tostring(root, encoding="utf-8", xml_declaration=True),
+    )
     return {"slideId": slide["slideId"], "part": slide["part"], "before": before, "after": str(operation.get("altText", ""))}
 
 
 def _set_speaker_notes(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
-    relationships = _relationship_map(archive, slide["part"])
+    relationships = _relationship_map(
+        archive, slide["part"], replacements, additions
+    )
     notes_target = next(
         (
             _resolve_target(slide["part"], relationship["target"])
@@ -722,9 +823,14 @@ def _set_speaker_notes(
         ),
         None,
     )
-    if not notes_target or notes_target not in archive.namelist():
+    if not notes_target or _current_part(
+        archive, replacements, additions, notes_target
+    ) is None:
         raise PptxEditError("set_speaker_notes requires an existing notes slide relationship")
-    root = ET.fromstring(replacements.get(notes_target, archive.read(notes_target)))
+    notes_data = _current_part(archive, replacements, additions, notes_target)
+    if notes_data is None:
+        raise PptxEditError("notes slide part is missing")
+    root = ET.fromstring(notes_data)
     body_shape = next(
         (
             shape for shape in root.iter(f"{{{P_NS}}}sp")
@@ -744,7 +850,13 @@ def _set_speaker_notes(
     text_nodes[0].text = str(operation.get("text", ""))
     for item in text_nodes[1:]:
         item.text = ""
-    replacements[notes_target] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        notes_target,
+        ET.tostring(root, encoding="utf-8", xml_declaration=True),
+    )
     return {"slideId": slide["slideId"], "part": notes_target, "before": before, "after": str(operation.get("text", ""))}
 
 
@@ -754,15 +866,18 @@ def _add_comment(
     additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
     author_name = str(operation.get("author", "Nexa"))
     initials = str(operation.get("initials", "NX"))
 
     presentation_rels_name = "ppt/_rels/presentation.xml.rels"
-    presentation_rels = ET.fromstring(
-        replacements.get(presentation_rels_name, archive.read(presentation_rels_name))
+    presentation_rels_data = _current_part(
+        archive, replacements, additions, presentation_rels_name
     )
+    if presentation_rels_data is None:
+        raise PptxEditError("presentation relationships part is missing")
+    presentation_rels = ET.fromstring(presentation_rels_data)
     authors_relationship = next(
         (item for item in presentation_rels if item.attrib.get("Type") == COMMENT_AUTHORS_REL),
         None,
@@ -782,9 +897,9 @@ def _add_comment(
         )
     else:
         authors_part = _resolve_target("ppt/presentation.xml", authors_relationship.attrib["Target"])
-    authors_data = additions.get(authors_part) or replacements.get(authors_part)
+    authors_data = _current_part(archive, replacements, additions, authors_part)
     if authors_data is None:
-        authors_data = archive.read(authors_part)
+        raise PptxEditError("comment authors part is missing")
     authors = ET.fromstring(authors_data)
     author = next(
         (item for item in authors if item.attrib.get("name", "").casefold() == author_name.casefold()),
@@ -799,16 +914,23 @@ def _add_comment(
     author_id = author.attrib.get("id", "0")
     comment_index = int(author.attrib.get("lastIdx", "0") or 0) + 1
     author.set("lastIdx", str(comment_index))
-    target_store = additions if authors_part in additions else replacements
-    target_store[authors_part] = ET.tostring(authors, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        authors_part,
+        ET.tostring(authors, encoding="utf-8", xml_declaration=True),
+    )
 
     slide_rels_name = _rels_path(slide["part"])
-    if slide_rels_name in replacements:
-        slide_rels = ET.fromstring(replacements[slide_rels_name])
-    elif slide_rels_name in archive.namelist():
-        slide_rels = ET.fromstring(archive.read(slide_rels_name))
-    else:
-        slide_rels = ET.Element(f"{{{REL_NS}}}Relationships")
+    slide_rels_data = _current_part(
+        archive, replacements, additions, slide_rels_name
+    )
+    slide_rels = (
+        ET.fromstring(slide_rels_data)
+        if slide_rels_data is not None
+        else ET.Element(f"{{{REL_NS}}}Relationships")
+    )
     comment_relationship = next(
         (item for item in slide_rels if item.attrib.get("Type") == COMMENT_REL),
         None,
@@ -825,9 +947,9 @@ def _add_comment(
         additions[comment_part] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
     else:
         comment_part = _resolve_target(slide["part"], comment_relationship.attrib["Target"])
-    comments_data = additions.get(comment_part) or replacements.get(comment_part)
+    comments_data = _current_part(archive, replacements, additions, comment_part)
     if comments_data is None:
-        comments_data = archive.read(comment_part)
+        raise PptxEditError("comment part is missing")
     comments = ET.fromstring(comments_data)
     comment = ET.SubElement(comments, f"{{{P_NS}}}cm", {
         "authorId": author_id,
@@ -838,10 +960,20 @@ def _add_comment(
         "x": str(int(operation.get("x", 0))), "y": str(int(operation.get("y", 0))),
     })
     ET.SubElement(comment, f"{{{P_NS}}}text").text = str(operation.get("comment", ""))
-    target_store = additions if comment_part in additions else replacements
-    target_store[comment_part] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
-    rel_store = replacements if slide_rels_name in archive.namelist() else additions
-    rel_store[slide_rels_name] = ET.tostring(slide_rels, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        comment_part,
+        ET.tostring(comments, encoding="utf-8", xml_declaration=True),
+    )
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        slide_rels_name,
+        ET.tostring(slide_rels, encoding="utf-8", xml_declaration=True),
+    )
 
     content_types = ET.fromstring(
         replacements.get("[Content_Types].xml", archive.read("[Content_Types].xml"))
@@ -863,11 +995,19 @@ def _add_comment(
 def presentation_order_from_bytes(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes] | None = None,
 ) -> list[dict[str, str]]:
-    presentation = ET.fromstring(replacements.get("ppt/presentation.xml", archive.read("ppt/presentation.xml")))
-    rels_root = ET.fromstring(
-        replacements.get("ppt/_rels/presentation.xml.rels", archive.read("ppt/_rels/presentation.xml.rels"))
+    additions = additions or {}
+    presentation_data = _current_part(
+        archive, replacements, additions, "ppt/presentation.xml"
     )
+    relationships_data = _current_part(
+        archive, replacements, additions, "ppt/_rels/presentation.xml.rels"
+    )
+    if presentation_data is None or relationships_data is None:
+        raise PptxEditError("presentation root or relationships part is missing")
+    presentation = ET.fromstring(presentation_data)
+    rels_root = ET.fromstring(relationships_data)
     rel_map = {
         child.attrib.get("Id", ""): child.attrib.get("Target", "")
         for child in rels_root
@@ -914,11 +1054,15 @@ def _reorder_slides(
 def _set_transition(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
+    additions: dict[str, bytes],
     operation: dict[str, Any],
 ) -> dict[str, Any]:
-    order = presentation_order_from_bytes(archive, replacements)
+    order = presentation_order_from_bytes(archive, replacements, additions)
     slide = _target_slide(operation, order)
-    root = ET.fromstring(replacements.get(slide["part"], archive.read(slide["part"])))
+    data = _current_part(archive, replacements, additions, slide["part"])
+    if data is None:
+        raise PptxEditError(f"target slide part is missing: {slide['part']}")
+    root = ET.fromstring(data)
     for child in list(root):
         if _local(child.tag) == "transition":
             root.remove(child)
@@ -937,7 +1081,13 @@ def _set_transition(
         len(list(root)),
     )
     root.insert(insert_at, transition)
-    replacements[slide["part"]] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        slide["part"],
+        ET.tostring(root, encoding="utf-8", xml_declaration=True),
+    )
     return {"slideId": slide["slideId"], "transition": transition_type}
 
 
@@ -955,19 +1105,25 @@ def patch_pptx(source: Path, output: Path, operations: list[dict[str, Any]]) -> 
             elif name == "insert_slide":
                 detail = _insert_slide(archive, replacements, additions, operation)
             elif name == "set_text":
-                detail = _set_text(archive, replacements, operation)
+                detail = _set_text(archive, replacements, additions, operation)
             elif name == "set_alt_text":
-                detail = _set_alt_text(archive, replacements, operation)
+                detail = _set_alt_text(archive, replacements, additions, operation)
             elif name == "set_speaker_notes":
-                detail = _set_speaker_notes(archive, replacements, operation)
+                detail = _set_speaker_notes(
+                    archive, replacements, additions, operation
+                )
             elif name == "set_chart_data":
-                detail = _set_chart_data(archive, replacements, operation)
+                detail = _set_chart_data(
+                    archive, replacements, additions, operation
+                )
             elif name == "add_comment":
                 detail = _add_comment(archive, replacements, additions, operation)
             elif name == "reorder_slides":
                 detail = _reorder_slides(archive, replacements, operation)
             else:
-                detail = _set_transition(archive, replacements, operation)
+                detail = _set_transition(
+                    archive, replacements, additions, operation
+                )
             receipts.append({"op": name, "detail": detail})
         output.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, "w") as destination:

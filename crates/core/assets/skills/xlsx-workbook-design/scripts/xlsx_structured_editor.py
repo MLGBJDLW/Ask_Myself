@@ -90,6 +90,17 @@ def _range_cells(value: str) -> list[str]:
     ]
 
 
+def _range_shape(value: str) -> tuple[int, int]:
+    match = RANGE_RE.fullmatch(value.replace(" ", "").upper())
+    if not match:
+        raise XlsxEditError(f"invalid range: {value}")
+    start_row, start_col, _ = _coordinate(match.group(1))
+    end_row, end_col, _ = _coordinate(match.group(2) or match.group(1))
+    if end_row < start_row or end_col < start_col:
+        raise XlsxEditError(f"range must be top-left to bottom-right: {value}")
+    return end_row - start_row + 1, end_col - start_col + 1
+
+
 def _workbook_sheet_parts(archive: zipfile.ZipFile) -> dict[str, str]:
     workbook = ET.fromstring(archive.read("xl/workbook.xml"))
     relationships = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
@@ -907,6 +918,79 @@ def _create_number_format_style(
     return len(list(cell_xfs)) - 1
 
 
+def _apply_sheet_operation(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    sheet_parts: dict[str, str],
+    operation: dict[str, Any],
+    style_count: int,
+    changed: list[str],
+) -> None:
+    name = str(operation["op"]).lower()
+    sheet_name = str(operation.get("sheet", ""))
+    part = sheet_parts.get(sheet_name.casefold())
+    if not part:
+        raise XlsxEditError(f"worksheet not found: {sheet_name}")
+    root = ET.fromstring(replacements.get(part, archive.read(part)))
+    if name == "set_value":
+        cell_ref = str(operation.get("cell", ""))
+        _write_literal(_find_or_create_cell(root, cell_ref), operation.get("value"))
+        changed.append(f"{sheet_name}!{cell_ref.replace('$', '').upper()}")
+    elif name == "set_formula":
+        cell_ref = str(operation.get("cell", ""))
+        _write_formula(
+            _find_or_create_cell(root, cell_ref),
+            operation.get("formula"),
+            operation.get("cachedValue"),
+        )
+        changed.append(f"{sheet_name}!{cell_ref.replace('$', '').upper()}")
+    elif name == "set_range":
+        range_ref = str(operation.get("range", ""))
+        cells = _range_cells(range_ref)
+        rows, columns = _range_shape(range_ref)
+        values = operation.get("values")
+        if not isinstance(values, list) or not all(isinstance(row, list) for row in values):
+            raise XlsxEditError("set_range values must be a two-dimensional array")
+        if len(values) != rows or any(len(row) != columns for row in values):
+            actual = "x".join(
+                [str(len(values)), "/".join(str(len(row)) for row in values) or "0"]
+            )
+            raise XlsxEditError(
+                f"set_range values shape {actual} does not match range shape {rows}x{columns}"
+            )
+        flat_values = [value for row in values for value in row]
+        for cell_ref, value in zip(cells, flat_values, strict=True):
+            _write_literal(_find_or_create_cell(root, cell_ref), value)
+            changed.append(f"{sheet_name}!{cell_ref}")
+    elif name == "clear_range":
+        for cell_ref in _range_cells(str(operation.get("range", ""))):
+            if _remove_cell(root, cell_ref):
+                changed.append(f"{sheet_name}!{cell_ref}")
+    elif name == "set_style":
+        style_id = int(operation.get("styleId", -1))
+        if style_id < 0 or style_id >= style_count:
+            raise XlsxEditError(
+                f"styleId {style_id} is outside workbook cellXfs range 0..{style_count - 1}"
+            )
+        for cell_ref in _range_cells(str(operation.get("range") or operation.get("cell") or "")):
+            _find_or_create_cell(root, cell_ref).set("s", str(style_id))
+            changed.append(f"{sheet_name}!{cell_ref}")
+    elif name == "set_data_validation":
+        _set_data_validation(root, operation)
+        changed.append(f"{sheet_name}!validation:{operation.get('range')}")
+    elif name == "create_table":
+        table_part = _create_table(
+            archive, replacements, additions, part, root, operation
+        )
+        changed.append(f"{sheet_name}!table:{operation.get('name')}")
+        changed.append(table_part)
+    else:
+        raise XlsxEditError(f"unsupported sheet operation: {name}")
+    _update_dimension(root)
+    replacements[part] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def patch_xlsx(
     source: Path,
     output: Path,
@@ -917,8 +1001,7 @@ def patch_xlsx(
         sheet_parts = _workbook_sheet_parts(archive)
         replacements: dict[str, bytes] = {}
         additions: dict[str, bytes] = {}
-        planned_operations: list[dict[str, Any]] = []
-        generated_style_ids: list[int] = []
+        style_count = _cell_xfs_count(archive)
         for index, operation in enumerate(operations):
             name = str(operation.get("op", "")).lower()
             if name not in SUPPORTED_OPERATIONS:
@@ -943,72 +1026,32 @@ def patch_xlsx(
                 )
             elif name == "set_number_format":
                 style_id = _create_number_format_style(archive, replacements, operation)
-                generated_style_ids.append(style_id)
-                planned_operations.append({
+                style_count = max(style_count, style_id + 1)
+                _apply_sheet_operation(
+                    archive,
+                    replacements,
+                    additions,
+                    sheet_parts,
+                    {
                     "op": "set_style",
                     "sheet": operation.get("sheet"),
                     "cell": operation.get("cell"),
                     "range": operation.get("range"),
                     "styleId": style_id,
-                })
+                    },
+                    style_count,
+                    changed,
+                )
             else:
-                planned_operations.append(operation)
-        style_count = max([_cell_xfs_count(archive), *(item + 1 for item in generated_style_ids)])
-        plan = _plan_operations(planned_operations, sheet_parts)
-        for part, part_operations in plan.items():
-            root = ET.fromstring(replacements.get(part, archive.read(part)))
-            for operation in part_operations:
-                name = str(operation["op"]).lower()
-                sheet_name = str(operation["sheet"])
-                if name == "set_value":
-                    cell_ref = str(operation.get("cell", ""))
-                    _write_literal(_find_or_create_cell(root, cell_ref), operation.get("value"))
-                    changed.append(f"{sheet_name}!{cell_ref.replace('$', '').upper()}")
-                elif name == "set_formula":
-                    cell_ref = str(operation.get("cell", ""))
-                    _write_formula(
-                        _find_or_create_cell(root, cell_ref),
-                        operation.get("formula"),
-                        operation.get("cachedValue"),
-                    )
-                    changed.append(f"{sheet_name}!{cell_ref.replace('$', '').upper()}")
-                elif name == "set_range":
-                    cells = _range_cells(str(operation.get("range", "")))
-                    values = operation.get("values")
-                    if not isinstance(values, list) or not all(isinstance(row, list) for row in values):
-                        raise XlsxEditError("set_range values must be a two-dimensional array")
-                    flat_values = [value for row in values for value in row]
-                    if len(flat_values) != len(cells):
-                        raise XlsxEditError(
-                            f"set_range value count {len(flat_values)} does not match range cells {len(cells)}"
-                        )
-                    for cell_ref, value in zip(cells, flat_values, strict=True):
-                        _write_literal(_find_or_create_cell(root, cell_ref), value)
-                        changed.append(f"{sheet_name}!{cell_ref}")
-                elif name == "clear_range":
-                    for cell_ref in _range_cells(str(operation.get("range", ""))):
-                        if _remove_cell(root, cell_ref):
-                            changed.append(f"{sheet_name}!{cell_ref}")
-                elif name == "set_style":
-                    style_id = int(operation.get("styleId", -1))
-                    if style_id < 0 or style_id >= style_count:
-                        raise XlsxEditError(
-                            f"styleId {style_id} is outside workbook cellXfs range 0..{style_count - 1}"
-                        )
-                    for cell_ref in _range_cells(str(operation.get("range") or operation.get("cell") or "")):
-                        _find_or_create_cell(root, cell_ref).set("s", str(style_id))
-                        changed.append(f"{sheet_name}!{cell_ref}")
-                elif name == "set_data_validation":
-                    _set_data_validation(root, operation)
-                    changed.append(f"{sheet_name}!validation:{operation.get('range')}")
-                else:
-                    table_part = _create_table(
-                        archive, replacements, additions, part, root, operation
-                    )
-                    changed.append(f"{sheet_name}!table:{operation.get('name')}")
-                    changed.append(table_part)
-            _update_dimension(root)
-            replacements[part] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                _apply_sheet_operation(
+                    archive,
+                    replacements,
+                    additions,
+                    sheet_parts,
+                    operation,
+                    style_count,
+                    changed,
+                )
 
         output.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, "w") as destination:

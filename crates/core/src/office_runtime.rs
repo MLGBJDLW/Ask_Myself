@@ -297,11 +297,8 @@ pub fn configure_bundled_openxml_validator(
     let destination_dir = app_data_dir.join("runtimes/openxml-validator/3.5.1");
     std::fs::create_dir_all(&destination_dir).map_err(CoreError::Io)?;
     let destination = destination_dir.join(filename);
-    let should_copy = match (std::fs::metadata(&source), std::fs::metadata(&destination)) {
-        (Ok(source_meta), Ok(destination_meta)) => source_meta.len() != destination_meta.len(),
-        (Ok(_), Err(_)) => true,
-        (Err(error), _) => return Err(CoreError::Io(error)),
-    };
+    let source_sha256 = file_sha256(&source)?;
+    let should_copy = !destination.is_file() || file_sha256(&destination)? != source_sha256;
     if should_copy {
         std::fs::copy(&source, &destination).map_err(CoreError::Io)?;
     }
@@ -1098,6 +1095,16 @@ mod tests {
         let configured = configure_bundled_openxml_validator(app_data.path(), resources.path())
             .unwrap()
             .unwrap();
+        assert_eq!(std::fs::read(&configured).unwrap(), b"validator-binary");
+        std::fs::write(&configured, b"same-size-stale!").unwrap();
+        assert_eq!(
+            std::fs::metadata(&configured).unwrap().len(),
+            b"validator-binary".len() as u64
+        );
+        let refreshed = configure_bundled_openxml_validator(app_data.path(), resources.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed, configured);
         assert_eq!(std::fs::read(&configured).unwrap(), b"validator-binary");
         assert_eq!(
             std::env::var_os(OPENXML_VALIDATOR_ENV),

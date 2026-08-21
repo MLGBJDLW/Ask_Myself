@@ -108,6 +108,42 @@ class DocxReviewEditorTests(unittest.TestCase):
                 self.assertIn(b'xmlns:w14=', comments_xml)
                 self.assertNotIn(b"Ignorable=", archive.read("word/document.xml"))
 
+    def test_comment_add_strip_and_recreate_are_sequential_in_one_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            stripped = root / "add-then-strip.docx"
+            docx_review_editor.patch_docx_reviews(source, stripped, [
+                {"op": "add_comment", "find": "target", "comment": "Transient"},
+                {"op": "strip_comments"},
+            ])
+            self.assertEqual([], docx_review_editor.extract_comments(stripped)["comments"])
+            with zipfile.ZipFile(stripped) as archive:
+                self.assertFalse(any(name.startswith("word/comments") for name in archive.namelist()))
+                self.assertNotIn(b"commentReference", archive.read("word/document.xml"))
+
+            existing = root / "existing.docx"
+            docx_review_editor.patch_docx_reviews(source, existing, [{
+                "op": "add_comment",
+                "find": "target",
+                "comment": "Old review",
+            }])
+            recreated = root / "strip-then-add.docx"
+            docx_review_editor.patch_docx_reviews(existing, recreated, [
+                {"op": "strip_comments"},
+                {
+                    "op": "add_comment",
+                    "find": "target",
+                    "comment": "New review",
+                    "author": "Replacement reviewer",
+                },
+            ])
+            comments = docx_review_editor.extract_comments(recreated)["comments"]
+            self.assertEqual(1, len(comments))
+            self.assertEqual("New review", comments[0]["text"])
+            self.assertEqual("Replacement reviewer", comments[0]["author"])
+            self.assertEqual(0, docx_audit.audit(recreated)["comment_replies"])
+
     def test_accept_reject_fail_closed_for_unhandled_revision_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

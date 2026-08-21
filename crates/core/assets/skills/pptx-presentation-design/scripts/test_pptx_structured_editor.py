@@ -222,6 +222,60 @@ class PptxStructuredEditorTests(unittest.TestCase):
                     archive.read("ppt/diagrams/data1.xml"),
                 )
 
+    def test_new_slides_are_available_to_later_operations_in_same_request(self) -> None:
+        from pptx import Presentation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, _, _ = self._source(root)
+            output = root / "sequential-slides.pptx"
+            result = pptx_structured_editor.patch_pptx(source, output, [
+                {
+                    "op": "insert_slide",
+                    "after": 1,
+                    "title": "Inserted title",
+                    "body": "Inserted body",
+                },
+                {
+                    "op": "set_text",
+                    "slideIndex": 2,
+                    "shapeName": "Nexa title",
+                    "text": "Edited inserted title",
+                },
+                {
+                    "op": "add_comment",
+                    "slideIndex": 2,
+                    "comment": "Comment on staged slide",
+                },
+                {"op": "clone_slide", "slideIndex": 2},
+                {
+                    "op": "set_text",
+                    "slideIndex": 3,
+                    "shapeName": "Nexa title",
+                    "text": "Edited clone title",
+                },
+                {
+                    "op": "set_transition",
+                    "slideIndex": 3,
+                    "transition": "fade",
+                },
+            ])
+
+            self.assertEqual(3, len(Presentation(output).slides))
+            with zipfile.ZipFile(output) as archive:
+                order = pptx_structured_editor.presentation_order(archive)
+                second = archive.read(order[1]["part"])
+                third = archive.read(order[2]["part"])
+                has_comment_part = any(
+                    name.startswith("ppt/comments/comment")
+                    for name in archive.namelist()
+                )
+            self.assertIn(b"Edited inserted title", second)
+            self.assertIn(b"Edited clone title", third)
+            self.assertIn(b"transition", third)
+            self.assertTrue(has_comment_part)
+            self.assertEqual(6, len(result["operations"]))
+
     def test_chart_data_updates_embedded_workbook_and_caches_atomically(self) -> None:
         import io
         import openpyxl
@@ -285,6 +339,30 @@ class PptxStructuredEditorTests(unittest.TestCase):
             workbook.close()
             self.assertIn(b"Sheet1!$A$2:$A$4", chart)
             self.assertIn(b"Sheet1!$B$2:$B$4", chart)
+
+            chained = root / "chart-clone-output.pptx"
+            chained_result = pptx_structured_editor.patch_pptx(source, chained, [
+                {"op": "clone_slide", "slideId": slide_id},
+                {
+                    "op": "set_chart_data",
+                    "slideIndex": 2,
+                    "shapeId": shape_id,
+                    "seriesIndex": 1,
+                    "categoryRange": "Sheet1!$A$2:$A$3",
+                    "valueRange": "Sheet1!$B$2:$B$3",
+                    "categories": ["Clone A", "Clone B"],
+                    "values": [11, 22],
+                },
+            ])
+            chained_detail = chained_result["operations"][1]["detail"]
+            self.assertNotEqual("ppt/charts/chart1.xml", chained_detail["chartPart"])
+            with zipfile.ZipFile(chained) as archive:
+                cloned_workbook = archive.read(chained_detail["workbookPart"])
+            workbook = openpyxl.load_workbook(io.BytesIO(cloned_workbook), data_only=False)
+            self.assertEqual(["Clone A", "Clone B"], [workbook["Sheet1"][cell].value for cell in ("A2", "A3")])
+            self.assertEqual([11, 22], [workbook["Sheet1"][cell].value for cell in ("B2", "B3")])
+            workbook.close()
+            self.assertEqual([], pptx_audit.audit(chained)["chart_validation_errors"])
 
 
 if __name__ == "__main__":

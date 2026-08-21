@@ -5,11 +5,13 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(root, '..', '..');
 const manifest = fs.readFileSync(path.join(root, 'manifest.xml'), 'utf8');
 const taskpane = fs.readFileSync(path.join(root, 'taskpane.js'), 'utf8');
 const manifestTemplate = fs.readFileSync(path.join(root, 'manifest.template.xml'), 'utf8');
 const manifestRenderer = fs.readFileSync(path.join(root, 'render_manifest.py'), 'utf8');
 const httpsServer = fs.readFileSync(path.join(root, 'serve_https.py'), 'utf8');
+const tauriConfig = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json'), 'utf8'));
 
 test('manifest covers all three hosts with read-write document permission', () => {
   for (const host of ['Document', 'Workbook', 'Presentation']) {
@@ -75,4 +77,12 @@ test('deployment kit requires an exact trusted HTTPS origin and user-provided ce
   assert.match(httpsServer, /TLSVersion\.TLSv1_2/);
   assert.match(httpsServer, /Content-Security-Policy/);
   assert.doesNotMatch(`${manifestRenderer}\n${httpsServer}`, /certutil|security add-trusted-cert|Import-Certificate|TrustRoot/);
+});
+
+test('Tauri maps Office runtimes to the resource paths probed at startup', () => {
+  assert.deepEqual(tauriConfig.bundle.resources, {
+    'resources/openxml-validator/': 'openxml-validator/',
+    'resources/office-addin/': 'office-addin/',
+    'resources/pptxgenjs-runtime/': 'pptxgenjs-runtime/',
+  });
 });

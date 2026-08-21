@@ -189,6 +189,52 @@ class XlsxStructuredEditorTests(unittest.TestCase):
                     "categoryRange": "[remote.xlsx]Summary!A2:A3",
                 }])
 
+    def test_set_range_rejects_ragged_matrix_with_matching_flat_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            with self.assertRaisesRegex(xlsx_structured_editor.XlsxEditError, "shape"):
+                xlsx_structured_editor.patch_xlsx(source, root / "ragged.xlsx", [{
+                    "op": "set_range",
+                    "sheet": "Summary",
+                    "range": "A1:B2",
+                    "values": [[1], [2, 3, 4]],
+                }])
+
+    def test_sheet_and_chart_operations_preserve_request_order_across_rename(self) -> None:
+        import openpyxl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            output = root / "ordered.xlsx"
+            xlsx_structured_editor.patch_xlsx(source, output, [
+                {"op": "set_value", "sheet": "Summary", "cell": "B2", "value": 999},
+                {
+                    "op": "set_chart_data",
+                    "chartPart": "xl/charts/chart1.xml",
+                    "seriesIndex": 1,
+                    "categoryRange": "Summary!$D$10:$D$11",
+                    "valueRange": "Summary!$E$10:$E$11",
+                    "categories": ["North", "South"],
+                    "values": [50, 25],
+                },
+                {"op": "rename_sheet", "sheet": "Summary", "newName": "Data"},
+                {"op": "set_value", "sheet": "Data", "cell": "B3", "value": 777},
+            ])
+
+            workbook = openpyxl.load_workbook(output, data_only=False)
+            self.assertEqual(999, workbook["Data"]["B2"].value)
+            self.assertEqual(777, workbook["Data"]["B3"].value)
+            self.assertEqual(["North", "South"], [workbook["Data"][f"D{row}"].value for row in (10, 11)])
+            self.assertEqual([50, 25], [workbook["Data"][f"E{row}"].value for row in (10, 11)])
+            workbook.close()
+            with zipfile.ZipFile(output) as archive:
+                chart_xml = archive.read("xl/charts/chart1.xml")
+            self.assertIn(b"Data!$D$10:$D$11", chart_xml)
+            self.assertIn(b"Data!$E$10:$E$11", chart_xml)
+            self.assertNotIn(b"Summary!", chart_xml)
+
 
 if __name__ == "__main__":
     unittest.main()
