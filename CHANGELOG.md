@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.12.24](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.23...nexa-monorepo-v0.12.24) (2026-08-21)
+
+
+### Features
+
+* **docx:** add native comment thread lifecycle ([0c2c0ef](https://github.com/MLGBJDLW/Nexa/commit/0c2c0ef25d348364d295dcf1f4148f245edaff14))
+* **office:** add authenticated live host editing ([b84902b](https://github.com/MLGBJDLW/Nexa/commit/b84902b45dbc03921d5a6bcf32c1c76231bdd699))
+* **office:** add transactional artifact engine ([07e2e03](https://github.com/MLGBJDLW/Nexa/commit/07e2e03c87cebbe77ddd28428c23542f3739716c))
+* **office:** add trusted add-in deployment kit ([371ce98](https://github.com/MLGBJDLW/Nexa/commit/371ce9835e93e30aac38338739f0086a346b47d3))
+* **office:** bundle validated author runtimes ([58a68c6](https://github.com/MLGBJDLW/Nexa/commit/58a68c69adab20701c8eb354c4bdeb28dc6c96d5))
+* **office:** complete transactional artifact contracts ([4594bb0](https://github.com/MLGBJDLW/Nexa/commit/4594bb0aca0fe8856f1ab77cffa061d2b12bc3da))
+* **office:** deepen artifact engine and live adapters ([6778530](https://github.com/MLGBJDLW/Nexa/commit/6778530f723c988db22d68f01f50c322885768bc))
+* **office:** deepen format-specific artifact adapters ([4fa7278](https://github.com/MLGBJDLW/Nexa/commit/4fa7278f4b3e0730c224dc9407221aa230334534))
+* **office:** deepen native object editors ([4e25fa2](https://github.com/MLGBJDLW/Nexa/commit/4e25fa24e762cc67c061d5e3ce81edc3183f94b3))
+* **office:** enforce evidence contracts and native boundaries ([d6ec6a4](https://github.com/MLGBJDLW/Nexa/commit/d6ec6a4197bf59d15104f1761d4e199aba426395))
+* **office:** expand authenticated live editing ([7655f76](https://github.com/MLGBJDLW/Nexa/commit/7655f766d6ddd9cef3d030b56191e8c4ba2195af))
+* **pptx:** make embedded chart edits atomic ([32ef52e](https://github.com/MLGBJDLW/Nexa/commit/32ef52ea18b5ef00dc4bf222cc89dd09e9b1ddba))
+* **ui:** expose Office proof evidence ([36a7638](https://github.com/MLGBJDLW/Nexa/commit/36a7638bbf69b5d82fda411d96928cf2082dc1a2))
+* **xlsx:** make chart data edits atomic ([ddc21de](https://github.com/MLGBJDLW/Nexa/commit/ddc21dea72142d7fe51ce69e1002a4da08125cf0))
+
+
+### Bug Fixes
+
+* **ci:** scope native acceptance runner paths ([c005e92](https://github.com/MLGBJDLW/Nexa/commit/c005e928c0081aca08505ea48e7c959a8eef926e))
+* **office:** close advanced object lifecycle gaps ([3131b27](https://github.com/MLGBJDLW/Nexa/commit/3131b27d7a04d1ddf466dadb572900bbfad4951a))
+* **office:** close artifact verification gaps ([a6fab83](https://github.com/MLGBJDLW/Nexa/commit/a6fab8354eb0d0c597ebde6443120cc98bcd80d8))
+* **office:** close final review gaps ([d4d9555](https://github.com/MLGBJDLW/Nexa/commit/d4d9555c0ea1ba34598b665925eaa154cecc575f))
+* **office:** enforce safe transactional artifact edits ([a9a7ccc](https://github.com/MLGBJDLW/Nexa/commit/a9a7ccc18bad3f44b2f26a62d72ed31b26224f45))
+* **office:** harden artifact integrity and native isolation ([b22d46f](https://github.com/MLGBJDLW/Nexa/commit/b22d46f0279ae8bad4611a72869a998b6c12d3d8))
+* **office:** harden native acceptance evidence ([f7cc528](https://github.com/MLGBJDLW/Nexa/commit/f7cc528dadc395afea6af890e234cc91af012f30))
+* **office:** preserve pptx helper call contracts ([7bf2b35](https://github.com/MLGBJDLW/Nexa/commit/7bf2b353118c6bf3e9ce6f8ff2a34a4de1bc70d1))
+* **office:** secure bundled and live runtimes ([d043245](https://github.com/MLGBJDLW/Nexa/commit/d04324583939337384cadc70e238b2aefcc9e238))
+* **pptx:** validate macro templates without python-pptx ([aa0ab9b](https://github.com/MLGBJDLW/Nexa/commit/aa0ab9bd8bfeffef0e9b0607b234683bb622e6ee))
+* **skills:** route mixed Office attachments ([b2557aa](https://github.com/MLGBJDLW/Nexa/commit/b2557aa58583b4c509225514ef13aa15bf87fcbf))
+
 ## [0.12.23](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.22...nexa-monorepo-v0.12.23) (2026-08-21)
 
 
