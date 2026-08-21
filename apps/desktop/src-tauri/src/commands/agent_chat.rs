@@ -1019,7 +1019,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 })
                 .map(|entry| conv_message_to_llm(&entry))
                 .collect::<Vec<_>>();
-            let history = sanitize_tool_call_history(history);
+            let history = sanitize_tool_call_history(history, Some(&conv_id));
             record_turn_launch_metric(
                 &db,
                 &handle,

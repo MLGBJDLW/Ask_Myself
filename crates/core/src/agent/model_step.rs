@@ -101,6 +101,7 @@ pub(super) enum ModelStepOutcome {
 pub(super) struct ModelStepOutput {
     pub(super) full_content: String,
     pub(super) tool_calls: Vec<ToolCallRequest>,
+    pub(super) tool_call_assembly_rejected: bool,
     pub(super) chunk_usage: Option<Usage>,
     pub(super) iteration_thinking: String,
     pub(super) answer_delta_seen: bool,
@@ -122,6 +123,7 @@ fn reset_iteration_capture_for_new_sample(
     accumulated_len_before_iteration: usize,
     full_content: &mut String,
     tool_calls: &mut Vec<ToolCallRequest>,
+    tool_call_assembly_rejected: &mut bool,
     chunk_usage: &mut Option<Usage>,
     iteration_thinking: &mut String,
     answer_delta_seen: &mut bool,
@@ -135,6 +137,7 @@ fn reset_iteration_capture_for_new_sample(
     accumulated_content.truncate(accumulated_len_before_iteration);
     full_content.clear();
     tool_calls.clear();
+    *tool_call_assembly_rejected = false;
     *chunk_usage = None;
     iteration_thinking.clear();
     *answer_delta_seen = false;
@@ -268,6 +271,7 @@ impl AgentExecutor {
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        let mut tool_call_assembly_rejected = false;
         let mut chunk_usage: Option<Usage> = None;
         let mut iteration_thinking = String::new();
         let mut answer_delta_seen = false;
@@ -300,6 +304,7 @@ impl AgentExecutor {
                         accumulated_len_before_iteration,
                         &mut full_content,
                         &mut tool_calls,
+                        &mut tool_call_assembly_rejected,
                         &mut chunk_usage,
                         &mut iteration_thinking,
                         &mut answer_delta_seen,
@@ -387,7 +392,9 @@ impl AgentExecutor {
                     }
                     // Accumulate tool-call deltas.
                     if let Some(ref tc_delta) = chunk.tool_call_delta {
-                        accumulate_tool_call(&mut tool_calls, tc_delta);
+                        if !accumulate_tool_call(&mut tool_calls, tc_delta) {
+                            tool_call_assembly_rejected = true;
+                        }
 
                         // Emit a stable preparing signal while arguments are
                         // still being assembled. Do not stream partial
@@ -696,6 +703,7 @@ impl AgentExecutor {
                                     accumulated_len_before_iteration,
                                     &mut full_content,
                                     &mut tool_calls,
+                                    &mut tool_call_assembly_rejected,
                                     &mut chunk_usage,
                                     &mut iteration_thinking,
                                     &mut answer_delta_seen,
@@ -1354,6 +1362,7 @@ impl AgentExecutor {
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,
             tool_calls,
+            tool_call_assembly_rejected,
             chunk_usage,
             iteration_thinking,
             answer_delta_seen,

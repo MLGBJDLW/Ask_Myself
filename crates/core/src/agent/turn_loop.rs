@@ -955,6 +955,7 @@ impl AgentExecutor {
             let model_step::ModelStepOutput {
                 mut full_content,
                 mut tool_calls,
+                tool_call_assembly_rejected,
                 chunk_usage,
                 iteration_thinking,
                 answer_delta_seen,
@@ -1130,6 +1131,88 @@ impl AgentExecutor {
                     frontend_message,
                     "error",
                 );
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: frontend_message.to_string(),
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
+            }
+
+            let incomplete_tool_call_count = tool_calls
+                .iter()
+                .filter(|call| !crate::llm::message_validation::is_complete_tool_call(call))
+                .count();
+            if incomplete_tool_call_count > 0 || tool_call_assembly_rejected {
+                // Provider streams may terminate after emitting only part of a
+                // function call. Never persist, replay, or execute that partial
+                // protocol envelope. Re-plan from a plain controller message so
+                // the next request is valid even when the partial assistant also
+                // contained visible text.
+                if accumulated_content.ends_with(&full_content) {
+                    accumulated_content
+                        .truncate(accumulated_content.len().saturating_sub(full_content.len()));
+                }
+                let trace_message = format!(
+                    "provider_returned_incomplete_tool_calls: count={incomplete_tool_call_count}, assembly_rejected={tool_call_assembly_rejected}"
+                );
+                append_internal_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    "The provider returned an incomplete tool-call envelope. Nexa discarded it before persistence or execution and requested a fresh plan.",
+                    "warning",
+                );
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "incomplete_tool_calls_rejected".to_string(),
+                        content: "The provider returned incomplete tool-call data. Nexa rejected it safely and will ask the model to re-plan.".to_string(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+                for call in &tool_calls {
+                    if call.id.trim().is_empty() || call.name.trim().is_empty() {
+                        continue;
+                    }
+                    let run = build_tool_run_item(
+                        &self.tools,
+                        &call.id,
+                        &call.name,
+                        ToolRunStatus::Failed,
+                        None,
+                        Some(
+                            "Rejected because the provider did not finish the tool-call envelope."
+                                .to_string(),
+                        ),
+                        Some(true),
+                        Some(serde_json::json!({
+                            "kind": "incompleteToolCall",
+                            "executed": false,
+                        })),
+                        Some("incomplete provider output".to_string()),
+                        Some(0),
+                    );
+                    append_persisted_trace_tool_run(&mut persisted_trace_items, &run);
+                    let _ = tx.send(AgentEvent::ToolRunCompleted { run }).await;
+                }
+
+                if iteration + 1 < self.config.max_iterations {
+                    if let Some(message) = prompt_ir::controller_state_message(
+                        "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call.",
+                    ) {
+                        messages.push(message);
+                    }
+                    continue 'react_loop;
+                }
+
+                let frontend_message = "The provider repeatedly returned incomplete tool-call data. Nexa rejected it without executing any tool; retry the turn or choose another model.";
                 emit_error_and_finalize_turn(
                     &tx,
                     db,

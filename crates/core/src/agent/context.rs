@@ -93,6 +93,18 @@ pub fn prepare_messages_with_options(
     tool_definitions: &[ToolDefinition],
     options: PrepareMessagesOptions<'_>,
 ) -> Vec<Message> {
+    // Every caller, including non-desktop AgentSession and recovery paths,
+    // crosses the same history-integrity seam before prompt compilation.
+    let history_repair =
+        crate::llm::message_validation::repair_persisted_message_history(history.to_vec(), None);
+    for diagnostic in &history_repair.repairs {
+        tracing::warn!(
+            message_index = diagnostic.message_index,
+            role = %diagnostic.role,
+            reason = %diagnostic.reason,
+            "Repaired invalid assistant/tool history before prompt compilation"
+        );
+    }
     let user_query = user_parts
         .iter()
         .filter_map(|part| match part {
@@ -173,7 +185,7 @@ pub fn prepare_messages_with_options(
             .iter()
             .filter_map(|section| PromptBlock::new(PromptLayer::Evidence, *section))
             .collect(),
-        transcript: history.to_vec(),
+        transcript: history_repair.messages,
         current_user: Some(current_user),
         controller_state: options
             .controller_state_sections
@@ -878,6 +890,49 @@ mod tests {
         assert_eq!(result[1].role, Role::System);
         assert_eq!(result[2].role, Role::User);
         assert_eq!(result[2].text_content(), "Hello");
+    }
+
+    #[test]
+    fn prepare_messages_repairs_incomplete_tool_history_for_every_agent_entrypoint() {
+        let mut malformed = msg(Role::Assistant, "Visible progress");
+        malformed.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-broken".to_string(),
+            name: "search".to_string(),
+            arguments: "{".to_string(),
+            thought_signature: None,
+        }]);
+        let history = vec![
+            msg(Role::User, "Inspect the repository"),
+            malformed,
+            Message::text_with_name(Role::Tool, "not executed", "call-broken"),
+        ];
+
+        let result = prepare_messages(
+            "System prompt",
+            &history,
+            &[ContentPart::Text {
+                text: "Continue".to_string(),
+            }],
+            "deepseek-v4-pro",
+            4096,
+            None,
+            &[],
+            &[],
+            &[],
+        );
+
+        assert!(result.iter().all(|message| message.role != Role::Tool));
+        let repaired = result
+            .iter()
+            .find(|message| message.text_content() == "Visible progress")
+            .expect("visible assistant text should survive history repair");
+        assert!(repaired.tool_calls.is_none());
+        crate::llm::message_validation::validate_provider_request(
+            &result,
+            "openai",
+            "deepseek-v4-pro",
+        )
+        .unwrap();
     }
 
     #[test]

@@ -191,16 +191,15 @@ impl Message {
     }
 
     pub fn set_provider_turn(&mut self, envelope: provider_turn::ProviderTurnEnvelope) {
-        self.parts
-            .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
+        self.clear_provider_turn();
         self.parts.push(ContentPart::ProviderTurn {
             envelope: Box::new(envelope),
         });
     }
 
-    /// Remove secret-adjacent provider replay state before serializing a
-    /// message to the desktop UI or another display-only consumer.
-    pub fn without_provider_turn(mut self) -> Self {
+    /// Remove provider-native replay state when a history repair changes the
+    /// assistant/tool envelope it authenticated.
+    pub fn clear_provider_turn(&mut self) {
         self.parts
             .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
         if let Some(tool_calls) = self.tool_calls.as_mut() {
@@ -208,6 +207,12 @@ impl Message {
                 tool_call.thought_signature = None;
             }
         }
+    }
+
+    /// Remove secret-adjacent provider replay state before serializing a
+    /// message to the desktop UI or another display-only consumer.
+    pub fn without_provider_turn(mut self) -> Self {
+        self.clear_provider_turn();
         self
     }
 }
@@ -797,10 +802,12 @@ impl MessageValidatingProvider {
     }
 
     fn validate(&self, request: &CompletionRequest) -> Result<(), CoreError> {
-        message_validation::validate_provider_request(
+        message_validation::validate_provider_request_with_context(
             &request.messages,
             self.inner.name(),
             &request.model,
+            request.routing_session_id.as_deref(),
+            None,
         )
     }
 }

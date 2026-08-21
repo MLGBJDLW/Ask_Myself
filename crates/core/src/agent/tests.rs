@@ -207,6 +207,70 @@ fn test_accumulate_by_index_when_id_missing() {
 }
 
 #[test]
+fn test_accumulate_late_real_id_updates_the_existing_index_slot() {
+    let mut calls = Vec::new();
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: String::new(),
+            name: Some("search".into()),
+            arguments_delta: r#"{"query":"rus"#.into(),
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "provider-call-1".into(),
+            name: None,
+            arguments_delta: r#"t"}"#.into(),
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "provider-call-1");
+    assert_eq!(calls[0].name, "search");
+    assert_eq!(calls[0].arguments, r#"{"query":"rust"}"#);
+    assert!(crate::llm::message_validation::is_complete_tool_call(
+        &calls[0]
+    ));
+}
+
+#[test]
+fn test_accumulate_rejects_unaddressed_parallel_fragment() {
+    let mut calls = vec![
+        ToolCallRequest {
+            id: "call-1".into(),
+            name: "search".into(),
+            arguments: r#"{"query":"a"}"#.into(),
+            thought_signature: None,
+        },
+        ToolCallRequest {
+            id: "call-2".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"b"}"#.into(),
+            thought_signature: None,
+        },
+    ];
+
+    assert!(!accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: String::new(),
+            name: None,
+            arguments_delta: "corrupt".into(),
+            index: None,
+            thought_signature: None,
+        },
+    ));
+    assert_eq!(calls[0].arguments, r#"{"query":"a"}"#);
+    assert_eq!(calls[1].arguments, r#"{"path":"b"}"#);
+}
+
+#[test]
 fn test_default_config() {
     let cfg = AgentConfig::default();
     assert_eq!(cfg.max_iterations, u32::MAX);
@@ -1780,6 +1844,11 @@ struct TruncatedToolCallProvider {
     saw_output_limit_tool_error: Arc<Mutex<bool>>,
 }
 
+struct MalformedToolCallProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_safe_replan_context: Arc<Mutex<bool>>,
+}
+
 #[async_trait]
 impl LlmProvider for AnswerOnlyRecoveryProvider {
     fn name(&self) -> &str {
@@ -2002,6 +2071,78 @@ impl LlmProvider for TruncatedToolCallProvider {
             *self.saw_output_limit_tool_error.lock().unwrap() = saw_error;
             StreamChunk {
                 delta: "final answer after re-planning".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MalformedToolCallProvider {
+    fn name(&self) -> &str {
+        "malformed-tool-call-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-v4-pro".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: "I will inspect the repository.".to_string(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "malformed-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"unterminated""#.to_string(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            let has_incomplete_replay = request.messages.iter().any(|message| {
+                message.tool_calls.as_deref().is_some_and(|calls| {
+                    calls
+                        .iter()
+                        .any(|call| !crate::llm::message_validation::is_complete_tool_call(call))
+                })
+            });
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let has_replan_instruction = request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message
+                        .text_content()
+                        .contains("incomplete tool-call envelope")
+            });
+            *self.saw_safe_replan_context.lock().unwrap() =
+                !has_incomplete_replay && !has_tool_result && has_replan_instruction;
+            StreamChunk {
+                delta: "final answer after safe re-planning".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4927,6 +5068,75 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         *saw_output_limit_tool_error.lock().unwrap(),
         "the next model step must receive a synthetic tool error and re-plan"
     );
+}
+
+#[tokio::test]
+async fn malformed_tool_call_is_quarantined_before_replan_and_persistence() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_safe_replan_context = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(MalformedToolCallProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_safe_replan_context: Arc::clone(&saw_safe_replan_context),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-v4-pro".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "open_ai".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "use a tool safely".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("malformed tool call should be quarantined and replanned");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after safe re-planning"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert!(*saw_safe_replan_context.lock().unwrap());
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    assert!(persisted.iter().all(|message| {
+        message
+            .tool_calls
+            .iter()
+            .all(|call| crate::llm::message_validation::is_complete_tool_call(call))
+    }));
+    assert!(persisted
+        .iter()
+        .all(|message| !message.content.contains("I will inspect the repository")));
 }
 
 #[tokio::test]

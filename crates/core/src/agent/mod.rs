@@ -729,64 +729,70 @@ impl AgentExecutor {
 /// - First chunk provides `id` + `name`
 /// - Subsequent chunks append to `arguments_delta` and may omit `id`, using `index`
 ///
-/// When `id` is non-empty we either update an existing entry or create a new one.
-/// When `id` is empty we fall back to `index`, then to the most recent tool call.
-fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta) {
-    if !delta.id.is_empty() {
-        // Lookup by id — update existing or insert new.
-        if let Some(existing) = calls.iter_mut().find(|c| c.id == delta.id) {
-            if let Some(ref name) = delta.name {
-                existing.name.clone_from(name);
+/// The provider's stream-local `index` owns assembly until a final `id` arrives.
+/// An unaddressed fragment is accepted only when exactly one call is in flight;
+/// parallel-call fragments are never assigned by recency guesswork.
+fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta) -> bool {
+    fn apply_delta(existing: &mut ToolCallRequest, delta: &ToolCallDelta) -> bool {
+        if !delta.id.is_empty() {
+            if !existing.id.is_empty() && existing.id != delta.id {
+                return false;
             }
-            existing.arguments.push_str(&delta.arguments_delta);
-            if delta.thought_signature.is_some() {
-                existing.thought_signature = delta.thought_signature.clone();
+            existing.id.clone_from(&delta.id);
+        }
+        if let Some(name) = delta.name.as_deref().filter(|name| !name.trim().is_empty()) {
+            if !existing.name.is_empty() && existing.name != name {
+                return false;
             }
-        } else {
+            existing.name = name.to_string();
+        }
+        existing.arguments.push_str(&delta.arguments_delta);
+        if delta.thought_signature.is_some() {
+            existing.thought_signature = delta.thought_signature.clone();
+        }
+        true
+    }
+
+    // A provider's stream-local index is the stable assembly identity. The
+    // final call id may arrive later, so never invent a durable id from index.
+    if let Some(index) = delta.index.map(|index| index as usize) {
+        if let Some(existing) = calls.get_mut(index) {
+            return apply_delta(existing, delta);
+        }
+        if index == calls.len() {
             calls.push(ToolCallRequest {
                 id: delta.id.clone(),
                 name: delta.name.clone().unwrap_or_default(),
                 arguments: delta.arguments_delta.clone(),
                 thought_signature: delta.thought_signature.clone(),
             });
+            return true;
         }
-    } else if let Some(index) = delta.index {
-        // Some providers omit id on follow-up chunks and only send the call index.
-        let index = index as usize;
-        if let Some(existing) = calls.get_mut(index) {
-            if let Some(ref name) = delta.name {
-                existing.name.clone_from(name);
-            }
-            existing.arguments.push_str(&delta.arguments_delta);
-            if delta.thought_signature.is_some() {
-                existing.thought_signature = delta.thought_signature.clone();
-            }
-        } else if index == calls.len() {
-            calls.push(ToolCallRequest {
-                id: format!("call_{index}"),
-                name: delta.name.clone().unwrap_or_default(),
-                arguments: delta.arguments_delta.clone(),
-                thought_signature: delta.thought_signature.clone(),
-            });
-        } else if let Some(last) = calls.last_mut() {
-            if let Some(ref name) = delta.name {
-                last.name.clone_from(name);
-            }
-            last.arguments.push_str(&delta.arguments_delta);
-            if delta.thought_signature.is_some() {
-                last.thought_signature = delta.thought_signature.clone();
-            }
-        }
-    } else if let Some(last) = calls.last_mut() {
-        // No id provided — append to the most recent tool call.
-        if let Some(ref name) = delta.name {
-            last.name.clone_from(name);
-        }
-        last.arguments.push_str(&delta.arguments_delta);
-        if delta.thought_signature.is_some() {
-            last.thought_signature = delta.thought_signature.clone();
-        }
+        // An index gap is ambiguous; quarantining the fragment is safer than
+        // attaching it to a different parallel call.
+        return false;
     }
+
+    if !delta.id.is_empty() {
+        if let Some(existing) = calls.iter_mut().find(|call| call.id == delta.id) {
+            return apply_delta(existing, delta);
+        }
+        calls.push(ToolCallRequest {
+            id: delta.id.clone(),
+            name: delta.name.clone().unwrap_or_default(),
+            arguments: delta.arguments_delta.clone(),
+            thought_signature: delta.thought_signature.clone(),
+        });
+        return true;
+    }
+
+    // A legacy provider may omit both id and index for a single call. Once
+    // multiple calls exist, "append to the latest" corrupts parallel calls,
+    // so reject the unaddressed fragment instead of guessing.
+    if calls.len() == 1 {
+        return apply_delta(&mut calls[0], delta);
+    }
+    false
 }
 
 /// Resolve which accumulated [`ToolCallRequest`] a streaming delta refers to.
