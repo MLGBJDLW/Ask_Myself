@@ -113,6 +113,13 @@ test.beforeEach(async ({ page }) => {
           return clone(active);
         case 'create_conversation_cmd': {
           createConversationArgs.push(clone(args));
+          if (localStorage.getItem('e2e-fail-next-conversation-create') === '1') {
+            localStorage.removeItem('e2e-fail-next-conversation-create');
+            throw new Error('Injected conversation create failure');
+          }
+          if (localStorage.getItem('e2e-delay-conversation-create') === '1') {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
           const conversation = {
             ...activeConversation,
             id: 'conv-new',
@@ -340,6 +347,41 @@ test('new chat resets the previous conversation persona before first persistence
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
       .__CREATE_CONVERSATION_ARGS__[0],
   )).toMatchObject({ personaId: 'default' });
+});
+
+test('failed first persistence keeps the local draft available for retry', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-fail-next-conversation-create', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Keep this draft when persistence fails.');
+
+  await input.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await expect(input).toHaveValue('Keep this draft when persistence fails.');
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+});
+
+test('first persistence is single-flight when Enter is pressed repeatedly', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-delay-conversation-create', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Create exactly one conversation.');
+
+  await input.press('Enter');
+  await input.press('Enter');
+  await page.waitForTimeout(500);
+
+  expect(await page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
 });
 
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {

@@ -770,7 +770,7 @@ export function ChatPage() {
                 graphContext,
               }
             : inputOptions?.userArtifacts;
-      await chat.send(
+      const accepted = await chat.send(
         content,
         attachments,
         personaForSend,
@@ -796,10 +796,11 @@ export function ChatPage() {
             }
           : undefined,
       );
-      if (graphContext) {
+      if (accepted && graphContext) {
         clearGraphAgentContext();
         setPendingGraphContext(null);
       }
+      return accepted;
     },
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
@@ -823,8 +824,7 @@ export function ChatPage() {
     inputOptions?: ChatInputSendOptions,
   ) => {
     if (!activeInteraction) {
-      await handleChatSend(content, attachments, inputOptions);
-      return;
+      return handleChatSend(content, attachments, inputOptions);
     }
     if (attachments?.length) {
       throw new Error(t('chat.decisionTraySupplementTextOnly'));
@@ -832,6 +832,7 @@ export function ChatPage() {
     await api.appendInteractionSupplement(activeInteraction.interactionId, content);
     await chat.reloadMessages();
     toast.success(t('chat.decisionTraySupplementSaved'));
+    return true;
   }, [activeInteraction, chat.reloadMessages, handleChatSend, t]);
 
   const handleApprovePlan = useCallback(

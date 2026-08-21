@@ -66,7 +66,11 @@ export interface ChatInputSendOptions {
 }
 
 interface ChatInputProps {
-  onSend: (message: string, attachments?: ImageAttachment[], options?: ChatInputSendOptions) => void;
+  onSend: (
+    message: string,
+    attachments?: ImageAttachment[],
+    options?: ChatInputSendOptions,
+  ) => Promise<boolean>;
   onStop: () => void;
   isStreaming: boolean;
   disabled: boolean;
@@ -403,6 +407,7 @@ export function ChatInput({
   const [nexusActivationVisible, setNexusActivationVisible] = useState(false);
   const [visionPolicyMode, setVisionPolicyMode] = useState<'off' | 'ask' | 'auto' | 'always_auxiliary'>('auto');
   const [visionTurnOverride, setVisionTurnOverride] = useState<VisionTurnOverride | null>(null);
+  const [sendPending, setSendPending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -413,13 +418,15 @@ export function ChatInput({
   );
   const historyDraftRef = useRef<{ value: string; cursor: number } | null>(null);
   const previousPowerModeKeyRef = useRef(draftKey);
+  const previousDraftKeyRef = useRef(draftKey);
+  const sendInFlightRef = useRef(false);
   // Compaction only locks actions that mutate conversation history. The draft
   // remains fully editable so the user can keep typing while the checkpoint is
   // being built, then send as soon as compaction completes.
   const hasImageAttachments = attachments.some((attachment) => attachment.mediaType.startsWith('image/'));
   const visionDecisionRequired = hasImageAttachments && visionPolicyMode === 'ask' && visionTurnOverride === null;
   const inputLocked = disabled;
-  const sendLocked = inputLocked || isCompacting || visionDecisionRequired;
+  const sendLocked = inputLocked || isCompacting || visionDecisionRequired || sendPending;
   const attachmentLocked = inputLocked || isCompacting || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
   const inputHistoryEntries = useMemo(
@@ -543,6 +550,23 @@ export function ChatInput({
   }, [activeSlashCommandId, attachments, draftKey]);
 
   useEffect(() => {
+    const previousKey = previousDraftKeyRef.current;
+    if (
+      sendInFlightRef.current
+      && previousKey === NEW_CONVERSATION_DRAFT_KEY
+      && draftKey !== NEW_CONVERSATION_DRAFT_KEY
+    ) {
+      // First-send persistence changes the route before the async launch has
+      // settled. Carry the draft to the durable conversation key so a later
+      // launch failure can restore it instead of loading an empty draft.
+      const draft = draftsRef.current[previousKey] ?? readChatInputDraft(previousKey);
+      draftsRef.current[draftKey] = cloneDraftState(draft);
+      persistChatInputDraft(draftKey, draft);
+      resetInputHistoryNavigation();
+      setLoadedDraftKey(draftKey);
+      previousDraftKeyRef.current = draftKey;
+      return;
+    }
     const draft = draftsRef.current[draftKey] ?? readChatInputDraft(draftKey);
     draftsRef.current[draftKey] = cloneDraftState(draft);
     resetInputHistoryNavigation();
@@ -551,6 +575,7 @@ export function ChatInput({
     setAttachments(draft.attachments);
     setActiveSlashCommandId(draft.activeSlashCommandId);
     setPreviewAttachment(null);
+    previousDraftKeyRef.current = draftKey;
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -869,8 +894,8 @@ export function ChatInput({
     }, 0);
   }, [draftKey, resetInputHistoryNavigation]);
 
-  const handleSend = useCallback(() => {
-    if (sendLocked) return;
+  const handleSend = useCallback(async () => {
+    if (sendLocked || sendInFlightRef.current) return;
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0 && !activeSlashCommand) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
@@ -962,12 +987,23 @@ export function ChatInput({
     if (executionMode === "plan") {
       setPlanMode(true);
     }
-    onSend(
-      outgoingMessage,
-      attachments.length > 0 ? attachments : undefined,
-      sendOptions,
-    );
-    clearDraft();
+    sendInFlightRef.current = true;
+    setSendPending(true);
+    try {
+      const accepted = await onSend(
+        outgoingMessage,
+        attachments.length > 0 ? attachments : undefined,
+        sendOptions,
+      );
+      if (accepted) {
+        clearDraft();
+      }
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      sendInFlightRef.current = false;
+      setSendPending(false);
+    }
   }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, collaborationMode, customOrchestration, effectivePlanModeEnabled, isStreaming, moaPreset, onCompact, onSend, orchestrationProfile, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value, visionTurnOverride]);
 
   const handleKeyDown = useCallback(
