@@ -729,6 +729,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::ToolCallRequest;
 
     fn msg(role: Role, content: &str) -> Message {
         Message::text(role, content)
