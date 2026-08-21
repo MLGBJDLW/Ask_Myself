@@ -563,6 +563,76 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertEqual("pass", contract["status"])
         self.assertTrue(output.exists())
 
+    def test_potm_insert_uses_direct_ooxml_contract_validation(self) -> None:
+        from pptx import Presentation
+
+        base = self.root / "macro-template-base.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        slide.shapes.title.text = "Template cover"
+        presentation.save(base)
+        with zipfile.ZipFile(base) as archive:
+            content_types = ET.fromstring(archive.read("[Content_Types].xml"))
+            for override in content_types:
+                if override.attrib.get("PartName") == "/ppt/presentation.xml":
+                    override.set(
+                        "ContentType",
+                        "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+                    )
+            if not any(item.attrib.get("Extension") == "bin" for item in content_types):
+                ET.SubElement(content_types, f"{{{CONTENT_TYPES_NS}}}Default", {
+                    "Extension": "bin",
+                    "ContentType": "application/vnd.ms-office.vbaProject",
+                })
+            relationships = ET.fromstring(archive.read("ppt/_rels/presentation.xml.rels"))
+            ET.SubElement(relationships, f"{{{RELATIONSHIPS_NS}}}Relationship", {
+                "Id": "rIdNexaVba",
+                "Type": "http://schemas.microsoft.com/office/2006/relationships/vbaProject",
+                "Target": "vbaProject.bin",
+            })
+        source = self.root / "macro-template.potm"
+        _rewrite_zip(
+            base,
+            {
+                "[Content_Types].xml": ET.tostring(
+                    content_types, encoding="utf-8", xml_declaration=True
+                ),
+                "ppt/_rels/presentation.xml.rels": ET.tostring(
+                    relationships, encoding="utf-8", xml_declaration=True
+                ),
+            },
+            {"ppt/vbaProject.bin": b"NEXA-VBA-PROBE"},
+            source,
+        )
+        output = self.root / "macro-template-result.potm"
+        payload = {
+            "jobVersion": 1,
+            "format": "pptx",
+            "intent": "edit_existing",
+            "input": str(source),
+            "output": str(output),
+            "operations": [{
+                "op": "insert_slide",
+                "after": 1,
+                "title": "Inserted decision",
+                "body": "Inserted evidence",
+            }],
+            "validationContract": {
+                "required_text": ["Inserted decision", "Inserted evidence"],
+                "min_slides": 2,
+                "max_slides": 2,
+            },
+            "preservationPolicy": "strict",
+            "renderPolicy": "none",
+        }
+
+        result, exit_code = execute_job(OfficeArtifactJob.from_dict(payload, self.root), self.root)
+
+        self.assertEqual(0, exit_code, result)
+        self.assertEqual("pass", result["validation"]["backend"]["contract"]["status"])
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(b"NEXA-VBA-PROBE", archive.read("ppt/vbaProject.bin"))
+
     def test_job_rejects_manifest_path_equal_to_artifact_path(self) -> None:
         output = self.root / "conflict.docx"
         with self.assertRaisesRegex(ValueError, "manifest path must be distinct"):

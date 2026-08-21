@@ -2732,50 +2732,61 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
 
 
 def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
-    try:
-        from pptx import Presentation  # type: ignore
-    except ImportError:
-        _missing("python-pptx")
     contract = _read_json(contract_path)
     _validate_contract_keys(contract, "pptx")
-    presentation = Presentation(str(path))
+    skills_root = Path(__file__).resolve().parents[2]
+    audit_dir = skills_root / "pptx-presentation-design" / "scripts"
+    if str(audit_dir) not in sys.path:
+        sys.path.insert(0, str(audit_dir))
+    try:
+        import pptx_audit  # type: ignore
+    except ImportError:
+        _missing("pptx_audit")
+    package = pptx_audit.audit(path)
     fragments: list[str] = []
     titles: list[str] = []
     slides_with_notes = 0
-    for slide in presentation.slides:
-        if slide.shapes.title is not None:
-            title = slide.shapes.title.text.strip()
-            if title:
-                titles.append(title)
-        else:
-            # Renderers and imported decks frequently use a regular text box for
-            # the visual title.  Treat the top-most non-empty text frame as the
-            # semantic title instead of requiring a PowerPoint title placeholder.
+    with zipfile.ZipFile(path) as archive:
+        for slide in package.get("slide_details", []):
+            slide_part = str(slide.get("part", ""))
+            slide_root = pptx_audit.parse_xml(pptx_audit.read_text(archive, slide_part))
+            slide_text = pptx_audit.slide_text(slide_root)
+            if slide_text:
+                fragments.append(slide_text)
             text_shapes = [
-                shape for shape in slide.shapes
-                if getattr(shape, "has_text_frame", False) and shape.text.strip()
+                shape
+                for shape in slide.get("shape_details", [])
+                if str(shape.get("text", "")).strip()
             ]
-            if text_shapes:
-                title_shape = min(
-                    text_shapes,
-                    key=lambda shape: (int(shape.top), int(shape.left)),
-                )
-                titles.append(title_shape.text.strip())
-        if slide.has_notes_slide:
-            notes_text = "\n".join(
-                shape.text for shape in slide.notes_slide.shapes
-                if getattr(shape, "has_text_frame", False)
-            ).strip()
+            title_shapes = [shape for shape in text_shapes if shape.get("isTitle")]
+            if title_shapes:
+                titles.append(str(title_shapes[0]["text"]).strip())
+            elif text_shapes:
+                # Imported decks often use an ordinary text box as the visual
+                # title. The audit inventory is position-sorted, so the first
+                # non-empty text shape is the same deterministic fallback used
+                # for normal PPTX and macro/template packages.
+                titles.append(str(text_shapes[0]["text"]).strip())
+            notes_text: list[str] = []
+            for relationship in pptx_audit.rel_targets(archive, slide_part):
+                if (
+                    relationship.get("target_mode") != "External"
+                    and relationship.get("type", "").rsplit("/", 1)[-1] == "notesSlide"
+                ):
+                    notes = pptx_audit.parse_xml(
+                        pptx_audit.read_text(archive, str(relationship.get("target", "")))
+                    )
+                    if notes is not None:
+                        notes_text.extend(
+                            (item.text or "").strip()
+                            for item in notes.findall(".//a:t", pptx_audit.NS)
+                            if (item.text or "").strip()
+                        )
             if notes_text:
                 slides_with_notes += 1
-                fragments.append(notes_text)
-        for shape in slide.shapes:
-            if getattr(shape, "has_text_frame", False):
-                fragments.append(shape.text)
-            if getattr(shape, "has_table", False):
-                fragments.extend(cell.text for row in shape.table.rows for cell in row.cells)
+                fragments.extend(notes_text)
     errors, checks = _contract_text_checks("\n".join(fragments), contract)
-    slide_count = len(presentation.slides)
+    slide_count = int(package.get("slides", 0))
     checks["measurements"] = {
         "slides": slide_count,
         "slidesWithNotes": slides_with_notes,
