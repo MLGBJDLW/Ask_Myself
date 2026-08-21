@@ -106,6 +106,34 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.424
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked PPTX author adapter
+        run: npm ci --ignore-scripts
+
+      - name: Verify Office author supply chain and bundle closure
+        run: |
+          npm audit --audit-level=high
+          npm run office:supply-chain:test
+          npm run office:pptxgenjs:bundle
+          test -f apps/desktop/src-tauri/resources/pptxgenjs-runtime/runtime-manifest.json
+
+      - name: Verify Office.js add-in contract
+        run: npm run office:addin:test
+
+      - name: Build pinned Open XML SDK validator
+        run: |
+          dotnet restore tools/openxml-validator/Nexa.OpenXml.Validator.csproj --locked-mode
+          dotnet publish tools/openxml-validator/Nexa.OpenXml.Validator.csproj -c Release --no-restore
+
       - name: Install Office smoke dependencies
         uses: ./.github/actions/install-ubuntu-packages
         timeout-minutes: 12
@@ -115,9 +143,11 @@ jobs:
             poppler-utils
 
       - name: Office artifact runtime smoke
+        env:
+          NEXA_OPENXML_VALIDATOR: ${{ github.workspace }}/tools/openxml-validator/bin/Release/net8.0/publish/Nexa.OpenXml.Validator.dll
         run: |
           python3 -m venv /tmp/nexa-office-venv
-          /tmp/nexa-office-venv/bin/python -m pip install --disable-pip-version-check -r crates/core/assets/skills/doc-script-editor/scripts/requirements.txt
+          /tmp/nexa-office-venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r crates/core/assets/skills/doc-script-editor/scripts/requirements.lock
           for suite in \
             crates/core/assets/skills/doc-script-editor/scripts \
             crates/core/assets/skills/docx-document-design/scripts \

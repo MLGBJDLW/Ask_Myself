@@ -33,6 +33,9 @@ desktop.ini
 .vite/
 build/
 .artifacts/
+**/bin/
+**/obj/
+/.nexa/
 
 # Coverage
 *.lcov

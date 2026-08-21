@@ -5,12 +5,22 @@
     "tauri": "npm run tauri --prefix apps/desktop --",
     "catalog:audit": "node scripts/model-catalog-audit.mjs",
     "catalog:audit:test": "node scripts/model-catalog-audit.test.mjs",
+    "office:addin:test": "node --test integrations/office-addin/office-addin-contract.test.mjs",
+    "office:supply-chain:test": "node --test vendor/image-size-safe/image-size-safe.test.mjs",
+    "office:pptxgenjs:bundle": "node scripts/bundle-pptxgenjs-runtime.mjs --output apps/desktop/src-tauri/resources/pptxgenjs-runtime",
     "eval:smoke": "cargo test -p nexa-core developer_eval_smoke_workflow",
     "eval:nightly": "cargo test -p nexa-core developer_eval_nightly_workflow"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "png2icons": "^2.0.1"
+    "image-size": "file:vendor/image-size-safe",
+    "png2icons": "^2.0.1",
+    "pptxgenjs": "4.0.1"
+  },
+  "overrides": {
+    "pptxgenjs": {
+      "image-size": "$image-size"
+    }
   },
   "version": "0.12.23"
 }
