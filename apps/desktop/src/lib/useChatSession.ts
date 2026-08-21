@@ -1054,6 +1054,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       };
 
       let convId = activeId;
+      let createdConversationForSend: Conversation | null = null;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
       if (
@@ -1154,10 +1155,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           const nextConversation = collectionContextForSend
             ? { ...conv, collectionContext: collectionContextForSend }
             : conv;
-          setConversations((prev) => [nextConversation, ...prev]);
-          setInternalConversationId(convId);
-          onConversationCreated?.(convId);
+          // Keep the newly allocated row private until the agent command
+          // accepts the first turn. This lets a rejected launch roll back to
+          // the local draft without flashing or retaining an empty history row.
+          createdConversationForSend = nextConversation;
         } catch (e) {
+          if (convId) {
+            await api.deleteConversation(convId).catch(() => undefined);
+          }
           conversationCreationInFlightRef.current = false;
           toast.error(formatUserError(t('chat.createError'), e));
           return false;
@@ -1182,8 +1187,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const currentMessages = messageCache[convId] ?? [];
 
       // Add optimistic user message
+      const optimisticMessageId = `temp-${Date.now()}`;
       const optimisticMsg: ConversationMessage = {
-        id: `temp-${Date.now()}`,
+        id: optimisticMessageId,
         conversationId: convId,
         role: 'user',
         content,
@@ -1219,9 +1225,29 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           options?.userArtifacts,
           options?.taskOrchestratorRunId,
           options?.resumeCheckpointId,
-          options?.interactionContinuation === true,
+          true,
         );
+        if (createdConversationForSend) {
+          setConversations((prev) => [createdConversationForSend as Conversation, ...prev]);
+          setInternalConversationId(convId);
+          onConversationCreated?.(convId);
+        }
         return true;
+      } catch (e) {
+        setMessagesForConversation(convId, (prev) =>
+          prev.filter((message) => message.id !== optimisticMessageId),
+        );
+        knownStreamConversationsRef.current.delete(convId);
+        suppressedLiveUsageRef.current.delete(convId);
+        compactionUsageRef.current.delete(convId);
+        setChatError(String(e));
+        if (ownsConversationCreation) {
+          await api.deleteConversation(convId).catch((cleanupError) => {
+            toast.error(formatUserError(t('chat.deleteError'), cleanupError));
+          });
+          streamStore.clearStream(convId);
+        }
+        throw e;
       } finally {
         if (ownsConversationCreation) {
           conversationCreationInFlightRef.current = false;

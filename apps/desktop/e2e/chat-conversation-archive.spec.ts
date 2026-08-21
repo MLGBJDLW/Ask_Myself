@@ -157,6 +157,12 @@ test.beforeEach(async ({ page }) => {
           archived = archived.filter((item) => item.id !== id);
           return null;
         }
+        case 'agent_chat_cmd':
+          if (localStorage.getItem('e2e-fail-next-agent-launch') === '1') {
+            localStorage.removeItem('e2e-fail-next-agent-launch');
+            throw new Error('Injected agent launch failure');
+          }
+          return null;
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const conversation = [...active, ...archived].find((item) => item.id === id);
@@ -363,6 +369,28 @@ test('failed first persistence keeps the local draft available for retry', async
       .__CREATE_CONVERSATION_ARGS__.length,
   )).toBe(1);
   await expect(input).toHaveValue('Keep this draft when persistence fails.');
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+});
+
+test('rejected first turn rolls back its empty conversation and keeps the draft', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-fail-next-agent-launch', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Keep this draft when the agent launch is rejected.');
+
+  await input.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __ARCHIVE_COMMANDS__: string[] })
+      .__ARCHIVE_COMMANDS__.filter((command) => command === 'delete_conversation_cmd').length,
+  )).toBe(1);
+  await expect(input).toHaveValue('Keep this draft when the agent launch is rejected.');
   await expect(page).toHaveURL(/\/chat$/);
   await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
 });
