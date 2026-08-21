@@ -1050,6 +1050,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         content = Path(__file__).with_name("requirements.lock").read_text(encoding="utf-8")
         self.assertIn("lxml==6.1.1", content)
         self.assertIn("pillow==12.3.0", content)
+        self.assertIn('pywin32==312 ; sys_platform == "win32"', content)
         self.assertGreaterEqual(content.count("--hash=sha256:"), 200)
 
     def test_v2_translates_to_internal_plan_not_legacy_job_protocol(self) -> None:

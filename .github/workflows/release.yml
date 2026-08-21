@@ -74,6 +74,21 @@ jobs:
             exit 1
           fi
 
+      - name: Require successful native Office acceptance for this SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          accepted=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/office-native-acceptance.yml/runs" \
+            -f head_sha="$GITHUB_SHA" \
+            -f status=completed \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$accepted" -lt 1 ]; then
+            echo "::error::Release SHA $GITHUB_SHA has no successful Native Office Acceptance run."
+            exit 1
+          fi
+
   build:
     needs: [release-please, preflight]
     if: needs.release-please.outputs.release_created == 'true'

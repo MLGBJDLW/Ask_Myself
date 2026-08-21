@@ -62,6 +62,7 @@ FORMAT_PYTHON_DEPENDENCIES = {
     "pptx": {"python-pptx"},
     "xlsx": {"openpyxl"},
 }
+WINDOWS_COM_DEPENDENCY = {"name": "pywin32", "version": "312"}
 
 
 def office_dependency_lock_status() -> dict[str, Any]:
@@ -457,12 +458,27 @@ class WindowsComBackend(OfficeBackend):
                 local=True,
                 detail=f"pywin32 or Microsoft Office is unavailable: {error}",
             )
+        try:
+            pywin32_version = importlib.metadata.version(WINDOWS_COM_DEPENDENCY["name"])
+        except importlib.metadata.PackageNotFoundError:
+            pywin32_version = None
+        if pywin32_version != WINDOWS_COM_DEPENDENCY["version"]:
+            return BackendStatus(
+                id=self.id,
+                label="Microsoft Office COM",
+                status="version-mismatch",
+                capabilities=["finalize", "recalculate", "render"],
+                local=True,
+                version=pywin32_version,
+                detail=f"pywin32 {WINDOWS_COM_DEPENDENCY['version']} is required.",
+            )
         return BackendStatus(
             id=self.id,
             label="Microsoft Office COM",
             status="ready",
             capabilities=["finalize", "recalculate", "render"],
             local=True,
+            version=pywin32_version,
             detail="Optional native finalizer; never used without an explicit job backend.",
         )
 
