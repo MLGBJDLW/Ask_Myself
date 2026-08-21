@@ -13,6 +13,7 @@ import ctypes
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shutil
@@ -102,6 +103,10 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "create_table": {"sheet", "range", "name", "columns", "styleName"},
         "set_number_format": {"sheet", "cell", "range", "formatCode", "baseStyleId"},
         "set_chart_title": {"chartPart", "title"},
+        "set_chart_data": {
+            "chartPart", "seriesIndex", "seriesName", "categoryRange",
+            "valueRange", "categories", "values",
+        },
         "recalculate": set(),
         "validate": set(),
         "render": set(),
@@ -144,6 +149,7 @@ REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
     "create_table": {"sheet", "range", "name"},
     "set_number_format": {"sheet", "formatCode"},
     "set_chart_title": {"chartPart", "title"},
+    "set_chart_data": {"chartPart", "seriesIndex", "categories", "values"},
     "set_alt_text": {"altText"},
     "set_speaker_notes": {"text"},
 }
@@ -209,7 +215,7 @@ FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
         "create", "replace", "redact", "validate", "render", "recalculate",
         "set_value", "set_formula", "set_range", "clear_range", "set_style",
         "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
-        "set_number_format", "set_chart_title",
+        "set_number_format", "set_chart_title", "set_chart_data",
     })),
     "pptx": LocalOpenXmlFormatAdapter("pptx", frozenset({
         "create", "replace", "redact", "insert_slide", "validate", "render",
@@ -2756,7 +2762,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
         )
     boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst", "allowMultiple", "resolved"}
-    integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId", "baseStyleId", "x", "y"}
+    integer_fields = {"expectedMatches", "occurrence", "slideIndex", "seriesIndex", "afterIndex", "after", "styleId", "baseStyleId", "x", "y"}
     string_fields = {
         "elementId", "spec", "title", "subtitle", "body", "font", "footer", "author",
         "inputMd", "template", "find", "replace", "expectedSha256", "scope", "comment",
@@ -2769,6 +2775,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         "authorEngine",
         "target",
         "commentId",
+        "seriesName", "categoryRange", "valueRange",
     }
     boolean_fields.update({"allowBlank", "showErrorMessage"})
     for field in boolean_fields & set(operation):
@@ -2779,7 +2786,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             )
     for field in integer_fields & set(operation):
         value = operation[field]
-        minimum = 1 if field in {"occurrence", "slideIndex"} else 0
+        minimum = 1 if field in {"occurrence", "slideIndex", "seriesIndex"} else 0
         if type(value) is not int or value < minimum:
             raise OfficeArtifactError(
                 "schema.operation_type",
@@ -2808,13 +2815,33 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             "schema.operation_type",
             f"operations[{index}].order must be an array of slide ids",
         )
-    if "values" in operation and (
-        not isinstance(operation["values"], list)
-        or not all(isinstance(row, list) for row in operation["values"])
+    if "values" in operation:
+        values = operation["values"]
+        valid_values = (
+            isinstance(values, list)
+            and bool(values)
+            and all(
+                type(value) in {int, float} and math.isfinite(float(value))
+                for value in values
+            )
+            if name == "set_chart_data"
+            else isinstance(values, list) and all(isinstance(row, list) for row in values)
+        )
+        if not valid_values:
+            expected = "a non-empty array of finite numbers" if name == "set_chart_data" else "a two-dimensional array"
+            raise OfficeArtifactError(
+                "schema.operation_type",
+                f"operations[{index}].values must be {expected}",
+            )
+    if "categories" in operation and (
+        not isinstance(operation["categories"], list)
+        or not operation["categories"]
+        or any(isinstance(value, (dict, list)) for value in operation["categories"])
+        or any(isinstance(value, float) and not math.isfinite(value) for value in operation["categories"])
     ):
         raise OfficeArtifactError(
             "schema.operation_type",
-            f"operations[{index}].values must be a two-dimensional array",
+            f"operations[{index}].categories must be a non-empty array of finite scalar values",
         )
     if "bindings" in operation and (
         not isinstance(operation["bindings"], dict)

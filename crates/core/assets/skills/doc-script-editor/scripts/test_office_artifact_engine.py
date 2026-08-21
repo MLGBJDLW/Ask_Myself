@@ -1209,6 +1209,57 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         self.assertEqual("0.00", workbook["Data"]["B2"].number_format)
         workbook.close()
 
+    def test_xlsx_chart_data_is_atomic_across_source_formula_and_cache(self) -> None:
+        import openpyxl
+        from openpyxl.chart import BarChart, Reference
+
+        source = self.root / "chart-source.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Summary"
+        sheet.append(["Region", "Amount"])
+        sheet.append(["North", 100])
+        sheet.append(["South", 80])
+        chart = BarChart()
+        chart.add_data(
+            Reference(sheet, min_col=2, min_row=1, max_row=3),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(sheet, min_col=1, min_row=2, max_row=3))
+        sheet.add_chart(chart, "D2")
+        workbook.save(source)
+        workbook.close()
+        destination = self.root / "chart-result.xlsx"
+
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "xlsx",
+            "intent": "modify",
+            "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "destination": str(destination),
+            "operations": [{
+                "op": "set_chart_data",
+                "chartPart": "xl/charts/chart1.xml",
+                "seriesIndex": 1,
+                "seriesName": "Updated amount",
+                "categories": ["East", "West"],
+                "values": [125, 95],
+            }],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+        })
+
+        self.assertFalse(destination.exists())
+        self.assertTrue(outcome["preservationEvidence"]["verified"])
+        candidate = Path(outcome["candidatePath"])
+        workbook = openpyxl.load_workbook(candidate, data_only=False)
+        self.assertEqual(["East", "West"], [workbook["Summary"]["A2"].value, workbook["Summary"]["A3"].value])
+        self.assertEqual([125, 95], [workbook["Summary"]["B2"].value, workbook["Summary"]["B3"].value])
+        self.assertEqual("Updated amount", workbook["Summary"]["B1"].value)
+        workbook.close()
+        inspection = self.engine.inspect(str(candidate), "xlsx")
+        self.assertEqual([], inspection["profile"]["chart_validation_errors"])
+
     def test_assessment_requires_excel_native_for_dynamic_array_formulas(self) -> None:
         try:
             import openpyxl  # type: ignore

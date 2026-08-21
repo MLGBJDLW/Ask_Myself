@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import posixpath
 import re
 import sys
@@ -31,7 +32,7 @@ SHEET_OPERATIONS = {
 }
 SUPPORTED_OPERATIONS = SHEET_OPERATIONS | {
     "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
-    "set_number_format", "set_chart_title",
+    "set_number_format", "set_chart_title", "set_chart_data",
 }
 
 
@@ -480,6 +481,288 @@ def _set_chart_title(data: bytes, title: str) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _chart_series(root: ET.Element, series_index: int) -> ET.Element:
+    series = [item for item in root.iter() if _local(item.tag) == "ser"]
+    if series_index < 1 or series_index > len(series):
+        raise XlsxEditError(
+            f"seriesIndex {series_index} is outside chart series range 1..{len(series)}"
+        )
+    return series[series_index - 1]
+
+
+def _series_container(series: ET.Element, names: set[str]) -> ET.Element:
+    container = next(
+        (item for item in list(series) if _local(item.tag) in names),
+        None,
+    )
+    if container is None:
+        raise XlsxEditError(
+            "chart series is missing " + "/".join(sorted(names)) + " data"
+        )
+    return container
+
+
+def _reference_formula(container: ET.Element) -> str:
+    reference = next(
+        (
+            item
+            for item in list(container)
+            if _local(item.tag) in {"strRef", "numRef"}
+        ),
+        None,
+    )
+    if reference is None:
+        raise XlsxEditError("chart data uses inline or unsupported references")
+    formula = next(
+        (item.text or "" for item in reference if _local(item.tag) == "f"),
+        "",
+    ).strip()
+    if not formula:
+        raise XlsxEditError("chart reference formula is missing")
+    return formula
+
+
+def _parse_chart_range(
+    formula: str,
+    sheet_parts: dict[str, str],
+) -> dict[str, Any]:
+    normalized = formula.strip().lstrip("=")
+    if "[" in normalized or "]" in normalized:
+        raise XlsxEditError("chart data references must stay inside the current workbook")
+    match = re.fullmatch(
+        r"(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^!]+))!"
+        r"(?P<range>\$?[A-Z]{1,3}\$?[1-9][0-9]*(?::\$?[A-Z]{1,3}\$?[1-9][0-9]*)?)",
+        normalized,
+    )
+    if match is None:
+        raise XlsxEditError(f"chart data reference must be a local cell range: {formula}")
+    sheet_name = (match.group("quoted") or match.group("plain") or "").replace("''", "'")
+    part = sheet_parts.get(sheet_name.casefold())
+    if part is None or not part.startswith("xl/worksheets/"):
+        raise XlsxEditError(f"chart data worksheet not found or unsupported: {sheet_name}")
+    cells = _range_cells(match.group("range"))
+    return {
+        "formula": normalized,
+        "sheet": sheet_name,
+        "part": part,
+        "cells": cells,
+    }
+
+
+def _chart_data_targets(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    sheet_parts: dict[str, str],
+    operation: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    chart_part = str(operation.get("chartPart", ""))
+    if (
+        re.fullmatch(r"xl/charts/chart[0-9]+\.xml", chart_part) is None
+        or chart_part not in archive.namelist()
+    ):
+        raise XlsxEditError("chartPart must identify an existing xl/charts/chartN.xml part")
+    root = ET.fromstring(replacements.get(chart_part, archive.read(chart_part)))
+    series = _chart_series(root, int(operation.get("seriesIndex", 0)))
+    categories = _series_container(series, {"cat", "xVal"})
+    values = _series_container(series, {"val", "yVal"})
+    targets = {
+        "categories": _parse_chart_range(
+            str(operation.get("categoryRange") or _reference_formula(categories)),
+            sheet_parts,
+        ),
+        "values": _parse_chart_range(
+            str(operation.get("valueRange") or _reference_formula(values)),
+            sheet_parts,
+        ),
+    }
+    if operation.get("seriesName") is not None:
+        title = next(
+            (item for item in list(series) if _local(item.tag) == "tx"),
+            None,
+        )
+        if title is not None:
+            try:
+                title_target = _parse_chart_range(_reference_formula(title), sheet_parts)
+            except XlsxEditError as error:
+                if "inline or unsupported" not in str(error):
+                    raise
+            else:
+                if len(title_target["cells"]) != 1:
+                    raise XlsxEditError("chart series title reference must contain one cell")
+                targets["seriesName"] = title_target
+    occupied: dict[tuple[str, str], str] = {}
+    for role, target in targets.items():
+        for cell in target["cells"]:
+            key = (str(target["part"]), cell)
+            if key in occupied:
+                raise XlsxEditError(
+                    f"chart data target ranges overlap at {target['sheet']}!{cell} "
+                    f"({occupied[key]} and {role})"
+                )
+            occupied[key] = role
+    return targets
+
+
+def _cache_text(value: Any, *, numeric: bool) -> str:
+    if numeric:
+        if type(value) not in {int, float} or not math.isfinite(float(value)):
+            raise XlsxEditError("chart values must be finite JSON numbers")
+        return str(value)
+    if isinstance(value, (dict, list)) or (
+        isinstance(value, float) and not math.isfinite(value)
+    ):
+        raise XlsxEditError("chart categories must be finite scalar JSON values")
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return str(value)
+
+
+def _replace_chart_reference(
+    container: ET.Element,
+    formula: str,
+    values: list[Any],
+    *,
+    numeric: bool,
+) -> None:
+    format_code = "General"
+    for reference in list(container):
+        if _local(reference.tag) not in {"strRef", "numRef"}:
+            continue
+        existing_cache = next(
+            (
+                item
+                for item in reference
+                if _local(item.tag) in {"strCache", "numCache"}
+            ),
+            None,
+        )
+        if existing_cache is not None:
+            existing_format = next(
+                (item.text or "" for item in existing_cache if _local(item.tag) == "formatCode"),
+                "",
+            )
+            if existing_format:
+                format_code = existing_format
+        container.remove(reference)
+    reference = ET.Element(f"{{{CHART_NS}}}{'numRef' if numeric else 'strRef'}")
+    ET.SubElement(reference, f"{{{CHART_NS}}}f").text = formula.lstrip("=")
+    cache = ET.SubElement(reference, f"{{{CHART_NS}}}{'numCache' if numeric else 'strCache'}")
+    if numeric:
+        ET.SubElement(cache, f"{{{CHART_NS}}}formatCode").text = format_code
+    ET.SubElement(cache, f"{{{CHART_NS}}}ptCount", {"val": str(len(values))})
+    for index, value in enumerate(values):
+        point = ET.SubElement(cache, f"{{{CHART_NS}}}pt", {"idx": str(index)})
+        ET.SubElement(point, f"{{{CHART_NS}}}v").text = _cache_text(
+            value, numeric=numeric
+        )
+    container.insert(0, reference)
+
+
+def _write_chart_source_values(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    target: dict[str, Any],
+    values: list[Any],
+) -> list[str]:
+    cells = list(target["cells"])
+    if len(cells) != len(values):
+        raise XlsxEditError(
+            f"chart {target['sheet']} range has {len(cells)} cells but received {len(values)} values"
+        )
+    part = str(target["part"])
+    root = ET.fromstring(replacements.get(part, archive.read(part)))
+    for cell, value in zip(cells, values, strict=True):
+        _write_literal(_find_or_create_cell(root, cell), value)
+    _update_dimension(root)
+    replacements[part] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return [f"{target['sheet']}!{cell}" for cell in cells]
+
+
+def _set_chart_data(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    sheet_parts: dict[str, str],
+    operation: dict[str, Any],
+) -> list[str]:
+    categories = operation.get("categories")
+    values = operation.get("values")
+    if not isinstance(categories, list) or not categories:
+        raise XlsxEditError("set_chart_data categories must be a non-empty array")
+    if not isinstance(values, list) or not values:
+        raise XlsxEditError("set_chart_data values must be a non-empty array")
+    if len(categories) != len(values):
+        raise XlsxEditError("set_chart_data categories and values must have the same length")
+    for value in values:
+        _cache_text(value, numeric=True)
+    for category in categories:
+        _cache_text(category, numeric=False)
+
+    chart_part = str(operation["chartPart"])
+    root = ET.fromstring(replacements.get(chart_part, archive.read(chart_part)))
+    series = _chart_series(root, int(operation["seriesIndex"]))
+    targets = _chart_data_targets(
+        archive, replacements, sheet_parts, operation
+    )
+    changed = _write_chart_source_values(
+        archive, replacements, targets["categories"], categories
+    )
+    changed.extend(
+        _write_chart_source_values(archive, replacements, targets["values"], values)
+    )
+    _replace_chart_reference(
+        _series_container(series, {"cat", "xVal"}),
+        str(targets["categories"]["formula"]),
+        categories,
+        numeric=all(type(item) in {int, float} for item in categories),
+    )
+    _replace_chart_reference(
+        _series_container(series, {"val", "yVal"}),
+        str(targets["values"]["formula"]),
+        values,
+        numeric=True,
+    )
+    if operation.get("seriesName") is not None:
+        series_name = str(operation["seriesName"])
+        title = next(
+            (item for item in list(series) if _local(item.tag) == "tx"),
+            None,
+        )
+        if title is None:
+            title = ET.Element(f"{{{CHART_NS}}}tx")
+            insert_at = next(
+                (
+                    index
+                    for index, child in enumerate(list(series))
+                    if _local(child.tag) not in {"idx", "order"}
+                ),
+                len(list(series)),
+            )
+            series.insert(insert_at, title)
+        if "seriesName" in targets:
+            changed.extend(
+                _write_chart_source_values(
+                    archive, replacements, targets["seriesName"], [series_name]
+                )
+            )
+            _replace_chart_reference(
+                title,
+                str(targets["seriesName"]["formula"]),
+                [series_name],
+                numeric=False,
+            )
+        else:
+            for child in list(title):
+                title.remove(child)
+            ET.SubElement(title, f"{{{CHART_NS}}}v").text = series_name
+    replacements[chart_part] = ET.tostring(
+        root, encoding="utf-8", xml_declaration=True
+    )
+    changed.append(chart_part)
+    return changed
+
+
 def _create_table(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
@@ -654,6 +937,10 @@ def patch_xlsx(
                     replacements.get(part, archive.read(part)), str(operation.get("title", ""))
                 )
                 changed.append(part)
+            elif name == "set_chart_data":
+                changed.extend(
+                    _set_chart_data(archive, replacements, sheet_parts, operation)
+                )
             elif name == "set_number_format":
                 style_id = _create_number_format_style(archive, replacements, operation)
                 generated_style_ids.append(style_id)

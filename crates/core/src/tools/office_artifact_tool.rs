@@ -282,6 +282,7 @@ enum OfficeOperation {
         chart_part: String,
         title: String,
     },
+    SetChartData(ChartDataOperation),
     Recalculate {},
     InsertSlide(InsertSlideOperation),
     SetText(SetTextOperation),
@@ -427,6 +428,21 @@ struct TemplateBindingOperation {
     target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     allow_multiple: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChartDataOperation {
+    chart_part: String,
+    series_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    series_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category_range: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value_range: Option<String>,
+    categories: Vec<Value>,
+    values: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1299,6 +1315,42 @@ mod tests {
             }
         }));
         assert!(invalid_resolution.is_err());
+
+        let valid_chart_data = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "execute",
+            "workspace_root": ".",
+            "request": {
+                "requestVersion": 2,
+                "format": "xlsx",
+                "intent": "modify",
+                "operations": [{
+                    "op": "set_chart_data",
+                    "chartPart": "xl/charts/chart1.xml",
+                    "seriesIndex": 1,
+                    "categories": ["North", "South"],
+                    "values": [1, 2.5]
+                }]
+            }
+        }));
+        assert!(valid_chart_data.is_ok());
+
+        let invalid_chart_data = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "execute",
+            "workspace_root": ".",
+            "request": {
+                "requestVersion": 2,
+                "format": "xlsx",
+                "intent": "modify",
+                "operations": [{
+                    "op": "set_chart_data",
+                    "chartPart": "xl/charts/chart1.xml",
+                    "seriesIndex": 1,
+                    "categories": ["North"],
+                    "values": ["1"]
+                }]
+            }
+        }));
+        assert!(invalid_chart_data.is_err());
     }
 
     #[test]

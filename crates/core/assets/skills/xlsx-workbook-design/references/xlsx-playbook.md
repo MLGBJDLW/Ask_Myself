@@ -27,6 +27,12 @@
 - Freeze panes, filters, print areas, page orientation, and column widths are part of the deliverable, not optional polish.
 - For user-facing dashboards, preview the workbook after generation and correct clipped headers, unreadable labels, empty charts, broken filters, and excessive blank regions.
 
+### Chart Data Integrity
+- Inspect the chart part and its one-based series index before editing. Use `set_chart_data` for local cell-backed series instead of changing cache XML or worksheet cells separately.
+- Supply equal-length `categories` and numeric `values`. Optional `categoryRange` and `valueRange` may resize the series only when each local range has exactly the supplied number of cells.
+- Treat the source cells, chart formulas, and `strCache`/`numCache` points as one consistency boundary. Validation must fail when their counts or values disagree; formula-backed source cells without usable caches require recalculation evidence rather than an invented value.
+- Reject external workbook formulas, missing worksheets, chartsheets as data sources, overlapping category/value/title targets, non-finite numbers, and unsupported inline/multi-level reference forms.
+
 ### Cleanup
 - Delete temporary scripts, CSV staging files, rendered sheet images, conversion outputs, and unpacked OOXML directories after a successful run unless they are requested deliverables or needed to diagnose a failure.
 - If cleanup removes important debug artifacts after an error would hide the cause, keep them in a clearly named diagnostic folder and mention it.

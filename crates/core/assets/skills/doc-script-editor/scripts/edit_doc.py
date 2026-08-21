@@ -2928,6 +2928,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
             result["cachedFormulaErrors"] = errors
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1
+        skills_root = Path(__file__).resolve().parents[2]
+        audit_dir = skills_root / "xlsx-workbook-design" / "scripts"
+        if str(audit_dir) not in sys.path:
+            sys.path.insert(0, str(audit_dir))
+        try:
+            import xlsx_audit  # type: ignore
+
+            package_graph = xlsx_audit.audit(path)
+            result["packageGraph"] = package_graph
+            if package_graph.get("chart_validation_errors"):
+                result["status"] = "fail"
+        except Exception as exc:  # noqa: BLE001
+            result["packageGraphWarning"] = f"{type(exc).__name__}: {exc}"
+            if result["status"] == "pass":
+                result["status"] = "warn"
         try:
             _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
             formula_qa = audit_xlsx_formula_integrity(path)

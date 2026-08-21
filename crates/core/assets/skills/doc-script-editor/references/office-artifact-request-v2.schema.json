@@ -41,7 +41,8 @@
       {"$ref": "#/$defs/xlsxClearRange"}, {"$ref": "#/$defs/xlsxSetStyle"}, {"$ref": "#/$defs/xlsxNoArg"}
       , {"$ref": "#/$defs/xlsxRenameSheet"}, {"$ref": "#/$defs/xlsxDefinedName"},
       {"$ref": "#/$defs/xlsxDataValidation"}, {"$ref": "#/$defs/xlsxCreateTable"},
-      {"$ref": "#/$defs/xlsxNumberFormat"}, {"$ref": "#/$defs/xlsxChartTitle"}
+      {"$ref": "#/$defs/xlsxNumberFormat"}, {"$ref": "#/$defs/xlsxChartTitle"},
+      {"$ref": "#/$defs/xlsxChartData"}
     ]}}}}},
     {"if": {"properties": {"format": {"const": "pptx"}}, "required": ["format"]}, "then": {"properties": {"operations": {"items": {"oneOf": [
       {"$ref": "#/$defs/pptxCreate"}, {"$ref": "#/$defs/pptxReplace"}, {"$ref": "#/$defs/pptxInsertSlide"},
@@ -107,6 +108,7 @@
     "xlsxCreateTable": {"type": "object", "additionalProperties": false, "required": ["op", "sheet", "range", "name"], "properties": {"op": {"const": "create_table"}, "elementId": {"type": "string"}, "sheet": {"type": "string"}, "range": {"type": "string"}, "name": {"type": "string", "minLength": 1}, "columns": {"type": "array", "items": {"type": "string", "minLength": 1}}, "styleName": {"type": "string"}}},
     "xlsxNumberFormat": {"type": "object", "additionalProperties": false, "required": ["op", "sheet", "formatCode"], "oneOf": [{"required": ["cell"]}, {"required": ["range"]}], "properties": {"op": {"const": "set_number_format"}, "elementId": {"type": "string"}, "sheet": {"type": "string"}, "cell": {"type": "string"}, "range": {"type": "string"}, "formatCode": {"type": "string", "minLength": 1}, "baseStyleId": {"type": "integer", "minimum": 0}}},
     "xlsxChartTitle": {"type": "object", "additionalProperties": false, "required": ["op", "chartPart", "title"], "properties": {"op": {"const": "set_chart_title"}, "elementId": {"type": "string"}, "chartPart": {"type": "string", "pattern": "^xl/charts/chart[0-9]+\\.xml$"}, "title": {"type": "string"}}},
+    "xlsxChartData": {"type": "object", "additionalProperties": false, "required": ["op", "chartPart", "seriesIndex", "categories", "values"], "properties": {"op": {"const": "set_chart_data"}, "elementId": {"type": "string"}, "chartPart": {"type": "string", "pattern": "^xl/charts/chart[0-9]+\\.xml$"}, "seriesIndex": {"type": "integer", "minimum": 1}, "seriesName": {"type": "string"}, "categoryRange": {"type": "string", "minLength": 1}, "valueRange": {"type": "string", "minLength": 1}, "categories": {"type": "array", "minItems": 1, "items": {"type": ["string", "number", "boolean", "null"]}}, "values": {"type": "array", "minItems": 1, "items": {"type": "number"}}}},
     "xlsxNoArg": {"type": "object", "additionalProperties": false, "required": ["op"], "properties": {"op": {"enum": ["recalculate", "validate", "render"]}, "elementId": {"type": "string"}}},
     "pptxCreate": {
       "type": "object", "additionalProperties": false, "required": ["op"],

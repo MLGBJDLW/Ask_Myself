@@ -414,7 +414,7 @@ def _native_operations(
     xlsx_typed = {
         "set_value", "set_formula", "set_range", "clear_range", "set_style",
         "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
-        "set_number_format", "set_chart_title",
+        "set_number_format", "set_chart_title", "set_chart_data",
     }
     pptx_typed = {
         "set_text", "clone_slide", "insert_slide", "reorder_slides", "set_transition",
@@ -984,6 +984,8 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
             return ("xl/worksheets/*.xml", "xl/styles.xml")
         if operation == "set_chart_title":
             return ("xl/charts/*.xml",)
+        if operation == "set_chart_data":
+            return ("xl/charts/*.xml", "xl/worksheets/*.xml")
         if operation in {"replace", "redact"}:
             return (
                 "xl/worksheets/*.xml", "xl/sharedStrings.xml", "xl/workbook.xml",
@@ -1111,6 +1113,23 @@ def _exact_operation_parts(
         return {"xl/workbook.xml"}
     if artifact_format == "xlsx" and operation == "set_chart_title":
         return {str(payload.get("chartPart", ""))}
+    if artifact_format == "xlsx" and operation == "set_chart_data":
+        scripts = skills_root / "xlsx-workbook-design" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from xlsx_structured_editor import (  # type: ignore
+            _chart_data_targets,
+            _workbook_sheet_parts,
+        )
+
+        with zipfile.ZipFile(path) as archive:
+            targets = _chart_data_targets(
+                archive, {}, _workbook_sheet_parts(archive), payload
+            )
+        return {
+            str(payload.get("chartPart", "")),
+            *(str(target["part"]) for target in targets.values()),
+        }
     if artifact_format == "xlsx" and operation == "rename_sheet":
         old = str(payload.get("sheet", ""))
         exact = {"xl/workbook.xml"}
@@ -1474,7 +1493,7 @@ def _verify_exact_semantic_scope(
     if artifact_format == "xlsx":
         if operation in {
             "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
-            "set_number_format", "set_chart_title",
+            "set_number_format", "set_chart_title", "set_chart_data",
         }:
             if operation == "rename_sheet":
                 scripts = Path(__file__).resolve().parents[2] / "xlsx-workbook-design" / "scripts"
@@ -1527,6 +1546,23 @@ def _verify_exact_semantic_scope(
                     )
                     if str(payload.get("title", "")) not in text:
                         raise RuntimeError("strict XLSX chart-title operation did not create its target")
+                elif operation == "set_chart_data":
+                    scripts = Path(__file__).resolve().parents[2] / "xlsx-workbook-design" / "scripts"
+                    if str(scripts) not in sys.path:
+                        sys.path.insert(0, str(scripts))
+                    from xlsx_audit import audit  # type: ignore
+
+                    chart_part = str(payload.get("chartPart", ""))
+                    errors = [
+                        error
+                        for error in audit(after_path).get("chart_validation_errors", [])
+                        if chart_part in error
+                    ]
+                    if errors:
+                        raise RuntimeError(
+                            "strict XLSX chart-data consistency failed: "
+                            + "; ".join(errors)
+                        )
                 elif operation == "create_table":
                     if not any(
                         name.startswith("xl/tables/table")
