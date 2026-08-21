@@ -273,7 +273,6 @@ pub fn repair_persisted_message_history(
 ) -> MessageRepairReport {
     let mut repaired = Vec::with_capacity(messages.len());
     let mut repairs = Vec::new();
-    let mut resolved_call_ids = HashSet::new();
     let mut index = 0usize;
 
     while index < messages.len() {
@@ -340,11 +339,9 @@ pub fn repair_persisted_message_history(
         let results = &messages[index + 1..result_end];
 
         let mut call_ids = HashSet::new();
-        let calls_are_complete = calls.iter().all(|call| {
-            is_complete_tool_call(call)
-                && call_ids.insert(call.id.clone())
-                && !resolved_call_ids.contains(&call.id)
-        });
+        let calls_are_complete = calls
+            .iter()
+            .all(|call| is_complete_tool_call(call) && call_ids.insert(call.id.clone()));
         let mut result_ids = HashSet::new();
         let results_are_complete = results.len() == calls.len()
             && results.iter().all(|result| {
@@ -360,7 +357,6 @@ pub fn repair_persisted_message_history(
             && call_ids == result_ids;
 
         if unit_is_complete {
-            resolved_call_ids.extend(call_ids);
             repaired.push(message.clone());
             repaired.extend(results.iter().cloned());
         } else {
@@ -429,29 +425,32 @@ fn validate_tool_call_sequence(
     mut context: MessageNormalizationContext<'_>,
 ) -> Result<(), MessageValidationError> {
     let mut pending: HashMap<String, usize> = HashMap::new();
-    let mut resolved: HashSet<String> = HashSet::new();
+    let mut resolved_in_round: HashSet<String> = HashSet::new();
 
     for (index, message) in messages.iter().enumerate() {
         context.message_index = index;
-        if message.role != Role::Tool && !pending.is_empty() {
-            return Err(MessageValidationError {
-                diagnostic: Box::new(diagnostic(
-                    &context,
-                    message,
-                    has_visible_content(message),
-                    message.tool_calls.as_ref().map_or(0, Vec::len),
-                    format!(
-                        "{} tool call(s) have no result before the next non-tool message",
-                        pending.len()
-                    ),
-                )),
-            });
+        if message.role != Role::Tool {
+            if !pending.is_empty() {
+                return Err(MessageValidationError {
+                    diagnostic: Box::new(diagnostic(
+                        &context,
+                        message,
+                        has_visible_content(message),
+                        message.tool_calls.as_ref().map_or(0, Vec::len),
+                        format!(
+                            "{} tool call(s) have no result before the next non-tool message",
+                            pending.len()
+                        ),
+                    )),
+                });
+            }
+            resolved_in_round.clear();
         }
 
         match message.role {
             Role::Assistant => {
                 for call in message.tool_calls.as_deref().unwrap_or_default() {
-                    if pending.contains_key(&call.id) || resolved.contains(&call.id) {
+                    if pending.contains_key(&call.id) {
                         return Err(MessageValidationError {
                             diagnostic: Box::new(diagnostic(
                                 &context,
@@ -478,7 +477,7 @@ fn validate_tool_call_sequence(
                         )),
                     });
                 }
-                if resolved.contains(call_id) {
+                if resolved_in_round.contains(call_id) {
                     return Err(MessageValidationError {
                         diagnostic: Box::new(diagnostic(
                             &context,
@@ -511,7 +510,7 @@ fn validate_tool_call_sequence(
                         )),
                     });
                 }
-                resolved.insert(call_id.to_string());
+                resolved_in_round.insert(call_id.to_string());
             }
             Role::System | Role::User => {}
         }
@@ -734,5 +733,26 @@ mod tests {
         assert!(report.repairs.is_empty());
         assert_eq!(report.messages.len(), 2);
         validate_provider_request(&report.messages, "openai", "deepseek-v4-pro").unwrap();
+    }
+
+    #[test]
+    fn completed_tool_rounds_may_reuse_provider_call_ids() {
+        let call = || ToolCallRequest {
+            id: "call_0".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"rust"}"#.to_string(),
+            thought_signature: None,
+        };
+        let messages = vec![
+            assistant_with_calls(Some(vec![call()])),
+            Message::text_with_name(Role::Tool, "first result", "call_0"),
+            assistant_with_calls(Some(vec![call()])),
+            Message::text_with_name(Role::Tool, "second result", "call_0"),
+        ];
+
+        validate_provider_request(&messages, "openai", "local-compatible").unwrap();
+        let report = repair_persisted_message_history(messages, Some("conversation-1"));
+        assert!(report.repairs.is_empty());
+        assert_eq!(report.messages.len(), 4);
     }
 }
