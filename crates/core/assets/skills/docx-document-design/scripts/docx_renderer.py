@@ -256,7 +256,7 @@ def _set_repeat_header(row: Any) -> None:
     tr_pr = row._tr.get_or_add_trPr()
     if tr_pr.find(qn("w:tblHeader")) is None:
         repeat = OxmlElement("w:tblHeader")
-        repeat.set(qn("w:val"), "true")
+        repeat.set(qn("w:val"), "on")
         tr_pr.append(repeat)
 
 
@@ -281,6 +281,8 @@ def _shade(cell: Any, color: str) -> None:
     if shading is None:
         shading = OxmlElement("w:shd")
         properties.append(shading)
+    shading.set(qn("w:val"), "clear")
+    shading.set(qn("w:color"), "auto")
     shading.set(qn("w:fill"), color)
 
 

@@ -84,6 +84,53 @@ class DocxReviewEditorTests(unittest.TestCase):
                 self.assertNotIn(b"<ns0:ins", archive.read("word/document.xml"))
                 self.assertNotIn(b"<ns0:del", archive.read("word/document.xml"))
 
+    def test_bookmark_field_content_control_and_protection_are_native_word_objects(self) -> None:
+        import docx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "structured.docx"
+            document = docx.Document()
+            document.add_paragraph("Bookmark target")
+            document.add_paragraph("Field placeholder")
+            document.add_paragraph("Controlled text")
+            document.save(source)
+            output = root / "structured-output.docx"
+
+            result = docx_review_editor.patch_docx_reviews(source, output, [
+                {"op": "add_bookmark", "find": "Bookmark", "bookmarkName": "DecisionAnchor"},
+                {"op": "insert_field", "find": "placeholder", "instruction": "REF DecisionAnchor", "displayText": "Bookmark"},
+                {"op": "wrap_content_control", "find": "Controlled", "tag": "decision", "title": "Decision", "lock": "content"},
+                {"op": "set_protection", "mode": "trackedChanges"},
+            ])
+
+            self.assertEqual(
+                ["word/document.xml", "word/settings.xml"],
+                result["changedParts"],
+            )
+            with zipfile.ZipFile(output) as archive:
+                document_xml = archive.read("word/document.xml")
+                settings_xml = archive.read("word/settings.xml")
+            self.assertIn(b"bookmarkStart", document_xml)
+            self.assertIn(b"DecisionAnchor", document_xml)
+            self.assertIn(b"fldSimple", document_xml)
+            self.assertIn(b"REF DecisionAnchor", document_xml)
+            self.assertIn(b"sdtContent", document_xml)
+            self.assertIn(b"sdtContentLocked", document_xml)
+            self.assertIn(b"documentProtection", settings_xml)
+            self.assertIn(b"trackedChanges", settings_xml)
+
+    def test_field_allowlist_rejects_external_or_executable_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root, "Unsafe field")
+            with self.assertRaisesRegex(docx_review_editor.DocxReviewError, "safe.*allowlist"):
+                docx_review_editor.patch_docx_reviews(source, root / "unsafe.docx", [{
+                    "op": "insert_field",
+                    "find": "Unsafe",
+                    "instruction": "INCLUDETEXT https://example.invalid/secret",
+                }])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ import re
 import sys
 import zipfile
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -20,7 +21,14 @@ A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
-SUPPORTED_OPERATIONS = {"set_text", "clone_slide", "reorder_slides", "set_transition"}
+COMMENT_REL = f"{R_NS}/comments"
+COMMENT_AUTHORS_REL = f"{R_NS}/commentAuthors"
+COMMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.comments+xml"
+COMMENT_AUTHORS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"
+SUPPORTED_OPERATIONS = {
+    "set_text", "clone_slide", "reorder_slides", "set_transition",
+    "set_alt_text", "set_speaker_notes", "add_comment",
+}
 DUPLICATE_RELATION_TYPES = {
     "chart", "chartUserShapes", "chartStyle", "chartColorStyle", "package", "oleObject",
     "notesSlide", "comments", "commentAuthors", "diagramData", "diagramLayout",
@@ -310,6 +318,180 @@ def _set_text(
     return {"slideId": slide["slideId"], "part": slide["part"], "before": before, "after": str(operation.get("text", ""))}
 
 
+def _set_alt_text(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    order = presentation_order_from_bytes(archive, replacements)
+    slide = _target_slide(operation, order)
+    root = ET.fromstring(replacements.get(slide["part"], archive.read(slide["part"])))
+    shape = _find_shape(root, operation)
+    properties = next((item for item in shape.iter() if _local(item.tag) == "cNvPr"), None)
+    if properties is None:
+        raise PptxEditError("target shape has no non-visual properties")
+    before = properties.attrib.get("descr", "")
+    properties.set("descr", str(operation.get("altText", "")))
+    if operation.get("title") is not None:
+        properties.set("title", str(operation["title"]))
+    replacements[slide["part"]] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return {"slideId": slide["slideId"], "part": slide["part"], "before": before, "after": str(operation.get("altText", ""))}
+
+
+def _set_speaker_notes(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    order = presentation_order_from_bytes(archive, replacements)
+    slide = _target_slide(operation, order)
+    relationships = _relationship_map(archive, slide["part"])
+    notes_target = next(
+        (
+            _resolve_target(slide["part"], relationship["target"])
+            for relationship in relationships.values()
+            if relationship["type"].rsplit("/", 1)[-1] == "notesSlide"
+        ),
+        None,
+    )
+    if not notes_target or notes_target not in archive.namelist():
+        raise PptxEditError("set_speaker_notes requires an existing notes slide relationship")
+    root = ET.fromstring(replacements.get(notes_target, archive.read(notes_target)))
+    body_shape = next(
+        (
+            shape for shape in root.iter(f"{{{P_NS}}}sp")
+            if any(
+                item.attrib.get("type") == "body"
+                for item in shape.iter(f"{{{P_NS}}}ph")
+            )
+        ),
+        None,
+    )
+    if body_shape is None:
+        raise PptxEditError("notes slide has no body placeholder")
+    text_nodes = list(body_shape.iter(f"{{{A_NS}}}t"))
+    if not text_nodes:
+        raise PptxEditError("notes body placeholder has no text run")
+    before = "".join(item.text or "" for item in text_nodes)
+    text_nodes[0].text = str(operation.get("text", ""))
+    for item in text_nodes[1:]:
+        item.text = ""
+    replacements[notes_target] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return {"slideId": slide["slideId"], "part": notes_target, "before": before, "after": str(operation.get("text", ""))}
+
+
+def _add_comment(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    order = presentation_order_from_bytes(archive, replacements)
+    slide = _target_slide(operation, order)
+    author_name = str(operation.get("author", "Nexa"))
+    initials = str(operation.get("initials", "NX"))
+
+    presentation_rels_name = "ppt/_rels/presentation.xml.rels"
+    presentation_rels = ET.fromstring(
+        replacements.get(presentation_rels_name, archive.read(presentation_rels_name))
+    )
+    authors_relationship = next(
+        (item for item in presentation_rels if item.attrib.get("Type") == COMMENT_AUTHORS_REL),
+        None,
+    )
+    if authors_relationship is None:
+        authors_part = "ppt/commentAuthors.xml"
+        authors_relationship_id = _next_relationship_id(presentation_rels)
+        ET.SubElement(presentation_rels, f"{{{REL_NS}}}Relationship", {
+            "Id": authors_relationship_id,
+            "Type": COMMENT_AUTHORS_REL,
+            "Target": "commentAuthors.xml",
+        })
+        authors = ET.Element(f"{{{P_NS}}}cmAuthorLst")
+        additions[authors_part] = ET.tostring(authors, encoding="utf-8", xml_declaration=True)
+        replacements[presentation_rels_name] = ET.tostring(
+            presentation_rels, encoding="utf-8", xml_declaration=True
+        )
+    else:
+        authors_part = _resolve_target("ppt/presentation.xml", authors_relationship.attrib["Target"])
+    authors_data = additions.get(authors_part) or replacements.get(authors_part)
+    if authors_data is None:
+        authors_data = archive.read(authors_part)
+    authors = ET.fromstring(authors_data)
+    author = next(
+        (item for item in authors if item.attrib.get("name", "").casefold() == author_name.casefold()),
+        None,
+    )
+    if author is None:
+        author_id = str(max([int(item.attrib.get("id", "-1")) for item in authors] or [-1]) + 1)
+        author = ET.SubElement(authors, f"{{{P_NS}}}cmAuthor", {
+            "id": author_id, "name": author_name, "initials": initials,
+            "lastIdx": "0", "clrIdx": str(int(author_id) % 8),
+        })
+    author_id = author.attrib.get("id", "0")
+    comment_index = int(author.attrib.get("lastIdx", "0") or 0) + 1
+    author.set("lastIdx", str(comment_index))
+    target_store = additions if authors_part in additions else replacements
+    target_store[authors_part] = ET.tostring(authors, encoding="utf-8", xml_declaration=True)
+
+    slide_rels_name = _rels_path(slide["part"])
+    if slide_rels_name in replacements:
+        slide_rels = ET.fromstring(replacements[slide_rels_name])
+    elif slide_rels_name in archive.namelist():
+        slide_rels = ET.fromstring(archive.read(slide_rels_name))
+    else:
+        slide_rels = ET.Element(f"{{{REL_NS}}}Relationships")
+    comment_relationship = next(
+        (item for item in slide_rels if item.attrib.get("Type") == COMMENT_REL),
+        None,
+    )
+    if comment_relationship is None:
+        occupied = set(archive.namelist()) | set(additions)
+        comment_part = _allocate_part("ppt/comments/comment1.xml", occupied)
+        relationship_id = _next_relationship_id(slide_rels)
+        ET.SubElement(slide_rels, f"{{{REL_NS}}}Relationship", {
+            "Id": relationship_id, "Type": COMMENT_REL,
+            "Target": _relative_target(slide["part"], comment_part),
+        })
+        comments = ET.Element(f"{{{P_NS}}}cmLst")
+        additions[comment_part] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
+    else:
+        comment_part = _resolve_target(slide["part"], comment_relationship.attrib["Target"])
+    comments_data = additions.get(comment_part) or replacements.get(comment_part)
+    if comments_data is None:
+        comments_data = archive.read(comment_part)
+    comments = ET.fromstring(comments_data)
+    comment = ET.SubElement(comments, f"{{{P_NS}}}cm", {
+        "authorId": author_id,
+        "dt": str(operation.get("date") or datetime.now(timezone.utc).isoformat()),
+        "idx": str(comment_index),
+    })
+    ET.SubElement(comment, f"{{{P_NS}}}pos", {
+        "x": str(int(operation.get("x", 0))), "y": str(int(operation.get("y", 0))),
+    })
+    ET.SubElement(comment, f"{{{P_NS}}}text").text = str(operation.get("comment", ""))
+    target_store = additions if comment_part in additions else replacements
+    target_store[comment_part] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
+    rel_store = replacements if slide_rels_name in archive.namelist() else additions
+    rel_store[slide_rels_name] = ET.tostring(slide_rels, encoding="utf-8", xml_declaration=True)
+
+    content_types = ET.fromstring(
+        replacements.get("[Content_Types].xml", archive.read("[Content_Types].xml"))
+    )
+    for part, content_type in (
+        (authors_part, COMMENT_AUTHORS_CONTENT_TYPE),
+        (comment_part, COMMENT_CONTENT_TYPE),
+    ):
+        if not any(item.attrib.get("PartName") == f"/{part}" for item in content_types):
+            ET.SubElement(content_types, f"{{{CT_NS}}}Override", {
+                "PartName": f"/{part}", "ContentType": content_type,
+            })
+    replacements["[Content_Types].xml"] = ET.tostring(
+        content_types, encoding="utf-8", xml_declaration=True
+    )
+    return {"slideId": slide["slideId"], "commentPart": comment_part, "authorId": author_id, "index": comment_index}
+
+
 def presentation_order_from_bytes(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
@@ -404,6 +586,12 @@ def patch_pptx(source: Path, output: Path, operations: list[dict[str, Any]]) -> 
                 detail = _clone_slide(archive, replacements, additions, operation)
             elif name == "set_text":
                 detail = _set_text(archive, replacements, operation)
+            elif name == "set_alt_text":
+                detail = _set_alt_text(archive, replacements, operation)
+            elif name == "set_speaker_notes":
+                detail = _set_speaker_notes(archive, replacements, operation)
+            elif name == "add_comment":
+                detail = _add_comment(archive, replacements, additions, operation)
             elif name == "reorder_slides":
                 detail = _reorder_slides(archive, replacements, operation)
             else:

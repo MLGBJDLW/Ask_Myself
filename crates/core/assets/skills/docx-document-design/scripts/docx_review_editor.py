@@ -21,7 +21,10 @@ CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 COMMENTS_REL = f"{R_NS}/comments"
 COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
-SUPPORTED_OPERATIONS = {"add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes"}
+SUPPORTED_OPERATIONS = {
+    "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+    "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
+}
 
 
 class DocxReviewError(ValueError):
@@ -253,6 +256,137 @@ def _tracked_replace(
     return {"revisionId": revision_id, "before": find, "after": replacement}
 
 
+def _add_bookmark(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
+    find = str(operation.get("find", ""))
+    name = str(operation.get("bookmarkName", ""))
+    if not find:
+        raise DocxReviewError("add_bookmark requires find")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", name) is None:
+        raise DocxReviewError("bookmarkName must be a 1-40 character Word bookmark identifier")
+    if any(element.attrib.get(_q("name"), "").casefold() == name.casefold() for element in document.iter(_q("bookmarkStart"))):
+        raise DocxReviewError(f"bookmark already exists: {name}")
+    paragraph, nodes, start, end = _paragraph_match(
+        document, find, int(operation.get("occurrence", 1))
+    )
+    parents = _parent_map(paragraph)
+    template_run = parents[nodes[0]]
+    bookmark_id = _next_word_id([document])
+    _replace_match_with_elements(paragraph, nodes, start, end, [
+        ET.Element(_q("bookmarkStart"), {_q("id"): bookmark_id, _q("name"): name}),
+        _clone_run_with_text(template_run, find),
+        ET.Element(_q("bookmarkEnd"), {_q("id"): bookmark_id}),
+    ])
+    replacements["word/document.xml"] = ET.tostring(
+        document, encoding="utf-8", xml_declaration=True
+    )
+    return {"bookmarkId": bookmark_id, "bookmarkName": name, "anchor": find}
+
+
+def _insert_field(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
+    find = str(operation.get("find", ""))
+    instruction = " ".join(str(operation.get("instruction", "")).split())
+    if not find or not instruction:
+        raise DocxReviewError("insert_field requires find and instruction")
+    if re.fullmatch(
+        r"(?i)(PAGE|NUMPAGES|SECTIONPAGES|TOC(?:\s+\\[A-Za-z]+(?:\s+[^\\]+)?)|REF\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\s+\\[A-Za-z]+)*|SEQ\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\s+\\[A-Za-z]+(?:\s+\S+)?)*)",
+        instruction,
+    ) is None:
+        raise DocxReviewError("field instruction is outside the safe PAGE/TOC/REF/SEQ allowlist")
+    paragraph, nodes, start, end = _paragraph_match(
+        document, find, int(operation.get("occurrence", 1))
+    )
+    parents = _parent_map(paragraph)
+    template_run = parents[nodes[0]]
+    field = ET.Element(_q("fldSimple"), {_q("instr"): f" {instruction} "})
+    field.append(_clone_run_with_text(template_run, str(operation.get("displayText", "1"))))
+    _replace_match_with_elements(paragraph, nodes, start, end, [field])
+    replacements["word/document.xml"] = ET.tostring(
+        document, encoding="utf-8", xml_declaration=True
+    )
+    return {"instruction": instruction, "anchor": find}
+
+
+def _wrap_content_control(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
+    find = str(operation.get("find", ""))
+    tag = str(operation.get("tag", ""))
+    title = str(operation.get("title", tag))
+    lock = str(operation.get("lock", "none"))
+    if not find or not tag:
+        raise DocxReviewError("wrap_content_control requires find and tag")
+    if lock not in {"none", "content", "control"}:
+        raise DocxReviewError("content control lock must be none, content, or control")
+    paragraph, nodes, start, end = _paragraph_match(
+        document, find, int(operation.get("occurrence", 1))
+    )
+    parents = _parent_map(paragraph)
+    template_run = parents[nodes[0]]
+    sdt = ET.Element(_q("sdt"))
+    properties = ET.SubElement(sdt, _q("sdtPr"))
+    ET.SubElement(properties, _q("alias"), {_q("val"): title})
+    ET.SubElement(properties, _q("tag"), {_q("val"): tag})
+    ET.SubElement(properties, _q("id"), {_q("val"): _next_word_id([document])})
+    if lock != "none":
+        ET.SubElement(
+            properties,
+            _q("lock"),
+            {_q("val"): "sdtContentLocked" if lock == "content" else "sdtLocked"},
+        )
+    content = ET.SubElement(sdt, _q("sdtContent"))
+    content.append(_clone_run_with_text(template_run, find))
+    _replace_match_with_elements(paragraph, nodes, start, end, [sdt])
+    replacements["word/document.xml"] = ET.tostring(
+        document, encoding="utf-8", xml_declaration=True
+    )
+    return {"tag": tag, "title": title, "lock": lock, "anchor": find}
+
+
+def _set_protection(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    settings_name = "word/settings.xml"
+    if settings_name not in archive.namelist():
+        raise DocxReviewError("set_protection requires an existing word/settings.xml part")
+    settings = ET.fromstring(replacements.get(settings_name, archive.read(settings_name)))
+    for element in list(settings):
+        if _local(element.tag) == "documentProtection":
+            settings.remove(element)
+    mode = str(operation.get("mode", "readOnly"))
+    modes = {
+        "none": None,
+        "readOnly": "readOnly",
+        "comments": "comments",
+        "trackedChanges": "trackedChanges",
+        "forms": "forms",
+    }
+    if mode not in modes:
+        raise DocxReviewError("protection mode must be none, readOnly, comments, trackedChanges, or forms")
+    if modes[mode] is not None:
+        protection = ET.Element(_q("documentProtection"), {
+            _q("edit"): modes[mode],
+            _q("enforcement"): "1",
+        })
+        settings.insert(0, protection)
+    replacements[settings_name] = ET.tostring(settings, encoding="utf-8", xml_declaration=True)
+    return {"mode": mode, "enforced": mode != "none", "passwordProtected": False}
+
+
 def _resolve_revisions(data: bytes, accept: bool) -> tuple[bytes, int]:
     root = ET.fromstring(data)
     count = 0
@@ -340,6 +474,14 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
                 detail = _strip_comments(archive, replacements, deletions)
             elif name == "tracked_replace":
                 detail = _tracked_replace(archive, replacements, operation)
+            elif name == "add_bookmark":
+                detail = _add_bookmark(archive, replacements, operation)
+            elif name == "insert_field":
+                detail = _insert_field(archive, replacements, operation)
+            elif name == "wrap_content_control":
+                detail = _wrap_content_control(archive, replacements, operation)
+            elif name == "set_protection":
+                detail = _set_protection(archive, replacements, operation)
             else:
                 accept = name == "accept_changes"
                 changed_parts = []

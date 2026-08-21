@@ -58,8 +58,10 @@ def rel_targets(zf: zipfile.ZipFile, part_name: str) -> list[dict[str, str]]:
         target = rel.attrib.get("Target", "")
         mode = rel.attrib.get("TargetMode", "")
         rel_type = rel.attrib.get("Type", "")
-        if mode != "External" and not target.startswith("/"):
-            target = posixpath.normpath(f"{base}/{target}")
+        if mode != "External":
+            target = posixpath.normpath(
+                target.lstrip("/") if target.startswith("/") else f"{base}/{target}"
+            )
         out.append({"type": rel_type, "target": target, "mode": mode, "target_mode": mode or "Internal"})
     return out
 

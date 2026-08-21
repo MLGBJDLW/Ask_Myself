@@ -1,6 +1,6 @@
 ---
 name: xlsx-workbook-design
-description: Create, edit, analyze, lint, and validate Excel XLSX workbooks with Python-backed workflows. Activate for XLSX files, Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, or spreadsheet QA; use with `doc-script-editor`, openpyxl, pandas, and the skill-owned XLSX renderer.
+description: Create, edit, analyze, lint, and validate Excel XLSX/XLSM/XLTX/XLTM workbooks with Python-backed workflows. Activate for Excel spreadsheets, workbooks, dashboards, financial models, formulas, charts, tables, pivot-style summaries, data cleaning, spreadsheet QA, 工作簿, 电子表格, 表格, 公式, 数据透视表, 条件格式, or 宏工作簿; use with `doc-script-editor`, openpyxl, pandas, and the skill-owned XLSX renderer.
 ---
 
 ## Workflow

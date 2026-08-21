@@ -1,6 +1,6 @@
 ---
 name: docx-document-design
-description: Create, edit, review, and validate Microsoft Word DOCX documents with Python-backed workflows. Activate for DOCX or Word files, reports, proposals, memos, contracts, tables, comments, tracked-change-aware edits, template-preserving document work, polished document generation, or conversion involving .docx output; use with `doc-script-editor`, python-docx, and OOXML unpack/pack.
+description: Create, edit, review, and validate Microsoft Word DOCX/DOCM/DOTX/DOTM documents with Python-backed workflows. Activate for Word files, reports, proposals, memos, contracts, tables, comments, tracked-change-aware edits, template-preserving document work, polished document generation, conversion involving Word output, 文档, 报告, 合同, 批注, 修订, 目录, or 内容控件; use with `doc-script-editor`, python-docx, and OOXML unpack/pack.
 ---
 
 ## Workflow

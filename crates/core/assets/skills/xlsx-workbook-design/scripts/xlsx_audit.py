@@ -180,10 +180,37 @@ def audit(path: Path) -> dict:
         calc_chain_present = "xl/calcChain.xml" in names
         workbook = parse_xml(read_text(zf, "xl/workbook.xml"))
         calc_mode = ""
+        defined_names = []
         if workbook is not None:
             calc_pr = workbook.find("main:calcPr", NS)
             if calc_pr is not None:
                 calc_mode = calc_pr.attrib.get("calcMode", "")
+            for item in workbook.findall(".//main:definedName", NS):
+                defined_names.append({
+                    "name": item.attrib.get("name", ""),
+                    "local_sheet_id": item.attrib.get("localSheetId"),
+                    "formula": item.text or "",
+                })
+        table_details = []
+        for part in sorted(name for name in names if re.fullmatch(r"xl/tables/table\d+\.xml", name)):
+            table = parse_xml(read_text(zf, part))
+            if table is not None:
+                table_details.append({
+                    "part": part,
+                    "name": table.attrib.get("name", ""),
+                    "display_name": table.attrib.get("displayName", ""),
+                    "range": table.attrib.get("ref", ""),
+                })
+        chart_details = []
+        for part in sorted(name for name in names if re.fullmatch(r"xl/charts/chart\d+\.xml", name)):
+            chart = parse_xml(read_text(zf, part))
+            title = ""
+            if chart is not None:
+                title = "".join(
+                    item.text or "" for item in chart.iter()
+                    if item.tag.rsplit("}", 1)[-1] == "t"
+                )
+            chart_details.append({"part": part, "title": title})
 
         return {
             "path": str(path),
@@ -197,6 +224,9 @@ def audit(path: Path) -> dict:
             else 0,
             "calc_chain_present": calc_chain_present,
             "calc_mode": calc_mode,
+            "defined_names": defined_names,
+            "table_details": table_details,
+            "chart_details": chart_details,
             "warnings": warnings,
         }
 

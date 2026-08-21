@@ -1,6 +1,6 @@
 ---
 name: pptx-presentation-design
-description: Create, edit, inspect, and validate PowerPoint PPTX presentations with Python-backed workflows. Activate for PPTX files, PowerPoint, slide decks, slides, presentations, pitch decks, speaker notes, slide templates, visual QA, editable deck generation, or deck extraction; use with `doc-script-editor`, python-pptx, and OOXML unpack/pack.
+description: Create, edit, inspect, and validate PowerPoint PPTX/PPTM/POTX/POTM presentations with Python-backed workflows. Activate for PowerPoint, slide decks, slides, presentations, pitch decks, speaker notes, slide templates, visual QA, editable deck generation, deck extraction, 幻灯片, 演示文稿, 演示, PPT, 简报, 母版, or 讲者备注; use with `doc-script-editor`, python-pptx, and OOXML unpack/pack.
 ---
 
 ## Workflow
