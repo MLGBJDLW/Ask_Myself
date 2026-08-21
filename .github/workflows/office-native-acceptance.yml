@@ -18,8 +18,6 @@ jobs:
     environment: office-native-acceptance
     runs-on: [self-hosted, Windows, X64, office-native]
     timeout-minutes: 35
-    env:
-      ACCEPTANCE_ROOT: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -38,6 +36,8 @@ jobs:
 
       - name: Prepare hash-locked Office Python runtime
         shell: pwsh
+        env:
+          ACCEPTANCE_ROOT: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $venv = Join-Path $env:RUNNER_TEMP "nexa-office-python-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           New-Item -ItemType Directory -Path $env:ACCEPTANCE_ROOT | Out-Null
@@ -51,6 +51,7 @@ jobs:
       - name: Run SHA-bound native acceptance
         shell: pwsh
         env:
+          ACCEPTANCE_ROOT: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
           NEXA_RUN_OFFICE_NATIVE_SMOKE: '1'
         run: |
           & $env:OFFICE_PYTHON crates/core/assets/skills/doc-script-editor/scripts/office_native_acceptance.py `
@@ -60,6 +61,8 @@ jobs:
 
       - name: Hash acceptance certificate
         shell: pwsh
+        env:
+          ACCEPTANCE_ROOT: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $report = Join-Path $env:ACCEPTANCE_ROOT 'office-native-acceptance.json'
           $hash = (Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -71,11 +74,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: office-native-acceptance-${{ github.sha }}
-          path: ${{ env.ACCEPTANCE_ROOT }}
+          path: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 30
 
       - name: Attest SHA-bound acceptance certificate
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: ${{ env.ACCEPTANCE_ROOT }}/office-native-acceptance.json
+          subject-path: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}/office-native-acceptance.json
