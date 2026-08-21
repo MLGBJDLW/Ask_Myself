@@ -28,7 +28,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         kernel.GetExitCodeProcess.side_effect = write_still_active
         kernel.CloseHandle.return_value = 1
         with mock.patch.object(office_artifact_engine.os, "name", "nt"), mock.patch.object(
-            office_artifact_engine.ctypes, "WinDLL", return_value=kernel
+            office_artifact_engine.ctypes, "WinDLL", return_value=kernel, create=True
         ), mock.patch.object(office_artifact_engine.os, "kill", side_effect=AssertionError("must not kill")):
             self.assertTrue(office_artifact_engine._process_is_alive(4242))
         kernel.CloseHandle.assert_called_once_with(11)
