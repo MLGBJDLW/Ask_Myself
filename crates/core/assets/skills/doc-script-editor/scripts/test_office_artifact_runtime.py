@@ -368,6 +368,46 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
             )
         self.assertTrue(list(render_dir.glob("*.png")))
 
+    @unittest.skipUnless(
+        edit_doc._find_soffice() and edit_doc._find_pdftoppm(),
+        "LibreOffice and Poppler are required for DOCX/PPTX render smoke",
+    )
+    def test_docx_and_pptx_render_with_libreoffice_and_poppler(self) -> None:
+        import docx
+        from pptx import Presentation
+
+        document_path = self.root / "writer-smoke.docx"
+        document = docx.Document()
+        document.add_heading("Writer smoke", level=1)
+        document.add_paragraph("Rendered through LibreOffice Writer and Poppler.")
+        document.save(document_path)
+
+        presentation_path = self.root / "impress-smoke.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "Impress smoke"
+        slide.placeholders[1].text = "Rendered through LibreOffice Impress and Poppler."
+        presentation.save(presentation_path)
+
+        for artifact in (document_path, presentation_path):
+            with self.subTest(artifact=artifact.suffix):
+                render_dir = self.root / f"{artifact.stem}-rendered"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(
+                        0,
+                        edit_doc.cmd_render(
+                            argparse.Namespace(
+                                path=str(artifact),
+                                outdir=str(render_dir),
+                                dpi=90,
+                                format="png",
+                            )
+                        ),
+                    )
+                images = list(render_dir.glob("*.png"))
+                self.assertTrue(images)
+                self.assertTrue(all(path.stat().st_size > 0 for path in images))
+
     def test_xlsx_render_surface_plan_distinguishes_all_active_and_named_sheets(self) -> None:
         import openpyxl
 

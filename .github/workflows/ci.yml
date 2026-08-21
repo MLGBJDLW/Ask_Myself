@@ -148,6 +148,10 @@ jobs:
         env:
           NEXA_OPENXML_VALIDATOR: ${{ github.workspace }}/tools/openxml-validator/bin/Release/net8.0/publish/Nexa.OpenXml.Validator.dll
         run: |
+          command -v soffice
+          command -v pdftoppm
+          soffice --headless --version
+          pdftoppm -v
           python3 -m venv /tmp/nexa-office-venv
           /tmp/nexa-office-venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r crates/core/assets/skills/doc-script-editor/scripts/requirements.lock
           for suite in \
