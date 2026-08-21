@@ -20,16 +20,19 @@ import secrets
 import sys
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from office_artifact_runtime import (
+    office_dependency_lock_status,
     office_backend_statuses,
     office_python_dependency_statuses,
     publish_staged_artifact,
     rollback_published_artifact,
+    run_openxml_sdk_validator,
     scan_ooxml_risks,
     snapshot_file,
     staging_path,
@@ -37,7 +40,9 @@ from office_artifact_runtime import (
     workspace_path,
     write_artifact_manifest,
 )
-from office_artifact_service import OfficeArtifactJob, execute_job
+from office_artifact_service import OfficeExecutionPlan, execute_plan
+from office_synthetic_preview import create_synthetic_preview
+from office_schema import SchemaViolation, validate_schema_file
 
 
 REQUEST_VERSION = 2
@@ -69,6 +74,10 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "add_comment": {"find", "comment", "author", "initials", "date", "occurrence"},
         "strip_comments": set(),
         "tracked_replace": {"find", "replace", "author", "date", "occurrence"},
+        "add_bookmark": {"find", "bookmarkName", "occurrence"},
+        "insert_field": {"find", "instruction", "displayText", "occurrence"},
+        "wrap_content_control": {"find", "tag", "title", "lock", "occurrence"},
+        "set_protection": {"mode"},
         "accept_changes": set(),
         "reject_changes": set(),
         "validate": set(),
@@ -83,12 +92,18 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "set_range": {"sheet", "range", "values"},
         "clear_range": {"sheet", "range"},
         "set_style": {"sheet", "cell", "range", "styleId"},
+        "rename_sheet": {"sheet", "newName"},
+        "set_defined_name": {"name", "formula", "scopeSheet"},
+        "set_data_validation": {"sheet", "range", "validationType", "operator", "formula1", "formula2", "allowBlank", "showErrorMessage", "errorTitle", "error"},
+        "create_table": {"sheet", "range", "name", "columns", "styleName"},
+        "set_number_format": {"sheet", "cell", "range", "formatCode", "baseStyleId"},
+        "set_chart_title": {"chartPart", "title"},
         "recalculate": set(),
         "validate": set(),
         "render": set(),
     },
     "pptx": {
-        "create": {"spec", "template", "htmlFirst", "outdir", "mode", "screenshot", "title", "prompt"},
+        "create": {"spec", "template", "htmlFirst", "outdir", "mode", "screenshot", "title", "prompt", "authorEngine"},
         "replace": {"find", "replace", "expectedSha256", "expectedMatches"},
         "redact": {"find", "replace", "expectedSha256", "expectedMatches"},
         "insert_slide": {"after", "title", "body"},
@@ -96,6 +111,9 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "clone_slide": {"slideId", "slideIndex", "afterIndex"},
         "reorder_slides": {"order"},
         "set_transition": {"slideId", "slideIndex", "transition", "speed", "direction"},
+        "set_alt_text": {"slideId", "slideIndex", "shapeId", "shapeName", "altText", "title"},
+        "set_speaker_notes": {"slideId", "slideIndex", "text"},
+        "add_comment": {"slideId", "slideIndex", "comment", "author", "initials", "date", "x", "y"},
         "validate": set(),
         "render": set(),
     },
@@ -109,6 +127,18 @@ REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
     "secure_redact": {"find"},
     "add_comment": {"find", "comment"},
     "tracked_replace": {"find", "replace"},
+    "add_bookmark": {"find", "bookmarkName"},
+    "insert_field": {"find", "instruction"},
+    "wrap_content_control": {"find", "tag"},
+    "set_protection": {"mode"},
+    "rename_sheet": {"sheet", "newName"},
+    "set_defined_name": {"name", "formula"},
+    "set_data_validation": {"sheet", "range", "validationType"},
+    "create_table": {"sheet", "range", "name"},
+    "set_number_format": {"sheet", "formatCode"},
+    "set_chart_title": {"chartPart", "title"},
+    "set_alt_text": {"altText"},
+    "set_speaker_notes": {"text"},
 }
 
 
@@ -131,7 +161,9 @@ class OfficeArtifactError(Exception):
             "kind": "officeArtifactError",
             "code": self.code,
             "message": str(self),
+            "stage": self.code.split(".", 1)[0],
             "retryable": self.retryable,
+            "evidencePaths": self.details.get("evidencePaths", []),
             "details": self.details,
         }
 
@@ -157,14 +189,18 @@ FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
     "docx": LocalOpenXmlFormatAdapter("docx", frozenset({
         "create", "replace", "redact", "secure_redact", "validate", "render",
         "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+        "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
     })),
     "xlsx": LocalOpenXmlFormatAdapter("xlsx", frozenset({
         "create", "replace", "redact", "validate", "render", "recalculate",
         "set_value", "set_formula", "set_range", "clear_range", "set_style",
+        "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
+        "set_number_format", "set_chart_title",
     })),
     "pptx": LocalOpenXmlFormatAdapter("pptx", frozenset({
         "create", "replace", "redact", "insert_slide", "validate", "render",
         "set_text", "clone_slide", "reorder_slides", "set_transition",
+        "set_alt_text", "set_speaker_notes", "add_comment",
     })),
 }
 
@@ -204,8 +240,11 @@ class ArtifactRequest:
         source = workspace_path(Path(str(raw_source)), workspace_root, must_exist=True) if raw_source else None
         if intent != "create" and source is None:
             raise OfficeArtifactError("request.source_required", f"source is required for intent={intent}")
-        if source is not None and source.suffix.lower() != f".{artifact_format}":
-            raise OfficeArtifactError("request.source_format", f"source must end with .{artifact_format}")
+        if source is not None and source.suffix.lower() not in FORMAT_EXTENSIONS[artifact_format]:
+            raise OfficeArtifactError(
+                "request.source_format",
+                f"source extension must belong to the {artifact_format} format family",
+            )
         preconditions = payload.get("preconditions", {})
         if not isinstance(preconditions, dict):
             raise OfficeArtifactError("request.invalid_preconditions", "preconditions must be an object")
@@ -230,10 +269,20 @@ class ArtifactRequest:
         if raw_destination is None:
             raise OfficeArtifactError("request.destination_required", "destination is required")
         destination = workspace_path(Path(str(raw_destination)), workspace_root)
-        if destination.suffix.lower() != f".{artifact_format}":
+        if destination.suffix.lower() not in FORMAT_EXTENSIONS[artifact_format]:
             raise OfficeArtifactError(
                 "request.destination_format",
-                f"destination must end with .{artifact_format}",
+                f"destination extension must belong to the {artifact_format} format family",
+            )
+        if intent == "create" and destination.suffix.lower() != f".{artifact_format}":
+            raise OfficeArtifactError(
+                "request.create_extension",
+                "create cannot fabricate macro/template semantics; create the base format or modify an existing macro/template package",
+            )
+        if source is not None and source.suffix.lower() != destination.suffix.lower():
+            raise OfficeArtifactError(
+                "request.extension_conversion_unsupported",
+                "modify/verify preserves the exact Office extension; explicit macro/template conversion is unsupported",
             )
 
         raw_operations = payload.get("operations", [])
@@ -380,6 +429,18 @@ class ArtifactRequest:
                         "path.role_conflict",
                         f"{output_role} cannot overwrite request input {input_role}",
                     )
+        request_schema = (
+            Path(__file__).resolve().parent.parent
+            / "references"
+            / "office-artifact-request-v2.schema.json"
+        )
+        try:
+            validate_schema_file(payload, request_schema)
+        except (OSError, json.JSONDecodeError, SchemaViolation) as error:
+            raise OfficeArtifactError(
+                "schema.request_invalid",
+                f"request failed executable JSON Schema validation: {error}",
+            ) from error
         return cls(
             format=artifact_format,
             intent=intent,
@@ -430,6 +491,7 @@ class OfficeArtifactEngine:
             "calculationLevels": sorted(CALCULATION_LEVELS),
             "backends": backends,
             "pythonDependencies": office_python_dependency_statuses(),
+            "pythonDependencyLock": office_dependency_lock_status(),
             "formatReadiness": {
                 artifact_format: office_python_dependency_statuses(artifact_format)
                 for artifact_format in sorted(FORMATS)
@@ -451,6 +513,39 @@ class OfficeArtifactEngine:
                         "Does not execute macros or refresh external data.",
                     ],
                     "requires": ["python"],
+                },
+                {
+                    "adapterVersion": 1,
+                    "id": "pptxgenjs",
+                    "deployment": "local-file",
+                    "formats": ["pptx"],
+                    "operations": ["create", "masters", "charts", "svg", "media"],
+                    "guarantees": {
+                        "preservation": ["replace"],
+                        "calculation": ["not_required"],
+                        "render": ["none"],
+                    },
+                    "limitations": [
+                        "New-deck author only; existing decks stay on the OOXML patch/clone adapter.",
+                        "Local reviewed assets only; ICNS/JXL/HEIF and remote resources are blocked.",
+                    ],
+                    "requires": ["node", "pptxgenjs@4.0.1"],
+                },
+                {
+                    "adapterVersion": 1,
+                    "id": "openxml-sdk",
+                    "deployment": "local-file",
+                    "formats": ["docx", "xlsx", "pptx"],
+                    "operations": ["schema-validate"],
+                    "guarantees": {
+                        "preservation": ["strict", "balanced", "replace"],
+                        "calculation": [],
+                        "render": [],
+                    },
+                    "limitations": [
+                        "Validates Open XML schema and semantic constraints; it does not render layout.",
+                    ],
+                    "requires": ["DocumentFormat.OpenXml@3.5.1", ".NET 8 runtime"],
                 },
                 {
                     "adapterVersion": 1,
@@ -596,16 +691,34 @@ class OfficeArtifactEngine:
 
     def assess(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = ArtifactRequest.from_dict(payload, self.workspace_root)
-        backend = self._backend_for(request)
-        readiness = next(item for item in office_backend_statuses() if item["id"] == backend)
+        adapter_plan = self._adapter_plan(request)
+        backend = str(adapter_plan["primaryAdapter"])
+        statuses = {item["id"]: item for item in office_backend_statuses()}
+        adapter_manifests = {
+            item["id"]: item for item in self.capabilities()["adapters"]
+        }
+        consent_required = [
+            adapter_id for adapter_id in adapter_plan["requiredAdapters"]
+            if statuses[adapter_id].get("requires_explicit_network_consent")
+        ]
+        limitations = {
+            adapter_id: adapter_manifests.get(adapter_id, {}).get("limitations", [])
+            for adapter_id in adapter_plan["requiredAdapters"]
+        }
         blockers: list[dict[str, Any]] = []
         source_profile: dict[str, Any] | None = None
-        if readiness["status"] != "ready":
-            blockers.append({
-                "code": "backend.unavailable",
-                "backend": backend,
-                "detail": readiness.get("detail"),
-            })
+        for adapter_id in adapter_plan["requiredAdapters"]:
+            readiness = statuses[adapter_id]
+            if readiness["status"] != "ready":
+                blockers.append({
+                    "code": "backend.unavailable",
+                    "backend": adapter_id,
+                    "steps": [
+                        step["step"] for step in adapter_plan["steps"]
+                        if step["adapter"] == adapter_id
+                    ],
+                    "detail": readiness.get("detail"),
+                })
         openxml_dependencies = office_python_dependency_statuses(request.format)
         unavailable_dependencies = [
             item for item in openxml_dependencies if item["status"] != "ready"
@@ -617,15 +730,6 @@ class OfficeArtifactEngine:
                 "format": request.format,
                 "dependencies": unavailable_dependencies,
             })
-        if request.render != "none":
-            statuses = {item["id"]: item for item in office_backend_statuses()}
-            native_render = backend == "windows-com"
-            if not native_render and statuses["libreoffice"]["status"] != "ready":
-                blockers.append({
-                    "code": "render.backend_unavailable",
-                    "backend": "libreoffice",
-                    "detail": statuses["libreoffice"].get("detail"),
-                })
         if request.source is not None:
             source_validation = validate_ooxml_package(request.source)
             if source_validation.status == "fail":
@@ -634,13 +738,19 @@ class OfficeArtifactEngine:
                     "detail": "source package failed safety/structure preflight",
                     "validation": source_validation.to_dict(),
                 })
+                for blocker in blockers:
+                    blocker.setdefault("message", blocker.get("detail", blocker["code"]))
                 return {
                     "kind": "officeArtifactAssessment",
                     "requestVersion": REQUEST_VERSION,
+                    "status": "blocked",
                     "format": request.format,
                     "intent": request.intent,
                     "adapter": FORMAT_ADAPTERS[request.format].id,
                     "backend": backend,
+                    "adapterPlan": adapter_plan,
+                    "consentRequired": consent_required,
+                    "limitations": limitations,
                     "quality": request.quality,
                     "guarantees": {
                         "preservation": request.preservation,
@@ -691,7 +801,7 @@ class OfficeArtifactEngine:
                     "features": executable_excel_features,
                 })
             if (
-                backend == "windows-com"
+                "windows-com" in adapter_plan["requiredAdapters"]
                 and risk["features"].get("unsafeExternalRelationships")
             ):
                 blockers.append({
@@ -730,13 +840,19 @@ class OfficeArtifactEngine:
                             "code": "calculation.excel_native_required",
                             "features": formula_profile["nativeFeatures"],
                         })
+        for blocker in blockers:
+            blocker.setdefault("message", blocker.get("detail", blocker["code"]))
         return {
             "kind": "officeArtifactAssessment",
             "requestVersion": REQUEST_VERSION,
+            "status": "ready" if not blockers else "blocked",
             "format": request.format,
             "intent": request.intent,
             "adapter": FORMAT_ADAPTERS[request.format].id,
             "backend": backend,
+            "adapterPlan": adapter_plan,
+            "consentRequired": consent_required,
+            "limitations": limitations,
             "quality": request.quality,
             "guarantees": {
                 "preservation": request.preservation,
@@ -761,10 +877,10 @@ class OfficeArtifactEngine:
         candidate_id = uuid.uuid4().hex
         candidate_dir = self.candidates_root / candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=False)
-        candidate_path = candidate_dir / f"artifact.{request.format}"
+        candidate_path = candidate_dir / f"artifact{request.destination.suffix.lower()}"
         candidate_manifest = candidate_dir / "execution.json"
         state_path = candidate_dir / "state.json"
-        v1_payload = self._v1_payload(request, candidate_path, candidate_manifest)
+        execution_plan = self._execution_plan_payload(request, candidate_path, candidate_manifest)
         state = {
             "kind": "officeArtifactCandidateState",
             "version": 1,
@@ -811,8 +927,8 @@ class OfficeArtifactEngine:
         }
         self._write_candidate_state(state_path, state)
         try:
-            job = OfficeArtifactJob.from_dict(v1_payload, self.workspace_root)
-            execution, exit_code = execute_job(job, self.workspace_root)
+            plan = OfficeExecutionPlan.from_internal_dict(execution_plan, self.workspace_root)
+            execution, exit_code = execute_plan(plan, self.workspace_root)
             if exit_code != 0 or not execution.get("ok"):
                 raise OfficeArtifactError(
                     "execution.failed",
@@ -827,6 +943,24 @@ class OfficeArtifactEngine:
                     "validation.structural_failed",
                     "candidate failed final OOXML validation",
                     details={"validation": validation.to_dict()},
+                )
+            if request.quality in {"publish", "native"}:
+                schema_validation = run_openxml_sdk_validator(candidate_path)
+                if schema_validation.get("status") != "pass":
+                    raise OfficeArtifactError(
+                        "validation.openxml_schema_failed",
+                        "candidate failed Microsoft Open XML SDK schema validation",
+                        details={"schemaValidation": schema_validation},
+                    )
+                execution["schemaValidation"] = schema_validation
+            try:
+                execution["syntheticPreview"] = create_synthetic_preview(
+                    candidate_path,
+                    candidate_dir / "synthetic-preview",
+                )
+            except (OSError, ValueError, RuntimeError, ImportError, zipfile.BadZipFile) as error:
+                execution.setdefault("warnings", []).append(
+                    f"Synthetic structural preview unavailable: {type(error).__name__}: {error}"
                 )
             candidate_sha256 = _sha256(candidate_path)
             render_evidence = self._render_evidence(
@@ -886,7 +1020,10 @@ class OfficeArtifactEngine:
         destination = workspace_path(Path(state["destination"]), self.workspace_root)
         requested_manifest = workspace_path(Path(state["requestedManifest"]), self.workspace_root)
         artifact_format = str(state.get("requestSummary", {}).get("format", ""))
-        if artifact_format not in FORMATS or candidate.suffix.lower() != f".{artifact_format}":
+        if (
+            artifact_format not in FORMATS
+            or candidate.suffix.lower() not in FORMAT_EXTENSIONS[artifact_format]
+        ):
             raise OfficeArtifactError("candidate.invalid_state_file", "candidate format binding is invalid")
         role_paths = [destination, requested_manifest]
         destination_qa = destination.with_suffix(".xlsx.qa.json") if artifact_format == "xlsx" else None
@@ -1189,6 +1326,8 @@ class OfficeArtifactEngine:
                 "ownerToken": secrets.token_hex(16),
                 "candidateId": candidate_id,
                 "receiptId": receipt_id,
+                "requestSha256": state.get("requestSha256"),
+                "publishedReceiptSha256": _sha256(receipt_path),
                 "destination": str(destination),
                 "lockRolePaths": [str(path) for path in role_paths],
                 "createdAt": _utc_now(),
@@ -1223,6 +1362,22 @@ class OfficeArtifactEngine:
                 "path": str(destination),
                 "restoredSnapshot": str(snapshot) if snapshot else None,
             }
+        except Exception:
+            if journal_active and restore_journal_path.is_file():
+                # A normal I/O exception has the same partial-state risk as a
+                # process crash. Attempt the signed, idempotent recovery path
+                # immediately; if the underlying fault persists, the active
+                # journal and locks remain for startup recovery by a dead-owner
+                # process. Never perform an unjournaled best-effort rollback.
+                try:
+                    restore_journal["pid"] = 0
+                    restore_journal["updatedAt"] = _utc_now()
+                    self._write_journal(restore_journal_path, restore_journal)
+                    self._recover_restore_journal(restore_journal_path, restore_journal)
+                    journal_active = restore_journal_path.exists()
+                except Exception:
+                    journal_active = True
+            raise
         finally:
             if not journal_active:
                 for lock_path in lock_paths:
@@ -1250,18 +1405,44 @@ class OfficeArtifactEngine:
         if not hmac.compare_digest(actual_mac, self._receipt_integrity(receipt)["value"]):
             raise OfficeArtifactError("receipt.integrity_failed", "restore journal receipt HMAC failed")
         state_path, state = self._load_candidate(candidate_id)
+        receipt_status = receipt.get("status")
+        current_receipt_sha = _sha256(receipt_path)
         if (
-            receipt.get("status") != "published"
+            receipt_status not in {"published", "restored"}
             or receipt.get("candidateId") != candidate_id
             or receipt.get("destination") != journal.get("destination")
             or receipt.get("requestSha256") != state.get("requestSha256")
-            or state.get("status") != "published"
+            or receipt.get("requestSha256") != journal.get("requestSha256")
             or state.get("receiptId") != receipt_id
-            or state.get("receiptSha256") != _sha256(receipt_path)
         ):
             raise OfficeArtifactError(
                 "receipt.integrity_failed",
                 "restore journal, candidate state, and receipt binding failed",
+            )
+        published_receipt_sha = journal.get("publishedReceiptSha256")
+        if receipt_status == "published" and (
+            state.get("status") != "published"
+            or current_receipt_sha != published_receipt_sha
+            or state.get("receiptSha256") != published_receipt_sha
+        ):
+            raise OfficeArtifactError(
+                "receipt.integrity_failed",
+                "published receipt does not match the restore journal checkpoint",
+            )
+        if receipt_status == "restored" and (
+            state.get("status") not in {"published", "restored"}
+            or (
+                state.get("status") == "published"
+                and state.get("receiptSha256") != published_receipt_sha
+            )
+            or (
+                state.get("status") == "restored"
+                and state.get("receiptSha256") != current_receipt_sha
+            )
+        ):
+            raise OfficeArtifactError(
+                "receipt.integrity_failed",
+                "restored receipt does not match the candidate state checkpoint",
             )
         roles = journal.get("roles")
         if not isinstance(roles, list) or not roles:
@@ -1302,9 +1483,10 @@ class OfficeArtifactEngine:
             role["restored"] = True
             role["restoredAt"] = _utc_now()
             self._write_journal(path, journal)
-        receipt.update({"status": "restored", "restoredAt": _utc_now()})
-        receipt["integrity"] = self._receipt_integrity(receipt)
-        write_artifact_manifest(receipt_path, receipt, self.workspace_root)
+        if receipt_status == "published":
+            receipt.update({"status": "restored", "restoredAt": _utc_now()})
+            receipt["integrity"] = self._receipt_integrity(receipt)
+            write_artifact_manifest(receipt_path, receipt, self.workspace_root)
         state.update({
             "status": "restored",
             "restoredAt": receipt["restoredAt"],
@@ -1684,11 +1866,90 @@ class OfficeArtifactEngine:
                 )
 
     def _backend_for(self, request: ArtifactRequest) -> str:
-        if request.quality == "native" or request.calculation == "native":
-            return "windows-com"
+        return str(self._adapter_plan(request)["primaryAdapter"])
+
+    def _adapter_plan(self, request: ArtifactRequest) -> dict[str, Any]:
+        pptxgenjs_author = (
+            request.format == "pptx"
+            and request.intent == "create"
+            and any(
+                str(item.get("authorEngine", "")) == "pptxgenjs"
+                for item in request.operations
+            )
+        )
+        steps: list[dict[str, Any]] = [{
+            "step": "format",
+            "adapter": "pptxgenjs" if pptxgenjs_author else "nexa-openxml",
+            "operations": [str(item.get("op", "")).lower() for item in request.operations],
+            "guarantee": request.preservation,
+        }]
         if request.calculation == "compatible":
-            return "libreoffice"
-        return "nexa-openxml"
+            steps.append({
+                "step": "calculation",
+                "adapter": "libreoffice",
+                "operations": ["recalculate"],
+                "guarantee": "compatible",
+            })
+        elif request.calculation == "native":
+            steps.append({
+                "step": "calculation",
+                "adapter": "windows-com",
+                "operations": ["recalculate"],
+                "guarantee": "native",
+            })
+        elif request.format == "xlsx":
+            steps.append({
+                "step": "calculation",
+                "adapter": "nexa-openxml",
+                "operations": ["formula-inventory", "cache-inspection"],
+                "guarantee": request.calculation,
+            })
+        if request.quality == "native" and not any(
+            step["adapter"] == "windows-com" for step in steps
+        ):
+            steps.append({
+                "step": "finalize",
+                "adapter": "windows-com",
+                "operations": ["native-open-save"],
+                "guarantee": "native",
+            })
+        if request.render != "none":
+            native_render = request.quality == "native" or request.calculation == "native"
+            steps.append({
+                "step": "render",
+                "adapter": "windows-com" if native_render else "libreoffice",
+                "operations": ["render"],
+                "guarantee": request.render,
+            })
+        steps.append({
+            "step": "validate",
+            "adapter": "nexa-openxml",
+            "operations": ["opc", "semantic-contract", "allowed-diff"],
+            "guarantee": request.quality,
+        })
+        if request.quality in {"publish", "native"}:
+            steps.append({
+                "step": "schema-validate",
+                "adapter": "openxml-sdk",
+                "operations": ["OpenXmlValidator"],
+                "guarantee": "microsoft365-schema",
+            })
+        required = sorted({str(step["adapter"]) for step in steps})
+        primary = next(
+            (
+                str(step["adapter"])
+                for step in steps
+                if step["step"] in {"finalize", "calculation"}
+                and step["adapter"] != "nexa-openxml"
+            ),
+            "nexa-openxml",
+        )
+        return {
+            "solverVersion": 1,
+            "primaryAdapter": primary,
+            "requiredAdapters": required,
+            "steps": steps,
+        }
 
     def _xlsx_formula_profile(self, path: Path) -> dict[str, Any]:
         skills_root = Path(__file__).resolve().parents[2]
@@ -1721,7 +1982,7 @@ class OfficeArtifactEngine:
             "nativeFeatures": sorted(native_features),
         }
 
-    def _v1_payload(
+    def _execution_plan_payload(
         self,
         request: ArtifactRequest,
         candidate_path: Path,
@@ -1738,7 +1999,7 @@ class OfficeArtifactEngine:
         ):
             operations.append({"op": "recalculate"})
         return {
-            "jobVersion": 1,
+            "planVersion": 1,
             "format": request.format,
             "intent": "create_new" if request.intent == "create" else "edit_existing",
             "input": str(request.source) if request.source else None,
@@ -1767,7 +2028,7 @@ class OfficeArtifactEngine:
     ) -> dict[str, Any]:
         native_manifest = candidate_dir / "native-finalization.json"
         native_payload = {
-            "jobVersion": 1,
+            "planVersion": 1,
             "format": request.format,
             "intent": "finalize",
             "input": str(candidate_path),
@@ -1781,8 +2042,8 @@ class OfficeArtifactEngine:
             "backend": "windows-com",
             "manifest": str(native_manifest),
         }
-        native, exit_code = execute_job(
-            OfficeArtifactJob.from_dict(native_payload, self.workspace_root),
+        native, exit_code = execute_plan(
+            OfficeExecutionPlan.from_internal_dict(native_payload, self.workspace_root),
             self.workspace_root,
         )
         if exit_code != 0 or not native.get("ok"):
@@ -1838,6 +2099,8 @@ class OfficeArtifactEngine:
                 else openxml_execution.get("renderedPreviews", [])
             ),
             "renderEvidence": state.get("renderEvidence"),
+            "schemaValidation": execution.get("schemaValidation"),
+            "syntheticPreview": execution.get("syntheticPreview"),
             "warnings": list(openxml_execution.get("warnings", [])) + (
                 list(native_execution.get("warnings", [])) if isinstance(native_execution, dict) else []
             ),
@@ -2169,21 +2432,29 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
     name = operation["op"].lower()
     allowed = COMMON_OPERATION_KEYS | OPERATION_KEYS[artifact_format].get(name, set())
     _reject_unknown_keys(operation, allowed, f"operations[{index}]")
+    required_keys = set(REQUIRED_OPERATION_KEYS.get(name, set()))
+    if artifact_format == "pptx" and name == "add_comment":
+        required_keys = {"comment"}
     missing = sorted(
-        key for key in REQUIRED_OPERATION_KEYS.get(name, set())
+        key for key in required_keys
         if key not in operation
     )
     if name == "create" and not any(key in operation for key in ("spec", "body", "inputMd", "prompt")):
         missing.append("spec/body/inputMd/prompt")
     if name in {"replace", "redact"} and not operation.get("find"):
         missing.append("find")
-    if name in {"set_text", "clone_slide", "set_transition"} and not any(
-        key in operation for key in ("slideId", "slideIndex")
-    ):
+    if artifact_format == "pptx" and name in {
+        "set_text", "clone_slide", "set_transition", "set_alt_text",
+        "set_speaker_notes", "add_comment",
+    } and not any(key in operation for key in ("slideId", "slideIndex")):
         missing.append("slideId/slideIndex")
-    if name == "set_text" and not any(key in operation for key in ("shapeId", "shapeName")):
+    if artifact_format == "pptx" and name in {"set_text", "set_alt_text"} and not any(
+        key in operation for key in ("shapeId", "shapeName")
+    ):
         missing.append("shapeId/shapeName")
-    if name == "set_style" and not any(key in operation for key in ("cell", "range")):
+    if name in {"set_style", "set_number_format"} and not any(
+        key in operation for key in ("cell", "range")
+    ):
         missing.append("cell/range")
     if missing:
         raise OfficeArtifactError(
@@ -2191,13 +2462,19 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
         )
     boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst"}
-    integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId"}
+    integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId", "baseStyleId", "x", "y"}
     string_fields = {
         "elementId", "spec", "title", "subtitle", "body", "font", "footer", "author",
         "inputMd", "template", "find", "replace", "expectedSha256", "scope", "comment",
         "initials", "date", "sheet", "cell", "range", "formula", "shapeName", "text",
         "transition", "speed", "direction", "outdir", "mode", "screenshot", "prompt",
+        "bookmarkName", "instruction", "displayText", "tag", "lock",
+        "newName", "name", "scopeSheet", "validationType", "operator", "formula1", "formula2",
+        "errorTitle", "error", "styleName", "formatCode", "chartPart",
+        "altText",
+        "authorEngine",
     }
+    boolean_fields.update({"allowBlank", "showErrorMessage"})
     for field in boolean_fields & set(operation):
         if type(operation[field]) is not bool:
             raise OfficeArtifactError(
@@ -2242,6 +2519,14 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         raise OfficeArtifactError(
             "schema.operation_type",
             f"operations[{index}].values must be a two-dimensional array",
+        )
+    if "columns" in operation and (
+        not isinstance(operation["columns"], list)
+        or not all(isinstance(item, str) and item for item in operation["columns"])
+    ):
+        raise OfficeArtifactError(
+            "schema.operation_type",
+            f"operations[{index}].columns must be an array of non-empty strings",
         )
     if "expectedSha256" in operation and not re.fullmatch(
         r"[0-9A-Fa-f]{64}", operation["expectedSha256"]

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import hmac
 import re
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -242,6 +244,44 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             )
         )
 
+    def test_restore_journal_reconciles_receipt_written_before_candidate_state(self) -> None:
+        destination = self.root / "restore-receipt-window.docx"
+        candidate = self.engine.execute(self._docx_request(destination))
+        published = self.engine.decide(candidate["candidateId"], "publish")
+        real_write_state = self.engine._write_candidate_state
+        failed_once = False
+
+        def fail_first_restored_state(path, state):
+            nonlocal failed_once
+            if state.get("status") == "restored" and not failed_once:
+                failed_once = True
+                raise OSError("injected state checkpoint failure")
+            return real_write_state(path, state)
+
+        with mock.patch.object(
+            self.engine,
+            "_write_candidate_state",
+            side_effect=fail_first_restored_state,
+        ):
+            with self.assertRaisesRegex(OSError, "checkpoint failure"):
+                self.engine.restore(published["receiptId"])
+
+        self.assertTrue(failed_once)
+        self.assertFalse(destination.exists())
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        locks = self.root / ".nexa" / "office-artifacts" / "locks"
+        self.assertEqual([], list(journals.glob("restore-*.json")))
+        self.assertEqual([], list(locks.glob("*.lock")))
+        _, state = self.engine._load_candidate(candidate["candidateId"])
+        self.assertEqual("restored", state["status"])
+        receipt_path = (
+            self.root / ".nexa" / "office-artifacts" / "receipts"
+            / f"{published['receiptId']}.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual("restored", receipt["status"])
+        self.assertEqual(office_artifact_engine._sha256(receipt_path), state["receiptSha256"])
+
     def test_restore_recovery_rejects_valid_receipt_replay_before_mutation(self) -> None:
         first = self.engine.execute(self._docx_request(self.root / "first-replay.docx"))
         first_published = self.engine.decide(first["candidateId"], "publish")
@@ -414,11 +454,19 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         assessment = self.engine.assess(request)
 
         backend_status = {item["id"]: item for item in self.engine.capabilities()["backends"]}
-        if backend_status["libreoffice"]["status"] == "ready":
+        if all(
+            backend_status[adapter]["status"] == "ready"
+            for adapter in ("libreoffice", "openxml-sdk")
+        ):
             self.assertTrue(assessment["ready"])
         else:
             self.assertFalse(assessment["ready"])
-            self.assertIn("render.backend_unavailable", {item["code"] for item in assessment["blockers"]})
+            self.assertIn("backend.unavailable", {item["code"] for item in assessment["blockers"]})
+        render_step = next(
+            step for step in assessment["adapterPlan"]["steps"]
+            if step["step"] == "render"
+        )
+        self.assertEqual("libreoffice", render_step["adapter"])
 
         request = self._docx_request(self.root / "publish-bypass.docx")
         request["guarantees"].update({"quality": "publish", "render": "none"})
@@ -534,6 +582,140 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(OfficeArtifactError, "source SHA-256"):
             self.engine.assess(request)
 
+    def test_macro_enabled_format_families_preserve_vba_bytes_end_to_end(self) -> None:
+        from xml.etree import ElementTree as ET
+        import docx
+        import openpyxl
+        from pptx import Presentation
+
+        fixtures = []
+        docx_base = self.root / "macro-base.docx"
+        document = docx.Document()
+        document.add_paragraph("Macro document")
+        document.save(docx_base)
+        fixtures.append(("docx", docx_base, ".docm", "word", "document.xml"))
+        xlsx_base = self.root / "macro-base.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active["A1"] = "Macro workbook"
+        workbook.save(xlsx_base)
+        workbook.close()
+        fixtures.append(("xlsx", xlsx_base, ".xlsm", "xl", "workbook.xml"))
+        pptx_base = self.root / "macro-base.pptx"
+        presentation = Presentation()
+        presentation.slides.add_slide(presentation.slide_layouts[6])
+        presentation.save(pptx_base)
+        fixtures.append(("pptx", pptx_base, ".pptm", "ppt", "presentation.xml"))
+
+        macro_content_types = {
+            "docx": "application/vnd.ms-word.document.macroEnabled.main+xml",
+            "xlsx": "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+            "pptx": "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+        }
+        payload = b"NEXA-VBA-PROJECT-BYTES"
+        for artifact_format, base, extension, folder, main_name in fixtures:
+            source = base.with_suffix(extension)
+            rels_name = f"{folder}/_rels/{main_name}.rels"
+            vba_part = f"{folder}/vbaProject.bin"
+            with zipfile.ZipFile(base) as archive:
+                content_types = ET.fromstring(archive.read("[Content_Types].xml"))
+                for override in content_types:
+                    if override.attrib.get("PartName") == f"/{folder}/{main_name}":
+                        override.set("ContentType", macro_content_types[artifact_format])
+                ET.SubElement(content_types, "{http://schemas.openxmlformats.org/package/2006/content-types}Override", {
+                    "PartName": f"/{vba_part}",
+                    "ContentType": "application/vnd.ms-office.vbaProject",
+                })
+                relationships = ET.fromstring(archive.read(rels_name))
+                ET.SubElement(relationships, "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship", {
+                    "Id": "rIdNexaVba",
+                    "Type": "http://schemas.microsoft.com/office/2006/relationships/vbaProject",
+                    "Target": "vbaProject.bin",
+                })
+                with zipfile.ZipFile(source, "w") as output:
+                    for info in archive.infolist():
+                        data = archive.read(info.filename)
+                        if info.filename == "[Content_Types].xml":
+                            data = ET.tostring(content_types, encoding="utf-8", xml_declaration=True)
+                        elif info.filename == rels_name:
+                            data = ET.tostring(relationships, encoding="utf-8", xml_declaration=True)
+                        output.writestr(info, data)
+                    output.writestr(vba_part, payload)
+            outcome = self.engine.execute({
+                "requestVersion": 2,
+                "format": artifact_format,
+                "intent": "verify",
+                "source": str(source),
+                "destination": str(self.root / f"verified{extension}"),
+                "operations": [],
+                "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            })
+            candidate = Path(outcome["candidatePath"])
+            self.assertEqual(extension, candidate.suffix)
+            with zipfile.ZipFile(candidate) as archive:
+                self.assertEqual(payload, archive.read(vba_part))
+            self.assertTrue(outcome["preservationEvidence"]["verified"])
+
+    def test_template_format_families_preserve_exact_package_parts(self) -> None:
+        from xml.etree import ElementTree as ET
+        import docx
+        import openpyxl
+        from pptx import Presentation
+
+        base_docx = self.root / "template.docx"
+        doc = docx.Document()
+        doc.add_paragraph("Template Word")
+        doc.save(base_docx)
+        base_xlsx = self.root / "template.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active["A1"] = "Template Excel"
+        workbook.save(base_xlsx)
+        workbook.close()
+        base_pptx = self.root / "template.pptx"
+        presentation = Presentation()
+        presentation.slides.add_slide(presentation.slide_layouts[6])
+        presentation.save(base_pptx)
+        fixtures = [
+            ("docx", base_docx, ".dotx", "/word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"),
+            ("xlsx", base_xlsx, ".xltx", "/xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"),
+            ("pptx", base_pptx, ".potx", "/ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"),
+        ]
+        for artifact_format, base, extension, part_name, content_type in fixtures:
+            source = base.with_suffix(extension)
+            with zipfile.ZipFile(base) as archive, zipfile.ZipFile(source, "w") as output:
+                content_types = ET.fromstring(archive.read("[Content_Types].xml"))
+                for override in content_types:
+                    if override.attrib.get("PartName") == part_name:
+                        override.set("ContentType", content_type)
+                for info in archive.infolist():
+                    data = (
+                        ET.tostring(content_types, encoding="utf-8", xml_declaration=True)
+                        if info.filename == "[Content_Types].xml"
+                        else archive.read(info.filename)
+                    )
+                    output.writestr(info, data)
+            with zipfile.ZipFile(source) as archive:
+                source_hashes = {
+                    name: hashlib.sha256(archive.read(name)).hexdigest()
+                    for name in archive.namelist()
+                }
+            outcome = self.engine.execute({
+                "requestVersion": 2,
+                "format": artifact_format,
+                "intent": "verify",
+                "source": str(source),
+                "destination": str(self.root / f"verified{extension}"),
+                "operations": [],
+                "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            })
+            candidate = Path(outcome["candidatePath"])
+            self.assertEqual(extension, candidate.suffix)
+            with zipfile.ZipFile(candidate) as archive:
+                candidate_hashes = {
+                    name: hashlib.sha256(archive.read(name)).hexdigest()
+                    for name in archive.namelist()
+                }
+            self.assertEqual(source_hashes, candidate_hashes)
+
     def test_capabilities_validate_external_adapter_declarations_without_loading_code(self) -> None:
         adapter_dir = self.root / ".nexa" / "office-adapters"
         adapter_dir.mkdir(parents=True)
@@ -553,6 +735,32 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         by_name = {Path(item["manifestPath"]).name: item for item in declarations}
         self.assertEqual("declared-not-loaded", by_name["valid.json"]["status"])
         self.assertEqual("invalid", by_name["invalid.json"]["status"])
+
+    def test_capabilities_bind_hash_locked_python_supply_chain(self) -> None:
+        lock = self.engine.capabilities()["pythonDependencyLock"]
+        self.assertEqual("ready", lock["status"])
+        self.assertTrue(lock["requireHashes"])
+        self.assertRegex(lock["lockSha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(lock["sbomSha256"], r"^[0-9a-f]{64}$")
+        content = Path(__file__).with_name("requirements.lock").read_text(encoding="utf-8")
+        self.assertIn("lxml==6.1.1", content)
+        self.assertIn("pillow==12.3.0", content)
+        self.assertGreaterEqual(content.count("--hash=sha256:"), 200)
+
+    def test_v2_translates_to_internal_plan_not_legacy_job_protocol(self) -> None:
+        request = office_artifact_engine.ArtifactRequest.from_dict(
+            self._docx_request(self.root / "plan.docx"),
+            self.root,
+        )
+        payload = self.engine._execution_plan_payload(
+            request,
+            self.root / "candidate.docx",
+            self.root / "candidate-manifest.json",
+        )
+        self.assertEqual(1, payload["planVersion"])
+        self.assertNotIn("jobVersion", payload)
+        plan = office_artifact_engine.OfficeExecutionPlan.from_internal_dict(payload, self.root)
+        self.assertEqual("docx", plan.format)
 
     def test_xlsx_render_evidence_requires_surface_manifest_bound_to_candidate_sha(self) -> None:
         try:
@@ -658,6 +866,41 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             workbook.close()
         with zipfile.ZipFile(candidate) as archive:
             self.assertEqual(untouched_before, archive.read("xl/worksheets/sheet2.xml"))
+
+    def test_xlsx_object_operations_run_through_strict_candidate_lifecycle(self) -> None:
+        import openpyxl
+
+        source = self.root / "objects.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Summary"
+        sheet.append(["Metric", "Value"])
+        sheet.append(["Revenue", 100])
+        sheet.append(["Cost", 40])
+        workbook.create_sheet("Inputs")["A1"] = "=Summary!B2"
+        workbook.save(source)
+        workbook.close()
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "xlsx",
+            "intent": "modify",
+            "source": str(source),
+            "destination": str(self.root / "objects-result.xlsx"),
+            "operations": [
+                {"op": "rename_sheet", "sheet": "Summary", "newName": "Data"},
+                {"op": "set_defined_name", "name": "RevenueCell", "formula": "Data!$B$2"},
+                {"op": "set_data_validation", "sheet": "Data", "range": "B2:B3", "validationType": "whole", "formula1": "0", "formula2": "1000"},
+                {"op": "create_table", "sheet": "Data", "range": "A1:B3", "name": "DataTable"},
+                {"op": "set_number_format", "sheet": "Data", "range": "B2:B3", "formatCode": "0.00"},
+            ],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+        })
+        self.assertTrue(outcome["preservationEvidence"]["verified"])
+        workbook = openpyxl.load_workbook(Path(outcome["candidatePath"]), data_only=False)
+        self.assertEqual("=Data!B2", workbook["Inputs"]["A1"].value)
+        self.assertIn("DataTable", workbook["Data"].tables)
+        self.assertEqual("0.00", workbook["Data"]["B2"].number_format)
+        workbook.close()
 
     def test_assessment_requires_excel_native_for_dynamic_array_formulas(self) -> None:
         try:
@@ -799,6 +1042,133 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertEqual(archive.read(workbook_parts[0]), archive.read(workbook_parts[1]))
             self.assertIn(b"transition", archive.read("ppt/slides/slide2.xml"))
 
+    def test_pptx_insert_slide_preserves_existing_package_parts_under_strict_mode(self) -> None:
+        try:
+            from pptx import Presentation
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+
+        source = self.root / "insert-source.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "Existing decision"
+        slide.placeholders[1].text = "Existing evidence"
+        presentation.save(source)
+        with zipfile.ZipFile(source) as archive:
+            source_hashes = {
+                name: hashlib.sha256(archive.read(name)).hexdigest()
+                for name in archive.namelist()
+                if name.startswith(("ppt/slides/", "ppt/slideLayouts/", "ppt/slideMasters/", "ppt/theme/"))
+            }
+
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "modify",
+            "source": str(source),
+            "destination": str(self.root / "insert-result.pptx"),
+            "operations": [{
+                "op": "insert_slide",
+                "after": 1,
+                "title": "Inserted decision",
+                "body": "Inserted evidence",
+            }],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            "validation": {
+                "contractVersion": 2,
+                "min_slides": 2,
+                "max_slides": 2,
+                "required_text": ["Inserted decision", "Inserted evidence"],
+            },
+        })
+        candidate = Path(outcome["candidatePath"])
+        with zipfile.ZipFile(candidate) as archive:
+            candidate_hashes = {
+                name: hashlib.sha256(archive.read(name)).hexdigest()
+                for name in source_hashes
+            }
+            self.assertEqual(source_hashes, candidate_hashes)
+            self.assertIn("ppt/slides/slide2.xml", archive.namelist())
+
+    def test_pptx_notes_comments_and_alt_text_use_strict_typed_operations(self) -> None:
+        from pptx import Presentation
+
+        source = self.root / "review-deck.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "Decision"
+        slide.placeholders[1].text = "Evidence"
+        slide.notes_slide.notes_text_frame.text = "Original notes"
+        shape_id = slide.shapes.title.shape_id
+        presentation.save(source)
+        with zipfile.ZipFile(source) as archive:
+            scripts = Path(__file__).resolve().parents[2] / "pptx-presentation-design" / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from pptx_structured_editor import presentation_order
+
+            slide_id = presentation_order(archive)[0]["slideId"]
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "modify",
+            "source": str(source),
+            "destination": str(self.root / "review-deck-result.pptx"),
+            "operations": [
+                {"op": "set_alt_text", "slideId": slide_id, "shapeId": shape_id, "altText": "Decision title"},
+                {"op": "set_speaker_notes", "slideId": slide_id, "text": "Updated evidence notes"},
+                {"op": "add_comment", "slideId": slide_id, "comment": "Confirm owner", "author": "Reviewer"},
+            ],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            "validation": {"contractVersion": 2, "require_speaker_notes": True},
+        })
+        self.assertTrue(outcome["preservationEvidence"]["verified"])
+        with zipfile.ZipFile(Path(outcome["candidatePath"])) as archive:
+            self.assertIn(b"Updated evidence notes", archive.read("ppt/notesSlides/notesSlide1.xml"))
+            self.assertIn(b"Decision title", archive.read("ppt/slides/slide1.xml"))
+            self.assertTrue(any(name.startswith("ppt/comments/comment") for name in archive.namelist()))
+
+    def test_pptxgenjs_author_is_capability_solved_and_candidate_gated(self) -> None:
+        import shutil
+        from pptx import Presentation
+
+        if not shutil.which("node"):
+            self.skipTest("Node.js is not installed")
+        status = {
+            item["id"]: item for item in self.engine.capabilities()["backends"]
+        }["pptxgenjs"]
+        if status["status"] != "ready":
+            self.skipTest(status.get("detail", "PptxGenJS is unavailable"))
+        spec = self.root / "pptxgenjs-spec.json"
+        spec.write_text(json.dumps({
+            "schemaVersion": 1,
+            "slides": [{
+                "notes": ["Native author evidence"],
+                "elements": [
+                    {"type": "text", "text": "PptxGenJS decision", "x": 0.7, "y": 0.6, "w": 6.0, "h": 0.6, "options": {"fontSize": 26, "bold": True}},
+                    {"type": "chart", "chartType": "column", "altText": "Decision chart", "data": [{"name": "Value", "labels": ["A", "B"], "values": [1, 2]}], "x": 0.7, "y": 1.5, "w": 7.0, "h": 4.0, "options": {}},
+                ],
+            }],
+        }), encoding="utf-8")
+        request = {
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "create",
+            "destination": str(self.root / "pptxgenjs-result.pptx"),
+            "operations": [{"op": "create", "spec": str(spec), "authorEngine": "pptxgenjs"}],
+            "guarantees": {"quality": "standard", "preservation": "replace", "render": "none"},
+        }
+        assessment = self.engine.assess(request)
+        self.assertTrue(assessment["ready"])
+        self.assertIn("pptxgenjs", assessment["adapterPlan"]["requiredAdapters"])
+        outcome = self.engine.execute(request)
+        self.assertFalse((self.root / "pptxgenjs-result.pptx").exists())
+        presentation = Presentation(Path(outcome["candidatePath"]))
+        self.assertIn(
+            "PptxGenJS decision",
+            " ".join(shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")),
+        )
+
     def test_docx_review_operations_are_candidate_gated_and_contract_checked(self) -> None:
         import docx
 
@@ -836,6 +1206,38 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         self.assertNotIn('"find": "Approve"', state_text)
         self.assertNotIn('"replace": "new"', state_text)
         self.assertIn("requestSha256", state_text)
+
+    def test_docx_fields_bookmarks_content_controls_and_protection_are_candidate_gated(self) -> None:
+        import docx
+
+        source = self.root / "structured-source.docx"
+        document = docx.Document()
+        document.add_paragraph("Decision anchor")
+        document.add_paragraph("Reference placeholder")
+        document.add_paragraph("Controlled value")
+        document.save(source)
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "docx",
+            "intent": "modify",
+            "source": str(source),
+            "destination": str(self.root / "structured-result.docx"),
+            "operations": [
+                {"op": "add_bookmark", "find": "Decision", "bookmarkName": "DecisionAnchor"},
+                {"op": "insert_field", "find": "placeholder", "instruction": "REF DecisionAnchor", "displayText": "Decision"},
+                {"op": "wrap_content_control", "find": "Controlled", "tag": "decision", "lock": "content"},
+                {"op": "set_protection", "mode": "trackedChanges"},
+            ],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+        })
+        self.assertTrue(outcome["preservationEvidence"]["verified"])
+        with zipfile.ZipFile(Path(outcome["candidatePath"])) as archive:
+            document_xml = archive.read("word/document.xml")
+            settings_xml = archive.read("word/settings.xml")
+            self.assertIn(b"bookmarkStart", document_xml)
+            self.assertIn(b"fldSimple", document_xml)
+            self.assertIn(b"sdtContent", document_xml)
+            self.assertIn(b"documentProtection", settings_xml)
 
 
 if __name__ == "__main__":

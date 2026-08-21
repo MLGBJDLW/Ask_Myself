@@ -42,6 +42,10 @@ MAX_EXTRACT_BYTES = 50 * 1024
 HISTORY_DIR = ".nexa/doc-history"
 EXCEL_ERRORS = ("#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#N/A")
 UNPACK_MARKER = ".nexa-ooxml-unpack.json"
+DOCX_EXTENSIONS = {"docx", "docm", "dotx", "dotm"}
+XLSX_EXTENSIONS = {"xlsx", "xlsm", "xltx", "xltm"}
+PPTX_EXTENSIONS = {"pptx", "pptm", "potx", "potm"}
+OOXML_EXTENSIONS = DOCX_EXTENSIONS | XLSX_EXTENSIONS | PPTX_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -478,13 +482,13 @@ def _extract_xlsx(path: Path, sheets: str | None) -> str:
 def cmd_extract(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     ext = _ext(path)
-    if ext == "docx":
+    if ext in DOCX_EXTENSIONS:
         text = _extract_docx(path)
-    elif ext == "pptx":
+    elif ext in PPTX_EXTENSIONS:
         text = _extract_pptx(path, args.pages)
     elif ext == "pdf":
         text = _extract_pdf(path, args.pages)
-    elif ext == "xlsx":
+    elif ext in XLSX_EXTENSIONS:
         text = _extract_xlsx(path, args.sheets)
     else:
         _die(f"ERROR: extract does not support .{ext}", 3)
@@ -928,7 +932,7 @@ def cmd_replace(args: argparse.Namespace) -> int:
     if expected_count is not None and expected_count < 0:
         _die("ERROR: --expected-count cannot be negative", 3)
     ext = _ext(path)
-    if ext == "docx":
+    if ext in DOCX_EXTENSIONS:
         raw_scope = getattr(args, "scope", None)
         scopes = {item.strip().lower() for item in raw_scope.split(",") if item.strip()} if raw_scope else None
         supported_scopes = {"body", "table", "textbox", "header", "footer", "comments", "footnotes", "endnotes"}
@@ -944,9 +948,9 @@ def cmd_replace(args: argparse.Namespace) -> int:
             getattr(args, "occurrence", None),
             bool(getattr(args, "allow_style_merge", False)),
         )
-    if ext == "pptx":
+    if ext in PPTX_EXTENSIONS:
         return _replace_pptx(path, args.find, args.replace or "", args.dry_run, expected_count)
-    if ext == "xlsx":
+    if ext in XLSX_EXTENSIONS:
         return _replace_xlsx(path, args.find, args.replace or "", args.dry_run, expected_count)
     _die(f"ERROR: replace supports .docx/.pptx/.xlsx only (got .{ext})", 3)
     return 1
@@ -1111,8 +1115,8 @@ def cmd_secure_redact(args: argparse.Namespace) -> int:
 
 def cmd_insert_slide(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "pptx":
-        _die("ERROR: insert_slide requires a .pptx file", 3)
+    if _ext(path) not in PPTX_EXTENSIONS:
+        _die("ERROR: insert_slide requires a PowerPoint OOXML package", 3)
     try:
         from pptx import Presentation  # type: ignore
         from pptx.util import Inches  # type: ignore
@@ -1497,8 +1501,8 @@ def _load_xlsx_structured_editor():
 
 def cmd_edit_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "xlsx":
-        _die("ERROR: edit_xlsx requires a .xlsx file", 3)
+    if _ext(path) not in XLSX_EXTENSIONS:
+        _die("ERROR: edit_xlsx requires an Excel OOXML package", 3)
     payload = _read_json(args.spec)
     operations = payload.get("operations", payload)
     if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
@@ -1560,8 +1564,8 @@ def _load_docx_review_editor():
 
 def cmd_review_docx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "docx":
-        _die("ERROR: review_docx requires a .docx file", 3)
+    if _ext(path) not in DOCX_EXTENSIONS:
+        _die("ERROR: review_docx requires a Word OOXML package", 3)
     payload = _read_json(args.spec)
     operations = payload.get("operations", payload)
     if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
@@ -1584,8 +1588,8 @@ def cmd_review_docx(args: argparse.Namespace) -> int:
 
 def cmd_comments_docx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "docx":
-        _die("ERROR: comments_docx requires a .docx file", 3)
+    if _ext(path) not in DOCX_EXTENSIONS:
+        _die("ERROR: comments_docx requires a Word OOXML package", 3)
     _, extract_comments = _load_docx_review_editor()
     print(json.dumps(extract_comments(path), ensure_ascii=False, indent=2))
     return 0
@@ -1593,8 +1597,8 @@ def cmd_comments_docx(args: argparse.Namespace) -> int:
 
 def cmd_edit_pptx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "pptx":
-        _die("ERROR: edit_pptx requires a .pptx file", 3)
+    if _ext(path) not in PPTX_EXTENSIONS:
+        _die("ERROR: edit_pptx requires a PowerPoint OOXML package", 3)
     payload = _read_json(args.spec)
     operations = payload.get("operations", payload)
     if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
@@ -1691,8 +1695,8 @@ def cmd_create_html_pptx(args: argparse.Namespace) -> int:
 
 def cmd_unpack(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) not in {"docx", "pptx", "xlsx"}:
-        _die("ERROR: unpack supports .docx/.pptx/.xlsx only", 3)
+    if _ext(path) not in OOXML_EXTENSIONS:
+        _die("ERROR: unpack supports Word/Excel/PowerPoint OOXML packages only", 3)
     preflight = validate_ooxml_package(path)
     if preflight.status == "fail":
         _die(
@@ -1913,8 +1917,8 @@ def _render_xlsx_surfaces(
 
 def cmd_render(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) not in {"docx", "pptx", "xlsx", "pdf"}:
-        _die("ERROR: render supports .docx/.pptx/.xlsx/.pdf only", 3)
+    if _ext(path) not in OOXML_EXTENSIONS | {"pdf"}:
+        _die("ERROR: render supports Office OOXML and PDF packages only", 3)
     pdftoppm = _find_pdftoppm()
     if not pdftoppm:
         _die("MISSING_DEP: Poppler/pdftoppm\nInstall Poppler and ensure pdftoppm is on PATH.", 2)
@@ -1996,8 +2000,8 @@ def _count_xlsx_formulas(path: Path) -> int:
 
 def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "xlsx":
-        _die("ERROR: recalc_xlsx requires a .xlsx file", 3)
+    if _ext(path) not in XLSX_EXTENSIONS:
+        _die("ERROR: recalc_xlsx requires an Excel OOXML package", 3)
     soffice = _find_soffice()
     if not soffice:
         _die(
@@ -2121,8 +2125,8 @@ def cmd_recalc_xlsx(args: argparse.Namespace) -> int:
 
 def cmd_lint_xlsx(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
-    if _ext(path) != "xlsx":
-        _die("ERROR: lint_xlsx requires a .xlsx file", 3)
+    if _ext(path) not in XLSX_EXTENSIONS:
+        _die("ERROR: lint_xlsx requires an Excel OOXML package", 3)
     _, audit_xlsx_formula_integrity, inspect_formula_cache = _load_xlsx_renderer()
     formula_qa = audit_xlsx_formula_integrity(path)
     total_errors, cached_errors = _scan_xlsx_formula_errors(path)
@@ -2741,11 +2745,11 @@ def _validate_pptx_contract(path: Path, contract_path: str) -> dict[str, Any]:
 
 
 def _validate_artifact_contract(path: Path, contract_path: str) -> dict[str, Any]:
-    if _ext(path) == "xlsx":
+    if _ext(path) in XLSX_EXTENSIONS:
         return _validate_xlsx_contract(path, contract_path)
-    if _ext(path) == "docx":
+    if _ext(path) in DOCX_EXTENSIONS:
         return _validate_docx_contract(path, contract_path)
-    if _ext(path) == "pptx":
+    if _ext(path) in PPTX_EXTENSIONS:
         return _validate_pptx_contract(path, contract_path)
     _die("ERROR: validation contracts require DOCX, PPTX, or XLSX", 3)
 
@@ -2754,31 +2758,44 @@ def cmd_validate(args: argparse.Namespace) -> int:
     path = _validate_path(args.path)
     ext = _ext(path)
     result: dict[str, Any] = {"format": ext, "path": str(path), "status": "pass"}
-    if ext in {"docx", "pptx", "xlsx"}:
+    if ext in OOXML_EXTENSIONS:
         structural = validate_ooxml_package(path)
         result["structural"] = structural.to_dict()
         if structural.status == "fail":
             result["status"] = "fail"
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1
-    if ext == "docx":
-        try:
-            import docx  # type: ignore
-        except ImportError:
-            _missing("python-docx")
-        doc = docx.Document(str(path))
-        result["backend"] = {
-            "id": "python-docx",
-            "paragraphs": len(doc.paragraphs),
-            "tables": len(doc.tables),
-        }
-    elif ext == "pptx":
-        try:
-            from pptx import Presentation  # type: ignore
-        except ImportError:
-            _missing("python-pptx")
-        prs = Presentation(str(path))
-        result["backend"] = {"id": "python-pptx", "slides": len(prs.slides)}
+    if ext in DOCX_EXTENSIONS:
+        if ext == "docx":
+            try:
+                import docx  # type: ignore
+            except ImportError:
+                _missing("python-docx")
+            doc = docx.Document(str(path))
+            result["backend"] = {
+                "id": "python-docx",
+                "paragraphs": len(doc.paragraphs),
+                "tables": len(doc.tables),
+            }
+        else:
+            with zipfile.ZipFile(path) as archive:
+                root = ET.fromstring(archive.read("word/document.xml"))
+            result["backend"] = {
+                "id": "wordprocessingml-package",
+                "paragraphs": sum(1 for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "p"),
+                "tables": sum(1 for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "tbl"),
+                "macroTemplatePreservation": True,
+            }
+    elif ext in PPTX_EXTENSIONS:
+        if ext == "pptx":
+            try:
+                from pptx import Presentation  # type: ignore
+            except ImportError:
+                _missing("python-pptx")
+            prs = Presentation(str(path))
+            result["backend"] = {"id": "python-pptx", "slides": len(prs.slides)}
+        else:
+            result["backend"] = {"id": "presentationml-package", "macroTemplatePreservation": True}
         skills_root = Path(__file__).resolve().parents[2]
         audit_dir = skills_root / "pptx-presentation-design" / "scripts"
         if str(audit_dir) not in sys.path:
@@ -2794,12 +2811,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
             result["packageGraphWarning"] = f"{type(exc).__name__}: {exc}"
             if result["status"] == "pass":
                 result["status"] = "warn"
-    elif ext == "xlsx":
+    elif ext in XLSX_EXTENSIONS:
         try:
             import openpyxl  # type: ignore
         except ImportError:
             _missing("openpyxl")
-        wb = openpyxl.load_workbook(str(path), data_only=False, read_only=True)
+        wb = openpyxl.load_workbook(
+            str(path),
+            data_only=False,
+            read_only=True,
+            keep_vba=ext in {"xlsm", "xltm"},
+        )
         sheet_count = len(wb.worksheets)
         sheet_names = ",".join(wb.sheetnames)
         wb.close()

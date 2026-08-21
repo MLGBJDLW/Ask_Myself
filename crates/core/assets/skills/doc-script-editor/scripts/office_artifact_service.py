@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transactional Job/Result protocol for DOCX, PPTX, and XLSX artifacts."""
+"""Internal execution plan and legacy v1 compatibility for Office artifacts."""
 
 from __future__ import annotations
 
@@ -34,6 +34,11 @@ from office_artifact_runtime import (
 )
 
 FORMATS = {"docx", "pptx", "xlsx"}
+FORMAT_EXTENSIONS = {
+    "docx": {".docx", ".docm", ".dotx", ".dotm"},
+    "xlsx": {".xlsx", ".xlsm", ".xltx", ".xltm"},
+    "pptx": {".pptx", ".pptm", ".potx", ".potm"},
+}
 INTENTS = {"create_new", "edit_existing", "validate", "recalculate", "finalize"}
 PRESERVATION_POLICIES = {"strict", "balanced", "replace"}
 RENDER_POLICIES = {"none", "important_surfaces", "all"}
@@ -41,7 +46,7 @@ BACKENDS = {"auto", "nexa-openxml", "libreoffice", "officecli", "windows-com"}
 
 
 @dataclass
-class OfficeArtifactJob:
+class OfficeExecutionPlan:
     job_version: int
     format: str
     intent: str
@@ -56,10 +61,12 @@ class OfficeArtifactJob:
     manifest: Path
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any], workspace_root: Path) -> OfficeArtifactJob:
-        job_version = int(payload.get("jobVersion", 1))
-        if job_version != 1:
-            raise ValueError(f"unsupported jobVersion: {job_version}")
+    def from_internal_dict(
+        cls, payload: dict[str, Any], workspace_root: Path
+    ) -> OfficeExecutionPlan:
+        plan_version = payload.get("planVersion")
+        if type(plan_version) is not int or plan_version != 1:
+            raise ValueError(f"unsupported planVersion: {plan_version}")
         artifact_format = str(payload.get("format", "")).lower()
         if artifact_format not in FORMATS:
             raise ValueError(f"format must be one of: {', '.join(sorted(FORMATS))}")
@@ -80,10 +87,14 @@ class OfficeArtifactJob:
         if not raw_output:
             raise ValueError("output is required")
         output = workspace_path(Path(str(raw_output)), workspace_root)
-        if output.suffix.lower() != f".{artifact_format}":
-            raise ValueError(f"output suffix must be .{artifact_format}")
-        if input_path is not None and input_path.suffix.lower() != f".{artifact_format}":
-            raise ValueError(f"input suffix must be .{artifact_format}")
+        if output.suffix.lower() not in FORMAT_EXTENSIONS[artifact_format]:
+            raise ValueError(f"output suffix must belong to the {artifact_format} format family")
+        if input_path is not None and input_path.suffix.lower() not in FORMAT_EXTENSIONS[artifact_format]:
+            raise ValueError(f"input suffix must belong to the {artifact_format} format family")
+        if input_path is not None and input_path.suffix.lower() != output.suffix.lower():
+            raise ValueError("internal execution plan cannot convert macro/template extensions")
+        if intent == "create_new" and output.suffix.lower() != f".{artifact_format}":
+            raise ValueError("create_new cannot fabricate macro/template package semantics")
 
         operations = payload.get("operations", [])
         if not isinstance(operations, list) or not all(isinstance(item, dict) for item in operations):
@@ -109,7 +120,7 @@ class OfficeArtifactJob:
         if validation_contract is not None and not isinstance(validation_contract, (dict, str)):
             raise ValueError("validationContract must be an object or a workspace-local JSON path")
         return cls(
-            job_version=job_version,
+            job_version=plan_version,
             format=artifact_format,
             intent=intent,
             input=input_path,
@@ -122,6 +133,25 @@ class OfficeArtifactJob:
             allow_network_backend=bool(payload.get("allowNetworkBackend", False)),
             manifest=manifest,
         )
+
+    @classmethod
+    def from_legacy_job(
+        cls, payload: dict[str, Any], workspace_root: Path
+    ) -> OfficeExecutionPlan:
+        job_version = payload.get("jobVersion", 1)
+        if type(job_version) is not int or job_version != 1:
+            raise ValueError(f"unsupported jobVersion: {job_version}")
+        translated = {key: value for key, value in payload.items() if key != "jobVersion"}
+        translated["planVersion"] = 1
+        return cls.from_internal_dict(translated, workspace_root)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any], workspace_root: Path) -> OfficeExecutionPlan:
+        """Compatibility entry point for the retired public Job v1 protocol."""
+        return cls.from_legacy_job(payload, workspace_root)
+
+
+OfficeArtifactJob = OfficeExecutionPlan
 
 
 def _load_job(raw: str) -> dict[str, Any]:
@@ -208,7 +238,59 @@ def _run_editor(
     return completed.stdout.strip()
 
 
-def _select_backend(job: OfficeArtifactJob) -> str:
+def _run_pptxgenjs_author(
+    working: Path,
+    spec_path: Path,
+    actions: list[dict[str, Any]],
+    workspace_root: Path,
+) -> None:
+    configured_node = os.environ.get("NEXA_PPTXGENJS_NODE")
+    node = (
+        str(Path(configured_node).expanduser().resolve())
+        if configured_node and Path(configured_node).expanduser().is_file()
+        else shutil.which("node")
+    )
+    if not node:
+        raise RuntimeError("PptxGenJS author adapter requires Node.js")
+    adapter = (
+        Path(__file__).resolve().parents[2]
+        / "pptx-presentation-design"
+        / "scripts"
+        / "pptxgenjs_adapter.mjs"
+    )
+    completed = _run(
+        [
+            node,
+            str(adapter),
+            "--spec",
+            str(spec_path),
+            "--out",
+            str(working),
+            "--workspace",
+            str(workspace_root),
+        ],
+        timeout=300,
+        cwd=workspace_root,
+    )
+    action = {
+        "command": "pptxgenjs-author",
+        "status": "ok" if completed.returncode == 0 else "failed",
+        "exitCode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "engine": "pptxgenjs",
+        "engineVersion": "4.0.1",
+        "networkPolicy": "local-assets-only",
+    }
+    actions.append(action)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "pptxgenjs-author: "
+            + (completed.stderr.strip() or completed.stdout.strip() or "author adapter failed")
+        )
+
+
+def _select_backend(job: OfficeExecutionPlan) -> str:
     if job.backend != "auto":
         return job.backend
     needs_recalculation = job.intent in {"recalculate", "finalize"} or any(
@@ -227,7 +309,7 @@ def _backend_status(backend_id: str) -> dict[str, Any]:
     return statuses[backend_id]
 
 
-def _assert_backend_support(job: OfficeArtifactJob, backend: str) -> None:
+def _assert_backend_support(job: OfficeExecutionPlan, backend: str) -> None:
     has_recalculate_operation = any(
         str(operation.get("op", "")).lower() == "recalculate"
         for operation in job.operations
@@ -259,7 +341,7 @@ def _operation_path(
 
 
 def _native_create(
-    job: OfficeArtifactJob,
+    job: OfficeExecutionPlan,
     working: Path,
     actions: list[dict[str, Any]],
     workspace_root: Path,
@@ -296,7 +378,10 @@ def _native_create(
         spec = operation.get("spec")
         if not spec:
             raise ValueError("create_new PPTX requires operations[0].spec")
-        if operation.get("htmlFirst"):
+        if operation.get("authorEngine") == "pptxgenjs":
+            spec_path = _operation_path(spec, workspace_root, must_exist=True)
+            _run_pptxgenjs_author(working, spec_path, actions, workspace_root)
+        elif operation.get("htmlFirst"):
             outdir = operation.get("outdir")
             if not outdir:
                 raise ValueError("HTML-first PPTX requires outdir")
@@ -318,16 +403,26 @@ def _native_create(
 
 
 def _native_operations(
-    job: OfficeArtifactJob,
+    job: OfficeExecutionPlan,
     working: Path,
     actions: list[dict[str, Any]],
     workspace_root: Path,
 ) -> tuple[list[str], set[str]]:
     changed: list[str] = []
     authorized_parts: set[str] = set()
-    xlsx_typed = {"set_value", "set_formula", "set_range", "clear_range", "set_style"}
-    pptx_typed = {"set_text", "clone_slide", "reorder_slides", "set_transition"}
-    docx_review = {"add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes"}
+    xlsx_typed = {
+        "set_value", "set_formula", "set_range", "clear_range", "set_style",
+        "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
+        "set_number_format", "set_chart_title",
+    }
+    pptx_typed = {
+        "set_text", "clone_slide", "reorder_slides", "set_transition",
+        "set_alt_text", "set_speaker_notes", "add_comment",
+    }
+    docx_review = {
+        "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+        "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
+    }
     for index, operation in enumerate(job.operations):
         name = str(operation.get("op", "")).lower()
         if name in {"validate", "render", "recalculate"}:
@@ -499,7 +594,7 @@ def _native_operations(
     return changed, authorized_parts
 
 
-def _officecli_create(job: OfficeArtifactJob, working: Path, actions: list[dict[str, Any]]) -> None:
+def _officecli_create(job: OfficeExecutionPlan, working: Path, actions: list[dict[str, Any]]) -> None:
     if job.intent != "create_new":
         raise ValueError("OfficeCLI backend is limited to explicit create_new jobs")
     if not job.allow_network_backend:
@@ -881,6 +976,21 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
     if artifact_format == "xlsx":
         if operation in {"set_value", "set_formula", "set_range", "clear_range", "set_style"}:
             return ("xl/worksheets/*.xml",)
+        if operation == "rename_sheet":
+            return ("xl/workbook.xml", "xl/worksheets/*.xml")
+        if operation == "set_defined_name":
+            return ("xl/workbook.xml",)
+        if operation == "set_data_validation":
+            return ("xl/worksheets/*.xml",)
+        if operation == "create_table":
+            return (
+                "xl/worksheets/*.xml", "xl/worksheets/_rels/*.rels",
+                "xl/tables/*.xml", "[Content_Types].xml",
+            )
+        if operation == "set_number_format":
+            return ("xl/worksheets/*.xml", "xl/styles.xml")
+        if operation == "set_chart_title":
+            return ("xl/charts/*.xml",)
         if operation in {"replace", "redact"}:
             return (
                 "xl/worksheets/*.xml", "xl/sharedStrings.xml", "xl/workbook.xml",
@@ -903,9 +1013,23 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
                 "word/document.xml", "word/comments*.xml", "word/_rels/*.rels",
                 "[Content_Types].xml",
             )
+        if operation in {"add_bookmark", "insert_field", "wrap_content_control"}:
+            return ("word/document.xml",)
+        if operation == "set_protection":
+            return ("word/settings.xml",)
     if artifact_format == "pptx":
         if operation in {"set_text", "set_transition"}:
             return ("ppt/slides/*.xml",)
+        if operation == "set_alt_text":
+            return ("ppt/slides/*.xml",)
+        if operation == "set_speaker_notes":
+            return ("ppt/notesSlides/*.xml",)
+        if operation == "add_comment":
+            return (
+                "ppt/commentAuthors.xml", "ppt/comments/*.xml",
+                "ppt/slides/_rels/*.rels", "ppt/_rels/presentation.xml.rels",
+                "[Content_Types].xml",
+            )
         if operation == "reorder_slides":
             return ("ppt/presentation.xml",)
         if operation in {"replace", "redact"}:
@@ -952,7 +1076,62 @@ def _exact_operation_parts(
         if sheet not in parts:
             raise RuntimeError(f"worksheet not found for strict operation: {payload.get('sheet')}")
         return {parts[sheet]}
-    if artifact_format == "pptx" and operation in {"set_text", "set_transition"}:
+    if artifact_format == "xlsx" and operation in {"set_data_validation", "set_number_format", "create_table"}:
+        scripts = skills_root / "xlsx-workbook-design" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from xlsx_structured_editor import _sheet_relationships_name, _workbook_sheet_parts  # type: ignore
+
+        with zipfile.ZipFile(path) as archive:
+            parts = _workbook_sheet_parts(archive)
+            sheet = str(payload.get("sheet", "")).casefold()
+            if sheet not in parts:
+                raise RuntimeError(f"worksheet not found for strict operation: {payload.get('sheet')}")
+            target = parts[sheet]
+            if operation == "set_data_validation":
+                return {target}
+            if operation == "set_number_format":
+                return {target, "xl/styles.xml"}
+            table_indexes = [
+                int(match.group(1))
+                for name in archive.namelist()
+                if (match := re.fullmatch(r"xl/tables/table([0-9]+)\.xml", name))
+            ]
+            index = 1
+            while index in table_indexes:
+                index += 1
+            return {
+                target,
+                _sheet_relationships_name(target),
+                f"xl/tables/table{index}.xml",
+                "[Content_Types].xml",
+            }
+    if artifact_format == "xlsx" and operation == "set_defined_name":
+        return {"xl/workbook.xml"}
+    if artifact_format == "xlsx" and operation == "set_chart_title":
+        return {str(payload.get("chartPart", ""))}
+    if artifact_format == "xlsx" and operation == "rename_sheet":
+        old = str(payload.get("sheet", ""))
+        exact = {"xl/workbook.xml"}
+        with zipfile.ZipFile(path) as archive:
+            for name in archive.namelist():
+                if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
+                    continue
+                root = ET.fromstring(archive.read(name))
+                if any(
+                    re.search(rf"(?i)(?:'{re.escape(old)}'|{re.escape(old)})!", formula.text or "")
+                    for formula in root.iter()
+                    if formula.tag.rsplit("}", 1)[-1] == "f"
+                ):
+                    exact.add(name)
+        return exact
+    if artifact_format == "docx" and operation in {
+        "add_bookmark", "insert_field", "wrap_content_control",
+    }:
+        return {"word/document.xml"}
+    if artifact_format == "docx" and operation == "set_protection":
+        return {"word/settings.xml"}
+    if artifact_format == "pptx" and operation in {"set_text", "set_transition", "set_alt_text"}:
         scripts = skills_root / "pptx-presentation-design" / "scripts"
         if str(scripts) not in sys.path:
             sys.path.insert(0, str(scripts))
@@ -961,6 +1140,93 @@ def _exact_operation_parts(
         with zipfile.ZipFile(path) as archive:
             slide = _target_slide(payload, presentation_order(archive))
         return {slide["part"]}
+    if artifact_format == "pptx" and operation in {"clone_slide", "insert_slide"}:
+        scripts = skills_root / "pptx-presentation-design" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from pptx_structured_editor import (  # type: ignore
+            _allocate_part,
+            _discover_clone_closure,
+            _rels_path,
+            _target_slide,
+            presentation_order,
+        )
+
+        with zipfile.ZipFile(path) as archive:
+            if operation == "clone_slide":
+                source = _target_slide(payload, presentation_order(archive))
+                clone_part = _allocate_part(source["part"], set(archive.namelist()))
+                mapping = _discover_clone_closure(archive, source["part"], clone_part)
+                exact = set(mapping.values())
+                for old_part, new_part in mapping.items():
+                    if _rels_path(old_part) in archive.namelist():
+                        exact.add(_rels_path(new_part))
+            else:
+                order = presentation_order(archive)
+                new_part = _allocate_part(order[0]["part"], set(archive.namelist()))
+                exact = {new_part, _rels_path(new_part)}
+        exact.update({
+            "ppt/presentation.xml",
+            "ppt/_rels/presentation.xml.rels",
+            "[Content_Types].xml",
+        })
+        return exact
+    if artifact_format == "pptx" and operation in {"set_speaker_notes", "add_comment"}:
+        scripts = skills_root / "pptx-presentation-design" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from pptx_structured_editor import (  # type: ignore
+            COMMENT_AUTHORS_REL,
+            COMMENT_REL,
+            _allocate_part,
+            _relationship_map,
+            _rels_path,
+            _resolve_target,
+            _target_slide,
+            presentation_order,
+        )
+
+        with zipfile.ZipFile(path) as archive:
+            slide = _target_slide(payload, presentation_order(archive))
+            slide_relationships = _relationship_map(archive, slide["part"])
+            if operation == "set_speaker_notes":
+                notes = next(
+                    (
+                        _resolve_target(slide["part"], relationship["target"])
+                        for relationship in slide_relationships.values()
+                        if relationship["type"].rsplit("/", 1)[-1] == "notesSlide"
+                    ),
+                    None,
+                )
+                if not notes:
+                    raise RuntimeError("speaker-notes target has no notes relationship")
+                return {notes}
+            presentation_relationships = _relationship_map(archive, "ppt/presentation.xml")
+            author = next(
+                (
+                    _resolve_target("ppt/presentation.xml", relationship["target"])
+                    for relationship in presentation_relationships.values()
+                    if relationship["type"] == COMMENT_AUTHORS_REL
+                ),
+                "ppt/commentAuthors.xml",
+            )
+            comment = next(
+                (
+                    _resolve_target(slide["part"], relationship["target"])
+                    for relationship in slide_relationships.values()
+                    if relationship["type"] == COMMENT_REL
+                ),
+                None,
+            )
+            if comment is None:
+                comment = _allocate_part("ppt/comments/comment1.xml", set(archive.namelist()))
+            return {
+                author,
+                comment,
+                _rels_path(slide["part"]),
+                "ppt/_rels/presentation.xml.rels",
+                "[Content_Types].xml",
+            }
     if artifact_format == "pptx" and operation == "reorder_slides":
         return {"ppt/presentation.xml"}
     return None
@@ -984,6 +1250,55 @@ def _verify_exact_semantic_scope(
     if set(after) != set(before):
         raise RuntimeError("strict semantic scope lost a target package part")
     if artifact_format == "xlsx":
+        if operation in {
+            "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
+            "set_number_format", "set_chart_title",
+        }:
+            with zipfile.ZipFile(after_path) as archive:
+                if operation == "set_defined_name":
+                    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+                    if not any(
+                        item.attrib.get("name", "").casefold()
+                        == str(payload.get("name", "")).casefold()
+                        for item in workbook.iter()
+                        if item.tag.rsplit("}", 1)[-1] == "definedName"
+                    ):
+                        raise RuntimeError("strict XLSX defined-name operation did not create its target")
+                elif operation == "set_chart_title":
+                    part = str(payload.get("chartPart", ""))
+                    root = ET.fromstring(archive.read(part))
+                    text = "".join(
+                        item.text or "" for item in root.iter()
+                        if item.tag.rsplit("}", 1)[-1] == "t"
+                    )
+                    if str(payload.get("title", "")) not in text:
+                        raise RuntimeError("strict XLSX chart-title operation did not create its target")
+                elif operation == "create_table":
+                    if not any(
+                        name.startswith("xl/tables/table")
+                        and str(payload.get("name", "")).encode("utf-8") in archive.read(name)
+                        for name in archive.namelist()
+                    ):
+                        raise RuntimeError("strict XLSX table operation did not create its target")
+                elif operation == "set_number_format":
+                    if str(payload.get("formatCode", "")).encode("utf-8") not in archive.read("xl/styles.xml"):
+                        raise RuntimeError("strict XLSX number format operation did not create its target")
+                elif operation == "set_data_validation":
+                    if str(payload.get("range", "")).replace("$", "").upper().encode("utf-8") not in b"".join(
+                        archive.read(name) for name in archive.namelist()
+                        if name.startswith("xl/worksheets/") and name.endswith(".xml")
+                    ):
+                        raise RuntimeError("strict XLSX validation operation did not create its target")
+                elif operation == "rename_sheet":
+                    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+                    if not any(
+                        item.attrib.get("name", "").casefold()
+                        == str(payload.get("newName", "")).casefold()
+                        for item in workbook.iter()
+                        if item.tag.rsplit("}", 1)[-1] == "sheet"
+                    ):
+                        raise RuntimeError("strict XLSX rename operation did not create its target")
+            return
         scripts = Path(__file__).resolve().parents[2] / "xlsx-workbook-design" / "scripts"
         if str(scripts) not in sys.path:
             sys.path.insert(0, str(scripts))
@@ -1013,6 +1328,21 @@ def _verify_exact_semantic_scope(
     if artifact_format == "pptx":
         p_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
         a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+        if operation == "add_comment":
+            with zipfile.ZipFile(after_path) as archive:
+                if not any(
+                    name.startswith("ppt/comments/")
+                    and str(payload.get("comment", "")).encode("utf-8") in archive.read(name)
+                    for name in archive.namelist()
+                ):
+                    raise RuntimeError("strict PPTX comment operation did not create its target")
+            return
+        if operation in {"clone_slide", "insert_slide"}:
+            # The exact copy-on-write closure is computed from the pre-edit
+            # relationship graph by `_exact_operation_parts`; no existing
+            # slide, layout, master, media, or embedded object may change.
+            return
 
         def normalized(data: bytes) -> bytes:
             root = ET.fromstring(data)
@@ -1045,6 +1375,38 @@ def _verify_exact_semantic_scope(
                             text.text = "__NEXA_TARGET_TEXT__"
                 if not matched:
                     raise RuntimeError("strict PPTX set_text target shape disappeared")
+            elif operation == "set_alt_text":
+                shape_id = str(payload.get("shapeId", ""))
+                shape_name = str(payload.get("shapeName", ""))
+                matched = False
+                for shape in root.iter(f"{{{p_ns}}}sp"):
+                    properties = shape.find(f".//{{{p_ns}}}cNvPr")
+                    if properties is None:
+                        continue
+                    if (
+                        (shape_id and properties.attrib.get("id") == shape_id)
+                        or (shape_name and properties.attrib.get("name") == shape_name)
+                    ):
+                        properties.attrib.pop("descr", None)
+                        properties.attrib.pop("title", None)
+                        matched = True
+                if not matched:
+                    raise RuntimeError("strict PPTX set_alt_text target shape disappeared")
+            elif operation == "set_speaker_notes":
+                body_shape = next(
+                    (
+                        shape for shape in root.iter(f"{{{p_ns}}}sp")
+                        if any(
+                            placeholder.attrib.get("type") == "body"
+                            for placeholder in shape.iter(f"{{{p_ns}}}ph")
+                        )
+                    ),
+                    None,
+                )
+                if body_shape is None:
+                    raise RuntimeError("strict PPTX speaker-notes body disappeared")
+                for text in body_shape.iter(f"{{{a_ns}}}t"):
+                    text.text = "__NEXA_TARGET_NOTES__"
             return ET.tostring(root, encoding="utf-8")
 
         if any(normalized(before[name]) != normalized(after[name]) for name in before):
@@ -1515,7 +1877,37 @@ def _windows_com_render_xlsx(
             )
             png = outdir / f"sheet-{visible_index:03d}.png"
             if expected["type"] == "chartsheet":
-                exported = bool(sheet.Export(str(png), "PNG"))
+                sheet.Activate()
+                time.sleep(0.2)
+                active_chart = getattr(app, "ActiveChart", None)
+                if active_chart is None:
+                    raise RuntimeError(f"Excel did not activate chart sheet: {sheet.Name}")
+                width = min(1600.0, max(640.0, float(active_chart.ChartArea.Width)))
+                height = min(1200.0, max(360.0, float(active_chart.ChartArea.Height)))
+                active_chart.CopyPicture(Appearance=1, Format=2)  # xlScreen, xlPicture
+                try:
+                    import pythoncom  # type: ignore
+
+                    pythoncom.PumpWaitingMessages()
+                except (ImportError, OSError):
+                    pass
+                time.sleep(0.2)
+                scratch = None
+                chart_object = None
+                try:
+                    scratch = app.Workbooks.Add()
+                    scratch_sheet = scratch.Worksheets.Item(1)
+                    chart_object = scratch_sheet.ChartObjects().Add(0, 0, width, height)
+                    chart_object.Activate()
+                    chart_object.Chart.Paste()
+                    time.sleep(0.2)
+                    exported = bool(chart_object.Chart.Export(str(png), "PNG"))
+                finally:
+                    if chart_object is not None:
+                        chart_object.Delete()
+                    if scratch is not None:
+                        scratch.Close(SaveChanges=False)
+                    app.CutCopyMode = False
             else:
                 used_range = sheet.UsedRange
                 width = min(1600.0, max(640.0, float(used_range.Width)))
@@ -1650,7 +2042,7 @@ def _windows_com_render_pptx(
 
 
 def _contract_path(
-    job: OfficeArtifactJob,
+    job: OfficeExecutionPlan,
     temporary_root: Path,
     workspace_root: Path,
 ) -> Path | None:
@@ -1684,7 +2076,7 @@ def _rollback_job_outputs(
     return errors
 
 
-def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str, Any], int]:
+def execute_plan(job: OfficeExecutionPlan, workspace_root: Path) -> tuple[dict[str, Any], int]:
     backend = _select_backend(job)
     status = _backend_status(backend)
     result: dict[str, Any] = {
@@ -1945,6 +2337,9 @@ def execute_job(job: OfficeArtifactJob, workspace_root: Path) -> tuple[dict[str,
     return result, exit_code
 
 
+execute_job = execute_plan
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a transactional Office artifact job")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -1960,8 +2355,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         payload = _load_job(args.job)
-        job = OfficeArtifactJob.from_dict(payload, Path.cwd())
-        result, exit_code = execute_job(job, Path.cwd())
+        job = OfficeExecutionPlan.from_legacy_job(payload, Path.cwd())
+        result, exit_code = execute_plan(job, Path.cwd())
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return exit_code
     except Exception as error:  # noqa: BLE001

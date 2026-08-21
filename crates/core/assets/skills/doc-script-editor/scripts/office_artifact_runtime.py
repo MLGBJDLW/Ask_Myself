@@ -62,6 +62,27 @@ FORMAT_PYTHON_DEPENDENCIES = {
 }
 
 
+def office_dependency_lock_status() -> dict[str, Any]:
+    scripts_dir = Path(__file__).resolve().parent
+    lock = scripts_dir / "requirements.lock"
+    sbom = scripts_dir / "office-python.sbom.json"
+    if not lock.is_file() or not sbom.is_file():
+        return {
+            "status": "missing",
+            "requireHashes": True,
+            "lockPath": "scripts/requirements.lock",
+            "sbomPath": "scripts/office-python.sbom.json",
+        }
+    return {
+        "status": "ready",
+        "requireHashes": True,
+        "lockPath": "scripts/requirements.lock",
+        "lockSha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+        "sbomPath": "scripts/office-python.sbom.json",
+        "sbomSha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+    }
+
+
 def office_python_dependency_statuses(
     artifact_format: str | None = None,
     needs: set[str] | None = None,
@@ -246,6 +267,170 @@ class OfficeCliBackend(OfficeBackend):
         )
 
 
+class PptxGenJsBackend(OfficeBackend):
+    id = "pptxgenjs"
+
+    def preflight(self) -> BackendStatus:
+        configured_node = os.environ.get("NEXA_PPTXGENJS_NODE")
+        node = (
+            str(Path(configured_node).expanduser().resolve())
+            if configured_node and Path(configured_node).expanduser().is_file()
+            else shutil.which("node")
+        )
+        if not node:
+            return BackendStatus(
+                id=self.id,
+                label="PptxGenJS",
+                status="missing",
+                capabilities=["create", "masters", "charts", "svg", "media"],
+                local=True,
+                detail="Node.js is unavailable; the Python PPTX author remains available.",
+            )
+        configured_modules = os.environ.get("NEXA_PPTXGENJS_MODULE_ROOT")
+        module_root = (
+            Path(configured_modules).expanduser().resolve().parent
+            if configured_modules
+            and (Path(configured_modules).expanduser() / "pptxgenjs" / "package.json").is_file()
+            else next(
+                (
+                    parent for parent in Path(__file__).resolve().parents
+                    if (parent / "node_modules" / "pptxgenjs" / "package.json").is_file()
+                ),
+                None,
+            )
+        )
+        if module_root is None:
+            return BackendStatus(
+                id=self.id,
+                label="PptxGenJS",
+                status="missing",
+                capabilities=["create", "masters", "charts", "svg", "media"],
+                local=True,
+                path=node,
+                detail=(
+                    "Node.js is present, but reviewed pptxgenjs@4.0.1 is not installed "
+                    "in the app-managed Office author runtime."
+                ),
+            )
+        return BackendStatus(
+            id=self.id,
+            label="PptxGenJS",
+            status="ready",
+            capabilities=["create", "masters", "charts", "svg", "media"],
+            local=True,
+            path=node,
+            version="4.0.1",
+            detail="Network-closed author adapter restricted to reviewed local assets.",
+        )
+
+
+def find_openxml_sdk_validator() -> tuple[str, list[str]] | None:
+    configured = os.environ.get("NEXA_OPENXML_VALIDATOR")
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+    repository = next(
+        (parent for parent in Path(__file__).resolve().parents if (parent / "tools" / "openxml-validator").is_dir()),
+        None,
+    )
+    if repository is not None:
+        publish = repository / "tools" / "openxml-validator" / "bin" / "Release" / "net8.0" / "publish"
+        candidates.extend([
+            publish / "Nexa.OpenXml.Validator.exe",
+            publish / "Nexa.OpenXml.Validator",
+            publish / "Nexa.OpenXml.Validator.dll",
+        ])
+    commands: list[tuple[str, list[str]]] = []
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() == ".dll":
+            configured_dotnet = os.environ.get("NEXA_DOTNET")
+            dotnet = (
+                str(Path(configured_dotnet).expanduser().resolve())
+                if configured_dotnet and Path(configured_dotnet).expanduser().is_file()
+                else shutil.which("dotnet")
+            )
+            if dotnet:
+                commands.append((dotnet, [str(candidate)]))
+            continue
+        commands.append((str(candidate), []))
+    for program, prefix in commands:
+        try:
+            completed = subprocess.run(
+                [program, *prefix, "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+            payload = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            continue
+        if (
+            completed.returncode == 0
+            and payload.get("kind") == "openXmlSdkValidatorStatus"
+            and payload.get("engineVersion") == "3.5.1"
+            and payload.get("status") == "ready"
+        ):
+            return program, prefix
+    return None
+
+
+def run_openxml_sdk_validator(path: Path) -> dict[str, Any]:
+    command = find_openxml_sdk_validator()
+    if command is None:
+        raise RuntimeError("Microsoft Open XML SDK validator adapter is unavailable")
+    program, prefix = command
+    completed = subprocess.run(
+        [program, *prefix, str(path.resolve())],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "Open XML SDK validator returned non-JSON output: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        ) from error
+    if not isinstance(payload, dict) or payload.get("kind") != "openXmlSdkValidation":
+        raise RuntimeError("Open XML SDK validator returned an invalid evidence envelope")
+    payload["exitCode"] = completed.returncode
+    return payload
+
+
+class OpenXmlSdkValidatorBackend(OfficeBackend):
+    id = "openxml-sdk"
+
+    def preflight(self) -> BackendStatus:
+        command = find_openxml_sdk_validator()
+        if command is None:
+            return BackendStatus(
+                id=self.id,
+                label="Microsoft Open XML SDK Validator",
+                status="missing",
+                capabilities=["schema-validate"],
+                local=True,
+                version="3.5.1",
+                detail="Build or install the pinned Nexa OpenXmlValidator adapter.",
+            )
+        program, prefix = command
+        return BackendStatus(
+            id=self.id,
+            label="Microsoft Open XML SDK Validator",
+            status="ready",
+            capabilities=["schema-validate"],
+            local=True,
+            version="3.5.1",
+            path=" ".join([program, *prefix]),
+            detail="Official DocumentFormat.OpenXml OpenXmlValidator, Microsoft365 schema set.",
+        )
+
+
 class WindowsComBackend(OfficeBackend):
     id = "windows-com"
 
@@ -286,6 +471,8 @@ def office_backend_statuses() -> list[dict[str, Any]]:
         for backend in (
             NexaOpenXmlBackend(),
             LibreOfficeBackend(),
+            PptxGenJsBackend(),
+            OpenXmlSdkValidatorBackend(),
             OfficeCliBackend(),
             WindowsComBackend(),
         )
