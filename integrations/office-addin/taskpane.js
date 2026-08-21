@@ -13,10 +13,14 @@ function status(message) {
   statusElement.textContent = message;
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function validateEndpoint(value) {
   const parsed = new URL(value);
-  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.pathname !== '/') {
-    throw new Error('Endpoint must be the exact http://127.0.0.1:<port> value shown by Nexa.');
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password) {
+    throw new Error('Endpoint must be the exact http(s)://127.0.0.1:<port> value shown by Nexa.');
   }
   return parsed.origin;
 }
@@ -49,17 +53,33 @@ function requirementSets(host) {
 
 function capabilities(host, sets) {
   if (host === 'Word') {
-    return [
-      'word.replace-text',
-      'word.insert-text',
-      ...(sets.includes('WordApi:1.4') ? ['word.add-comment'] : []),
-    ];
+    return sets.includes('WordApi:1.4')
+      ? [
+        'word.replace-text',
+        'word.insert-text',
+        'word.add-comment',
+        'word.set-change-tracking',
+        'word.wrap-content-control',
+        'word.reply-comment',
+        'word.resolve-comment',
+      ]
+      : [];
   }
   if (host === 'Excel') {
-    return ['excel.set-range', 'excel.set-formula', 'excel.format-range'];
+    return sets.includes('ExcelApi:1.13')
+      ? [
+        'excel.set-range',
+        'excel.set-formula',
+        'excel.format-range',
+        'excel.create-table',
+        'excel.add-chart',
+        'excel.calculate',
+      ]
+      : [];
   }
   return [
     ...(sets.includes('PowerPointApi:1.4') ? ['powerpoint.set-text'] : []),
+    ...(sets.includes('PowerPointApi:1.4') ? ['powerpoint.add-textbox', 'powerpoint.add-shape'] : []),
     ...(sets.includes('PowerPointApi:1.3') ? ['powerpoint.add-slide'] : []),
   ];
 }
@@ -96,6 +116,45 @@ async function executeWord(operation) {
       await context.sync();
       return { commentAdded: true };
     }
+    if (operation.op === 'word_set_change_tracking') {
+      if (!Office.context.requirements.isSetSupported('WordApi', '1.4')) throw new Error('WordApi 1.4 is required');
+      const modes = {
+        off: Word.ChangeTrackingMode.off,
+        track_all: Word.ChangeTrackingMode.trackAll,
+        track_mine_only: Word.ChangeTrackingMode.trackMineOnly,
+      };
+      if (!hasOwn(modes, operation.mode)) throw new Error(`Unsupported change tracking mode: ${operation.mode}`);
+      context.document.changeTrackingMode = modes[operation.mode];
+      await context.sync();
+      return { changeTrackingMode: operation.mode };
+    }
+    if (operation.op === 'word_wrap_content_control') {
+      if (!Office.context.requirements.isSetSupported('WordApi', '1.4')) throw new Error('WordApi 1.4 is required');
+      const matches = context.document.body.search(operation.search);
+      matches.load('items');
+      await context.sync();
+      if (matches.items.length !== 1) throw new Error(`Content-control anchor must match exactly once; found ${matches.items.length}`);
+      const control = matches.items[0].insertContentControl();
+      control.tag = operation.tag;
+      if (operation.title) control.title = operation.title;
+      control.load('id,tag,title');
+      await context.sync();
+      return { contentControlId: control.id, tag: control.tag, title: control.title };
+    }
+    if (operation.op === 'word_reply_comment' || operation.op === 'word_resolve_comment') {
+      if (!Office.context.requirements.isSetSupported('WordApi', '1.4')) throw new Error('WordApi 1.4 is required');
+      const comments = context.document.body.getComments();
+      comments.load('items/id');
+      await context.sync();
+      const matched = comments.items.filter((item) => item.id === operation.commentId);
+      if (matched.length !== 1) throw new Error(`commentId must match exactly once; found ${matched.length}`);
+      if (operation.op === 'word_reply_comment') matched[0].reply(operation.comment);
+      else matched[0].resolved = operation.resolved;
+      await context.sync();
+      return operation.op === 'word_reply_comment'
+        ? { commentId: operation.commentId, replied: true }
+        : { commentId: operation.commentId, resolved: operation.resolved };
+    }
     throw new Error(`Unsupported Word operation: ${operation.op}`);
   });
 }
@@ -108,26 +167,78 @@ function excelWorksheet(context, name) {
 
 async function executeExcel(operation) {
   return Excel.run(async (context) => {
-    const range = excelWorksheet(context, operation.sheet).getRange(operation.address);
     if (operation.op === 'excel_set_range') {
+      const range = excelWorksheet(context, operation.sheet).getRange(operation.address);
       range.values = operation.values;
     } else if (operation.op === 'excel_set_formula') {
+      const range = excelWorksheet(context, operation.sheet).getRange(operation.address);
       range.formulas = operation.formulas;
     } else if (operation.op === 'excel_format_range') {
+      const range = excelWorksheet(context, operation.sheet).getRange(operation.address);
       const format = operation.format ?? {};
       const allowed = new Set(['fillColor', 'fontColor', 'fontBold', 'columnWidth', 'rowHeight', 'numberFormat']);
       for (const key of Object.keys(format)) if (!allowed.has(key)) throw new Error(`Unsupported Excel format key: ${key}`);
-      if (format.fillColor) range.format.fill.color = String(format.fillColor);
-      if (format.fontColor) range.format.font.color = String(format.fontColor);
-      if (typeof format.fontBold === 'boolean') range.format.font.bold = format.fontBold;
-      if (typeof format.columnWidth === 'number') range.format.columnWidth = format.columnWidth;
-      if (typeof format.rowHeight === 'number') range.format.rowHeight = format.rowHeight;
-      if (Array.isArray(format.numberFormat)) range.numberFormat = format.numberFormat;
+      if (hasOwn(format, 'fillColor') && typeof format.fillColor !== 'string') throw new Error('fillColor must be a string');
+      if (hasOwn(format, 'fontColor') && typeof format.fontColor !== 'string') throw new Error('fontColor must be a string');
+      if (hasOwn(format, 'fontBold') && typeof format.fontBold !== 'boolean') throw new Error('fontBold must be a boolean');
+      if (hasOwn(format, 'columnWidth') && (!Number.isFinite(format.columnWidth) || format.columnWidth <= 0 || format.columnWidth > 1000)) throw new Error('columnWidth must be in (0, 1000]');
+      if (hasOwn(format, 'rowHeight') && (!Number.isFinite(format.rowHeight) || format.rowHeight <= 0 || format.rowHeight > 1000)) throw new Error('rowHeight must be in (0, 1000]');
+      if (hasOwn(format, 'numberFormat') && (!Array.isArray(format.numberFormat) || !format.numberFormat.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === 'string')))) throw new Error('numberFormat must be a string matrix');
+      if (hasOwn(format, 'fillColor')) range.format.fill.color = format.fillColor;
+      if (hasOwn(format, 'fontColor')) range.format.font.color = format.fontColor;
+      if (hasOwn(format, 'fontBold')) range.format.font.bold = format.fontBold;
+      if (hasOwn(format, 'columnWidth')) range.format.columnWidth = format.columnWidth;
+      if (hasOwn(format, 'rowHeight')) range.format.rowHeight = format.rowHeight;
+      if (hasOwn(format, 'numberFormat')) range.numberFormat = format.numberFormat;
+    } else if (operation.op === 'excel_create_table') {
+      const sheet = excelWorksheet(context, operation.sheet);
+      const table = context.workbook.tables.add(sheet.getRange(operation.address), operation.hasHeaders);
+      if (operation.name) table.name = operation.name;
+      table.load('name');
+      await context.sync();
+      return { tableName: table.name, address: operation.address };
+    } else if (operation.op === 'excel_add_chart') {
+      const sheet = excelWorksheet(context, operation.sheet);
+      const chartTypes = {
+        column_clustered: Excel.ChartType.columnClustered,
+        bar_clustered: Excel.ChartType.barClustered,
+        line: Excel.ChartType.line,
+        line_markers: Excel.ChartType.lineMarkers,
+        area: Excel.ChartType.area,
+        pie: Excel.ChartType.pie,
+        doughnut: Excel.ChartType.doughnut,
+      };
+      const seriesBy = {
+        auto: Excel.ChartSeriesBy.auto,
+        columns: Excel.ChartSeriesBy.columns,
+        rows: Excel.ChartSeriesBy.rows,
+      };
+      if (!hasOwn(chartTypes, operation.chartType)) throw new Error(`Unsupported Excel chart type: ${operation.chartType}`);
+      if (operation.seriesBy && !hasOwn(seriesBy, operation.seriesBy)) throw new Error(`Unsupported seriesBy value: ${operation.seriesBy}`);
+      const chart = sheet.charts.add(
+        chartTypes[operation.chartType],
+        sheet.getRange(operation.sourceAddress),
+        operation.seriesBy ? seriesBy[operation.seriesBy] : Excel.ChartSeriesBy.auto,
+      );
+      if (operation.name) chart.name = operation.name;
+      if (operation.title) chart.title.text = operation.title;
+      if (operation.positionStart) chart.setPosition(operation.positionStart, operation.positionEnd ?? operation.positionStart);
+      chart.load('name');
+      await context.sync();
+      return { chartName: chart.name, sourceAddress: operation.sourceAddress };
+    } else if (operation.op === 'excel_calculate') {
+      const calculationTypes = {
+        recalculate: Excel.CalculationType.recalculate,
+        full: Excel.CalculationType.full,
+        full_rebuild: Excel.CalculationType.fullRebuild,
+      };
+      if (!hasOwn(calculationTypes, operation.calculationType)) throw new Error(`Unsupported calculation type: ${operation.calculationType}`);
+      context.workbook.application.calculate(calculationTypes[operation.calculationType]);
     } else {
       throw new Error(`Unsupported Excel operation: ${operation.op}`);
     }
     await context.sync();
-    return { address: operation.address, updated: true };
+    return { address: operation.address ?? null, updated: true };
   });
 }
 
@@ -166,6 +277,41 @@ async function executePowerPoint(operation) {
       shape.textFrame.textRange.text = operation.text;
       await context.sync();
       return { updated: true };
+    }
+    if (operation.op === 'powerpoint_add_textbox' || operation.op === 'powerpoint_add_shape') {
+      if (!Office.context.requirements.isSetSupported('PowerPointApi', '1.4')) throw new Error('PowerPointApi 1.4 is required');
+      if (![operation.left, operation.top, operation.width, operation.height].every(Number.isFinite) || operation.width <= 0 || operation.height <= 0) {
+        throw new Error('PowerPoint shape geometry must contain finite coordinates and positive dimensions');
+      }
+      const slide = await powerpointSlide(context, operation);
+      const options = { left: operation.left, top: operation.top, width: operation.width, height: operation.height };
+      let shape;
+      if (operation.op === 'powerpoint_add_textbox') {
+        shape = slide.shapes.addTextBox(operation.text, options);
+      } else {
+        const shapeTypes = {
+          rectangle: PowerPoint.GeometricShapeType.rectangle,
+          round_rectangle: PowerPoint.GeometricShapeType.roundRectangle,
+          ellipse: PowerPoint.GeometricShapeType.ellipse,
+          triangle: PowerPoint.GeometricShapeType.triangle,
+          diamond: PowerPoint.GeometricShapeType.diamond,
+          hexagon: PowerPoint.GeometricShapeType.hexagon,
+          chevron: PowerPoint.GeometricShapeType.chevron,
+          right_arrow: PowerPoint.GeometricShapeType.rightArrow,
+          flow_chart_process: PowerPoint.GeometricShapeType.flowChartProcess,
+          flow_chart_decision: PowerPoint.GeometricShapeType.flowChartDecision,
+        };
+        if (!hasOwn(shapeTypes, operation.shapeType)) throw new Error(`Unsupported PowerPoint shape type: ${operation.shapeType}`);
+        shape = slide.shapes.addGeometricShape(shapeTypes[operation.shapeType], options);
+        if (operation.text) shape.textFrame.textRange.text = operation.text;
+        if (operation.fillColor) shape.fill.setSolidColor(operation.fillColor);
+        if (operation.fontColor) shape.textFrame.textRange.font.color = operation.fontColor;
+        if (typeof operation.fontBold === 'boolean') shape.textFrame.textRange.font.bold = operation.fontBold;
+      }
+      if (operation.name) shape.name = operation.name;
+      shape.load('id,name');
+      await context.sync();
+      return { shapeId: shape.id, shapeName: shape.name, added: true };
     }
     throw new Error(`Unsupported PowerPoint operation: ${operation.op}`);
   });
@@ -213,14 +359,18 @@ async function pairAndRegister() {
   endpoint = validateEndpoint(endpointElement.value.trim());
   const pairingCode = pairingElement.value.trim();
   if (!/^\d{6}$/.test(pairingCode)) throw new Error('Pairing code must contain six digits');
+  const sets = requirementSets(officeHost);
+  const hostCapabilities = capabilities(officeHost, sets);
+  if (hostCapabilities.length === 0) {
+    throw new Error(`${officeHost} does not expose the Office.js requirement set required by Nexa.`);
+  }
   const paired = await bridgeRequest('/v1/pair', { pairingCode });
   bridgeToken = paired.bridgeToken;
-  const sets = requirementSets(officeHost);
   const registered = await bridgeRequest('/v1/register', {
     host: officeHost,
     documentId: Office.context.document.url || `${officeHost}-active-document`,
     requirementSets: sets,
-    capabilities: capabilities(officeHost, sets),
+    capabilities: hostCapabilities,
   }, bridgeToken);
   sessionId = registered.session.sessionId;
   status(`Connected to ${officeHost}. Session ${sessionId}. Keep this pane open.`);

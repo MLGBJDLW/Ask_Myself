@@ -657,6 +657,74 @@ enum OfficeDecision {
     Discard,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WordLiveChangeTrackingMode {
+    Off,
+    TrackAll,
+    TrackMineOnly,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExcelLiveCalculationType {
+    Recalculate,
+    Full,
+    FullRebuild,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExcelLiveChartType {
+    ColumnClustered,
+    BarClustered,
+    Line,
+    LineMarkers,
+    Area,
+    Pie,
+    Doughnut,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExcelLiveSeriesBy {
+    Auto,
+    Columns,
+    Rows,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExcelLiveRangeFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fill_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    column_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    row_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    number_format: Option<Vec<Vec<String>>>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PowerpointLiveShapeType {
+    Rectangle,
+    RoundRectangle,
+    Ellipse,
+    Triangle,
+    Diamond,
+    Hexagon,
+    Chevron,
+    RightArrow,
+    FlowChartProcess,
+    FlowChartDecision,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum OfficeLiveOperation {
@@ -676,6 +744,25 @@ enum OfficeLiveOperation {
         search: String,
         comment: String,
     },
+    WordSetChangeTracking {
+        mode: WordLiveChangeTrackingMode,
+    },
+    WordWrapContentControl {
+        search: String,
+        tag: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    WordReplyComment {
+        #[serde(rename = "commentId")]
+        comment_id: String,
+        comment: String,
+    },
+    WordResolveComment {
+        #[serde(rename = "commentId")]
+        comment_id: String,
+        resolved: bool,
+    },
     ExcelSetRange {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sheet: Option<String>,
@@ -692,7 +779,46 @@ enum OfficeLiveOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sheet: Option<String>,
         address: String,
-        format: Value,
+        format: ExcelLiveRangeFormat,
+    },
+    ExcelCreateTable {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sheet: Option<String>,
+        address: String,
+        #[serde(rename = "hasHeaders")]
+        has_headers: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    ExcelAddChart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sheet: Option<String>,
+        #[serde(rename = "sourceAddress")]
+        source_address: String,
+        #[serde(rename = "chartType")]
+        chart_type: ExcelLiveChartType,
+        #[serde(default, rename = "seriesBy", skip_serializing_if = "Option::is_none")]
+        series_by: Option<ExcelLiveSeriesBy>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(
+            default,
+            rename = "positionStart",
+            skip_serializing_if = "Option::is_none"
+        )]
+        position_start: Option<String>,
+        #[serde(
+            default,
+            rename = "positionEnd",
+            skip_serializing_if = "Option::is_none"
+        )]
+        position_end: Option<String>,
+    },
+    ExcelCalculate {
+        #[serde(rename = "calculationType")]
+        calculation_type: ExcelLiveCalculationType,
     },
     PowerpointSetText {
         #[serde(default, rename = "slideId", skip_serializing_if = "Option::is_none")]
@@ -715,6 +841,50 @@ enum OfficeLiveOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
+    #[serde(rename = "powerpoint_add_textbox")]
+    PowerpointAddTextBox {
+        #[serde(default, rename = "slideId", skip_serializing_if = "Option::is_none")]
+        slide_id: Option<String>,
+        #[serde(
+            default,
+            rename = "slideIndex",
+            skip_serializing_if = "Option::is_none"
+        )]
+        slide_index: Option<u64>,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        left: f64,
+        top: f64,
+        width: f64,
+        height: f64,
+    },
+    PowerpointAddShape {
+        #[serde(default, rename = "slideId", skip_serializing_if = "Option::is_none")]
+        slide_id: Option<String>,
+        #[serde(
+            default,
+            rename = "slideIndex",
+            skip_serializing_if = "Option::is_none"
+        )]
+        slide_index: Option<u64>,
+        #[serde(rename = "shapeType")]
+        shape_type: PowerpointLiveShapeType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        left: f64,
+        top: f64,
+        width: f64,
+        height: f64,
+        #[serde(default, rename = "fillColor", skip_serializing_if = "Option::is_none")]
+        fill_color: Option<String>,
+        #[serde(default, rename = "fontColor", skip_serializing_if = "Option::is_none")]
+        font_color: Option<String>,
+        #[serde(default, rename = "fontBold", skip_serializing_if = "Option::is_none")]
+        font_bold: Option<bool>,
+    },
 }
 
 impl OfficeLiveOperation {
@@ -722,11 +892,21 @@ impl OfficeLiveOperation {
         match self {
             Self::WordReplaceText { .. }
             | Self::WordInsertText { .. }
-            | Self::WordAddComment { .. } => "Word",
+            | Self::WordAddComment { .. }
+            | Self::WordSetChangeTracking { .. }
+            | Self::WordWrapContentControl { .. }
+            | Self::WordReplyComment { .. }
+            | Self::WordResolveComment { .. } => "Word",
             Self::ExcelSetRange { .. }
             | Self::ExcelSetFormula { .. }
-            | Self::ExcelFormatRange { .. } => "Excel",
-            Self::PowerpointSetText { .. } | Self::PowerpointAddSlide { .. } => "PowerPoint",
+            | Self::ExcelFormatRange { .. }
+            | Self::ExcelCreateTable { .. }
+            | Self::ExcelAddChart { .. }
+            | Self::ExcelCalculate { .. } => "Excel",
+            Self::PowerpointSetText { .. }
+            | Self::PowerpointAddSlide { .. }
+            | Self::PowerpointAddTextBox { .. }
+            | Self::PowerpointAddShape { .. } => "PowerPoint",
         }
     }
 
@@ -735,11 +915,20 @@ impl OfficeLiveOperation {
             Self::WordReplaceText { .. } => "word.replace-text",
             Self::WordInsertText { .. } => "word.insert-text",
             Self::WordAddComment { .. } => "word.add-comment",
+            Self::WordSetChangeTracking { .. } => "word.set-change-tracking",
+            Self::WordWrapContentControl { .. } => "word.wrap-content-control",
+            Self::WordReplyComment { .. } => "word.reply-comment",
+            Self::WordResolveComment { .. } => "word.resolve-comment",
             Self::ExcelSetRange { .. } => "excel.set-range",
             Self::ExcelSetFormula { .. } => "excel.set-formula",
             Self::ExcelFormatRange { .. } => "excel.format-range",
+            Self::ExcelCreateTable { .. } => "excel.create-table",
+            Self::ExcelAddChart { .. } => "excel.add-chart",
+            Self::ExcelCalculate { .. } => "excel.calculate",
             Self::PowerpointSetText { .. } => "powerpoint.set-text",
             Self::PowerpointAddSlide { .. } => "powerpoint.add-slide",
+            Self::PowerpointAddTextBox { .. } => "powerpoint.add-textbox",
+            Self::PowerpointAddShape { .. } => "powerpoint.add-shape",
         }
     }
 }
@@ -1226,6 +1415,25 @@ mod tests {
         assert!(actions.contains(&json!("restore")));
         assert!(actions.contains(&json!("live_status")));
         assert!(actions.contains(&json!("live_execute")));
+        let live_operations = schema["properties"]["live_operation"]["oneOf"]
+            .as_array()
+            .expect("live operation union")
+            .iter()
+            .filter_map(|variant| variant["properties"]["op"]["const"].as_str())
+            .collect::<Vec<_>>();
+        for operation in [
+            "word_set_change_tracking",
+            "word_wrap_content_control",
+            "word_reply_comment",
+            "word_resolve_comment",
+            "excel_create_table",
+            "excel_add_chart",
+            "excel_calculate",
+            "powerpoint_add_textbox",
+            "powerpoint_add_shape",
+        ] {
+            assert!(live_operations.contains(&operation));
+        }
     }
 
     #[test]
@@ -1399,6 +1607,72 @@ mod tests {
             }
         }));
         assert!(live_typo.is_err());
+
+        for operation in [
+            json!({"op": "word_set_change_tracking", "mode": "track_all"}),
+            json!({
+                "op": "word_wrap_content_control",
+                "search": "Decision",
+                "tag": "decision"
+            }),
+            json!({
+                "op": "excel_add_chart",
+                "sourceAddress": "A1:B3",
+                "chartType": "column_clustered",
+                "seriesBy": "columns"
+            }),
+            json!({
+                "op": "excel_format_range",
+                "address": "A1:B2",
+                "format": {"fontBold": true, "numberFormat": [["0.00", "0.00"]]}
+            }),
+            json!({"op": "excel_calculate", "calculationType": "full_rebuild"}),
+            json!({
+                "op": "powerpoint_add_shape",
+                "slideIndex": 1,
+                "shapeType": "rectangle",
+                "left": 10.0,
+                "top": 20.0,
+                "width": 200.0,
+                "height": 80.0
+            }),
+        ] {
+            let parsed = serde_json::from_value::<OfficeArtifactArgs>(json!({
+                "action": "live_execute",
+                "workspace_root": ".",
+                "live_session_id": "session",
+                "live_operation": operation
+            }));
+            assert!(parsed.is_ok());
+        }
+
+        let invalid_live_enum = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "live_execute",
+            "workspace_root": ".",
+            "live_session_id": "session",
+            "live_operation": {
+                "op": "powerpoint_add_shape",
+                "slideIndex": 1,
+                "shapeType": "arbitrary_shape",
+                "left": 10,
+                "top": 20,
+                "width": 200,
+                "height": 80
+            }
+        }));
+        assert!(invalid_live_enum.is_err());
+
+        let invalid_live_format = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "live_execute",
+            "workspace_root": ".",
+            "live_session_id": "session",
+            "live_operation": {
+                "op": "excel_format_range",
+                "address": "A1",
+                "format": {"rawOfficeFormat": {"dangerous": true}}
+            }
+        }));
+        assert!(invalid_live_format.is_err());
     }
 
     #[test]

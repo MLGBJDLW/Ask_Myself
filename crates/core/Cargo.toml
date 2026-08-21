@@ -33,6 +33,8 @@ tiktoken-rs = "0.11.0"
 tokenizers = { version = "0.23", default-features = false, features = ["progressbar", "onig"], optional = true }
 ndarray = { version = "0.17", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "multipart", "stream", "cookies", "gzip", "brotli", "deflate", "zstd", "charset", "http2"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -74,5 +76,6 @@ ocr = ["onnx-runtime"]
 video = ["candle-core", "candle-nn", "candle-transformers", "hound", "tempfile", "xz2", "tar", "dep:tokenizers"]
 
 [dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }

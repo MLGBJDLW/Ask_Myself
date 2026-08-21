@@ -1,14 +1,18 @@
 //! User-authorized loopback bridge for a separately sideloaded Office.js add-in.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use url::Url;
 use uuid::Uuid;
 
 use crate::error::CoreError;
@@ -19,6 +23,9 @@ const CLIENT_TTL_SECONDS: u64 = 35 * 60;
 const MAX_PAIRING_FAILURES: u8 = 5;
 const PAIRING_BACKOFF_SECONDS: u64 = 30;
 const OPERATION_TTL_SECONDS: u64 = 5 * 60;
+const OFFICE_LIVE_TLS_CERT_ENV: &str = "NEXA_OFFICE_LIVE_TLS_CERT";
+const OFFICE_LIVE_TLS_KEY_ENV: &str = "NEXA_OFFICE_LIVE_TLS_KEY";
+const OFFICE_LIVE_ORIGIN_ENV: &str = "NEXA_OFFICE_LIVE_ORIGIN";
 
 static LIVE_BRIDGE: OnceLock<Arc<OfficeLiveBridge>> = OnceLock::new();
 
@@ -41,6 +48,8 @@ pub struct OfficeLiveBridgeStatus {
     pub endpoint: String,
     pub pairing_code: Option<String>,
     pub add_in_manifest_path: Option<String>,
+    pub allowed_origin: Option<String>,
+    pub transport: &'static str,
     pub sessions: Vec<OfficeHostSession>,
 }
 
@@ -105,6 +114,8 @@ struct BridgeState {
 #[derive(Debug)]
 pub struct OfficeLiveBridge {
     endpoint: String,
+    allowed_origin: Option<String>,
+    transport: &'static str,
     state: Mutex<BridgeState>,
 }
 
@@ -136,16 +147,164 @@ fn constant_time_equal(left: &str, right: &str) -> bool {
         == 0
 }
 
+fn normalize_allowed_origin(value: &str) -> Result<String, CoreError> {
+    let parsed = Url::parse(value).map_err(|error| {
+        CoreError::InvalidInput(format!(
+            "{OFFICE_LIVE_ORIGIN_ENV} is not a valid URL: {error}"
+        ))
+    })?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return Err(CoreError::InvalidInput(format!(
+            "{OFFICE_LIVE_ORIGIN_ENV} must be an exact trusted HTTPS origin without credentials, path, query, or fragment"
+        )));
+    }
+    Ok(parsed.origin().ascii_serialization())
+}
+
+fn load_tls_config(
+    certificate_path: &Path,
+    key_path: &Path,
+) -> Result<Arc<ServerConfig>, CoreError> {
+    let mut certificate_reader = BufReader::new(File::open(certificate_path)?);
+    let certificates =
+        rustls_pemfile::certs(&mut certificate_reader).collect::<Result<Vec<_>, _>>()?;
+    if certificates.is_empty() {
+        return Err(CoreError::InvalidInput(format!(
+            "Office live TLS certificate chain is empty: {}",
+            certificate_path.display()
+        )));
+    }
+    let mut key_reader = BufReader::new(File::open(key_path)?);
+    let private_key = rustls_pemfile::private_key(&mut key_reader)?.ok_or_else(|| {
+        CoreError::InvalidInput(format!(
+            "Office live TLS private key is missing: {}",
+            key_path.display()
+        ))
+    })?;
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|error| {
+            CoreError::InvalidInput(format!("Office live TLS certificate/key mismatch: {error}"))
+        })?;
+    Ok(Arc::new(config))
+}
+
+fn allowed_capability(host: &str, capability: &str) -> bool {
+    match host {
+        "Word" => matches!(
+            capability,
+            "word.replace-text"
+                | "word.insert-text"
+                | "word.add-comment"
+                | "word.set-change-tracking"
+                | "word.wrap-content-control"
+                | "word.reply-comment"
+                | "word.resolve-comment"
+        ),
+        "Excel" => matches!(
+            capability,
+            "excel.set-range"
+                | "excel.set-formula"
+                | "excel.format-range"
+                | "excel.create-table"
+                | "excel.add-chart"
+                | "excel.calculate"
+        ),
+        "PowerPoint" => matches!(
+            capability,
+            "powerpoint.set-text"
+                | "powerpoint.add-slide"
+                | "powerpoint.add-textbox"
+                | "powerpoint.add-shape"
+        ),
+        _ => false,
+    }
+}
+
+fn valid_requirement_set(host: &str, requirement: &str) -> bool {
+    match host {
+        "Word" => requirement == "WordApi:1.4",
+        "Excel" => requirement == "ExcelApi:1.13",
+        "PowerPoint" => matches!(requirement, "PowerPointApi:1.3" | "PowerPointApi:1.4"),
+        _ => false,
+    }
+}
+
+fn bounded_string_array(body: &Value, key: &str) -> Option<Vec<String>> {
+    let Some(raw) = body.get(key) else {
+        return Some(Vec::new());
+    };
+    let values = raw.as_array()?;
+    if values.len() > 128 {
+        return None;
+    }
+    let mut strings = Vec::with_capacity(values.len());
+    for value in values {
+        let item = value.as_str()?;
+        if item.is_empty() || item.len() > 128 || strings.iter().any(|existing| existing == item) {
+            return None;
+        }
+        strings.push(item.to_string());
+    }
+    Some(strings)
+}
+
 impl OfficeLiveBridge {
+    #[cfg(test)]
     fn start() -> Result<Arc<Self>, CoreError> {
+        Self::start_with_config(None, None)
+    }
+
+    fn start_configured() -> Result<Arc<Self>, CoreError> {
+        let allowed_origin = std::env::var(OFFICE_LIVE_ORIGIN_ENV)
+            .ok()
+            .map(|value| normalize_allowed_origin(&value))
+            .transpose()?;
+        let certificate = std::env::var(OFFICE_LIVE_TLS_CERT_ENV).ok();
+        let private_key = std::env::var(OFFICE_LIVE_TLS_KEY_ENV).ok();
+        let tls = match (certificate, private_key) {
+            (None, None) => None,
+            (Some(certificate), Some(private_key)) => Some(load_tls_config(
+                Path::new(&certificate),
+                Path::new(&private_key),
+            )?),
+            _ => {
+                return Err(CoreError::InvalidInput(format!(
+                    "{OFFICE_LIVE_TLS_CERT_ENV} and {OFFICE_LIVE_TLS_KEY_ENV} must be configured together"
+                )));
+            }
+        };
+        if allowed_origin.is_some() && tls.is_none() {
+            return Err(CoreError::InvalidInput(format!(
+                "{OFFICE_LIVE_ORIGIN_ENV} requires a trusted TLS certificate and key for the loopback bridge"
+            )));
+        }
+        Self::start_with_config(allowed_origin, tls)
+    }
+
+    fn start_with_config(
+        allowed_origin: Option<String>,
+        tls: Option<Arc<ServerConfig>>,
+    ) -> Result<Arc<Self>, CoreError> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(CoreError::Io)?;
         listener.set_nonblocking(false).map_err(CoreError::Io)?;
+        let transport = if tls.is_some() { "https" } else { "http" };
         let endpoint = format!(
-            "http://127.0.0.1:{}",
+            "{transport}://127.0.0.1:{}",
             listener.local_addr().map_err(CoreError::Io)?.port()
         );
         let bridge = Arc::new(Self {
             endpoint,
+            allowed_origin,
+            transport,
             state: Mutex::new(BridgeState {
                 pairing_code: random_pairing_code(),
                 failed_pairing_attempts: 0,
@@ -161,6 +320,7 @@ impl OfficeLiveBridge {
             }),
         });
         let server = Arc::clone(&bridge);
+        let tls_config = tls;
         thread::Builder::new()
             .name("nexa-office-live-bridge".to_string())
             .spawn(move || {
@@ -168,10 +328,11 @@ impl OfficeLiveBridge {
                     match stream {
                         Ok(stream) => {
                             let bridge = Arc::clone(&server);
+                            let tls = tls_config.clone();
                             let _ = thread::Builder::new()
                                 .name("nexa-office-live-request".to_string())
                                 .spawn(move || {
-                                    let _ = bridge.handle(stream);
+                                    let _ = bridge.handle(stream, tls);
                                 });
                         }
                         Err(error) => {
@@ -200,6 +361,8 @@ impl OfficeLiveBridge {
             pairing_code: include_pairing_code.then(|| state.pairing_code.clone()),
             add_in_manifest_path: std::env::var(crate::office_runtime::OFFICE_ADDIN_MANIFEST_ENV)
                 .ok(),
+            allowed_origin: self.allowed_origin.clone(),
+            transport: self.transport,
             sessions,
         }
     }
@@ -281,24 +444,32 @@ impl OfficeLiveBridge {
         result
     }
 
-    fn handle(&self, mut stream: TcpStream) -> std::io::Result<()> {
+    fn handle(&self, mut stream: TcpStream, tls: Option<Arc<ServerConfig>>) -> std::io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-        let request = read_request(&mut stream)?;
+        if let Some(config) = tls {
+            let connection = ServerConnection::new(config).map_err(std::io::Error::other)?;
+            let mut secured = StreamOwned::new(connection, stream);
+            let result = self.handle_io(&mut secured);
+            secured.conn.send_close_notify();
+            let close_result = secured.flush();
+            result.and(close_result)
+        } else {
+            self.handle_io(&mut stream)
+        }
+    }
+
+    fn handle_io<S: Read + Write>(&self, stream: &mut S) -> std::io::Result<()> {
+        let request = read_request(stream)?;
         let origin = request.headers.get("origin").map(String::as_str);
-        if !is_allowed_origin(origin) {
-            return write_response(
-                &mut stream,
-                403,
-                &json!({"error": "origin_forbidden"}),
-                None,
-            );
+        if !is_allowed_origin(origin, self.allowed_origin.as_deref()) {
+            return write_response(stream, 403, &json!({"error": "origin_forbidden"}), None);
         }
         if request.method == "OPTIONS" {
-            return write_response(&mut stream, 204, &json!({}), origin);
+            return write_response(stream, 204, &json!({}), origin);
         }
         let response = self.route(&request);
-        write_response(&mut stream, response.0, &response.1, origin)
+        write_response(stream, response.0, &response.1, origin)
     }
 
     fn route(&self, request: &HttpRequest) -> (u16, Value) {
@@ -403,27 +574,32 @@ impl OfficeLiveBridge {
         if document_id.is_empty() || document_id.len() > 256 {
             return (400, json!({"error": "invalid_document_id"}));
         }
-        let strings = |key: &str| {
-            body.get(key)
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .take(128)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
+        let Some(requirement_sets) = bounded_string_array(body, "requirementSets") else {
+            return (400, json!({"error": "invalid_requirement_sets"}));
         };
+        if !requirement_sets
+            .iter()
+            .all(|requirement| valid_requirement_set(host, requirement))
+        {
+            return (400, json!({"error": "unsupported_requirement_set"}));
+        }
+        let Some(capabilities) = bounded_string_array(body, "capabilities") else {
+            return (400, json!({"error": "invalid_capabilities"}));
+        };
+        if !capabilities
+            .iter()
+            .all(|capability| allowed_capability(host, capability))
+        {
+            return (400, json!({"error": "unsupported_capability"}));
+        }
         let session_id = Uuid::new_v4().simple().to_string();
         let now = now_seconds();
         let session = OfficeHostSession {
             session_id: session_id.clone(),
             host: host.to_string(),
             document_id: document_id.to_string(),
-            requirement_sets: strings("requirementSets"),
-            capabilities: strings("capabilities"),
+            requirement_sets,
+            capabilities,
             connected_at: now,
             last_seen_at: now,
         };
@@ -569,11 +745,11 @@ fn prune_expired(state: &mut BridgeState, now: u64) {
     let expired_operations = state
         .operation_deadlines
         .iter()
-        .filter_map(|(operation_id, deadline)| {
-            (*deadline <= now
-                && state.operation_statuses.get(operation_id) == Some(&OperationStatus::Queued))
-            .then(|| operation_id.clone())
+        .filter(|(operation_id, deadline)| {
+            **deadline <= now
+                && state.operation_statuses.get(*operation_id) == Some(&OperationStatus::Queued)
         })
+        .map(|(operation_id, _)| operation_id.clone())
         .collect::<Vec<_>>();
     for operation_id in &expired_operations {
         state
@@ -595,7 +771,7 @@ struct HttpRequest {
     body: Value,
 }
 
-fn read_request(stream: &mut TcpStream) -> std::io::Result<HttpRequest> {
+fn read_request<R: Read>(stream: &mut R) -> std::io::Result<HttpRequest> {
     let mut data = Vec::new();
     let mut buffer = [0_u8; 8192];
     let header_end;
@@ -680,17 +856,18 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<HttpRequest> {
     })
 }
 
-fn is_allowed_origin(origin: Option<&str>) -> bool {
-    origin.is_some_and(|value| {
-        value
+fn is_allowed_origin(origin: Option<&str>, configured: Option<&str>) -> bool {
+    origin.is_some_and(|value| match configured {
+        Some(allowed) => value == allowed,
+        None => value
             .strip_prefix("https://localhost:")
             .or_else(|| value.strip_prefix("https://127.0.0.1:"))
-            .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+            .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())),
     })
 }
 
-fn write_response(
-    stream: &mut TcpStream,
+fn write_response<W: Write>(
+    stream: &mut W,
     status: u16,
     body: &Value,
     origin: Option<&str>,
@@ -716,14 +893,15 @@ fn write_response(
         origin.unwrap_or("null"),
     );
     stream.write_all(response.as_bytes())?;
-    stream.write_all(&encoded)
+    stream.write_all(&encoded)?;
+    stream.flush()
 }
 
 pub fn ensure_office_live_bridge() -> Result<Arc<OfficeLiveBridge>, CoreError> {
     if let Some(bridge) = LIVE_BRIDGE.get() {
         return Ok(Arc::clone(bridge));
     }
-    let bridge = OfficeLiveBridge::start()?;
+    let bridge = OfficeLiveBridge::start_configured()?;
     let _ = LIVE_BRIDGE.set(Arc::clone(&bridge));
     Ok(LIVE_BRIDGE.get().map(Arc::clone).unwrap_or(bridge))
 }
@@ -735,6 +913,8 @@ pub fn office_live_bridge() -> Option<Arc<OfficeLiveBridge>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, ClientConnection, RootCertStore};
 
     fn http_post(
         bridge: &OfficeLiveBridge,
@@ -786,13 +966,42 @@ mod tests {
         let token = paired["bridgeToken"].as_str().unwrap();
         assert_eq!(token.len(), 64);
 
+        assert_eq!(
+            bridge
+                .register(
+                    token,
+                    &json!({
+                        "host": "Excel",
+                        "documentId": "Book1",
+                        "requirementSets": ["WordApi:1.4"],
+                        "capabilities": ["excel.raw-script"]
+                    }),
+                )
+                .0,
+            400
+        );
+        assert_eq!(
+            bridge
+                .register(
+                    token,
+                    &json!({
+                        "host": "Excel",
+                        "documentId": "Book1",
+                        "requirementSets": ["ExcelApi:1.13"],
+                        "capabilities": ["excel.raw-script"]
+                    }),
+                )
+                .0,
+            400
+        );
+
         let (status, registered) = bridge.register(
             token,
             &json!({
                 "host": "Excel",
                 "documentId": "Book1",
                 "requirementSets": ["ExcelApi:1.13"],
-                "capabilities": ["set-range"]
+                "capabilities": ["excel.set-range"]
             }),
         );
         assert_eq!(status, 200);
@@ -890,7 +1099,7 @@ mod tests {
             &json!({
                 "host": "Excel",
                 "documentId": "Book1",
-                "capabilities": ["set-range"]
+                "capabilities": ["excel.set-range"]
             }),
         );
         let session_id = registered["session"]["sessionId"].as_str().unwrap();
@@ -979,9 +1188,68 @@ mod tests {
                 .0,
             429
         );
-        assert!(is_allowed_origin(Some("https://localhost:3000")));
-        assert!(!is_allowed_origin(Some("https://evil.example")));
-        assert!(!is_allowed_origin(None));
+        assert!(is_allowed_origin(Some("https://localhost:3000"), None));
+        assert!(is_allowed_origin(
+            Some("https://office.example.com"),
+            Some("https://office.example.com")
+        ));
+        assert!(!is_allowed_origin(
+            Some("https://evil.example"),
+            Some("https://office.example.com")
+        ));
+        assert!(!is_allowed_origin(
+            Some("https://localhost:3000"),
+            Some("https://office.example.com")
+        ));
+        assert!(!is_allowed_origin(None, None));
+        assert_eq!(
+            normalize_allowed_origin("https://office.example.com/").unwrap(),
+            "https://office.example.com"
+        );
+        assert!(normalize_allowed_origin("http://office.example.com").is_err());
+    }
+
+    #[test]
+    fn trusted_tls_bridge_completes_a_real_handshake() {
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_path = directory.path().join("certificate.pem");
+        let key_path = directory.path().join("private-key.pem");
+        std::fs::write(&certificate_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+        let server_config = load_tls_config(&certificate_path, &key_path).unwrap();
+        let bridge = OfficeLiveBridge::start_with_config(None, Some(server_config)).unwrap();
+        assert_eq!(bridge.status(false).transport, "https");
+
+        let mut roots = RootCertStore::empty();
+        roots.add(cert.der().clone()).unwrap();
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connection = ClientConnection::new(
+            Arc::new(client_config),
+            ServerName::try_from("localhost").unwrap().to_owned(),
+        )
+        .unwrap();
+        let address = bridge.endpoint.strip_prefix("https://").unwrap();
+        let tcp = TcpStream::connect(address).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut stream = StreamOwned::new(connection, tcp);
+        let pairing_code = bridge.status(true).pairing_code.unwrap();
+        let body = json!({"pairingCode": pairing_code}).to_string();
+        write!(
+            stream,
+            "POST /v1/pair HTTP/1.1\r\nHost: localhost\r\nOrigin: https://localhost:3000\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("bridgeToken"));
     }
 
     #[test]

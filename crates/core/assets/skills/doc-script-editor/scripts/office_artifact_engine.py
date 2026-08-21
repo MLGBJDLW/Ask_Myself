@@ -628,8 +628,10 @@ class OfficeArtifactEngine:
                     "deployment": "live-officejs",
                     "formats": ["docx", "xlsx", "pptx"],
                     "operations": [
-                        "read-current-document", "set-text", "set-range", "add-comment",
-                        "insert-slide", "native-object-edit",
+                        "word-text", "word-comment-thread", "word-change-tracking",
+                        "word-content-control", "excel-range", "excel-table", "excel-chart",
+                        "excel-calculate", "powerpoint-slide", "powerpoint-text",
+                        "powerpoint-shape",
                     ],
                     "guarantees": {
                         "preservation": ["native-host"],
@@ -639,8 +641,12 @@ class OfficeArtifactEngine:
                     "limitations": [
                         "Requires a separately connected and user-authorized Office.js add-in host.",
                         "Not available through the local-file engine until a host session is registered.",
+                        "Desktop sideload and certificate trust remain an explicit native acceptance step.",
                     ],
-                    "requires": ["officejs-host-session", "requirement-set-negotiation", "user-consent"],
+                    "requires": [
+                        "officejs-host-session", "requirement-set-negotiation", "user-consent",
+                        "trusted-https-origin",
+                    ],
                     "status": "not-connected",
                 },
             ],
