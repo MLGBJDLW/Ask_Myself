@@ -6,19 +6,17 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
-import type { ArtifactPayload } from '../../types/conversation';
+import {
+  extractOfficeArtifactEvidence,
+  officeRecord as record,
+  officeText as text,
+  summarizeOfficeArtifactEvidence,
+  type OfficeArtifactEvidence,
+  type RecordValue,
+} from '../../lib/officeArtifactEvidence';
 
-type RecordValue = Record<string, unknown>;
-
-function record(value: unknown): RecordValue | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as RecordValue
-    : null;
-}
-
-function text(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
-}
+export { extractOfficeArtifactEvidence };
+export type { OfficeArtifactEvidence };
 
 function statusTone(status: string): string {
   return ['ready', 'candidate', 'published', 'restored', 'pass'].includes(status)
@@ -26,20 +24,6 @@ function statusTone(status: string): string {
     : ['blocked', 'failed', 'error'].includes(status)
       ? 'border-danger/25 bg-danger/10 text-danger'
       : 'border-border/60 bg-surface-0/70 text-text-secondary';
-}
-
-export interface OfficeArtifactEvidence {
-  kind: string;
-  payload: RecordValue;
-}
-
-export function extractOfficeArtifactEvidence(
-  artifacts: ArtifactPayload | undefined,
-): OfficeArtifactEvidence | null {
-  const payload = record(artifacts);
-  const kind = text(payload?.kind);
-  if (!payload || !kind || (!kind.startsWith('officeArtifact') && !kind.startsWith('officeLive'))) return null;
-  return { kind, payload };
 }
 
 function EvidencePill({ label, status }: { label: string; status: string }) {
@@ -58,6 +42,7 @@ function EvidencePill({ label, status }: { label: string; status: string }) {
 
 export function OfficeArtifactEvidencePanel({ evidence }: { evidence: OfficeArtifactEvidence }) {
   const payload = evidence.payload;
+  const proof = summarizeOfficeArtifactEvidence(evidence);
   const status = text(payload.status) ?? (payload.ready === true ? 'ready' : 'information');
   const assessment = record(payload.assessment) ?? (evidence.kind === 'officeArtifactAssessment' ? payload : null);
   const guarantees = record(assessment?.guarantees);
@@ -156,13 +141,42 @@ export function OfficeArtifactEvidencePanel({ evidence }: { evidence: OfficeArti
       )}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
-        {validation && <EvidencePill label="contract" status={text(validation.status) ?? 'recorded'} />}
-        {preservation && <EvidencePill label="preservation" status={preservation.verified === true ? 'pass' : 'failed'} />}
-        {schema && <EvidencePill label="Open XML SDK" status={text(schema.status) ?? 'recorded'} />}
-        {calculation && <EvidencePill label="calculation" status={text(calculation.level) ?? text(calculation.profile) ?? 'recorded'} />}
-        {render && <EvidencePill label="render" status={render.complete === true ? 'complete' : 'incomplete'} />}
+        {validation && <EvidencePill label="contract" status={proof.validationStatus ?? 'recorded'} />}
+        {preservation && <EvidencePill label="preservation" status={proof.preservationStatus ?? 'recorded'} />}
+        {schema && <EvidencePill label="Open XML SDK" status={proof.schemaStatus ?? 'recorded'} />}
+        {calculation && <EvidencePill label="calculation" status={proof.calculationStatus ?? 'recorded'} />}
+        {render && <EvidencePill label="render" status={proof.renderStatus ?? 'incomplete'} />}
+        {proof.nativeEngine && (
+          <EvidencePill label="native host" status={proof.nativeOpenSave ? 'pass' : 'failed'} />
+        )}
+        {proof.renderShaBound !== null && (
+          <EvidencePill label="render SHA" status={proof.renderShaBound ? 'pass' : 'mismatch'} />
+        )}
         {synthetic && <EvidencePill label="synthetic preview" status="not final render" />}
       </div>
+
+      {(proof.artifactSha256 || proof.nativeEngine || proof.renderedSurfaces !== null || proof.warningCount > 0) && (
+        <div className="mt-2 grid gap-1 rounded-md border border-border/50 bg-surface-0/45 px-2.5 py-2 text-[10px] text-text-secondary sm:grid-cols-2">
+          {proof.artifactSha256 && (
+            <div className="truncate font-mono" title={proof.artifactSha256}>
+              SHA-256 · {proof.artifactSha256}
+            </div>
+          )}
+          {proof.nativeEngine && (
+            <div className="truncate">
+              Native · {proof.nativeEngine}{proof.nativeEngineVersion ? ` ${proof.nativeEngineVersion}` : ''}
+            </div>
+          )}
+          {proof.renderedSurfaces !== null && (
+            <div>
+              Rendered surfaces · {proof.renderedSurfaces}
+              {proof.expectedSurfaces !== null ? ` / ${proof.expectedSurfaces}` : ''}
+            </div>
+          )}
+          {proof.calculationEngine && <div className="truncate">Calculation · {proof.calculationEngine}</div>}
+          {proof.warningCount > 0 && <div className="text-warning">Warnings · {proof.warningCount}</div>}
+        </div>
+      )}
 
       {consent.length > 0 && (
         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/8 px-2.5 py-2 text-[11px] text-warning">
